@@ -1,0 +1,9 @@
+**
+!engine/
+!engine/agent_entry.py
+!engine/session_entry.py
+!engine/bundle.py
+!engine/policy.py
+!engine/repository.py
+!bundle/
+!bundle/**

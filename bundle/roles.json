@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "shared": "bundle/instructions.md",
+  "roles": {
+    "intake": {
+      "skill": "bundle/skills/concurro-assess-scope/SKILL.md",
+      "schema": "bundle/schemas/intake.json"
+    },
+    "plan": {
+      "skill": "bundle/skills/concurro-design/SKILL.md",
+      "schema": "bundle/schemas/plan.json"
+    },
+    "plan_qc": {
+      "skill": "bundle/skills/concurro-review-design/SKILL.md",
+      "schema": "bundle/schemas/plan_qc.json"
+    },
+    "develop": {
+      "skill": "bundle/skills/concurro-implement/SKILL.md",
+      "schema": "bundle/schemas/develop.json"
+    },
+    "local_review": {
+      "skill": "bundle/skills/concurro-review-local/SKILL.md",
+      "schema": "bundle/schemas/local_review.json"
+    },
+    "review": {
+      "skill": "bundle/skills/concurro-review-pr/SKILL.md",
+      "schema": "bundle/schemas/review.json"
+    }
+  }
+}

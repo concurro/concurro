@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "resources": [
+    "bundle/instructions.md",
+    "bundle/roles.json",
+    "bundle/schemas/develop.json",
+    "bundle/schemas/intake.json",
+    "bundle/schemas/local_review.json",
+    "bundle/schemas/plan.json",
+    "bundle/schemas/plan_qc.json",
+    "bundle/schemas/review.json",
+    "bundle/skills/concurro-assess-scope/SKILL.md",
+    "bundle/skills/concurro-design/SKILL.md",
+    "bundle/skills/concurro-implement/SKILL.md",
+    "bundle/skills/concurro-review-design/SKILL.md",
+    "bundle/skills/concurro-review-local/SKILL.md",
+    "bundle/skills/concurro-review-pr/SKILL.md"
+  ]
+}
