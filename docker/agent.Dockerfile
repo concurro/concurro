@@ -10,7 +10,7 @@ RUN test -n "$CODEX_VERSION" && test -n "$CLAUDE_VERSION" && test -n "$COPILOT_V
     && npm install -g "@openai/codex@$CODEX_VERSION" \
        "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@github/copilot@$COPILOT_VERSION" \
     && npm cache clean --force
-COPY engine/agent_entry.py engine/session_entry.py engine/bundle.py engine/policy.py engine/repository.py /opt/concurro/engine/
+COPY engine/agent_entry.py engine/session_entry.py engine/bundle.py engine/policy.py engine/checks.py engine/repository.py /opt/concurro/engine/
 COPY bundle /opt/concurro/bundle
 ENV HOME=/tmp/home CODEX_HOME=/tmp/codex CLAUDE_CONFIG_DIR=/tmp/claude \
     COPILOT_HOME=/tmp/copilot COPILOT_AUTO_UPDATE=false

@@ -3,3 +3,4 @@
 !engine/workspace_entry.py
 !engine/local.py
 !engine/policy.py
+!engine/checks.py

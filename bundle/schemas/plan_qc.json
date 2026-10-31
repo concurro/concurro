@@ -12,7 +12,8 @@
       ]
     },
     "rationale": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 1200
     },
     "risk": {
       "type": "string",
@@ -25,14 +26,18 @@
     "questions": {
       "type": "array",
       "items": {
-        "type": "string"
-      }
+        "type": "string",
+        "maxLength": 600
+      },
+      "maxItems": 8
     },
     "concerns": {
       "type": "array",
       "items": {
-        "type": "string"
-      }
+        "type": "string",
+        "maxLength": 600
+      },
+      "maxItems": 12
     },
     "scope": {
       "type": "object",
@@ -40,17 +45,22 @@
         "goal_ids": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "maxLength": 600
+          },
+          "maxItems": 12
         },
         "fit": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 800
         },
         "conflicts": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "maxLength": 600
+          },
+          "maxItems": 8
         }
       },
       "required": [
@@ -59,6 +69,127 @@
         "conflicts"
       ],
       "additionalProperties": false
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "line": {
+            "type": "integer"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "line",
+          "quote"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 12
+    },
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "satisfied",
+              "defect",
+              "uncertain"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 600
+            },
+            "maxItems": 12
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "counterexample": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "criterion",
+          "status",
+          "sources",
+          "reason",
+          "counterexample"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 32
+    },
+    "objection_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "counterexample": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "closure": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "detail",
+          "counterexample",
+          "closure",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 24
     }
   },
   "required": [
@@ -67,7 +198,10 @@
     "risk",
     "questions",
     "concerns",
-    "scope"
+    "scope",
+    "sources",
+    "assessments",
+    "objection_updates"
   ],
   "additionalProperties": false
 }

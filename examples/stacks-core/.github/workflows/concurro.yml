@@ -27,7 +27,7 @@ concurrency:
 jobs:
   advance:
     if: >-
-      github.repository == 'concurro/stacks-core-autobot' &&
+      github.repository == 'cylewitruk/stacks-core-autobot' &&
       github.ref == 'refs/heads/main' && vars.CONCURRO_ENABLED == 'true' &&
       (github.event_name != 'issues' ||
        !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
@@ -58,7 +58,7 @@ jobs:
         with:
           app-id: ${{ vars.CONCURRO_APP_ID }}
           private-key: ${{ secrets.CONCURRO_APP_PRIVATE_KEY }}
-          owner: concurro
+          owner: cylewitruk
           repositories: stacks-core-autobot
           permission-contents: write
           permission-issues: write

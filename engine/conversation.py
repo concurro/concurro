@@ -18,6 +18,13 @@ def render(state, kind, source, details):
     value = state
     for key in source:
         value = value[key]
+    if kind == 'plan_summary':
+        publication = value['publication']
+        return '\n'.join([
+            f"[Implementation plan]({details['url']}) · artifact version {details['revision']}",
+            f"Plan `{details['plan']}` · round {details['round']}", '', 'Changes:', '',
+            *['- ' + text for text in publication['changes']], '', 'Review focus:', '',
+            *['- ' + text for text in publication['review_focus']]])
     if kind == "plan":
         lines = [f"Plan `{details['plan']}` · round {details['round']}", "", value["summary"], "",
                  *["- " + step for step in value["steps"]], "", "Validation:", "",
@@ -32,7 +39,16 @@ def render(state, kind, source, details):
         minimal = {"plan_id": details["plan"], "design_generation": details["round"] - 1,
                    "objections": [{"id": identifier, "reviewer": details["reviewer"], "resolved": False}
                                   for identifier in details["resolved"]]}
-        return review_body(minimal, value, details["phase"], {"id": details["reviewer"]})
+        disposition_ids = details.get('disposition_ids', [])
+        concern_ids = [identifier for identifier, update in zip(disposition_ids, value.get('objection_updates', []))
+                       if update['status'] == 'open']
+        body = review_body(minimal, value, details["phase"], {"id": details["reviewer"]}, concern_ids)
+        if value.get('objection_updates'):
+            body += '\n\nObjection dispositions:\n' + ''.join(
+                f"\n- **{disposition_ids[i] if disposition_ids else u['id'] or 'New finding'}**: {u['status']} — {u['evidence']}"
+                + (f" Counterexample: {u['counterexample']} Closure: {u['closure']}" if u['status'] == 'open' else '')
+                for i, u in enumerate(value['objection_updates']))
+        return body
     if kind == "local":
         checks = ", ".join(f"{c['name']}: exit {c['exit_code']}" for c in value["checks"])
         body = f"Attempt {value['attempt'] + 1} · commit `{value.get('local_commit', 'pending')}`\n\n{checks}"
@@ -171,7 +187,7 @@ def compact(state):
                     state["reason"] = report[key]
 
 
-def review_body(state, report, phase, member):
+def review_body(state, report, phase, member, concern_ids=()):
     """Render attributed judgments and stable objection identifiers for one plan."""
     plan = state.get("plan_id", "intake")
     round_number = state.get("design_generation", 0) + 1
@@ -184,5 +200,6 @@ def review_body(state, report, phase, member):
             lines += ["", "This approval closes earlier objections: " + ", ".join(resolved) + "."]
     for key in ("concerns", "questions"):
         for index, text in enumerate(report[key], 1):
-            lines += ["", f"- **{prefix}-{key[0]}{index}**: {text}"]
+            identifier = concern_ids[index - 1] if key == 'concerns' and concern_ids else f"{prefix}-{key[0]}{index}"
+            lines += ["", f"- **{identifier}**: {text}"]
     return "\n".join(lines)

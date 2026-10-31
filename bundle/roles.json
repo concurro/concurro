@@ -8,19 +8,31 @@
     },
     "plan": {
       "skill": "bundle/skills/concurro-design/SKILL.md",
-      "schema": "bundle/schemas/plan.json"
+      "schema": "bundle/schemas/plan.json",
+      "supporting_skills": [
+        "bundle/skills/concurro-validation/SKILL.md"
+      ]
     },
     "plan_qc": {
       "skill": "bundle/skills/concurro-review-design/SKILL.md",
-      "schema": "bundle/schemas/plan_qc.json"
+      "schema": "bundle/schemas/plan_qc.json",
+      "supporting_skills": [
+        "bundle/skills/concurro-validation/SKILL.md"
+      ]
     },
     "develop": {
       "skill": "bundle/skills/concurro-implement/SKILL.md",
-      "schema": "bundle/schemas/develop.json"
+      "schema": "bundle/schemas/develop.json",
+      "supporting_skills": [
+        "bundle/skills/concurro-validation/SKILL.md"
+      ]
     },
     "local_review": {
       "skill": "bundle/skills/concurro-review-local/SKILL.md",
-      "schema": "bundle/schemas/local_review.json"
+      "schema": "bundle/schemas/local_review.json",
+      "supporting_skills": [
+        "bundle/skills/concurro-validation/SKILL.md"
+      ]
     },
     "review": {
       "skill": "bundle/skills/concurro-review-pr/SKILL.md",

@@ -6,6 +6,7 @@ import re
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import PurePosixPath
+from checks import COMMANDS, required as required_checks, contract_errors
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 PROVIDER_CREDENTIALS = {
@@ -60,8 +61,8 @@ def selected_model(config, provider, stage):
 
 
 def required_local_checks(paths):
-    """Rust execution profile: whitespace validation always, Cargo checks for Rust sources."""
-    return ["diff"] + (["format", "check", "nextest"] if any(p.endswith(".rs") for p in paths) else [])
+    """Rust execution profile: control checks always, Cargo checks for Rust sources."""
+    return required_checks(paths)
 
 
 def local_evidence_valid(state):
@@ -74,7 +75,8 @@ def local_evidence_valid(state):
         return False
     checks = evidence.get("checks", [])
     names = [c.get("name") for c in checks]
-    if len(names) != len(set(names)) or not set(required_local_checks(state["plan"]["files"])).issubset(names):
+    required = set(required_local_checks(state['plan']['files'])) | set(state['plan']['validation']['checks'])
+    if len(names) != len(set(names)) or not required.issubset(names):
         return False
     if any(c.get("exit_code") != 0 or c.get("timed_out") or c.get("output_limited")
            or c.get("tree") != evidence["tree"] for c in checks):
@@ -87,9 +89,12 @@ def local_evidence_valid(state):
     return review["verdict"] == "approve"
 
 
-def validate_qc(report, stage, charter=None):
+def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=0):
     """Reject incomplete or contradictory decisions before they can authorize work."""
-    if not isinstance(report, dict) or set(report) != {"decision", "rationale", "risk", "questions", "concerns", "scope"}:
+    fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
+    if stage == 'plan_qc':
+        fields |= {'sources', 'assessments', 'objection_updates'}
+    if not isinstance(report, dict) or set(report) != fields:
         raise Blocked("invalid QC fields")
     decisions = {"clarify", "reject", "escalate"} | ({"proceed"} if stage == "intake" else {"approve", "revise"})
     if report["decision"] not in decisions or report["risk"] not in ("low", "medium", "high"):
@@ -99,7 +104,12 @@ def validate_qc(report, stage, charter=None):
     for key in ("questions", "concerns"):
         if not isinstance(report[key], list) or not all(isinstance(v, str) and v.strip() for v in report[key]):
             raise Blocked("invalid QC questions or concerns")
-    if len(json.dumps(report)) > 6000:
+    if stage == 'plan_qc':
+        from design import report_limit
+        limit = report_limit(criteria_count, objection_count)
+    else:
+        limit = 6000
+    if len(json.dumps(report).encode()) > limit:
         raise Blocked("QC report too large")
     scope = report["scope"]
     if (not isinstance(scope, dict) or set(scope) != {"goal_ids", "fit", "conflicts"}
@@ -155,13 +165,18 @@ def consensus_valid(state, config, require_fresh=True):
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
     binding = approval_binding(state, config)
+    if contract_errors(state['plan']):
+        return False
     for member in roster:
         vote = votes[member["id"]]
         if vote.get("identity") != member or vote.get("binding") != binding:
             return False
         report = vote.get("report")
         try:
-            validate_qc(report, "plan_qc", state["charter"])
+            from design import validate_evidence, criteria
+            validate_qc(report, "plan_qc", state["charter"], len(criteria(state['requirements'])),
+                        len(vote.get('objection_ids', [])))
+            validate_evidence(report, state['requirements'], [{'id': v} for v in vote.get('objection_ids', [])])
         except (Blocked, TypeError, KeyError):
             return False
         if report["decision"] != "approve" or report["risk"] == "high":
@@ -221,13 +236,18 @@ def path_allowed(path, config):
 def merge_path_allowed(path, config):
     """Autonomous merge accepts only configured low-risk paths that need no build checks."""
     return (path.startswith(tuple(config["paths"]["autonomous_merge_prefixes"]))
-            and required_local_checks([path]) == ["diff"])
+            and not set(required_local_checks([path])) & set(COMMANDS))
 
 
 def validate_plan(plan, config):
     """Require a bounded, reviewable plan or explicit clarification questions."""
-    if set(plan) != {"summary", "questions", "files", "steps", "tests", "responses"}:
+    if not isinstance(plan, dict) or set(plan) != {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}:
         raise Blocked("invalid plan fields")
+    publication = plan['publication']
+    if (not isinstance(publication, dict) or set(publication) != {'changes', 'review_focus'}
+            or any(not isinstance(publication[k], list) or not 1 <= len(publication[k]) <= 5
+                   or not all(isinstance(t, str) and 0 < len(t) <= 300 for t in publication[k]) for k in publication)):
+        raise Blocked('plan publication needs bounded changes and review focus')
     if not isinstance(plan["responses"], list) or any(
             not isinstance(v, dict) or set(v) != {"id", "response"}
             or not all(isinstance(t, str) and t.strip() for t in v.values()) for v in plan["responses"]):

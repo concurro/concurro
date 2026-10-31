@@ -41,7 +41,7 @@ class SessionTests(unittest.TestCase):
             fresh = prepare(changed, CONFIG, "claude", "plan", {})
             self.assertNotEqual(fresh["scope"], first["scope"])
             self.assertEqual(fresh["turn"], 0)
-        reviewer = {"reviewer_identity": {"model": "claude-sonnet-4-6"}}
+        reviewer = {"reviewer_identity": {"model": CONFIG["models"]["claude"]}}
         self.assertNotEqual(prepare(state, CONFIG, "claude", "plan_qc", reviewer)["scope"], first["scope"])
         model = deepcopy(CONFIG)
         model["models"]["claude"] = "different-model"

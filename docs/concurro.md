@@ -3,7 +3,7 @@
 An engine for opt-in, end-to-end agentic implementation of GitHub issues. A
 target repository calls it from its own default-branch workflow and owns its
 charter, configuration and credentials; the engine owns the controller, roles,
-skills and response contracts. The first target is `concurro/stacks-core-autobot`
+skills and response contracts. The first target is `cylewitruk/stacks-core-autobot`
 ([example configuration](../examples/stacks-core)), a Stacks Core fork that never
 writes upstream.
 
@@ -246,6 +246,52 @@ path restrictions, check requirements, branch protection or merge restrictions.
 
 ## Local development loop
 
+Planning, design review, implementation and local review share the bundled
+`concurro-validation` skill. The controller supplies its check catalog from the
+same registry used by execution. Plans select named checks and declare each
+file's add/modify status, optional line limit and required literal text. Every
+candidate runs `diff`, `scope` and `text`; Rust changes also require the Cargo
+checks. Scope compares the complete committed candidate with the approved
+original files, including across repair attempts. Empty, missing, extra and
+uncommitted changes fail. The workbench has a synthetic local Git baseline;
+remote commit IDs identify provenance, not usable local revisions.
+
+These checks enforce declared mechanical constraints. Reviewers still assess
+whether the plan and its semantic tests satisfy the request. Each design vote
+must cover every supplied request criterion, cite exact lines from the pinned
+repository, and explain a considered counterexample. Missing evidence, fabricated
+citations or unresolved criteria cannot authorize implementation. Reviewers
+resolve or refine each of their own objection IDs independently, with concrete
+closure conditions. Fresh review excludes prior responses and publication summaries.
+
+Citation quotes may be literal fragments anywhere within their stated line;
+multiline quotes must start there and remain contiguous. Evidence reads use the
+same 2 MB text-file limit as repository inspection, including executable source.
+The 128 KB editable-file limit is unchanged. Binary files, symlinks, Git metadata,
+wrong line numbers and invented text remain invalid evidence.
+
+Criterion extraction removes known structural labels, exact duplicate statements
+and pure courtesy replies such as “Thanks!”. Substantive headings and short answers
+such as “Yes” or “No” remain. The complete request stays in review context; the
+controller never truncates substantive criteria to fit its 32-criterion limit.
+
+Reviews have schema-enforced field lengths and a JSON byte allowance that scales
+with criterion and objection counts. The controller also derives an allowance
+from remaining checkpoint space and checks the proposed vote and resulting stage
+transition before saving. Invalid evidence, oversized output and checkpoint-space
+failures return fixed diagnostics to the same reviewer. Cooperative corrections
+retain that reviewer's session; fresh corrections remain independent of cooperative
+history and peer findings. Four output repairs per task are allowed by default
+(`max_review_repairs`); repeated identical failures stop early. Every attempt
+consumes the shared model-call budget, and retry replenishes neither budget nor
+approvals. Transport and checkpoint-integrity failures do not enter this loop.
+
+Malformed or unavailable validation specifications return to the planner before
+design review. `max_validation_repairs` defaults to three per task, independently
+of semantic plan revisions. Repeating an unchanged invalid specification stops
+the loop early. These repairs retain sessions and consume the normal persistent
+model-call budget; retry does not replenish either allowance.
+
 The model proposes bounded edits and check identifiers; the controller executes
 those requests and returns diagnostics on the next turn. This gives the agent an
 edit/test/debug loop without giving its credential-bearing process a shell over
@@ -267,7 +313,7 @@ v1 profile), plans containing Rust also require
 these fixed checks by identifier; arbitrary shell commands are not accepted.
 Tests needing network access or writes to source fail closed and require operator
 attention. This suite does not cover every consensus or integration scenario.
-Non-Rust plans offer only whitespace and formatting checks. Dependency-consuming
+Non-Rust plans offer scope, text, whitespace and formatting checks. Dependency-consuming
 checks require Cargo preparation before candidate edits; unprepared requests
 stop with an explicit setup error rather than entering a repair loop.
 
@@ -295,6 +341,22 @@ published parent with the remaining budget. Cleanup is best effort: an abruptly
 killed runner can leave task volumes behind. Use a dedicated disposable host.
 
 ## Local checks
+
+An opt-in model benchmark uses four isolated fixtures: one valid plan and
+three workflow defects, each with 13 criteria and a 162 KB source containing
+indented text. It uses the normal image, repository tools and review
+contract, with fresh sessions and no GitHub token or writes. Expected labels stay
+outside model context. Supply only the chosen provider's dedicated credential
+and a matching immutable `CONCURRO_AGENT_IMAGE`, then run it from a target
+checkout, which supplies the charter and model configuration (for example
+`examples/stacks-core`):
+
+```bash
+python3 /path/to/concurro/engine/design_eval.py --provider claude --output /tmp/concurro-design-eval
+```
+
+Results distinguish missed defects, false alarms and invalid responses. This is
+a smoke test for review quality, not a guarantee of production correctness.
 
 From the engine repository root (tests run against the example target):
 
@@ -373,8 +435,11 @@ Verify entitlement to every configured model with the provider credentials befor
 starting. Copilot remains optional and needs an explicit model and its own
 inference-only credential when enabled.
 
-Create a private GitHub App owned by the target repository's owner, installed only
-on the selected target repository. Disable webhooks and user authorization requests.
+Create a GitHub App and install it only on the selected target repository. A
+private App can be installed only on its owner's account, so an App owned by an
+organization (such as `concurro`) must be public to serve a user-owned target;
+installation still requires the target owner's approval and grants nothing
+elsewhere. Disable webhooks and user authorization requests.
 Grant Contents, Issues and Pull requests write; Checks and Administration read;
 Metadata read is implicit. Do not grant workflow/actions writes or protection
 bypass. Use the actual App slug plus `[bot]` as `bot_login` before publishing the
@@ -564,8 +629,12 @@ checkpoint. Stage-label failures show a temporary fallback in the comment, clear
 when synchronization recovers even on idle tasks.
 
 Separate App-authored comments record intake, each model's review in each round,
-plan publication and responses to named objections, local validation, PR reviews
-and controller decisions. Each review identifies its provider/model, plan or
+plan publication, local validation, PR reviews
+and controller decisions. Plan comments link the artifact version and plan hash,
+summarize changes, and identify review focus; full steps, tests and responses stay
+in the plan artifact. A durable publication intent recovers interruptions between
+the artifact write and comment delivery. Existing queued legacy comments retain
+their original rendering. Each review identifies its provider/model, plan or
 commit, phase and round. Bot comments do not become issue requirements or peer
 review input. The controller never rewrites these events; GitHub users can still
 edit or delete comments, so they are a conversation record, not approval authority.

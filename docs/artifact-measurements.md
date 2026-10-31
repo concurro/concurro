@@ -1,7 +1,7 @@
 # Issue artifact history measurements
 
 Measured 2026-10-30 on macOS through `gh 2.103.3`, with a scoped App installation
-token on [unenrolled test issue #8](https://github.com/concurro/stacks-core-autobot/issues/8).
+token on [unenrolled test issue #8](https://github.com/cylewitruk/stacks-core-autobot/issues/8).
 Merging and scheduled execution stayed disabled; no models were invoked.
 Test artifacts were removed, the issue closed, and temporary tokens revoked.
 

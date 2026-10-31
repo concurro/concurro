@@ -16,8 +16,30 @@ from controller import Controller, MARKER, validate_config
 from policy import Blocked, digest, merge_reasons, path_allowed, validate_edits, validate_review
 
 PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.md"],
-        "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": []}
+        "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": [],
+        "validation": {"checks": ["diff", "scope", "text"], "files": [
+            {"path": "docs/guide.md", "change": "modify", "max_lines": None, "required_text": []}]},
+        "publication": {"changes": ["Clarify the guide."], "review_focus": ["Verify wording and links."]}}
 APPROVE = {"verdict": "approve", "summary": "The change satisfies the plan.", "findings": [], "design_issue": None}
+
+
+def design_report(report, context):
+    """Supply explicit deterministic evidence for fake review decisions."""
+    own = context.get('own_objections', [])
+    concerns = report['concerns']
+    updates = []
+    for index in range(max(len(own), len(concerns))):
+        detail = concerns[index] if index < len(concerns) else own[index]['text']
+        updates.append({'id': own[index]['id'] if index < len(own) else '',
+                        'status': 'open' if index < len(concerns) else 'resolved', 'detail': detail,
+                        'counterexample': 'An incomplete explanation misses the requested behavior.',
+                        'closure': 'The guide explains the requested behavior.', 'evidence': 'The current plan addresses the requested explanation.'})
+    return {**report, 'sources': [{'id': 'S1', 'path': 'CONTRIBUTING.md', 'line': 1, 'quote': 'Use docs.'}],
+            'assessments': [{'criterion': v['id'], 'status': 'satisfied' if report['decision'] == 'approve' else
+                             'uncertain' if report['questions'] else 'defect' if concerns else 'satisfied',
+                             'sources': ['S1'], 'reason': 'The plan explains the requested guide behavior.',
+                             'counterexample': 'Omitting the explanation would fail this criterion.'}
+                            for v in context['review_criteria']], 'objection_updates': updates}
 
 
 class FakeAgents:
@@ -34,11 +56,13 @@ class FakeAgents:
         self.calls.append((provider, stage, deepcopy(context)))
         if stage in ("intake", "plan_qc"):
             if self.qc_reports:
-                return deepcopy(self.qc_reports.pop(0))
-            return {"decision": "proceed" if stage == "intake" else "approve",
+                report = deepcopy(self.qc_reports.pop(0))
+            else:
+                report = {"decision": "proceed" if stage == "intake" else "approve",
                     "rationale": "Scope and acceptance criteria are sufficient.",
                     "risk": "low", "questions": [], "concerns": [],
                     "scope": {"goal_ids": ["G-USABILITY"], "fit": "Clarifies requested operator guidance.", "conflicts": []}}
+            return design_report(report, context) if stage == 'plan_qc' else report
         if stage == "plan":
             return {**deepcopy(PLAN), "responses": [{"id": v["id"], "response": "Updated the plan to address this finding."} for v in context.get("open_objections", [])]}
         if stage == "develop":
@@ -265,6 +289,10 @@ class FakeWorkspace:
         self.source.update({e["path"]: e["content"] for e in edits})
         self.current = {"local_commit": digest(self.source), "tree": digest(self.source), "branch": self.branch}
         return self.current
+
+    def configure_validation(self, spec, originals):
+        """Retain declared checks without replacing real-workbench integration coverage."""
+        self.validation = deepcopy(spec)
 
     def run_checks(self, required, requested, deadline):
         """Return successful evidence bound to this exact source tree."""

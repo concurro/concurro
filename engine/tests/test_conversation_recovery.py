@@ -144,7 +144,9 @@ class ConversationSizeTests(unittest.TestCase):
             result = original_ask(provider, stage, context)
             if stage == "plan":
                 result["steps"] = [plan_text]
-            elif stage in ("intake", "plan_qc"):
+            elif stage == 'plan_qc':
+                result['rationale'] = rationale[:1200]
+            elif stage == "intake":
                 result["rationale"] = rationale
             elif stage in ("review", "local_review"):
                 result["summary"] = summary
@@ -170,7 +172,9 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertTrue(state["conversation"]["receipts"])
         self.assertTrue(all(not v["resolved"] for v in state.get("objections", [])))
         timeline = "\n".join(c["body"] for c in gh.comments if c["body"].startswith(conversation.MARKER))
-        for full_text in (plan_text, rationale, summary):
+        self.assertNotIn(plan_text, timeline)
+        self.assertIn(plan_text, controller.checkpoints.plan['body'])
+        for full_text in (rationale, summary):
             self.assertIn(full_text, timeline)
         self.assertLess(len(state["reviews"]["claude"]["summary"]), 1000)
         self.assertFalse(config["merge_enabled"])

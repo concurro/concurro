@@ -714,7 +714,7 @@ class BundleTests(unittest.TestCase):
             instructions = bundle.instructions(stage)
             self.assertEqual(instructions["role"], stage)
             self.assertEqual(instructions["skill"], bundle.resources[bundle.roles[stage]["skill"]])
-            self.assertEqual(set(instructions), {"shared", "charter", "role", "skill"})
+            self.assertEqual(set(instructions), {"shared", "charter", "role", "skill", "supporting_skills"})
             self.assertTrue(bundle.schema(stage)["additionalProperties"] is False)
             skill_path = bundle.root / bundle.roles[stage]["skill"]
             links = re.findall(r"\]\(([^)]+)\)", instructions["skill"])

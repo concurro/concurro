@@ -13,7 +13,9 @@ SKILLS = dict(zip(STAGES, ("concurro-assess-scope", "concurro-design", "concurro
                           "concurro-implement", "concurro-review-local", "concurro-review-pr")))
 MANIFEST = "bundle/manifest.json"
 CHARTER = ".concurro/charter.json"
-ENGINE_RESOURCES = {"bundle/instructions.md", "bundle/roles.json"} | {
+VALIDATION_SKILL = "bundle/skills/concurro-validation/SKILL.md"
+VALIDATION_STAGES = ("plan", "plan_qc", "develop", "local_review")
+ENGINE_RESOURCES = {"bundle/instructions.md", "bundle/roles.json", VALIDATION_SKILL} | {
     f"bundle/schemas/{stage}.json" for stage in STAGES} | {
     f"bundle/skills/{name}/SKILL.md" for name in SKILLS.values()}
 RESOURCE_LIMIT = 24000
@@ -61,9 +63,13 @@ class Bundle:
                 or set(roles.get("roles", {})) != set(STAGES)):
             raise Blocked("invalid role manifest")
         self.roles = roles["roles"]
+        if not self.resources[VALIDATION_SKILL].startswith('---\nname: concurro-validation\ndescription: '):
+            raise Blocked('invalid supporting skill frontmatter')
         for stage, role in self.roles.items():
             expected = {"skill": f"bundle/skills/{SKILLS[stage]}/SKILL.md",
                         "schema": f"bundle/schemas/{stage}.json"}
+            if stage in VALIDATION_STAGES:
+                expected["supporting_skills"] = [VALIDATION_SKILL]
             if role != expected:
                 raise Blocked("role references an unapproved resource")
             skill = self.resources[role["skill"]]
@@ -86,7 +92,8 @@ class Bundle:
         """Load shared governance once and only the selected stage's skill."""
         return {"shared": self.resources["bundle/instructions.md"],
                 "charter": self.charter, "role": stage,
-                "skill": self.resources[self.roles[stage]["skill"]]}
+                "skill": self.resources[self.roles[stage]["skill"]],
+                "supporting_skills": [self.resources[p] for p in self.roles[stage].get("supporting_skills", [])]}
 
 
 def hashes(resources):

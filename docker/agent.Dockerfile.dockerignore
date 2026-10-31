@@ -4,6 +4,7 @@
 !engine/session_entry.py
 !engine/bundle.py
 !engine/policy.py
+!engine/checks.py
 !engine/repository.py
 !bundle/
 !bundle/**

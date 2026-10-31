@@ -140,6 +140,15 @@ class LocalLoopTests(unittest.TestCase):
                 evidence["review"] = {**APPROVE, "verdict": "changes_requested", "findings": [{"path": "x", "detail": "bad"}]}
             self.assertFalse(local_evidence_valid(candidate))
 
+    def test_publication_requires_every_selected_plan_check(self):
+        """An optional approved check cannot disappear from publication evidence."""
+        state = self.tick()
+        state['plan']['validation']['checks'].append('format')
+        self.assertFalse(local_evidence_valid(state))
+        evidence = state['local_evidence']
+        evidence['checks'].append({**evidence['checks'][0], 'name': 'format'})
+        self.assertTrue(local_evidence_valid(state))
+
     def test_resource_exhaustion_stops_without_model_repair(self):
         """Capacity failures retain diagnostics and do not spend further repair calls."""
         for failure in ({"timed_out": True}, {"output_limited": True}, {"exit_code": 137}):
@@ -198,7 +207,7 @@ class ExecutionBoundaryTests(unittest.TestCase):
 
     def test_requested_cargo_checks_require_prepared_dependencies(self):
         """A docs plan cannot turn empty-cache failures into implementation repair feedback."""
-        self.assertEqual(available_checks(["diff"]), ["diff", "format"])
+        self.assertEqual(available_checks(["diff"]), ["diff", "scope", "text", "format"])
         with patch.dict(os.environ, {"CONCURRO_EXECUTION_IMAGE": "sha256:" + "a" * 64}):
             workspace = LocalWorkspace(CONFIG, b"", "concurro/test")
         success = {"exit_code": 0, "timed_out": False, "output_limited": False}

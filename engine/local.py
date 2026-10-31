@@ -9,17 +9,12 @@ import time
 import uuid
 
 from policy import Blocked, IMAGE
-
-CHECKS = {
-    "format": ["cargo", "fmt", "--all", "--", "--check"],
-    "check": ["cargo", "check", "--workspace", "--locked", "--offline"],
-    "nextest": ["cargo", "nextest", "run", "--workspace", "--lib", "--locked", "--offline"],
-}
+from checks import COMMANDS as CHECKS, CONTROL_CHECKS, available
 
 
 def available_checks(required):
     """Offer dependency-consuming checks only when the plan prepares Cargo."""
-    return ["diff", "format"] + (["check", "nextest"] if {"check", "nextest"} & set(required) else [])
+    return available(required)
 
 
 def resource_exhausted(report):
@@ -160,9 +155,13 @@ class LocalWorkspace:
         self.current = self.control("checkpoint", data={"expected": self.current["local_commit"], "edits": edits})
         return self.current
 
+    def configure_validation(self, spec, originals):
+        """Bind declarative rules to the original approved source, including later PR repairs."""
+        self.control('validation', data={'spec': spec, 'originals': originals})
+
     def run_checks(self, required, requested, deadline):
         """Run mandatory and agent-requested checks; shell strings are never accepted."""
-        if not isinstance(requested, list) or not all(isinstance(c, str) and c in {"diff", *CHECKS} for c in requested):
+        if not isinstance(requested, list) or not all(isinstance(c, str) and c in {*CONTROL_CHECKS, *CHECKS} for c in requested):
             raise Blocked("agent requested an unknown local check")
         if {"check", "nextest"} & set(required + requested) and not self.cargo_prepared:
             raise Blocked("Cargo checks require dependencies prepared before candidate edits; revise the plan's checks")
@@ -171,8 +170,8 @@ class LocalWorkspace:
             remaining = deadline - time.monotonic()
             if remaining < 1:
                 raise Blocked("local execution time budget exhausted")
-            command = ["python3", "-I", "/opt/concurro/workspace_entry.py", "diff"] if name == "diff" else CHECKS[name]
-            reports.append(self.execute(name, command, min(remaining, self.config["local_check_timeout_seconds"]), control=name == "diff"))
+            command = ["python3", "-I", "/opt/concurro/workspace_entry.py", name] if name in CONTROL_CHECKS else CHECKS[name]
+            reports.append(self.execute(name, command, min(remaining, self.config["local_check_timeout_seconds"]), control=name in CONTROL_CHECKS))
             if resource_exhausted(reports[-1]):
                 break
         return reports

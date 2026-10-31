@@ -1,5 +1,5 @@
 {
-  "repository": "concurro/stacks-core-autobot",
+  "repository": "cylewitruk/stacks-core-autobot",
   "base": "main",
   "bot_login": "concurro[bot]",
   "autonomous": true,
@@ -24,7 +24,7 @@
   },
   "merge_enabled": false,
   "required_checks": [
-    "Rust"
+    "Concurro Rust"
   ],
   "policy_documents": [
     "CONTRIBUTING.md",
@@ -54,7 +54,9 @@
       "contrib/",
       "scripts/"
     ],
-    "protected_files": [],
+    "protected_files": [
+      "docs/concurro.md"
+    ],
     "autonomous_merge_prefixes": [
       "docs/",
       "changelog.d/"
@@ -66,5 +68,7 @@
   "max_open_issues": 10,
   "max_design_reopens": 2,
   "max_outcome_issues": 10,
-  "max_outcome_lessons": 3
+  "max_outcome_lessons": 3,
+  "max_validation_repairs": 3,
+  "max_review_repairs": 4
 }

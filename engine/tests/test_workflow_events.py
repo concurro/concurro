@@ -13,7 +13,7 @@ WORKFLOW = TARGET / '.github/workflows/concurro.yml'
 def eligible(event_name, event, enabled='true'):
     """Evaluate the workflow's boolean expression subset against GitHub event fixtures."""
     source = WORKFLOW.read_text().split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
-    context = {'github': {'repository': 'concurro/stacks-core-autobot',
+    context = {'github': {'repository': 'cylewitruk/stacks-core-autobot',
                          'ref': 'refs/heads/main', 'event_name': event_name, 'event': event},
                'vars': {'CONCURRO_ENABLED': enabled}}
 

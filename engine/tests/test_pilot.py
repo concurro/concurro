@@ -141,7 +141,7 @@ class PilotTests(unittest.TestCase):
         """Request one repository and reject a response granting broader access."""
         config = deepcopy(CONFIG)
         responses = [{"slug": config["bot_login"].removesuffix("[bot]")},
-                     {"id": 42, "repository_selection": "selected", "account": {"login": "concurro"}},
+                     {"id": 42, "repository_selection": "selected", "account": {"login": "cylewitruk"}},
                      {"token": "temporary", "permissions": {**pilot.PERMISSIONS, "metadata": "read"}},
                      {"total_count": 2, "repositories": [{"full_name": config["repository"]}, {"full_name": "another/repo"}]}]
         with patch.object(pilot, "private_file", return_value=b"fixture"), patch.object(pilot.subprocess, "run") as run, \

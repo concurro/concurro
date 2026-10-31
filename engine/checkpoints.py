@@ -243,6 +243,8 @@ class Checkpoints:
             if state["plan"].get("responses"):
                 lines += ["## Review responses", ""] + [
                     f"- **{item['id']}**: {item['response']}" for item in state["plan"]["responses"]] + [""]
+            if state['plan'].get('validation'):
+                lines += ['## Executable validation', '', '```json', json.dumps(state['plan']['validation'], indent=2, sort_keys=True), '```', '']
         else:
             lines += ["The previous plan is superseded. A new plan is required before implementation.", ""]
         return "\n".join(lines)
