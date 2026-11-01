@@ -18,7 +18,7 @@ class Agents:
     def __init__(self, config, archive_loader=None):
         """Use trusted configuration and an operator-pinned image digest."""
         self.config = config
-        self.bundle = Bundle()
+        self.bundle = Bundle(profiles=config["execution_profiles"])
         self.archive_loader = archive_loader or GitHub(config["repository"]).archive
         self.archives = {}
 
@@ -46,6 +46,7 @@ class Agents:
             raise Blocked("agent transport bundle differs from the approved bundle")
         payload = {"provider": provider, "model": model, "stage": stage,
                    "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text,
+                   "profiles": self.config["execution_profiles"], "profile_texts": self.bundle.target_profile_texts,
                    "context": context, "session": session}
         if session:
             volume = SessionVolume(image, session)

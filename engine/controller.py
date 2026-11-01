@@ -21,7 +21,7 @@ from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from checkpoint_health import sync_checkpoint_health
 from github import GitHub
-from local import LocalWorkspace, available_checks, resource_exhausted
+from local import LocalWorkspace, resource_exhausted
 from scheduler import QueueScan
 from policy import (Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
                     consensus_valid, design_roster, path_allowed, required_local_checks, selected_model,
@@ -29,7 +29,6 @@ from policy import (Blocked, SessionFailure, approval_binding, approval_valid, d
 
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 PROVIDERS = {"claude", "codex", "copilot"}
-EXECUTION_PROFILES = {"rust"}
 PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixes", "protected_prefixes",
                "protected_files", "autonomous_merge_prefixes"}
 REPOSITORY = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
@@ -75,8 +74,9 @@ def validate_config(config):
     if not strings(documents, 10) or not all(
             not PurePosixPath(p).is_absolute() and ".." not in p.split("/") for p in documents):
         raise Blocked("policy documents must be relative repository paths")
-    if config["execution_profile"] not in EXECUTION_PROFILES:
-        raise Blocked("unsupported execution profile")
+    selection = config["execution_profiles"]
+    if not strings(selection, 4) or not selection:
+        raise Blocked("execution_profiles must list one to four profiles")
     paths = config["paths"]
     if (not isinstance(paths, dict) or set(paths) != PATH_POLICY
             or not all(strings(v) for v in paths.values()) or not paths["editable_extensions"]
@@ -110,7 +110,7 @@ class Controller:
         self.permissions = {}
         self.trees = {}
         self.workspace_factory = workspace_factory or LocalWorkspace
-        self.bundle = Bundle(bundle_root, target_root)
+        self.bundle = Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
         self.stage_synced = None
         self.stage_sync_warned = False
         self.stage_fallback = False
@@ -273,7 +273,7 @@ class Controller:
         return {"issue": self.state["requirements"], "policy": selected,
                 "plan": self.state.get("plan"), "base": self.state["base"],
                 "bundle_id": self.bundle.identity, "charter": self.bundle.charter,
-                "validation_capabilities": checks.catalog(self.state.get('plan', {}).get('files', [])),
+                "validation_capabilities": checks.catalog(self.state.get('plan', {}).get('files', []), self.bundle.execution),
                 "prior_outcomes_untrusted": self.state.get("prior_outcomes", [])}
 
     def ask(self, provider, stage, context):
@@ -355,8 +355,9 @@ class Controller:
                       "agent_image": os.environ.get("CONCURRO_AGENT_IMAGE", ""),
                       "execution_image": os.environ.get("CONCURRO_EXECUTION_IMAGE", ""),
                       "config_digest": digest(self.config), "bundle_id": self.bundle.identity,
-                      "bundle_hashes": self.bundle.hashes, "charter_id": digest(self.bundle.charter),
-                      "charter": self.bundle.charter, "design_generation": 0,
+                      "charter_id": digest(self.bundle.charter),
+                      "charter": self.bundle.charter, "execution": self.bundle.execution_summary,
+                      "design_generation": 0,
                       "design_reopens": 0, "design_votes": {}, "design_history": [],
                       "design_phase": "cooperative"}
         self.state["prior_outcomes"] = self.retrieve_outcomes()
@@ -420,7 +421,7 @@ class Controller:
         state["design_parent"] = state.get("head")
         if state.get("pr"):
             changed = [f["filename"] for f in self.gh.pages(f"pulls/{state['pr']}/files")]
-            if not changed or not all(path_allowed(p, self.config) for p in changed):
+            if not changed or not all(path_allowed(p, self.config, self.state["execution"]) for p in changed):
                 raise Blocked("cannot reconcile accumulated PR changes")
             state["changed_files"] = changed
         self.save()
@@ -566,7 +567,7 @@ class Controller:
         member = None
         phase = state.get("design_phase", "cooperative")
         if stage == "plan_qc":
-            if checks.contract_errors(state['plan']):
+            if checks.contract_errors(state['plan'], state['execution']):
                 raise Blocked('design review requires a valid executable validation contract')
             roster = design_roster(self.config)
             member = next((m for m in roster if m["id"] not in state["design_votes"]), None)
@@ -588,7 +589,7 @@ class Controller:
                            accumulated_changed_files=state.get("changed_files", []),
                            published_parent=state.get("design_parent"))
         else:
-            context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config)]
+            context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if member and state.get("head"):
             context["published_files"] = self.files(state["head"], state["plan"]["files"])
         provider = member["provider"] if member else self.config["qc"]
@@ -766,22 +767,22 @@ class Controller:
         context['validation_feedback'] = self.state.get('validation_feedback', [])
         if self.state.get('plan_draft'):
             context['plan'] = self.state['plan_draft']
-            context['validation_capabilities'] = checks.catalog(context['plan']['files'])
+            context['validation_capabilities'] = checks.catalog(context['plan']['files'], self.bundle.execution)
         context["open_objections"] = [v for v in self.state.get("objections", []) if not v["resolved"]]
-        context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config)]
+        context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if self.state.get("head"):
             paths = self.state["changed_files"]
             context.update(accumulated_before=self.files(self.state["base"], paths),
                            accumulated_after=self.files(self.state["head"], paths))
         plan = self.ask(self.config["planner"], "plan", context)
-        validate_plan(plan, self.config)
+        validate_plan(plan, self.config, self.state["execution"])
         expected = {v["id"] for v in context["open_objections"]}
         if {v["id"] for v in plan["responses"]} != expected or len(plan["responses"]) != len(expected):
             raise Blocked("planner must respond to every open objection exactly once")
         if self.state.get("head") and not plan["questions"]:
             if not set(self.state.get("changed_files", [])).issubset(plan["files"]):
                 raise Blocked("revised scope does not reconcile the accumulated PR diff")
-        errors = checks.contract_errors(plan) if not plan['questions'] else []
+        errors = checks.contract_errors(plan, self.state['execution']) if not plan['questions'] else []
         if not errors and not plan['questions']:
             tree = self.tree(self.state['base'])
             if any((r['change'] == 'modify') != (r['path'] in tree) for r in plan['validation']['files']):
@@ -862,25 +863,32 @@ class Controller:
         state = self.state
         self.design_authorization()
         deadline = time.monotonic() + self.config["local_timeout_seconds"]
-        required = list(dict.fromkeys(required_local_checks(state["plan"]["files"]) + state['plan']['validation']['checks']))
+        required = list(dict.fromkeys(required_local_checks(state["plan"]["files"], state["execution"])
+                                      + state['plan']['validation']['checks']))
         feedback = None
         round_key = f"{state['design_generation']}:{state['round']}"
         attempts = state.setdefault("local_attempts", {})
         if attempts.get(round_key, 0) > self.config["max_local_fix_rounds"]:
             raise Blocked("local repair budget exhausted")
         archive = self.gh.archive(parent)
-        with self.workspace_factory(self.config, archive, state["branch"]) as workspace:
+        # Networked preparation reads only the approved base, never an earlier published candidate.
+        base_archive = None
+        if checks.preparing(required, state["execution"]):
+            base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
+        with self.workspace_factory(self.config, archive, state["branch"], execution=self.bundle.execution,
+                                    base_archive=base_archive) as workspace:
             if workspace.files(state["plan"]["files"]) != originals:
                 raise Blocked("source archive does not match the pinned GitHub files")
             workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']))
             workspace.prepare(required, min(600, deadline - time.monotonic()))
+            executable = checks.executable(state["execution"], checks.preparing(required, state["execution"]))
             for attempt in range(attempts.get(round_key, 0), self.config["max_local_fix_rounds"] + 1):
                 if deadline - time.monotonic() < 600:
                     raise Blocked("local time budget cannot accommodate another agent turn")
                 attempts[round_key] = attempt + 1
                 context = self.context()
                 context.update(files=workspace.files(state["plan"]["files"]), prior_reviews=state["reviews"],
-                               local_feedback=feedback, available_checks=available_checks(required), required_checks=required,
+                               local_feedback=feedback, available_checks=executable, required_checks=required,
                                design_authorization=self.design_authorization())
                 result = self.ask(self.config["implementer"], "develop", context)
                 if not isinstance(result, dict) or set(result) != {"summary", "edits", "checks", "design_issue"}:
@@ -892,7 +900,7 @@ class Controller:
                     return None
                 proposal = {"summary": result["summary"], "edits": result["edits"]}
                 if result["edits"]:
-                    validate_edits(proposal, state["plan"], context["files"], self.config)
+                    validate_edits(proposal, state["plan"], context["files"], self.config, state["execution"])
                 elif not workspace.export()["edits"]:
                     raise Blocked("initial development attempt must propose changes")
                 checkpoint = workspace.checkpoint(result["edits"])
@@ -922,7 +930,7 @@ class Controller:
                     feedback = {"checks": reports, "review": review}
                     continue
                 final = {"summary": result["summary"], "edits": export["edits"]}
-                validate_edits(final, state["plan"], originals, self.config)
+                validate_edits(final, state["plan"], originals, self.config, state["execution"])
                 evidence = {k: v for k, v in record.items() if k != "edits"}
                 evidence["checks"] = [{k: v for k, v in c.items() if k != "output"} for c in reports]
                 evidence.update(parent=parent, edits_digest=digest(export["edits"]),
@@ -966,7 +974,7 @@ class Controller:
         if developed is None:
             return
         result, evidence = developed
-        edits = validate_edits(result, state["plan"], originals, self.config)
+        edits = validate_edits(result, state["plan"], originals, self.config, state["execution"])
         # Git Trees API accepts content directly, avoiding filesystem extraction and hooks.
         parent_commit = self.gh.repo("git/commits/" + parent)
         tree = self.gh.repo("git/trees", "POST", {"base_tree": parent_commit["tree"]["sha"], "tree": [
@@ -1124,8 +1132,8 @@ class Controller:
         if self.state and (self.state.get("bundle_id") != self.bundle.identity
                            or self.state.get("charter_id") != digest(self.bundle.charter)
                            or digest(self.state.get("charter")) != self.state.get("charter_id")
-                           or self.state.get("bundle_hashes") != self.bundle.hashes):
-            raise Blocked("trusted charter, role, skill or schema bundle changed; operator reconciliation required")
+                           or self.state.get("execution") != self.bundle.execution_summary):
+            raise Blocked("trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required")
         self.sync_stage()
         if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
                 or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent'))):

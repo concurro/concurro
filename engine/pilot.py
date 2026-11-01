@@ -200,12 +200,15 @@ def preflight(settings, config):
         if result.returncode:
             problems.append(kind + " image is unavailable locally")
     if IMAGE.fullmatch(settings.get("agent_image", "")):
-        bundle = Bundle(ENGINE, target=TARGET)
+        bundle = Bundle(ENGINE, target=TARGET, profiles=config["execution_profiles"])
+        governance = json.dumps({"charter": bundle.charter_text, "profiles": config["execution_profiles"],
+                                 "profile_texts": bundle.target_profile_texts})
         result = subprocess.run(["docker", "run", "--rm", "-i", "--network=none", "--read-only",
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--entrypoint", "python3", settings["agent_image"],
-            "-I", "-c", "import sys; sys.path.insert(0,'/opt/concurro/engine'); from bundle import Bundle; "
-            "print(Bundle('/opt/concurro', charter_text=sys.stdin.read()).identity)"],
-            input=bundle.charter_text, capture_output=True, text=True, timeout=30)
+            "-I", "-c", "import json, sys; sys.path.insert(0,'/opt/concurro/engine'); from bundle import Bundle; "
+            "g = json.load(sys.stdin); print(Bundle('/opt/concurro', charter_text=g['charter'], "
+            "profiles=g['profiles'], profile_texts=g['profile_texts']).identity)"],
+            input=governance, capture_output=True, text=True, timeout=30)
         if result.returncode or result.stdout.strip() != bundle.identity:
             problems.append("inference image governance bundle differs from this engine checkout")
     repository = "repos/" + config["repository"]

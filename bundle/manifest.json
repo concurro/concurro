@@ -2,6 +2,7 @@
   "version": 1,
   "resources": [
     "bundle/instructions.md",
+    "bundle/profiles/rust.json",
     "bundle/roles.json",
     "bundle/schemas/develop.json",
     "bundle/schemas/intake.json",

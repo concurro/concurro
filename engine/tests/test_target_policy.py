@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, EXECUTION, PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config
@@ -32,7 +32,8 @@ class TargetConfigTests(unittest.TestCase):
             "duplicate_checks": ("required_checks", ["Rust", "Rust"]),
             "absolute_document": ("policy_documents", ["/etc/passwd"]),
             "escaping_document": ("policy_documents", ["docs/../../secret.md"]),
-            "profile": ("execution_profile", "python"),
+            "no_profiles": ("execution_profiles", []),
+            "duplicate_profiles": ("execution_profiles", ["rust", "rust"]),
             "missing_rule": ("paths", {k: v for k, v in CONFIG["paths"].items() if k != "protected_files"}),
             "no_extensions": ("paths", {**CONFIG["paths"], "editable_extensions": []}),
             "bare_extension": ("paths", {**CONFIG["paths"], "editable_extensions": ["md"]}),
@@ -54,25 +55,25 @@ class PathPolicyTests(unittest.TestCase):
         for path in ("../x.md", ".github/x.md", "docs/.git/x.md", "AGENTS.md", "docs/CLAUDE.md", "SECURITY.md"):
             with self.subTest(path=path):
                 self.assertFalse(path_safe(path))
-                self.assertFalse(path_allowed(path, permissive))
-        self.assertTrue(path_allowed("docs/guide.md", permissive))
+                self.assertFalse(path_allowed(path, permissive, EXECUTION))
+        self.assertTrue(path_allowed("docs/guide.md", permissive, EXECUTION))
 
     def test_target_rules_protect_configured_paths(self):
         """Configured names, prefixes, files and policy documents are not editable."""
         config = {**CONFIG, "policy_documents": ["docs/policy.md"],
                   "paths": {**CONFIG["paths"], "protected_files": ["docs/frozen.md"]}}
-        self.assertTrue(path_allowed("docs/guide.md", config))
+        self.assertTrue(path_allowed("docs/guide.md", config, EXECUTION))
         for path in ("Cargo.toml", "crates/a/Cargo.lock", "rust-toolchain.toml", "scripts/a.md",
                      "docs/frozen.md", "docs/policy.md", "docs/image.png"):
             with self.subTest(path=path):
-                self.assertFalse(path_allowed(path, config))
+                self.assertFalse(path_allowed(path, config, EXECUTION))
 
     def test_autonomous_merge_paths_exclude_build_checked_sources(self):
         """Only configured prefixes that need no execution-profile checks can merge autonomously."""
-        self.assertTrue(merge_path_allowed("docs/guide.md", CONFIG))
-        self.assertTrue(merge_path_allowed("changelog.d/x.added", CONFIG))
-        self.assertFalse(merge_path_allowed("docs/example.rs", CONFIG))
-        self.assertFalse(merge_path_allowed("src/lib.md", CONFIG))
+        self.assertTrue(merge_path_allowed("docs/guide.md", CONFIG, EXECUTION))
+        self.assertTrue(merge_path_allowed("changelog.d/x.added", CONFIG, EXECUTION))
+        self.assertFalse(merge_path_allowed("docs/example.rs", CONFIG, EXECUTION))
+        self.assertFalse(merge_path_allowed("src/lib.md", CONFIG, EXECUTION))
 
 
 class BundleSplitTests(unittest.TestCase):
@@ -80,11 +81,11 @@ class BundleSplitTests(unittest.TestCase):
 
     def test_container_charter_text_reproduces_controller_identity(self):
         """An agent image without the charter derives the same identity from supplied text."""
-        controller = Bundle(target=TARGET)
-        container = Bundle(ROOT, charter_text=controller.charter_text)
+        controller = Bundle(target=TARGET, profiles=PROFILES)
+        container = Bundle(ROOT, charter_text=controller.charter_text, profiles=PROFILES, profile_texts={})
         self.assertEqual(container.identity, controller.identity)
         self.assertEqual(container.engine_identity, controller.engine_identity)
-        altered = Bundle(ROOT, charter_text=controller.charter_text + "\n")
+        altered = Bundle(ROOT, charter_text=controller.charter_text + "\n", profiles=PROFILES, profile_texts={})
         self.assertNotEqual(altered.identity, controller.identity)
         self.assertEqual(altered.engine_identity, controller.engine_identity)
 
@@ -93,13 +94,13 @@ class BundleSplitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             with self.assertRaises(FileNotFoundError):
-                Bundle(target=target)
+                Bundle(target=target, profiles=PROFILES)
             shutil.copytree(TARGET / ".concurro", target / ".concurro")
-            self.assertEqual(Bundle(target=target).identity, Bundle().identity)
+            self.assertEqual(Bundle(target=target, profiles=PROFILES).identity, Bundle(profiles=PROFILES).identity)
             charter = json.loads((target / CHARTER).read_text())
             charter["id"] = "another-target"
             (target / CHARTER).write_text(json.dumps(charter))
-            self.assertNotEqual(Bundle(target=target).identity, Bundle().identity)
+            self.assertNotEqual(Bundle(target=target, profiles=PROFILES).identity, Bundle(profiles=PROFILES).identity)
 
     def test_agent_payload_carries_exact_charter_text(self):
         """The controller sends the charter bytes that the container must hash."""
@@ -114,7 +115,9 @@ class BundleSplitTests(unittest.TestCase):
             agents.ask("codex", "review", {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40})
         payload = json.loads(run.call_args_list[0].kwargs["input"])
         self.assertEqual(payload["charter"], agents.bundle.charter_text)
-        self.assertEqual(payload["bundle_id"], Bundle(ROOT, charter_text=payload["charter"]).identity)
+        self.assertEqual(payload["profiles"], PROFILES)
+        self.assertEqual(payload["bundle_id"], Bundle(ROOT, charter_text=payload["charter"], profiles=payload["profiles"],
+                                                      profile_texts=payload["profile_texts"]).identity)
 
 
 if __name__ == "__main__":

@@ -192,7 +192,7 @@ Target-specific configuration keys:
 | `bot_login` | The controller App's `<slug>[bot]` login |
 | `required_checks` | Names of the target CI check runs that must pass before merge |
 | `policy_documents` | Trusted repository guidance supplied to models and protected from edits; `.github/instructions/*.md` with a matching `applyTo` is added automatically |
-| `execution_profile` | Local check profile; `rust` (`cargo fmt`, `cargo check`, `cargo nextest`) is the only v1 profile |
+| `execution_profiles` | Ordered [execution profiles](design/execution-profiles.md): built-in names (`rust`) or `target:<id>` for `.concurro/profiles/<id>.json` |
 | `paths` | `editable_extensions`, `protected_names`, `protected_name_prefixes`, `protected_prefixes`, `protected_files` and `autonomous_merge_prefixes` |
 
 The workflow checks out the target's trusted commit, mints the App token and runs
@@ -302,20 +302,50 @@ The execution container has no provider or GitHub credentials, host directory
 mounts, Docker socket, or network during candidate checks. Source is read-only
 while tests run; build output and Cargo caches use per-task volumes. Local Git
 metadata is mounted only into the trusted checkpoint helper, never into tests.
-Before edits, a separate credential-free `cargo fetch --locked` step uses network
-access to populate the task's dependencies. Candidate commands then run offline.
-Caches persist across local fixes but are not shared with other tasks or the host.
+Each selected execution profile declares its triggers, protected manifests,
+per-task caches, an optional networked preparation step and named checks. Before
+any edit, a profile whose prepared checks the approved plan selects runs its
+preparation from a neutral directory with network access but no credentials,
+reading only its protected inputs (and, for `rust`, a read-only source view) from
+the approved base commit. Candidate commands then run offline. Caches persist
+across local fixes but are not shared with other tasks or the host.
 
-Every candidate runs `git diff --check`. In the `rust` execution profile (the only
-v1 profile), plans containing Rust also require
+Every candidate runs `git diff --check` and the scope and text checks. In the
+built-in `rust` profile, plans containing Rust also require
 `cargo fmt --all -- --check`, `cargo check --workspace --locked --offline`, and
 `cargo nextest run --workspace --lib --locked --offline`. The agent can request
-these fixed checks by identifier; arbitrary shell commands are not accepted.
+any catalogued check by identifier; arbitrary shell commands are not accepted.
 Tests needing network access or writes to source fail closed and require operator
 attention. This suite does not cover every consensus or integration scenario.
-Non-Rust plans offer scope, text, whitespace and formatting checks. Dependency-consuming
-checks require Cargo preparation before candidate edits; unprepared requests
-stop with an explicit setup error rather than entering a repair loop.
+Preparation failures stop with an explicit environment error rather than
+entering a repair loop.
+
+### Repository Cargo configuration
+
+Preparation runs from `/prepare`, so Cargo never discovers the repository's
+`.cargo/config.toml` there; checks, running in `/workspace`, do. A repository
+that relies on that configuration during download (vendored sources, source
+replacement or alternative registries) needs a target profile that passes it
+explicitly. Copy `bundle/profiles/rust.json` to `.concurro/profiles/<id>.json`,
+then:
+
+- set `id` and select `target:<id>` instead of `rust` (check IDs cannot repeat
+  across selected profiles);
+- append `"--config", "/workspace/.cargo/config.toml"` to the `cargo fetch` step;
+- add vendored directories such as `"vendor/**"` to `protected`.
+
+```json
+"prepare": {"requires": ["Cargo.lock"], "source": true, "steps": [
+  ["cargo", "fetch", "--locked", "--manifest-path", "/workspace/Cargo.toml",
+   "--config", "/workspace/.cargo/config.toml"]]}
+```
+
+Opting in trusts the approved base's Cargo configuration during the networked
+step: it can redirect downloads and name programs Cargo may run, such as a
+credential provider, including executables committed to the repository.
+Candidates cannot change it (hidden paths are never editable), and no
+credentials are available, so authenticated private registries are not
+supported.
 
 `local_reviewer` selects one fresh reviewer (Claude by default);
 `local_review_model` overrides its model, including when Copilot is selected.

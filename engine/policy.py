@@ -3,10 +3,9 @@
 import hashlib
 import json
 import re
-from fnmatch import fnmatchcase
-from functools import lru_cache
 from pathlib import PurePosixPath
-from checks import COMMANDS, required as required_checks, contract_errors
+from checks import (build_checked, contract_errors, glob_matches as instruction_matches,
+                    protected as profile_protected, required as required_checks)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 PROVIDER_CREDENTIALS = {
@@ -15,24 +14,6 @@ PROVIDER_CREDENTIALS = {
     "copilot": ("COPILOT_GITHUB_TOKEN",),
 }
 SECRET_NAMES = frozenset(name for names in PROVIDER_CREDENTIALS.values() for name in names)
-
-
-def instruction_matches(path, pattern):
-    """Match path segments with ** covering zero or more directories."""
-    parts, patterns = path.split("/"), pattern.split("/")
-
-    @lru_cache(maxsize=None)
-    def match(index, pattern_index):
-        """Memoize wildcard branches within this bounded path comparison."""
-        if pattern_index == len(patterns):
-            return index == len(parts)
-        if patterns[pattern_index] == "**":
-            return (match(index, pattern_index + 1)
-                    or index < len(parts) and match(index + 1, pattern_index))
-        return (index < len(parts) and fnmatchcase(parts[index], patterns[pattern_index])
-                and match(index + 1, pattern_index + 1))
-
-    return match(0, 0)
 
 
 PROTECTED_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"})
@@ -60,9 +41,9 @@ def selected_model(config, provider, stage):
     return config["models"][provider]
 
 
-def required_local_checks(paths):
-    """Rust execution profile: control checks always, Cargo checks for Rust sources."""
-    return required_checks(paths)
+def required_local_checks(paths, execution):
+    """Control checks always; mandatory checks of every execution profile the paths trigger."""
+    return required_checks(paths, execution)
 
 
 def local_evidence_valid(state):
@@ -75,7 +56,8 @@ def local_evidence_valid(state):
         return False
     checks = evidence.get("checks", [])
     names = [c.get("name") for c in checks]
-    required = set(required_local_checks(state['plan']['files'])) | set(state['plan']['validation']['checks'])
+    required = (set(required_local_checks(state['plan']['files'], state['execution']))
+                | set(state['plan']['validation']['checks']))
     if len(names) != len(set(names)) or not required.issubset(names):
         return False
     if any(c.get("exit_code") != 0 or c.get("timed_out") or c.get("output_limited")
@@ -165,7 +147,7 @@ def consensus_valid(state, config, require_fresh=True):
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
     binding = approval_binding(state, config)
-    if contract_errors(state['plan']):
+    if not state.get("execution") or contract_errors(state['plan'], state['execution']):
         return False
     for member in roster:
         vote = votes[member["id"]]
@@ -218,9 +200,9 @@ def path_safe(path):
     )
 
 
-def path_allowed(path, config):
-    """Apply the target repository's editable-path policy on top of the engine invariants."""
-    if not path_safe(path):
+def path_allowed(path, config, execution):
+    """Apply the target's editable-path policy and profile protections on top of engine invariants."""
+    if not path_safe(path) or profile_protected(path, execution):
         return False
     policy = config["paths"]
     return (
@@ -233,13 +215,13 @@ def path_allowed(path, config):
     )
 
 
-def merge_path_allowed(path, config):
-    """Autonomous merge accepts only configured low-risk paths that need no build checks."""
+def merge_path_allowed(path, config, execution):
+    """Autonomous merge accepts only configured low-risk paths that trigger no execution profile."""
     return (path.startswith(tuple(config["paths"]["autonomous_merge_prefixes"]))
-            and not set(required_local_checks([path])) & set(COMMANDS))
+            and not build_checked(path, execution))
 
 
-def validate_plan(plan, config):
+def validate_plan(plan, config, execution):
     """Require a bounded, reviewable plan or explicit clarification questions."""
     if not isinstance(plan, dict) or set(plan) != {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}:
         raise Blocked("invalid plan fields")
@@ -263,13 +245,13 @@ def validate_plan(plan, config):
         return
     if not 1 <= len(plan["files"]) <= 8 or len(set(plan["files"])) != len(plan["files"]):
         raise Blocked("plan must name 1–8 distinct files")
-    if not all(path_allowed(p, config) for p in plan["files"]):
+    if not all(path_allowed(p, config, execution) for p in plan["files"]):
         raise Blocked("plan includes protected or unsupported files")
     if not plan["steps"] or not plan["tests"]:
         raise Blocked("plan needs steps and validation criteria")
 
 
-def validate_edits(result, plan, originals, config):
+def validate_edits(result, plan, originals, config, execution):
     """Accept complete text replacements only within the approved file set."""
     if set(result) != {"summary", "edits"} or not isinstance(result["summary"], str):
         raise Blocked("invalid implementation response")
@@ -281,7 +263,7 @@ def validate_edits(result, plan, originals, config):
         if not isinstance(edit, dict) or set(edit) != {"path", "content"}:
             raise Blocked("invalid edit fields")
         path, content = edit["path"], edit["content"]
-        if not path_allowed(path, config) or path not in plan["files"] or path in seen:
+        if not path_allowed(path, config, execution) or path not in plan["files"] or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
         if not isinstance(content, str) or "\x00" in content or len(content.encode()) > 128000:
             raise Blocked("invalid text replacement")
@@ -344,9 +326,9 @@ def merge_reasons(state, pr, files, checks, threads, reviews, config):
             reasons.append(provider + " approval missing or stale")
     if not files or set(files) != set(state.get("changed_files", [])):
         reasons.append("PR file set differs from controller evidence")
-    if not all(path_allowed(p, config) and p in state["plan"]["files"] for p in files):
+    if not all(path_allowed(p, config, state["execution"]) and p in state["plan"]["files"] for p in files):
         reasons.append("unapproved path")
-    if not all(merge_path_allowed(p, config) for p in files):
+    if not all(merge_path_allowed(p, config, state["execution"]) for p in files):
         reasons.append("autonomous merge is limited to configured low-risk paths")
     for name in config["required_checks"]:
         candidates = [c for c in checks if c["name"] == name]

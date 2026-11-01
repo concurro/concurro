@@ -31,7 +31,9 @@
     ".github/copilot-instructions.md",
     ".agents/skills/stacks-pr-review/SKILL.md"
   ],
-  "execution_profile": "rust",
+  "execution_profiles": [
+    "rust"
+  ],
   "paths": {
     "editable_extensions": [
       ".rs",
@@ -41,14 +43,8 @@
       ".fixed",
       ".removed"
     ],
-    "protected_names": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "build.rs"
-    ],
-    "protected_name_prefixes": [
-      "rust-toolchain"
-    ],
+    "protected_names": [],
+    "protected_name_prefixes": [],
     "protected_prefixes": [
       "tools/",
       "contrib/",

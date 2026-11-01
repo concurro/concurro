@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "rust",
+  "triggers": ["**/*.rs"],
+  "protected": ["**/Cargo.toml", "**/Cargo.lock", "**/build.rs", "**/rust-toolchain*"],
+  "caches": ["cargo", "target"],
+  "env": {"CARGO_HOME": "{cache:cargo}", "CARGO_TARGET_DIR": "{cache:target}"},
+  "prepare": {
+    "requires": ["Cargo.lock"],
+    "source": true,
+    "steps": [["cargo", "fetch", "--locked", "--manifest-path", "/workspace/Cargo.toml"]]
+  },
+  "checks": [
+    {"id": "format", "purpose": "Run cargo fmt for the workspace without modifying files.",
+     "command": ["cargo", "fmt", "--all", "--", "--check"], "prepared": false, "mandatory": true},
+    {"id": "check", "purpose": "Compile the workspace offline using prepared dependencies.",
+     "command": ["cargo", "check", "--workspace", "--locked", "--offline"], "prepared": true, "mandatory": true},
+    {"id": "nextest", "purpose": "Run workspace library tests offline using prepared dependencies.",
+     "command": ["cargo", "nextest", "run", "--workspace", "--lib", "--locked", "--offline"], "prepared": true, "mandatory": true}
+  ]
+}

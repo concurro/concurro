@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 clang l
     && rustup component add rustfmt clippy \
     && cargo install cargo-nextest --version 0.9.145 --locked --jobs 2
 COPY engine/workspace_entry.py engine/local.py engine/policy.py engine/checks.py /opt/concurro/
-ENV HOME=/tmp/home CARGO_HOME=/cargo CARGO_TARGET_DIR=/target RUSTUP_AUTO_INSTALL=0
+# CARGO_HOME and CARGO_TARGET_DIR come from the rust profile's per-task caches.
+ENV HOME=/tmp/home RUSTUP_AUTO_INSTALL=0
 WORKDIR /workspace
 ENTRYPOINT ["python3", "-I", "/opt/concurro/workspace_entry.py"]

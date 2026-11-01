@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 import time
 import unittest
 from unittest.mock import patch
@@ -112,11 +112,11 @@ class ValidationCatalogTests(unittest.TestCase):
     def test_catalog_matches_dispatch_and_requires_complete_candidate_checks(self):
         """Neither Rust nor docs plans can omit scope, text or whitespace validation."""
         for paths in (['docs/a.md'], ['src/lib.rs']):
-            catalog = checks.catalog(paths)
+            catalog = checks.catalog(paths, EXECUTION)
             offered = {v['id'] for v in catalog['checks']}
-            self.assertTrue(set(checks.required(paths)).issubset(offered))
+            self.assertTrue(set(checks.required(paths, EXECUTION)).issubset(offered))
             self.assertTrue(set(checks.CONTROL_CHECKS).issubset(catalog['mandatory']))
-            self.assertTrue(offered.issubset(set(checks.COMMANDS) | set(checks.CONTROL_CHECKS)))
+            self.assertEqual(offered, set(checks.available(EXECUTION)))
 
     def test_evaluation_labels_never_enter_review_context_and_scoring_detects_misses(self):
         """The quality benchmark measures false approvals and false alarms independently."""
@@ -126,7 +126,7 @@ class ValidationCatalogTests(unittest.TestCase):
             self.assertNotIn('expected', request)
             self.assertNotIn('controller_session', request)
             self.assertNotIn('responses', request['plan'])
-            self.assertFalse(checks.contract_errors(case['plan']))
+            self.assertFalse(checks.contract_errors(case['plan'], EXECUTION))
             results.append({'id': case['id'], 'decision': 'approve'})
         score = design_eval.score(results)
         self.assertEqual((score['missed_defects'], score['false_alarms']), (3, 0))
@@ -147,7 +147,7 @@ class DockerValidationTests(unittest.TestCase):
         spec = {'checks': ['diff', 'scope', 'text'], 'files': [
             {'path': path, 'change': 'add', 'max_lines': 2, 'required_text': ['Required']} for path in paths]}
         with patch.dict(os.environ, {'CONCURRO_EXECUTION_IMAGE': os.environ['CONCURRO_TEST_EXECUTION_IMAGE']}):
-            with LocalWorkspace(CONFIG, archive_files({'README.md': 'Baseline\n'}), 'concurro/validation-fixture') as candidate:
+            with LocalWorkspace(CONFIG, archive_files({'README.md': 'Baseline\n'}), 'concurro/validation-fixture', EXECUTION) as candidate:
                 candidate.configure_validation(spec, dict.fromkeys(paths))
                 for path in paths:
                     candidate.checkpoint([{'path': path, 'content': 'Required\n'}])

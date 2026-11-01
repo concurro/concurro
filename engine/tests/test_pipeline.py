@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from agents import Agents
@@ -263,7 +263,7 @@ class FakeGitHub:
 class FakeWorkspace:
     """Model local checkpoints and execution evidence without Docker or network access."""
 
-    def __init__(self, config, archive, branch):
+    def __init__(self, config, archive, branch, execution=None, base_archive=None):
         """Seed an isolated candidate from the fake archive."""
         self.original = json.loads(archive)
         self.source = deepcopy(self.original)
@@ -521,11 +521,11 @@ class PipelineTests(unittest.TestCase):
         for path in ("../escape.md", "/docs/x.md", "docs/../x.md", ".github/a.md", "docs/.git/a.md",
                      "docs/CLAUDE.md", "src/build.rs", "tools/a.rs", "docs/x\\y.md", "docs//a.md"):
             with self.subTest(path=path):
-                self.assertFalse(path_allowed(path, self.config))
+                self.assertFalse(path_allowed(path, self.config, EXECUTION))
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config)
+            validate_edits({"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config, EXECUTION)
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config)
+            validate_edits({"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config, EXECUTION)
 
     def test_contradictory_review_is_rejected(self):
         """An approve verdict with an outstanding finding is never accepted."""

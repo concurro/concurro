@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from policy import Blocked, path_allowed
@@ -45,7 +45,7 @@ class RepositoryTests(unittest.TestCase):
             extract(io.BytesIO(archive({"repo/CONTRIBUTING.md": b"Writer enrollment\nMerge disabled\n",
                                        "repo/.concurro/config.json": b"{}"})), root)
             repo = Repository(root)
-            self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG))
+            self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG, EXECUTION))
             self.assertIn("CONTRIBUTING.md", json.loads(repo.call("list_files", {}))["paths"])
             self.assertEqual(json.loads(repo.call("read_file", {"path": "CONTRIBUTING.md"}))["lines"][0]["text"],
                              "Writer enrollment")

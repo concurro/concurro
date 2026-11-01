@@ -80,7 +80,8 @@ def main():
     os.makedirs("/tmp/session", exist_ok=True)
     os.chdir("/tmp/session")
     schema_path, output_path = "/tmp/schema.json", "/tmp/result.json"
-    bundle = Bundle(Path(__file__).resolve().parents[1], charter_text=request["charter"])
+    bundle = Bundle(Path(__file__).resolve().parents[1], charter_text=request["charter"],
+                    profiles=request["profiles"], profile_texts=request["profile_texts"])
     if request["bundle_id"] != bundle.identity or not request["model"].strip():
         raise ValueError("unbound bundle or model")
     request["schema"] = bundle.schema(request["stage"])

@@ -74,13 +74,14 @@ def archive():
 
 def request(case, provider, config):
     """Build a fresh review input without expected labels, peer votes or prior findings."""
+    bundle = Bundle(profiles=config['execution_profiles'])
     return {'issue': REQUIREMENTS, 'base': 'e' * 40, 'repository_commit': 'e' * 40,
-            'bundle_id': Bundle().identity, 'charter': Bundle().charter, 'review_phase': 'fresh',
+            'bundle_id': bundle.identity, 'charter': bundle.charter, 'review_phase': 'fresh',
             'reviewer_identity': {'id': digest([provider, config['models'][provider]]),
                                   'provider': provider, 'model': config['models'][provider], 'roles': ['review']},
             'review_criteria': criteria(REQUIREMENTS),
             'review_output_budget': {'max_json_bytes': report_limit(len(criteria(REQUIREMENTS)))},
-            'validation_capabilities': catalog(case['plan']['files']),
+            'validation_capabilities': catalog(case['plan']['files'], bundle.execution),
             'plan': {k: v for k, v in case['plan'].items() if k not in ('summary', 'publication', 'responses')}}
 
 
@@ -106,7 +107,7 @@ def main():
     agents = Agents(config, archive_loader=lambda _: archive())
     results = []
     for case in cases():
-        if contract_errors(case['plan']):
+        if contract_errors(case['plan'], agents.bundle.execution):
             raise ValueError('evaluation fixture has an invalid executable contract')
         item = {'id': case['id'], 'provider': args.provider, 'model': config['models'][args.provider],
                 'bundle_id': agents.bundle.identity, 'agent_image': os.environ.get('CONCURRO_AGENT_IMAGE'),
@@ -114,7 +115,7 @@ def main():
         try:
             report = agents.ask(args.provider, 'plan_qc', request(case, args.provider, config))
             item['report'] = report
-            validate_qc(report, 'plan_qc', Bundle().charter, len(criteria(REQUIREMENTS)))
+            validate_qc(report, 'plan_qc', agents.bundle.charter, len(criteria(REQUIREMENTS)))
             validate_evidence(report, REQUIREMENTS, files=SOURCE)
             item.update(decision=report['decision'], report=report)
         except Exception as error:

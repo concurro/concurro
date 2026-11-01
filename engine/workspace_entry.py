@@ -10,12 +10,13 @@ import tarfile
 
 sys.path.insert(0, "/opt/concurro")
 from policy import path_safe
-from checks import contract_errors
+from checks import NAME, file_rule_errors
 
 ROOT = Path("/workspace")
 STATE = Path("/state")
-CARGO = Path("/cargo")
-TARGET = Path("/target")
+STAGE = Path("/stage")
+INPUT = Path("/input")
+CACHE = Path("/cache")
 
 
 def git(*args):
@@ -45,10 +46,11 @@ def safe_file(name):
     return path
 
 
-def extract_member(archive, member):
+def extract_member(archive, member, base=None):
     """Extract allowed entries without ownership changes or version-dependent tar filters."""
-    root = ROOT.resolve()
-    destination = ROOT / member.name
+    base = ROOT if base is None else base
+    root = base.resolve()
+    destination = base / member.name
     resolved = destination.resolve()
     if not resolved.is_relative_to(root) or ".git" in resolved.relative_to(root).parts:
         raise ValueError("archive destination escapes source")
@@ -69,13 +71,11 @@ def extract_member(archive, member):
         destination.chmod(0o755 if member.mode & 0o111 else 0o644)
 
 
-def initialize(branch):
-    """Safely extract the GitHub archive and create a local-only baseline branch."""
-    if not branch.startswith("concurro/") or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789/-" for c in branch):
-        raise ValueError("invalid local branch")
+def extract(stream, base):
+    """Safely extract one single-root GitHub archive into a source tree."""
     total = 0
     prefix = None
-    with tarfile.open(fileobj=sys.stdin.buffer, mode="r|gz") as archive:
+    with tarfile.open(fileobj=stream, mode="r|gz") as archive:
         for member in archive:
             parts = Path(member.name).parts
             if not parts or Path(member.name).is_absolute() or ".." in parts or ".git" in parts:
@@ -89,15 +89,58 @@ def initialize(branch):
             if total > 500_000_000:
                 raise ValueError("archive expansion limit exceeded")
             member.name = "/".join(parts[1:])
-            extract_member(archive, member)
-    for path in (CARGO, TARGET):
-        path.chmod(0o777)
+            extract_member(archive, member, base)
+
+
+def initialize(branch, *caches):
+    """Safely extract the GitHub archive and create a local-only baseline branch."""
+    if not branch.startswith("concurro/") or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789/-" for c in branch):
+        raise ValueError("invalid local branch")
+    extract(sys.stdin.buffer, ROOT)
+    for cache in caches:
+        # Engine-assigned mounts only: /cache/<profile>/<name>, writable by the unprivileged runner.
+        parts = Path(cache).relative_to(CACHE).parts
+        if len(parts) != 2 or not all(NAME.fullmatch(part) for part in parts):
+            raise ValueError("invalid cache mount")
+        CACHE.joinpath(*parts).chmod(0o777)
     git("init", "--bare", "--initial-branch=main", str(STATE / "git"))
     git("symbolic-ref", "HEAD", "refs/heads/" + branch)
     git("add", "--force", "-A")
     git("commit", "-m", "Local baseline")
     STATE.joinpath("base").write_text(git("rev-parse", "HEAD"))
     return snapshot()
+
+
+def stage():
+    """Extract the approved base commit, separate from the possibly published workbench parent."""
+    extract(sys.stdin.buffer, STAGE)
+    return {"staged": True}
+
+
+def inputs(profile, paths):
+    """Copy only a profile's protected preparation inputs from the approved base snapshot."""
+    if not NAME.fullmatch(profile) or not isinstance(paths, list) or not 1 <= len(paths) <= 16:
+        raise ValueError("invalid preparation inputs")
+    destination = INPUT / profile
+    for name in paths:
+        if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name or any(
+                part in ("", ".", "..", ".git") for part in name.split("/")):
+            raise ValueError("invalid preparation input path")
+        source = STAGE
+        for part in name.split("/"):
+            source = source / part
+            if source.is_symlink():
+                raise ValueError("preparation input is a symlink")
+        if not source.is_file():
+            raise ValueError("preparation input is missing at the approved base")
+        target = destination.joinpath(*name.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o444)
+    for directory in [destination, *destination.rglob("*")]:
+        if directory.is_dir():
+            directory.chmod(0o755)
+    return {"inputs": sorted(paths)}
 
 
 def snapshot():
@@ -144,7 +187,11 @@ def main():
     """Perform one trusted operation; candidate test execution uses another container."""
     operation = sys.argv[1]
     if operation == "init":
-        result = initialize(sys.argv[2])
+        result = initialize(sys.argv[2], *sys.argv[3:])
+    elif operation == "stage":
+        result = stage()
+    elif operation == "inputs":
+        result = inputs(sys.argv[2], json.load(sys.stdin))
     elif operation == "checkpoint":
         payload = json.load(sys.stdin)
         if git("rev-parse", "HEAD") != payload["expected"]:
@@ -173,7 +220,7 @@ def main():
         payload = json.load(sys.stdin)
         if (set(payload) != {'spec', 'originals'} or not isinstance(payload['originals'], dict)
                 or not all(path_safe(p) and (v is None or isinstance(v, str)) for p, v in payload['originals'].items())
-                or contract_errors({'files': list(payload['originals']), 'validation': payload['spec']})):
+                or file_rule_errors({'files': list(payload['originals']), 'validation': payload['spec']})):
             raise ValueError('invalid validation contract')
         STATE.joinpath('validation.json').write_text(json.dumps(payload))
         result = snapshot()
