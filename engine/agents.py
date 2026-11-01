@@ -5,6 +5,7 @@ import os
 import subprocess
 import uuid
 
+import cleanup
 from policy import Blocked, KILLED, SessionFailure, UNCERTAIN_EXIT, UncertainOutcome, IMAGE, selected_model
 from credentials import Credential, EnvironmentCredentials
 from bundle import Bundle
@@ -89,5 +90,4 @@ class Agents:
                     raise UncertainOutcome(f"{provider} outcome is unknown; output suppressed") from None
                 raise error
             finally:
-                subprocess.run(["docker", "rm", "-f", name], capture_output=True,
-                               timeout=30, env=environment)
+                cleanup.remove(["docker", "rm", "-f", name], environment)

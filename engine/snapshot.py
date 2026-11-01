@@ -6,6 +6,7 @@ import re
 import subprocess
 import uuid
 
+import cleanup
 from policy import Blocked, IMAGE
 
 
@@ -36,7 +37,7 @@ class Snapshot:
             if result.returncode:
                 raise Blocked("repository snapshot preparation failed")
         finally:
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True, env=self.env, timeout=30)
+            cleanup.remove(["docker", "rm", "-f", name], self.env)
 
     def __enter__(self):
         """Create the complete source snapshot before any credential-bearing model starts."""
@@ -53,7 +54,7 @@ class Snapshot:
 
     def __exit__(self, *_):
         """Remove only this invocation's snapshot volume after its model container exits."""
-        subprocess.run(["docker", "volume", "rm", self.volume], capture_output=True, env=self.env, timeout=30)
+        cleanup.remove(["docker", "volume", "rm", self.volume], self.env)
 
 
 def inspection(context, stage):

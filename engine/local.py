@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 
+import cleanup
 from policy import Blocked, IMAGE
 from checks import CACHE_ROOT, CONTROL_CHECKS, PLACEHOLDER, executable, preparing
 
@@ -104,8 +105,7 @@ class LocalWorkspace:
     def close(self):
         """Clean only resources allocated by this workbench."""
         for volume in [*self.volumes.values(), *self.caches.values(), *self.inputs.values()]:
-            subprocess.run(["docker", "volume", "rm", "-f", volume], env=self.env,
-                           capture_output=True, timeout=30)
+            cleanup.remove(["docker", "volume", "rm", "-f", volume], self.env)
 
     def expand(self, profile, value):
         """Resolve a profile's cache placeholders to its engine-assigned mount points."""
@@ -159,7 +159,7 @@ class LocalWorkspace:
                 raise Blocked("local Git workspace operation failed")
             return json.loads(result.stdout)
         finally:
-            subprocess.run(["docker", "rm", "-f", name], env=self.env, capture_output=True, timeout=30)
+            cleanup.remove(["docker", "rm", "-f", name], self.env)
 
     def execute(self, name, command, timeout, network=False, control=False, mode="check", profile=None):
         """Run one bounded command and bind its actual exit status to the current tree."""
@@ -170,7 +170,7 @@ class LocalWorkspace:
             report = bounded_process(args, self.env, timeout)
             return {"name": name, "tree": self.current["tree"], **report}
         finally:
-            subprocess.run(["docker", "rm", "-f", container], env=self.env, capture_output=True, timeout=30)
+            cleanup.remove(["docker", "rm", "-f", container], self.env)
 
     def prepare(self, selected, timeout):
         """Prepare each selected profile from the approved base, before any candidate edit."""

@@ -35,7 +35,8 @@ in-flight approvals.
 
 ```bash
 python3 -m unittest discover -s engine/tests -v
-python3 -m compileall -q engine
+python3 -m unittest discover -s service/tests -v
+python3 -m compileall -q engine service
 python3 engine/bundle.py examples/stacks-core
 ```
 

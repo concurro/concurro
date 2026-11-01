@@ -120,7 +120,7 @@ sees generations. Fencing is therefore enforced by token custody.
 
 - Workers hold no GitHub write token. Every mutation (artifact, comment, label,
   branch, PR, review, merge) is a request to the mutation gateway carrying the
-  issue, the worker's generation and an operation ID.
+  issue and the worker's generation.
 - The gateway alone obtains installation tokens from the identity service. It
   executes one issue's mutations serially and checks the generation inside the
   same critical section that grants ownership, so a request is either executed
@@ -128,10 +128,9 @@ sees generations. Fencing is therefore enforced by token custody.
 - Handoff is serialized with writes: a new generation is granted only when the
   issue has no mutation in flight. Queued requests from older generations are
   rejected.
-- A mutation whose outcome is unknown (lost response, gateway restart) is
-  reconciled against GitHub before any further mutation or handoff for that
-  issue. If it cannot be reconciled, the issue is blocked for operator attention
-  instead of being taken over automatically.
+- A mutation whose outcome is unknown (lost response, gateway restart) stops
+  further mutation and handoff for that issue until an operator resolves it as
+  applied or not applied, instead of the issue being taken over automatically.
 - v1 runs one gateway process. Replicating it later needs a single leader per
   issue; that is an open question, not a v1 requirement.
 
@@ -139,19 +138,26 @@ Read access is not fenced; a stale worker may read but cannot change anything.
 
 ### Operations and retries
 
-- Each model call and mutation has a stable logical operation ID, assigned before
-  the first attempt and carried in the outbox and receipts.
-- Each attempt has its own attempt ID, and the attempt count per operation is
-  persisted before the attempt starts.
-- The recovery rule is enforced from that count: a model call whose outcome is
-  uncertain may be retried once; a further uncertain outcome blocks the task.
-  A mutation is retried only after reconciliation shows it did not take effect.
+Model calls and GitHub mutations are retried differently:
+
+- **Model calls** have a stable logical operation ID in task state, assigned
+  before the first attempt. Each attempt has its own attempt ID, and the attempt
+  count is persisted before the attempt starts. A call whose outcome is uncertain
+  may be retried once; a further uncertain outcome blocks the task.
+- **Gateway mutations** are occurrences: each request gets a new intent ID
+  (issue, generation, sequence), recorded before it is sent, and identical
+  payloads are never deduplicated, since label and attention changes
+  legitimately repeat. The gateway never resends.
+- **Reconstruction** belongs to the engine: after any outcome, its next tick
+  finds or recomputes each write's result from GitHub (comments by marker and
+  author, artifacts by creator and name, the PR by head branch, labels from
+  state). The gateway admits only writes with such a rule.
 
 Guarantees for duplicate or redelivered events:
 
 - No GitHub mutation from a stale generation.
-- No duplicate GitHub-visible publication: duplicates are recognized by operation
-  ID and receipt.
+- No duplicate GitHub-visible publication: the engine recognizes an earlier
+  publication by its marker, author and receipt before publishing again.
 - At most one additional model call per uncertain call.
 - No merge of a head other than the reviewed head; merges stay bound to the exact
   head SHA. Branch updates use non-forced (fast-forward only) ref updates; GitHub
@@ -462,7 +468,8 @@ Each step is useful alone and keeps the Actions path working until removed.
      truthy only when the tick progressed, so the Actions loop is unchanged.
 4. Service skeleton: ingress, change-driven reconciler, scheduler with ownership
    generations, mutation gateway, and a worker running the current controller
-   with the service-controlled executor and session affinity.
+   with the service-controlled executor and session affinity. Planned in
+   [service-skeleton.md](service-skeleton.md).
 5. Credential service, admission, and the inference proxy for API keys.
 6. Rotating credentials, starting with the documented Codex app-server flow.
 7. Per-provider Apps through the identity service.

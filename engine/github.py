@@ -8,6 +8,10 @@ STAGE_LABEL_PREFIX = "concurro:stage:"
 ATTENTION_LABEL = "concurro:attention"
 STAGES = {"intake", "clarify", "plan", "plan_qc", "planned", "implement", "publish", "review",
           "gates", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
+# The engine's only GraphQL mutation; the service gateway admits exactly this document.
+LINKED_BRANCH = """mutation($input:CreateLinkedBranchInput!) {
+          createLinkedBranch(input:$input) { linkedBranch { ref { name target { oid } } } }
+        }"""
 
 
 class NotFound(RuntimeError):
@@ -105,10 +109,7 @@ class GitHub:
 
     def create_linked_branch(self, issue_id, branch, sha):
         """Create a repository branch linked to its issue without publishing candidate edits."""
-        mutation = """mutation($input:CreateLinkedBranchInput!) {
-          createLinkedBranch(input:$input) { linkedBranch { ref { name target { oid } } } }
-        }"""
-        result = self.api("graphql", "POST", {"query": mutation, "variables": {"input": {
+        result = self.api("graphql", "POST", {"query": LINKED_BRANCH, "variables": {"input": {
             "issueId": issue_id, "name": branch, "oid": sha}}})
         if result.get("errors"):
             raise RuntimeError("linked branch creation failed; reconcile on retry")

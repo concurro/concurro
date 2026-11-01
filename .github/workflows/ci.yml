@@ -25,6 +25,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - run: python3 -m unittest discover -s engine/tests -v
-      - run: python3 -m compileall -q engine
+      - run: python3 -m unittest discover -s service/tests -v
+      - run: python3 -m compileall -q engine service
       - name: Verify trusted role, skill, schema and example charter packaging
         run: python3 engine/bundle.py examples/stacks-core
