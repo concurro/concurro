@@ -43,8 +43,8 @@ class CheckpointHealthTests(unittest.TestCase):
                 patch.dict(os.environ, {'CONCURRO_ISSUE': '7'}):
             controller_module.main()
 
-    def test_checkpoint_failure_reports_once_then_clears_after_idle_recovery(self):
-        """Failed reads preserve authoritative state and display a warning until a verified run."""
+    def test_unverified_checkpoint_failure_reports_only_to_the_runner(self):
+        """Before ownership is verified nothing is written to the issue; the runner gets the diagnostic."""
         before = deepcopy(self.gh.artifacts)
         summary = deepcopy(self.gh.comments[0])
         labels = deepcopy(self.gh.issue['labels'])
@@ -57,23 +57,21 @@ class CheckpointHealthTests(unittest.TestCase):
             return original(path, method, data)
 
         for _ in range(2):
-            with patch.object(self.gh, 'repo', side_effect=fail_checkpoint), \
+            with patch.object(self.gh, 'repo', side_effect=fail_checkpoint) as repo, \
                     patch('sys.stderr', new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
                 self.run_main()
             self.assertNotIn('private-token-fixture', output.getvalue())
+            self.assertIn(CheckpointError('artifact_request').public_detail(), output.getvalue())
+            self.assertFalse([c for c in repo.call_args_list if len(c.args) > 1 and c.args[1] != 'GET'])
             self.assertEqual(self.gh.artifacts, before)
             self.assertEqual(self.gh.comments[0], summary)
-            self.assertEqual(len(self.notices()), 1)
-            self.assertEqual(self.notices()[0]['body'], FAILED + '\nDiagnostic: ' + CheckpointError('artifact_request').public_detail() + '\n')
-            self.assertEqual(self.gh.issue['labels'], labels + [{'name': ATTENTION_LABEL}])
-        self.run_main()
-        self.assertEqual(self.gh.artifacts, before)
-        self.assertEqual(self.gh.comments[0], summary)
-        self.assertEqual(self.gh.issue['labels'], labels)
-        self.assertEqual(self.notices()[0]['body'], RECOVERED)
+            self.assertEqual(self.notices(), [])
+            self.assertEqual(self.gh.issue['labels'], labels)
         with patch.object(self.gh, 'repo', wraps=self.gh.repo) as repo:
             self.run_main()
         self.assertFalse([call for call in repo.call_args_list if len(call.args) > 1 and call.args[1] in ('POST', 'PATCH')])
+        self.assertEqual(self.gh.artifacts, before)
+        self.assertEqual(self.gh.issue['labels'], labels)
         self.assertEqual(len(self.agents.calls), 1)
         self.assertEqual(self.gh.merges, 0)
 

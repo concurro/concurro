@@ -5,7 +5,7 @@ import os
 import subprocess
 import uuid
 
-from policy import Blocked, SessionFailure, IMAGE, selected_model
+from policy import Blocked, KILLED, SessionFailure, UNCERTAIN_EXIT, UncertainOutcome, IMAGE, selected_model
 from credentials import Credential, EnvironmentCredentials
 from bundle import Bundle
 from github import GitHub
@@ -74,12 +74,19 @@ class Agents:
             try:
                 result = subprocess.run(command, input=json.dumps(payload), capture_output=True,
                                         text=True, timeout=600, env=environment)
+                if result.returncode in KILLED or result.returncode == UNCERTAIN_EXIT:
+                    raise UncertainOutcome(f"{provider} outcome is unknown; output suppressed")
                 if result.returncode or len(result.stdout.encode()) > 300000:
                     raise Blocked(f"{provider} failed; output suppressed to protect credentials")
                 return json.loads(result.stdout)
             except (Blocked, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+                # A timeout or kill may follow upstream completion; other failures were reported.
+                uncertain = isinstance(error, (subprocess.TimeoutExpired, UncertainOutcome))
                 if session:
-                    raise SessionFailure("provider session failed; output suppressed to protect credentials") from None
+                    raise SessionFailure("provider session failed; output suppressed to protect credentials",
+                                         uncertain=uncertain) from None
+                if uncertain:
+                    raise UncertainOutcome(f"{provider} outcome is unknown; output suppressed") from None
                 raise error
             finally:
                 subprocess.run(["docker", "rm", "-f", name], capture_output=True,

@@ -1,12 +1,14 @@
 """Durable issue-to-PR state machine. Only this trusted process writes to GitHub."""
 
 import base64
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -98,12 +100,38 @@ def validate_config(config):
         raise Blocked("invalid local check timeout")
 
 
+# Tasks without an ownership marker predate it and belong to the Actions controller.
+ACTIONS = "actions"
+OUTCOMES = ("continue", "wait-until", "await-human", "blocked", "terminal")
+# Fallback poll for timed waits; schedulers may also re-enqueue earlier when inputs change.
+WAIT_SECONDS = 300
+# Request fields derived from current checkpoint size rather than from the intended work.
+VOLATILE_REQUEST = ("review_output_budget",)
+# Audit room kept free when retaining a completed model result for recovery.
+RESULT_MARGIN = 4000
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """How a scheduler should treat a task after one tick; truthy when the tick made progress."""
+
+    kind: str
+    progressed: bool = False
+    retry_after: int | None = None
+
+    def __bool__(self):
+        """Keep `if controller.advance(...)` meaning "this tick changed the task"."""
+        return self.progressed
+
+
 class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
 
-    def __init__(self, github, agents, config, workspace_factory=None, bundle_root=None, target_root=None):
+    def __init__(self, github, agents, config, workspace_factory=None, bundle_root=None, target_root=None,
+                 controller_id=ACTIONS):
         """Inject transports so complete lifecycles can be tested without credentials."""
         self.gh, self.agents, self.config = github, agents, config
+        self.controller_id = controller_id
         self.comment_id = None
         self.checkpoints = None
         self.state = None
@@ -114,12 +142,24 @@ class Controller:
         self.identities = Identities(config)
         self.bundle = Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
         self.stage_synced = None
+        self.foreign = False
+        self.consuming = None
         self.stage_sync_warned = False
         self.stage_fallback = False
 
     def checkpoint(self):
         """Persist authoritative progress independently of conversation delivery."""
         conversation.compact(self.state)
+        operation = self.state.get("operation")
+        if (operation and operation["status"] == "completed" and self.consuming is not None
+                and (operation["id"], operation["attempt"]) == self.consuming):
+            # The stage holds the result; this save (of whichever state copy it keeps) persists its use.
+            operation["status"] = "consumed"
+            operation.pop("response", None)
+        if (operation and "response" in operation
+                and len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN):
+            # Too large to retain: recovery then treats the completion as lost, within the allowance.
+            del operation["response"]
         self.checkpoints.save(self.state)
 
     def save(self, publish_events=True):
@@ -279,10 +319,21 @@ class Controller:
                 "prior_outcomes_untrusted": self.state.get("prior_outcomes", [])}
 
     def ask(self, provider, stage, context):
-        """Debit the persistent attempt budget before contacting a model."""
+        """Debit the persistent attempt budget before contacting a model.
+
+        A retried or recovered call keeps its original response contract: recorded volatile
+        fields replace recomputed ones in the caller's context, which validates the response.
+        """
+        caller = context
         context = {**context, "repository_commit": self.state.get("head", self.state["base"])}
         if len(json.dumps(context).encode()) > self.config["max_context_bytes"]:
             raise Blocked("context exceeds v1 limit; narrow the issue")
+        operation = self.operation(provider, stage, context)
+        caller.update(operation["contract"])
+        context.update(operation["contract"])
+        retained = self.recover(operation)
+        if retained is not None:
+            return retained
         if self.state["calls"] >= self.config["max_model_calls"]:
             raise Blocked("model-call budget exhausted")
         credential = self.agents.credential(provider, stage, {"repository": self.config["repository"],
@@ -294,6 +345,7 @@ class Controller:
             request = {**context, "controller_credential": credential.record()}
             if session:
                 request["controller_session"] = session
+            self.begin_attempt(operation, context)
             self.state["calls"] += 1
             used = self.state.setdefault("credentials", {}).setdefault(
                 credential.id, {k: v for k, v in credential.record().items() if k != "id"} | {"calls": 0})
@@ -301,8 +353,10 @@ class Controller:
             self.save()
             try:
                 response = self.agents.ask(provider, stage, request)
-            except SessionFailure:
-                if not session:
+            except Exception as error:
+                # Timeouts and killed containers may have completed upstream; reported errors did not.
+                operation["status"] = "uncertain" if getattr(error, "uncertain", False) else "failed"
+                if not isinstance(error, SessionFailure) or not session:
                     raise
                 sessions.restart(self.state, session)
                 conversation.queue(self.state, "Controller · session restarted",
@@ -318,9 +372,47 @@ class Controller:
                 current["turn"] += 1
                 current["completed"] = {"call": self.state["calls"], "request": digest(context),
                                         "response": digest(response)}
-                # Execution can be interrupted before the normal stage save.
-                self.checkpoint()
+            self.complete(operation, response)
             return response
+
+    def operation(self, provider, stage, context):
+        """Bind a model call to its intended work, so incidental request changes keep its allowance."""
+        work = {k: v for k, v in context.items() if k not in VOLATILE_REQUEST}
+        identifier = digest([self.state["issue"], provider, stage, digest(work)])
+        current = self.state.get("operation")
+        if not current or current["id"] != identifier or current["status"] == "consumed":
+            current = self.state["operation"] = {
+                "id": identifier, "provider": provider, "stage": stage, "request": None, "attempts": 0,
+                "uncertain": 0, "attempt": None, "status": "new",
+                "contract": {k: context[k] for k in VOLATILE_REQUEST if k in context}}
+            self.consuming = None
+        return current
+
+    def recover(self, operation):
+        """Return a durably retained result not yet consumed; a completion without one was lost."""
+        if operation["status"] != "completed":
+            return None
+        if "response" in operation:
+            self.consuming = (operation["id"], operation["attempt"])
+            return deepcopy(operation["response"])
+        operation["status"] = "uncertain"
+        return None
+
+    def begin_attempt(self, operation, context):
+        """Persist each attempt before dispatch; unresolved prior attempts count as uncertain."""
+        if operation["status"] in ("started", "uncertain"):
+            operation["uncertain"] += 1
+        if operation["uncertain"] >= 2:
+            raise Blocked("model call outcome was uncertain twice; operator reconciliation required")
+        operation.update(attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started",
+                         request=digest(context))
+
+    def complete(self, operation, response):
+        """Checkpoint the result itself, when it fits, until the stage durably consumes it."""
+        operation["status"] = "completed"
+        operation["response"] = deepcopy(response)
+        self.checkpoint()
+        self.consuming = (operation["id"], operation["attempt"])
 
     def permitted(self, login):
         """Cache fresh writer permissions within this invocation only."""
@@ -356,7 +448,7 @@ class Controller:
     def initialize(self, comments, mode, command_id=0, enrollment=None):
         """Create a bounded task while preserving explicit manual mode compatibility."""
         base = self.gh.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
-        self.state = {"version": 2, "issue": self.issue["number"], "mode": mode,
+        self.state = {"version": 2, "issue": self.issue["number"], "mode": mode, "controller": self.controller_id,
                       "stage": "intake", "enrollment": enrollment,
                       "base": base, "calls": 0, "round": 0, "plan_revisions": 0, "reviews": {},
                       "command_id": command_id, "requirements": self.requirements(comments),
@@ -520,6 +612,8 @@ class Controller:
         remaining = deepcopy(self.state)
         remaining.get('qc', {}).pop('plan_qc', None)
         remaining.pop('review_repair', None)
+        # A retained result is temporary and dropped when its stage saves.
+        remaining.get('operation', {}).pop('response', None)
         room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 10000
         return {'max_json_bytes': max(1000, min(room // 3, design.report_limit(
                     len(context['review_criteria']), len(context.get('own_objections', []))))),
@@ -764,6 +858,8 @@ class Controller:
                 else:
                     self.state.update(stage=self.state.pop("retry_stage"), command_id=comment["id"])
                 self.state.pop("reason", None)
+                # A writer's retry authorizes a fresh attempt allowance for an uncertain call.
+                self.state.pop("operation", None)
                 self.save()
             elif self.state and text == "/concurro stop":
                 self.state["command_id"] = comment["id"]
@@ -1138,12 +1234,40 @@ class Controller:
         self.save()
 
     def advance(self, number):
+        """Advance one stage and classify what the task waits for next."""
+        self.foreign = False
+        return self.outcome(self.step(number))
+
+    def outcome(self, progressed):
+        """Derive the scheduling outcome from durable stage, so every return path agrees."""
+        if self.foreign or self.issue and "pull_request" in self.issue:
+            return Outcome("terminal")
+        if not self.state:
+            return Outcome("await-human")
+        stage = self.state["stage"]
+        if stage in ("merged", "observed_merged"):
+            return Outcome("terminal", progressed)
+        if stage in ("blocked", "stopped", "rejected", "escalated"):
+            return Outcome("blocked", progressed)
+        if stage in ("planned", "clarify"):
+            return Outcome("await-human", progressed)
+        if progressed:
+            return Outcome("continue", True)
+        return Outcome("wait-until", retry_after=WAIT_SECONDS)
+
+    def step(self, number):
         """Process writer commands, validate current authority, and advance one stage."""
         self.issue = self.gh.repo(f"issues/{number}")
         if "pull_request" in self.issue:
             return False
         comments = self.gh.pages(f"issues/{number}/comments")
         self.load(comments)
+        if self.state and self.state.get("controller", ACTIONS) != self.controller_id:
+            # Another controller owns this task: no label, comment, artifact or health write.
+            # Dropping the state also keeps the caller's health and failure paths silent.
+            self.state = None
+            self.foreign = True
+            return False
         if self.state and (self.state.get("bundle_id") != self.bundle.identity
                            or self.state.get("charter_id") != digest(self.bundle.charter)
                            or digest(self.state.get("charter")) != self.state.get("charter_id")
@@ -1242,9 +1366,13 @@ def main():
                 break
         except Exception as error:
             # Do not publish raw CLI/provider errors: they can contain credentials or injected text.
-            if isinstance(error, CheckpointError) and not isinstance(error, conversation.PublicationError):
+            if not controller.state:
+                # Ownership was never established (or belongs elsewhere): no issue-level writes.
+                detail = error.public_detail() if isinstance(error, CheckpointError) else "unverified task state"
+                print(f"Concurro diagnostic for issue {number}: {detail}", file=sys.stderr)
+            elif isinstance(error, CheckpointError) and not isinstance(error, conversation.PublicationError):
                 sync_checkpoint_health(gh, config, number, failed=True, error=error)
-            elif controller.state:
+            else:
                 reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect runner health."
                 try:
                     controller.suspend("blocked", reason, publish_events=False)

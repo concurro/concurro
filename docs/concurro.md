@@ -715,8 +715,11 @@ compare-and-swap here: the existing Actions concurrency group and local pilot lo
 must still enforce one controller writer. Never run the two controllers concurrently.
 Do not edit or delete the audit artifact or recovery reference manually.
 
-Checkpoint failures set `concurro:attention` and update a separate App-owned health
-notice, without replacing uncertain state or changing the last known stage label.
+Checkpoint failures on a task this controller owns set `concurro:attention` and
+update a separate App-owned health notice, without replacing uncertain state or
+changing the last known stage label. Failures before the task state (and so its
+owning controller) is verified, such as unreadable artifacts, write nothing to the
+issue: the stable diagnostic code appears in the runner log and the run fails.
 Reporting is best effort if GitHub is unavailable; repeated failures reuse the
 notice. Diagnostics show a stable code and fixed controller text, never raw API or
 provider errors. A successful invocation clears the label and marks the notice recovered.

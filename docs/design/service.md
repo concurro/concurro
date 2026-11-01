@@ -1,6 +1,6 @@
 # Concurro service
 
-Status: proposal, revision 3; migration steps 1–2 implemented. Describes responsibilities,
+Status: proposal, revision 3; migration steps 1–3 implemented. Describes responsibilities,
 module boundaries and contracts. Technology choices (hosting, queue, stores,
 secret backend, compute) are deliberately left open; examples are illustrative,
 not decisions.
@@ -434,8 +434,32 @@ Each step is useful alone and keeps the Actions path working until removed.
    are excluded from human discussion. With one App every role maps to
    `bot_login`. Choosing a token per author is deferred to the mutation gateway
    (step 4), which is the only component that will hold tokens.
-3. Tick outcomes, logical operation and attempt IDs, and controller-marker
-   support in the engine, released to the Actions path before any cutover.
+3. Engine support (implemented), to be released to the Actions path before any
+   cutover:
+   - Ownership marker: new tasks record `controller` in state (`actions` by
+     default; unmarked tasks are `actions`). A controller whose identity differs
+     from the marker, or meets a malformed marker, returns immediately after
+     loading state with no label, comment, artifact or health write.
+   - Operation records: each model call has a logical ID for its intended work
+     (issue, provider, stage and the request without fields derived from
+     checkpoint size), with the full request digest and a per-attempt ID
+     recorded separately. The attempt is persisted before dispatch. A completed
+     result is checkpointed with the operation and reused, without dispatch,
+     until the stage's next save consumes it; a result too large to retain is
+     treated as lost. A retried or recovered call keeps the response contract
+     (such as its output budget) it was first requested with, and consumption
+     is matched by operation and attempt ID, whichever state copy the stage
+     saves. Interrupted attempts, lost results, timeouts and killed providers or
+     containers are uncertain; inside the agent container a provider timeout or
+     kill exits with a fixed status (75) that the host classifies as uncertain.
+     A second uncertain outcome blocks before dispatch, and `/concurro retry`
+     restores the allowance. Reported provider failures are not uncertain.
+   - Issue-level diagnostics (health notices, attention labels, failure
+     summaries) are written only after the task state and its owner are
+     verified; earlier failures go to the runner log.
+   - Tick outcomes: `advance` returns an outcome (`continue`, `wait-until`,
+     `await-human`, `blocked`, `terminal`) derived from durable stage; it stays
+     truthy only when the tick progressed, so the Actions loop is unchanged.
 4. Service skeleton: ingress, change-driven reconciler, scheduler with ownership
    generations, mutation gateway, and a worker running the current controller
    with the service-controlled executor and session affinity.

@@ -26,6 +26,23 @@ class Blocked(ValueError):
 class SessionFailure(Blocked):
     """A provider turn or its local transcript needs a new isolated session."""
 
+    def __init__(self, message, uncertain=False):
+        """Record whether the failed turn may still have completed upstream."""
+        super().__init__(message)
+        self.uncertain = uncertain
+
+
+# Exit statuses meaning a provider call may have completed upstream: the agent entry point's
+# own signal for a provider timeout or kill, and a container killed by a signal.
+UNCERTAIN_EXIT = 75
+KILLED = (-9, 137)
+
+
+class UncertainOutcome(Blocked):
+    """A provider call may have completed upstream, but its result was not received."""
+
+    uncertain = True
+
 
 def digest(value):
     """Bind approvals to a canonical JSON value."""

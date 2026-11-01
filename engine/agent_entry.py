@@ -7,8 +7,13 @@ import subprocess
 import sys
 
 from bundle import Bundle
+from policy import KILLED, UNCERTAIN_EXIT
 from repository import TOOL_NAMES
 from session_entry import SessionTurn
+
+
+class ProviderUncertain(RuntimeError):
+    """The provider was killed; it may have completed upstream."""
 
 
 def command_for(request, schema_path, output_path):
@@ -99,6 +104,8 @@ def main():
     command = command_for(request, schema_path, output_path)
     # Copilot's piped stdin is already programmatic; -p would discard that input.
     result = subprocess.run(command, input=prompt, text=True, capture_output=True, timeout=550)
+    if result.returncode in KILLED:
+        raise ProviderUncertain()
     if result.returncode:
         raise RuntimeError("provider invocation failed")
     if request["provider"] == "codex":
@@ -127,9 +134,18 @@ def main():
     print(json.dumps(response))
 
 
-if __name__ == "__main__":
+def run():
+    """Map outcomes to exit statuses; only a fixed uncertainty signal crosses the container boundary."""
     try:
         main()
+    except (subprocess.TimeoutExpired, ProviderUncertain):
+        print("agent invocation outcome unknown (details suppressed)", file=sys.stderr)
+        return UNCERTAIN_EXIT
     except Exception:
         print("agent invocation failed (details suppressed)", file=sys.stderr)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())
