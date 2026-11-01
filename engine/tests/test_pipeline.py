@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from agents import Agents
 from controller import Controller, MARKER, validate_config
+from credentials import Credential
 from github import NotFound
 from policy import Blocked, digest, merge_reasons, path_allowed, protection_errors, validate_edits, validate_review
 
@@ -51,6 +52,10 @@ class FakeAgents:
         self.calls = []
         self.fix = fix
         self.qc_reports = []
+
+    def credential(self, provider, stage, task):
+        """Select one fixture operator credential per provider."""
+        return Credential("fixture:" + provider, provider, "org", "direct-api-key")
 
     def ask(self, provider, stage, context):
         """Supply a plan, a distinct edit per attempt, or independent reviews."""

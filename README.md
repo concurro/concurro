@@ -47,6 +47,7 @@ images.
 ## Status
 
 v1 is in supervised pilot. It supports Claude, Codex and Copilot CLIs and
-pluggable [execution profiles](docs/design/execution-profiles.md); `rust` is built in. Read the [trust boundaries](docs/concurro.md#trust-boundaries)
+pluggable [execution profiles](docs/design/execution-profiles.md); `rust` is built in.
+A webhook-driven [service](docs/design/service.md) is proposed to replace the Actions controller. Read the [trust boundaries](docs/concurro.md#trust-boundaries)
 before running it: model containers hold inference credentials and need a
 dedicated, disposable host.

@@ -361,7 +361,8 @@ the supervised pilot remains documentation-only. Per-task caches are not shared
 across distinct tasks to avoid importing untrusted build state.
 
 The issue state records budgets, checkpoint/tree identities and successful check
-and review evidence. GitHub's native Development link appears when approved
+and review evidence. It also counts model calls per credential identity (for
+example `env:CODEX_API_KEY`, with its kind and adapter), never the secret. GitHub's native Development link appears when approved
 implementation starts, while the remote branch still contains only the base.
 A failure or design reopen can leave that base-only branch linked for inspection;
 the controller does not automatically delete it. Actions artifacts retain candidate edits and bounded check

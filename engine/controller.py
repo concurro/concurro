@@ -283,12 +283,19 @@ class Controller:
             raise Blocked("context exceeds v1 limit; narrow the issue")
         if self.state["calls"] >= self.config["max_model_calls"]:
             raise Blocked("model-call budget exhausted")
+        credential = self.agents.credential(provider, stage, {"repository": self.config["repository"],
+                                                              "issue": self.state["issue"]})
         for attempt in range(2):
             if self.state["calls"] >= self.config["max_model_calls"]:
                 raise Blocked("model-call budget exhausted")
             session = sessions.prepare(self.state, self.config, provider, stage, context)
-            request = {**context, "controller_session": session} if session else context
+            request = {**context, "controller_credential": credential.record()}
+            if session:
+                request["controller_session"] = session
             self.state["calls"] += 1
+            used = self.state.setdefault("credentials", {}).setdefault(
+                credential.id, {k: v for k, v in credential.record().items() if k != "id"} | {"calls": 0})
+            used["calls"] += 1
             self.save()
             try:
                 response = self.agents.ask(provider, stage, request)
