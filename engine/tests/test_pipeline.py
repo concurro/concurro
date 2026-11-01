@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from agents import Agents
 from controller import Controller, MARKER, validate_config
-from policy import Blocked, digest, merge_reasons, path_allowed, validate_edits, validate_review
+from github import NotFound
+from policy import Blocked, digest, merge_reasons, path_allowed, protection_errors, validate_edits, validate_review
 
 PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.md"],
         "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": [],
@@ -75,6 +76,12 @@ class FakeAgents:
         return deepcopy(APPROVE)
 
 
+RULES = [{"type": "required_status_checks", "ruleset_id": 1, "parameters": {
+             "strict_required_status_checks_policy": True,
+             "required_status_checks": [{"context": name} for name in CONFIG["required_checks"]]}},
+         {"type": "pull_request", "ruleset_id": 1, "parameters": {"required_review_thread_resolution": True}}]
+
+
 class FakeGitHub:
     """Model GitHub's durable state, Git objects and compare-and-swap merge guard."""
 
@@ -98,6 +105,10 @@ class FakeGitHub:
         self.merges = 0
         self.review_threads = []
         self.human_reviews = []
+        self.protection = {"required_status_checks": {"strict": True, "contexts": config["required_checks"]},
+                           "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
+        self.rules = []
+        self.rulesets = {}
         self.checks_green = True
         self.authorized = True
         self.fail_after_ref = False
@@ -159,6 +170,8 @@ class FakeGitHub:
             return [{"filename": "docs/guide.md"}]
         if path == "pulls/9/reviews":
             return deepcopy(self.human_reviews)
+        if path == "rules/branches/main":
+            return deepcopy(self.rules)
         if path.startswith("commits/"):
             return [{"name": name, "head_sha": self.pr["head"]["sha"], "status": "completed",
                      "conclusion": "success" if self.checks_green else "failure",
@@ -248,8 +261,11 @@ class FakeGitHub:
         if path == "pulls/9":
             return deepcopy(self.pr)
         if path == "branches/main/protection":
-            return {"required_status_checks": {"strict": True, "contexts": self.config["required_checks"]},
-                    "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
+            if self.protection is None:
+                raise NotFound("Branch not protected")
+            return deepcopy(self.protection)
+        if path.startswith("rulesets/"):
+            return deepcopy(self.rulesets[int(path.split("/")[1])])
         if path == "pulls/9/merge":
             if data["sha"] != self.pr["head"]["sha"]:
                 return {"merged": False}
@@ -557,6 +573,25 @@ class PipelineTests(unittest.TestCase):
                 self.tick()
         self.assertEqual(self.gh.merges, 0)
 
+    def test_ruleset_only_protection_guards_merge(self):
+        """Active rulesets the App cannot bypass replace classic protection."""
+        self.ready()
+        self.gh.protection = None
+        self.gh.rules = RULES
+        self.gh.rulesets = {1: {"id": 1, "enforcement": "active", "current_user_can_bypass": "never"}}
+        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertEqual(self.gh.merges, 1)
+
+    def test_bypassable_ruleset_does_not_guard_merge(self):
+        """A ruleset the App could bypass leaves the merge race unguarded."""
+        self.ready()
+        self.gh.protection = None
+        self.gh.rules = RULES
+        self.gh.rulesets = {1: {"id": 1, "enforcement": "active", "current_user_can_bypass": "always"}}
+        with self.assertRaisesRegex(Blocked, "cannot bypass"):
+            self.tick()
+        self.assertEqual(self.gh.merges, 0)
+
     def test_default_merge_switch_and_rust_paths_block(self):
         """Autonomous merge is opt-in and cannot include Rust source."""
         state = self.ready()
@@ -607,6 +642,40 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("--read-only", args[0])
         self.assertEqual(kwargs["env"]["CODEX_API_KEY"], "inference")
 
+
+
+class ProtectionTests(unittest.TestCase):
+    """Only protection the App cannot bypass counts, whether classic or ruleset-based."""
+
+    CLASSIC = {"required_status_checks": {"strict": True, "contexts": ["Concurro Rust"]},
+               "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
+    ACTIVE = {1: {"enforcement": "active", "current_user_can_bypass": "never"}}
+
+    def test_classic_and_ruleset_sources(self):
+        """Either source satisfies the gate, and requirements may be split across them."""
+        self.assertEqual(protection_errors(self.CLASSIC, [], {}, ["Concurro Rust"]), [])
+        self.assertEqual(protection_errors(None, RULES, self.ACTIVE, CONFIG["required_checks"]), [])
+        classic = {**self.CLASSIC, "required_conversation_resolution": {"enabled": False}}
+        self.assertEqual(protection_errors(classic, RULES[1:], self.ACTIVE, ["Concurro Rust"]), [])
+
+    def test_weak_sources_are_ignored(self):
+        """Unenforced, bypassable, evaluate-only, non-strict and unknown sources never count."""
+        weak_classic = [{**self.CLASSIC, "enforce_admins": {"enabled": False}},
+                        {**self.CLASSIC, "required_status_checks": {"strict": False, "contexts": ["Concurro Rust"]}}]
+        for classic in weak_classic:
+            with self.subTest(classic=classic):
+                self.assertTrue(protection_errors(classic, [], {}, ["Concurro Rust"]))
+        weak_rulesets = [{1: {"enforcement": "active", "current_user_can_bypass": mode}}
+                         for mode in ("always", "pull_requests_only", None)]
+        weak_rulesets += [{1: {"enforcement": "evaluate", "current_user_can_bypass": "never"}}, {}]
+        for rulesets in weak_rulesets:
+            with self.subTest(rulesets=rulesets):
+                self.assertEqual(len(protection_errors(None, RULES, rulesets, CONFIG["required_checks"])), 2)
+        lax = deepcopy(RULES)
+        lax[0]["parameters"]["strict_required_status_checks_policy"] = False
+        self.assertEqual(protection_errors(None, lax, self.ACTIVE, ["Concurro Rust"]),
+                         ["strict branch protection the App cannot bypass must require: Concurro Rust"])
+        self.assertTrue(protection_errors(None, RULES, self.ACTIVE, ["Concurro Rust", "Other CI"]))
 
 if __name__ == "__main__":
     unittest.main()

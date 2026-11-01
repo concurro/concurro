@@ -11,7 +11,7 @@ from unittest.mock import patch
 from support import setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from controller import Controller, ESCALATION_REASON, STATE_PREFIX, MARKER
-from github import GitHub
+from github import GitHub, NotFound
 from policy import Blocked
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
 from test_autonomy import decision
@@ -258,6 +258,16 @@ class GitHubSurfaceAdapterTests(unittest.TestCase):
         with patch.object(gh, "pages", return_value=[{"name": "concurro:stage:plan-qc"}]), patch.object(gh, "repo") as repo:
             gh.sync_stage(4, "plan_qc")
             repo.assert_not_called()
+
+    def test_only_not_found_responses_are_distinguished(self):
+        """Absent classic protection is a 404; every other failure stays a generic error."""
+        gh = GitHub(CONFIG["repository"])
+        for stderr, error in (("gh: Branch not protected (HTTP 404)", NotFound), ("gh: Forbidden (HTTP 403)", RuntimeError)):
+            with self.subTest(stderr=stderr), patch("github.subprocess.run") as run:
+                run.return_value.returncode, run.return_value.stderr = 1, stderr
+                with self.assertRaises(error) as raised:
+                    gh.repo("branches/main/protection")
+                self.assertEqual(type(raised.exception), error)
 
     def test_development_query_paginates_and_checks_repository_identity(self):
         """A same-named branch in another repository is not our Development link."""

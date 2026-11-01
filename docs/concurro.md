@@ -561,10 +561,17 @@ host; provisioning and billing are intentionally outside this repository's scrip
    non-writer, or revoked label actor cannot authorize model calls. Public issues
    outside this queue do not consume model quota.
 9. Keep `merge_enabled=false` until a supervised end-to-end pilot passes. To enable
-   it, change the config **before starting a new issue**. Configure classic branch
-   protection on `main`: require the checks listed in `required_checks`, require branches
-   to be up to date, require conversation resolution, and enforce for administrators.
-   Keep bypass lists empty. Ruleset-only configurations are not recognized by v1.
+   it, change the config **before starting a new issue**. Protect `main` with classic
+   branch protection, active rulesets, or both: require the checks listed in
+   `required_checks` with branches up to date, and require conversation resolution.
+   Before each merge the controller reads both sources and counts only protection the
+   App cannot bypass: classic protection enforced for administrators, and active
+   rulesets whose `current_user_can_bypass` is `never` for the App. Requirements may
+   be split across sources. With read-only Administration the App cannot see ruleset
+   bypass lists, so it does not verify human bypass actors. Review those yourself, and
+   keep the App off every bypass list. GitHub does not let a PR's author approve it,
+   and Concurro's model verdicts are not GitHub approvals, so a ruleset that requires
+   approving reviews needs an approval from another account before the App can merge.
 
 | Command | Effect |
 | ---- | ---- |

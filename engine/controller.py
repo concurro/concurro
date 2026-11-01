@@ -20,11 +20,11 @@ from repository import MAX_FILE
 from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from checkpoint_health import sync_checkpoint_health
-from github import GitHub
+from github import GitHub, NotFound
 from local import LocalWorkspace, resource_exhausted
 from scheduler import QueueScan
 from policy import (Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
-                    consensus_valid, design_roster, path_allowed, required_local_checks, selected_model,
+                    consensus_valid, design_roster, path_allowed, protection_errors, required_local_checks, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_qc, validate_review)
 
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
@@ -1066,6 +1066,18 @@ class Controller:
                 raise Blocked("independent reviews still request changes; fix budget exhausted")
             self.save()
 
+    def protection_errors(self):
+        """Evaluate classic protection and every active rule GitHub applies to the base branch."""
+        base = self.config["base"]
+        try:
+            classic = self.gh.repo(f"branches/{base}/protection")
+        except NotFound:
+            classic = None
+        rules = self.gh.pages(f"rules/branches/{base}")
+        identifiers = sorted({r.get("ruleset_id") for r in rules if type(r.get("ruleset_id")) is int})
+        rulesets = {i: self.gh.repo(f"rulesets/{i}") for i in identifiers}
+        return protection_errors(classic, rules, rulesets, self.config["required_checks"])
+
     def gates(self):
         """Check fresh GitHub evidence and merge only the reviewed SHA, without admin bypass."""
         state = self.state
@@ -1081,15 +1093,9 @@ class Controller:
                 self.save()
             return False
         # Require server-side protection so a concurrent base/check change cannot bypass gates.
-        protection = self.gh.repo("branches/" + self.config["base"] + "/protection")
-        required = protection.get("required_status_checks") or {}
-        names = set(required.get("contexts", [])) | {c["context"] for c in required.get("checks", [])}
-        if not required.get("strict") or not set(self.config["required_checks"]).issubset(names):
-            raise Blocked("strict branch protection must require both Concurro CI checks")
-        if not protection.get("required_conversation_resolution", {}).get("enabled"):
-            raise Blocked("branch protection must require conversation resolution")
-        if not protection.get("enforce_admins", {}).get("enabled"):
-            raise Blocked("branch protection must apply to administrators")
+        errors = self.protection_errors()
+        if errors:
+            raise Blocked("; ".join(errors))
         # Save intent: a lost merge response is reconciled from GitHub on the next tick.
         state["stage"] = "merging"
         self.save()

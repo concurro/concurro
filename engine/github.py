@@ -10,6 +10,10 @@ STAGES = {"intake", "clarify", "plan", "plan_qc", "planned", "implement", "publi
           "gates", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
 
 
+class NotFound(RuntimeError):
+    """The resource does not exist or is not visible to this token."""
+
+
 class GitHub:
     """Use gh's authenticated transport, with bounded pagination and explicit methods."""
 
@@ -27,7 +31,8 @@ class GitHub:
         result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
                                 text=True, capture_output=True, timeout=90)
         if result.returncode:
-            raise RuntimeError("GitHub request failed: " + method + " " + path)
+            error = NotFound if "(HTTP 404)" in result.stderr else RuntimeError
+            raise error("GitHub request failed: " + method + " " + path)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     def repo(self, path, method="GET", data=None):

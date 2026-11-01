@@ -299,6 +299,36 @@ def validate_review(review):
             raise Blocked("invalid finding")
 
 
+def protection_errors(classic, rules, rulesets, required_checks):
+    """Return why server-side protection the App cannot bypass would not guard a merge race.
+
+    Classic protection counts only when enforced for administrators. Ruleset rules count only
+    from active rulesets reporting that the requesting App can never bypass them.
+    """
+    names, resolution = set(), False
+    if classic and classic.get("enforce_admins", {}).get("enabled"):
+        required = classic.get("required_status_checks") or {}
+        if required.get("strict"):
+            names |= set(required.get("contexts", [])) | {c["context"] for c in required.get("checks", [])}
+        resolution = bool(classic.get("required_conversation_resolution", {}).get("enabled"))
+    for rule in rules:
+        ruleset = rulesets.get(rule.get("ruleset_id")) or {}
+        if ruleset.get("enforcement") != "active" or ruleset.get("current_user_can_bypass") != "never":
+            continue
+        parameters = rule.get("parameters") or {}
+        if rule.get("type") == "required_status_checks" and parameters.get("strict_required_status_checks_policy"):
+            names |= {c["context"] for c in parameters.get("required_status_checks", [])}
+        elif rule.get("type") == "pull_request" and parameters.get("required_review_thread_resolution"):
+            resolution = True
+    errors = []
+    missing = sorted(set(required_checks) - names)
+    if missing:
+        errors.append("strict branch protection the App cannot bypass must require: " + ", ".join(missing))
+    if not resolution:
+        errors.append("branch protection the App cannot bypass must require conversation resolution")
+    return errors
+
+
 def merge_reasons(state, pr, files, checks, threads, reviews, config):
     """Return every failed merge gate; missing evidence always blocks."""
     reasons = []
