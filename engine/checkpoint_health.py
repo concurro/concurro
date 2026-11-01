@@ -3,6 +3,7 @@
 import sys
 
 from checkpoints import CheckpointError
+from identities import Identities
 
 MARKER = "<!-- concurro:checkpoint-health:v1 -->"
 FAILED = (MARKER + "\n## Concurro checkpoint needs attention\n\n"
@@ -22,7 +23,8 @@ def sync_checkpoint_health(gh, config, number, failed, error=None):
         incomplete = True
     try:
         comments = gh.pages(f"issues/{number}/comments")
-        matches = [c for c in comments if c.get("user", {}).get("login") == config["bot_login"]
+        author = Identities(config).author("state")
+        matches = [c for c in comments if c.get("user", {}).get("login") == author
                    and c.get("body", "").startswith(MARKER)]
         if len(matches) > 1:
             raise ValueError("duplicate health notices")

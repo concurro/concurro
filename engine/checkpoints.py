@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import re
 
+from identities import Identities
 from policy import Blocked, digest
 
 MARKER = "<!-- concurro:v1 -->"
@@ -67,6 +68,7 @@ class Checkpoints:
     def __init__(self, github, config, issue):
         """Bind storage to one repository, issue and configured App identity."""
         self.gh, self.config, self.issue = github, config, issue
+        self.author = Identities(config).author("state")
         self.audit = self.plan = self.comment = self.legacy = None
         self.plan_binding = None
         self.dirty = False
@@ -92,7 +94,7 @@ class Checkpoints:
             response = self.request(f"issues/{self.issue}/artifacts/{number}")
             artifact, versions = response["artifact"], response["versions"]
             name, marker = (AUDIT_NAME, AUDIT_MARKER) if kind == "generic" else (PLAN_NAME, PLAN_MARKER)
-            bot = self.config["bot_login"]
+            bot = self.author
             latest = versions[0]
             if (artifact["number"] != number or type(artifact["id"]) is not int
                     or artifact["type"] != kind or artifact["creator"]["login"] != bot
@@ -126,7 +128,7 @@ class Checkpoints:
         matches = []
         for item in items:
             named = item.get("name") == name or item.get("body", "").startswith(marker)
-            if item.get("creator", {}).get("login") != self.config["bot_login"]:
+            if item.get("creator", {}).get("login") != self.author:
                 continue
             if not named and not (kind == "plan" and item.get("type") == "plan"):
                 continue
@@ -180,7 +182,7 @@ class Checkpoints:
 
     def load(self, comments):
         """Prefer verified artifact state; use a legacy comment only before migration."""
-        matches = [c for c in comments if c.get("user", {}).get("login") == self.config["bot_login"]
+        matches = [c for c in comments if c.get("user", {}).get("login") == self.author
                    and c.get("body", "").startswith(MARKER)]
         if len(matches) > 1:
             raise CheckpointError("duplicate_comments")
@@ -211,13 +213,13 @@ class Checkpoints:
             if not self.audit or any(pointer[k] != self.audit[k] for k in ("id", "number")):
                 raise CheckpointError("audit_missing")
             known = [v for v in self.audit["versions"] if v.get("version") == pointer["revision"]]
-            if (len(known) != 1 or known[0].get("actor", {}).get("login") != self.config["bot_login"]
+            if (len(known) != 1 or known[0].get("actor", {}).get("login") != self.author
                     or digest(known[0].get("body")) != pointer["digest"]):
                 raise CheckpointError("audit_history")
         if self.audit:
             if self.legacy is not None and not any(
                     v.get("body") == self.audit_body(self.legacy, bind_plan=False)
-                    and v.get("actor", {}).get("login") == self.config["bot_login"] for v in self.audit["versions"]):
+                    and v.get("actor", {}).get("login") == self.author for v in self.audit["versions"]):
                 raise CheckpointError("legacy_history")
             state = self.decode(self.audit)
             self.plan = self.discover(items, "plan")

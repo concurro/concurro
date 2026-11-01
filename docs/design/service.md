@@ -1,6 +1,6 @@
 # Concurro service
 
-Status: proposal, revision 3; migration step 1 implemented. Describes responsibilities,
+Status: proposal, revision 3; migration steps 1–2 implemented. Describes responsibilities,
 module boundaries and contracts. Technology choices (hosting, queue, stores,
 secret backend, compute) are deliberately left open; examples are illustrative,
 not decisions.
@@ -426,7 +426,14 @@ Each step is useful alone and keeps the Actions path working until removed.
    credential identity per model call through `engine/credentials.py`; the
    transport receives only that credential's material; audit state counts calls
    per credential ID. The first resolver reads today's environment.
-2. Identity abstraction and authorship allow-list, still with one App.
+2. Authorship contract (implemented): `engine/identities.py` maps each event type
+   and role to exactly one expected author. Control-plane events (artifacts,
+   state pointers, queue cursors, health notices, merges) are controller-only;
+   conversation events may name a role whose publisher authors them. Every
+   recovery and validation path uses it, and comments by any Concurro identity
+   are excluded from human discussion. With one App every role maps to
+   `bot_login`. Choosing a token per author is deferred to the mutation gateway
+   (step 4), which is the only component that will hold tokens.
 3. Tick outcomes, logical operation and attempt IDs, and controller-marker
    support in the engine, released to the Actions path before any cutover.
 4. Service skeleton: ingress, change-driven reconciler, scheduler with ownership

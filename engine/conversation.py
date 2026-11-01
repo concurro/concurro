@@ -5,6 +5,7 @@ import json
 
 from policy import Blocked, digest
 from checkpoints import CheckpointError
+from identities import Identities
 
 MARKER = "<!-- concurro:event:v1:"
 
@@ -133,10 +134,13 @@ def publish(state, github, config):
         return False
     try:
         comments = github.pages(f"issues/{state['issue']}/comments")
+        identities = Identities(config)
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
-            matches = [c for c in comments if c.get("user", {}).get("login") == config["bot_login"]
+            # Recovery trusts only the one identity expected to author this event.
+            author = identities.author("conversation", event.get("role"))
+            matches = [c for c in comments if c.get("user", {}).get("login") == author
                        and c["body"].startswith(marker)]
             if len(matches) > 1 or matches and matches[0]["body"] != body:
                 raise PublicationError("conversation_conflict")

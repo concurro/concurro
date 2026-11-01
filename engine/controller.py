@@ -21,6 +21,7 @@ from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from checkpoint_health import sync_checkpoint_health
 from github import GitHub, NotFound
+from identities import Identities
 from local import LocalWorkspace, resource_exhausted
 from scheduler import QueueScan
 from policy import (Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
@@ -110,6 +111,7 @@ class Controller:
         self.permissions = {}
         self.trees = {}
         self.workspace_factory = workspace_factory or LocalWorkspace
+        self.identities = Identities(config)
         self.bundle = Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
         self.stage_synced = None
         self.stage_sync_warned = False
@@ -345,7 +347,7 @@ class Controller:
         discussion = []
         for comment in comments:
             body, login = comment["body"], comment["user"]["login"]
-            if body.startswith(MARKER) or body.strip().startswith("/concurro ") or login == self.config["bot_login"]:
+            if body.startswith(MARKER) or body.strip().startswith("/concurro ") or self.identities.ours(login):
                 continue
             if login == author or self.permitted(login):
                 discussion.append({"author": login, "body": body})
@@ -1125,7 +1127,7 @@ class Controller:
             raise Blocked("merged PR lacks completion evidence")
         intent = state["stage"] == "merging" or (state["stage"] == "blocked" and state.get("retry_stage") == "merging")
         actor = (pr.get("merged_by") or {}).get("login")
-        controlled = intent and actor == self.config["bot_login"]
+        controlled = intent and actor == self.identities.author("merge")
         state["completion"] = {"kind": "controller_reconciled" if controlled else "observed_external",
             "head": state["head"], "merge_sha": pr["merge_commit_sha"], "pr": state["pr"],
             "gates_verified": controlled, "observed_stage": state["stage"],

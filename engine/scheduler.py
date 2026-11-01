@@ -2,6 +2,7 @@
 
 import json
 
+from identities import Identities
 from policy import Blocked
 
 MARKER = "<!-- concurro:queue:v1 -->\n"
@@ -26,8 +27,9 @@ class QueueScan:
             return
         self.anchor = min(open_numbers) if open_numbers else numbers[0]
         comments = github.pages(f"issues/{self.anchor}/comments")
+        author = Identities(config).author("state")
         cursors = [comment for comment in comments
-                   if comment["user"]["login"] == config["bot_login"]
+                   if comment["user"]["login"] == author
                    and comment["body"].startswith(MARKER)]
         if len(cursors) > 1:
             raise Blocked("multiple queue cursors; manual reconciliation required")
