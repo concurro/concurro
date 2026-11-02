@@ -6,9 +6,10 @@ import json
 import re
 import threading
 
-from github import GitHub, LINKED_BRANCH, NotFound
+from github import GitHub, LINKED_BRANCH, NotFound, Transient
 
 from .errors import OwnershipLost, Unresolved
+from .transport import throttle
 
 LEASE_SECONDS = 15 * 60
 NUMBER = r"[1-9][0-9]*"
@@ -78,24 +79,52 @@ def request_digest(method, path, body):
     return hashlib.sha256(json.dumps([method, path, body], sort_keys=True).encode()).hexdigest()
 
 
-def disposition(status):
-    """Settle a write from its HTTP status: done, failed (GitHub rejected it) or unknown."""
+def settle(path, response, now):
+    """`(recorded status, payload, error for the engine)` for one write's response.
+
+    A REST 2xx establishes that the write applied even when its body is lost; a GraphQL
+    response is `done` only with a complete result and no errors, since execution can
+    report errors after its resolver ran.
+    """
+    if not response.sent:
+        return "failed", None, Transient("unavailable")
+    status = response.status
+    if status == 401:
+        return "failed", None, Transient("unavailable")
+    delay = throttle(response, now) if status == 403 else None
+    if delay is not None:
+        return "failed", None, Transient("throttled", delay)
+    if path == "graphql":
+        try:
+            payload = response.json()
+        except ValueError:
+            return "unknown", None, None
+        data = payload.get("data") if isinstance(payload, dict) and "errors" not in payload else None
+        if status == 200 and isinstance(data, dict) and data.get("createLinkedBranch") is not None:
+            return "done", payload, None
+        return "unknown", None, None
     if 200 <= status < 300:
-        return "done"
+        try:
+            return "done", response.json(), None
+        except ValueError:
+            return "done", None, Transient("response_lost")
+    if status == 404:
+        return "failed", None, NotFound(f"GitHub rejected the write (HTTP {status})")
     if 400 <= status < 500 and status not in (408, 429):
-        return "failed"
-    return "unknown"
+        return "failed", None, Rejected(f"GitHub rejected the write (HTTP {status})")
+    return "unknown", None, None
 
 
 class MutationGateway:
     """Admit, send and settle every write; grant and end ownership in the same per-task section."""
 
-    def __init__(self, registry, send, read):
-        """`send(method, path, body)` returns `(status, payload)`; raising means the outcome is unknown.
+    def __init__(self, registry, writer, reader):
+        """`writer(repository)` and `reader(repository)` return that repository's write and read transports.
 
-        `read(path)` reads with the gateway's own token; it resolves each task's issue node ID.
+        A writer's `send(method, path, body)` returns a `transport.Response`; raising means the
+        outcome is unknown. The reader resolves each task's issue node ID.
         """
-        self.registry, self.send, self.read = registry, send, read
+        self.registry, self.writer, self.reader = registry, writer, reader
         self.guard = threading.Lock()
         self.sections = {}
         self.sending = set()
@@ -113,7 +142,7 @@ class MutationGateway:
     def node(self, key):
         """The task's issue node ID, which never changes."""
         if key not in self.nodes:
-            self.nodes[key] = self.read(f"repos/{key[0]}/issues/{key[1]}")["node_id"]
+            self.nodes[key] = self.reader(key[0]).request("GET", f"repos/{key[0]}/issues/{key[1]}")["node_id"]
         return self.nodes[key]
 
     def acquire(self, key, worker, lease_seconds=LEASE_SECONDS):
@@ -171,10 +200,10 @@ class MutationGateway:
             self.sending.add(key)
         try:
             try:
-                status, payload = self.send(method, path, body)
-                result = disposition(status)
+                result, payload, error = settle(path, self.writer(key[0]).send(method, path, body),
+                                                self.registry.clock())
             except Exception:
-                status, payload, result = None, None, "unknown"
+                result, payload, error = "unknown", None, None
             self.registry.settle(intent, result)
         finally:
             with self.section(key) as condition:
@@ -182,8 +211,8 @@ class MutationGateway:
                 condition.notify_all()
         if result == "unknown":
             self.halt(key, generation, Unresolved(f"write {intent} has an unknown outcome; operator resolution required"))
-        if result == "failed":
-            raise (NotFound if status == 404 else Rejected)(f"GitHub rejected {method} {path} (HTTP {status})")
+        if error:
+            raise error
         return payload
 
 

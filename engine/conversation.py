@@ -5,6 +5,7 @@ import json
 
 from policy import Blocked, digest
 from checkpoints import CheckpointError
+from github import Transient
 from identities import Identities
 
 MARKER = "<!-- concurro:event:v1:"
@@ -154,7 +155,7 @@ def publish(state, github, config):
                 journal.setdefault("receipts", {})["/".join(event["source"])] = {
                     "comment": comment["id"], "content_digest": event["content_digest"],
                     "source_digest": digest(source)}
-    except PublicationError:
+    except (PublicationError, Transient):
         raise
     except Exception:
         raise PublicationError("conversation_publish") from None

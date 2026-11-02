@@ -1,9 +1,11 @@
 # Service skeleton (migration step 4)
 
-Status: accepted plan (revision 3); step 1 (registry and mutation gateway)
-implemented. Implements the v1
-deployment from [the service design](service.md): one process on one Linux host, a
-thick worker, the mutation gateway, and the existing local executor. Every module
+Status: accepted plan (revision 4). Step 1 (registry and mutation gateway) and
+step 2 (settings, identity service, transports, transient errors) are
+implemented.
+Implements the v1 deployment from [the service design](service.md): one process
+on one Linux host, a thick worker, the mutation gateway, and the existing local
+executor. Every module
 sits behind an interface whose first implementation is local (a local transactional
 store, threads, the host's Docker), so hosting, queue, store and secret choices stay
 open.
@@ -47,7 +49,9 @@ gains no dependency on it.
 | `service/reconciler.py` | Observation snapshots and due-work discovery |
 | `service/scheduler.py` | Queue, concurrency and fairness |
 | `service/identity.py` | App JWT and installation tokens (extracted from `engine/pilot.py`) |
+| `service/transport.py` | HTTPS to the GitHub API with one repository's token; read and write forms |
 | `service/gateway.py` | `MutationGateway`, ownership critical section, `GatewayGitHub` facade |
+| `service/failures.py` | The shared failure classifier, mapping errors and stops to outcomes |
 | `service/worker.py` | Load a target at its approved revision and run one tick |
 | `service/control.py` | Owner-only local control channel for operator commands |
 | `service/__main__.py` | `serve` plus clients for `reconcile-once`, `adopt`, `release`, `status`, `resolve` |
@@ -67,6 +71,28 @@ A private JSON file (directory 700, file 600), like the pilot's:
 | `targets` | Enabled repositories, each with its `credentials_file` |
 | `agent_image`, `execution_image` | Pinned digests, process-wide |
 | `limits` | Global and per-repository concurrent ticks |
+
+`settings.load(path)` returns a frozen `Settings` and refuses:
+
+- unknown or missing fields, or wrong types;
+- a `controller_id` not matching `service:[a-z0-9-]{1,32}`, an `engine` that is not
+  40 hex digits, or an `app_id` that is not a positive integer;
+- paths that are relative or not canonical (a symlink anywhere along the path, a
+  `.` or `..` component, a trailing slash), files not owned by the user with mode
+  600, directories not mode 700, or any path inside the engine checkout;
+- a `state_dir` that is not an existing owner-only directory;
+- no targets, a repository not of the form `owner/name` or repeated (ignoring
+  case);
+- a secret file (App key, webhook secret, each `credentials_file`) that has
+  another hard link, or that is the same file as another secret, compared by
+  filesystem identity rather than spelling;
+- images not pinned by digest (`policy.IMAGE`);
+- limits outside `1 ≤ per_repository ≤ global`.
+
+Checks that need the host (the engine checkout's HEAD equals `engine`; the images
+exist locally) run when `serve` starts, in step 3. The private-file checks move
+from `engine/pilot.py` into `engine/private.py`, shared by the pilot and the
+service; the pilot keeps its function names as thin wrappers.
 
 The service refuses to start if any file is group- or world-readable, as the pilot
 does. Process-wide values (images, Docker settings, report directory) are fixed at
@@ -168,11 +194,25 @@ replays by payload.
 
 Settling an occurrence:
 
-| Result | Recorded as |
-| ---- | ---- |
-| 2xx | `done` |
-| 4xx other than 408 and 429 | `failed`: GitHub rejected the request |
-| 408, 429, 5xx, timeout, connection loss, process crash | `unknown`: the write may have applied, possibly late |
+| Result | Recorded as | Raised to the engine |
+| ---- | ---- | ---- |
+| REST 2xx | `done` | The payload is returned |
+| REST 2xx whose body cannot be read or parsed | `done`: the status establishes it applied | `Transient("response_lost")`; the next tick reconstructs the result instead of resending |
+| GraphQL 200 with a complete JSON body, no `errors` and a non-null `createLinkedBranch` | `done` | The payload is returned |
+| Not sent: no token, or connection or TLS setup failed before any request byte | `failed` | `Transient("unavailable")` |
+| 401 (REST or GraphQL) | `failed`: rejected before execution | `Transient("unavailable")`; the cached token is dropped |
+| 403 with throttling evidence (REST or GraphQL) | `failed`: rejected before execution | `Transient("throttled")` |
+| REST 404 | `failed` | `NotFound` |
+| Other REST 4xx except 408 and 429 | `failed`: GitHub rejected the request | `Rejected` |
+| Any other GraphQL response: `errors` present, a null result, an unreadable body or another status | `unknown` | `Unresolved` |
+| 408, 429, 3xx, 5xx, timeout, connection loss after sending, process crash | `unknown`: the write may have applied, possibly late | `Unresolved` |
+
+GraphQL execution can report errors after a resolver ran, with nulls propagating
+upward, so neither a null result nor an error type shows that nothing changed.
+
+Throttling evidence is a `Retry-After` header, `X-RateLimit-Remaining: 0`, or a
+body `message` naming a rate limit. Ordinary quota headers on another 403 are not
+evidence; that 403 is a plain rejection.
 
 ### Write allow-list and result reconstruction
 
@@ -244,20 +284,140 @@ record, so no later exception can turn a stopped tick into an ordinary failure
 with diagnostic writes. No engine change is needed beyond
 keeping these properties, which tests pin.
 
+### Transient errors
+
+`engine/github.py` gains `Transient(RuntimeError)`, the one typed error for "not
+applied, or its result not read; retry later". Its fixed `code` is one of:
+
+- `throttled`;
+- `unavailable`;
+- `response_lost`: a write applied but its response was lost, so the next tick
+  reconstructs it.
+
+Its `retry_after` is the delay GitHub requested, in seconds, or None. The delay
+comes from `Retry-After`, from `X-RateLimit-Reset` when the remaining quota is 0,
+or is 60 seconds for a secondary limit with neither. It is at least 1 and is never
+shortened. Its text is fixed per code, so it is safe to log.
+
+- Engine wrappers that replace `Exception` re-raise `Transient` unchanged:
+  `Checkpoints.request()`, `Checkpoints.collection()` and `conversation.publish()`.
+  Label sync and health reporting still swallow it, since they are display only.
+- Outcome lessons (`controller.py`) skip another issue's checkpoint only on
+  integrity errors. A transient read now propagates, so model input never depends
+  on a transient failure.
+- `Transient` is neither a `Blocked` nor a `CheckpointError`, so no
+  `except Blocked` or `except CheckpointError` handler catches it.
+- The engine's `gh` transport never raises it, so the Actions path is unchanged.
+- `service/failures.py` adds `classify(error, stop)`, the shared classifier. This
+  step covers its first rows:
+  - a recorded stop or a `GatewayStop` returns that stop;
+  - `Transient` returns `Outcome("wait-until", retry_after=…)`, with no stage
+    effect, no health notice and no further write. The delay is GitHub's
+    `retry_after` when given. Otherwise it is local exponential backoff from 60
+    seconds by attempt, capped at 3600 seconds; only this local backoff is capped.
+
+  Step 3 adds the remaining rows.
+
+A transient failure while publishing a comment leaves the events in the saved
+checkpoint's `pending` outbox: the checkpoint is saved before publication, and
+`pending` is cleared only after it succeeds. The next tick publishes them, and
+recovery by marker prevents duplicates. No `/concurro retry` is needed.
+
+### Transport
+
+`service/transport.py` speaks HTTPS to `api.github.com` with `http.client`, with
+one repository's token:
+
+- Paths must be `repos/<repository>/…` or `graphql`; anything else is refused
+  locally, before a token is used.
+- Each request sends `Authorization: Bearer`, `Accept: application/vnd.github+json`,
+  `X-GitHub-Api-Version: 2022-11-28` and a fixed `User-Agent`. There is no proxy,
+  nothing read from the environment, and no automatic redirect.
+- The token is fetched and the connection (TCP and TLS) is opened before any
+  request byte is written. A failure there is `NotSent` (internal to the
+  transport, surfaced as `Transient("unavailable")`); any failure after the
+  request starts is ambiguous.
+- Responses are bounded per endpoint, with timeouts of 45 s (120 s for an
+  archive):
+
+  | Endpoint | Limit | Basis |
+  | ---- | ---- | ---- |
+  | `issues/<n>/artifacts…`, read or write | 16 MB | Up to 31 bodies (current plus 30 versions) of at most 60,000 bytes (`checkpoints.LIMIT`), with worst-case 6× JSON escaping; 1,493,376 bytes measured for 24 KB bodies ([measurements](../artifact-measurements.md)) |
+  | `git/trees/<sha>?recursive=1` | 16 MB | GitHub truncates recursive trees itself, and the engine refuses `truncated` |
+  | Any other JSON | 4 MB | Covers a base64 blob of `repository.MAX_FILE` (2 MB) |
+  | Archive | 100 MB | As in the engine |
+
+  An oversized response is unreadable, never truncated. A regression fixture
+  reproduces the measured artifact response and one at the worst-case bound.
+- `request(method, path, data)` (reads) returns parsed JSON. A 404 raises
+  `NotFound`. A 408, 429, 5xx, rate-limited 403, timeout or connection failure
+  raises `Transient`. A GraphQL query answered with HTTP 200 whose errors report
+  rate limiting (type `RATE_LIMITED`, or a message naming a rate limit) also
+  raises `Transient("throttled")`, with the delay from the headers or 60 seconds;
+  any other GraphQL errors are returned for the engine to handle. Anything else
+  raises a `RuntimeError` naming only the method, path and status, mirroring
+  `GitHub.api`. GraphQL mutation settlement is unchanged: any errors are
+  `unknown`.
+- `archive(path)` expects exactly one 302 to `https://codeload.github.com/` and
+  follows it without the `Authorization` header, since the redirect carries its
+  own token. Any other host, or a second redirect, is refused.
+- `send(method, path, body)` (writes) returns a `Response` and never raises for an
+  HTTP status: `sent` (false only for `NotSent`), `status` (None if no status
+  line arrived), the `Retry-After`, `X-RateLimit-Remaining` and
+  `X-RateLimit-Reset` headers, and `body` (bytes), or `body_error` when the body
+  could not be read completely or exceeded its limit. The gateway parses the body
+  and settles from all of these.
+
+`MutationGateway(registry, writer, reader)` takes per-repository factories:
+`writer(repository)` returns a transport with the write token, and
+`reader(repository)` one with the read token. The gateway uses `reader` for its
+issue-node lookup, and each facade receives only `reader(repository)`.
+
 The worker never holds a write token: the facade has only the gateway handle. In
 one process this is a code boundary, not an OS boundary; it becomes a process
 boundary when the gateway is split out.
 
 ## Identity service
 
-Extracts the pilot's JWT signing and installation-token code into one module:
+`Identity(settings, http)` extracts the pilot's JWT signing and installation-token
+code into one module:
 
-- `read_token(repository)` and `write_token(repository)`, each narrowed to that
-  repository and to the least permissions of its use, cached until shortly
-  before expiry.
-- The same checks as the pilot: App slug equals `bot_login`, selected-repository
-  installation, the expected owner, the exact granted permissions.
-- Only the gateway calls `write_token`.
+- **App JWT:** signed with `openssl dgst -sha256 -sign`, as in the pilot. It
+  expires after 9 minutes and is re-signed 1 minute before that.
+- **App identity:** `verify()` reads `GET /app` once at startup and records
+  `bot_login` as the App slug plus `[bot]`. In step 3 the worker requires each
+  target's configured `bot_login` to equal it.
+- **Installation:** for each repository, `repository_selection` must be
+  `selected` and the account login must equal the owner. The installation ID is
+  cached.
+- **Tokens:** `read_token(repository)` and `write_token(repository)` are each
+  minted for that one repository, with exactly these permissions:
+
+  | Kind | Permissions | Holder |
+  | ---- | ---- | ---- |
+  | Read | `contents`, `issues`, `pull_requests`, `checks`, `administration`: read | Facade reads; the gateway's node lookup |
+  | Write | `contents`, `issues`, `pull_requests`: write | The gateway's `send` only |
+  | Cutover | `actions`, `actions_variables`, `environments`: read | `adopt` only |
+
+  `administration: read` covers branch protection and rulesets. No kind has
+  `workflows`, so no candidate commit can change a workflow.
+
+  The cutover token is used for the `adopt` checks: repository and `concurro`
+  environment variables (`CONCURRO_ENABLED`) and the repository's workflow runs.
+  It is minted for that one command, verified like the others, never cached, and
+  revoked when the command ends. The App's registration must grant these
+  permissions; without them, `adopt` is refused. The workflow file and its engine
+  pin are read with the read token. The engine-repository compare runs
+  unauthenticated, so `adopt` is refused if the engine repository is not public.
+- **Verification after minting:** the granted permissions, without `metadata`,
+  must equal the request exactly, and `installation/repositories` must list only
+  that repository. Otherwise the token is revoked and minting fails.
+- **Caching:** each token is cached until 10 minutes before its `expires_at`. One
+  lock per repository and kind means concurrent callers mint once. A 401 drops the
+  cached token. A refresh does not revoke the old token, since another thread may
+  still be using it; `close()` revokes every cached token, best effort.
+- **Failures** raise `IdentityError` with sanitized text. No token appears in an
+  exception, a log or a registry record.
 
 ## Worker
 
@@ -293,7 +453,7 @@ service maps each class to a stage effect and an outcome:
 | ---- | ---- | ---- |
 | `OwnershipLost` (stale generation; `GatewayStop`) | None; no further write | None recorded; the new owner continues |
 | `Unresolved` (unknown mutation; `GatewayStop`) | None; no further write | Key unscheduled until resolved |
-| GitHub transport or 5xx error on a read | None; stage preserved | `wait-until`, exponential backoff |
+| `Transient` on a read or write (throttled, or not sent) | None; stage preserved; no health notice | `wait-until`, `retry_after` or exponential backoff |
 | Uncertain model outcome within its allowance | None; stage preserved | `wait-until` (the next tick makes the one permitted retry) |
 | Checkpoint failure on verified, owned state | Health notice; stage preserved | `wait-until`, backoff |
 | `Blocked` (policy, validation, budget, a second uncertain outcome) | Suspended to `blocked`, as today | `blocked` |
@@ -419,6 +579,28 @@ All with fake GitHub and fake providers; no network, Docker or credentials.
 | Concurro-authored comments and labels | Never wake a task |
 | Issue `updated_at` changes with no input change | Rescan only; nothing enqueued |
 | Waiting tasks (`await-human`, `blocked`, `wait-until` before due) | Not dispatched; no model calls |
+| Settings with an unknown field, wrong type, readable or symlinked file, path in the engine checkout, repeated target or out-of-range limits | Refused at load |
+| App slug, all-repositories installation, foreign owner, or granted permissions or repositories differing from the request | Minting fails; any token minted is revoked |
+| Read and write tokens | Each narrowed to one repository with exactly its permissions; concurrent callers mint once; re-minted near expiry; dropped after a 401; revoked on `close()` |
+| Two targets through the transports | Each repository's requests carry only its own token; a foreign path is refused before a token is used |
+| Write over a loopback server: connection refused | Not sent; the occurrence is `failed`, `Transient` is raised and the key is not unresolved |
+| Write over a loopback server: connection closed after the request, or a 5xx | `unknown`; the key is unresolved |
+| REST write over a loopback server: 2xx with a truncated body | `done`, then `Transient("response_lost")` |
+| GraphQL 200 with `errors` of any type, a null result, or an unreadable body | `unknown`; the key is unresolved |
+| Artifact responses: the measured 1,493,376-byte fixture, and one at the worst-case bound | Read successfully; one byte over the endpoint limit is refused |
+| `Transient` raised inside checkpoint requests, the artifact collection and conversation publication (real engine paths) | Reaches `classify` unwrapped with its code and `retry_after`; result `wait-until` |
+| Transient failure publishing a conversation comment, then a clean tick | Pending events kept in the checkpoint; published once on the next tick, with no `/concurro retry` |
+| Transient read of another issue's checkpoint while gathering outcome lessons | Propagates; the lesson is not silently skipped |
+| Write responses: 401, throttled 403, and a 429 | `failed` with `Transient` for the first two; `unknown` for the 429 |
+| A 403 carrying only ordinary quota headers | `Rejected`, not throttled |
+| `Retry-After: 7200`, and a reset two hours away | `retry_after` 7200 each; local backoff alone is capped at 3600 |
+| `classify` on a `Transient` | `kind == "wait-until"`, `progressed` false, and `retry_after` set |
+| Comment and PR creation applied with a truncated 2xx body, then a clean tick | `done`, `Transient("response_lost")`, `wait-until`; the next tick finds each object, with no duplicate and no `/concurro retry` |
+| `adopt` without the cutover permissions | Refused before any write |
+| GraphQL query rate-limited with HTTP 200 (`RATE_LIMITED`, or a secondary-limit message), through the real transport and `branch_linked` | `Transient("throttled")` with the header delay; `wait-until`; the next tick resumes |
+| Settings paths with `.` or `..`, a symlinked directory or ancestor, a symlinked or missing `state_dir`, a hard link, or one secret file named twice | Refused at load |
+| Archive redirect | Followed once to codeload without `Authorization`; another host or a second redirect is refused |
+| Oversized response | Refused |
 | GitHub read failure or an uncertain model call mid-tick | Stage preserved; `wait-until`; resumes without `/concurro retry` |
 | Cutover with a marker-aware Actions controller re-enabled | Actions makes zero writes to adopted tasks |
 | Cutover refused | Non-marker-aware pin, `CONCURRO_ENABLED=true`, or a running Actions job |
@@ -437,6 +619,15 @@ Accepted in review:
 4. Ambiguous writes are resolved by an operator, per attempt, with recorded
    evidence.
 5. Leases of 15 minutes, renewed during long stages; liveness only.
+
+Revision 4, accepted in review:
+
+6. A failure while explicitly opening the connection, completed before any request
+   byte is sent, counts as not sent. A failure during transmission is uncertain.
+7. No GraphQL error type counts as a rejection. Without a GitHub guarantee that
+   nothing changed, any GraphQL response with errors is unknown.
+8. The pilot keeps its own token code until it is retired at cutover. Only the
+   private-file helpers are shared, in `engine/private.py`.
 
 Open:
 

@@ -279,9 +279,10 @@ make delivered material expire. Each adapter states what it can actually enforce
 | Long-lived token (`long-lived-token`) | The token itself | Provider-defined, long | Provider-side only | Trusted executor |
 
 Proxied keys are preferred wherever the provider CLI accepts a custom API
-endpoint. Direct and long-lived forms are acceptable only with the
-service-controlled executor, and their records say so. Ending a lease never claims
-to recall delivered material.
+endpoint. Direct and long-lived forms are acceptable with the service-controlled
+executor and the [runner executor](runner-executor.md); on runners the operator
+accepts their exposure to the agent, bounded by provider limits, and their
+records say so. Ending a lease never claims to recall delivered material.
 
 ### Rotating credentials
 
@@ -399,6 +400,9 @@ Changes relative to the Actions model:
   enablement per target, the existing `/concurro` commands, and autonomous merge
   remaining off by default.
 - Agent and execution containers keep today's boundaries regardless of placement.
+  [The agent sandbox](agent-sandbox.md) (proposed) replaces them with gVisor,
+  internet egress that cannot reach the host or private addresses, and normal
+  agent tooling.
 
 ## Acceptance scenarios
 

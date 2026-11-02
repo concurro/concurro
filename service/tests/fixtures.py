@@ -1,6 +1,7 @@
 """Shared service fixtures: a REST view of the engine tests' in-memory GitHub, a registry, a clock."""
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +13,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "engine/tests")]
 # Imported once the repository root and the engine tests are on the module path.
 import service  # noqa: E402  (puts the engine on the module path)
 from service.gateway import GatewayGitHub, MutationGateway  # noqa: E402
+from service.transport import Response  # noqa: E402
+from github import NotFound  # noqa: E402
 from service.registry import Registry  # noqa: E402
 from support import CONFIG  # noqa: E402
 from test_pipeline import FakeAgents, FakeGitHub, FakeWorkspace  # noqa: E402
@@ -43,10 +46,23 @@ class RestBackend:
         self.repository_labels = set()
         self.writes = []
         self.faults = []
+        self.read_faults = []
 
-    def fail(self, method, prefix, status=None, lost=False, body=""):
-        """Fail the next matching write: reject it with `status`, or apply it and lose the response."""
-        self.faults.append({"method": method, "prefix": prefix, "status": status, "lost": lost, "body": body})
+    def fail(self, method, prefix, status=None, lost=False, body="", truncated=False, headers=None,
+             message="fixture rejection"):
+        """Fail the next matching write.
+
+        Reject it with `status` (and `headers`), or apply it and then lose the response
+        (`lost`) or truncate its body (`truncated`). The returned fault records the body it saw.
+        """
+        fault = {"method": method, "prefix": prefix, "status": status, "lost": lost, "body": body,
+                 "truncated": truncated, "headers": headers or {}, "message": message}
+        self.faults.append(fault)
+        return fault
+
+    def fail_read(self, prefix, error):
+        """Raise `error` for the next read whose repository-relative path starts with `prefix`."""
+        self.read_faults.append((prefix, error))
 
     def relative(self, path):
         """Strip and require the repository prefix."""
@@ -59,6 +75,10 @@ class RestBackend:
         if path == "graphql":
             return self.query(data)
         relative = self.relative(path)
+        fault = next((f for f in self.read_faults if relative.startswith(f[0])), None)
+        if fault:
+            self.read_faults.remove(fault)
+            raise fault[1]
         if PAGE in relative:
             base, page = relative.split(PAGE)
             base = base[:-1]
@@ -98,19 +118,22 @@ class RestBackend:
         return self.fake.archive(path.rsplit("/", 1)[1])
 
     def send(self, method, path, body):
-        """Apply one write and return `(status, payload)`, honouring the next matching fault."""
+        """Apply one write and return its `Response`, honouring the next matching fault."""
         relative = "graphql" if path == "graphql" else self.relative(path)
         fault = next((f for f in self.faults if f["method"] == method and relative.startswith(f["prefix"])
                       and (body or {}).get("body", "").startswith(f["body"])), None)
         if fault:
             self.faults.remove(fault)
+            fault["seen"] = deepcopy(body)
             if fault["status"]:
-                return fault["status"], {"message": "fixture rejection"}
+                return Response(True, fault["status"], fault["headers"], json.dumps({"message": fault["message"]}).encode())
         result = self.apply(method, relative, body)
         self.writes.append((method, relative))
         if fault and fault["lost"]:
             raise TimeoutError("fixture lost response")
-        return 200, result
+        if fault and fault["truncated"]:
+            return Response(True, 201, {}, None, "incomplete")
+        return Response(True, 200, {}, json.dumps(result).encode())
 
     def apply(self, method, relative, body):
         """Mutate the fake's state as GitHub would."""
@@ -138,6 +161,73 @@ class RestBackend:
         return sorted(label["name"] for label in self.fake.issue["labels"])
 
 
+class Reply:
+    """The parts of `http.client.HTTPResponse` the transport reads."""
+
+    def __init__(self, status, payload, headers=None):
+        self.status = status
+        self.data = b"" if payload is None else json.dumps(payload).encode()
+        self.headers = {**(headers or {}), "Content-Length": str(len(self.data))}
+
+    def getheaders(self):
+        return list(self.headers.items())
+
+    def getheader(self, name, default=None):
+        return next((v for k, v in self.headers.items() if k.lower() == name.lower()), default)
+
+    def read(self, size):
+        chunk, self.data = self.data[:size], self.data[size:]
+        return chunk
+
+
+class Wire:
+    """`http.client`-shaped connections serving a `RestBackend`'s reads, so a real transport fronts the engine.
+
+    `reply(match, status, payload, headers)` answers the next request for which
+    `match(method, path, data)` holds with that raw response instead.
+    """
+
+    def __init__(self, backend):
+        self.backend = backend
+        self.replies = []
+
+    def reply(self, match, status, payload, headers=None):
+        self.replies.append((match, Reply(status, payload, headers)))
+
+    def connection(self, host, timeout):
+        return WireConnection(self)
+
+    def answer(self, method, path, data):
+        """The raw reply for one request."""
+        found = next((r for r in self.replies if r[0](method, path, data)), None)
+        if found:
+            self.replies.remove(found)
+            return found[1]
+        try:
+            return Reply(200, self.backend.request(method, path, data))
+        except NotFound:
+            return Reply(404, {"message": "Not Found"})
+
+
+class WireConnection:
+    """One connection to a `Wire`."""
+
+    def __init__(self, wire):
+        self.wire = wire
+
+    def connect(self):
+        pass
+
+    def request(self, method, target, body=None, headers=None):
+        self.reply = self.wire.answer(method, target.lstrip("/"), json.loads(body) if body else None)
+
+    def getresponse(self):
+        return self.reply
+
+    def close(self):
+        pass
+
+
 class ServiceFixture:
     """A registry in a private temporary directory, a gateway over the REST fake, and engine fixtures."""
 
@@ -152,7 +242,8 @@ class ServiceFixture:
         self.config["autonomous"] = False
         self.fake = FakeGitHub(self.config)
         self.backend = RestBackend(self.fake)
-        self.gateway = MutationGateway(self.registry, self.backend.send, lambda path: self.backend.request("GET", path))
+        self.gateway = MutationGateway(self.registry, lambda repository: self.backend, lambda repository: self.backend)
+        self.reader = self.backend
         self.agents = FakeAgents()
 
     def open(self, initialize=False):
@@ -163,7 +254,7 @@ class ServiceFixture:
 
     def facade(self, generation, gateway=None):
         """The engine client for issue 7 under one generation."""
-        return GatewayGitHub(KEY[0], KEY[1], generation, gateway or self.gateway, self.backend)
+        return GatewayGitHub(KEY[0], KEY[1], generation, gateway or self.gateway, self.reader)
 
     def controller(self, generation, workspace=FakeWorkspace):
         """A service-owned controller for one tick."""

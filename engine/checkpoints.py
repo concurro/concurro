@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import re
 
+from github import Transient
 from identities import Identities
 from policy import Blocked, digest
 
@@ -78,6 +79,8 @@ class Checkpoints:
         """Sanitize storage errors; never infer absence from an API failure."""
         try:
             return self.gh.repo(path, method, data)
+        except Transient:
+            raise
         except Exception:
             raise CheckpointError("artifact_request") from None
 
@@ -85,6 +88,8 @@ class Checkpoints:
         """Return the bounded, issue-scoped artifact collection."""
         try:
             return self.gh.pages(f"issues/{self.issue}/artifacts")
+        except Transient:
+            raise
         except Exception:
             raise CheckpointError("artifact_collection") from None
 

@@ -1,18 +1,22 @@
 """The real engine under the gateway: stops pass every wrapper, and lost writes are reconstructed."""
 
 import subprocess
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from fixtures import KEY, ServiceFixture
+from fixtures import KEY, ServiceFixture, Wire
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from test_pipeline import FakeWorkspace
 from checkpoint_health import sync_checkpoint_health
-from controller import MARKER
+from controller import MARKER, Outcome
 import cleanup
 import conversation
+from github import Transient
+from service import failures
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS
+from service.transport import Transport
 
 
 class CleanupWorkspace(FakeWorkspace):
@@ -27,6 +31,16 @@ class CleanupWorkspace(FakeWorkspace):
     def __exit__(self, *_):
         CleanupWorkspace.inside = False
         cleanup.remove(["docker", "volume", "rm", "-f", "fixture"], {})
+
+
+class Token:
+    """A fixed read token."""
+
+    def get(self):
+        return "read-token"
+
+    def drop(self, token):
+        pass
 
 
 class StopTests(ServiceFixture, unittest.TestCase):
@@ -94,12 +108,12 @@ class StopTests(ServiceFixture, unittest.TestCase):
         run.assert_called_once()
 
 
-class ReconstructionTests(ServiceFixture, unittest.TestCase):
-    """An applied write whose response was lost is resolved `applied`; the next tick finds its result."""
+class Recovery(ServiceFixture):
+    """Tick to review as the worker will: resolve unknown writes, wait out transient failures."""
 
-    def lose(self, method, prefix, body=""):
-        """Lose the response to one write, resolve it as applied, and tick on to review."""
-        self.backend.fail(method, prefix, lost=True, body=body)
+    def to_review(self, prefix=None):
+        """Return the final state and every `Transient` that ended a tick, each classified `wait-until`."""
+        transients, state = [], None
         for _ in range(12):
             try:
                 state, _ = self.tick()
@@ -108,15 +122,38 @@ class ReconstructionTests(ServiceFixture, unittest.TestCase):
                 self.assertTrue(record.path.endswith(prefix))
                 self.registry.resolve(record.intent, "applied", "object observed on GitHub", "operator")
                 continue
+            except Transient as error:
+                outcome = failures.classify(error, self.gateway.stop(KEY, self.registry.current(KEY).generation))
+                self.assertEqual((outcome.kind, outcome.progressed), ("wait-until", False))
+                self.assertEqual(outcome.retry_after, error.retry_after or failures.backoff(0))
+                transients.append(error)
+                continue
             if state and state["stage"] == "review":
                 break
-        self.assertEqual(self.backend.faults, [])
+        self.assertEqual((self.backend.faults, self.backend.read_faults), ([], []))
         self.assertEqual(state["stage"], "review")
-        return state
+        self.assertEqual(self.registry.unresolved(KEY), [])
+        return state, transients
 
     def assert_single(self, method, path):
         """The write was sent exactly once."""
         self.assertEqual(self.backend.writes.count((method, path)), 1)
+
+
+class ReconstructionTests(Recovery, unittest.TestCase):
+    """An applied write whose response was lost is reconstructed by the next tick, never resent."""
+
+    def lose(self, method, prefix, body=""):
+        """Lose the response to one write, resolve it as applied, and tick on to review."""
+        self.backend.fail(method, prefix, lost=True, body=body)
+        return self.to_review(prefix)[0]
+
+    def truncate(self, method, prefix, body=""):
+        """Apply one write but truncate its 2xx body; it settles `done` and the next tick finds it."""
+        self.backend.fail(method, prefix, truncated=True, body=body)
+        state, transients = self.to_review()
+        self.assertEqual([error.code for error in transients], ["response_lost"])
+        return state
 
     def test_audit_artifact(self):
         """The audit artifact is found by creator and name, not created twice."""
@@ -134,6 +171,83 @@ class ReconstructionTests(ServiceFixture, unittest.TestCase):
         state = self.lose("POST", "pulls")
         self.assert_single("POST", "pulls")
         self.assertEqual(state["pr"], self.fake.pr["number"])
+
+    def test_summary_comment_with_a_truncated_response(self):
+        """A created summary comment whose body was lost is found by marker; no duplicate, no retry command."""
+        self.truncate("POST", "issues/7/comments", body=MARKER)
+        self.assertEqual(len([c for c in self.fake.comments if c["body"].startswith(MARKER)]), 1)
+
+    def test_pull_request_with_a_truncated_response(self):
+        """A created PR whose body was lost is found by its head branch."""
+        state = self.truncate("POST", "pulls")
+        self.assert_single("POST", "pulls")
+        self.assertEqual(state["pr"], self.fake.pr["number"])
+
+
+class TransientTests(Recovery, unittest.TestCase):
+    """A transient GitHub failure passes every engine wrapper typed, and the task resumes on its own."""
+
+    def assert_resumes(self, code, retry_after):
+        """Tick to review; exactly one tick ended with this transient failure."""
+        state, transients = self.to_review()
+        self.assertEqual([(e.code, e.retry_after) for e in transients], [(code, retry_after)])
+        self.assertFalse(any(c["body"].startswith("/concurro retry") for c in self.fake.comments))
+        return state
+
+    def test_checkpoint_request(self):
+        """`Checkpoints.request` wraps `Exception` as a checkpoint error, but not `Transient`."""
+        self.backend.fail_read("issues/7/artifacts/", Transient("unavailable"))
+        self.assert_resumes("unavailable", None)
+
+    def test_checkpoint_write(self):
+        """A throttled artifact write is `failed`, typed, and the next tick saves again."""
+        self.backend.fail("PATCH", "issues/7/artifacts/", status=403, headers={"retry-after": "120"})
+        self.assert_resumes("throttled", 120)
+
+    def test_artifact_collection(self):
+        """`Checkpoints.collection` wraps `Exception` too, but not `Transient`."""
+        self.backend.fail_read("issues/7/artifacts?", Transient("throttled", 30))
+        self.assert_resumes("throttled", 30)
+
+    def test_conversation_publication(self):
+        """Pending events survive a throttled comment and are published once by the next tick."""
+        fault = self.backend.fail("POST", "issues/7/comments", status=403, body=conversation.MARKER,
+                                  headers={"retry-after": "30"})
+        self.assert_resumes("throttled", 30)
+        published = [c["body"] for c in self.fake.comments if c["body"].startswith(conversation.MARKER)]
+        self.assertEqual(published.count(fault["seen"]["body"]), 1)
+        self.assertEqual(len(published), len(set(published)))
+
+    def test_graphql_query_throttled_with_http_200(self):
+        """A rate-limited Development-link query waits, through the real transport, and resumes."""
+        wire = Wire(self.backend)
+        reader = Transport(KEY[0], Token(), self.clock, wire.connection)
+        self.reader = SimpleNamespace(request=reader.request, archive=self.backend.archive)
+        wire.reply(lambda method, path, data: path == "graphql" and "linkedBranches" in data["query"], 200,
+                   {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
+                   {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(self.clock()) + 90)})
+        self.assert_resumes("throttled", 90)
+        self.assertEqual(wire.replies, [])
+
+    def test_outcome_lessons_do_not_skip_a_transient_read(self):
+        """A lesson is skipped only for an integrity error; a transient read of its checkpoint propagates."""
+        controller = self.controller(self.gateway.acquire(KEY, "worker"))
+        controller.state = {"issue": 7, "requirements": {"title": "Improve fixture handling"}}
+        self.backend.fail_read("issues/12/artifacts", Transient("unavailable"))
+        with patch.object(controller.gh, "outcome_candidates", return_value=[(12, [])]):
+            with self.assertRaises(Transient):
+                controller.retrieve_outcomes()
+
+    def test_classifier(self):
+        """Stops win over errors; a transient failure waits for GitHub's delay or local backoff."""
+        stop = OwnershipLost("stale")
+        self.assertIs(failures.classify(Transient("throttled", 7200), stop), stop)
+        self.assertIs(failures.classify(stop), stop)
+        self.assertEqual(failures.classify(Transient("throttled", 7200)), Outcome("wait-until", retry_after=7200))
+        self.assertEqual(failures.classify(Transient("unavailable"), attempt=10),
+                         Outcome("wait-until", progressed=False, retry_after=failures.BACKOFF_LIMIT))
+        self.assertEqual(failures.classify(Transient("unavailable")).retry_after, failures.BACKOFF_SECONDS)
+        self.assertIsNone(failures.classify(RuntimeError("other")))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,24 @@ class NotFound(RuntimeError):
     """The resource does not exist or is not visible to this token."""
 
 
+class Transient(RuntimeError):
+    """GitHub did not apply a request, or its result was not read; retry later.
+
+    `retry_after` is the delay GitHub requested, in seconds, or None. The text is
+    fixed per code, so it is safe to log and publish.
+    """
+
+    TEXT = {"throttled": "GitHub rate limit reached; retry later.",
+            "unavailable": "GitHub unavailable; retry later.",
+            "response_lost": "GitHub response lost after the write applied; reconstruct on retry."}
+
+    def __init__(self, code, retry_after=None):
+        """Select a fixed text; unknown codes become `unavailable`."""
+        self.code = code if code in self.TEXT else "unavailable"
+        self.retry_after = retry_after
+        super().__init__(self.TEXT[self.code])
+
+
 class GitHub:
     """Use gh's authenticated transport, with bounded pagination and explicit methods."""
 

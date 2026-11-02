@@ -1,13 +1,15 @@
 """Every write is an occurrence fenced by ownership generation; unknown outcomes stop the task."""
 
+import json
 import threading
 import unittest
 
 from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from github import ATTENTION_LABEL, LINKED_BRANCH, NotFound
+from github import ATTENTION_LABEL, LINKED_BRANCH, NotFound, Transient
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed
+from service.transport import Response
 
 COMMENTS = f"repos/{KEY[0]}/issues/7/comments"
 INTAKE = "concurro:stage:intake"
@@ -24,14 +26,14 @@ class FencingTests(ServiceFixture, unittest.TestCase):
         """No handoff while a write is outstanding, even after the lease expired; then the old owner is fenced."""
         first = self.gateway.acquire(KEY, "old")
         sending, finish = threading.Event(), threading.Event()
-        send = self.gateway.send
+        send = self.backend.send
 
         def slow(method, path, body):
             sending.set()
             finish.wait(5)
             return send(method, path, body)
 
-        self.gateway.send = slow
+        self.backend.send = slow
         writer = threading.Thread(target=self.gateway.mutate, args=(KEY, first, "POST", COMMENTS, {"body": "x"}))
         writer.start()
         self.addCleanup(writer.join, 5)
@@ -41,7 +43,7 @@ class FencingTests(ServiceFixture, unittest.TestCase):
         self.assertIsNone(self.gateway.acquire(KEY, "new"))
         finish.set()
         writer.join(5)
-        self.gateway.send = send
+        self.backend.send = send
         second = self.gateway.acquire(KEY, "new")
         self.assertEqual(second, first + 1)
         count, writes = len(self.admitted()), len(self.backend.writes)
@@ -85,7 +87,7 @@ class SerializationTests(ServiceFixture, unittest.TestCase):
         """Hold the first write open, submit a second, and return the second's result once the first settles."""
         generation = self.gateway.acquire(KEY, "worker")
         sending, finish, result = threading.Event(), threading.Event(), {}
-        send = self.gateway.send
+        send = self.backend.send
 
         def held(method, path, body):
             if not sending.is_set():
@@ -94,7 +96,7 @@ class SerializationTests(ServiceFixture, unittest.TestCase):
                 send(method, path, body)
                 if lost:
                     raise TimeoutError("fixture lost response")
-                return 200, {}
+                return Response(True, 200, {}, b"{}")
             return send(method, path, body)
 
         def write(name, text):
@@ -103,7 +105,7 @@ class SerializationTests(ServiceFixture, unittest.TestCase):
             except BaseException as error:  # noqa: B036  (the stop type is under test)
                 result[name] = error
 
-        self.gateway.send = held
+        self.backend.send = held
         first = threading.Thread(target=write, args=("first", "one"))
         second = threading.Thread(target=write, args=("second", "two"))
         for thread in (first, second):
@@ -239,6 +241,64 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
             self.comment()
         self.assertEqual(self.registry.unresolved(KEY), [])
         self.assertEqual(self.comment()["body"], "hello")
+
+    def test_requests_not_sent_or_refused_before_execution(self):
+        """Not sent, 401 and a throttled 403 did not apply: `failed`, `Transient`, and nothing to resolve."""
+        cases = [(lambda *_: Response(sent=False), "unavailable", None),
+                 (None, "unavailable", {"status": 401}),
+                 (None, "throttled", {"status": 403, "headers": {"retry-after": "7200"}}),
+                 (None, "throttled", {"status": 403, "headers": {"x-ratelimit-remaining": "0",
+                                                                  "x-ratelimit-reset": str(1_000_000 + 7200)}}),
+                 (None, "throttled", {"status": 403, "message": "You have exceeded a secondary rate limit"})]
+        send = self.backend.send
+        for index, (replacement, code, fault) in enumerate(cases):
+            with self.subTest(case=index):
+                self.backend.send = replacement or send
+                if fault:
+                    self.backend.fail("POST", "issues/7/comments", **fault)
+                with self.assertRaises(Transient) as raised:
+                    self.comment()
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(raised.exception.retry_after, {2: 7200, 3: 7200, 4: 60}.get(index))
+        self.backend.send = send
+        self.assertEqual((len(self.registry.mutations(KEY, "failed")), self.registry.unresolved(KEY)), (5, []))
+        self.assertEqual(self.backend.writes, [])
+
+    def test_ordinary_quota_headers_are_not_throttling(self):
+        """A permission 403 that carries the usual quota headers is a plain rejection."""
+        self.backend.fail("POST", "issues/7/comments", status=403, message="Resource not accessible by integration",
+                          headers={"x-ratelimit-remaining": "4999", "x-ratelimit-reset": "1000060"})
+        with self.assertRaises(Rejected) as raised:
+            self.comment()
+        self.assertNotIsInstance(raised.exception, Transient)
+
+    def test_rest_success_with_a_lost_body_is_done(self):
+        """The status line shows the write applied; the engine gets `response_lost`, the task stays schedulable."""
+        self.backend.fail("POST", "issues/7/comments", truncated=True)
+        with self.assertRaises(Transient) as raised:
+            self.comment()
+        self.assertEqual(raised.exception.code, "response_lost")
+        self.assertEqual((len(self.registry.mutations(KEY, "done")), self.registry.unresolved(KEY)), (1, []))
+        self.assertEqual(self.fake.comments[-1]["body"], "hello")
+
+    def test_graphql_settles_done_only_on_a_complete_result(self):
+        """Errors of any type, a null result, or an unreadable body leave the linked branch unknown."""
+        ref = {"linkedBranch": {"ref": {"name": "concurro/7", "target": {"oid": "a" * 40}}}}
+        responses = [{"errors": [{"type": "INTERNAL"}], "data": {"createLinkedBranch": ref}},
+                     {"errors": [{"type": "UNPROCESSABLE"}], "data": {"createLinkedBranch": None}},
+                     {"errors": [{"type": "NOT_FOUND"}], "data": None},
+                     {"data": {"createLinkedBranch": None}}, None]
+        for index, payload in enumerate(responses):
+            with self.subTest(case=index):
+                body = None if payload is None else json.dumps(payload).encode()
+                self.backend.send = lambda *_: Response(True, 200, {}, body, None if body else "incomplete")
+                with self.assertRaises(Unresolved):
+                    self.gh.create_linked_branch("issue-7", "concurro/7", "a" * 40)
+                [record] = self.registry.unresolved(KEY)
+                self.gateway.release(KEY, self.generation, None)
+                self.registry.resolve(record.intent, "not-applied", "no linked branch", "operator")
+                self.generation = self.gateway.acquire(KEY, "worker")
+                self.gh = self.facade(self.generation)
 
     def test_resolution_makes_the_task_schedulable_without_resending(self):
         """An applied resolution settles the occurrence as done; nothing is sent again."""

@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,7 @@ import urllib.request
 from bundle import Bundle
 from controller import validate_config
 from policy import Blocked, IMAGE, PROVIDER_CREDENTIALS, SECRET_NAMES, design_roster
+import private
 
 # Run from the target repository checkout; the engine is this file's checkout.
 ENGINE = Path(__file__).resolve().parents[1]
@@ -31,34 +31,13 @@ PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write",
 
 
 def private_file(path):
-    """Read a bounded owner-only regular file without following a final symlink."""
-    path = Path(path).expanduser()
-    if any(path.resolve().is_relative_to(root.resolve()) for root in (TARGET, ENGINE)):
-        raise Blocked("private material must stay outside the repository")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise Blocked("private files must be owned by you with mode 600")
-        data = handle.read(1_000_001)
-        if len(data) > 1_000_000:
-            raise Blocked("private file exceeds size limit")
-        return data
+    """Read a bounded owner-only regular file outside both checkouts."""
+    return private.read(path, (TARGET, ENGINE))
 
 
 def write_private(path, data):
-    """Create a private file exclusively; never replace an existing credential."""
-    path = Path(path).expanduser()
-    if any(path.resolve().is_relative_to(root.resolve()) for root in (TARGET, ENGINE)):
-        raise Blocked("private material must stay outside the repository")
-    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    info = path.parent.stat()
-    if path.parent.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise Blocked("private directory must be owned by you with mode 700")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\n")
+    """Create a private file outside both checkouts; never replace an existing credential."""
+    private.write(path, data, (TARGET, ENGINE))
 
 
 def read_secrets(path, config):
