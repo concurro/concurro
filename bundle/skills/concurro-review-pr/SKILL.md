@@ -7,6 +7,13 @@ description: Review the exact published Concurro PR head independently.
 
 For standalone use, first read the [shared instructions](../../instructions.md) and the target repository's versioned project charter (`.concurro/charter.json`). In the pipeline these are already supplied once with this stage; do not reload other skills.
 
-Review complete before/after files, acceptance criteria and applicable repository review guidance. Peer votes are withheld; your own prior findings are evidence. Approve only without findings. Request changes for implementation defects. Signal requirements or plan defects using verdict reopen and structured design_issue evidence; fresh unanimous design approval is required before further changes.
+Review complete before/after files, acceptance criteria and applicable repository review guidance. Peer votes are withheld. Request changes for implementation defects. Signal requirements or plan defects using verdict reopen and structured design_issue evidence, with no findings or dispositions; fresh unanimous design approval is required before further changes.
+
+Findings:
+
+- Report only new defects in `findings`. Name the file (`path`) whenever a finding can realistically be attributed to one, and anchor it with `start_line` and `line` on the reviewed head version when it concerns specific lines; use `null` otherwise. A finding about the change as a whole has a `null` path.
+- `own_findings` lists your earlier findings that are still open or were withdrawn by a design reopen. Answer each exactly once in `dispositions`: `fixed` with evidence naming the changed lines that fix it, `open` with what remains wrong, or, for a withdrawn finding only, `obsolete` with evidence that the new plan no longer makes it apply. Do not repeat an answered finding as a new one.
+- Approve only with no new findings and no `open` disposition.
+- Keep the whole JSON response within `review_output_budget.max_json_bytes`; prefer fewer, precise findings to long ones.
 
 In the pipeline, use the supplied external [response contract](../../schemas/review.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.

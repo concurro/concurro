@@ -17,6 +17,7 @@ import conversation
 import sessions
 import checks
 import design
+import reviews as findings
 from copy import deepcopy
 from repository import MAX_FILE
 from bundle import Bundle
@@ -26,9 +27,10 @@ from github import GitHub, NotFound
 from identities import Identities
 from local import LocalWorkspace, resource_exhausted
 from scheduler import QueueScan
-from policy import (Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
+from policy import (PR_REVIEW_LIMIT, Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
                     consensus_valid, design_roster, path_allowed, protection_errors, required_local_checks, selected_model,
-                    instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_qc, validate_review)
+                    instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
+                    validate_qc, validate_review)
 
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 PROVIDERS = {"claude", "codex", "copilot"}
@@ -43,6 +45,15 @@ def strings(value, limit=32):
     """Return whether a value is a bounded list of distinct non-empty strings."""
     return (isinstance(value, list) and len(value) <= limit and len(set(value)) == len(value)
             and all(isinstance(v, str) and v.strip() and len(v) <= 240 for v in value))
+
+
+def pr_review_cost(report):
+    """Checkpoint bytes a PR review adds: the report, its finding text again in the ledger, and for a
+    reopen the copies of its design issue kept in its event, history, feedback and revision notice."""
+    cost = len(json.dumps(report).encode()) + sum(len(json.dumps(f["detail"]).encode()) for f in report["findings"])
+    if report["verdict"] == "reopen":
+        cost += 4 * len(json.dumps(report["design_issue"]).encode())
+    return cost
 
 
 def validate_config(config):
@@ -117,6 +128,9 @@ WAIT_SECONDS = 300
 VOLATILE_REQUEST = ("review_output_budget",)
 # Audit room kept free when retaining a completed model result for recovery.
 RESULT_MARGIN = 4000
+# Checkpoint room a PR review step keeps for its queued events, the stage transition's reason
+# (up to 4,000 characters at the gates) and outcome bookkeeping.
+PR_REVIEW_RESERVE = 6000
 
 
 @dataclass(frozen=True)
@@ -227,7 +241,10 @@ class Controller:
         for provider, report in state.get("reviews", {}).items():
             lines += ["**" + provider + "** (`" + report["head"] + "`): " + report["verdict"],
                       "", report["summary"], ""]
-            lines += ["- " + f["path"] + ": " + f["detail"] for f in report["findings"]] + [""]
+            lines += findings.report_lines(report) + [""]
+        still_open = [f["id"] for f in state.get("findings", []) if f["status"] in ("open", "withdrawn")]
+        if still_open:
+            lines += ["Unresolved review findings: " + ", ".join(still_open), ""]
         reason = state.get("reason", "").strip()
         if any(reason == ESCALATION_REASON + " " + rationale for rationale in shown_rationales):
             reason = ESCALATION_REASON
@@ -502,6 +519,8 @@ class Controller:
                     "decision": v["report"]["decision"], "report_digest": digest(v["report"]),
                     "concerns": v["report"]["concerns"]} for v in state.get("design_votes", {}).values()]})
         state["design_generation"] += 1
+        state["input_revision"] = state.get("input_revision", 0) + 1
+        findings.withdraw(state)
         state["design_phase"] = "cooperative"
         state.pop("cooperative_votes", None)
         state["design_votes"] = {}
@@ -629,6 +648,28 @@ class Controller:
         return {'max_json_bytes': max(1000, min(room // 3, design.report_limit(
                     len(context['review_criteria']), len(context.get('own_objections', []))))),
                 'encoding': 'JSON with non-ASCII characters escaped'}
+
+    def pr_review_room(self):
+        """Checkpoint bytes a PR review may add, keeping the step's reserve.
+
+        A retained model result is not counted: `checkpoint` drops it when it would not fit,
+        and recovery then treats the result as lost, within its allowance.
+        """
+        remaining = deepcopy(self.state)
+        remaining.get('operation', {}).pop('response', None)
+        return CHECKPOINT_LIMIT - PR_REVIEW_RESERVE - len(self.checkpoints.audit_body(remaining).encode())
+
+    def pr_review_output_budget(self):
+        """The reviewer's budget: half the room, since a review's finding text is kept twice."""
+        return {'max_json_bytes': max(1000, min(self.pr_review_room() // 2, PR_REVIEW_LIMIT)),
+                'encoding': 'JSON with non-ASCII characters escaped'}
+
+    def record_pr_review(self, state, provider, report):
+        """Apply a validated PR review to the ledger and keep it as the provider's report for this head."""
+        sequence, identifiers = findings.apply(state, provider, report, state["head"])
+        report.update(head=state["head"], model=self.config["models"][provider] or "CLI default",
+                      input_revision=state.get("input_revision", 0), sequence=sequence, finding_ids=identifiers)
+        state["reviews"][provider] = report
 
     def validate_design_report(self, report, context):
         """Validate reviewer output before recording any vote or resolving an objection."""
@@ -1004,6 +1045,7 @@ class Controller:
                 attempts[round_key] = attempt + 1
                 context = self.context()
                 context.update(files=workspace.files(state["plan"]["files"]), prior_reviews=state["reviews"],
+                               review_findings=findings.open_findings(state),
                                local_feedback=feedback, available_checks=executable, required_checks=required,
                                design_authorization=self.design_authorization())
                 result = self.ask(self.config["implementer"], "develop", context)
@@ -1140,7 +1182,8 @@ class Controller:
                         + pending["summary"] + "\n\nGenerated changes; CI and independent reviews are pending."})
         if state["reviews"]:
             state.setdefault("review_history", []).append(state["reviews"])
-        state.update(head=pending["head"], pr=pr["number"], reviews={}, stage="review")
+        state.update(head=pending["head"], pr=pr["number"], reviews={}, stage="review",
+                     input_revision=state.get("input_revision", 0) + 1)
         state["changed_files"] = [f["filename"] for f in self.gh.pages(f"pulls/{pr['number']}/files")]
         del state["pending"]
         conversation.queue(state, "Controller · PR published",
@@ -1155,15 +1198,19 @@ class Controller:
             context = self.context()
             context.update(before=self.files(state["base"], state["plan"]["files"]),
                            after=self.files(state["head"], state["plan"]["files"]), head=state["head"])
-            context["previous_findings"] = [r[provider] for r in state.get("review_history", []) if provider in r]
+            context["own_findings"] = findings.context(state, provider)
+            context["review_output_budget"] = self.pr_review_output_budget()
             report = self.ask(provider, "review", context)
-            validate_review(report)
+            owned = findings.owned(state, provider)
+            validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],
+                               [f["id"] for f in owned if f["status"] == "withdrawn"])
+            if pr_review_cost(report) > self.pr_review_room():
+                raise Blocked("PR review exceeds the checkpoint budget")
             if report["verdict"] == "reopen":
                 state["review_event"] = report
                 source = ("review_event",)
             else:
-                report.update(head=state["head"], model=self.config["models"][provider] or "CLI default")
-                state["reviews"][provider] = report
+                self.record_pr_review(state, provider, report)
                 source = ("reviews", provider)
             conversation.queue(state, f"{provider} / {self.config['models'][provider]} · PR review · {report['verdict']}",
                                source=source, kind="review",

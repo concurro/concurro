@@ -1,7 +1,7 @@
 # PR reviews
 
-Status: accepted for implementation (revision 5, reviewed). Publishes the engine's independent PR reviews as
-native GitHub reviews, with findings as threads that the engine replies to and
+Status: accepted (revision 5, reviewed); rollout step 1 implemented. Publishes
+the engine's independent PR reviews as native GitHub reviews, with findings as threads that the engine replies to and
 resolves once a re-review verifies the fix, and that writers can answer to drive
 the next repair round.
 
@@ -273,7 +273,7 @@ Threads, their first comments and their replies come from a bounded GraphQL
 
 | Area | Change |
 | ---- | ---- |
-| `bundle/schemas/pr_review.json`, skill, `policy.py` | PR-specific contract and `validate_pr_review`; local review untouched |
+| `bundle/schemas/review.json` (the PR review stage), skill, `policy.py` | PR-specific contract and `validate_pr_review`; local review keeps `local_review.json` and `validate_review` |
 | `controller.py` | Ledger and revisions, finding IDs, dispositions, reply admission and repair scheduling, withdrawal and retirement, the three new gate reasons |
 | New `engine/reviews.py` | Patch parsing and placement, rendering, outbox items, marker recovery, resolution rules |
 | `conversation.py` | Short pointer event per review; compaction keeps reports until their PR items publish |
@@ -288,8 +288,11 @@ Token permissions are unchanged. Reviews, comments and replies need
 
 ## Rollout
 
-1. Contract: PR schema and validator, the ledger and IDs, with publication still
-   on the issue.
+1. Contract (implemented): PR schema and validator, the ledger with IDs,
+   dispositions, the input revision, withdrawal and retirement, the open and
+   withdrawn gate reasons, and the repair context, with publication still on the
+   issue. The ledger's `thread`, `comment`, `resolution` and `replies` fields
+   arrive with the steps that need them.
 2. Reviews on the PR: placement, the review, file-level comments, failures and
    completion gates, and recovery, on both the Actions and service paths.
 3. Threads: disposition replies and at-most-once resolution. First confirm on the

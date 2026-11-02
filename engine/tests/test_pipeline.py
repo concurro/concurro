@@ -23,6 +23,7 @@ PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.
             {"path": "docs/guide.md", "change": "modify", "max_lines": None, "required_text": []}]},
         "publication": {"changes": ["Clarify the guide."], "review_focus": ["Verify wording and links."]}}
 APPROVE = {"verdict": "approve", "summary": "The change satisfies the plan.", "findings": [], "design_issue": None}
+FINDING = {"path": "docs/guide.md", "start_line": None, "line": None, "detail": "Define the term."}
 
 
 def design_report(report, context):
@@ -74,10 +75,15 @@ class FakeAgents:
         if stage == "develop":
             return {"summary": "Explain the guide.", "edits": [{"path": "docs/guide.md",
                     "content": "Updated guide " + str(len(self.calls)) + "\n"}], "checks": [], "design_issue": None}
-        if stage == "review" and self.fix and provider == "claude":
-            self.fix = False
-            return {"verdict": "changes_requested", "summary": "One ambiguity remains.",
-                    "findings": [{"path": "docs/guide.md", "detail": "Define the term."}], "design_issue": None}
+        if stage == "review":
+            # Each earlier finding of this provider is answered as fixed by the new head.
+            dispositions = [{"id": f["id"], "status": "fixed", "evidence": "The updated guide defines the term."}
+                            for f in context.get("own_findings", [])]
+            if self.fix and provider == "claude":
+                self.fix = False
+                return {"verdict": "changes_requested", "summary": "One ambiguity remains.",
+                        "findings": [FINDING], "dispositions": dispositions, "design_issue": None}
+            return {**deepcopy(APPROVE), "dispositions": dispositions}
         return deepcopy(APPROVE)
 
 

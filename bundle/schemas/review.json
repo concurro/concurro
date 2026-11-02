@@ -18,7 +18,22 @@
         "type": "object",
         "properties": {
           "path": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "detail": {
             "type": "string"
@@ -26,7 +41,37 @@
         },
         "required": [
           "path",
+          "start_line",
+          "line",
           "detail"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "fixed",
+              "open",
+              "obsolete"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "evidence"
         ],
         "additionalProperties": false
       }
@@ -70,6 +115,7 @@
     "verdict",
     "summary",
     "findings",
+    "dispositions",
     "design_issue"
   ],
   "additionalProperties": false

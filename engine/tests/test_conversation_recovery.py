@@ -148,8 +148,11 @@ class ConversationSizeTests(unittest.TestCase):
                 result['rationale'] = rationale[:1200]
             elif stage == "intake":
                 result["rationale"] = rationale
-            elif stage in ("review", "local_review"):
+            elif stage == "local_review":
                 result["summary"] = summary
+            elif stage == "review":
+                # Fill the review to the room its budget reports (twice the budget, as it has no findings).
+                result["summary"] = summary[:2 * context["review_output_budget"]["max_json_bytes"] - 1500]
             return result
 
         def measure(path, method="GET", data=None):

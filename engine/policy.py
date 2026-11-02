@@ -316,6 +316,74 @@ def validate_review(review):
             raise Blocked("invalid finding")
 
 
+PR_REVIEW_FIELDS = {"verdict", "summary", "findings", "dispositions", "design_issue"}
+PR_FINDING_FIELDS = {"path", "start_line", "line", "detail"}
+MAX_PR_FINDINGS = 20
+MAX_PR_TEXT = 4000
+PR_REVIEW_LIMIT = 24000
+
+
+def line_number(value):
+    """A 1-based line number or None."""
+    return value is None or type(value) is int and value >= 1
+
+
+def validate_pr_finding(finding):
+    """One new finding: an optional repository path and line range on the reviewed head."""
+    if not isinstance(finding, dict) or set(finding) != PR_FINDING_FIELDS:
+        raise Blocked("invalid finding")
+    path, start, line, detail = (finding[k] for k in ("path", "start_line", "line", "detail"))
+    if path is not None and (not isinstance(path, str) or not path.strip() or len(path) > 240
+                             or PurePosixPath(path).is_absolute() or ".." in path.split("/")):
+        raise Blocked("finding path must be a relative repository path")
+    if not line_number(start) or not line_number(line) or start is not None and (line is None or start > line):
+        raise Blocked("finding lines must be 1-based with start_line ≤ line")
+    if path is None and line is not None:
+        raise Blocked("a finding without a path cannot name lines")
+    if not isinstance(detail, str) or not detail.strip() or len(detail) > MAX_PR_TEXT:
+        raise Blocked("finding detail must be bounded non-empty text")
+
+
+def validate_pr_review(review, open_ids, withdrawn_ids):
+    """Reject inconsistent PR reviews; dispositions answer exactly the reviewer's open and withdrawn findings.
+
+    Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
+    """
+    if not isinstance(review, dict) or set(review) != PR_REVIEW_FIELDS:
+        raise Blocked("invalid review fields")
+    if review["verdict"] not in ("approve", "changes_requested", "reopen"):
+        raise Blocked("invalid review verdict")
+    if (not isinstance(review["summary"], str) or not isinstance(review["findings"], list)
+            or not isinstance(review["dispositions"], list)):
+        raise Blocked("invalid review content")
+    if len(json.dumps(review)) > PR_REVIEW_LIMIT or len(review["findings"]) > MAX_PR_FINDINGS:
+        raise Blocked("review too large")
+    if review["verdict"] == "reopen":
+        validate_design_issue(review["design_issue"])
+        if review["findings"] or review["dispositions"]:
+            raise Blocked("design reopening cannot also report or answer findings")
+        return
+    if review["design_issue"] is not None:
+        raise Blocked("review verdict contradicts design issue")
+    for finding in review["findings"]:
+        validate_pr_finding(finding)
+    answered = []
+    for disposition in review["dispositions"]:
+        if (not isinstance(disposition, dict) or set(disposition) != {"id", "status", "evidence"}
+                or not isinstance(disposition["id"], str) or not isinstance(disposition["evidence"], str) or not disposition["evidence"].strip()
+                or len(disposition["evidence"]) > MAX_PR_TEXT):
+            raise Blocked("invalid disposition")
+        allowed = ("fixed", "open", "obsolete") if disposition["id"] in withdrawn_ids else ("fixed", "open")
+        if disposition["status"] not in allowed:
+            raise Blocked("invalid disposition status")
+        answered.append(disposition["id"])
+    if sorted(answered) != sorted(set(open_ids) | set(withdrawn_ids)):
+        raise Blocked("dispositions must answer each of the reviewer's open and withdrawn findings once")
+    still_open = review["findings"] or any(d["status"] == "open" for d in review["dispositions"])
+    if (review["verdict"] == "approve") == bool(still_open):
+        raise Blocked("review verdict contradicts findings")
+
+
 def protection_errors(classic, rules, rulesets, required_checks):
     """Return why server-side protection the App cannot bypass would not guard a merge race.
 
@@ -369,8 +437,15 @@ def merge_reasons(state, pr, files, checks, threads, reviews, config):
     reports = state.get("reviews", {})
     for provider in config["reviewers"]:
         report = reports.get(provider, {})
-        if report.get("head") != head or report.get("verdict") != "approve" or report.get("findings"):
+        if (report.get("head") != head or report.get("verdict") != "approve" or report.get("findings")
+                or report.get("input_revision") != state.get("input_revision", 0)):
             reasons.append(provider + " approval missing or stale")
+    ledger = state.get("findings", [])
+    if any(f["status"] == "open" for f in ledger):
+        reasons.append("open review findings")
+    withdrawn = [f["id"] for f in ledger if f["status"] == "withdrawn"]
+    if withdrawn:
+        reasons.append("withdrawn findings awaiting retirement: " + ", ".join(withdrawn))
     if not files or set(files) != set(state.get("changed_files", [])):
         reasons.append("PR file set differs from controller evidence")
     if not all(path_allowed(p, config, state["execution"]) and p in state["plan"]["files"] for p in files):

@@ -7,6 +7,7 @@ from policy import Blocked, digest
 from checkpoints import CheckpointError
 from github import Transient
 from identities import Identities
+import reviews
 
 MARKER = "<!-- concurro:event:v1:"
 
@@ -61,7 +62,13 @@ def render(state, kind, source, details):
         return body
     if kind == "review":
         body = f"Commit `{details['head']}` · round {details['round']}\n\n{value['summary']}"
-        body += "".join("\n\n- " + f["path"] + ": " + f["detail"] for f in value["findings"])
+        if "finding_ids" not in value:
+            # Reports from before the finding ledger keep their exact rendering, so queued and
+            # already-posted events still match their recorded digests.
+            body += "".join("\n\n- " + f["path"] + ": " + f["detail"] for f in value["findings"])
+        else:
+            lines = reviews.report_lines(value)
+            body += "\n\n" + "\n".join(lines) if lines else ""
         if value["design_issue"]:
             body += "\n\n" + value["design_issue"]["explanation"]
         return body
@@ -172,6 +179,7 @@ def compact(state):
     journal = state.get("conversation", {})
     if journal.get("pending") or not journal.get("receipts"):
         return
+    reviews.compact(state)
     state.pop("review_event", None)
     published = {r.get("source_digest") for r in journal["receipts"].values()}
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())

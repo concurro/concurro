@@ -312,7 +312,7 @@ class ConsensusTests(unittest.TestCase):
             result = original(provider, stage, context)
             if stage == "review":
                 return {"verdict": "reopen", "summary": "Coverage needs design changes.",
-                        "findings": [], "design_issue": DESIGN_ISSUE}
+                        "findings": [], "dispositions": [], "design_issue": DESIGN_ISSUE}
             return result
 
         with patch.object(self.agents, "ask", side_effect=reopen):
