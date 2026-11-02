@@ -10,6 +10,7 @@ from checkpoints import Checkpoints
 import controller as controller_module
 from controller import ACTIONS, Controller
 import conversation
+from policy import Blocked
 import test_pipeline
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
 
@@ -81,6 +82,15 @@ class OwnershipTests(OwnershipFixture, unittest.TestCase):
         self.assertTrue(advanced)
         self.assertEqual(controller.state["stage"], "merged")
         self.assertTrue(writes)
+
+    def test_engine_pin_is_not_part_of_the_configuration_digest(self):
+        """A service target's `engine` pin can change without invalidating its tasks; it must name a commit."""
+        self.assertEqual(controller_module.config_digest({**self.config, "engine": "e" * 40}),
+                         controller_module.config_digest(self.config))
+        controller_module.validate_config({**self.config, "engine": "e" * 40})
+        for engine in ("e" * 39, "E" * 40, 7):
+            with self.assertRaises(Blocked):
+                controller_module.validate_config({**self.config, "engine": engine})
 
     def test_unrecognized_markers_fail_closed(self):
         """Malformed or unknown markers are foreign to every controller."""

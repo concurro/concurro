@@ -1,8 +1,8 @@
 # Service skeleton (migration step 4)
 
-Status: accepted plan (revision 4). Step 1 (registry and mutation gateway) and
-step 2 (settings, identity service, transports, transient errors) are
-implemented.
+Status: implemented (revision 4). Step 1 (registry and mutation gateway), step 2
+(settings, identity service, transports, transient errors) and step 3 (worker,
+scheduler, ingress, reconciler, cutover and operator commands) are in place.
 Implements the v1 deployment from [the service design](service.md): one process
 on one Linux host, a thick worker, the mutation gateway, and the existing local
 executor. Every module
@@ -53,6 +53,7 @@ gains no dependency on it.
 | `service/gateway.py` | `MutationGateway`, ownership critical section, `GatewayGitHub` facade |
 | `service/failures.py` | The shared failure classifier, mapping errors and stops to outcomes |
 | `service/worker.py` | Load a target at its approved revision and run one tick |
+| `service/cutover.py` | `adopt` and `release`: the Actions preconditions and marker rewrites |
 | `service/control.py` | Owner-only local control channel for operator commands |
 | `service/__main__.py` | `serve` plus clients for `reconcile-once`, `adopt`, `release`, `status`, `resolve` |
 | `service/tests/` | Fake GitHub and fake provider tests, no network or Docker |
@@ -139,7 +140,7 @@ class Registry:
     def enqueue(self, key, cause, due_at)            # key = (repository, issue)
     def due(self, now) -> list[WorkItem]
     # Ownership and mutations: called only inside the gateway's critical section
-    def grant(self, key, worker, lease_seconds) -> int          # new generation
+    def grant(self, key, worker, lease_seconds, consume=True) -> int  # new generation
     def current(self, key) -> Ownership | None
     def end(self, key, generation, outcome)
     def renew(self, key, generation, lease_seconds) -> bool
@@ -151,9 +152,29 @@ class Registry:
     # Observation and outcomes
     def acknowledged(self, key) -> Snapshot | None
     def acknowledge(self, key, snapshot)
+    def defer(self, key, snapshot)                   # input a failed tick saw; its retry is queued
+    def deferred(self, key) -> Snapshot | None
+    def observe(self, key, snapshot) -> bool         # enqueue a polled snapshot if it is new input
     def outcome(self, key) -> Outcome | None
     def active(self, repository) -> list[key]        # every key with a non-terminal outcome
+    # Pull requests, for mapping PR and check events; operator views
+    def link(self, key, pull)
+    def pull(self, key) -> int | None
+    def task(self, repository, pull) -> key | None
+    def mutation(self, intent_id) -> MutationRecord | None
+    def status(self) -> list[dict]
 ```
+
+Follow-ups are scheduled in the commit that makes them necessary, so no crash
+can lose one:
+
+- `end` records a `continue` outcome as due at once and a `wait-until` at its
+  time.
+- `resolve` of a task's last unknown write makes the task due.
+
+A tick's `grant` consumes the task's work item; an administrative grant
+(`consume=False`, used by cutover) keeps it, so a refused cutover loses no
+queued work.
 
 ## Mutation gateway
 
@@ -243,8 +264,8 @@ unresolved. Unresolved keys are never scheduled, acquired or released.
 disposition (`applied` or `not-applied`), the operator's evidence (for example the
 GitHub object observed and its request digest) and who resolved it. `applied`
 settles it as `done`, `not-applied` as `failed`. Either way, the key becomes
-schedulable and the engine's next tick reconstructs the result through the rules
-above; nothing is resent and no empty success is returned to a caller. The
+schedulable (resolving its last unknown write enqueues it in the same commit) and
+the engine's next tick reconstructs the result through the rules above; nothing is resent and no empty success is returned to a caller. The
 operator `release` command refuses keys with unresolved mutations; the gateway's
 `release` still ends a generation, so a stopped tick never stays live.
 
@@ -426,8 +447,12 @@ For one key and generation:
 1. Take an observation snapshot of the key (see Reconciler) before anything
    else.
 2. Read the target's `.concurro/` at its default-branch head through the read
-   token into a private temporary directory, validate the configuration, and
-   require its `engine` field to equal the service's engine commit.
+   token (the head from GraphQL, each file through the contents API, regular
+   files only) into a private temporary directory, and validate the
+   configuration. It must name this repository, pin the service's engine commit
+   in its `engine` field, name the verified App as `bot_login`, and keep
+   `merge_enabled` false. `engine` is excluded from the task's configuration
+   digest, so an engine upgrade does not invalidate tasks.
 3. Build one `Bundle(engine_root, target=tmp, profiles=...)` and inject that same
    instance, the facade, and a facade-backed archive loader everywhere they are
    needed. This requires two small engine changes:
@@ -440,7 +465,10 @@ For one key and generation:
 4. Construct `Controller(facade, agents, config, workspace_factory,
    bundle=bundle, controller_id=settings.controller_id)` and call `advance`.
 5. Classify the result (see Failures), then acknowledge the step-1 snapshot only
-   if the tick completed or blocked durably.
+   if the tick completed or blocked durably. A completed tick also clears the
+   health notice, as `controller.main()` does, and records the task's PR.
+
+The lease is renewed every five minutes while the tick runs.
 
 No per-task working-directory change or environment mutation is used.
 
@@ -458,8 +486,12 @@ service maps each class to a stage effect and an outcome:
 | Checkpoint failure on verified, owned state | Health notice; stage preserved | `wait-until`, backoff |
 | `Blocked` (policy, validation, budget, a second uncertain outcome) | Suspended to `blocked`, as today | `blocked` |
 | Any other exception | Suspended to `blocked` with the fixed transport text | `blocked` |
+| Any failure before the task's state is loaded and owned (target configuration, credentials file, snapshot) | None; no write | `wait-until`, backoff |
+| A suspension that itself fails | Health notice | `wait-until`, backoff |
 
-Only the last two require `/concurro retry` or an operator. The Actions path keeps
+Only `Blocked` and other exceptions on verified state require `/concurro retry`
+or an operator. Backoff counts a task's consecutive failures in memory, so it
+restarts at 60 seconds after a restart. The Actions path keeps
 its current handling (it retries only on its schedule) until it adopts the same
 classifier in a later change.
 
@@ -469,7 +501,8 @@ classifier in a later change.
 
 A snapshot holds, per key, only task inputs:
 
-- human comment IDs with their `updated_at` (edits), and their ID set (deletions);
+- human comment IDs with a digest of their body (edits), and their ID set
+  (deletions);
 - the issue's state and a digest of its title and body;
 - enrollment label events with their actors;
 - the linked PR's head SHA, merged state, review IDs with their states, and
@@ -478,13 +511,24 @@ A snapshot holds, per key, only task inputs:
 Comments and label events authored by any Concurro identity are excluded. The
 issue's own `updated_at` changes for those excluded writes too, so it is only a
 rescan hint: it decides whether to fetch the inputs above, and a change in it
-alone never enqueues work.
+alone never enqueues work. While it is unchanged, the last comment and
+label-event scan is reused, for at most an hour.
 
 - The worker snapshots before its tick and acknowledges exactly that snapshot
   afterwards, never a fresh read, so input arriving during the tick is never
   acknowledged unseen.
-- Events arriving during a tick (webhook or poll) mark the key dirty; when the
-  tick ends, a dirty key is enqueued again.
+- A tick that ends `wait-until` on a failure defers its snapshot instead. That
+  input is not new: its retry is already queued at GitHub's or the backoff's
+  delay, and polling never hastens it. Only different input wakes the task
+  sooner.
+- Each poll cause names the digest of the snapshot it observed (`poll:<digest>`).
+  Deferring or acknowledging a snapshot drops queued polls of exactly that input
+  in the same commit, including one queued while the tick ran. Every other
+  cause keeps its due time, so a webhook during the tick may still bring the
+  retry forward once.
+- Events arriving during a tick (webhook or poll) enqueue the key durably;
+  `acquire` refuses it while the tick runs, so the item waits and becomes the
+  follow-up tick when the tick ends.
 
 ### Polling
 
@@ -493,8 +537,10 @@ Every interval (default five minutes) and on `reconcile-once`:
 1. Build the candidate set per target: issues currently labelled `concurro` plus
    every key the registry holds as active, so a task whose label was removed is
    still observed.
-2. Snapshot each candidate and enqueue it when the snapshot differs from the
-   acknowledged one, or its `continue` / `wait-until` outcome is due.
+2. Snapshot each candidate; `observe` enqueues it when the snapshot differs
+   from both the acknowledged and the deferred one, checking and enqueueing in
+   one transaction. Due `continue` and `wait-until` outcomes are already queued
+   by `end`.
    `terminal` keys are skipped unless their issue is reopened.
 
 Polling uses GitHub reads only; ticks (and model calls) run only for due work.
@@ -511,10 +557,11 @@ Polling uses GitHub reads only; ticks (and model calls) run only for due work.
 - Drops events the Actions workflow already ignores and events authored by
   Concurro identities.
 - Records the delivery ID; a redelivery is acknowledged without enqueueing.
-- Enqueues with `due_at = now`, or marks the key dirty if a tick is running. It
+- Enqueues with `due_at = now`; during a tick the item waits for it to end. It
   never reads task state or calls the engine.
 
-The HTTP surface is a single POST endpoint plus a health endpoint. How it is
+The HTTP surface is a single POST endpoint plus a health endpoint (`GET
+/health`), bound to `serve --listen` (default `127.0.0.1:8787`). How it is
 exposed (reverse proxy, tunnel, cloud ingress) is a deployment choice.
 
 ## Scheduler
@@ -522,7 +569,9 @@ exposed (reverse proxy, tunnel, cloud ingress) is a deployment choice.
 - Work items are keyed by `(repository, issue)`; several causes for one key
   collapse into one item.
 - Before a tick, the gateway's `acquire` grants a generation (see the critical
-  section); keys with unresolved mutations are skipped.
+  section). A key it refuses (live owner, write in flight or unresolved) stays
+  queued, and selection continues with the next due key, so a refused key never
+  holds a slot.
 - Concurrency: at most one tick per key, `limits.repository` per repository and
   `limits.global` overall, on a bounded worker thread pool.
 - Fairness: due items are taken round-robin across repositories, oldest first
@@ -546,9 +595,12 @@ exposed (reverse proxy, tunnel, cloud ingress) is a deployment choice.
    `service:<name>` through the gateway, then explicitly enqueue it with a fresh
    snapshot.
 
+The engine-support commit (migration step 3) is `b2aaafb` (`MARKER_AWARE`). A task not owned by `actions` is
+refused individually and reported; the others are still adopted.
+
 `release <repository> <issue>` writes the marker back to `actions` for an idle key
 without unresolved mutations, so the operator can roll back before re-enabling
-Actions.
+Actions. The service records the task as `terminal` and stops observing it.
 
 ## Tests
 

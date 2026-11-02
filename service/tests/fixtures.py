@@ -1,10 +1,13 @@
 """Shared service fixtures: a REST view of the engine tests' in-memory GitHub, a registry, a clock."""
 
+import base64
 from copy import deepcopy
 import json
+import logging
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,15 +18,31 @@ import service  # noqa: E402  (puts the engine on the module path)
 from service.gateway import GatewayGitHub, MutationGateway  # noqa: E402
 from service.transport import Response  # noqa: E402
 from github import NotFound  # noqa: E402
+from service.reconciler import Reconciler  # noqa: E402
 from service.registry import Registry  # noqa: E402
-from support import CONFIG  # noqa: E402
+from service.scheduler import Scheduler  # noqa: E402
+from service.settings import Limits, Target  # noqa: E402
+from service.worker import Worker  # noqa: E402
+from support import CONFIG, TARGET  # noqa: E402
 from test_pipeline import FakeAgents, FakeGitHub, FakeWorkspace  # noqa: E402
+from checkpoints import Checkpoints  # noqa: E402
 from controller import Controller  # noqa: E402
+
+# Expected failures are logged by the service; keep test output clean.
+logging.getLogger("concurro.service").addHandler(logging.NullHandler())
 
 SERVICE = "service:primary"
 REGISTRY_ID = "registry-test"
+ENGINE = "e" * 40
 KEY = (CONFIG["repository"], 7)
 PAGE = "per_page=100&page="
+ENROLLED = "issues?state=open&labels=concurro"
+
+
+def target_files(config, charter=None):
+    """The target's `.concurro/` files as the default branch holds them, pinning the test engine."""
+    return {".concurro/config.json": json.dumps({**config, "engine": ENGINE}),
+            ".concurro/charter.json": charter or (TARGET / ".concurro/charter.json").read_text()}
 
 
 class Clock:
@@ -47,6 +66,7 @@ class RestBackend:
         self.writes = []
         self.faults = []
         self.read_faults = []
+        self.files = target_files(fake.config)
 
     def fail(self, method, prefix, status=None, lost=False, body="", truncated=False, headers=None,
              message="fixture rejection"):
@@ -79,6 +99,8 @@ class RestBackend:
         if fault:
             self.read_faults.remove(fault)
             raise fault[1]
+        if relative.startswith("contents/"):
+            return self.content(relative)
         if PAGE in relative:
             base, page = relative.split(PAGE)
             base = base[:-1]
@@ -92,8 +114,21 @@ class RestBackend:
             return {"permission": "write" if self.fake.permitted(login) else "read"}
         return self.fake.repo(relative, "GET")
 
+    def content(self, relative):
+        """A file of the default branch through the contents API."""
+        path, _, ref = unquote(relative[len("contents/"):]).partition("?ref=")
+        if ref != self.fake.base or path not in self.files:
+            raise NotFound("GitHub request failed: GET " + relative)
+        data = self.files[path].encode()
+        return {"type": "file", "encoding": "base64", "path": path, "size": len(data),
+                "content": base64.b64encode(data).decode()}
+
     def page(self, base):
         """The first and only page of a collection."""
+        if base == ENROLLED:
+            issue = self.fake.issue
+            enrolled = issue["state"] == "open" and any(label["name"] == "concurro" for label in issue["labels"])
+            return [deepcopy(issue)] if enrolled else []
         if base == "issues/7/labels":
             return deepcopy(self.fake.issue["labels"])
         if base == "labels":
@@ -103,6 +138,9 @@ class RestBackend:
     def query(self, data):
         """Answer the engine's two GraphQL read queries."""
         variables = data["variables"]
+        if "defaultBranchRef" in data["query"]:
+            ref = {"name": "main", "target": {"oid": self.fake.base}}
+            return {"data": {"repository": {"defaultBranchRef": ref}}}
         if "linkedBranches" in data["query"]:
             nodes = [{"ref": {"name": b, "repository": {"nameWithOwner": self.fake.config["repository"]}}}
                      for b in sorted(self.fake.linked_branches)]
@@ -228,6 +266,16 @@ class WireConnection:
         pass
 
 
+class Inline:
+    """An executor that runs each tick at once, so tests observe every tick deterministically."""
+
+    def submit(self, function, *args):
+        function(*args)
+
+    def shutdown(self, wait=True):
+        pass
+
+
 class ServiceFixture:
     """A registry in a private temporary directory, a gateway over the REST fake, and engine fixtures."""
 
@@ -274,3 +322,41 @@ class ServiceFixture:
             return controller.state, outcome
         finally:
             self.gateway.release(KEY, generation, outcome)
+
+    def credentials(self, name="credentials.json", data=None):
+        """A private provider credentials file for one target."""
+        path = Path(self.directory.name) / name
+        path.write_text(json.dumps(data or {"CODEX_API_KEY": "fixture-" + name}))
+        path.chmod(0o600)
+        return path
+
+    def service(self, workspace=FakeWorkspace, executor=None, limits=None):
+        """The reconciler, worker and scheduler over the fakes, with the fake agents."""
+        bot = self.config["bot_login"]
+        self.settings = SimpleNamespace(controller_id=SERVICE, engine=ENGINE, limits=limits or Limits(4, 2),
+                                        targets=(Target(KEY[0], self.credentials()),))
+        self.reconciler = Reconciler(self.registry, lambda repository: self.backend, [KEY[0]], {bot}, clock=self.clock)
+        self.worker = Worker(self.settings, self.gateway, self.registry, self.reconciler, lambda repository: self.backend,
+                             bot, agents=lambda *args, **kwargs: self.agents, workspace_factory=workspace)
+        self.scheduler = Scheduler(self.registry, self.gateway, self.worker, self.settings.limits, clock=self.clock,
+                                   executor=executor or Inline())
+        return self.scheduler
+
+    def drain(self, limit=20):
+        """Dispatch until nothing is due now; return the number of ticks started."""
+        ticks = 0
+        for _ in range(limit):
+            started = self.scheduler.dispatch()
+            if not started:
+                return ticks
+            ticks += len(started)
+        self.fail("work never drained")
+
+    def stage(self):
+        """The task's stage, as its progress label shows it."""
+        return next((label[len("concurro:stage:"):] for label in self.backend.labels()
+                     if label.startswith("concurro:stage:")), None)
+
+    def state(self):
+        """The task's verified checkpoint state, read directly from the fake."""
+        return Checkpoints(self.fake, self.config, KEY[1]).load(self.fake.pages(f"issues/{KEY[1]}/comments"))

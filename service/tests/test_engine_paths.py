@@ -9,7 +9,9 @@ from fixtures import KEY, ServiceFixture, Wire
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from test_pipeline import FakeWorkspace
 from checkpoint_health import sync_checkpoint_health
+from checkpoints import CheckpointError
 from controller import MARKER, Outcome
+from policy import Blocked, UncertainOutcome
 import cleanup
 import conversation
 from github import Transient
@@ -247,7 +249,22 @@ class TransientTests(Recovery, unittest.TestCase):
         self.assertEqual(failures.classify(Transient("unavailable"), attempt=10),
                          Outcome("wait-until", progressed=False, retry_after=failures.BACKOFF_LIMIT))
         self.assertEqual(failures.classify(Transient("unavailable")).retry_after, failures.BACKOFF_SECONDS)
-        self.assertIsNone(failures.classify(RuntimeError("other")))
+
+    def test_remaining_classes(self):
+        """Uncertain calls, checkpoint failures and unverified state keep the stage; the rest block."""
+        wait = Outcome("wait-until", retry_after=failures.BACKOFF_SECONDS)
+        cases = [(UncertainOutcome("unknown"), True, wait, None),
+                 (CheckpointError("unknown"), True, wait, "health"),
+                 (conversation.PublicationError("conversation_conflict"), True, Outcome("blocked"), "suspend"),
+                 (Blocked("policy"), True, Outcome("blocked"), "suspend"),
+                 (RuntimeError("other"), True, Outcome("blocked"), "suspend"),
+                 (Blocked("policy"), False, wait, None),
+                 (Transient("unavailable"), True, wait, None)]
+        for error, verified, outcome, effect in cases:
+            with self.subTest(error=type(error).__name__, verified=verified):
+                self.assertEqual(failures.classify(error, verified=verified), outcome)
+                self.assertEqual(failures.effect(error, verified), effect)
+        self.assertIsNone(failures.effect(OwnershipLost("stale"), True))
 
 
 if __name__ == "__main__":

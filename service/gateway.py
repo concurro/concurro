@@ -145,15 +145,18 @@ class MutationGateway:
             self.nodes[key] = self.reader(key[0]).request("GET", f"repos/{key[0]}/issues/{key[1]}")["node_id"]
         return self.nodes[key]
 
-    def acquire(self, key, worker, lease_seconds=LEASE_SECONDS):
-        """Grant a new generation only with no live owner, nothing in flight and nothing unresolved."""
+    def acquire(self, key, worker, lease_seconds=LEASE_SECONDS, consume=True):
+        """Grant a new generation only with no live owner, nothing in flight and nothing unresolved.
+
+        A tick consumes the task's queued work; an administrative grant (`consume=False`) keeps it.
+        """
         with self.section(key):
             current = self.registry.current(key)
             if current and current.live and current.lease_until > self.registry.clock():
                 return None
             if self.registry.in_flight(key) or self.registry.unresolved(key):
                 return None
-            return self.registry.grant(key, worker, lease_seconds)
+            return self.registry.grant(key, worker, lease_seconds, consume)
 
     def renew(self, key, generation, lease_seconds=LEASE_SECONDS):
         """Extend a live generation's lease; liveness only, never authority over a newer owner."""

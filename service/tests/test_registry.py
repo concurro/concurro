@@ -152,6 +152,61 @@ class StateTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((record.resolution["disposition"], record.resolution["operator"]), ("applied", "operator"))
         self.assertEqual(self.registry.unresolved(KEY), [])
 
+    def test_ending_a_generation_schedules_its_follow_up(self):
+        """`continue` is due at once and `wait-until` at its time, in the commit that records the outcome."""
+        for outcome, due in ((Outcome("continue", True), 0), (Outcome("wait-until", retry_after=300), 300),
+                             (Outcome("await-human"), None), (None, None)):
+            with self.subTest(outcome=outcome):
+                self.registry.end(KEY, self.registry.grant(KEY, "worker", 60), outcome)
+                items = self.registry.due(self.clock() + 3600)
+                self.assertEqual([item.due_at - self.clock() for item in items], [] if due is None else [due])
+
+    def test_resolving_the_last_unknown_write_schedules_the_task_atomically(self):
+        """The task is due once nothing is unknown, and stays due across a crash right after the resolution."""
+        generation = self.registry.grant(KEY, "worker", 60)
+        intents = [self.registry.admit(KEY, generation, "POST", "p", "d") for _ in range(2)]
+        for intent in intents:
+            self.registry.settle(intent, "unknown")
+        self.registry.end(KEY, generation, None)
+        self.registry.resolve(intents[0], "applied", "observed", "operator")
+        self.assertEqual(self.registry.due(self.clock()), [])
+        self.registry.resolve(intents[1], "not-applied", "absent", "operator")
+        [item] = self.open_again().due(self.clock())
+        self.assertEqual((item.key, item.causes), (KEY, ("resolved",)))
+
+    def test_deferral_drops_only_polls_of_the_same_input(self):
+        """Polls of the deferred input go; polls of newer input and every other cause keep their due time."""
+        seen, newer = {"issue": {"state": "open"}, "comments": [[1, "a"]]}, {"issue": {"state": "open"}, "comments": []}
+        self.assertTrue(self.registry.observe(KEY, seen))
+        self.registry.defer(KEY, seen)
+        self.assertEqual(self.registry.due(self.clock() + 3600), [])
+        self.assertFalse(self.registry.observe(KEY, seen), "deferred input is not new")
+        self.assertTrue(self.registry.observe(KEY, newer))
+        self.registry.enqueue(KEY, "webhook:issue_comment", self.clock())
+        self.registry.defer(KEY, seen)
+        [item] = self.registry.due(self.clock())
+        self.assertEqual(len(item.causes), 2)
+        self.assertIn("webhook:issue_comment", item.causes)
+        self.registry.acknowledge(KEY, newer)
+        self.assertEqual(self.registry.due(self.clock())[0].causes, ("webhook:issue_comment",))
+
+    def test_administrative_grants_keep_queued_work(self):
+        """Only a tick's grant consumes the work item."""
+        self.registry.enqueue(KEY, "retry", self.clock() + 300)
+        self.registry.end(KEY, self.registry.grant(KEY, "cutover", 60, consume=False), None)
+        self.assertEqual([item.key for item in self.registry.due(self.clock() + 300)], [KEY])
+        self.registry.end(KEY, self.registry.grant(KEY, "worker", 60), None)
+        self.assertEqual(self.registry.due(self.clock() + 300), [])
+
+    def test_pull_requests_map_back_to_their_task(self):
+        """A pull request belongs to one task; relinking moves it."""
+        self.assertIsNone(self.registry.task(KEY[0], 9))
+        self.registry.link(KEY, 9)
+        self.assertEqual((self.registry.task(KEY[0], 9), self.registry.pull(KEY)), (KEY, 9))
+        self.registry.link((KEY[0], 8), 9)
+        self.assertEqual(self.registry.task(KEY[0], 9), (KEY[0], 8))
+        self.assertEqual(self.open_again().pull(KEY), None)
+
 
 if __name__ == "__main__":
     unittest.main()

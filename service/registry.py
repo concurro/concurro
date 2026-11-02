@@ -11,10 +11,11 @@ import threading
 import time
 
 from controller import Outcome
+from policy import digest
 
 from .errors import RegistryError, RegistryFailure
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -36,6 +37,10 @@ CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapsh
 CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,
                        progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,
                        PRIMARY KEY (repository, issue));
+CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,
+                       PRIMARY KEY (repository, issue));
+CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, pull INTEGER NOT NULL,
+                    PRIMARY KEY (repository, issue), UNIQUE (repository, pull));
 """
 
 
@@ -81,6 +86,29 @@ def queue(db, key, cause, due_at):
     causes = sorted(set(json.loads(row[0]) if row else ()) | {cause})
     db.execute("INSERT OR REPLACE INTO queue VALUES (?, ?, ?, ?)",
                (*key, json.dumps(causes), min(row[1], due_at) if row else due_at))
+
+
+def poll_cause(snapshot):
+    """The queue cause for a poll that observed exactly this input."""
+    return "poll:" + digest(snapshot)
+
+
+def drop_polls(db, key, snapshot):
+    """Drop queued polls of input a tick has handled or deferred; every other cause and its due time stay."""
+    row = db.execute("SELECT causes FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
+    if not row:
+        return
+    causes = [cause for cause in json.loads(row[0]) if cause != poll_cause(snapshot)]
+    if causes:
+        db.execute("UPDATE queue SET causes = ? WHERE repository = ? AND issue = ?", (json.dumps(causes), *key))
+    else:
+        db.execute("DELETE FROM queue WHERE repository = ? AND issue = ?", key)
+
+
+def stored(db, table, key):
+    """A stored snapshot, or None."""
+    row = db.execute(f"SELECT snapshot FROM {table} WHERE repository = ? AND issue = ?", key).fetchone()
+    return json.loads(row[0]) if row else None
 
 
 class Registry:
@@ -199,14 +227,18 @@ class Registry:
 
     # Ownership and mutations: called only inside the gateway's critical section
 
-    def grant(self, key, worker, lease_seconds):
-        """Grant the next generation and consume the task's work item in the same commit."""
+    def grant(self, key, worker, lease_seconds, consume=True):
+        """Grant the next generation, consuming the task's work item in the same commit.
+
+        Administrative grants (`consume=False`) leave queued work for the next tick.
+        """
         with self.transaction() as db:
             row = db.execute("SELECT generation FROM ownership WHERE repository = ? AND issue = ?", key).fetchone()
             generation = (row[0] if row else 0) + 1
             db.execute("INSERT OR REPLACE INTO ownership VALUES (?, ?, ?, ?, ?, 1)",
                        (*key, generation, worker, self.clock() + lease_seconds))
-            db.execute("DELETE FROM queue WHERE repository = ? AND issue = ?", key)
+            if consume:
+                db.execute("DELETE FROM queue WHERE repository = ? AND issue = ?", key)
         return generation
 
     def current(self, key):
@@ -224,14 +256,23 @@ class Registry:
                               (self.clock() + lease_seconds, *key, generation)).rowcount == 1
 
     def end(self, key, generation, outcome):
-        """End that generation only, recording its outcome; return whether it was live."""
+        """End that generation only, recording its outcome; return whether it was live.
+
+        A `continue` outcome is due again at once and a `wait-until` at its time, in the
+        same commit, so no restart can lose the follow-up.
+        """
+        now = self.clock()
         with self.transaction() as db:
             if db.execute("UPDATE ownership SET live = 0 WHERE repository = ? AND issue = ? "
                           "AND generation = ? AND live = 1", (*key, generation)).rowcount != 1:
                 return False
             if outcome is not None:
                 db.execute("INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?)",
-                           (*key, outcome.kind, int(outcome.progressed), outcome.retry_after, self.clock()))
+                           (*key, outcome.kind, int(outcome.progressed), outcome.retry_after, now))
+                if outcome.kind == "continue":
+                    queue(db, key, "continue", now)
+                elif outcome.kind == "wait-until":
+                    queue(db, key, "wait-until", now + (outcome.retry_after or 0))
             return True
 
     def admit(self, key, generation, method, path, request_digest):
@@ -260,6 +301,13 @@ class Registry:
                               "ORDER BY generation, sequence", (*key, status)).fetchall()
         return [MutationRecord(r[0], (r[1], r[2]), *r[3:11], json.loads(r[11]) if r[11] else None) for r in rows]
 
+    def mutation(self, intent):
+        """One occurrence by its intent ID, or None."""
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM mutations WHERE intent = ?", (intent,)).fetchone()
+        return MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None) \
+            if row else None
+
     def in_flight(self, key):
         """Occurrences sent or about to be sent and not yet settled."""
         return self.mutations(key, "in-flight")
@@ -269,28 +317,73 @@ class Registry:
         return self.mutations(key, "unknown")
 
     def resolve(self, intent, disposition, evidence, operator):
-        """Record an operator's disposition of an unknown occurrence; nothing is resent."""
+        """Record an operator's disposition of an unknown occurrence; nothing is resent.
+
+        Resolving the task's last unknown write makes it due in the same commit, so the
+        next tick reconstructs the result even across a crash.
+        """
         if disposition not in DISPOSITIONS or not all(isinstance(v, str) and v.strip() for v in (evidence, operator)):
             raise ValueError("resolution needs a disposition, evidence and the resolving operator")
-        resolution = {"disposition": disposition, "evidence": evidence, "operator": operator, "at": self.clock()}
+        now = self.clock()
+        resolution = {"disposition": disposition, "evidence": evidence, "operator": operator, "at": now}
         with self.transaction() as db:
             if db.execute("UPDATE mutations SET status = ?, resolution = ? WHERE intent = ? AND status = 'unknown'",
                           (DISPOSITIONS[disposition], json.dumps(resolution), intent)).rowcount != 1:
                 raise ValueError("no unresolved mutation with that intent ID")
+            key = db.execute("SELECT repository, issue FROM mutations WHERE intent = ?", (intent,)).fetchone()
+            if not db.execute("SELECT 1 FROM mutations WHERE repository = ? AND issue = ? AND status = 'unknown'",
+                              key).fetchone():
+                queue(db, tuple(key), "resolved", now)
 
     # Observation and outcomes
 
     def acknowledged(self, key):
         """The last snapshot a completed tick acknowledged."""
         with self.transaction() as db:
-            row = db.execute("SELECT snapshot FROM snapshots WHERE repository = ? AND issue = ?", key).fetchone()
-        return json.loads(row[0]) if row else None
+            return stored(db, "snapshots", key)
 
     def acknowledge(self, key, snapshot):
-        """Acknowledge exactly the snapshot taken before the tick."""
+        """Acknowledge exactly the snapshot taken before the tick; polls of that input are dropped."""
         with self.transaction() as db:
             db.execute("INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?)",
                        (*key, json.dumps(snapshot, sort_keys=True)))
+            db.execute("DELETE FROM deferred WHERE repository = ? AND issue = ?", key)
+            drop_polls(db, key, snapshot)
+
+    def defer(self, key, snapshot):
+        """Record input a failed tick already saw, dropping any poll of it queued during the tick.
+
+        Its retry is queued at its own delay, which polling must not hasten.
+        """
+        with self.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO deferred VALUES (?, ?, ?)",
+                       (*key, json.dumps(snapshot, sort_keys=True)))
+            drop_polls(db, key, snapshot)
+
+    def deferred(self, key):
+        """The input awaiting a retry, or None."""
+        with self.transaction() as db:
+            return stored(db, "deferred", key)
+
+    def observe(self, key, snapshot):
+        """Enqueue a polled snapshot if it is new input; return whether it was.
+
+        New means neither acknowledged nor deferred; a terminal task wakes only when its
+        issue is reopened. The check and the enqueue share one transaction, so a tick that
+        defers or acknowledges this input meanwhile cannot leave a stale poll queued.
+        """
+        snapshot = json.loads(json.dumps(snapshot))
+        with self.transaction() as db:
+            acknowledged = stored(db, "snapshots", key)
+            outcome = db.execute("SELECT kind FROM outcomes WHERE repository = ? AND issue = ?", key).fetchone()
+            if outcome and outcome[0] == "terminal":
+                new = (acknowledged is not None and acknowledged["issue"]["state"] == "closed"
+                       and snapshot["issue"]["state"] == "open")
+            else:
+                new = snapshot != acknowledged and snapshot != stored(db, "deferred", key)
+            if new:
+                queue(db, key, poll_cause(snapshot), self.clock())
+            return new
 
     def outcome(self, key):
         """The outcome the task's last completed generation recorded."""
@@ -298,6 +391,45 @@ class Registry:
             row = db.execute("SELECT kind, progressed, retry_after FROM outcomes "
                              "WHERE repository = ? AND issue = ?", key).fetchone()
         return Outcome(row[0], bool(row[1]), row[2]) if row else None
+
+    def link(self, key, pull):
+        """Record the task's pull request, so PR and check events map back to it."""
+        with self.transaction() as db:
+            db.execute("DELETE FROM pulls WHERE repository = ? AND pull = ? AND issue != ?", (key[0], pull, key[1]))
+            db.execute("INSERT OR REPLACE INTO pulls VALUES (?, ?, ?)", (*key, pull))
+
+    def pull(self, key):
+        """The task's recorded pull request number, or None."""
+        with self.transaction() as db:
+            row = db.execute("SELECT pull FROM pulls WHERE repository = ? AND issue = ?", key).fetchone()
+        return row[0] if row else None
+
+    def task(self, repository, pull):
+        """The task that owns a pull request, or None."""
+        with self.transaction() as db:
+            row = db.execute("SELECT issue FROM pulls WHERE repository = ? AND pull = ?", (repository, pull)).fetchone()
+        return (repository, row[0]) if row else None
+
+    def status(self):
+        """Every task the registry knows: queue, ownership, outcome and unknown writes."""
+        with self.transaction() as db:
+            keys = sorted(set(db.execute("SELECT repository, issue FROM queue UNION SELECT repository, issue "
+                                         "FROM ownership UNION SELECT repository, issue FROM outcomes").fetchall()))
+            tasks = []
+            for key in keys:
+                queued = db.execute("SELECT causes, due_at FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
+                owner = db.execute("SELECT generation, live, lease_until FROM ownership "
+                                   "WHERE repository = ? AND issue = ?", key).fetchone()
+                outcome = db.execute("SELECT kind, retry_after, recorded FROM outcomes "
+                                     "WHERE repository = ? AND issue = ?", key).fetchone()
+                unknown = [row[0] for row in db.execute("SELECT intent FROM mutations WHERE repository = ? "
+                                                        "AND issue = ? AND status = 'unknown'", key)]
+                tasks.append({"repository": key[0], "issue": key[1],
+                              "queued": {"causes": json.loads(queued[0]), "due_at": queued[1]} if queued else None,
+                              "generation": owner[0] if owner else None, "live": bool(owner and owner[1]),
+                              "outcome": {"kind": outcome[0], "retry_after": outcome[1], "recorded": outcome[2]}
+                              if outcome else None, "unresolved": unknown})
+        return tasks
 
     def active(self, repository):
         """Every task of the repository with a non-terminal outcome."""

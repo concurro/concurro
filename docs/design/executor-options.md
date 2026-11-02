@@ -26,7 +26,7 @@ write credential?
 | Option | Verdict | Reason |
 | ---- | ---- | ---- |
 | A. [Agent sandbox](agent-sandbox.md) on a Concurro host | Kept as the sandbox, and as the fallback placement | Fits every requirement, but needs a build host of our own, beside the App key unless split |
-| H. A's sandbox on GitHub-hosted runners in the target, credentials over OIDC | **Proposed** | A's properties without build machines; per-operation credentials; the App key never on the agent's machine. Disk (14 GB documented) is unproven |
+| H. A's sandbox on GitHub-hosted runners in the target, credentials over OIDC | **Proposed** | A's properties without build machines; per-operation credentials; the App key never on the agent's machine. Measured to fit a standard runner with ample headroom |
 | B. Copilot cloud agent through Agent HQ | Benchmark only | 59-minute sessions on Actions, a cold sandbox of unstated size, a seat-bearing user token, no request binding, and billing at API rates through Copilot |
 | C. GitHub Agentic Workflows | Not chosen | Static provider secrets in Actions, an allow-list firewall, no sessions |
 | D. Plain Actions job with static secrets | Superseded by H | H fetches credentials over OIDC instead |
@@ -47,9 +47,9 @@ write credential?
   talks to the Copilot CLI and supports bring-your-own-key. They add typed
   events, tool-call callbacks and long-lived sessions, but are not a security
   boundary.
-- GitHub-hosted runners for public repositories: 4 CPUs, 16 GB, 14 GB of
-  storage, passwordless `sudo`, 6 hours per job. Private repositories: 2 CPUs,
-  8 GB.
+- GitHub-hosted runners for public repositories: 4 CPUs, 16 GB, passwordless
+  `sudo`, 6 hours per job. GitHub documents 14 GB of storage, but a measured
+  runner had 86 GiB free. Private repositories: 2 CPUs, 8 GB.
 - OIDC tokens carry `repository_id`, `job_workflow_ref`, `job_workflow_sha`,
   `event_name`, `ref`, `run_id`, `run_attempt`, `runner_environment` and `jti`.
 

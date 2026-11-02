@@ -36,6 +36,7 @@ PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixe
                "protected_files", "autonomous_merge_prefixes"}
 REPOSITORY = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def strings(value, limit=32):
@@ -98,6 +99,13 @@ def validate_config(config):
         raise Blocked("invalid local iteration budget")
     if not 1 <= config["local_check_timeout_seconds"] <= 900:
         raise Blocked("invalid local check timeout")
+    if "engine" in config and not (isinstance(config["engine"], str) and COMMIT.fullmatch(config["engine"])):
+        raise Blocked("engine must name a full engine commit")
+
+
+def config_digest(config):
+    """Bind tasks to their configuration; the service's `engine` pin is excluded, so upgrades keep tasks valid."""
+    return digest({k: v for k, v in config.items() if k != "engine"})
 
 
 # Tasks without an ownership marker predate it and belong to the Actions controller.
@@ -128,8 +136,11 @@ class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
 
     def __init__(self, github, agents, config, workspace_factory=None, bundle_root=None, target_root=None,
-                 controller_id=ACTIONS):
-        """Inject transports so complete lifecycles can be tested without credentials."""
+                 controller_id=ACTIONS, bundle=None):
+        """Inject transports so complete lifecycles can be tested without credentials.
+
+        `bundle`, when given, is the instance the agents also use; otherwise it is built here.
+        """
         self.gh, self.agents, self.config = github, agents, config
         self.controller_id = controller_id
         self.comment_id = None
@@ -140,7 +151,7 @@ class Controller:
         self.trees = {}
         self.workspace_factory = workspace_factory or LocalWorkspace
         self.identities = Identities(config)
-        self.bundle = Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
+        self.bundle = bundle or Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
         self.stage_synced = None
         self.foreign = False
         self.consuming = None
@@ -455,7 +466,7 @@ class Controller:
                       "issue_digest": digest([self.issue["title"], self.issue["body"]]),
                       "agent_image": os.environ.get("CONCURRO_AGENT_IMAGE", ""),
                       "execution_image": os.environ.get("CONCURRO_EXECUTION_IMAGE", ""),
-                      "config_digest": digest(self.config), "bundle_id": self.bundle.identity,
+                      "config_digest": config_digest(self.config), "bundle_id": self.bundle.identity,
                       "charter_id": digest(self.bundle.charter),
                       "charter": self.bundle.charter, "execution": self.bundle.execution_summary,
                       "design_generation": 0,
@@ -1298,7 +1309,7 @@ class Controller:
         state = self.state
         if state["stage"] == "merging":
             state["stage"] = "gates"
-        if state["config_digest"] != digest(self.config):
+        if state["config_digest"] != config_digest(self.config):
             raise Blocked("controller configuration changed; re-plan required")
         if state["agent_image"] != os.environ.get("CONCURRO_AGENT_IMAGE", ""):
             raise Blocked("agent image changed; re-plan required")

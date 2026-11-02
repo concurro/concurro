@@ -17,11 +17,14 @@ from sessions import SessionVolume
 class Agents:
     """Launch bounded inference without host filesystem mounts or shared role context."""
 
-    def __init__(self, config, archive_loader=None, credentials=None):
-        """Use trusted configuration, an operator-pinned image digest and a credential resolver."""
+    def __init__(self, config, archive_loader=None, credentials=None, bundle=None):
+        """Use trusted configuration, an operator-pinned image digest and a credential resolver.
+
+        `bundle` is the controller's own instance; by default it is built from the working directory.
+        """
         self.config = config
         self.credentials = credentials or EnvironmentCredentials()
-        self.bundle = Bundle(profiles=config["execution_profiles"])
+        self.bundle = bundle or Bundle(profiles=config["execution_profiles"])
         self.archive_loader = archive_loader or GitHub(config["repository"]).archive
         self.archives = {}
 

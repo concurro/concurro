@@ -262,7 +262,67 @@ Deferred, with what brings each back:
 | 4 | The deferred capabilities, as their triggers arise, and further providers | Each provider completes a pilot issue |
 | 5 | SDK transports for the implementer and local reviewer, Codex first | Typed events, early refusal of protected-path edits, and stall detection |
 
-Steps 1–3 depend on the service skeleton's worker and mutation gateway.
+Steps 1–3 build on the service skeleton's worker and mutation gateway, now in place; the probe also needs the service's endpoint to be publicly reachable.
+
+### Step 0: target audit (`cylewitruk/stacks-core-autobot`, 2026-11-02)
+
+- **Repository:** public and user-owned. Actions allows all actions and reusable
+  workflows, with no commit pinning required, so the endpoint's
+  `job_workflow_sha` check is the pin. The default `GITHUB_TOKEN` is read-only;
+  fork PRs from first-time contributors need approval.
+- **Triggers:** no `pull_request_target` or `workflow_run`. The `pull_request`
+  workflows (`ci`, `check-clippy`, `check-nix`, `concurro-rust`) reference no
+  secrets and run with `contents: read`, so published agent branches reach no
+  secrets.
+- **Secrets:** none at repository level. They live only in the `concurro` and
+  `autobot` environments, both with required reviewers and branch policies. The
+  executor workflows use no environment. The `release` environment that the
+  release workflows reference doesn't exist on the fork.
+- **Caches:** `create-test-caches` and `concurro-rust` save default-branch caches
+  on pushes to `main`, and PR CI restores them through deliberately broad
+  `restore-keys`. These are exactly the entries a container escape could poison,
+  which `cache-mode: none` on agent jobs prevents. The release workflows use no
+  Actions cache.
+- **Ruleset `Protect main`:** pull requests with one approval, last-push
+  approval, stale-review dismissal, signed commits and linear history. It covers
+  the caller workflow file, so no separate rule is needed. It requires no status
+  checks (the earlier `Concurro Rust` follow-up is still open), and the owner can
+  always bypass it.
+
+### Step 0: capacity results (run 41450737419, 2026-11-02)
+
+Standard `ubuntu-24.04` runner on the public fork: 4 CPUs, 16 GB of memory,
+`/dev/kvm` present, and 86 GiB free before any cleanup (114 GiB after it; `/mnt`
+is the same filesystem). GitHub's documented 14 GB is not the limit.
+
+| Phase | runc | gVisor systrap | gVisor KVM |
+| ---- | ---- | ---- | ---- |
+| `cargo fetch` | 29 s | 36 s | 51 s |
+| `cargo check --workspace`, cold | 168 s | 222 s | 311 s |
+| `nextest --workspace --lib --no-run`, cold | 711 s | 826 s | 1,250 s |
+| `nextest run -p stacks-common --lib` | 60 s | 74 s | 94 s |
+| `cargo check --workspace`, after one change | 8 s | 17 s | 21 s |
+| Test build, after one change | 78 s | 132 s | 195 s |
+| Peak memory used | 7.6 GiB | 7.8 GiB | 7.4 GiB |
+| `target` size | 14 GiB | 14 GiB | 14 GiB |
+
+Conclusions:
+
+- Standard runners fit with ample headroom: about half the memory and a sixth
+  of the free disk. The disk cleanup is unnecessary, and the fallback is not
+  needed.
+- gVisor uses the systrap platform. It adds about 20% to a cold build and about
+  a minute to a repair round's rebuild. The KVM platform is slower on these
+  nested VMs.
+- A session's cold start costs about 18 minutes under systrap, after which
+  repair rounds rebuild in about two and a half minutes.
+
+The measurement workflow is `.github/workflows/concurro-runner-measure.yml` on
+the fork. It runs on pushes to the `concurro/runner-measure` branch, which
+trigger no other workflow, or on manual dispatch, and reports per runtime in the
+job summary. It samples host resources during compilation and a limited test
+run (`stacks-common`), so it establishes initial capacity, not that the full
+workspace tests complete. A failed phase fails the job.
 
 ## Fallback
 

@@ -470,10 +470,10 @@ Each step is useful alone and keeps the Actions path working until removed.
    - Tick outcomes: `advance` returns an outcome (`continue`, `wait-until`,
      `await-human`, `blocked`, `terminal`) derived from durable stage; it stays
      truthy only when the tick progressed, so the Actions loop is unchanged.
-4. Service skeleton: ingress, change-driven reconciler, scheduler with ownership
-   generations, mutation gateway, and a worker running the current controller
-   with the service-controlled executor and session affinity. Planned in
-   [service-skeleton.md](service-skeleton.md).
+4. Service skeleton (implemented): ingress, change-driven reconciler, scheduler
+   with ownership generations, mutation gateway, and a worker running the
+   current controller with the service-controlled executor and session
+   affinity. See [service-skeleton.md](service-skeleton.md).
 5. Credential service, admission, and the inference proxy for API keys.
 6. Rotating credentials, starting with the documented Codex app-server flow.
 7. Per-provider Apps through the identity service.
