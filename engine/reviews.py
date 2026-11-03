@@ -5,6 +5,8 @@ import re
 import sys
 
 from github import Transient
+import markup
+from markup import block, code, link, table, text
 from policy import Blocked, digest
 
 # A closed finding's text is excerpted once its review event is published.
@@ -44,8 +46,10 @@ def apply(state, provider, report, head):
         number = state.get("finding_sequence", 0) + 1
         state["finding_sequence"] = number
         identifier = f"F{number}"
-        ledger(state).append({"id": identifier, "provider": provider, **item, "text_digest": digest(item["detail"]),
-                              "head": head, "review": sequence, "status": "open"})
+        finding = {"id": identifier, "provider": provider, **item, "text_digest": digest(item["detail"]),
+                   "head": head, "review": sequence, "status": "open", "format": FORMAT}
+        finding["opening_digest"] = digest(finding_body(finding))
+        ledger(state).append(finding)
         identifiers.append(identifier)
     return sequence, identifiers
 
@@ -102,12 +106,18 @@ def report_lines(report):
 # Publication on the pull request: every write is a projection of checkpoint state, recovered by
 # its marker and author before anything is sent again.
 
+# Findings and outbox items created from now on publish in this format; one without `format` is format 1 forever.
+FORMAT = 2
 REVIEW_MARKER = "<!-- concurro:review:v1:"
 FINDING_MARKER = "<!-- concurro:finding:v1:"
 DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
 WITHDRAWN_MARKER = "<!-- concurro:withdrawn:v1:"
 # Failed attempts of one publication item before the task is blocked; a 422 may be spam prevention.
 MAX_ATTEMPTS = 3
+# GitHub rejects a review body over 65,536 characters.
+REVIEW_BODY_LIMIT = 60000
+KEPT_TEXT = 1000
+OMITTED = "Full text omitted: it exceeds GitHub's review limit. It is kept in the automation audit state."
 HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -148,24 +158,105 @@ def task_id(state, config):
 
 
 def finding_prefix(finding):
-    """The opening comment's text before the finding's detail."""
+    """A format 1 opening comment's text before the finding's detail."""
     return f"{FINDING_MARKER}{finding['id']} -->\n**{finding['id']}** · {finding['provider']}: "
 
 
 def finding_body(finding):
-    """The comment that opens a finding's thread."""
-    return finding_prefix(finding) + finding["detail"]
+    """The comment that opens a finding's thread, in the finding's format."""
+    if finding.get("format", 1) == 1:
+        return finding_prefix(finding) + finding["detail"]
+    severity = markup.SEVERITY.get(finding.get("severity"))
+    heading = " · ".join(["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)])
+    return (f"{FINDING_MARKER}{finding['id']} -->\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
+            f"{block(finding['detail'])}\n\n" + markup.sub("Concurro review · " + text(finding["provider"])))
 
 
 def opening_matches(finding, comment):
-    """Whether a comment is the finding's recorded opening; by digest, since a closed finding's text is excerpted."""
-    prefix = finding_prefix(finding)
+    """Whether a comment is the finding's recorded opening.
+
+    By digest, since a closed finding's text is excerpted: of the detail in format 1, of the
+    whole comment, recorded when the finding was, in format 2.
+    """
     body = comment.get("body", "")
-    return (comment.get("path") == finding["path"] and comment.get("in_reply_to_id") is None
-            and body.startswith(prefix) and digest(body[len(prefix):]) == finding["text_digest"])
+    if comment.get("path") != finding["path"] or comment.get("in_reply_to_id") is not None:
+        return False
+    if finding.get("format", 1) != 1:
+        return digest(body) == finding["opening_digest"]
+    prefix = finding_prefix(finding)
+    return body.startswith(prefix) and digest(body[len(prefix):]) == finding["text_digest"]
+
+
+def thread_url(state, config, finding):
+    """A finding's opening comment on the PR."""
+    return f"https://github.com/{config['repository']}/pull/{state['pr']}#discussion_r{finding['comment']}"
+
+
+def where(finding):
+    """A finding's location as a table cell."""
+    if finding["path"] is None:
+        return "general"
+    start, line = finding["start_line"], finding["line"]
+    lines = "" if line is None else f":{start}-{line}" if start not in (None, line) else f":{line}"
+    return code(finding["path"] + lines, cell=True)
+
+
+class Droppable(str):
+    """Review body text that goes, for one note, when the body would exceed GitHub's limit."""
 
 
 def review_body(state, config, item, report, findings, placed):
+    """The review's own body, in the item's format."""
+    if item.get("format", 1) != 1:
+        return review_body_v2(state, config, item, report, findings, placed)
+    return review_body_v1(state, config, item, report, findings, placed)
+
+
+def review_body_v2(state, config, item, report, findings, placed):
+    """Verdict and headline, new findings by severity, answers to earlier ones; the rest collapsed."""
+    emoji, outcome = markup.VERDICT[report["verdict"]]
+    lines = [f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
+             f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}"]
+    # The summary itself leads when it is one short sentence or has no headline to lead with.
+    # Long model text is `Droppable`: it goes, for one note, when the body would exceed GitHub's limit.
+    title = markup.headline(report, "summary")
+    collapse = bool(title) and not markup.redundant(report, "summary")
+    summary = block(report["summary"])
+    lines += ["", title if collapse else Droppable(summary) if len(summary) > KEPT_TEXT else summary]
+    order = list(markup.SEVERITY)
+    ordered = sorted(findings, key=lambda f: (order.index(f["severity"]) if f.get("severity") in order else len(order),
+                                              int(f["id"][1:])))
+    if ordered:
+        rows = [[markup.severity(f) or "—", f"**{text(f['id'])}** {markup.finding_title(f)}", where(f)] for f in ordered]
+        lines += ["", table(["Severity", "Finding", "Where"], rows)]
+    if report["dispositions"]:
+        answers = []
+        for disposition in report["dispositions"]:
+            finding = find(state, disposition["id"])
+            name = link(disposition["id"], thread_url(state, config, finding)) if finding.get("comment") else text(disposition["id"])
+            answers.append(f"{name} {markup.label(markup.STATUS[disposition['status']])}")
+        lines += ["", "**Earlier findings:** " + " · ".join(answers)]
+    if ordered or any(d["status"] == "open" for d in report["dispositions"]):
+        lines += ["", markup.BLOCKING_NOTE]
+    if report["design_issue"]:
+        issue = report["design_issue"]
+        lines += ["", f"**Design issue** · {text(issue['kind'])}", "", block(issue["explanation"]), "",
+                  "\n".join("- " + text(evidence, 1000) for evidence in issue["evidence"])]
+    if collapse:
+        lines += ["", Droppable(markup.details("Full review", summary))]
+    unthreaded = [f for f in ordered if placed[f["id"]] == "body"]
+    if unthreaded:
+        lines += ["", Droppable(markup.details("Findings without a file", "\n\n".join(
+            f"**{text(f['id'])} · {markup.finding_title(f)}**\n\n{block(f['detail'])}" for f in unthreaded)))]
+    lines += ["", markup.sub(text(f"{item['provider']} / {report['model']}"), "head " + code(item["head"][:7]),
+                             f"review {item['sequence']}")]
+    body = "\n".join(str(line) for line in lines)
+    if len(body) > REVIEW_BODY_LIMIT:
+        body = "\n".join(OMITTED if isinstance(line, Droppable) else line for line in lines)
+    return body
+
+
+def review_body_v1(state, config, item, report, findings, placed):
     """The review's own body: verdict, summary, answers to earlier findings, and unthreaded findings."""
     lines = [f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
              f"### {item['provider']} / {report['model']} · {report['verdict'].replace('_', ' ')}", "", report["summary"]]
@@ -186,11 +277,16 @@ def review_body(state, config, item, report, findings, placed):
 
 
 def disposition_body(state, item, disposition):
-    """A reply answering one finding in its thread."""
+    """A reply answering one finding in its thread, in the item's format."""
     marker = f"{DISPOSITION_MARKER}{disposition['id']}:{item['sequence']} -->"
-    text = {"fixed": f"Fixed in `{item['head']}`", "open": f"Still open on `{item['head']}`",
-            "obsolete": f"Obsolete under plan `{state['plan_id']}`"}[disposition["status"]]
-    return f"{marker}\n{text}: {disposition['evidence']}"
+    if item.get("format", 1) != 1:
+        emoji, status = markup.STATUS[disposition["status"]]
+        where = {"fixed": "in " + code(item["head"][:7]), "open": "on " + code(item["head"][:7]),
+                 "obsolete": "under plan " + code(state["plan_id"][:12])}[disposition["status"]]
+        return f"{marker}\n{emoji} **{status}** {where}\n\n{block(disposition['evidence'])}"
+    answer = {"fixed": f"Fixed in `{item['head']}`", "open": f"Still open on `{item['head']}`",
+              "obsolete": f"Obsolete under plan `{state['plan_id']}`"}[disposition["status"]]
+    return f"{marker}\n{answer}: {disposition['evidence']}"
 
 
 def queue_review(state, provider, report):
@@ -199,7 +295,7 @@ def queue_review(state, provider, report):
     A design reopen is not kept among the head's reports, so its item carries the report.
     """
     item = {"kind": "review", "provider": provider, "sequence": report["sequence"],
-            "head": report["head"], "attempts": 0, "inline": True}
+            "head": report["head"], "attempts": 0, "inline": True, "format": FORMAT}
     if report["verdict"] == "reopen":
         item["report"] = report
     state.setdefault("pr_outbox", []).append(item)
@@ -210,7 +306,8 @@ def queue_withdrawal(state, identifiers):
     threaded = [i for i in identifiers if (find(state, i) or {}).get("comment")]
     if threaded:
         state.setdefault("pr_outbox", []).append({"kind": "withdrawn", "findings": threaded,
-                                                  "generation": state["design_generation"], "attempts": 0})
+                                                  "generation": state["design_generation"], "attempts": 0,
+                                                  "format": FORMAT})
 
 
 def find(state, identifier):
@@ -352,10 +449,15 @@ class Publisher:
             finding = find(self.state, identifier)
             self.opening(comments, finding)
             marker = f"{WITHDRAWN_MARKER}{identifier}:{item['generation']} -->"
-            text = (f"{marker}\nThe design was reopened. {finding['provider']} will re-assess this finding "
-                    "under the new plan.")
-            self.comment(comments, marker, f"pulls/{self.pr}/comments/{finding['comment']}/replies", text,
-                         {"body": text})
+            if item.get("format", 1) == 1:
+                notice = (f"{marker}\nThe design was reopened. {finding['provider']} will re-assess this finding "
+                          "under the new plan.")
+            else:
+                emoji, status = markup.STATUS["withdrawn"]
+                notice = (f"{marker}\n{emoji} **{status}**: the design was reopened. {text(finding['provider'])} "
+                          "will re-assess this finding under the new plan.")
+            self.comment(comments, marker, f"pulls/{self.pr}/comments/{finding['comment']}/replies", notice,
+                         {"body": notice})
 
     def run(self):
         """Publish pending items in order; return whether the outbox is now empty.

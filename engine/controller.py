@@ -14,6 +14,8 @@ from urllib.parse import quote
 
 from agents import Agents
 import conversation
+import markup
+from markup import block, code, link, text
 import sessions
 import checks
 import design
@@ -32,6 +34,8 @@ from policy import (PR_REVIEW_LIMIT, Blocked, SessionFailure, approval_binding, 
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
                     validate_qc, validate_review)
 
+# GitHub rejects a comment over 65,536 characters.
+SUMMARY_LIMIT = 60000
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 PROVIDERS = {"claude", "codex", "copilot"}
 PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixes", "protected_prefixes",
@@ -201,8 +205,9 @@ class Controller:
             artifact = self.checkpoints.plan
             if not artifact or intent['plan'] != state.get('plan_id'):
                 raise Blocked('plan publication intent differs from checkpoint')
-            conversation.queue(state, intent['title'], source=('plan',), kind='plan_summary', details={
+            conversation.queue(state, None, source=('plan',), kind='plan_summary', details={
                 'plan': state['plan_id'], 'round': intent['round'], 'revision': artifact['revision'],
+                'actor': intent.get('actor') or intent['title'].split(' · ')[0],
                 'url': f"https://github.com/{self.config['repository']}/issues/{state['issue']}/artifacts/{artifact['number']}"})
             del state['plan_event_intent']
             self.checkpoint()
@@ -211,52 +216,8 @@ class Controller:
             self.checkpoint()
         if publish_events:
             findings.publish(state, self.gh, self.config, self.checkpoint)
-        lines = [MARKER, "## Concurro", ""]
-        shown_rationales = set()
-        if state.get("plan_id"):
-            lines += [f"Design round {state.get('design_generation', 0) + 1} · "
-                      f"{state.get('design_phase', 'cooperative')} review", ""]
-            for member in design_roster(self.config):
-                vote = state.get("design_votes", {}).get(member["id"], {})
-                decision = vote.get("report", {}).get("decision", "pending")
-                lines += [f"- {member['provider']} / `{member['model']}`: **{decision}**"]
-            lines += [""]
-        latest = state.get("conversation", {}).get("latest")
-        if latest:
-            lines += [f"[Latest conversation event](https://github.com/{self.config['repository']}/issues/"
-                      f"{state['issue']}#issuecomment-{latest})", ""]
-        for stage, report in state.get("qc", {}).items():
-            shown_rationales.add(report["rationale"].strip())
-            lines += ["**QC " + stage + ": " + report["decision"] + "**", "", report["rationale"], ""]
-            lines += ["- " + v for v in report["questions"] + report["concerns"]] + [""]
-        if state.get("plan"):
-            plan = state["plan"]
-            lines += [plan["summary"], "", "Plan: `" + state["plan_id"] + "`", ""]
-            lines += ["- " + question for question in plan["questions"]] + [""]
-            if state["stage"] == "planned":
-                lines += ["A writer can approve with `/concurro approve " + state["plan_id"] + "`.", ""]
-        if state.get("pr"):
-            lines += ["PR: #" + str(state["pr"]), ""]
-        if state.get("local_evidence"):
-            local = state["local_evidence"]
-            lines += ["Local checkpoint: `" + local["local_commit"] + "`", "",
-                      "Local checks: " + ", ".join(c["name"] for c in local["checks"]), "",
-                      "Local review: " + local["review"]["verdict"], ""]
-        for provider, report in state.get("reviews", {}).items():
-            lines += ["**" + provider + "** (`" + report["head"] + "`): " + report["verdict"],
-                      "", report["summary"], ""]
-            lines += findings.report_lines(report) + [""]
-        still_open = [f["id"] for f in state.get("findings", []) if f["status"] in ("open", "withdrawn")]
-        if still_open:
-            lines += ["Unresolved review findings: " + ", ".join(still_open), ""]
-        reason = state.get("reason", "").strip()
-        if any(reason == ESCALATION_REASON + " " + rationale for rationale in shown_rationales):
-            reason = ESCALATION_REASON
-        if reason and reason not in shown_rationales:
-            lines += ["Status: " + reason, ""]
-        lines += self.checkpoints.links()
-        body = "\n".join(lines)
-        if len(body.encode()) > 60000:
+        body = self.summary_body()
+        if len(body.encode()) > SUMMARY_LIMIT:
             raise Blocked("summary exceeds comment limit")
         if self.comment_id:
             self.checkpoints.request(f"issues/comments/{self.comment_id}", "PATCH", {"body": body})
@@ -270,6 +231,77 @@ class Controller:
             body = body.replace("## Concurro\n", "## Concurro\n\n" + fallback, 1)
             self.checkpoints.request(f"issues/comments/{self.comment_id}", "PATCH", {"body": body})
             self.stage_fallback = True
+
+    def summary_body(self):
+        """The status comment: stage, plan, PR and votes first; reports and evidence collapsed.
+
+        One that would exceed its limit drops the collapsed reports and shortens the reason; the
+        status itself always remains.
+        """
+        body = self.summary_lines(compact=False)
+        if len(body.encode()) > SUMMARY_LIMIT:
+            body = self.summary_lines(compact=True)
+        return body
+
+    def summary_lines(self, compact):
+        """The status comment's text; `compact` omits model narrative beyond a short reason."""
+        state = self.state
+        lines = [MARKER, "## Concurro", ""]
+        plan = ""
+        if state.get("plan_id"):
+            plan = (f"{code(state['plan_id'][:12], cell=True)} · round {state.get('design_generation', 0) + 1}"
+                    f" · {text(state.get('design_phase', 'cooperative'))}")
+        pr = f"#{state['pr']} · head {code(state['head'][:7], cell=True)}" if state.get("pr") else ""
+        lines += [markup.table(["Stage", "Plan", "PR"], [[text(state["stage"].replace("_", " ").capitalize()),
+                                                         plan or "—", pr or "—"]]), ""]
+        if state.get("plan_id"):
+            rows = []
+            for member in design_roster(self.config):
+                decision = state.get("design_votes", {}).get(member["id"], {}).get("report", {}).get("decision")
+                design_cell = markup.label(markup.DECISION[decision]) if decision in markup.DECISION else "Pending"
+                review = state.get("reviews", {}).get(member["provider"]) if "review" in member["roles"] else None
+                review_cell = (markup.label(markup.VERDICT[review["verdict"]]) if review
+                               else "Pending" if "review" in member["roles"] else "—")
+                rows.append([text(member["provider"] + " / " + member["model"]), design_cell, review_cell])
+            lines += [markup.table(["Reviewer", "Design", "Code review"], rows), ""]
+        # A reason that only repeats a QC rationale stays in that report below; any other is shown in full.
+        reason = state.get("reason", "").strip()
+        if reason and reason not in {r["rationale"].strip() for r in state.get("qc", {}).values()}:
+            heading = {"gates": f"{markup.GATE} **Merge blocked**", "blocked": f"{markup.BLOCKED} **Blocked**",
+                       "escalated": f"{markup.ESCALATED} **Escalated**"}.get(state["stage"], "**Status**")
+            lines += [heading, "", text(reason, 2000) if compact else block(reason), ""]
+        still_open = [f["id"] for f in state.get("findings", []) if f["status"] in ("open", "withdrawn")]
+        if still_open:
+            lines += [f"{markup.label(markup.STATUS['open'])}: {len(still_open)} review finding"
+                      f"{'s' if len(still_open) != 1 else ''} ({text(', '.join(still_open))}). {markup.BLOCKING_NOTE}", ""]
+        if state["stage"] == "planned" and state.get("plan_id"):
+            lines += [f"A writer can approve with {code('/concurro approve ' + state['plan_id'])}.", ""]
+        hidden = []
+        for stage, report in state.get("qc", {}).items():
+            name = "Intake QC" if stage == "intake" else "Plan QC"
+            hidden += [f"**{name}: {markup.label(markup.DECISION[report['decision']])}**", "", block(report["rationale"]), ""]
+            if report["questions"] + report["concerns"]:
+                hidden += ["- " + text(v, 1000) for v in report["questions"] + report["concerns"]] + [""]
+        if state.get("plan"):
+            hidden += ["**Plan**", "", block(state["plan"]["summary"]), ""]
+            if state["plan"]["questions"]:
+                hidden += ["- " + text(question, 1000) for question in state["plan"]["questions"]] + [""]
+        if state.get("local_evidence"):
+            local = state["local_evidence"]
+            hidden += [f"**Local evidence** · commit {code(local['local_commit'][:7])} · checks "
+                       + ", ".join(code(c["name"]) for c in local["checks"])
+                       + f" · local review {markup.label(markup.VERDICT[local['review']['verdict']])}", ""]
+        for provider, report in state.get("reviews", {}).items():
+            hidden += [f"**Code review · {text(provider)}** · head {code(report['head'][:7])} · "
+                       f"{markup.label(markup.VERDICT[report['verdict']])}", "", block(report["summary"]), ""]
+        if hidden:
+            lines += [conversation.OMITTED if compact else
+                      markup.details("Plan, QC, reviews and local evidence", "\n".join(hidden).strip()), ""]
+        latest = state.get("conversation", {}).get("latest")
+        if latest:
+            lines += [link("Latest event", f"https://github.com/{self.config['repository']}/issues/"
+                                           f"{state['issue']}#issuecomment-{latest}"), ""]
+        return "\n".join(lines + self.checkpoints.links())
 
     def sync_stage(self):
         """Mirror durable progress to labels without letting display failures authorize or block work."""
@@ -391,8 +423,8 @@ class Controller:
                 if not isinstance(error, SessionFailure) or not session:
                     raise
                 sessions.restart(self.state, session)
-                conversation.queue(self.state, "Controller · session restarted",
-                    f"{provider} · {stage}: the prior session could not continue. "
+                conversation.queue(self.state, "Controller · Session restarted",
+                    f"{text(provider)} · {text(stage)}: the prior session could not continue. "
                     "The next attempt uses a new isolated session with full context. "
                     "Consumed calls and approval requirements are unchanged.")
                 self.save()
@@ -507,8 +539,8 @@ class Controller:
             return False
         self.state["plan_revisions"] += 1
         self.state.update(stage=stage, reason=reason)
-        conversation.queue(self.state, "Controller · revision requested",
-                           f"Revision {self.state['plan_revisions']} of {self.config['max_plan_revisions']}.\n\n{reason}")
+        conversation.queue(self.state, "Controller · Revision requested",
+                           f"Revision {self.state['plan_revisions']} of {self.config['max_plan_revisions']}.\n\n{block(reason)}")
         return True
 
     def invalidate_design(self, reason):
@@ -541,9 +573,9 @@ class Controller:
         state = self.state
         if state.get("pending"):
             raise Blocked("prepared publication must be reconciled before reopening design")
-        conversation.queue(state, "Design reopened · " + source,
-                           f"Plan `{state['plan_id']}`\n\n{issue['explanation']}\n\n"
-                           + "\n".join("- " + evidence for evidence in issue["evidence"]))
+        conversation.queue(state, f"{markup.VERDICT['reopen'][0]} Design reopened · {text(source)}",
+                           block(issue["explanation"]) + "\n\n" + conversation.items(issue["evidence"]),
+                           meta=("plan " + code(state["plan_id"][:12]),))
         state.setdefault("reopen_history", []).append({"source": source, "issue": issue,
             "head": state.get("head"), "plan": state["plan_id"]})
         state["design_feedback"] = issue
@@ -723,9 +755,9 @@ class Controller:
         else:
             state['review_repairs'] = state.get('review_repairs', 0) + 1
             state.update(stage='plan_qc', reason='Review output needs correction: ' + error.code)
-        conversation.queue(state, 'Controller · review output repair',
-                           f"{member['provider']} / {member['model']}: {state['reason']} "
-                           + design.REPAIR_DETAILS[error.code])
+        conversation.queue(state, 'Controller · Review output repair',
+                           f"{text(member['provider'] + ' / ' + member['model'])}: "
+                           + text(state['reason'] + ' ' + design.REPAIR_DETAILS[error.code]))
         self.save()
 
     def quality_control(self, stage):
@@ -790,8 +822,8 @@ class Controller:
         identity = member or {"id": digest([provider, "intake"]), "provider": provider,
                               "model": selected_model(self.config, provider, stage)}
         try:
-            conversation.queue(state, f"{provider} / {identity['model']} · {stage} · {report['decision']}",
-                               source=("qc", stage), kind="qc", details={
+            conversation.queue(state, None, source=("qc", stage), kind="qc", details={
+                                   "provider": provider, "model": identity["model"],
                                    "plan": state.get("plan_id", "intake"), "round": state["design_generation"] + 1,
                                    "phase": phase if member else "intake", "reviewer": identity["id"],
                                    "resolved": resolved, "disposition_ids": disposition_ids})
@@ -854,11 +886,11 @@ class Controller:
             raise Blocked("unanimous design consensus missing or stale")
         if state.get("design_phase") != "fresh":
             state.update(design_phase="fresh", design_votes={})
-            conversation.queue(state, "Controller · cooperative consensus reached",
-                               f"Plan `{state['plan_id']}` now requires fresh independent approval from every reviewer.")
+            conversation.queue(state, "Controller · Cooperative consensus reached",
+                               f"Plan {code(state['plan_id'][:12])} now requires fresh, independent approval from every reviewer.")
             return
-        conversation.queue(state, "Controller · fresh design approval complete",
-                           f"Every participating model approved plan `{state['plan_id']}` in a fresh session.")
+        conversation.queue(state, "Controller · Fresh design approval complete",
+                           f"Every participating model approved plan {code(state['plan_id'][:12])} in a fresh session.")
         if state.get("mode") == "manual":
             state["stage"] = "planned"
         else:
@@ -991,7 +1023,7 @@ class Controller:
         else:
             state['validation_repairs'] = state.get('validation_repairs', 0) + 1
             state.update(stage='plan', reason='Validation contract needs repair: ' + ', '.join(errors))
-        conversation.queue(state, 'Controller · validation repair', state['reason'])
+        conversation.queue(state, 'Controller · Validation repair', block(state['reason']))
         self.save()
 
     def local_report(self, attempt, report):
@@ -1003,7 +1035,7 @@ class Controller:
         changed = state.get("local_status") != compact
         state["local_status"] = compact
         if changed:
-            conversation.queue(state, "Local validation", source=("local_status",), kind="local",
+            conversation.queue(state, None, source=("local_status",), kind="local",
                                details={"reviewer": self.config["local_reviewer"]})
         directory = os.environ.get("CONCURRO_LOCAL_REPORT_DIR")
         if directory:
@@ -1199,9 +1231,15 @@ class Controller:
                      input_revision=state.get("input_revision", 0) + 1)
         state["changed_files"] = [f["filename"] for f in self.gh.pages(f"pulls/{pr['number']}/files")]
         del state["pending"]
+        number = pr["number"]
         conversation.queue(state, "Controller · PR published",
-                           f"PR #{pr['number']} · commit `{state['head']}`. Local checks and review passed.")
+                           f"{link(f'PR #{number}', self.pr_url(number))} · commit {code(state['head'][:7])}. "
+                           "Local checks and review passed.")
         self.save()
+
+    def pr_url(self, number):
+        """The task's pull request on GitHub."""
+        return f"https://github.com/{self.config['repository']}/pull/{number}"
 
     def review(self):
         """Run one fresh provider review against the same immutable before/after files."""
@@ -1221,15 +1259,17 @@ class Controller:
                 raise Blocked("PR review exceeds the checkpoint budget")
             self.record_pr_review(state, provider, report)
             source = ("review_event",) if report["verdict"] == "reopen" else ("reviews", provider)
-            conversation.queue(state, f"{provider} / {self.config['models'][provider]} · PR review · {report['verdict']}",
-                               source=source, kind="review",
-                               details={"head": state["head"], "round": state["round"] + 1, "pr": state["pr"]})
+            conversation.queue(state, None, source=source, kind="review", details={
+                "head": state["head"], "round": state["round"] + 1, "pr": state["pr"], "provider": provider,
+                "model": self.config["models"][provider] or "CLI default", "pr_url": self.pr_url(state["pr"])})
             if report["verdict"] == "reopen":
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
                 return
             self.save()
         if len(state["reviews"]) == len(self.config["reviewers"]):
             if all(r["verdict"] == "approve" for r in state["reviews"].values()):
+                # A reason at the gates is always the gates' own; an earlier stage's is stale.
+                state.pop("reason", None)
                 state["stage"] = "gates"
             elif state["round"] < self.config["max_fix_rounds"]:
                 state["round"] += 1

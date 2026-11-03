@@ -2,14 +2,25 @@
 
 from datetime import datetime, timezone
 import json
+from typing import NamedTuple
 
 from policy import Blocked, digest
 from checkpoints import CheckpointError
 from github import Transient
 from identities import Identities
+import markup
+from markup import block, code, details as collapsed, link, table, text
 import reviews
 
 MARKER = "<!-- concurro:event:v1:"
+# Events queued from now on render in this format; an event without `format` is format 1 forever.
+FORMAT = 2
+EVENT_LIMIT = 24000
+# Room for an event's heading, marker and metadata line.
+EVENT_RESERVE = 1000
+# Expanded model text up to this size stays when an event is shortened.
+KEPT_TEXT = 1000
+OMITTED = "Full text omitted: it exceeds the comment limit. It is kept in the automation audit state."
 
 
 class PublicationError(CheckpointError):
@@ -80,29 +91,183 @@ def render(state, kind, source, details):
     raise ValueError("unknown conversation renderer")
 
 
+def source_value(state, source):
+    """The checkpoint value an event renders from."""
+    value = state
+    for key in source:
+        value = value[key]
+    return value
+
+
+def objections(value, details):
+    """A QC report's objection IDs: those its approval resolves, and its concerns and questions."""
+    prefix = f"D{details['round']}-{details['reviewer'][:8]}-{details['phase']}"
+    resolved = list(details["resolved"]) if value["decision"] == "approve" else []
+    updates = zip(details.get("disposition_ids", []), value.get("objection_updates", []))
+    concern_ids = [identifier for identifier, update in updates if update["status"] == "open"]
+    concerns = [(concern_ids[i] if concern_ids else f"{prefix}-c{i + 1}", t) for i, t in enumerate(value["concerns"])]
+    questions = [(f"{prefix}-q{i + 1}", t) for i, t in enumerate(value["questions"])]
+    return resolved, concerns, questions
+
+
+def items(entries):
+    """Model text entries as plain-text list items."""
+    return "\n".join("- " + text(entry, 1000) for entry in entries)
+
+
+class Hidden(NamedTuple):
+    """A collapsed section of an event, dropped first when the event would exceed its limit."""
+    caption: str
+    body: str
+
+
+class Text(NamedTuple):
+    """Model text shown expanded, dropped with the collapsed sections when long and the event would not fit."""
+    body: str
+
+
+def droppable(part):
+    """Whether a part goes when its event would exceed the limit."""
+    return isinstance(part, Hidden) or isinstance(part, Text) and len(part.body.encode()) > KEPT_TEXT
+
+
+def join(parts, compact):
+    """An event body from its parts; `compact` replaces droppable parts with one note."""
+    if compact:
+        parts = [p for p in parts if not droppable(p)] + [OMITTED]
+    return "\n\n".join(collapsed(p.caption, p.body) if isinstance(p, Hidden) else p.body if isinstance(p, Text) else p
+                       for p in parts if p)
+
+
+def render_v2(state, kind, source, details):
+    """`(title, body, meta)` of one sourced event in format 2; long model text goes when it would not fit."""
+    title, parts, meta = parts_v2(state, kind, source, details)
+    body = join(parts, False)
+    if len(body.encode()) > EVENT_LIMIT - EVENT_RESERVE and any(droppable(p) for p in parts):
+        body = join(parts, True)
+    return title, body, meta
+
+
+def lead(report, field):
+    """`(lead, collapsed)`: a report's headline and its main text to collapse under it, or the text itself."""
+    title = markup.headline(report, field)
+    if title and not markup.redundant(report, field):
+        return title, block(report[field])
+    return Text(block(report[field])), None
+
+
+def parts_v2(state, kind, source, details):
+    """`(title, parts, meta)` of one sourced event: outcome first, the rest in `Hidden` sections."""
+    value = source_value(state, source)
+    plan = ("plan " + code(details["plan"][:12])) if details.get("plan") not in (None, "intake") else ""
+    if kind == "plan_summary":
+        publication = value["publication"]
+        # The plan itself is linked, so its summary's headline is enough here.
+        first, _ = lead(value, "summary")
+        lines = [first, link("Implementation plan", details["url"]) + f" · artifact version {details['revision']}"]
+        lines.append(Hidden("Changes and review focus", "**Changes**\n\n" + items(publication["changes"])
+                            + "\n\n**Review focus**\n\n" + items(publication["review_focus"])))
+        return f"Plan updated · {text(details['actor'])}", lines, (plan, f"round {details['round']}")
+    if kind == "qc":
+        emoji, outcome = markup.DECISION[value["decision"]]
+        stage = "Intake QC" if details["phase"] == "intake" else "Plan QC"
+        resolved, concerns, questions = objections(value, details)
+        ids = details.get("disposition_ids", [])
+        updates = [(ids[i] if ids else u["id"] or "New finding", u) for i, u in enumerate(value.get("objection_updates", []))]
+        updated = {i for i, _ in updates}
+        rows = [[code(i, cell=True), "Objection", markup.label(markup.STATUS[u["status"]])] for i, u in updates]
+        rows += [[code(i, cell=True), "Concern", markup.label(markup.STATUS["open"])] for i, _ in concerns if i not in updated]
+        rows += [[code(i, cell=True), "Question", markup.label(markup.STATUS["open"])] for i, _ in questions]
+        rows += [[code(i, cell=True), "Objection", markup.label(markup.STATUS["resolved"])] for i in resolved if i not in updated]
+        first, full = lead(value, "rationale")
+        parts = [first]
+        if rows:
+            parts.append(table(["Objection", "Kind", "Status"], rows))
+        hidden = [full] if full else []
+        hidden += [f"**{text(i)}** · Concern\n\n{block(t)}" for i, t in concerns]
+        hidden += [f"**{text(i)}** · Question\n\n{block(t)}" for i, t in questions]
+        for identifier, update in updates:
+            entry = f"**{text(identifier)}** · {markup.label(markup.STATUS[update['status']])}\n\n{block(update['evidence'])}"
+            if update["status"] == "open":
+                entry += f"\n\nCounterexample: {text(update['counterexample'], 2000)}\n\nClosure: {text(update['closure'], 2000)}"
+            hidden.append(entry)
+        if hidden:
+            parts.append(Hidden("Rationale and objections", "\n\n".join(hidden)))
+        title = f"{emoji} {stage} · {text(details['provider'])} · {outcome}"
+        phase = "" if details["phase"] == "intake" else details["phase"]
+        return title, parts, (text(details["model"]), plan, f"round {details['round']}", phase)
+    if kind == "local":
+        rows = [[code(c["name"], cell=True), markup.label(markup.PASS if c["exit_code"] == 0 else markup.FAIL),
+                 str(c["exit_code"])] for c in value["checks"]]
+        parts = [table(["Check", "Result", "Exit"], rows)] if rows else []
+        report = value.get("review")
+        if report:
+            emoji, outcome = markup.VERDICT[report["verdict"]]
+            parts.append(f"**{emoji} Local review · {text(details['reviewer'])} · {outcome}**")
+            first, full = lead(report, "summary")
+            hidden = ([full] if full else []) + [f"**{code(f['path'])}**\n\n{block(f['detail'])}" for f in report["findings"]]
+            parts.append(first)
+            if hidden:
+                parts.append(Hidden("Local review", "\n\n".join(hidden)))
+        commit = value.get("local_commit")
+        return (f"Local validation · attempt {value['attempt'] + 1}", parts,
+                ("commit " + code(commit[:7]) if commit else "",))
+    if kind == "review":
+        emoji, outcome = markup.VERDICT[value["verdict"]]
+        first, full = lead(value, "summary")
+        parts = [first]
+        new = [reviews.find(state, i) or {"id": i, **f} for i, f in zip(value["finding_ids"], value["findings"])]
+        severities = [f.get("severity") for f in new]
+        summary = f"{len(new)} new finding{'s' if len(new) != 1 else ''}"
+        breakdown = ", ".join(f"{severities.count(key)} {markup.label(entry)}"
+                              for key, entry in markup.SEVERITY.items() if key in severities)
+        line = [link(f"Review on PR #{details['pr']}", details["pr_url"]), summary + (f" ({breakdown})" if breakdown else "")]
+        if value["dispositions"]:
+            line.append("earlier: " + ", ".join(f"{text(d['id'])} {markup.label(markup.STATUS[d['status']])}"
+                                                for d in value["dispositions"]))
+        parts.append(" · ".join(line))
+        if value["design_issue"]:
+            parts += ["**Design issue:**", Text(block(value["design_issue"]["explanation"]))]
+        if full:
+            parts.append(Hidden("Full review", full))
+        title = f"{emoji} Code review · {text(details['provider'])} · {outcome}"
+        return title, parts, (text(details["model"]), "head " + code(details["head"][:7]), f"round {details['round']}")
+    raise ValueError("unknown conversation renderer")
+
+
 def content(event, body):
-    """Build the exact immutable text used for publication and reconciliation."""
+    """Build the exact immutable text used for publication and reconciliation (format 1)."""
     return (f"{MARKER}{event['id']} -->\n### {event['title']}\n\n"
             f"Event {event['sequence']} · {event['at']}\n\n{body}")
 
 
-def queue(state, title, body=None, *, source=None, kind=None, details=None):
-    """Persist a bounded event descriptor; large reports stay in their existing state fields."""
+def content_v2(event, title, body, meta):
+    """Format 2: heading, outcome-first body, then one metadata line."""
+    return f"{MARKER}{event['id']} -->\n### {title}\n\n{body}\n\n" + markup.sub(f"Event {event['sequence']}", *meta)
+
+
+def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=()):
+    """Persist a bounded event descriptor; large reports stay in their existing state fields.
+
+    A sourced event renders its own title from its report; `title` is used only for an
+    event with a body.
+    """
     journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
     if source is not None:
-        body = render(state, kind, source, details)
-    if len(body.encode()) > 24000 or len(journal["pending"]) >= 8:
-        raise Blocked("conversation event exceeds publication bounds")
+        title, body, meta = render_v2(state, kind, source, details)
     journal["sequence"] += 1
     sequence = journal["sequence"]
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     identifier = digest([state["issue"], sequence, title, body, timestamp])
     event = {"id": identifier, "title": title, "sequence": sequence, "at": timestamp}
-    rendered = content(event, body)
+    rendered = content_v2(event, title, body, meta)
+    if len(rendered.encode()) > EVENT_LIMIT or len(journal["pending"]) >= 8:
+        journal["sequence"] -= 1
+        raise Blocked("conversation event exceeds publication bounds")
     if source is None:
         event = {"id": identifier, "body": rendered}
     else:
-        event.update(source=list(source), kind=kind, details=details, content_digest=digest(rendered))
+        event.update(source=list(source), kind=kind, details=details, format=FORMAT, content_digest=digest(rendered))
     journal["pending"].append(event)
 
 
@@ -111,7 +276,10 @@ def event_body(state, event):
     if "body" in event:
         return event["body"]
     try:
-        body = content(event, render(state, event["kind"], event["source"], event["details"]))
+        if event.get("format", 1) == 1:
+            body = content(event, render(state, event["kind"], event["source"], event["details"]))
+        else:
+            body = content_v2(event, *render_v2(state, event["kind"], event["source"], event["details"]))
         if digest(body) == event["content_digest"]:
             return body
     except (KeyError, TypeError, ValueError):
@@ -127,16 +295,30 @@ def transition(state):
     if journal.get("transition") == signature:
         return
     journal["transition"] = signature
-    if stage in ("intake", "implement", "planned", "clarify", "blocked", "stopped", "rejected",
-                 "escalated", "gates", "merged", "observed_merged"):
-        details = {"intake": "Request enrolled; scope assessment is next.",
-                   "implement": "The exact plan has passed design approval. Local implementation is next.",
-                   "planned": "Design approved; waiting for a writer's plan-bound approval.",
-                   "gates": "Code reviews completed; checking publication and merge gates."}
-        body = details.get(stage, "Progress paused or completed; see the current summary.")
-        if stage in ("blocked", "stopped", "rejected", "escalated", "gates") and state.get("reason"):
-            body += "\n\n" + state["reason"][:4000]
-        queue(state, "Controller · " + stage.replace("_", " "), body)
+    if stage not in ("intake", "implement", "planned", "clarify", "blocked", "stopped", "rejected",
+                     "escalated", "gates", "merged", "observed_merged"):
+        return
+    reason = (state.get("reason") or "")[:4000] if stage in ("blocked", "stopped", "rejected", "escalated", "gates") else ""
+    if stage == "gates" and reason:
+        title = f"{markup.GATE} Merge gates · Blocked"
+        body = "\n".join("- " + text(r, 1000) for r in reason.split("; ") if r.strip())
+    elif stage in ("blocked", "escalated", "rejected") and reason:
+        emoji, name = {"blocked": (markup.BLOCKED, "Task blocked"), "escalated": (markup.ESCALATED, "Escalated"),
+                       "rejected": (markup.BLOCKED, "Rejected")}[stage]
+        title = f"{emoji} {name}"
+        first = markup.first_sentence(reason)
+        body = text(first) + "\n\n" + collapsed("Full reason", block(reason)) if first and first != markup.one_line(reason) \
+            else block(reason)
+    else:
+        title = "Controller · " + stage.replace("_", " ").capitalize()
+        body = {"intake": "Request enrolled; scope assessment is next.",
+                "implement": "The exact plan has passed design approval. Local implementation is next.",
+                "planned": "Design approved; waiting for a writer's plan-bound approval.",
+                "gates": "Code reviews completed; checking publication and merge gates."}.get(
+                    stage, "Progress paused or completed; see the current summary.")
+        if reason:
+            body += "\n\n" + block(reason)
+    queue(state, title, body)
 
 
 def publish(state, github, config):

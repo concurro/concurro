@@ -9,6 +9,9 @@
         "reopen"
       ]
     },
+    "headline": {
+      "type": "string"
+    },
     "summary": {
       "type": "string"
     },
@@ -68,6 +71,7 @@
   },
   "required": [
     "verdict",
+    "headline",
     "summary",
     "findings",
     "design_issue"

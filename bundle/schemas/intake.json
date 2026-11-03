@@ -10,6 +10,9 @@
         "escalate"
       ]
     },
+    "headline": {
+      "type": "string"
+    },
     "rationale": {
       "type": "string"
     },
@@ -62,6 +65,7 @@
   },
   "required": [
     "decision",
+    "headline",
     "rationale",
     "risk",
     "questions",

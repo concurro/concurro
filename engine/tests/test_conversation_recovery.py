@@ -52,7 +52,7 @@ class ConversationRecoveryTests(unittest.TestCase):
             self.assertEqual(len(notices), 1)
             self.assertIn("`" + code + "`", notices[0]["body"])
             self.assertNotIn("private-fixture", notices[0]["body"])
-            self.assertIn("Status:", self.gh.summary()["body"])
+            self.assertIn("🛑 **Blocked**", self.gh.summary()["body"])
         return controller
 
     def test_repeated_publication_failures_stay_visible_then_retry(self):
@@ -206,9 +206,11 @@ class ConversationSizeTests(unittest.TestCase):
 
     def test_reference_outbox_rejects_source_mutation(self):
         """A queued report cannot silently change between checkpointing and publication."""
-        state = {"issue": 7, "reviews": {"claude": {"summary": "original", "findings": [], "design_issue": None}}}
-        conversation.queue(state, "Review", source=("reviews", "claude"), kind="review",
-                           details={"head": "a" * 40, "round": 1})
+        state = {"issue": 7, "reviews": {"claude": {"verdict": "approve", "summary": "original", "findings": [],
+                                                    "dispositions": [], "finding_ids": [], "design_issue": None}}}
+        conversation.queue(state, None, source=("reviews", "claude"), kind="review",
+                           details={"head": "a" * 40, "round": 1, "pr": 9, "provider": "claude", "model": "m",
+                                    "pr_url": "https://github.com/o/r/pull/9"})
         event = state["conversation"]["pending"][0]
         self.assertNotIn("body", event)
         self.assertIn("original", conversation.event_body(state, event))

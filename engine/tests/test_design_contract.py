@@ -99,8 +99,8 @@ class DesignContractTests(unittest.TestCase):
         old = deepcopy(self.load().state['objections'])
         first_review = '\n'.join(c['body'] for c in self.gh.comments)
         for item in old:
-            self.assertIn('**' + item['id'] + '**: ' + item['text'], first_review)
-            self.assertIn('**' + item['id'] + '**: open', first_review)
+            self.assertIn('**' + item['id'] + '** · Concern\n\n' + item['text'], first_review)
+            self.assertIn('**' + item['id'] + '** · 📌 Open', first_review)
         self.tick()
         self.tick()
         original = self.agents.ask
@@ -120,7 +120,7 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(controller.state['objections'][0]['id'], old[1]['id'])
         self.assertEqual(controller.state['objection_sequence'], 2)
         timeline = '\n'.join(c['body'] for c in self.gh.comments)
-        self.assertIn('**' + old[0]['id'] + '**: resolved', timeline)
+        self.assertIn('| `' + old[0]['id'] + '` | Objection | ✅ Resolved |', timeline)
         self.tick()
         plan_context = [c for _, stage, c in self.agents.calls if stage == 'plan'][-1]
         self.assertEqual([v['id'] for v in plan_context['open_objections']], [old[1]['id']])
@@ -200,11 +200,11 @@ class DesignContractTests(unittest.TestCase):
         self.assertTrue(recovered.state['plan_event_intent'])
         self.assertIn(PLAN['steps'][0], recovered.checkpoints.plan['body'])
         recovered.advance(7)
-        events = [c['body'] for c in self.gh.comments if '· plan updated' in c['body']]
+        events = [c['body'] for c in self.gh.comments if '### Plan updated ·' in c['body']]
         self.assertEqual(len(events), 1)
         self.assertIn('/issues/7/artifacts/', events[0])
         self.assertIn('artifact version', events[0])
-        self.assertIn(recovered.state['plan_id'], events[0])
+        self.assertIn(recovered.state['plan_id'][:12], events[0])
         self.assertNotIn(PLAN['steps'][0], events[0])
         self.assertNotIn('plan_event_intent', self.load().state)
 

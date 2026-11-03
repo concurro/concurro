@@ -88,12 +88,24 @@ def local_evidence_valid(state):
     return review["verdict"] == "approve"
 
 
+def presentation(report, fields, optional):
+    """`fields` plus whichever `optional` presentation fields the report has, each a string.
+
+    Presentation fields are normalized when rendered, never a reason to reject; reports
+    recorded before they existed have none.
+    """
+    present = {key for key in optional if isinstance(report, dict) and key in report}
+    if not all(isinstance(report[key], str) for key in present):
+        raise Blocked("invalid presentation field")
+    return fields | present
+
+
 def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=0):
     """Reject incomplete or contradictory decisions before they can authorize work."""
     fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
     if stage == 'plan_qc':
         fields |= {'sources', 'assessments', 'objection_updates'}
-    if not isinstance(report, dict) or set(report) != fields:
+    if not isinstance(report, dict) or set(report) != presentation(report, fields, {"headline"}):
         raise Blocked("invalid QC fields")
     decisions = {"clarify", "reject", "escalate"} | ({"proceed"} if stage == "intake" else {"approve", "revise"})
     if report["decision"] not in decisions or report["risk"] not in ("low", "medium", "high"):
@@ -294,7 +306,7 @@ def validate_edits(result, plan, originals, config, execution):
 
 def validate_review(review):
     """Reject contradictory approvals and incomplete structured findings."""
-    if set(review) != {"verdict", "summary", "findings", "design_issue"}:
+    if set(review) != presentation(review, {"verdict", "summary", "findings", "design_issue"}, {"headline"}):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")
@@ -318,6 +330,7 @@ def validate_review(review):
 
 PR_REVIEW_FIELDS = {"verdict", "summary", "findings", "dispositions", "design_issue"}
 PR_FINDING_FIELDS = {"path", "start_line", "line", "detail"}
+SEVERITIES = ("critical", "high", "medium", "low")
 MAX_PR_FINDINGS = 20
 MAX_PR_TEXT = 4000
 PR_REVIEW_LIMIT = 24000
@@ -330,8 +343,10 @@ def line_number(value):
 
 def validate_pr_finding(finding):
     """One new finding: an optional repository path and line range on the reviewed head."""
-    if not isinstance(finding, dict) or set(finding) != PR_FINDING_FIELDS:
+    if not isinstance(finding, dict) or set(finding) != presentation(finding, PR_FINDING_FIELDS, {"severity", "title"}):
         raise Blocked("invalid finding")
+    if "severity" in finding and finding["severity"] not in SEVERITIES:
+        raise Blocked("invalid finding severity")
     path, start, line, detail = (finding[k] for k in ("path", "start_line", "line", "detail"))
     if path is not None and (not isinstance(path, str) or not path.strip() or len(path) > 240
                              or PurePosixPath(path).is_absolute() or ".." in path.split("/")):
@@ -349,7 +364,7 @@ def validate_pr_review(review, open_ids, withdrawn_ids):
 
     Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
     """
-    if not isinstance(review, dict) or set(review) != PR_REVIEW_FIELDS:
+    if not isinstance(review, dict) or set(review) != presentation(review, PR_REVIEW_FIELDS, {"headline"}):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")

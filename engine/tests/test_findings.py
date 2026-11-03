@@ -10,7 +10,7 @@ from test_pipeline import APPROVE, FINDING, FakeAgents, FakeGitHub, FakeWorkspac
 from checkpoints import LIMIT, Checkpoints
 from controller import PR_REVIEW_RESERVE, Controller
 import conversation
-from policy import Blocked, merge_reasons, validate_pr_review, validate_review
+from policy import Blocked, digest, merge_reasons, validate_pr_review, validate_review
 import reviews
 
 DESIGN_ISSUE = {"kind": "plan", "explanation": "The plan misses a case.", "evidence": ["The guide omits it."]}
@@ -127,8 +127,13 @@ class LegacyRenderingTests(unittest.TestCase):
                                {"path": "docs/other.md", "detail": "Link it."}],
                   "design_issue": None, "head": "c" * 40, "model": "m"}
         self.state = {"issue": 7, "reviews": {"claude": legacy}}
-        conversation.queue(self.state, "claude / m · PR review · changes_requested", source=("reviews", "claude"),
-                           kind="review", details={"head": "c" * 40, "round": 1})
+        # Queued before format 2: no `format`, so it renders in format 1 forever.
+        details = {"head": "c" * 40, "round": 1}
+        event = {"id": "e" * 64, "title": "claude / m · PR review · changes_requested", "sequence": 1,
+                 "at": "2026-11-01T00:00:00+00:00", "source": ["reviews", "claude"], "kind": "review", "details": details}
+        event["content_digest"] = digest(conversation.content(event, conversation.render(
+            self.state, "review", ("reviews", "claude"), details)))
+        self.state["conversation"] = {"sequence": 1, "pending": [event]}
 
     def test_rendering_is_unchanged(self):
         body = conversation.render(self.state, "review", ("reviews", "claude"), {"head": "c" * 40, "round": 1})
@@ -228,9 +233,9 @@ class LifecycleTests(Harness, unittest.TestCase):
                          [("F1", "claude", "fixed"), ("F2", "codex", "fixed")])
         self.assertNotIn("claude approval missing or stale", self.reasons(state))
         self.assertNotIn("codex approval missing or stale", self.reasons(state))
-        events = "\n".join(c["body"] for c in self.gh.comments if "PR review" in c["body"])
-        self.assertIn("Posted as a review on PR #9. New findings: F1.", events)
-        self.assertIn("Earlier findings: F1 fixed.", events)
+        events = "\n".join(c["body"] for c in self.gh.comments if "Code review ·" in c["body"])
+        self.assertIn("[Review on PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 1 new finding", events)
+        self.assertIn("earlier: F1 ✅ Fixed", events)
         self.assertEqual([r["event"] for r in self.gh.app_reviews], ["COMMENT"] * 4)
         self.assertEqual([t["isResolved"] for t in self.gh.thread_list], [True, True])
 
@@ -401,7 +406,7 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertEqual((opening["line"], opening["review"]), (1, first["id"]))
         [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
         self.assertEqual(reply["in_reply_to_id"], opening["id"])
-        self.assertIn("Fixed in `", reply["body"])
+        self.assertIn("✅ **Fixed** in `", reply["body"])
         finding = state["findings"][0]
         self.assertEqual((finding["thread"], finding["comment"], finding["resolution"]), ("T1", opening["id"], "done"))
         self.assertNotIn("PR review publication incomplete", self.reasons(state))
@@ -413,7 +418,9 @@ class PublicationTests(Harness, unittest.TestCase):
         [file_level] = self.comments(f"{reviews.FINDING_MARKER}F1 -->")
         self.assertEqual(file_level["subject_type"], "file")
         self.assertEqual(self.comments(f"{reviews.FINDING_MARKER}F2 -->"), [])
-        self.assertIn("**F2** `general`: Overall.", self.gh.app_reviews[0]["body"])
+        body = self.gh.app_reviews[0]["body"]
+        self.assertIn("| — | **F2** Overall. | general |", body)
+        self.assertIn("<details><summary>Findings without a file</summary>\n\n**F2 · Overall.**\n\nOverall.", body)
         self.assertEqual([f["thread"] for f in state["findings"]], ["T1", "body"])
 
     def lose_once(self, matches):
@@ -513,7 +520,7 @@ class PublicationTests(Harness, unittest.TestCase):
         [notice] = self.comments(f"{reviews.WITHDRAWN_MARKER}F1:")
         self.assertIn("design was reopened", notice["body"])
         [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
-        self.assertIn("Obsolete under plan", reply["body"])
+        self.assertIn("🗃️ **Obsolete** under plan", reply["body"])
         self.assertEqual((state["findings"][0]["status"], state["findings"][0]["resolution"]), ("obsolete", "done"))
 
     def test_review_is_published_in_full_before_compaction(self):
@@ -608,12 +615,13 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertEqual(len(controller.state["pr_outbox"]), 1, "retained after the failure")
         controller = self.run_to(agents, "gates", ticks=40)
         self.assertNotIn("review_event", controller.state)
-        [reopen] = [r for r in self.gh.app_reviews if "· reopen" in r["body"]]
+        [reopen] = [r for r in self.gh.app_reviews if "### 🧭 Concurro review · claude · Design reopened" in r["body"]]
         self.assertEqual(reopen["event"], "COMMENT")
-        self.assertIn("Design reopened (plan): The plan misses a case.", reopen["body"])
+        self.assertIn("**Design issue** · plan\n\nThe plan misses a case.", reopen["body"])
         self.assertIn("- The guide omits it.", reopen["body"])
-        events = "\n".join(c["body"] for c in self.gh.comments if "PR review · reopen" in c["body"])
-        self.assertIn("Posted as a review on PR #9.", events)
+        events = "\n".join(c["body"] for c in self.gh.comments if "Code review ·" in c["body"] and "Design reopened" in c["body"])
+        self.assertIn("[Review on PR #9]", events)
+        self.assertIn("**Design issue:**", events)
 
 
 if __name__ == "__main__":

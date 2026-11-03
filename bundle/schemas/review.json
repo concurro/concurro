@@ -9,6 +9,9 @@
         "reopen"
       ]
     },
+    "headline": {
+      "type": "string"
+    },
     "summary": {
       "type": "string"
     },
@@ -17,6 +20,18 @@
       "items": {
         "type": "object",
         "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
           "path": {
             "type": [
               "string",
@@ -40,6 +55,8 @@
           }
         },
         "required": [
+          "severity",
+          "title",
           "path",
           "start_line",
           "line",
@@ -113,6 +130,7 @@
   },
   "required": [
     "verdict",
+    "headline",
     "summary",
     "findings",
     "dispositions",

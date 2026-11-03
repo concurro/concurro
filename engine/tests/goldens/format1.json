@@ -1,0 +1,9 @@
+{
+  "event/local": "Attempt 1 · commit `cccccccccccccccccccccccccccccccccccccccc`\n\ndiff: exit 0, text|lint: exit 1\n\nclaude: **changes_requested** — One defect remains. Fix the heading.\n\n- docs/guide.md: Heading level skips from 1 to 3.",
+  "event/plan_summary": "[Implementation plan](https://github.com/o/r/issues/7/artifacts/2) · artifact version 1\nPlan `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · round 1\n\nChanges:\n\n- Add a note under step 5.\n\nReview focus:\n\n- Is `--locked` accurate?",
+  "event/qc": "Plan `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · round 2 · cooperative\n\nOne boundary is unspecified. The rest of the plan holds.\n\n- **O2-bbbbbbbb**: Specify the `<limit>` boundary.\n\nObjection dispositions:\n\n- **O1-bbbbbbbb**: resolved — Step 2 now covers it.\n- **O2-bbbbbbbb**: open — Step 3 is silent. Counterexample: A request at the limit. Closure: Step 3 names the limit.",
+  "event/review": "Commit `dddddddddddddddddddddddddddddddddddddddd` · round 2\n\nThe guide is close.\n\n<!-- unclosed\n\nPosted as a review on PR #9. New findings: F2, F3. Earlier findings: F1 fixed.",
+  "pr/opening": "<!-- concurro:finding:v1:F2 -->\n**F2** · claude: The term is undefined. Define it before use.",
+  "pr/reply": "<!-- concurro:disposition:v1:F1:2 -->\nFixed in `dddddddddddddddddddddddddddddddddddddddd`: Lines 3-4 define it.",
+  "pr/review": "<!-- concurro:review:v1:o/r#7:2 -->\n### claude / m · changes requested\n\nThe guide is close.\n\n<!-- unclosed\n\nNew findings, in their threads: F2\n\nNew findings:\n\n- **F3** `general`: No fragment.\n\n```\n</details>\n\nEarlier findings:\n\n- **F1** fixed: Lines 3-4 define it."
+}

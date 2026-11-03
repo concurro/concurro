@@ -43,23 +43,22 @@ class SurfaceTests(unittest.TestCase):
         self.fail("design did not reach approval")
 
     def test_summary_deduplicates_rationale_and_links_public_state(self):
-        """One visible rationale and native stage label replace the duplicated status text."""
+        """One rationale, collapsed, and a native stage label replace the duplicated status text."""
         controller = self.controller()
         controller.advance(7)
         body = self.gh.summary()["body"]
         visible = body.split("<details>", 1)[0]
         rationale = controller.state["qc"]["intake"]["rationale"]
-        self.assertEqual(visible.count(rationale), 1)
-        self.assertNotIn("Status:", visible)
+        self.assertEqual(body.count(rationale), 1)
+        self.assertNotIn("**Status**", visible)
         self.assertNotIn("Stage:", visible)
         self.assertIn("[Automation audit state]", body)
         self.assertNotIn(STATE_PREFIX, body)
-        self.assertNotIn("<details>", body)
         self.assertIn({"name": "concurro:stage:plan"}, self.gh.issue["labels"])
         self.assertEqual(self.controller().state, controller.state)
         controller.state.update(stage="blocked", reason="Transport unavailable")
         controller.save()
-        self.assertIn("Status: Transport unavailable", self.gh.summary()["body"].split("<details>")[0])
+        self.assertIn("🛑 **Blocked**\n\nTransport unavailable", self.gh.summary()["body"].split("<details>")[0])
 
     def test_escalation_shows_rationale_once_and_keeps_action(self):
         """High risk and explicit escalations retain one explanation plus the required action."""
@@ -77,7 +76,7 @@ class SurfaceTests(unittest.TestCase):
                 self.assertEqual(recovered["outcomes"][-1]["reason"], expected)
                 visible = self.gh.summary()["body"].split("<details>")[0]
                 self.assertEqual(visible.count(report["rationale"]), 1)
-                self.assertIn("Status: " + ESCALATION_REASON, visible)
+                self.assertIn("📣 **Escalated**\n\n" + ESCALATION_REASON, visible)
                 self.assertFalse(self.gh.refs)
 
     def test_legacy_escalation_reason_is_deduplicated_without_changing_state(self):
@@ -91,10 +90,10 @@ class SurfaceTests(unittest.TestCase):
         self.assertEqual(recovered.state, controller.state)
         visible = self.gh.summary()["body"].split("<details>")[0]
         self.assertEqual(visible.count(rationale), 1)
-        self.assertIn("Status: " + ESCALATION_REASON, visible)
+        self.assertIn("📣 **Escalated**\n\n" + ESCALATION_REASON, visible)
         recovered.state["reason"] = "Transport failed after QC: " + rationale
         recovered.save()
-        self.assertIn("Status: " + recovered.state["reason"], self.gh.summary()["body"])
+        self.assertIn("📣 **Escalated**\n\n" + recovered.state["reason"], self.gh.summary()["body"])
 
     def test_old_expanded_state_remains_readable(self):
         """Changing the comment presentation does not reset existing budgets or evidence."""

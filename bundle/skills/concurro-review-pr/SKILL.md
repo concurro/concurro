@@ -12,6 +12,7 @@ Review complete before/after files, acceptance criteria and applicable repositor
 Findings:
 
 - Report only new defects in `findings`. Name the file (`path`) whenever a finding can realistically be attributed to one, and anchor it with `start_line` and `line` on the reviewed head version when it concerns specific lines; use `null` otherwise. A finding about the change as a whole has a `null` path.
+- Give each new finding a `severity` and a `title`, a plain label under 100 characters. `critical` breaks consensus, security, funds or data; `high` breaks required behaviour or an acceptance criterion; `medium` is a real defect with limited impact; `low` is a minor correctness or clarity issue. Severity orders findings for readers; every open finding blocks the merge regardless.
 - `own_findings` lists your earlier findings that are still open or were withdrawn by a design reopen. Answer each exactly once in `dispositions`: `fixed` with evidence naming the changed lines that fix it, `open` with what remains wrong, or, for a withdrawn finding only, `obsolete` with evidence that the new plan no longer makes it apply. Do not repeat an answered finding as a new one.
 - Approve only with no new findings and no `open` disposition.
 - Keep the whole JSON response within `review_output_budget.max_json_bytes`; prefer fewer, precise findings to long ones.

@@ -11,6 +11,9 @@
         "escalate"
       ]
     },
+    "headline": {
+      "type": "string"
+    },
     "rationale": {
       "type": "string",
       "maxLength": 1200
@@ -194,6 +197,7 @@
   },
   "required": [
     "decision",
+    "headline",
     "rationale",
     "risk",
     "questions",

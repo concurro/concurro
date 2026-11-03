@@ -1,6 +1,6 @@
 # Comment format
 
-Status: accepted (revision 3, reviewed). Gives Concurro's GitHub comments, reviews and
+Status: accepted (revision 3, reviewed); rollout steps 1–2 implemented. Gives Concurro's GitHub comments, reviews and
 threads one scannable, professional layout and a visual vocabulary of its own,
 distinct from Copilot code review.
 
@@ -251,7 +251,8 @@ text must not change the structure around it.
   value. No value is assumed safe because the engine
   produced it.
 - **Size:** every rendered event stays within the existing 24,000-byte bound, and
-  the status comment within 60,000.
+  the status comment within 60,000. An event that would not fit drops its collapsed
+  sections for one note pointing to the audit state; its outcome-first lines remain.
 
 ## Rollout
 
