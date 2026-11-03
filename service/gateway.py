@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import re
 import threading
 
@@ -14,6 +15,8 @@ from reviews import FINDING_MARKER
 
 from .errors import OwnershipLost, Unresolved
 from .transport import throttle
+
+log = logging.getLogger("concurro.service")
 
 LEASE_SECONDS = 15 * 60
 NUMBER = r"[1-9][0-9]*"
@@ -150,8 +153,20 @@ def settle(path, response, now):
     if status == 404:
         return "failed", None, NotFound(f"GitHub rejected the write (HTTP {status})")
     if 400 <= status < 500 and status not in (408, 429):
-        return "failed", None, Rejected(f"GitHub rejected the write (HTTP {status})")
+        # GitHub's own validation message, for the operator; the engine publishes only fixed diagnostics.
+        detail = rejection(response)
+        log.warning("GitHub rejected a write to %s (HTTP %s): %s", path, status, detail)
+        return "failed", None, Rejected(f"GitHub rejected the write (HTTP {status}): {detail}")
     return "unknown", None, None
+
+
+def rejection(response):
+    """GitHub's message for a rejected write, as one bounded line."""
+    try:
+        message = response.json().get("message")
+    except (ValueError, AttributeError):
+        message = None
+    return " ".join(message.split())[:300] if isinstance(message, str) and message.strip() else "no message"
 
 
 class MutationGateway:

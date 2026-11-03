@@ -20,6 +20,10 @@ MARKER = "<!-- concurro:event:v1:"
 FORMAT = 3
 ARCHIVE_LIMIT = 60000
 ARCHIVED = "… [Full text in its report archive.]"
+# GitHub's artifact name rules: letters, numbers, spaces, periods, hyphens and underscores, starting and
+# ending with a letter or number; 255 characters were measured as accepted.
+NAME_UNSAFE = re.compile(r"[^A-Za-z0-9 ._-]")
+ARTIFACT_NAME_LIMIT = 100
 # The status comment's rounds table keeps this many archived reports.
 REPORT_INDEX = 40
 EVENT_LIMIT = 24000
@@ -243,9 +247,10 @@ def parts_v2(state, kind, source, details):
 
 
 def archive_name(event):
-    """An archive artifact's name: plain text, from engine values only."""
+    """An archive artifact's name, from engine values only, within GitHub's name rules."""
     index = event["index"]
-    return f"Concurro report {event['sequence']} · {index['step']} · {index['provider']} · round {index['round']}"
+    name = f"Concurro report {event['sequence']} - {index['step']} - {index['provider']} - round {index['round']}"
+    return NAME_UNSAFE.sub("-", name)[:ARTIFACT_NAME_LIMIT].strip(" ._-")
 
 
 def content(event, body):

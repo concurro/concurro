@@ -250,9 +250,11 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
 
     def test_rejections_fail_normally(self):
         """A 422 or 404 did not apply: the engine handles it as an ordinary error and may continue."""
-        self.backend.fail("POST", "issues/7/comments", status=422)
-        with self.assertRaises(Rejected):
+        self.backend.fail("POST", "issues/7/comments", status=422, message="name must start and end with a letter")
+        with self.assertRaises(Rejected) as raised, self.assertLogs("concurro.service", "WARNING") as logged:
             self.comment()
+        self.assertIn("name must start and end with a letter", str(raised.exception))
+        self.assertIn("(HTTP 422): name must start and end with a letter", logged.output[0])
         self.backend.fail("POST", "issues/7/comments", status=404)
         with self.assertRaises(NotFound):
             self.comment()

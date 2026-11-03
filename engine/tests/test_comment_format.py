@@ -200,6 +200,21 @@ class ContractTests(unittest.TestCase):
         validate_qc(qc, "intake")
 
 
+class ArchiveNameTests(unittest.TestCase):
+    """Archive names follow GitHub's artifact name rules, which rejected the first live archive."""
+
+    RULE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._-]*[A-Za-z0-9])?")
+
+    def test_names_follow_githubs_rules(self):
+        for index in ({"step": "Design review", "provider": "claude", "round": "1 cooperative"},
+                      {"step": "Code review", "provider": "c·d<x>", "round": "2"},
+                      {"step": "Intake", "provider": "codex", "round": "1" + "9" * 300}):
+            with self.subTest(index=index):
+                name = conversation.archive_name({"sequence": 12, "index": index})
+                self.assertRegex(name, self.RULE)
+                self.assertLessEqual(len(name), conversation.ARTIFACT_NAME_LIMIT)
+
+
 class SizeTests(unittest.TestCase):
     """Rendered comments stay within their bounds."""
 
@@ -241,7 +256,7 @@ class SizeTests(unittest.TestCase):
         self.assertLessEqual(len(body.encode()), conversation.ARCHIVE_LIMIT)
         record = body.split("`````json\n", 1)[1].rsplit("\n`````", 1)[0]
         self.assertEqual(json.loads(record), state["reviews"]["claude"])
-        self.assertEqual(conversation.archive_name(event), "Concurro report 1 · Code review · claude · round 2")
+        self.assertEqual(conversation.archive_name(event), "Concurro report 1 - Code review - claude - round 2")
         assert_structure(self, body)
 
     def test_largest_review_fits_a_github_review(self):
