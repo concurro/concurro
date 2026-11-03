@@ -14,7 +14,7 @@ CONTROL_DESCRIPTIONS = {
 }
 REPAIR_DETAILS = {
     'validation_shape': 'Return a validation object containing checks and files.',
-    'validation_checks': 'Select distinct available check IDs and include every mandatory check for the planned paths.',
+    'validation_checks': 'Select distinct available check IDs and include every mandatory check of the profiles the planned files or the scope envelope trigger.',
     'validation_files': 'Declare exactly the planned paths with add/modify status, an optional positive line limit and bounded literal text assertions.',
     'validation_change': 'The declared add/modify status disagrees with file existence at the approved source base.',
 }
@@ -33,6 +33,12 @@ SCOPE, PACKAGE_PLACEHOLDER = "{scope}", "{package}"
 MANIFEST = re.compile(r"[A-Za-z0-9._-]{1,64}")
 PACKAGE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}")
 MAX_PACKAGES = 8
+# A plan's scope envelope: the paths its change may touch and its size budget, under engine caps.
+SCOPE_KEYS = {"paths", "max_files", "max_changed_lines"}
+MAX_SCOPE_PATHS, MAX_SCOPE_FILES, MAX_SCOPE_LINES = 8, 32, 3000
+MAX_PLAN_FILES = 8
+# Inspection overlays the primary files and every changed file.
+MAX_OVERLAY_FILES = MAX_SCOPE_FILES + MAX_PLAN_FILES
 
 
 class ProfileError(ValueError):
@@ -173,6 +179,48 @@ def triggered(profile, paths):
     return any(glob_matches(path, pattern) for path in paths for pattern in profile["triggers"])
 
 
+def scope_of(plan):
+    """A plan's envelope and budget; a plan without one may change exactly its files, as before envelopes."""
+    return plan.get("scope") or {"paths": list(plan["files"]), "max_files": len(plan["files"]), "max_changed_lines": None}
+
+
+def in_scope(path, plan):
+    """Whether a path lies inside the plan's envelope."""
+    return any(glob_matches(path, pattern) for pattern in scope_of(plan)["paths"])
+
+
+def scope_errors(plan):
+    """Why a plan's `scope` is invalid, or None."""
+    scope = plan.get("scope")
+    if scope is None:
+        return None
+    if (not isinstance(scope, dict) or set(scope) != SCOPE_KEYS
+            or not _strings(scope["paths"], 1, MAX_SCOPE_PATHS) or not all(_relative(v) for v in scope["paths"])
+            or type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES
+            or type(scope["max_changed_lines"]) is not int or not 1 <= scope["max_changed_lines"] <= MAX_SCOPE_LINES):
+        return "plan scope needs 1–8 path globs, a file budget covering its files (at most 32) and 1–3000 changed lines"
+    if not all(in_scope(path, plan) for path in plan["files"]):
+        return "plan files must lie inside the plan scope"
+    return None
+
+
+def approved_profiles(plan, tree, execution):
+    """Profiles the design may trigger: those a primary file, or a base file inside the envelope, triggers."""
+    inside = [path for path in tree if in_scope(path, plan)]
+    return [p["id"] for p in execution["profiles"] if triggered(p, list(plan["files"]) + inside)]
+
+
+def mandatory(profiles, execution):
+    """Control checks always; mandatory checks of the named profiles."""
+    return list(CONTROL_CHECKS) + [c["id"] for p in execution["profiles"] if p["id"] in profiles
+                                   for c in p["checks"] if c["mandatory"]]
+
+
+def unapproved_triggers(profiles, execution):
+    """Trigger globs of the profiles a candidate must not newly trigger."""
+    return [pattern for p in execution["profiles"] if p["id"] not in profiles for pattern in p["triggers"]]
+
+
 def required(paths, execution):
     """Control checks always; mandatory checks of every profile a planned path triggers."""
     return list(CONTROL_CHECKS) + [c["id"] for p in execution["profiles"] if triggered(p, paths)
@@ -300,13 +348,17 @@ def file_rule_errors(plan):
     return []
 
 
-def contract_errors(plan, execution):
-    """Return fixed repair codes for check selections and declarative file rules."""
+def contract_errors(plan, execution, profiles=None):
+    """Return fixed repair codes for check selections and declarative file rules.
+
+    `profiles` are the plan's approved profiles; without them, those its files trigger.
+    """
     errors = file_rule_errors(plan)
     if errors:
         return errors
     names = plan['validation']['checks']
+    needed = mandatory(profiles, execution) if profiles is not None else required(plan['files'], execution)
     if (len(names) != len(set(names)) or not set(names).issubset(available(execution))
-            or not set(required(plan['files'], execution)).issubset(names)):
+            or not set(needed).issubset(names)):
         return ['validation_checks']
     return []

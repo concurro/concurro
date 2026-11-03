@@ -1,6 +1,6 @@
 # Scope envelope
 
-Status: accepted (revision 3, reviewed). The plan's file list stops being a hard fence: a plan
+Status: implemented (revision 3). The plan's file list stops being a hard fence: a plan
 approves a design, the area it may touch and a size budget, and the implementer
 makes whatever edits that design needs inside them. A design reopens when the change
 outgrows the design, not when it needs one more file.

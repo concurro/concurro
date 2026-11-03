@@ -19,6 +19,29 @@
         "type": "string"
       }
     },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_files": {
+          "type": "integer"
+        },
+        "max_changed_lines": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "paths",
+        "max_files",
+        "max_changed_lines"
+      ],
+      "additionalProperties": false
+    },
     "steps": {
       "type": "array",
       "items": {
@@ -131,6 +154,7 @@
     "summary",
     "questions",
     "files",
+    "scope",
     "steps",
     "tests",
     "responses",

@@ -189,11 +189,7 @@ class LocalWorkspace:
 
         for profile in preparing(selected, self.execution):
             spec = self.profiles[profile]["prepare"]
-            if not self.staged:
-                if self.base_archive is None:
-                    raise Blocked("dependency preparation requires the approved base snapshot")
-                self.control("stage", data=self.base_archive, timeout=remaining(120))
-                self.staged = True
+            self.stage_base(remaining(120))
             self.control("inputs", profile, data=spec["requires"], timeout=remaining(120))
             for index, step in enumerate(spec["steps"], 1):
                 report = self.execute(f"prepare:{profile}:{index}", [self.expand(profile, v) for v in step],
@@ -201,6 +197,15 @@ class LocalWorkspace:
                 if report["exit_code"] or report["timed_out"] or report["output_limited"]:
                     raise Blocked("dependency preparation failed; repair the execution environment")
             self.prepared.add(profile)
+
+    def stage_base(self, timeout=120):
+        """Extract the approved base once: preparation reads it, and `scope` judges the candidate against it."""
+        if self.staged:
+            return
+        if self.base_archive is None:
+            raise Blocked("the workbench requires the approved base snapshot")
+        self.control("stage", data=self.base_archive, timeout=timeout)
+        self.staged = True
 
     def files(self, paths):
         """Read approved source files through the isolated helper."""
@@ -215,9 +220,10 @@ class LocalWorkspace:
         """Bind each profile's scoped checks to the packages the approved plan changes (None: all)."""
         self.packages = dict(packages)
 
-    def configure_validation(self, spec, originals):
-        """Bind declarative rules to the original approved source, including later PR repairs."""
-        self.control('validation', data={'spec': spec, 'originals': originals})
+    def configure_validation(self, spec, originals, scope):
+        """Bind declarative rules and the scope envelope to the approved base, including later PR repairs."""
+        self.stage_base()
+        self.control('validation', data={'spec': spec, 'originals': originals, 'scope': scope})
 
     def run_checks(self, required, requested, deadline):
         """Run mandatory and agent-requested checks; shell strings are never accepted."""

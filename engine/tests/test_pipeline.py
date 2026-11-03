@@ -383,9 +383,9 @@ class FakeWorkspace:
         """Record the packages scoped checks would cover."""
         self.packages = dict(packages)
 
-    def configure_validation(self, spec, originals):
-        """Retain declared checks without replacing real-workbench integration coverage."""
-        self.validation = deepcopy(spec)
+    def configure_validation(self, spec, originals, scope):
+        """Retain declared checks and scope without replacing real-workbench integration coverage."""
+        self.validation, self.scope_payload = deepcopy(spec), deepcopy(scope)
 
     def run_checks(self, required, requested, deadline):
         """Return successful evidence bound to this exact source tree."""

@@ -30,14 +30,17 @@ from github import GitHub, NotFound
 from identities import Identities
 from local import LocalWorkspace, resource_exhausted
 from scheduler import QueueScan
-from policy import (PR_REVIEW_LIMIT, Blocked, SessionFailure, approval_binding, approval_valid, digest, local_evidence_valid, merge_reasons,
-                    consensus_valid, design_roster, path_allowed, protection_errors, required_local_checks, selected_model,
+from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid, approved_checks,
+                    approved_profile_ids, digest, local_evidence_valid, merge_reasons,
+                    consensus_valid, design_roster, path_allowed, protection_errors, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
                     validate_qc, validate_review)
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
 PR_TITLE_LIMIT = 72
+# Context bytes `ask()` adds at dispatch (the repository commit and the operation contract).
+DISPATCH_ALLOWANCE = 2000
 # The status comment's steps, and the stage each running stage belongs to.
 STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
 STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
@@ -466,8 +469,13 @@ class Controller:
             result[path] = data.decode('utf-8')
         return result
 
-    def context(self):
-        """Bind issue requirements and trusted repository guidance to the plan base."""
+    def context(self, changed=None):
+        """Bind issue requirements and trusted repository guidance to the plan base.
+
+        Instructions apply to the primary files and the files the change touches (by default, the PR's).
+        """
+        changed = self.state.get("changed_files", []) if changed is None else changed
+        targets = [*self.state.get("plan", {}).get("files", []), *changed]
         paths = list(self.config["policy_documents"])
         tree = self.tree(self.state["base"])
         paths += [p for p in tree if p.startswith(".github/instructions/") and p.endswith(".md")]
@@ -480,8 +488,7 @@ class Controller:
             if path.startswith(".github/instructions/"):
                 match = re.search(r'^applyTo: "([^"]+)"', content, re.MULTILINE)
                 if not match or not any(instruction_matches(p, pattern.strip())
-                                       for p in self.state.get("plan", {}).get("files", [])
-                                       for pattern in match[1].split(",")):
+                                       for p in targets for pattern in match[1].split(",")):
                     continue
             selected[path] = content
         return {"issue": self.state["requirements"], "policy": selected,
@@ -498,8 +505,10 @@ class Controller:
         """
         caller = context
         context = {**context, "repository_commit": self.state.get("head", self.state["base"])}
-        if len(json.dumps(context).encode()) > self.config["max_context_bytes"]:
-            raise Blocked("context exceeds v1 limit; narrow the issue")
+        size = len(json.dumps(context).encode())
+        if size > self.config["max_context_bytes"]:
+            raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
+                          "narrow the change")
         operation = self.operation(provider, stage, context)
         caller.update(operation["contract"])
         context.update(operation["contract"])
@@ -1089,17 +1098,20 @@ class Controller:
         if {v["id"] for v in plan["responses"]} != expected or len(plan["responses"]) != len(expected):
             raise Blocked("planner must respond to every open objection exactly once")
         if self.state.get("head") and not plan["questions"]:
-            if not set(self.state.get("changed_files", [])).issubset(plan["files"]):
+            if not all(checks.in_scope(path, plan) for path in self.state.get("changed_files", [])):
                 raise Blocked("revised scope does not reconcile the accumulated PR diff")
-        errors = checks.contract_errors(plan, self.state['execution']) if not plan['questions'] else []
+        tree = self.tree(self.state['base'])
+        profiles = checks.approved_profiles(plan, tree, self.state['execution']) if not plan['questions'] else []
+        errors = checks.contract_errors(plan, self.state['execution'], profiles) if not plan['questions'] else []
         if not errors and not plan['questions']:
-            tree = self.tree(self.state['base'])
             if any((r['change'] == 'modify') != (r['path'] in tree) for r in plan['validation']['files']):
                 errors = ['validation_change']
         if errors:
             self.repair_validation(plan, errors)
             return
         self.state["plan"] = plan
+        # Derived from the plan and the approved base, so the design's approval binding covers it.
+        self.state["approved_profiles"] = profiles
         self.state.pop('design_feedback', None)
         self.state.pop('review_repair', None)
         for key in ('plan_draft', 'validation_feedback', 'validation_failure', 'validation_stalls'):
@@ -1170,32 +1182,39 @@ class Controller:
         state = self.state
         self.design_authorization()
         deadline = time.monotonic() + self.config["local_timeout_seconds"]
-        required = list(dict.fromkeys(required_local_checks(state["plan"]["files"], state["execution"])
-                                      + state['plan']['validation']['checks']))
+        required = list(dict.fromkeys(approved_checks(state) + state['plan']['validation']['checks']))
+        # Files earlier published rounds changed; with the parent's changes they make the cumulative change.
+        accumulated = state.get("changed_files", []) if state.get("head") else []
         feedback = None
         round_key = f"{state['design_generation']}:{state['round']}"
         attempts = state.setdefault("local_attempts", {})
         if attempts.get(round_key, 0) > self.config["max_local_fix_rounds"]:
             raise Blocked("local repair budget exhausted")
         archive = self.gh.archive(parent)
-        # Networked preparation reads only the approved base, never an earlier published candidate.
-        base_archive = None
-        if checks.preparing(required, state["execution"]):
-            base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
+        # The approved base is always staged: preparation reads only it, and `scope` judges the candidate against it.
+        base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
         with self.workspace_factory(self.config, archive, state["branch"], execution=self.bundle.execution,
                                     base_archive=base_archive) as workspace:
             if workspace.files(state["plan"]["files"]) != originals:
                 raise Blocked("source archive does not match the pinned GitHub files")
-            workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']))
+            scope = checks.scope_of(state["plan"])
+            workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']), {
+                "paths": scope["paths"], "max_files": scope["max_files"], "max_changed_lines": scope["max_changed_lines"],
+                "accumulated": accumulated, "unapproved": checks.unapproved_triggers(approved_profile_ids(state), state["execution"])})
             workspace.prepare(required, min(600, deadline - time.monotonic()))
-            workspace.scope(self.packages(state["plan"]["files"]))
             executable = checks.executable(state["execution"], checks.preparing(required, state["execution"]))
             for attempt in range(attempts.get(round_key, 0), self.config["max_local_fix_rounds"] + 1):
                 if deadline - time.monotonic() < 600:
                     raise Blocked("local time budget cannot accommodate another agent turn")
                 attempts[round_key] = attempt + 1
-                context = self.context()
-                context.update(files=workspace.files(state["plan"]["files"]), prior_reviews=state["reviews"],
+                changed = self.changed(workspace, accumulated)
+                context = self.context(changed)
+                # Inspection overlays these current texts, so non-primary edits are visible to repair turns.
+                overlay = sorted({*state["plan"]["files"], *changed})
+                if len(overlay) > checks.MAX_OVERLAY_FILES:
+                    raise Blocked("candidate changes too many files to inspect; it is far over the approved budget")
+                context.update(files=workspace.files(overlay),
+                               prior_reviews=state["reviews"], changed_files=changed,
                                review_findings=findings.open_findings(state),
                                local_feedback=feedback, available_checks=executable, required_checks=required,
                                design_authorization=self.design_authorization())
@@ -1209,10 +1228,20 @@ class Controller:
                     return None
                 proposal = {"summary": result["summary"], "edits": result["edits"]}
                 if result["edits"]:
-                    validate_edits(proposal, state["plan"], context["files"], self.config, state["execution"])
+                    current = workspace.files(sorted({e.get("path") for e in result["edits"]
+                                                      if isinstance(e, dict) and isinstance(e.get("path"), str)}))
+                    try:
+                        validate_edits(proposal, state["plan"], current, self.config, state["execution"])
+                    except OutsideScope as error:
+                        # Refused whole, before anything is applied; the implementer may reopen the design.
+                        feedback = {"scope": str(error) + ". Keep edits inside the approved scope, or return a "
+                                             "design_issue if the change needs them."}
+                        continue
                 elif not workspace.export()["edits"]:
                     raise Blocked("initial development attempt must propose changes")
                 checkpoint = workspace.checkpoint(result["edits"])
+                changed = self.changed(workspace, accumulated)
+                workspace.scope(self.packages(changed))
                 reports = workspace.run_checks(required, result["checks"], deadline)
                 export = workspace.export()
                 record = {**export, "checks": reports, "image": state["execution_image"]}
@@ -1224,10 +1253,14 @@ class Controller:
                     continue
                 if deadline - time.monotonic() < 600:
                     raise Blocked("local time budget cannot accommodate pre-publication review")
-                review_context = self.context()
-                review_context.update(before=self.files(state["base"], state["plan"]["files"]),
-                                      after=workspace.files(state["plan"]["files"]), local_checks=reports,
+                before, after = self.files(state["base"], changed), workspace.files(changed)
+                review_context = self.context(changed)
+                review_context.update(before=before, after=after, local_checks=reports,
                                       local_commit=checkpoint["local_commit"])
+                oversized = self.oversized(review_context, before, after)
+                if oversized:
+                    feedback = {"checks": reports, "capacity": oversized}
+                    continue
                 review = self.ask(self.config["local_reviewer"], "local_review", review_context)
                 validate_review(review)
                 if review["verdict"] == "reopen":
@@ -1239,7 +1272,8 @@ class Controller:
                     feedback = {"checks": reports, "review": review}
                     continue
                 final = {"summary": result["summary"], "edits": export["edits"]}
-                validate_edits(final, state["plan"], originals, self.config, state["execution"])
+                validate_edits(final, state["plan"], self.files(parent, [e["path"] for e in export["edits"]]),
+                               self.config, state["execution"])
                 evidence = {k: v for k, v in record.items() if k != "edits"}
                 evidence["checks"] = [{k: v for k, v in c.items() if k != "output"} for c in reports]
                 evidence.update(parent=parent, edits_digest=digest(export["edits"]),
@@ -1247,6 +1281,36 @@ class Controller:
                                 model=selected_model(self.config, self.config["local_reviewer"], "local_review") or "CLI default")
                 return final, evidence
         raise Blocked("local tests or review still fail; local repair budget exhausted")
+
+    @staticmethod
+    def changed(workspace, accumulated):
+        """Files the candidate changes since the approved base: this round's and earlier published rounds'."""
+        return sorted({e["path"] for e in workspace.export()["edits"]} | set(accumulated))
+
+    def oversized(self, local_context, before, after):
+        """Why a review of this candidate would not fit, or None.
+
+        Measures the local review and each reviewer's prospective PR review as they would be sent,
+        with the same serialization and limit as `ask()`. Files are never omitted to make one fit.
+        """
+        contexts = [("local review", local_context)]
+        contexts += [(provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40))
+                     for provider in self.config["reviewers"]]
+        limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
+        over = [f"{name} ({size} of {limit} bytes)" for name, context in contexts
+                if (size := len(json.dumps(context).encode())) > limit]
+        if not over:
+            return None
+        return ("The change is too large to review: " + ", ".join(over) + ". Reduce it, or return a design_issue "
+                "to split the work.")
+
+    def pr_review_context(self, provider, before, after, head):
+        """One reviewer's PR review context for a candidate's changed files."""
+        context = self.context(sorted(after))
+        context.update(before=before, after=after, head=head)
+        context["own_findings"] = findings.context(self.state, provider)
+        context["review_output_budget"] = self.pr_review_output_budget()
+        return context
 
     def reserve_development_branch(self):
         """Create a linked base-only branch after approval, with durable intent for lost responses."""
@@ -1283,7 +1347,8 @@ class Controller:
         if developed is None:
             return
         result, evidence = developed
-        edits = validate_edits(result, state["plan"], originals, self.config, state["execution"])
+        edits = validate_edits(result, state["plan"], self.files(parent, [e["path"] for e in result["edits"]]),
+                               self.config, state["execution"])
         # Git Trees API accepts content directly, avoiding filesystem extraction and hooks.
         parent_commit = self.gh.repo("git/commits/" + parent)
         tree = self.gh.repo("git/trees", "POST", {"base_tree": parent_commit["tree"]["sha"], "tree": [
@@ -1369,11 +1434,9 @@ class Controller:
         state = self.state
         provider = next((p for p in self.config["reviewers"] if p not in state["reviews"]), None)
         if provider:
-            context = self.context()
-            context.update(before=self.files(state["base"], state["plan"]["files"]),
-                           after=self.files(state["head"], state["plan"]["files"]), head=state["head"])
-            context["own_findings"] = findings.context(state, provider)
-            context["review_output_budget"] = self.pr_review_output_budget()
+            changed = state["changed_files"]
+            context = self.pr_review_context(provider, self.files(state["base"], changed),
+                                             self.files(state["head"], changed), state["head"])
             report = self.ask(provider, "review", context)
             owned = findings.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],

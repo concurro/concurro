@@ -1,5 +1,6 @@
 """Trusted local Git operations inside a credential-free container, never on the host."""
 
+import difflib
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import tarfile
 
 sys.path.insert(0, "/opt/concurro")
 from policy import path_safe
-from checks import NAME, file_rule_errors
+from checks import NAME, file_rule_errors, glob_matches
 
 ROOT = Path("/workspace")
 STATE = Path("/state")
@@ -155,20 +156,65 @@ def clean_checkpoint():
         raise ValueError('candidate has uncommitted files')
 
 
+def read_under(root, name):
+    """A regular file's text under `root`, or None when absent; symlinked ancestors are refused."""
+    target = root
+    for part in name.split("/"):
+        target = target / part
+        if target.is_symlink():
+            raise ValueError("path crosses a symlink")
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise ValueError("path is not a regular file")
+    return target.read_text()
+
+
+def lines_of(text):
+    """LF-delimited lines; a final newline ends the last line rather than starting another."""
+    lines = (text or "").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def changed_lines(before, after):
+    """Lines added plus lines removed between two versions of a file; any other difference counts as one."""
+    matcher = difflib.SequenceMatcher(None, lines_of(before), lines_of(after), autojunk=False)
+    count = sum(i2 - i1 + j2 - j1 for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal")
+    return max(count, int(before != after))
+
+
 def check_scope(payload):
-    """Compare the entire declared candidate to approved original content, not just the last commit."""
+    """Judge the whole candidate against the staged approved base: envelope, budget, profiles, planned files.
+
+    The local Git base is the parent, which may be an earlier published round; the changed set adds
+    the files those rounds changed, so budgets and the envelope always cover the cumulative change.
+    """
     clean_checkpoint()
-    expected = {r['path']: 'A' if r['change'] == 'add' else 'M' for r in payload['spec']['files']}
-    names = git('diff', '--name-only', STATE.joinpath('base').read_text(), 'HEAD').splitlines()
-    if not set(names).issubset(expected):
-        raise ValueError('candidate changes an undeclared path')
-    actual = {}
-    for path, original in payload['originals'].items():
-        target = safe_file(path)
-        if target.exists() and target.read_text() != original:
-            actual[path] = 'A' if original is None else 'M'
-    if actual != expected:
-        raise ValueError('candidate does not contain exactly the declared changes')
+    scope = payload['scope']
+    names = set(git('diff', '--name-only', STATE.joinpath('base').read_text(), 'HEAD').splitlines())
+    actual, lines = {}, 0
+    for path in sorted(names | set(scope['accumulated'])):
+        before, after = read_under(STAGE, path), read_under(ROOT, path)
+        if before != after:
+            actual[path] = 'A' if before is None else 'D' if after is None else 'M'
+            lines += changed_lines(before, after)
+    if not actual:
+        raise ValueError('candidate changes nothing')
+    outside = [p for p in actual if not any(glob_matches(p, g) for g in scope['paths'])]
+    if outside:
+        raise ValueError('candidate changes paths outside the approved scope: ' + ', '.join(outside))
+    unprepared = [p for p in actual if any(glob_matches(p, g) for g in scope['unapproved'])]
+    if unprepared:
+        raise ValueError('candidate triggers an execution profile the design did not approve: ' + ', '.join(unprepared))
+    if len(actual) > scope['max_files']:
+        raise ValueError(f"candidate changes {len(actual)} files, over the approved budget of {scope['max_files']}")
+    if scope['max_changed_lines'] is not None and lines > scope['max_changed_lines']:
+        raise ValueError(f"candidate changes {lines} lines, over the approved budget of {scope['max_changed_lines']}")
+    for rule in payload['spec']['files']:
+        if actual.get(rule['path']) != ('A' if rule['change'] == 'add' else 'M'):
+            raise ValueError('candidate does not make the planned change to ' + rule['path'])
 
 
 def check_text(payload):
@@ -181,6 +227,16 @@ def check_text(payload):
             raise ValueError('candidate exceeds declared line limit')
         if any(value not in text for value in rule['required_text']):
             raise ValueError('candidate is missing required text')
+
+
+def scope_valid(scope):
+    """The scope payload: envelope globs, unapproved triggers, accumulated paths and a budget."""
+    globs = lambda v: isinstance(v, list) and all(isinstance(g, str) and g and not g.startswith("/") for g in v)
+    return (isinstance(scope, dict) and set(scope) == {'paths', 'unapproved', 'accumulated', 'max_files', 'max_changed_lines'}
+            and globs(scope['paths']) and globs(scope['unapproved'])
+            and isinstance(scope['accumulated'], list) and all(path_safe(p) for p in scope['accumulated'])
+            and type(scope['max_files']) is int and scope['max_files'] >= 1
+            and (scope['max_changed_lines'] is None or type(scope['max_changed_lines']) is int))
 
 
 def main():
@@ -218,7 +274,8 @@ def main():
         result = snapshot()
     elif operation == 'validation':
         payload = json.load(sys.stdin)
-        if (set(payload) != {'spec', 'originals'} or not isinstance(payload['originals'], dict)
+        if (set(payload) != {'spec', 'originals', 'scope'} or not scope_valid(payload['scope'])
+                or not isinstance(payload['originals'], dict)
                 or not all(path_safe(p) and (v is None or isinstance(v, str)) for p, v in payload['originals'].items())
                 or file_rule_errors({'files': list(payload['originals']), 'validation': payload['spec']})):
             raise ValueError('invalid validation contract')

@@ -14,6 +14,7 @@ from unittest.mock import patch
 from support import EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
+from checks import MAX_OVERLAY_FILES
 from policy import Blocked, path_allowed
 from repository import Repository, TOOL_NAMES, extract, overlay, serve
 from snapshot import Snapshot, inspection
@@ -87,6 +88,15 @@ class RepositoryTests(unittest.TestCase):
             for files in ({"CONTRIBUTING.md": "bad"}, {"../secret": "bad"}, {"docs/guide.md": None}):
                 with self.assertRaises(ValueError):
                     overlay(files, root)
+
+    def test_overlay_admits_an_envelope_of_changed_files(self):
+        """A candidate's primary and changed files fit; more than the engine caps allow do not."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            extract(io.BytesIO(archive({"repo/docs/guide.md": b"old"})), root)
+            overlay({f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES)}, root)
+            with self.assertRaises(ValueError):
+                overlay({f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES + 1)}, root)
 
     def test_read_pagination_binary_rejection_and_budget(self):
         """Large output is paginated and repeated retrieval cannot run unbounded."""

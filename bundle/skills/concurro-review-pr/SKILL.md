@@ -17,4 +17,6 @@ Findings:
 - Approve only with no new findings and no `open` disposition.
 - Keep the whole JSON response within `review_output_budget.max_json_bytes`; prefer fewer, precise findings to long ones.
 
+The candidate may change files beyond the plan's primary files inside its approved scope; review every changed file, and use verdict reopen when the change has drifted from the approved design even inside the scope.
+
 In the pipeline, use the supplied external [response contract](../../schemas/review.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.

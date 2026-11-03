@@ -4,8 +4,8 @@ import hashlib
 import json
 import re
 from pathlib import PurePosixPath
-from checks import (build_checked, contract_errors, glob_matches as instruction_matches,
-                    protected as profile_protected, required as required_checks)
+from checks import (MAX_PLAN_FILES, build_checked, contract_errors, glob_matches as instruction_matches, in_scope,
+                    mandatory, protected as profile_protected, scope_errors, scope_of, triggered)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 PROVIDER_CREDENTIALS = {
@@ -58,9 +58,25 @@ def selected_model(config, provider, stage):
     return config["models"][provider]
 
 
-def required_local_checks(paths, execution):
-    """Control checks always; mandatory checks of every execution profile the paths trigger."""
-    return required_checks(paths, execution)
+def approved_profile_ids(state):
+    """The plan's approved profiles; a plan approved before envelopes has those its files trigger."""
+    profiles = state.get("approved_profiles")
+    if profiles is None:
+        return [p["id"] for p in state["execution"]["profiles"] if triggered(p, state["plan"]["files"])]
+    return profiles
+
+
+def approved_checks(state):
+    """The mandatory checks of the plan's approved profiles."""
+    return mandatory(approved_profile_ids(state), state['execution'])
+
+
+class OutsideScope(Blocked):
+    """An implementation proposal edits paths outside the approved envelope; refused whole, as feedback."""
+
+    def __init__(self, paths):
+        self.paths = sorted(paths)
+        super().__init__("edit outside the approved scope: " + ", ".join(self.paths))
 
 
 def local_evidence_valid(state):
@@ -73,8 +89,7 @@ def local_evidence_valid(state):
         return False
     checks = evidence.get("checks", [])
     names = [c.get("name") for c in checks]
-    required = (set(required_local_checks(state['plan']['files'], state['execution']))
-                | set(state['plan']['validation']['checks']))
+    required = set(approved_checks(state)) | set(state['plan']['validation']['checks'])
     if len(names) != len(set(names)) or not required.issubset(names):
         return False
     if any(c.get("exit_code") != 0 or c.get("timed_out") or c.get("output_limited")
@@ -176,7 +191,7 @@ def consensus_valid(state, config, require_fresh=True):
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
     binding = approval_binding(state, config)
-    if not state.get("execution") or contract_errors(state['plan'], state['execution']):
+    if not state.get("execution") or contract_errors(state['plan'], state['execution'], state.get("approved_profiles")):
         return False
     for member in roster:
         vote = votes[member["id"]]
@@ -253,7 +268,7 @@ def merge_path_allowed(path, config, execution):
 def validate_plan(plan, config, execution):
     """Require a bounded, reviewable plan or explicit clarification questions."""
     fields = {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}
-    if not isinstance(plan, dict) or set(plan) != presentation(plan, fields, {"headline"}):
+    if not isinstance(plan, dict) or set(plan) - {"scope"} != presentation(plan, fields, {"headline"}):
         raise Blocked("invalid plan fields")
     publication = plan['publication']
     if (not isinstance(publication, dict) or set(publication) != {'changes', 'review_focus'}
@@ -273,10 +288,13 @@ def validate_plan(plan, config, execution):
         raise Blocked("plan too large")
     if plan["questions"]:
         return
-    if not 1 <= len(plan["files"]) <= 8 or len(set(plan["files"])) != len(plan["files"]):
+    if not 1 <= len(plan["files"]) <= MAX_PLAN_FILES or len(set(plan["files"])) != len(plan["files"]):
         raise Blocked("plan must name 1–8 distinct files")
     if not all(path_allowed(p, config, execution) for p in plan["files"]):
         raise Blocked("plan includes protected or unsupported files")
+    problem = scope_errors(plan)
+    if problem:
+        raise Blocked(problem)
     if not plan["steps"] or not plan["tests"]:
         raise Blocked("plan needs steps and validation criteria")
 
@@ -286,14 +304,20 @@ def validate_edits(result, plan, originals, config, execution):
     if set(result) != {"summary", "edits"} or not isinstance(result["summary"], str):
         raise Blocked("invalid implementation response")
     edits = result["edits"]
-    if not isinstance(edits, list) or not 1 <= len(edits) <= 8:
-        raise Blocked("implementation must contain 1–8 edits")
+    limit = scope_of(plan)["max_files"]
+    if not isinstance(edits, list) or not 1 <= len(edits) <= limit:
+        raise Blocked(f"implementation must contain 1–{limit} edits")
+    if not all(isinstance(edit, dict) and set(edit) == {"path", "content"} for edit in edits):
+        raise Blocked("invalid edit fields")
+    # A proposal reaching outside the envelope is refused whole, before anything is applied.
+    outside = {e["path"] for e in edits if isinstance(e["path"], str) and path_allowed(e["path"], config, execution)
+               and not in_scope(e["path"], plan)}
+    if outside:
+        raise OutsideScope(outside)
     seen = set()
     for edit in edits:
-        if not isinstance(edit, dict) or set(edit) != {"path", "content"}:
-            raise Blocked("invalid edit fields")
         path, content = edit["path"], edit["content"]
-        if not path_allowed(path, config, execution) or path not in plan["files"] or path in seen:
+        if not path_allowed(path, config, execution) or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
         if not isinstance(content, str) or "\x00" in content or len(content.encode()) > 128000:
             raise Blocked("invalid text replacement")
@@ -466,7 +490,7 @@ def merge_reasons(state, pr, files, checks, threads, reviews, config):
         reasons.append("withdrawn findings awaiting retirement: " + ", ".join(withdrawn))
     if not files or set(files) != set(state.get("changed_files", [])):
         reasons.append("PR file set differs from controller evidence")
-    if not all(path_allowed(p, config, state["execution"]) and p in state["plan"]["files"] for p in files):
+    if not all(path_allowed(p, config, state["execution"]) and in_scope(p, state["plan"]) for p in files):
         reasons.append("unapproved path")
     if not all(merge_path_allowed(p, config, state["execution"]) for p in files):
         reasons.append("autonomous merge is limited to configured low-risk paths")

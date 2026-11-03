@@ -28,10 +28,11 @@ class WorkbenchValidationTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        self.source, self.state = root / 'source', root / 'state'
-        self.source.mkdir()
-        self.state.mkdir()
-        for target, value in (('ROOT', self.source), ('STATE', self.state)):
+        self.source, self.state, self.stage = root / 'source', root / 'state', root / 'stage'
+        for directory in (self.source, self.state, self.stage):
+            directory.mkdir()
+        (self.stage / 'README.md').write_text('Baseline\n')
+        for target, value in (('ROOT', self.source), ('STATE', self.state), ('STAGE', self.stage)):
             patched = patch.object(workspace, target, value)
             patched.start()
             self.addCleanup(patched.stop)
@@ -40,10 +41,13 @@ class WorkbenchValidationTests(unittest.TestCase):
         workspace.git('add', '--force', '-A')
         workspace.git('commit', '-m', 'Local baseline')
         self.state.joinpath('base').write_text(workspace.git('rev-parse', 'HEAD'))
+        # A plan without an envelope: exactly its files, as before envelopes.
         self.payload = {'originals': {'docs/a.md': None, 'docs/b.md': None}, 'spec': {
             'checks': ['diff', 'scope', 'text'], 'files': [
                 {'path': path, 'change': 'add', 'max_lines': 3, 'required_text': ['Required']}
-                for path in ('docs/a.md', 'docs/b.md')]}}
+                for path in ('docs/a.md', 'docs/b.md')]},
+            'scope': {'paths': ['docs/a.md', 'docs/b.md'], 'max_files': 2, 'max_changed_lines': None,
+                      'accumulated': [], 'unapproved': ['**/*.rs']}}
 
     def add(self, path, content='Required\n', commit=True):
         """Create a candidate file with an optional local checkpoint."""
@@ -83,9 +87,66 @@ class WorkbenchValidationTests(unittest.TestCase):
         wrong = deepcopy(self.payload)
         wrong['spec']['files'][0]['change'] = 'modify'
         with self.assertRaises(ValueError): workspace.check_scope(wrong)
+        # A repair's parent is the published round; that round's files are accumulated.
         self.state.joinpath('base').write_text(workspace.git('rev-parse', 'HEAD'))
         self.add('docs/a.md', 'Required repaired\n')
-        workspace.check_scope(self.payload)
+        with self.assertRaisesRegex(ValueError, 'planned change to docs/b.md'): workspace.check_scope(self.payload)
+        repaired = deepcopy(self.payload)
+        repaired['scope']['accumulated'] = ['docs/a.md', 'docs/b.md']
+        workspace.check_scope(repaired)
+
+    def envelope(self, **scope):
+        """The payload with a scope envelope around docs/."""
+        payload = deepcopy(self.payload)
+        payload['scope'].update({'paths': ['docs/**'], 'max_files': 4, 'max_changed_lines': 20, **scope})
+        return payload
+
+    def test_envelope_admits_unplanned_files_inside_it(self):
+        self.add('docs/a.md')
+        self.add('docs/b.md')
+        self.add('docs/callers/c.md', 'Updated caller\n')
+        workspace.check_scope(self.envelope())
+        self.add('src/elsewhere.md', 'Outside\n')
+        with self.assertRaisesRegex(ValueError, 'outside the approved scope: src/elsewhere.md'):
+            workspace.check_scope(self.envelope())
+
+    def test_budget_counts_the_cumulative_change_across_rounds(self):
+        self.add('docs/a.md', 'Required\n' + 'line\n' * 9)
+        self.add('docs/b.md')
+        workspace.check_scope(self.envelope())
+        self.state.joinpath('base').write_text(workspace.git('rev-parse', 'HEAD'))
+        self.add('docs/b.md', 'Required\n' + 'more\n' * 10)
+        round_two = self.envelope(accumulated=['docs/a.md', 'docs/b.md'])
+        with self.assertRaisesRegex(ValueError, '21 lines, over the approved budget of 20'):
+            workspace.check_scope(round_two)
+        self.add('docs/c.md')
+        self.add('docs/d.md')
+        self.add('docs/e.md')
+        with self.assertRaisesRegex(ValueError, 'changes 5 files, over the approved budget of 4'):
+            workspace.check_scope(self.envelope(max_changed_lines=100, accumulated=['docs/a.md', 'docs/b.md']))
+
+    def test_line_budget_counts_source_lines_that_look_like_diff_headers(self):
+        (self.stage / 'docs').mkdir()
+        (self.stage / 'docs/c.md').write_text('Intro\n' + '---\n' * 30)
+        self.add('docs/a.md')
+        self.add('docs/b.md')
+        self.add('docs/c.md', 'Intro\n++ added\n')
+        with self.assertRaisesRegex(ValueError, '33 lines, over the approved budget of 32'):
+            workspace.check_scope(self.envelope(max_changed_lines=32))
+        workspace.check_scope(self.envelope(max_changed_lines=33))
+
+    def test_changed_lines_are_newline_delimited(self):
+        self.assertEqual(workspace.changed_lines('a\n--b\n', 'a\n++b\n'), 2)
+        self.assertEqual(workspace.changed_lines('a\u2028b\n', 'a\u2028c\n'), 2, 'one LF line replaced')
+        self.assertEqual(workspace.changed_lines('a', 'a\n'), 1, 'any difference counts')
+        self.assertEqual(workspace.changed_lines(None, 'a\nb\n'), 2)
+
+    def test_a_new_execution_profile_is_a_design_change(self):
+        self.add('docs/a.md')
+        self.add('docs/b.md')
+        self.add('docs/tool.rs', 'fn main() {}\n')
+        with self.assertRaisesRegex(ValueError, 'did not approve: docs/tool.rs'):
+            workspace.check_scope(self.envelope())
 
     def test_line_limits_and_text_assertions_enforce_results(self):
         """The declared constraints fail checks rather than merely printing counts."""

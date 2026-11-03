@@ -70,8 +70,9 @@ def extract(stream, root):
 def overlay(files, root):
     """Apply only controller-supplied candidate text before mounting the snapshot read-only."""
     # This helper runs only during credential-free preparation, never as an MCP tool.
+    from checks import MAX_OVERLAY_FILES
     from policy import path_safe
-    if not isinstance(files, dict) or len(files) > 8:
+    if not isinstance(files, dict) or len(files) > MAX_OVERLAY_FILES:
         raise ValueError("invalid inspection overlay")
     for name, content in files.items():
         if not path_safe(name) or content is not None and (
