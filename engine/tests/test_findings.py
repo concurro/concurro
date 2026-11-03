@@ -107,10 +107,6 @@ class LedgerTests(unittest.TestCase):
         reviews.apply(state, "claude", report("changes_requested", dispositions=[answer("F1"), answer("F2", "open")]),
                       "b" * 40)
         digests = [f["text_digest"] for f in state["findings"]]
-        state["pr_outbox"] = [{"kind": "review"}]
-        reviews.compact(state)
-        self.assertEqual(state["findings"][0]["detail"], long["detail"], "a pending PR review still renders it")
-        state["pr_outbox"] = []
         reviews.compact(state)
         reviews.compact(state)
         fixed, still_open = state["findings"]
@@ -519,6 +515,21 @@ class PublicationTests(Harness, unittest.TestCase):
         [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
         self.assertIn("Obsolete under plan", reply["body"])
         self.assertEqual((state["findings"][0]["status"], state["findings"][0]["resolution"]), ("obsolete", "done"))
+
+    def test_review_is_published_in_full_before_compaction(self):
+        """Published issue text is compacted only once the PR outbox is empty, so the PR review keeps its full summary."""
+        agents = Reviewers(set())
+        ask, summary = agents.ask, "The note is accurate. " * 80
+
+        def long_summary(provider, stage, context):
+            result = ask(provider, stage, context)
+            return result | {"summary": summary} if stage == "review" else result
+
+        agents.ask = long_summary
+        state = self.run_to(agents, "gates").state
+        self.assertEqual([summary in r["body"] for r in self.gh.app_reviews], [True, True])
+        self.assertTrue(all(r["summary"].endswith("[Full text in the published issue conversation.]")
+                            for r in state["reviews"].values()), "compacted once published")
 
     def test_hidden_opening_comment_is_retried_not_unthreaded(self):
         """An opening comment missing from one read keeps the review pending; it is never recorded as body-only."""

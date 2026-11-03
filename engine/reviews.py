@@ -73,10 +73,8 @@ def compact(state):
     """Excerpt the text of closed findings; called only once every queued event is published.
 
     The full text stays in the published review event that raised the finding, and its
-    `text_digest` still identifies it. Waits for the PR outbox, whose reviews render finding text.
+    `text_digest` still identifies it.
     """
-    if state.get("pr_outbox"):
-        return
     for finding in state.get("findings", []):
         if (finding["status"] in ("fixed", "obsolete") and len(finding["detail"]) > EXCERPT
                 and not finding["detail"].endswith(ELIDED)):

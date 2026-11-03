@@ -177,12 +177,15 @@ def publish(state, github, config):
 
 
 def compact(state):
-    """Retain operative evidence and compact only published narrative text."""
+    """Retain operative evidence and compact only published narrative text.
+
+    Waits for the PR outbox too, since a pending PR review renders its report's full text.
+    """
     state.pop("cooperative_votes", None)
     if "objections" in state:
         state["objections"] = [v for v in state["objections"] if not v["resolved"]]
     journal = state.get("conversation", {})
-    if journal.get("pending") or not journal.get("receipts"):
+    if journal.get("pending") or state.get("pr_outbox") or not journal.get("receipts"):
         return
     reviews.compact(state)
     state.pop("review_event", None)
