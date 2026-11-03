@@ -422,6 +422,20 @@ class Controller:
         self.trees[sha] = {v["path"]: v for v in result["tree"]}
         return self.trees[sha]
 
+    def packages(self, paths):
+        """For each profile that scopes checks, the packages owning the planned paths at the base (None: all)."""
+        tree = self.tree(self.state["base"])
+
+        def read(path):
+            # Only content problems fall back to the workspace; transient GitHub errors still propagate.
+            try:
+                return self.files(self.state["base"], [path], inspection=True)[path]
+            except (Blocked, UnicodeError):
+                return None
+
+        return {p["id"]: checks.packages(p, paths, tree, read) for p in self.bundle.execution["profiles"]
+                if p.get("package_manifest")}
+
     def files(self, sha, paths, inspection=False):
         """Read bounded text blobs; executable source is evidence-only, never editable."""
         tree = self.tree(sha)
@@ -1170,6 +1184,7 @@ class Controller:
                 raise Blocked("source archive does not match the pinned GitHub files")
             workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']))
             workspace.prepare(required, min(600, deadline - time.monotonic()))
+            workspace.scope(self.packages(state["plan"]["files"]))
             executable = checks.executable(state["execution"], checks.preparing(required, state["execution"]))
             for attempt in range(attempts.get(round_key, 0), self.config["max_local_fix_rounds"] + 1):
                 if deadline - time.monotonic() < 600:

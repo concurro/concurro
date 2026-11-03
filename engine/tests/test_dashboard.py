@@ -10,6 +10,7 @@ from test_findings import Harness, Reviewers
 from test_pipeline import Controller, FakeAgents, FakeGitHub, FakeWorkspace
 import actions
 import conversation
+from github import Transient
 from policy import Blocked, digest
 
 
@@ -83,6 +84,32 @@ class PullRequestTests(Harness, unittest.TestCase):
         controller.state["plan"]["headline"] = "Word " * 40
         self.assertEqual(len(controller.pr_title()), 72)
         self.assertTrue(controller.pr_title().endswith("… (#7)"))
+
+
+class CheckScopeTests(Harness, unittest.TestCase):
+    """The controller hands the workbench the packages owning the planned files, before any check runs."""
+
+    def test_packages_reach_the_workbench(self):
+        scopes = []
+        original = FakeWorkspace.scope if hasattr(FakeWorkspace, "scope") else None
+
+        def record(workspace, packages):
+            scopes.append(dict(packages))
+            return original(workspace, packages)
+
+        with patch.object(FakeWorkspace, "scope", record):
+            controller = self.run_to(Reviewers(set()), "review")
+        self.assertEqual(scopes, [{"rust": None}], "a docs-only plan touches no Rust package")
+        tree = {"stacks-common/Cargo.toml": {}, "stacks-common/src/lib.rs": {}}
+        with patch.object(controller, "tree", return_value=tree), \
+                patch.object(controller, "files", return_value={"stacks-common/Cargo.toml": '[package]\nname = "stacks-common"'}):
+            self.assertEqual(controller.packages(["stacks-common/src/lib.rs"]), {"rust": ["stacks-common"]})
+        with patch.object(controller, "tree", return_value=tree), \
+                patch.object(controller, "files", side_effect=Blocked("source must be a bounded regular text file")):
+            self.assertEqual(controller.packages(["stacks-common/src/lib.rs"]), {"rust": None}, "unreadable: workspace")
+        with patch.object(controller, "tree", return_value=tree), \
+                patch.object(controller, "files", side_effect=Transient("unavailable")), self.assertRaises(Transient):
+            controller.packages(["stacks-common/src/lib.rs"])
 
 
 class CompactionTests(unittest.TestCase):

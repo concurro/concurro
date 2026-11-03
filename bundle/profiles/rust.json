@@ -4,6 +4,7 @@
   "triggers": ["**/*.rs"],
   "protected": ["**/Cargo.toml", "**/Cargo.lock", "**/build.rs", "**/rust-toolchain*"],
   "caches": ["cargo", "target"],
+  "package_manifest": "Cargo.toml",
   "env": {"CARGO_HOME": "{cache:cargo}", "CARGO_TARGET_DIR": "{cache:target}"},
   "prepare": {
     "requires": ["Cargo.lock"],
@@ -15,7 +16,8 @@
      "command": ["cargo", "fmt", "--all", "--", "--check"], "prepared": false, "mandatory": true},
     {"id": "check", "purpose": "Compile the workspace offline using prepared dependencies.",
      "command": ["cargo", "check", "--workspace", "--locked", "--offline"], "prepared": true, "mandatory": true},
-    {"id": "nextest", "purpose": "Run workspace library tests offline using prepared dependencies.",
-     "command": ["cargo", "nextest", "run", "--workspace", "--lib", "--locked", "--offline"], "prepared": true, "mandatory": true}
+    {"id": "nextest", "purpose": "Run the library tests of the packages the plan changes (the whole workspace if a changed file is outside a package) offline using prepared dependencies.",
+     "command": ["cargo", "nextest", "run", "{scope}", "--lib", "--locked", "--offline"],
+     "scope": {"each": ["--package", "{package}"], "all": ["--workspace"], "library": true}, "prepared": true, "mandatory": true}
   ]
 }

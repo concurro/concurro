@@ -120,6 +120,91 @@ class ProfileSchemaTests(unittest.TestCase):
         self.assertTrue(merge_path_allowed("docs/guide/a.md", CONFIG, EXECUTION))
 
 
+class PackageScopeTests(unittest.TestCase):
+    """Scoped checks run only the changed packages' tests, and fall back to everything when unsure."""
+
+    TREE = {"Cargo.toml", "stacks-common/Cargo.toml", "stacks-common/src/lib.rs", "crates/a/Cargo.toml",
+            "crates/a/src/lib.rs", "crates/b/Cargo.toml", "crates/bad/Cargo.toml", "crates/bad/src/lib.rs",
+            "crates/broken/Cargo.toml", "node/Cargo.toml", "node/src/main.rs", "nolib/Cargo.toml", "nolib/src/lib.rs",
+            "odd/Cargo.toml", "unreadable/Cargo.toml"}
+    MANIFESTS = {"Cargo.toml": '[workspace]\nmembers = ["stacks-common"]',
+                 "stacks-common/Cargo.toml": '[package]\nname = "stacks-common"',
+                 "crates/a/Cargo.toml": '[package]\nname = "a"',
+                 "crates/b/Cargo.toml": '[package]\nname = "b_b"\n[lib]\npath = "lib/b.rs"',
+                 "crates/bad/Cargo.toml": '[package]\nname = "--config=x"', "crates/broken/Cargo.toml": "[package",
+                 "node/Cargo.toml": '[package]\nname = "node"',
+                 "nolib/Cargo.toml": '[package]\nname = "nolib"\nautolib = false', "odd/Cargo.toml": 'package = "x"'}
+
+    def packages(self, paths):
+        return checks.packages(load(RUST), paths, self.TREE, self.MANIFESTS.get)
+
+    def test_nearest_manifest_names_the_package(self):
+        self.assertEqual(self.packages(["stacks-common/src/deps_common/bitcoin/network/encodable.rs", "docs/a.md"]),
+                         ["stacks-common"])
+        self.assertEqual(self.packages(["crates/b/src/x.rs", "crates/a/src/lib.rs", "crates/a/tests/t.rs"]), ["a", "b_b"])
+
+    def test_anything_uncertain_covers_the_workspace(self):
+        for paths in (["src/main.rs"], ["crates/bad/src/lib.rs"], ["crates/broken/src/lib.rs"], ["docs/a.md"],
+                      ["crates/a/src/lib.rs", "src/main.rs"], ["odd/src/lib.rs"], ["unreadable/src/lib.rs"]):
+            with self.subTest(paths=paths):
+                self.assertIsNone(self.packages(paths))
+        many = {f"c{i}/{f}" for i in range(9) for f in ("Cargo.toml", "src/lib.rs")}
+        read = lambda path: f'[package]\nname = "{path.split("/")[0]}"'
+        self.assertIsNone(checks.packages(load(RUST), [f"c{i}/src/lib.rs" for i in range(9)], many, read))
+        self.assertIsNone(checks.packages(load(DOCS), ["docs/a.md"], self.TREE, self.MANIFESTS.get), "unscoped profile")
+
+    def test_a_package_without_a_library_target_covers_the_workspace(self):
+        """Scoping `--lib` tests to a binary-only package would select nothing, so it runs them all."""
+        for paths in (["node/src/main.rs"], ["crates/a/src/lib.rs", "node/src/main.rs"], ["nolib/src/lib.rs"]):
+            with self.subTest(paths=paths):
+                self.assertIsNone(self.packages(paths))
+        unscoped = deepcopy(RUST)
+        next(c for c in unscoped["checks"] if c["id"] == "nextest")["scope"].pop("library")
+        self.assertEqual(checks.packages(load(unscoped), ["node/src/main.rs"], self.TREE, self.MANIFESTS.get), ["node"],
+                         "a scope that runs any target may name a binary-only package")
+
+    def test_command_expansion(self):
+        nextest = next(c for c in load(RUST)["checks"] if c["id"] == "nextest")
+        self.assertEqual(checks.command(nextest, ["a", "b_b"]),
+                         ["cargo", "nextest", "run", "--package", "a", "--package", "b_b", "--lib", "--locked", "--offline"])
+        self.assertEqual(checks.command(nextest, None),
+                         ["cargo", "nextest", "run", "--workspace", "--lib", "--locked", "--offline"])
+        check = next(c for c in load(RUST)["checks"] if c["id"] == "check")
+        self.assertIn("--workspace", checks.command(check, ["a"]), "the compile check stays workspace-wide")
+
+    def test_invalid_scopes_are_rejected(self):
+        def scoped(**changes):
+            profile = deepcopy(RUST)
+            nextest = next(c for c in profile["checks"] if c["id"] == "nextest")
+            for key, value in changes.items():
+                (profile if key == "package_manifest" else nextest)[key] = value
+            if changes.get("package_manifest") is KeyError:
+                del profile["package_manifest"]
+            return profile
+
+        for name, profile in {"no manifest": scoped(package_manifest=KeyError),
+                              "manifest path": scoped(package_manifest="../Cargo.toml"),
+                              "two scopes": scoped(command=["cargo", "{scope}", "{scope}"]),
+                              "scope as program": scoped(command=["{scope}", "run"]),
+                              "no placeholder": scoped(scope={"each": ["--package"], "all": ["--workspace"]}),
+                              "embedded placeholder": scoped(scope={"each": ["--package={package}"], "all": []}),
+                              "extra key": scoped(scope={"each": ["{package}"], "all": [], "x": []}),
+                              "library not a flag": scoped(scope={"each": ["{package}"], "all": [], "library": "yes"})}.items():
+            with self.subTest(name=name), self.assertRaises(checks.ProfileError):
+                load(profile)
+
+    def test_workbench_runs_the_scoped_command(self):
+        with patch.dict(os.environ, {"CONCURRO_EXECUTION_IMAGE": "sha256:" + "a" * 64}):
+            workspace = LocalWorkspace(CONFIG, b"", "concurro/test", composed(RUST), base_archive=b"base")
+        workspace.prepared = {"rust"}
+        workspace.current = {"local_commit": "c", "tree": "t"}
+        workspace.scope({"rust": ["stacks-common"]})
+        success = {"name": "nextest", "exit_code": 0, "timed_out": False, "output_limited": False}
+        with patch.object(workspace, "execute", return_value=success) as execute:
+            workspace.run_checks(["nextest"], [], float("inf"))
+        self.assertIn("--package stacks-common --lib", " ".join(execute.call_args.args[1]))
+
+
 class ProfileBundleTests(unittest.TestCase):
     """Selected profiles bind into the bundle identity and travel to agent containers."""
 

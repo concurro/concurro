@@ -39,6 +39,7 @@ A profile is a strict JSON document, version 1:
   "triggers": ["**/*.rs"],
   "protected": ["**/Cargo.toml", "Cargo.lock", "**/build.rs", "rust-toolchain*"],
   "caches": ["cargo", "target"],
+  "package_manifest": "Cargo.toml",
   "env": {"CARGO_HOME": "{cache:cargo}", "CARGO_TARGET_DIR": "{cache:target}"},
   "prepare": {
     "requires": ["Cargo.lock"],
@@ -52,8 +53,9 @@ A profile is a strict JSON document, version 1:
     {"id": "check", "purpose": "Compile the workspace offline.",
      "command": ["cargo", "check", "--workspace", "--locked", "--offline"],
      "prepared": true, "mandatory": true},
-    {"id": "nextest", "purpose": "Run workspace library tests offline.",
-     "command": ["cargo", "nextest", "run", "--workspace", "--lib", "--locked", "--offline"],
+    {"id": "nextest", "purpose": "Run the changed packages' library tests offline.",
+     "command": ["cargo", "nextest", "run", "{scope}", "--lib", "--locked", "--offline"],
+     "scope": {"each": ["--package", "{package}"], "all": ["--workspace"], "library": true},
      "prepared": true, "mandatory": true}
   ]
 }
@@ -67,13 +69,22 @@ A profile is a strict JSON document, version 1:
 | `caches` | Cache names only. The engine creates a fresh per-workbench volume for each and mounts it at `/cache/<profile>/<name>` |
 | `env` | Variables for this profile's preparation and check processes only. Values may use `{cache:<name>}` placeholders for this profile's caches |
 | `prepare` | Optional. `requires` lists protected files that must exist and are copied into the read-only input view; `source` (default `false`) additionally mounts the full source read-only at `/workspace` for tools that must parse the tree; `steps` is an ordered list of argv commands run with network access from a neutral working directory |
+| `package_manifest` | Optional. The file naming a package, such as `Cargo.toml`. A planned path belongs to the nearest enclosing directory with one, named by its `[package] name` at the approved base |
 | `checks` | Ordered checks with fixed argv. `prepared` checks need this profile's preparation; `mandatory` checks are required when a trigger matches. Argv may use `{cache:<name>}` placeholders |
+| `checks[].scope` | Optional, with `package_manifest`. The check's single `{scope}` argument becomes `each` once per package the plan changes (with its one `{package}` argument replaced by the name), or `all` when a changed path is outside any package, its manifest is unreadable or malformed, a name is not a plain package name, or more than 8 packages change. With `library: true`, for checks that run library targets only, a changed package without one (no `[lib]` table, and no `src/lib.rs` or `autolib = false`) also selects `all`, since scoping to it would select nothing |
 
 Profiles name caches but never choose mount points. `/workspace`, `/state`,
 `/tmp`, `/opt/concurro` and another profile's caches therefore cannot be
 replaced or overlapped by construction. Environment keys must match
 `[A-Z][A-Z0-9_]*`; `PATH`, `HOME`, and names starting with `LD_`, `GIT_` or
 `CONCURRO_` are rejected. Profile variables never reach the trusted control helper.
+
+Scoping keeps a check within the per-check time limit. The built-in `rust`
+profile scopes only `nextest`, since running the whole workspace's library tests
+cannot fit, and keeps `check` workspace-wide so a change that breaks a dependent
+package still fails locally. Package names come from the approved base, never the
+candidate, and must match `[A-Za-z0-9_][A-Za-z0-9_-]{0,63}`, so a name cannot add
+an option to the command.
 
 Engine control checks (`diff`, `scope`, `text`) stay built in: always available,
 always mandatory, run in the trusted helper, and cannot be redefined. Profile

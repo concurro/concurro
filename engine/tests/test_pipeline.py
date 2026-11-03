@@ -379,6 +379,10 @@ class FakeWorkspace:
         self.current = {"local_commit": digest(self.source), "tree": digest(self.source), "branch": self.branch}
         return self.current
 
+    def scope(self, packages):
+        """Record the packages scoped checks would cover."""
+        self.packages = dict(packages)
+
     def configure_validation(self, spec, originals):
         """Retain declared checks without replacing real-workbench integration coverage."""
         self.validation = deepcopy(spec)

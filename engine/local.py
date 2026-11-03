@@ -10,7 +10,7 @@ import uuid
 
 import cleanup
 from policy import Blocked, IMAGE
-from checks import CACHE_ROOT, CONTROL_CHECKS, PLACEHOLDER, executable, preparing
+from checks import CACHE_ROOT, CONTROL_CHECKS, PLACEHOLDER, command as check_command, executable, preparing
 
 
 def resource_exhausted(report):
@@ -83,6 +83,8 @@ class LocalWorkspace:
         self.current = None
         self.baseline = None
         self.prepared = set()
+        # Packages each profile's scoped checks cover; a profile absent here runs them unscoped.
+        self.packages = {}
         self.staged = False
 
     def __enter__(self):
@@ -209,6 +211,10 @@ class LocalWorkspace:
         self.current = self.control("checkpoint", data={"expected": self.current["local_commit"], "edits": edits})
         return self.current
 
+    def scope(self, packages):
+        """Bind each profile's scoped checks to the packages the approved plan changes (None: all)."""
+        self.packages = dict(packages)
+
     def configure_validation(self, spec, originals):
         """Bind declarative rules to the original approved source, including later PR repairs."""
         self.control('validation', data={'spec': spec, 'originals': originals})
@@ -235,8 +241,8 @@ class LocalWorkspace:
                                             timeout, control=True))
             else:
                 profile, check = known[name]
-                reports.append(self.execute(name, [self.expand(profile, v) for v in check["command"]],
-                                            timeout, profile=profile))
+                argv = check_command(check, self.packages.get(profile))
+                reports.append(self.execute(name, [self.expand(profile, v) for v in argv], timeout, profile=profile))
             if resource_exhausted(reports[-1]):
                 break
         return reports
