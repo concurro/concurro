@@ -1,6 +1,6 @@
 # Issue dashboard
 
-Status: accepted (revision 3, reviewed). Replaces the issue's chronological conversation with
+Status: accepted (revision 3, reviewed); rollout steps 1–3 implemented. Replaces the issue's chronological conversation with
 one status comment kept current in place, and posts a new comment only when a human
 must act. Supersedes the issue event and status comment layouts of
 [comment format](comment-format.md); its vocabulary, escaping, size and
@@ -23,7 +23,7 @@ narration also spent notifications, burying the few comments that asked for acti
 | ---- | ---- |
 | Where progress is shown | The status comment, edited in place: a progress line and one table, one row per step |
 | When a new comment is posted | Only when a human must act: input needed, escalated, blocked, plan ready for approval (manual mode), handed off for merge |
-| Where full reports live | One report archive artifact per completed round, written once and never edited, linked from the status comment |
+| Where full reports live | One report archive artifact per report, written once and never edited, linked from the status comment's rounds table |
 | Clarification | One "Input needed" request at a time, mentioning the issue's author; it is marked answered only when a real answer is recorded |
 | Handed off for merge | When all of Concurro's own gates pass and only its merge policy, or GitHub's own requirements, stand between the PR and a merge. It claims Concurro is done, never that GitHub will allow the merge |
 | Report length | An approval is its headline, plus at most two sentences when what was verified is not evident; findings, objections and questions keep their detail |
@@ -66,7 +66,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
   shows its latest round: "🛠️ Revise · 2 open objections", "🧭 Reopened · round 2".
 - **Detail column:** engine-generated counts and links, and at most one model
   headline, serialized as a table cell. Never model prose.
-- **Rounds:** a collapsed table of every vote by round, each round linking to its
+- **Rounds:** a collapsed table of every vote by round, each vote linking to its
   report archive, so revision history stays visible without any report text here.
 - **Action line:** when a human must act, one line under the table names it and links
   the actionable comment.
@@ -78,22 +78,25 @@ The audit artifact cannot be the archive: the API returns only an artifact's new
 30 versions ([measurement](../artifact-measurements.md)), so a report compacted out of
 the checkpoint could become unreachable.
 
-- **One archive artifact per completed round** (an intake assessment, a design
-  review phase, a local validation attempt, a code review round), named
-  `Concurro reports · <step> · round <n>`. Its body is a marker, then each report of
-  the round rendered as in comment format 2, in full. It is created once and never
+- **One archive artifact per report:** an intake or design vote, a local validation
+  attempt with its local review, or a code review. It is named
+  `Concurro report <n> · <step> · <provider> · round <round>`, and its body is the
+  event marker, the report's heading and headline, then the report itself verbatim as
+  JSON in a fence longer than any backtick run in it. It is created once and never
   edited, so its only version is permanent.
-- **Bounded:** a round's reports are already bounded for the checkpoint. A round whose
-  rendering would exceed the artifact limit is split into numbered parts; the event
-  size fallback that drops collapsed sections never applies to an archive.
-- **Recovery:** before creating it, the controller looks for an App-authored archive
-  with the round's marker. One with the expected body is the archive; one with any
-  other body is a conflict that blocks the task.
+- **Bounded:** reports are already bounded for the checkpoint (32,000 bytes at most),
+  so an archive stays within the 60,000-byte artifact limit without splitting; one
+  that would not is refused like an oversized event. The event size fallback never
+  applies to an archive.
+- **Recovery:** archives are queued and published through the existing event outbox,
+  with its content digest. Before creating one, the publisher looks for an App-authored
+  archive with the event's marker. One with the expected body is the archive; one with
+  any other body is a conflict that blocks the task.
 - **Discovery:** checkpoint discovery matches only the audit and plan artifacts'
   names and markers, so archives never become candidates for task state.
-- **Compaction:** a report's text is excerpted only once its round's archive is
-  confirmed, and still only while no issue event or PR review that renders it is
-  pending. The excerpt note links the archive.
+- **Compaction:** a report's text is excerpted only once its archive's receipt is
+  recorded, and still only while no event or PR review that renders it is pending. The
+  excerpt note says the full text is in its report archive.
 
 ## Actionable comments
 
@@ -102,6 +105,7 @@ the checkpoint could become unreachable.
 | ❓ Input needed | The task enters `clarify` | Autonomous: a reply or an issue edit. Manual: a reply, then `/concurro start` |
 | 📣 Escalated | The task enters `escalated` | Edit the issue if needed, then `/concurro retry`, in either mode |
 | 🛑 Blocked | The task enters `blocked` | `/concurro retry` when the reason allows it; otherwise operator reconciliation, which the reason names |
+| 🛑 Rejected | The task enters `rejected` | Edit the issue if needed, then `/concurro retry` |
 | Plan ready for approval | Manual mode reaches `planned` | The exact `/concurro approve <plan>` command |
 | ✅ Handed off for merge | The hand-off holds (below) for the PR's head | A human review and merge, under GitHub's own requirements |
 
@@ -169,9 +173,8 @@ Reply in a comment or edit the issue description; the author or any writer may a
   edits the comment in place: the marker first, then "✅ Answered" with a link to the
   answering comment or "the issue description was edited", then the questions.
 - **Escalation after an issue edit:** `/concurro retry` from a terminal judgment
-  re-reads the issue's requirements, as `/concurro start` does, in both modes. With an
-  existing PR, changed requirements take the requirements-reopen path autonomous
-  refresh already uses. Today manual mode instead blocks on the changed issue.
+  reassesses from intake, as it already did, and now re-reads the issue's requirements
+  first, in both modes. Previously manual mode blocked on the changed issue.
 - **Superseded:** a new clarify with different questions while a request is open
   marks it "Superseded by" the new request, which is then posted. Identical questions
   post nothing new.
@@ -179,9 +182,10 @@ Reply in a comment or edit the issue description; the author or any writer may a
   and its state as `intended`. A comment found with exactly that body completes it;
   one with the original body is edited again, which is idempotent; any other body is
   a conflict that blocks.
-- **Gateway binding (new):** the gateway admits issue-comment `PATCH`es today without
-  checking author or marker. It is bound to App-authored comments that start with the
-  status comment's or a request's marker, read before the write as for PR replies.
+- **Gateway binding (new):** the gateway admitted issue-comment `PATCH`es without
+  checking author or marker. Each is now read before the write, as for PR replies,
+  and admitted only on an App-authored comment on the task's issue that starts with
+  the status comment's, its health notice's or an event's marker.
 
 ## Report length
 
@@ -216,7 +220,7 @@ natively.
 
 ## Rollout
 
-1. Report archives and archive-gated compaction; the status comment dashboard; stop
+1. Report archives and receipt-gated compaction; the status comment dashboard; stop
    queueing non-actionable events. Engine only, no bundle change.
 2. The actionable comments, request records and the answered and superseded edits;
    the gateway's comment `PATCH` binding; the hand-off rule; manual `/concurro start`
@@ -228,7 +232,7 @@ natively.
 ## Testing
 
 - The happy path posts no issue comments besides the status comment and the hand-off,
-  writes one archive per round, and the status comment shows every step's
+  writes one archive per report, and the status comment shows every step's
   outcome, the rounds table and the links.
 - A revision, a design reopen and an open finding change only the status comment.
 - An archive with a lost response is found by marker, not created twice; one with a
@@ -241,10 +245,11 @@ natively.
 - A lost answered edit completes on the next tick by its exact body.
 - Escalated, blocked and plan ready each post once per occurrence; the hand-off posts
   once per head, never with a conflict or with any of Concurro's own gates open.
-- Manual `/concurro retry` after an escalation and an issue edit re-plans from the
-  edited issue, with and without an existing PR.
+- Manual `/concurro retry` after an escalation and an issue edit reassesses the
+  edited issue instead of blocking.
 - The gateway refuses a comment `PATCH` on a human comment or one without a Concurro
   marker.
-- An archive of an oversized round keeps every report in full, split into parts.
+- An archive keeps its report verbatim, even with text that would close a fence or a
+  collapsed section.
 - Queued pre-change events still publish byte for byte.
 - Approval reports in the pilot fixtures stay within the new length guidance.
