@@ -706,13 +706,15 @@ class PipelineTests(unittest.TestCase):
         """Only the chosen provider's inference secret enters the isolated process."""
         environment = {"CONCURRO_AGENT_IMAGE": "example/agent@sha256:" + "a" * 64,
                        "CODEX_API_KEY": "inference", "GH_TOKEN": "write-secret", "PATH": "/usr/bin"}
-        with patch.dict("os.environ", environment, clear=True), patch("agents.Snapshot") as snapshot, \
+        with patch.dict("os.environ", environment, clear=True), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
                 patch("agents.subprocess.run") as run:
             snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=fixture,target=/repository,readonly"
+            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
             run.return_value.returncode = 0
             run.return_value.stdout = '{"ok":true}'
-            self.assertEqual(Agents({**CONFIG, "models": {**CONFIG["models"], "codex": "explicit-model"}}, archive_loader=lambda _: b"archive").ask(
-                "codex", "review", {"bundle_id": Controller(self.gh, self.agents, self.config).bundle.identity, "repository_commit": "a" * 40}), {"ok": True})
+            self.assertEqual(Agents({**CONFIG, "models": {**CONFIG["models"], "codex": "explicit-model"}}).ask(
+                "codex", "review", {"bundle_id": Controller(self.gh, self.agents, self.config).bundle.identity, "repository_commit": "a" * 40,
+                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}), {"ok": True})
         args, kwargs = run.call_args_list[0]
         self.assertNotIn("GH_TOKEN", kwargs["env"])
         self.assertNotIn("--volume", args[0])

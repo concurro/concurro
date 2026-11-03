@@ -1,6 +1,6 @@
 # Open workspaces
 
-Status: accepted (revision 3, reviewed). Builds on [the agent sandbox](agent-sandbox.md)
+Status: accepted (revision 3, reviewed); rollout step 1 implemented. Builds on [the agent sandbox](agent-sandbox.md)
 and [the runner executor](runner-executor.md), and settles two questions they
 leave open: agents may change dependencies, and every model works with the
 target's real Git repository.

@@ -2,16 +2,17 @@
 
 import argparse
 from copy import deepcopy
-import io
 import json
 import os
 from pathlib import Path
-import tarfile
+import subprocess
+import tempfile
 
 from agents import Agents
 from bundle import Bundle
 from checks import catalog, contract_errors
 from design import criteria, validate_evidence, report_limit
+from mirror import Mirror, git_environment
 from policy import digest, validate_qc
 
 SOURCE = {
@@ -60,22 +61,30 @@ def cases():
     return items
 
 
-def archive():
-    """Expose only the evaluation's source fixture through normal repository inspection tools."""
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode='w:gz') as handle:
-        for name, text in SOURCE.items():
-            data = text.encode()
-            item = tarfile.TarInfo('fixture/' + name)
-            item.size = len(data)
-            handle.addfile(item, io.BytesIO(data))
-    return output.getvalue()
+def fixture_mirror(root, repository):
+    """A mirror holding one commit of the evaluation's source fixture, and nothing to fetch."""
+    mirror = Mirror(root, repository, url='')
+    mirror.initialize()
+    env = {**git_environment(), 'GIT_INDEX_FILE': str(Path(root) / 'fixture.index'), 'GIT_AUTHOR_NAME': 'Concurro',
+           'GIT_AUTHOR_EMAIL': 'concurro@invalid', 'GIT_COMMITTER_NAME': 'Concurro', 'GIT_COMMITTER_EMAIL': 'concurro@invalid'}
+
+    def git(*args, data=None):
+        return subprocess.run(['git', '--git-dir', str(mirror.path), *args], input=data, env=env,
+                              capture_output=True, check=True).stdout.decode().strip()
+
+    for name, text in SOURCE.items():
+        blob = git('hash-object', '-w', '--no-filters', '--stdin', data=text.encode())
+        git('update-index', '--add', '--cacheinfo', f'100644,{blob},{name}')
+    commit = git('commit-tree', git('write-tree'), '-m', 'Evaluation fixture')
+    git('update-ref', 'refs/heads/fixture', commit)
+    return mirror, commit
 
 
-def request(case, provider, config):
+def request(case, provider, config, commit):
     """Build a fresh review input without expected labels, peer votes or prior findings."""
     bundle = Bundle(profiles=config['execution_profiles'])
-    return {'issue': REQUIREMENTS, 'base': 'e' * 40, 'repository_commit': 'e' * 40,
+    return {'issue': REQUIREMENTS, 'base': commit, 'repository_commit': commit,
+            'repository': {'refs': {config['base']: commit}, 'head': config['base']},
             'bundle_id': bundle.identity, 'charter': bundle.charter, 'review_phase': 'fresh',
             'reviewer_identity': {'id': digest([provider, config['models'][provider]]),
                                   'provider': provider, 'model': config['models'][provider], 'roles': ['review']},
@@ -104,7 +113,8 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     config = json.loads(Path('.concurro/config.json').read_text())
-    agents = Agents(config, archive_loader=lambda _: archive())
+    mirror, commit = fixture_mirror(tempfile.mkdtemp(), config['repository'])
+    agents = Agents(config, mirror=mirror)
     results = []
     for case in cases():
         if contract_errors(case['plan'], agents.bundle.execution):
@@ -113,7 +123,7 @@ def main():
                 'bundle_id': agents.bundle.identity, 'agent_image': os.environ.get('CONCURRO_AGENT_IMAGE'),
                 'fixture_digest': digest([SOURCE, REQUIREMENTS, case['plan']])}
         try:
-            report = agents.ask(args.provider, 'plan_qc', request(case, args.provider, config))
+            report = agents.ask(args.provider, 'plan_qc', request(case, args.provider, config, commit))
             item['report'] = report
             validate_qc(report, 'plan_qc', agents.bundle.charter, len(criteria(REQUIREMENTS)))
             validate_evidence(report, REQUIREMENTS, files=SOURCE)

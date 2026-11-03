@@ -141,10 +141,11 @@ class SessionTests(unittest.TestCase):
                             subprocess.CompletedProcess([], 0, "not-json", "private-fixture"),
                             subprocess.TimeoutExpired("provider", 600, output="private-fixture")):
                 with self.subTest(retained=retained, failure=type(failure).__name__), \
-                        patch.dict(os.environ, environment, clear=True), patch("agents.Snapshot"), \
+                        patch.dict(os.environ, environment, clear=True), patch("agents.Snapshot"), patch("agents.Tools"), \
                         patch("agents.SessionVolume"), patch("agents.subprocess.run") as run:
-                    agents = Agents(CONFIG, archive_loader=lambda _: b"archive")
-                    context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40}
+                    agents = Agents(CONFIG)
+                    context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
+                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
                     if retained:
                         context["controller_session"] = {"scope": "b" * 64, "turn": 1}
                     run.side_effect = [failure, subprocess.CompletedProcess([], 0)]

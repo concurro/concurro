@@ -9,24 +9,24 @@ import cleanup
 from policy import Blocked, KILLED, SessionFailure, UNCERTAIN_EXIT, UncertainOutcome, IMAGE, selected_model
 from credentials import Credential, EnvironmentCredentials
 from bundle import Bundle
-from github import GitHub
-from snapshot import Snapshot, inspection
+from mirror import Mirror, default_root
+from snapshot import Snapshot, Tools, inspection
 from sessions import SessionVolume
 
 
 class Agents:
     """Launch bounded inference without host filesystem mounts or shared role context."""
 
-    def __init__(self, config, archive_loader=None, credentials=None, bundle=None):
+    def __init__(self, config, mirror=None, credentials=None, bundle=None):
         """Use trusted configuration, an operator-pinned image digest and a credential resolver.
 
         `bundle` is the controller's own instance; by default it is built from the working directory.
+        `mirror` is the target's host-side Git mirror.
         """
         self.config = config
         self.credentials = credentials or EnvironmentCredentials()
         self.bundle = bundle or Bundle(profiles=config["execution_profiles"])
-        self.archive_loader = archive_loader or GitHub(config["repository"]).archive
-        self.archives = {}
+        self.mirror = mirror or Mirror(default_root(), config["repository"])
 
     def credential(self, provider, stage, task):
         """Select the credential identity for one model call before any secret is read."""
@@ -37,6 +37,7 @@ class Agents:
         context = dict(context)
         session = context.pop("controller_session", None)
         selected = context.pop("controller_credential", None)
+        candidate = context.pop("controller_candidate", None)
         model = (context["reviewer_identity"]["model"] if stage == "plan_qc"
                  else selected_model(self.config, provider, stage))
         if not model.strip():
@@ -69,12 +70,10 @@ class Agents:
         environment = {k: os.environ[k] for k in ("PATH", "DOCKER_HOST", "DOCKER_CONTEXT")
                        if k in os.environ}
         environment.update(secrets)
-        commit, overlays = inspection(context, stage)
-        if commit not in self.archives:
-            # Cache only the current immutable archive within this controller invocation.
-            self.archives = {commit: self.archive_loader(commit)}
-        with Snapshot(image, self.archives[commit], overlays) as snapshot:
-            command[-1:-1] = ["--mount", snapshot.mount()]
+        spec = inspection(context.get("repository"), candidate, stage, self.config["base"])
+        # The agent container gets only the tool socket; the repository is read in the tool container.
+        with Snapshot(image, self.mirror, spec) as snapshot, Tools(snapshot) as tools:
+            command[-1:-1] = ["--mount", tools.mount()]
             try:
                 result = subprocess.run(command, input=json.dumps(payload), capture_output=True,
                                         text=True, timeout=600, env=environment)

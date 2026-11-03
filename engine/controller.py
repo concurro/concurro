@@ -2,6 +2,8 @@
 
 import base64
 from dataclasses import dataclass
+import difflib
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -39,8 +41,10 @@ from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, appr
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
 PR_TITLE_LIMIT = 72
-# Context bytes `ask()` adds at dispatch (the repository commit and the operation contract).
+# Context bytes `ask()` adds at dispatch (the repository commit and refs, and the operation contract).
 DISPATCH_ALLOWANCE = 2000
+# A review context's diff of one file; the reviewer reads the rest in the repository.
+MAX_DIFF = 64000
 # The status comment's steps, and the stage each running stage belongs to.
 STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
 STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
@@ -159,6 +163,42 @@ class Outcome:
     def __bool__(self):
         """Keep `if controller.advance(...)` meaning "this tick changed the task"."""
         return self.progressed
+
+
+def transport_size(context):
+    """Bytes a model receives; controller-only keys never reach it."""
+    return len(json.dumps({k: v for k, v in context.items() if not k.startswith("controller_")}).encode())
+
+
+def changes(before, after):
+    """Each changed file as status, digests, line counts and a unified diff against the base, bounded per file."""
+    result = []
+    for path in sorted(set(before) | set(after)):
+        old, new = before.get(path), after.get(path)
+        if old == new:
+            continue
+        lines = list(difflib.unified_diff(lf_lines(old or ""), lf_lines(new or ""), "a/" + path, "b/" + path))
+        body = lines[2:]
+        diff = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
+        truncated = len(diff.encode()) > MAX_DIFF
+        if truncated:
+            diff = diff.encode()[:MAX_DIFF].decode(errors="ignore") + "\n[diff truncated; read the rest in the repository]\n"
+        result.append({"path": path, "status": "added" if old is None else "deleted" if new is None else "modified",
+                       "base_sha256": sha256(old), "head_sha256": sha256(new),
+                       "added": sum(line.startswith("+") for line in body),
+                       "removed": sum(line.startswith("-") for line in body), "diff": diff, "truncated": truncated})
+    return result
+
+
+def lf_lines(text):
+    """Source lines as Git and the repository reader count them: LF-delimited, each keeping its terminator."""
+    parts = text.split("\n")
+    return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def sha256(text):
+    """SHA-256 of a file's UTF-8 bytes, or None when absent."""
+    return None if text is None else hashlib.sha256(text.encode()).hexdigest()
 
 
 class Controller:
@@ -497,6 +537,19 @@ class Controller:
                 "validation_capabilities": checks.catalog(self.state.get('plan', {}).get('files', []), self.bundle.execution),
                 "prior_outcomes_untrusted": self.state.get("prior_outcomes", [])}
 
+    def repository_refs(self, candidate):
+        """Real branch names at the commits a call reads; a candidate is committed on the task branch."""
+        state = self.state
+        refs = {self.config["base"]: state["base"]}
+        branch, head = state.get("branch"), state.get("head")
+        if head:
+            refs[branch] = head
+        if candidate:
+            refs[branch] = head or state["base"]
+            if head:
+                refs["concurro/published"] = head
+        return {"refs": refs, "head": branch if head or candidate else self.config["base"]}
+
     def ask(self, provider, stage, context):
         """Debit the persistent attempt budget before contacting a model.
 
@@ -504,8 +557,9 @@ class Controller:
         fields replace recomputed ones in the caller's context, which validates the response.
         """
         caller = context
-        context = {**context, "repository_commit": self.state.get("head", self.state["base"])}
-        size = len(json.dumps(context).encode())
+        context = {**context, "repository_commit": self.state.get("head", self.state["base"]),
+                   "repository": self.repository_refs("controller_candidate" in context)}
+        size = transport_size(context)
         if size > self.config["max_context_bytes"]:
             raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
                           "narrow the change")
@@ -1090,8 +1144,8 @@ class Controller:
         context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if self.state.get("head"):
             paths = self.state["changed_files"]
-            context.update(accumulated_before=self.files(self.state["base"], paths),
-                           accumulated_after=self.files(self.state["head"], paths))
+            context["accumulated_changes"] = changes(self.files(self.state["base"], paths, inspection=True),
+                                                     self.files(self.state["head"], paths, inspection=True))
         plan = self.ask(self.config["planner"], "plan", context)
         validate_plan(plan, self.config, self.state["execution"])
         expected = {v["id"] for v in context["open_objections"]}
@@ -1213,7 +1267,8 @@ class Controller:
                 overlay = sorted({*state["plan"]["files"], *changed})
                 if len(overlay) > checks.MAX_OVERLAY_FILES:
                     raise Blocked("candidate changes too many files to inspect; it is far over the approved budget")
-                context.update(files=workspace.files(overlay),
+                files = workspace.files(overlay)
+                context.update(files=files, controller_candidate=files,
                                prior_reviews=state["reviews"], changed_files=changed,
                                review_findings=findings.open_findings(state),
                                local_feedback=feedback, available_checks=executable, required_checks=required,
@@ -1253,10 +1308,10 @@ class Controller:
                     continue
                 if deadline - time.monotonic() < 600:
                     raise Blocked("local time budget cannot accommodate pre-publication review")
-                before, after = self.files(state["base"], changed), workspace.files(changed)
+                before, after = self.files(state["base"], changed, inspection=True), workspace.files(changed)
                 review_context = self.context(changed)
-                review_context.update(before=before, after=after, local_checks=reports,
-                                      local_commit=checkpoint["local_commit"])
+                review_context.update(changes=changes(before, after), controller_candidate=after,
+                                      local_checks=reports, local_commit=checkpoint["local_commit"])
                 oversized = self.oversized(review_context, before, after)
                 if oversized:
                     feedback = {"checks": reports, "capacity": oversized}
@@ -1298,7 +1353,7 @@ class Controller:
                      for provider in self.config["reviewers"]]
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [f"{name} ({size} of {limit} bytes)" for name, context in contexts
-                if (size := len(json.dumps(context).encode())) > limit]
+                if (size := transport_size(context)) > limit]
         if not over:
             return None
         return ("The change is too large to review: " + ", ".join(over) + ". Reduce it, or return a design_issue "
@@ -1307,7 +1362,7 @@ class Controller:
     def pr_review_context(self, provider, before, after, head):
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
-        context.update(before=before, after=after, head=head)
+        context.update(changes=changes(before, after), head=head)
         context["own_findings"] = findings.context(self.state, provider)
         context["review_output_budget"] = self.pr_review_output_budget()
         return context
@@ -1430,13 +1485,13 @@ class Controller:
         return f"https://github.com/{self.config['repository']}/pull/{number}"
 
     def review(self):
-        """Run one fresh provider review against the same immutable before/after files."""
+        """Run one fresh provider review of the same immutable change."""
         state = self.state
         provider = next((p for p in self.config["reviewers"] if p not in state["reviews"]), None)
         if provider:
             changed = state["changed_files"]
-            context = self.pr_review_context(provider, self.files(state["base"], changed),
-                                             self.files(state["head"], changed), state["head"])
+            context = self.pr_review_context(provider, self.files(state["base"], changed, inspection=True),
+                                             self.files(state["head"], changed, inspection=True), state["head"])
             report = self.ask(provider, "review", context)
             owned = findings.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],

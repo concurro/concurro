@@ -22,8 +22,9 @@ def command_for(request, schema_path, output_path):
     provider = request["provider"]
     session = request.get("session")
     resume = request.get("resume_id")
+    # A relay to the tool container's socket; this container holds no repository.
     server = {"command": "/usr/bin/env", "args": ["-i", "PATH=/usr/bin:/bin", "python3", "-I",
-              "/opt/concurro/engine/repository.py", "serve"]}
+              "/opt/concurro/engine/repository.py", "relay"]}
     mcp = json.dumps({"mcpServers": {"repository": server}})
     if provider == "codex":
         return ["codex", "exec", *(["resume"] if resume else []),
@@ -61,8 +62,9 @@ def prompt_for(request, bundle):
     authorization = context.pop("design_authorization", None)
     prompt = {"instructions": bundle.instructions(request["stage"]),
               "repository_snapshot": {"commit": context["repository_commit"],
+                  "refs": context["repository"]["refs"], "head": context["repository"]["head"],
                   "local_checkpoint": context.get("local_commit"),
-                  "has_local_overlay": request["stage"] in ("develop", "local_review"),
+                  "head_is_local_candidate": request["stage"] in ("develop", "local_review"),
                   "tools": list(TOOL_NAMES)},
               "response_schema": request["schema"], "untrusted_context": context}
     if authorization is not None:

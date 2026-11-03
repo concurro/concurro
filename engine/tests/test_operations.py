@@ -307,16 +307,17 @@ class ContainerBoundaryTests(unittest.TestCase):
 
     def host(self, completed, session=None):
         """Feed an entry-point result to the host transport in place of Docker."""
-        agents = Agents(CONFIG, archive_loader=lambda commit: b"",
-                        credentials=EnvironmentCredentials({"CODEX_API_KEY": "k"}))
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40}
+        agents = Agents(CONFIG, credentials=EnvironmentCredentials({"CODEX_API_KEY": "k"}))
+        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
+                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
         if session:
             context["controller_session"] = session
         with patch.dict("os.environ", {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64}), \
-                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, \
+                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
                 patch("agents.SessionVolume"), \
                 patch("agents.subprocess.run", side_effect=[completed, subprocess.CompletedProcess([], 0)]):
             snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=x,target=/repo"
+            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
             agents.ask("codex", "review", context)
 
     def test_provider_timeout_is_uncertain_on_the_host(self):

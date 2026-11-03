@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
+from pathlib import Path
 import threading
 import unittest
 
@@ -282,7 +283,7 @@ class SchedulerTests(ServiceFixture, unittest.TestCase):
 
 
 class TwoTargets(ServiceFixture, unittest.TestCase):
-    """Two targets tick concurrently, each with only its own configuration, bundle, archive and credentials."""
+    """Two targets tick concurrently, each with only its own configuration, bundle, mirror and credentials."""
 
     def test_isolation(self):
         bot = self.config["bot_login"]
@@ -291,22 +292,19 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
         backends = {KEY[0]: self.backend, "owner/two": RestBackend(fakes["owner/two"])}
         charter = json.loads(backends["owner/two"].files[".concurro/charter.json"])
         backends["owner/two"].files = target_files(second, json.dumps({**charter, "id": "second-charter"}))
-        for repository, fake in fakes.items():
-            fake.trees[fake.base]["docs/guide.md"] = "Guide of " + repository + "\n"
         seen, barrier = {}, threading.Barrier(2, timeout=30)
 
-        def agents(config, archive_loader, credentials, bundle):
+        def agents(config, mirror, credentials, bundle):
             repository = config["repository"]
             credential = credentials.resolve("codex", "intake", None)
-            seen[repository] = {"config": config["repository"], "bundle": bundle.identity,
-                                "archive": json.loads(archive_loader(fakes[repository].base))["docs/guide.md"],
+            seen[repository] = {"config": config["repository"], "bundle": bundle.identity, "mirror": mirror.path,
                                 "credentials": credentials.material(credential)}
             barrier.wait()
             return FakeAgents()
 
         targets = (Target(KEY[0], self.credentials("one.json")), Target("owner/two", self.credentials("two.json")))
         settings = type("Settings", (), {"controller_id": "service:primary", "engine": ENGINE, "targets": targets,
-                                         "limits": Limits(2, 1)})
+                                         "limits": Limits(2, 1), "state_dir": Path(self.directory.name)})
         gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__)
         reconciler = Reconciler(self.registry, backends.__getitem__, list(fakes), {bot}, clock=self.clock)
         worker = Worker(settings, gateway, self.registry, reconciler, backends.__getitem__, bot, agents=agents,
@@ -321,7 +319,8 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
         self.assertNotEqual(seen[KEY[0]]["bundle"], seen["owner/two"]["bundle"])
         for repository in fakes:
             self.assertEqual(seen[repository]["config"], repository)
-            self.assertEqual(seen[repository]["archive"], "Guide of " + repository + "\n")
+            self.assertEqual(seen[repository]["mirror"],
+                             Path(self.directory.name) / "mirrors" / (repository.replace("/", "__") + ".git"))
 
 
 class FairnessTests(unittest.TestCase):

@@ -183,7 +183,7 @@ class ValidationCatalogTests(unittest.TestCase):
         """The quality benchmark measures false approvals and false alarms independently."""
         results = []
         for case in design_eval.cases():
-            request = design_eval.request(case, 'claude', CONFIG)
+            request = design_eval.request(case, 'claude', CONFIG, 'e' * 40)
             self.assertNotIn('expected', request)
             self.assertNotIn('controller_session', request)
             self.assertNotIn('responses', request['plan'])

@@ -18,6 +18,7 @@ from controller import Controller, validate_config
 from conversation import PublicationError
 from credentials import EnvironmentCredentials
 from github import Transient
+from mirror import Mirror
 from policy import Blocked, SECRET_NAMES
 import private
 
@@ -158,8 +159,8 @@ class Worker:
                 snapshot = self.reconciler.snapshot(key)
                 target = self.load(key[0])
                 facade = GatewayGitHub(key[0], key[1], generation, self.gateway, self.reader(key[0]))
-                agents = self.agents(target.config, archive_loader=facade.archive, credentials=target.credentials,
-                                     bundle=target.bundle)
+                agents = self.agents(target.config, mirror=Mirror(self.settings.state_dir / "mirrors", key[0]),
+                                     credentials=target.credentials, bundle=target.bundle)
                 controller = Controller(facade, agents, target.config, self.workspace_factory, bundle=target.bundle,
                                         controller_id=self.settings.controller_id)
                 outcome = controller.advance(key[1])

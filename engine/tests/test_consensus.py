@@ -325,7 +325,7 @@ class ConsensusTests(unittest.TestCase):
         state = self.reach("implement")
         self.assertEqual(state["branch"], branch)
         plan_turn = next(c for _, stage, c in reversed(self.agents.calls) if stage == "plan")
-        self.assertNotEqual(plan_turn["accumulated_before"], plan_turn["accumulated_after"])
+        self.assertTrue(plan_turn["accumulated_changes"])
         state = self.tick()
         self.assertEqual(state["pending"]["parent"], parent)
         state = self.tick()

@@ -363,7 +363,8 @@ class ServiceFixture:
         """The reconciler, worker and scheduler over the fakes, with the fake agents."""
         bot = self.config["bot_login"]
         self.settings = SimpleNamespace(controller_id=SERVICE, engine=ENGINE, limits=limits or Limits(4, 2),
-                                        targets=(Target(KEY[0], self.credentials()),))
+                                        targets=(Target(KEY[0], self.credentials()),),
+                                        state_dir=Path(self.directory.name))
         self.reconciler = Reconciler(self.registry, lambda repository: self.backend, [KEY[0]], {bot}, clock=self.clock)
         self.worker = Worker(self.settings, self.gateway, self.registry, self.reconciler, lambda repository: self.backend,
                              bot, agents=lambda *args, **kwargs: self.agents, workspace_factory=workspace)

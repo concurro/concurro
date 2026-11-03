@@ -105,14 +105,16 @@ class BundleSplitTests(unittest.TestCase):
     def test_agent_payload_carries_exact_charter_text(self):
         """The controller sends the charter bytes that the container must hash."""
         configured = {**CONFIG, "models": {**CONFIG["models"], "codex": "operator-model"}}
-        agents = Agents(configured, archive_loader=lambda commit: b"")
+        agents = Agents(configured)
         with patch.dict("os.environ", {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64, "CODEX_API_KEY": "fixture"}), \
-                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, \
+                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
                 patch("agents.subprocess.run") as run:
             snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=x,target=/repo"
+            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
             run.return_value.returncode = 0
             run.return_value.stdout = "{}"
-            agents.ask("codex", "review", {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40})
+            agents.ask("codex", "review", {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
+                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}})
         payload = json.loads(run.call_args_list[0].kwargs["input"])
         self.assertEqual(payload["charter"], agents.bundle.charter_text)
         self.assertEqual(payload["profiles"], PROFILES)

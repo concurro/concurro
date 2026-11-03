@@ -1,11 +1,8 @@
 """Scope envelope: a plan approves a design, an area and a budget; the implementer edits within them."""
 
 from copy import deepcopy
-import io
 import json
 import os
-from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -16,9 +13,7 @@ import checks
 from controller import DISPATCH_ALLOWANCE, Controller
 from local import LocalWorkspace
 from policy import Blocked, OutsideScope, local_evidence_valid, merge_reasons, validate_edits, validate_plan
-from repository import Repository, extract, overlay
 from snapshot import inspection
-from test_repository import archive
 
 SCOPE = {"paths": ["docs/**"], "max_files": 3, "max_changed_lines": 50}
 
@@ -108,7 +103,12 @@ class ImplementationTests(Harness, unittest.TestCase):
         self.assertIn("outside the approved scope: guides/elsewhere.md", developments[1]["local_feedback"]["scope"])
         self.assertEqual(sorted(state["changed_files"]), ["docs/caller.md", "docs/guide.md"])
         reviews = [c for _, stage, c in agents.calls if stage == "review"]
-        self.assertEqual(sorted(reviews[0]["after"]), ["docs/caller.md", "docs/guide.md"], "reviews see every changed file")
+        self.assertEqual([c["path"] for c in reviews[0]["changes"]], ["docs/caller.md", "docs/guide.md"],
+                         "reviews see every changed file")
+        local = next(c for _, stage, c in agents.calls if stage == "local_review")
+        self.assertEqual([c["path"] for c in local["changes"]], ["docs/caller.md", "docs/guide.md"])
+        self.assertNotIn("after", local)
+        self.assertEqual(sorted(local["controller_candidate"]), ["docs/caller.md", "docs/guide.md"])
         self.assertNotIn("unapproved path", self.reasons(state))
         self.assertNotIn("guides/elsewhere.md", json.dumps(self.gh.trees))
 
@@ -124,11 +124,9 @@ class ImplementationTests(Harness, unittest.TestCase):
         self.assertNotIn(rule, first["policy"], "nothing has touched the call site yet")
         self.assertIn(rule, repair["policy"])
         self.assertEqual(repair["files"]["docs/caller.md"], "See the updated guide.\n")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            extract(io.BytesIO(archive({"repo/docs/guide.md": b"Original guide\n"})), root)
-            overlay(inspection(repair, "develop")[1], root)
-            self.assertEqual(Repository(root).read("docs/caller.md"), "See the updated guide.\n")
+        spec = inspection(repair["repository"], repair["controller_candidate"], "develop", "main")
+        self.assertEqual(spec["candidate"]["files"]["docs/caller.md"], "See the updated guide.\n")
+        self.assertEqual(spec["head"], self.load()[1]["branch"], "the candidate is committed on the task branch")
         reviews = [c for _, stage, c in agents.calls if stage in ("local_review", "review")]
         self.assertTrue(reviews and all(rule in c["policy"] for c in reviews), "reviews apply the call site's rules")
 

@@ -5,7 +5,7 @@ ARG CODEX_VERSION
 ARG CLAUDE_VERSION
 ARG COPILOT_VERSION
 RUN test -n "$CODEX_VERSION" && test -n "$CLAUDE_VERSION" && test -n "$COPILOT_VERSION" \
-    && apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g "@openai/codex@$CODEX_VERSION" \
        "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@github/copilot@$COPILOT_VERSION" \

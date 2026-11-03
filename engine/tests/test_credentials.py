@@ -57,14 +57,16 @@ class AgentCredentialTests(unittest.TestCase):
 
     def ask(self, credentials, selected):
         """Run one patched provider call and return the Docker invocation."""
-        agents = Agents(CONFIG, archive_loader=lambda commit: b"", credentials=credentials)
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40}
+        agents = Agents(CONFIG, credentials=credentials)
+        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
+                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
         if selected is not None:
             context["controller_credential"] = selected.record()
         with patch.dict("os.environ", {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64}), \
-                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, \
+                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
                 patch("agents.subprocess.run") as run:
             snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=x,target=/repo"
+            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
             run.return_value.returncode = 0
             run.return_value.stdout = "{}"
             agents.ask("codex", "review", context)
