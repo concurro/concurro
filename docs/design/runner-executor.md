@@ -12,6 +12,7 @@ Alternatives considered are recorded in
 Give the implementer and local reviewer their normal tools (shell, build,
 tests, web research) without running build machines ourselves, while keeping
 GitHub write credentials, and the App key, entirely away from the agent.
+[Open workspaces](open-workspaces.md) extends the same sessions to every role.
 
 ## Settled requirements
 
@@ -45,7 +46,7 @@ The caller workflow:
 
 - triggers on `repository_dispatch` with `types: [concurro-agent, concurro-checks]`,
   and runs one job per type, calling `agent.yml` or `checks.yml`;
-- sets `permissions: { id-token: write }` and `cache-mode: none` on each job,
+- sets `permissions: { id-token: write }` and `cache-mode: read` on each job,
   and nothing else;
 - passes only the session or check ID from the payload. The agent image digest,
   engine ref and endpoint URL live inside the reusable workflows, where
@@ -58,9 +59,11 @@ The caller workflow:
 
 The reusable workflows set their own `timeout-minutes` (at most 360 for
 `agent.yml`; a shorter limit for `checks.yml`), since a calling job cannot, and
-set `cache-mode: none` on their jobs as well. A called workflow never receives
-more cache access than its caller granted, so the caller's `none` bounds it
-either way.
+set `cache-mode: read` on their jobs as well. A called workflow never receives
+more cache access than its caller granted, and requesting more fails
+validation, so caller and called jobs must both say `read`. `read` allows
+restoring the target's default-branch caches, the trusted seed that
+[open workspaces](open-workspaces.md) describes, and refuses every save.
 
 The target's Actions policy must allow `concurro/concurro` reusable workflows.
 GitHub's "require actions to be pinned to a full-length commit SHA" policy does
@@ -174,7 +177,7 @@ generation, attempt and request digest.
 | On the runner | Risk if the agent or candidate code reached it | Control |
 | ---- | ---- | ---- |
 | `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | Minting OIDC tokens to act as the job | Never passed into a container; the endpoint serves only issued turns for the bound run |
-| `ACTIONS_RUNTIME_TOKEN` | Writing the target's Actions caches and artifacts. Default-branch caches are visible to every branch, including release workflows, and cannot be modified once saved, so a poisoned entry persists | Never passed into a container; `cache-mode: none` makes the cache service refuse all cache access for the job; no artifacts are uploaded; gVisor makes a container escape harder; the target avoids prefix `restore-keys` in release workflows |
+| `ACTIONS_RUNTIME_TOKEN` | Writing the target's Actions caches and artifacts. Default-branch caches are visible to every branch, including release workflows, and cannot be modified once saved, so a poisoned entry persists | Never passed into a container; `cache-mode: read` makes the cache service refuse every save for the job, so nothing can be poisoned; no artifacts are uploaded; gVisor makes a container escape harder; the target avoids prefix `restore-keys` in release workflows |
 | `GITHUB_TOKEN` | Nothing | `permissions: { id-token: write }` only; no checkout (the source comes as an archive) |
 | Target secrets and variables | Exposure | The workflows reference none, and use no environment with secrets |
 | The provider credential (agent runner only) | The agent has it anyway | A dedicated key; proxy tokens where the provider supports them; masked in logs |
@@ -281,8 +284,8 @@ Steps 1–3 build on the service skeleton's worker and mutation gateway, now in 
 - **Caches:** `create-test-caches` and `concurro-rust` save default-branch caches
   on pushes to `main`, and PR CI restores them through deliberately broad
   `restore-keys`. These are exactly the entries a container escape could poison,
-  which `cache-mode: none` on agent jobs prevents. The release workflows use no
-  Actions cache.
+  which `cache-mode: read` on executor jobs prevents, since it refuses saves.
+  The release workflows use no Actions cache.
 - **Ruleset `Protect main`:** pull requests with one approval, last-push
   approval, stale-review dismissal, signed commits and linear history. It covers
   the caller workflow file, so no separate rule is needed. It requires no status
@@ -337,7 +340,9 @@ unchanged.
 
 - Whether `repository_dispatch` delivery latency and runner queueing are
   acceptable per session and per check.
-- Cache use: whether trusted jobs may save dependency caches that agent jobs
-  restore (`cache-mode: read`), and under which keys.
-- Planners and design reviewers stay on today's read-only containers; whether
-  they move to the runner later.
+- Cache use: settled by [open workspaces](open-workspaces.md). Jobs restore the
+  target's own default-branch cache with `cache-mode: read`, and Concurro never
+  saves one.
+- Roles: settled by [open workspaces](open-workspaces.md). Every role
+  (planners, design reviewers, the implementer and reviewers) can run in
+  sessions on runners; the service-host adapter remains for the fallback host.
