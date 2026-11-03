@@ -372,8 +372,11 @@ Not built in v1; the contracts above are shaped so it can be added later.
 ## Targets and engine versions
 
 The service serves every repository where its controller App is installed and the
-operator has enabled the target. Targets select their engine version in their own
-configuration; the service runs only versions it has and the operator allows.
+operator has enabled the target. A target may pin an engine commit in its own
+configuration, and the service then acts on it only at that commit; without a pin,
+the target accepts the engine the operator serves. A pin is recommended where the
+target's maintainers and the operator differ, since it keeps engine upgrades a
+reviewed change in the target.
 Upgrading a target with active tasks follows the existing rule that bundle
 identity changes block in-flight approvals.
 

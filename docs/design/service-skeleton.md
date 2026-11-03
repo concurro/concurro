@@ -65,7 +65,7 @@ A private JSON file (directory 700, file 600), like the pilot's:
 | Field | Meaning |
 | ---- | ---- |
 | `controller_id` | Ownership marker this service writes, `service:<name>` |
-| `engine` | This service's engine commit |
+| `engine` | Optional: the engine commit to serve. Without it, the service serves the engine checkout's HEAD |
 | `app_id`, `private_key_path` | The controller App |
 | `webhook_secret_path` | HMAC secret for ingress |
 | `state_dir`, `registry_id` | Registry location and the identity it must contain |
@@ -75,7 +75,7 @@ A private JSON file (directory 700, file 600), like the pilot's:
 
 `settings.load(path)` returns a frozen `Settings` and refuses:
 
-- unknown or missing fields, or wrong types;
+- unknown or missing fields (other than `engine`), or wrong types;
 - a `controller_id` not matching `service:[a-z0-9-]{1,32}`, an `engine` that is not
   40 hex digits, or an `app_id` that is not a positive integer;
 - paths that are relative or not canonical (a symlink anywhere along the path, a
@@ -90,8 +90,9 @@ A private JSON file (directory 700, file 600), like the pilot's:
 - images not pinned by digest (`policy.IMAGE`);
 - limits outside `1 ≤ per_repository ≤ global`.
 
-Checks that need the host (the engine checkout's HEAD equals `engine`; the images
-exist locally) run when `serve` starts, in step 3. The private-file checks move
+Checks that need the host (the engine checkout is clean, at `engine` when it is
+set; the images exist locally) run when `serve` starts, in step 3. The served
+commit is logged at startup. The private-file checks move
 from `engine/pilot.py` into `engine/private.py`, shared by the pilot and the
 service; the pilot keeps its function names as thin wrappers.
 
@@ -449,9 +450,11 @@ For one key and generation:
 2. Read the target's `.concurro/` at its default-branch head through the read
    token (the head from GraphQL, each file through the contents API, regular
    files only) into a private temporary directory, and validate the
-   configuration. It must name this repository, pin the service's engine commit
-   in its `engine` field, name the verified App as `bot_login`, and keep
-   `merge_enabled` false. `engine` is excluded from the task's configuration
+   configuration. It must name this repository, name the verified App as
+   `bot_login`, and keep `merge_enabled` false. Its `engine` pin is optional and
+   recommended where the target's maintainers and the service operator differ:
+   with one, only that commit may act on the target; without one, the target
+   accepts the engine the operator serves. `engine` is excluded from the task's configuration
    digest, so an engine upgrade does not invalidate tasks.
 3. Build one `Bundle(engine_root, target=tmp, profiles=...)` and inject that same
    instance, the facade, and a facade-backed archive loader everywhere they are

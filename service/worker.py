@@ -79,8 +79,8 @@ def secrets(path):
 def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT):
     """Read and validate `.concurro/` at the default-branch head, through the read token.
 
-    The target must pin exactly this service's engine, name the verified App and keep
-    merging disabled. Files are staged in a private temporary directory only while the
+    The target must name the verified App and keep merging disabled. Its `engine` pin is
+    optional: without one, it runs whatever engine the operator serves; with one, only that. Files are staged in a private temporary directory only while the
     bundle reads them.
     """
     repository = target.repository
@@ -91,7 +91,7 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT):
     validate_config(config)
     if config["repository"] != repository:
         raise Blocked("target configuration names another repository")
-    if config.get("engine") != engine:
+    if "engine" in config and config["engine"] != engine:
         raise Blocked("target pins another engine commit")
     if config["bot_login"] != bot_login:
         raise Blocked("target bot_login differs from the controller App")

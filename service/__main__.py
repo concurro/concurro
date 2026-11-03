@@ -1,6 +1,7 @@
 """`serve` runs the daemon; every other command is a request to it over the control channel."""
 
 import argparse
+from dataclasses import replace
 import json
 import logging
 import os
@@ -38,14 +39,22 @@ class StartupError(RuntimeError):
 
 
 def host_checks(settings):
-    """The engine checkout is clean at the configured commit, and both images exist locally."""
+    """Settings with the engine resolved: the checkout is clean at its HEAD, and both images exist locally.
+
+    Settings that name an engine commit require the checkout to be at it; without one, the
+    service serves the checkout's HEAD.
+    """
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=CHECKOUT, capture_output=True, text=True, timeout=30)
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=CHECKOUT, capture_output=True, text=True, timeout=30)
-    if head.returncode or head.stdout.strip() != settings.engine or dirty.returncode or dirty.stdout.strip():
-        raise StartupError("the engine checkout must be clean at the configured engine commit")
+    if head.returncode or dirty.returncode or dirty.stdout.strip():
+        raise StartupError("the engine checkout must be clean")
+    engine = head.stdout.strip()
+    if settings.engine not in (None, engine):
+        raise StartupError("the engine checkout must be at the configured engine commit")
     for image in (settings.agent_image, settings.execution_image):
         if subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode:
             raise StartupError("a configured image is unavailable locally")
+    return replace(settings, engine=engine)
 
 
 class Daemon:
@@ -59,8 +68,8 @@ class Daemon:
 
     def start(self):
         """Check the host, verify the App, open the registry and start serving."""
-        settings = self.settings
-        host_checks(settings)
+        self.settings = settings = host_checks(self.settings)
+        log.info("serving engine %s", settings.engine)
         # Process-wide values, fixed at startup; nothing per task enters the environment.
         reports = settings.state_dir / "reports"
         reports.mkdir(mode=0o700, exist_ok=True)

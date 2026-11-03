@@ -42,10 +42,13 @@ class Limits:
 
 @dataclass(frozen=True)
 class Settings:
-    """Validated operator settings; host checks (engine HEAD, local images) run when `serve` starts."""
+    """Validated operator settings; host checks (engine HEAD, local images) run when `serve` starts.
+
+    `engine` is None when the settings leave it to the checkout's HEAD, resolved at startup.
+    """
 
     controller_id: str
-    engine: str
+    engine: str | None
     app_id: int
     private_key_path: Path
     webhook_secret_path: Path
@@ -113,9 +116,9 @@ def load(path):
         data = json.loads(private.read(path, (CHECKOUT,)))
     except (OSError, ValueError, Blocked):
         raise SettingsError("settings file is missing, unreadable or not owner-only") from None
-    require(isinstance(data, dict) and set(data) == FIELDS, "fields")
+    require(isinstance(data, dict) and set(data) in (FIELDS, FIELDS - {"engine"}), "fields")
     require(isinstance(data["controller_id"], str) and CONTROLLER.fullmatch(data["controller_id"]), "controller_id")
-    require(isinstance(data["engine"], str) and COMMIT.fullmatch(data["engine"]), "engine")
+    require("engine" not in data or isinstance(data["engine"], str) and COMMIT.fullmatch(data["engine"]), "engine")
     require(isinstance(data["registry_id"], str) and REGISTRY.fullmatch(data["registry_id"]), "registry_id")
     for field in ("agent_image", "execution_image"):
         require(isinstance(data[field], str) and IMAGE.fullmatch(data[field]), field)
@@ -140,7 +143,7 @@ def load(path):
     total = integer(limits["global"], "limits.global")
     require(integer(limits["per_repository"], "limits.per_repository") <= total, "limits.per_repository")
     return Settings(
-        controller_id=data["controller_id"], engine=data["engine"], app_id=integer(data["app_id"], "app_id"),
+        controller_id=data["controller_id"], engine=data.get("engine"), app_id=integer(data["app_id"], "app_id"),
         private_key_path=key, webhook_secret_path=webhook,
         state_dir=state(data["state_dir"]), registry_id=data["registry_id"],
         targets=tuple(targets), agent_image=data["agent_image"], execution_image=data["execution_image"],

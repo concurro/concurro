@@ -4,11 +4,13 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import fixtures  # noqa: F401  (puts the service and engine on the module path)
-from service import settings
+from service import __main__ as daemon, settings
 from service.settings import SettingsError
 
 IMAGE = "sha256:" + "a" * 64
@@ -56,6 +58,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((loaded.limits.global_ticks, loaded.limits.per_repository), (4, 2))
         with self.assertRaises(AttributeError):
             loaded.engine = "c" * 40
+        unpinned = deepcopy(self.data)
+        del unpinned["engine"]
+        self.assertIsNone(self.load(unpinned).engine, "resolved to the checkout's HEAD at startup")
 
     def test_invalid_fields(self):
         """Unknown, missing or ill-typed fields, unpinned images and out-of-range limits are refused."""
@@ -69,7 +74,7 @@ class SettingsTests(unittest.TestCase):
             return data
 
         cases = {
-            "unknown": changed(extra=1), "missing": changed(engine=KeyError),
+            "unknown": changed(extra=1), "missing": changed(app_id=KeyError),
             "controller": changed(controller_id="actions"), "engine": changed(engine="main"),
             "boolean app": changed(app_id=True), "string app": changed(app_id="123"), "zero app": changed(app_id=0),
             "image": changed(agent_image="concurro-agent:latest"),
@@ -152,6 +157,30 @@ class SettingsTests(unittest.TestCase):
             self.load({**self.data, "engine": "secret-looking-value"})
         self.assertEqual(str(raised.exception), "invalid settings field: engine")
 
+
+
+class HostCheckTests(unittest.TestCase):
+    """Startup serves the clean checkout's HEAD, or refuses a checkout away from the configured commit."""
+
+    def check(self, engine, head="a" * 40, dirty=""):
+        replies = {"rev-parse": head + "\n", "status": dirty}
+
+        def run(command, **kwargs):
+            out = next((v for k, v in replies.items() if k in command), "")
+            return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
+
+        loaded = settings.Settings("service:p", engine, 1, Path("/k"), Path("/w"), Path("/s"), "r", (),
+                                   "sha256:" + "0" * 64, "sha256:" + "1" * 64, settings.Limits(1, 1))
+        with patch.object(daemon.subprocess, "run", side_effect=run):
+            return daemon.host_checks(loaded)
+
+    def test_engine_resolution(self):
+        self.assertEqual(self.check(None).engine, "a" * 40)
+        self.assertEqual(self.check("a" * 40).engine, "a" * 40)
+        with self.assertRaisesRegex(daemon.StartupError, "configured engine commit"):
+            self.check("b" * 40)
+        with self.assertRaisesRegex(daemon.StartupError, "clean"):
+            self.check(None, dirty=" M engine/controller.py\n")
 
 if __name__ == "__main__":
     unittest.main()

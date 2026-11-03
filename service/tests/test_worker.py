@@ -175,6 +175,14 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         self.drain()
         self.assertEqual(self.stage(), "planned")
 
+    def test_unpinned_target_runs_the_served_engine(self):
+        """A target without an `engine` pin accepts whatever engine the operator serves."""
+        self.backend.files[".concurro/config.json"] = json.dumps({k: v for k, v in self.config.items() if k != "engine"})
+        self.service()
+        self.assertEqual(self.reconciler.poll(), [KEY])
+        self.drain()
+        self.assertEqual(self.stage(), "planned")
+
     def test_target_mismatches_make_no_writes(self):
         """Another engine pin, App or merge setting is refused before any state is read or written."""
         self.service()
