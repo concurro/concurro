@@ -15,6 +15,7 @@ from bundle import CHARTER, Bundle, RESOURCE_LIMIT, profile_paths
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from controller import Controller, validate_config
+from conversation import PublicationError
 from credentials import EnvironmentCredentials
 from github import Transient
 from policy import Blocked, SECRET_NAMES
@@ -190,7 +191,9 @@ class Worker:
             if action == "suspend":
                 reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect service health."
                 try:
-                    controller.suspend("blocked", reason, publish_events=False)
+                    # The Blocked comment is posted now; a publication failure has the health notice instead.
+                    controller.suspend("blocked", reason, outboxes=False,
+                                       publish_events=not isinstance(error, PublicationError))
                 except Exception as display_error:
                     diagnostic = display_error if isinstance(display_error, CheckpointError) else CheckpointError("failure_display")
                     sync_checkpoint_health(controller.gh, controller.config, key[1], failed=True, error=diagnostic)

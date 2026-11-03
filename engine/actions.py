@@ -3,6 +3,7 @@
 import conversation
 import markup
 from markup import block, code, link, text
+from checkpoints import DIAGNOSTICS
 from policy import Blocked, digest
 
 # Gate reasons only a human merge resolves: Concurro's own merge policy, and GitHub's requirements
@@ -10,6 +11,8 @@ from policy import Blocked, digest
 POLICY_REASONS = {"autonomous merge is disabled", "autonomous merge is limited to configured low-risk paths"}
 GITHUB_REASON = "GitHub mergeability is not clean"
 COMMENT_URL = "https://github.com/{repository}/issues/{issue}#issuecomment-{comment}"
+# Blocks that the checkpoint health notice already reports; they get no Blocked comment of their own.
+PUBLICATION_REASONS = {DIAGNOSTICS["conversation_publish"], DIAGNOSTICS["conversation_conflict"]}
 
 
 def transition(state, config, author, plan_url=None):
@@ -28,7 +31,7 @@ def transition(state, config, author, plan_url=None):
         conversation.queue(state, f"{markup.ESCALATED} Escalated", explain(reason, retry))
     elif stage == "rejected":
         conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry))
-    elif stage == "blocked":
+    elif stage == "blocked" and reason not in PUBLICATION_REASONS:
         conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(
             reason, f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
                     "a reason that asks for reconciliation needs an operator first."))

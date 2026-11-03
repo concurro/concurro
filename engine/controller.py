@@ -199,8 +199,12 @@ class Controller:
             del operation["response"]
         self.checkpoints.save(self.state)
 
-    def save(self, publish_events=True):
-        """Persist audit and plan artifacts before publishing their concise comment summary."""
+    def save(self, publish_events=True, outboxes=True):
+        """Persist audit and plan artifacts before publishing their concise comment summary.
+
+        `outboxes=False` publishes the issue conversation only, leaving PR reviews and request
+        edits for a later tick: a failure's own notice must not replay what just failed.
+        """
         state = self.state
         self.record_outcome()
         if publish_events:
@@ -211,7 +215,7 @@ class Controller:
         self.sync_stage()
         if publish_events and conversation.publish(state, self.gh, self.config):
             self.checkpoint()
-        if publish_events:
+        if publish_events and outboxes:
             actions.publish(state, self.gh, self.checkpoint)
             findings.publish(state, self.gh, self.config, self.checkpoint)
         body = self.summary_body()
@@ -974,14 +978,14 @@ class Controller:
             state.update(stage="implement", approval={"kind": "consensus", "plan": state["plan_id"],
                                                        "binding": approval_binding(state, self.config)})
 
-    def suspend(self, stage, reason=None, publish_events=True):
+    def suspend(self, stage, reason=None, publish_events=True, outboxes=True):
         """Pause work without replacing an earlier resume target on repeated failures."""
         if self.state["stage"] not in ("blocked", "stopped"):
             self.state["retry_stage"] = self.state["stage"]
         self.state["stage"] = stage
         if reason is not None:
             self.state["reason"] = reason
-        self.save(publish_events=publish_events)
+        self.save(publish_events=publish_events, outboxes=outboxes)
 
     def resume_with_head(self, requirements):
         """Continue a design whose PR exists under changed requirements; whether planning resumes.
@@ -1342,7 +1346,11 @@ class Controller:
         if not title:
             return f"Address issue #{self.state['issue']}"
         limit = PR_TITLE_LIMIT - len(suffix)
-        return (title if len(title) <= limit else title[:limit - 1].rstrip() + "…") + suffix
+        if len(title) > limit:
+            cut = title[:limit - 1]
+            # Cut at a word boundary unless the first word alone is too long.
+            title = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-") + "…"
+        return title + suffix
 
     def pr_body(self):
         """The plan's summary, its artifact, and the issue it closes; GitHub shows CI and reviews natively."""
@@ -1601,7 +1609,9 @@ def main():
             else:
                 reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect runner health."
                 try:
-                    controller.suspend("blocked", reason, publish_events=False)
+                    # The Blocked comment is posted now; a publication failure has the health notice instead.
+                    controller.suspend("blocked", reason, outboxes=False,
+                                       publish_events=not isinstance(error, conversation.PublicationError))
                 except Exception as display_error:
                     diagnostic = display_error if isinstance(display_error, CheckpointError) else CheckpointError("failure_display")
                     sync_checkpoint_health(gh, config, number, failed=True, error=diagnostic)

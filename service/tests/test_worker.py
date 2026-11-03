@@ -11,6 +11,7 @@ from support import setUpModule, tearDownModule  # unittest module fixtures
 from test_pipeline import FakeAgents, FakeGitHub, FakeWorkspace
 from controller import Controller, Outcome, config_digest
 from github import Transient
+import reviews
 from policy import Blocked, UncertainOutcome
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS, MutationGateway
@@ -169,11 +170,34 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         state = self.state()
         self.assertEqual((state["stage"], state["reason"]), ("blocked", "plan refused by policy"))
         self.assertEqual(self.registry.outcome(KEY).kind, "blocked")
+        notices = lambda: [c["body"] for c in self.fake.comments if "### 🛑 Blocked" in c["body"]]
+        self.assertEqual(len(notices()), 1, "posted when the task blocks, not on its next tick")
+        self.assertIn("plan refused by policy", notices()[0])
         self.assertEqual(self.reconciler.poll(), [])
         self.fake.comment("/concurro retry")
         self.assertEqual(self.reconciler.poll(), [KEY])
         self.drain()
         self.assertEqual(self.stage(), "planned")
+        self.assertEqual(len(notices()), 1, "the retry posts no stale notice")
+
+    def test_exhausted_pr_publication_stays_blocked(self):
+        """Persistent review rejections block after the attempt limit, and nothing retries them until a writer acts."""
+        for _ in range(12):
+            self.backend.fail("POST", "pulls/9/reviews", status=422)
+        self.service()
+        self.reconciler.poll()
+        self.drain()
+        self.fake.comment("/concurro approve " + self.state()["plan_id"])
+        for _ in range(8):
+            self.reconciler.poll()
+            self.drain()
+            self.clock.now += 3601
+        attempts = lambda: [m for m in self.registry.mutations(KEY, "failed") if m.path.endswith("/pulls/9/reviews")]
+        self.assertEqual((self.state()["stage"], self.registry.outcome(KEY).kind), ("blocked", "blocked"))
+        self.assertEqual(len(attempts()), reviews.MAX_ATTEMPTS)
+        self.assertEqual(self.reconciler.poll(), [])
+        self.assertEqual(self.drain(), 0)
+        self.assertEqual(len(attempts()), reviews.MAX_ATTEMPTS, "no automatic retries past the limit")
 
     def test_unpinned_target_runs_the_served_engine(self):
         """A target without an `engine` pin accepts whatever engine the operator serves."""

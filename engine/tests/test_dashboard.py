@@ -82,8 +82,12 @@ class PullRequestTests(Harness, unittest.TestCase):
     def test_long_headline_is_cut(self):
         controller = self.run_to(Reviewers(set()), "review")
         controller.state["plan"]["headline"] = "Word " * 40
-        self.assertEqual(len(controller.pr_title()), 72)
-        self.assertTrue(controller.pr_title().endswith("… (#7)"))
+        self.assertLessEqual(len(controller.pr_title()), 72)
+        self.assertTrue(controller.pr_title().endswith("Word… (#7)"), "cut at a word boundary")
+        controller.state["plan"]["headline"] = "README section 3 recommends plain `cargo build` for everyday development work"
+        self.assertEqual(controller.pr_title(), "README section 3 recommends plain `cargo build` for everyday… (#7)")
+        controller.state["plan"]["headline"] = "x" * 100
+        self.assertEqual(controller.pr_title(), "x" * 66 + "… (#7)", "one long word is cut where it must be")
 
 
 class CheckScopeTests(Harness, unittest.TestCase):

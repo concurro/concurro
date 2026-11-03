@@ -77,6 +77,8 @@ class ConversationRecoveryTests(unittest.TestCase):
         self.run_main()
         self.assertEqual(self.load().state["stage"], "plan_qc")
         self.assertFalse(self.load().state["conversation"]["pending"])
+        self.assertFalse([c for c in self.gh.comments if "### 🛑 Blocked" in c["body"]],
+                         "a publication failure is reported by the health notice, never a late Blocked comment")
         self.assertNotIn({"name": "concurro:attention"}, self.gh.issue["labels"])
         self.assertEqual(self.gh.merges, 0)
 
