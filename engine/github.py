@@ -8,9 +8,12 @@ STAGE_LABEL_PREFIX = "concurro:stage:"
 ATTENTION_LABEL = "concurro:attention"
 STAGES = {"intake", "clarify", "plan", "plan_qc", "planned", "implement", "publish", "review",
           "gates", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
-# The engine's only GraphQL mutation; the service gateway admits exactly this document.
+# The engine's only GraphQL mutations; the service gateway admits exactly these documents.
 LINKED_BRANCH = """mutation($input:CreateLinkedBranchInput!) {
           createLinkedBranch(input:$input) { linkedBranch { ref { name target { oid } } } }
+        }"""
+RESOLVE_THREAD = """mutation($input:ResolveReviewThreadInput!) {
+          resolveReviewThread(input:$input) { thread { id isResolved } }
         }"""
 
 
@@ -163,6 +166,41 @@ class GitHub:
         """Require current repository write access, not author association alone."""
         result = self.repo("collaborators/" + quote(login, safe="") + "/permission")
         return result["permission"] in ("admin", "maintain", "write")
+
+    def review_threads(self, number):
+        """Every review thread as `{id, isResolved, comment}`, where `comment` is its first comment's REST ID."""
+        owner, name = self.repository.split("/")
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+          repository(owner:$owner,name:$name) { pullRequest(number:$number) {
+            reviewThreads(first:100,after:$cursor) {
+              nodes { id isResolved comments(first:1) { nodes { databaseId } } }
+              pageInfo { hasNextPage endCursor }
+            }
+          } }
+        }"""
+        cursor, result = None, []
+        for _ in range(100):
+            response = self.api("graphql", "POST", {"query": query, "variables": {
+                "owner": owner, "name": name, "number": number, "cursor": cursor}})
+            if response.get("errors"):
+                raise RuntimeError("cannot establish review-thread state")
+            page = response["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for node in page["nodes"]:
+                first = node["comments"]["nodes"]
+                result.append({"id": node["id"], "isResolved": node["isResolved"],
+                               "comment": first[0]["databaseId"] if first else None})
+            if not page["pageInfo"]["hasNextPage"]:
+                return result
+            cursor = page["pageInfo"]["endCursor"]
+        raise RuntimeError("review-thread pagination exceeded safety bound")
+
+    def resolve_thread(self, thread_id):
+        """Resolve one review thread; return whether GitHub reports it resolved."""
+        result = self.api("graphql", "POST", {"query": RESOLVE_THREAD, "variables": {"input": {"threadId": thread_id}}})
+        if result.get("errors"):
+            raise RuntimeError("review thread resolution failed; reconcile on the next tick")
+        thread = ((result.get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
+        return thread.get("id") == thread_id and thread.get("isResolved") is True
 
     def threads(self, number):
         """Read every review thread; an outdated unresolved thread still blocks."""

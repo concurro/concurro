@@ -441,6 +441,8 @@ def merge_reasons(state, pr, files, checks, threads, reviews, config):
                 or report.get("input_revision") != state.get("input_revision", 0)):
             reasons.append(provider + " approval missing or stale")
     ledger = state.get("findings", [])
+    if state.get("pr_outbox"):
+        reasons.append("PR review publication incomplete")
     if any(f["status"] == "open" for f in ledger):
         reasons.append("open review findings")
     withdrawn = [f["id"] for f in ledger if f["status"] == "withdrawn"]

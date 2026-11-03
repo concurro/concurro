@@ -49,10 +49,12 @@ def strings(value, limit=32):
 
 def pr_review_cost(report):
     """Checkpoint bytes a PR review adds: the report, its finding text again in the ledger, and for a
-    reopen the copies of its design issue kept in its event, history, feedback and revision notice."""
-    cost = len(json.dumps(report).encode()) + sum(len(json.dumps(f["detail"]).encode()) for f in report["findings"])
+    reopen the report's copy in the PR outbox and the copies of its design issue kept in its history,
+    feedback and revision notice."""
+    size = len(json.dumps(report).encode())
+    cost = size + sum(len(json.dumps(f["detail"]).encode()) for f in report["findings"])
     if report["verdict"] == "reopen":
-        cost += 4 * len(json.dumps(report["design_issue"]).encode())
+        cost += size + 3 * len(json.dumps(report["design_issue"]).encode())
     return cost
 
 
@@ -207,6 +209,8 @@ class Controller:
         self.sync_stage()
         if publish_events and conversation.publish(state, self.gh, self.config):
             self.checkpoint()
+        if publish_events:
+            findings.publish(state, self.gh, self.config, self.checkpoint)
         lines = [MARKER, "## Concurro", ""]
         shown_rationales = set()
         if state.get("plan_id"):
@@ -520,7 +524,9 @@ class Controller:
                     "concerns": v["report"]["concerns"]} for v in state.get("design_votes", {}).values()]})
         state["design_generation"] += 1
         state["input_revision"] = state.get("input_revision", 0) + 1
-        findings.withdraw(state)
+        withdrawn = findings.withdraw(state)
+        if state.get("pr"):
+            findings.queue_withdrawal(state, withdrawn)
         state["design_phase"] = "cooperative"
         state.pop("cooperative_votes", None)
         state["design_votes"] = {}
@@ -665,11 +671,18 @@ class Controller:
                 'encoding': 'JSON with non-ASCII characters escaped'}
 
     def record_pr_review(self, state, provider, report):
-        """Apply a validated PR review to the ledger and keep it as the provider's report for this head."""
+        """Apply a validated PR review to the ledger and queue its publication on the PR.
+
+        A design reopen is kept as the pending review event, not as the head's report.
+        """
         sequence, identifiers = findings.apply(state, provider, report, state["head"])
         report.update(head=state["head"], model=self.config["models"][provider] or "CLI default",
                       input_revision=state.get("input_revision", 0), sequence=sequence, finding_ids=identifiers)
-        state["reviews"][provider] = report
+        if report["verdict"] == "reopen":
+            state["review_event"] = report
+        else:
+            state["reviews"][provider] = report
+        findings.queue_review(state, provider, report)
 
     def validate_design_report(self, report, context):
         """Validate reviewer output before recording any vote or resolving an objection."""
@@ -1206,15 +1219,11 @@ class Controller:
                                [f["id"] for f in owned if f["status"] == "withdrawn"])
             if pr_review_cost(report) > self.pr_review_room():
                 raise Blocked("PR review exceeds the checkpoint budget")
-            if report["verdict"] == "reopen":
-                state["review_event"] = report
-                source = ("review_event",)
-            else:
-                self.record_pr_review(state, provider, report)
-                source = ("reviews", provider)
+            self.record_pr_review(state, provider, report)
+            source = ("review_event",) if report["verdict"] == "reopen" else ("reviews", provider)
             conversation.queue(state, f"{provider} / {self.config['models'][provider]} · PR review · {report['verdict']}",
                                source=source, kind="review",
-                               details={"head": state["head"], "round": state["round"] + 1})
+                               details={"head": state["head"], "round": state["round"] + 1, "pr": state["pr"]})
             if report["verdict"] == "reopen":
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
                 return
@@ -1333,7 +1342,8 @@ class Controller:
             raise Blocked("trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required")
         self.sync_stage()
         if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
-                or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent'))):
+                or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent')
+                                   or self.state.get("pr_outbox"))):
             self.save()
         if self.state and self.state.get("pr") and self.state["stage"] not in ("merged", "observed_merged"):
             pr = self.gh.repo(f"pulls/{self.state['pr']}")

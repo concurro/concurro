@@ -107,6 +107,10 @@ class LedgerTests(unittest.TestCase):
         reviews.apply(state, "claude", report("changes_requested", dispositions=[answer("F1"), answer("F2", "open")]),
                       "b" * 40)
         digests = [f["text_digest"] for f in state["findings"]]
+        state["pr_outbox"] = [{"kind": "review"}]
+        reviews.compact(state)
+        self.assertEqual(state["findings"][0]["detail"], long["detail"], "a pending PR review still renders it")
+        state["pr_outbox"] = []
         reviews.compact(state)
         reviews.compact(state)
         fixed, still_open = state["findings"]
@@ -173,8 +177,8 @@ class Reviewers(FakeAgents):
                                     for f in context["own_findings"]])
 
 
-class LifecycleTests(unittest.TestCase):
-    """Findings through the real controller: repair rounds, freshness and gates."""
+class Harness:
+    """The real controller over the fake GitHub, ticked as the Actions path does."""
 
     def setUp(self):
         self.config = deepcopy(CONFIG)
@@ -214,6 +218,10 @@ class LifecycleTests(unittest.TestCase):
         return merge_reasons(state, self.gh.pr, files, self.gh.pages("commits/x/check-runs"), self.gh.threads(9),
                              self.gh.human_reviews, self.config)
 
+
+class LifecycleTests(Harness, unittest.TestCase):
+    """Findings through the real controller: repair rounds, freshness and gates."""
+
     def test_both_providers_fix_their_findings_on_one_head(self):
         """Each provider's dispositions leave the other's report fresh; one repair round reaches the gates."""
         agents = Reviewers({"claude", "codex"})
@@ -225,8 +233,10 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("claude approval missing or stale", self.reasons(state))
         self.assertNotIn("codex approval missing or stale", self.reasons(state))
         events = "\n".join(c["body"] for c in self.gh.comments if "PR review" in c["body"])
-        self.assertIn("**F1** `docs/guide.md`: claude finds the term undefined.", events)
-        self.assertIn("**F1** fixed: Lines 3-4 now define the term.", events)
+        self.assertIn("Posted as a review on PR #9. New findings: F1.", events)
+        self.assertIn("Earlier findings: F1 fixed.", events)
+        self.assertEqual([r["event"] for r in self.gh.app_reviews], ["COMMENT"] * 4)
+        self.assertEqual([t["isResolved"] for t in self.gh.thread_list], [True, True])
 
     def test_repair_round_receives_open_findings(self):
         agents = Reviewers({"claude"})
@@ -338,6 +348,261 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual([f["id"] for f in reviews.owned(state, "claude")], ["F1"])
         sequence, _ = reviews.apply(state, "claude", report(dispositions=[answer("F1", "obsolete")]), "d" * 40)
         self.assertEqual((state["findings"][0]["status"], state["findings"][0]["answered"]), ("obsolete", sequence))
+
+
+PATCH = "@@ -1,3 +1,4 @@\n context one\n-old two\n+new two\n+new three\n context four\n@@ -20,2 +21,2 @@\n context x\n+added y"
+
+
+class PlacementTests(unittest.TestCase):
+    """Only lines the patch shows on the right side are commented inline."""
+
+    def test_shown_lines(self):
+        self.assertEqual(reviews.shown_lines(PATCH), [{1, 2, 3, 4}, {21, 22}])
+
+    def test_placement(self):
+        patches = {"a.md": PATCH, "big.md": None}
+        cases = [({"path": "a.md", "start_line": None, "line": 2}, "inline"),
+                 ({"path": "a.md", "start_line": 2, "line": 4}, "inline"),
+                 ({"path": "a.md", "start_line": 4, "line": 21}, "file"),
+                 ({"path": "a.md", "start_line": None, "line": 10}, "file"),
+                 ({"path": "a.md", "start_line": None, "line": None}, "file"),
+                 ({"path": "big.md", "start_line": None, "line": 1}, "file"),
+                 ({"path": "other.md", "start_line": None, "line": 1}, "body"),
+                 ({"path": None, "start_line": None, "line": None}, "body")]
+        for finding, expected in cases:
+            with self.subTest(finding=finding):
+                self.assertEqual(reviews.placement(finding, patches), expected)
+        self.assertEqual(reviews.placement(cases[0][0], patches, inline=False), "file")
+
+
+    def test_opening_comment_binding(self):
+        """An opening is matched by finding, path and text digest, so an excerpted ledger entry still matches."""
+        state = {}
+        reviews.apply(state, "claude", report("changes_requested", [{**FINDING, "detail": "word " * 200}]), "a" * 40)
+        finding = state["findings"][0]
+        opening = {"id": 1, "path": FINDING["path"], "body": reviews.finding_body(finding)}
+        finding["status"] = "fixed"
+        reviews.compact(state)
+        self.assertTrue(finding["detail"].endswith(reviews.ELIDED))
+        self.assertTrue(reviews.opening_matches(finding, opening))
+        for changed in ({"path": "other.md"}, {"in_reply_to_id": 5}, {"body": opening["body"] + " Edited."}):
+            with self.subTest(changed=changed):
+                self.assertFalse(reviews.opening_matches(finding, {**opening, **changed}))
+
+
+class PublicationTests(Harness, unittest.TestCase):
+    """Reviews on the PR: one thread per finding, answered and resolved at most once, recovered after losses."""
+
+    def comments(self, marker):
+        return [c for c in self.gh.review_comments if c["body"].startswith(marker)]
+
+    def test_inline_finding_is_threaded_replied_and_resolved(self):
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        state = self.run_to(agents, "gates").state
+        [first, *_] = self.gh.app_reviews
+        self.assertTrue(first["body"].startswith(f"{reviews.REVIEW_MARKER}{CONFIG['repository']}#7:1 -->"))
+        [opening] = self.comments(f"{reviews.FINDING_MARKER}F1 -->")
+        self.assertEqual((opening["line"], opening["review"]), (1, first["id"]))
+        [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
+        self.assertEqual(reply["in_reply_to_id"], opening["id"])
+        self.assertIn("Fixed in `", reply["body"])
+        finding = state["findings"][0]
+        self.assertEqual((finding["thread"], finding["comment"], finding["resolution"]), ("T1", opening["id"], "done"))
+        self.assertNotIn("PR review publication incomplete", self.reasons(state))
+        self.assertNotIn("unresolved review threads", self.reasons(state))
+
+    def test_unanchored_and_general_findings(self):
+        agents = Reviewers({"claude"}, findings={"claude": [FINDING, {**FINDING, "path": None, "detail": "Overall."}]})
+        state = self.run_to(agents, "gates").state
+        [file_level] = self.comments(f"{reviews.FINDING_MARKER}F1 -->")
+        self.assertEqual(file_level["subject_type"], "file")
+        self.assertEqual(self.comments(f"{reviews.FINDING_MARKER}F2 -->"), [])
+        self.assertIn("**F2** `general`: Overall.", self.gh.app_reviews[0]["body"])
+        self.assertEqual([f["thread"] for f in state["findings"]], ["T1", "body"])
+
+    def lose_once(self, matches):
+        """Apply the next matching write but lose its response."""
+        original, lost = self.gh.repo, []
+
+        def repo(path, method="GET", data=None):
+            result = original(path, method, data)
+            if method == "POST" and matches(path) and not lost:
+                lost.append(path)
+                raise RuntimeError("lost response")
+            return result
+
+        return patch.object(self.gh, "repo", side_effect=repo), lost
+
+    def test_lost_review_and_reply_responses_publish_once(self):
+        for target in ("/reviews", "/replies"):
+            with self.subTest(target=target):
+                self.setUp()
+                agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+                patcher, lost = self.lose_once(lambda path: path.endswith(target))
+                with patcher:
+                    state = self.run_to(agents, "gates").state
+                self.assertTrue(lost)
+                self.assertEqual(len(self.comments(f"{reviews.FINDING_MARKER}F1 -->")), 1)
+                self.assertEqual(len(self.comments(f"{reviews.DISPOSITION_MARKER}F1:")), 1)
+                self.assertEqual(len([r for r in self.gh.app_reviews if ":1 -->" in r["body"]]), 1)
+                self.assertEqual(state["findings"][0]["resolution"], "done")
+
+    def test_rejected_review_falls_back_to_file_comments_then_blocks(self):
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        original, rejected = self.gh.repo, []
+
+        def repo(path, method="GET", data=None):
+            if method == "POST" and path.endswith("/reviews") and data["comments"] and not rejected:
+                rejected.append(data)
+                raise RuntimeError("GitHub request failed: POST pulls/9/reviews (HTTP 422)")
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=repo):
+            self.run_to(agents, "gates")
+        [opening] = self.comments(f"{reviews.FINDING_MARKER}F1 -->")
+        self.assertEqual(opening["subject_type"], "file")
+        self.setUp()
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        original = self.gh.repo
+
+        def refuse(path, method="GET", data=None):
+            if method == "POST" and path.endswith("/reviews"):
+                raise RuntimeError("GitHub request failed: POST pulls/9/reviews (HTTP 422)")
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=refuse), self.assertRaisesRegex(Blocked, "failed repeatedly"):
+            self.run_to(agents, "gates")
+
+    def test_resolution_is_attempted_once(self):
+        """A lost resolution is confirmed from the thread; a thread found unresolved is left to a human."""
+        for reopened in (False, True):
+            with self.subTest(reopened=reopened):
+                self.setUp()
+                agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+                calls, resolve = [], self.gh.resolve_thread
+
+                def lost(thread_id):
+                    calls.append(thread_id)
+                    resolve(thread_id)
+                    if reopened:
+                        self.gh.thread_list[0]["isResolved"] = False
+                    raise RuntimeError("lost response")
+
+                with patch.object(self.gh, "resolve_thread", side_effect=lost):
+                    controller = self.run_to(agents, "gates", until=lambda state: not state.get("pr_outbox"))
+                self.assertEqual(calls, ["T1"])
+                finding = controller.state["findings"][0]
+                self.assertEqual(finding["resolution"], "manual" if reopened else "done")
+                self.assertEqual("unresolved review threads" in self.reasons(controller.state), reopened)
+
+    def test_publication_gate_and_stale_head(self):
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        controller = self.run_to(agents, "review")
+        state = deepcopy(controller.state)
+        state["pr_outbox"] = [{"kind": "review"}]
+        self.assertIn("PR review publication incomplete", self.reasons(state))
+        controller = self.run_to(agents, "review", until=lambda state: state.get("reviews"))
+        posted = len(self.gh.app_reviews)
+        [report] = controller.state["reviews"].values()
+        reviews.queue_review(controller.state, "claude", {**report, "sequence": report["sequence"]})
+        self.gh.pr["head"]["sha"] = "f" * 40  # moved since the review
+        controller.state["findings"][0]["comment"] = None
+        self.assertTrue(reviews.publish(controller.state, self.gh, self.config, lambda: None))
+        self.assertEqual((controller.state["pr_outbox"], len(self.gh.app_reviews)), ([], posted))
+        self.assertIsNone(controller.state["findings"][0]["comment"], "nothing re-mapped for a stale head")
+
+    def test_withdrawn_thread_is_notified_then_retired(self):
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]}, reopen_once=True)
+        state = self.run_to(agents, "gates", ticks=40).state
+        [notice] = self.comments(f"{reviews.WITHDRAWN_MARKER}F1:")
+        self.assertIn("design was reopened", notice["body"])
+        [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
+        self.assertIn("Obsolete under plan", reply["body"])
+        self.assertEqual((state["findings"][0]["status"], state["findings"][0]["resolution"]), ("obsolete", "done"))
+
+    def test_hidden_opening_comment_is_retried_not_unthreaded(self):
+        """An opening comment missing from one read keeps the review pending; it is never recorded as body-only."""
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        original, hidden = self.gh.pages, []
+
+        def pages(path, key=None):
+            result = original(path, key)
+            if path == "pulls/9/comments" and result and not hidden:
+                hidden.append(path)
+                return []
+            return result
+
+        with patch.object(self.gh, "pages", side_effect=pages):
+            controller = self.run_to(agents, "implement", until=lambda state: state.get("findings"))
+        self.assertTrue(hidden)
+        finding = controller.state["findings"][0]
+        self.assertNotEqual(finding.get("thread"), "body")
+        state = self.run_to(agents, "gates").state
+        self.assertEqual((state["findings"][0]["thread"], state["findings"][0]["resolution"]), ("T1", "done"))
+        self.assertEqual(len(self.comments(f"{reviews.FINDING_MARKER}F1 -->")), 1)
+
+    def test_changed_opening_comment_blocks_before_reply_or_resolution(self):
+        """An opening comment edited under its marker is a conflict, whether found at publication or before a reply."""
+        for when in ("publication", "reply"):
+            with self.subTest(when=when):
+                self.setUp()
+                agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+                original = self.gh.repo
+
+                def edit(path, method="GET", data=None):
+                    result = original(path, method, data)
+                    if method == "POST" and path.endswith("/reviews") and self.gh.review_comments:
+                        self.gh.review_comments[0]["body"] += " Edited."
+                    return result
+
+                if when == "reply":
+                    self.run_to(agents, "implement", until=lambda state: state.get("findings"))
+                    self.gh.review_comments[0]["body"] += " Edited."
+                    run = lambda: self.run_to(agents, "gates")
+                else:
+                    def run():
+                        with patch.object(self.gh, "repo", side_effect=edit):
+                            self.run_to(agents, "gates")
+                with self.assertRaisesRegex(Blocked, "differs from its recorded content"):
+                    run()
+                self.assertEqual(self.comments(f"{reviews.DISPOSITION_MARKER}F1:"), [])
+                self.assertEqual([t["isResolved"] for t in self.gh.thread_list], [False])
+                repairs = [c for _, stage, c in agents.calls if stage == "develop" and c["review_findings"]]
+                self.assertEqual(bool(repairs), when == "reply", "a conflict at publication blocks before repair")
+
+    def test_reopen_verdict_is_published_on_the_pr(self):
+        """A PR review reopening the design is a COMMENT review on the PR, published from its outbox copy."""
+        agents = Reviewers(set())
+        ask = agents.ask
+        reopened = []
+
+        def reopen_once(provider, stage, context):
+            if stage == "review" and not reopened:
+                reopened.append(provider)
+                return report("reopen", design_issue=DESIGN_ISSUE)
+            return ask(provider, stage, context)
+
+        agents.ask = reopen_once
+        original, refused = self.gh.repo, []
+
+        def refuse_once(path, method="GET", data=None):
+            if method == "POST" and path.endswith("/reviews") and not refused:
+                refused.append(path)
+                raise RuntimeError("GitHub request failed: POST pulls/9/reviews (HTTP 502)")
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=refuse_once):
+            controller = self.run_to(agents, "plan", until=lambda state: state["design_reopens"] == 1)
+        self.assertTrue(refused)
+        self.assertEqual(len(controller.state["pr_outbox"]), 1, "retained after the failure")
+        controller = self.run_to(agents, "gates", ticks=40)
+        self.assertNotIn("review_event", controller.state)
+        [reopen] = [r for r in self.gh.app_reviews if "· reopen" in r["body"]]
+        self.assertEqual(reopen["event"], "COMMENT")
+        self.assertIn("Design reopened (plan): The plan misses a case.", reopen["body"])
+        self.assertIn("- The guide omits it.", reopen["body"])
+        events = "\n".join(c["body"] for c in self.gh.comments if "PR review · reopen" in c["body"])
+        self.assertIn("Posted as a review on PR #9.", events)
 
 
 if __name__ == "__main__":

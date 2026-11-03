@@ -2,6 +2,7 @@
 
 import base64
 from copy import deepcopy
+import difflib
 import json
 from pathlib import Path
 import sys
@@ -114,8 +115,10 @@ class FakeGitHub:
         self.trees = {self.base: {"docs/guide.md": "Original guide\n", "CONTRIBUTING.md": "Use docs."}}
         self.counter = 10
         self.merges = 0
-        self.review_threads = []
+        self.thread_list = []
         self.human_reviews = []
+        self.app_reviews = []
+        self.review_comments = []
         self.protection = {"required_status_checks": {"strict": True, "contexts": config["required_checks"]},
                            "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
         self.rules = []
@@ -177,10 +180,12 @@ class FakeGitHub:
             return deepcopy(self.events)
         if path.startswith("pulls?"):
             return [deepcopy(self.pr)] if self.pr else []
+        if path == "pulls/9/comments":
+            return deepcopy(self.review_comments)
         if path == "pulls/9/files":
-            return [{"filename": "docs/guide.md"}]
+            return self.pull_files()
         if path == "pulls/9/reviews":
-            return deepcopy(self.human_reviews)
+            return deepcopy(self.human_reviews + self.app_reviews)
         if path == "rules/branches/main":
             return deepcopy(self.rules)
         if path.startswith("commits/"):
@@ -193,9 +198,44 @@ class FakeGitHub:
         """Return a bounded historical state window for learning tests."""
         return deepcopy(getattr(self, "past_outcomes", []))[:limit]
 
+    def pull_files(self):
+        """Each changed file with a unified patch against the base, as GitHub lists them."""
+        base = self.trees[self.base]
+        head = self.trees[self.commits[self.pr["head"]["sha"]]["tree"]["sha"]] if self.pr else base
+        files = []
+        for name in sorted(set(base) | set(head)):
+            if base.get(name) != head.get(name):
+                diff = difflib.unified_diff((base.get(name) or "").splitlines(), (head.get(name) or "").splitlines(),
+                                            lineterm="", n=3)
+                files.append({"filename": name, "patch": "\n".join(list(diff)[2:])})
+        return files or [{"filename": "docs/guide.md", "patch": None}]
+
+    def thread(self, comment):
+        """Open a review thread on one new comment."""
+        self.thread_list.append({"id": f"T{len(self.thread_list) + 1}", "isResolved": False,
+                                    "isOutdated": False, "comments": {"nodes": [{"databaseId": comment["id"]}]}})
+
+    def review_comment(self, data, **fields):
+        """Record one App review comment."""
+        self.counter += 1
+        comment = {"id": self.counter, "user": {"login": self.config["bot_login"]}, "body": data["body"], **fields}
+        self.review_comments.append(comment)
+        return comment
+
+    def review_threads(self, number):
+        """Threads as the engine's adapter returns them."""
+        return [{"id": t["id"], "isResolved": t["isResolved"],
+                 "comment": t["comments"]["nodes"][0]["databaseId"] if t.get("comments") else None}
+                for t in self.thread_list]
+
+    def resolve_thread(self, thread_id):
+        """Resolve one thread."""
+        next(t for t in self.thread_list if t["id"] == thread_id)["isResolved"] = True
+        return True
+
     def threads(self, number):
         """Return human review threads without resolving them."""
-        return deepcopy(self.review_threads)
+        return deepcopy(self.thread_list)
 
     def repo(self, path, method="GET", data=None):
         """Implement only the controller's explicit GitHub operations."""
@@ -263,6 +303,22 @@ class FakeGitHub:
                 self.fail_after_ref = False
                 raise RuntimeError("lost response after successful write")
             return {}
+        if path == "pulls/9/reviews" and method == "POST":
+            self.counter += 1
+            review = {"id": self.counter, "user": {"login": self.config["bot_login"]}, "body": data["body"],
+                      "state": "COMMENTED", "commit_id": data["commit_id"], "event": data["event"]}
+            self.app_reviews.append(review)
+            for item in data["comments"]:
+                self.thread(self.review_comment(item, path=item["path"], line=item["line"], review=review["id"]))
+            return deepcopy(review)
+        if path == "pulls/9/comments" and method == "POST":
+            comment = self.review_comment(data, path=data["path"], subject_type=data["subject_type"])
+            self.thread(comment)
+            return deepcopy(comment)
+        if path.startswith("pulls/9/comments/") and path.endswith("/replies"):
+            parent = int(path.split("/")[3])
+            comment = self.review_comment(data, in_reply_to_id=parent)
+            return deepcopy(comment)
         if path == "pulls":
             self.pr = {"number": 9, "state": "open", "draft": False, "mergeable": True,
                        "mergeable_state": "clean", "head": {"sha": self.refs[data["head"]],
@@ -502,7 +558,7 @@ class PipelineTests(unittest.TestCase):
         """Missing CI and human objections cannot be overridden by model approval."""
         self.ready()
         self.gh.checks_green = False
-        self.gh.review_threads = [{"isResolved": False, "isOutdated": True}]
+        self.gh.thread_list = [{"isResolved": False, "isOutdated": True}]
         self.gh.human_reviews = [{"user": {"login": "writer"}, "state": "CHANGES_REQUESTED"}]
         state = self.tick()
         self.assertIn("unsuccessful", state["reason"])
@@ -510,7 +566,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("human", state["reason"])
         self.assertEqual(self.gh.merges, 0)
         self.gh.checks_green = True
-        self.gh.review_threads[0]["isResolved"] = True
+        self.gh.thread_list[0]["isResolved"] = True
         self.gh.human_reviews.append({"user": {"login": "writer"}, "state": "APPROVED"})
         self.assertEqual(self.tick()["stage"], "merged")
 

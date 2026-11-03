@@ -66,6 +66,11 @@ def render(state, kind, source, details):
             # Reports from before the finding ledger keep their exact rendering, so queued and
             # already-posted events still match their recorded digests.
             body += "".join("\n\n- " + f["path"] + ": " + f["detail"] for f in value["findings"])
+        elif "pr" in details:
+            # The review itself, with its findings in threads, is published on the PR.
+            new = ", ".join(value["finding_ids"]) or "none"
+            answered = ", ".join(f"{d['id']} {d['status']}" for d in value["dispositions"]) or "none"
+            body += f"\n\nPosted as a review on PR #{details['pr']}. New findings: {new}. Earlier findings: {answered}."
         else:
             lines = reviews.report_lines(value)
             body += "\n\n" + "\n".join(lines) if lines else ""

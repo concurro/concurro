@@ -6,7 +6,8 @@ import json
 import re
 import threading
 
-from github import GitHub, LINKED_BRANCH, NotFound, Transient
+from github import GitHub, LINKED_BRANCH, NotFound, RESOLVE_THREAD, Transient
+from reviews import FINDING_MARKER
 
 from .errors import OwnershipLost, Unresolved
 from .transport import throttle
@@ -28,7 +29,15 @@ WRITES = (
     ("PATCH", r"git/refs/heads/[A-Za-z0-9._/-]{1,100}"),
     ("POST", r"pulls"),
     ("PUT", rf"pulls/{NUMBER}/merge"),
+    ("POST", rf"pulls/{NUMBER}/reviews"),
+    ("POST", rf"pulls/{NUMBER}/comments"),
+    ("POST", rf"pulls/{NUMBER}/comments/{NUMBER}/replies"),
 )
+# The App only ever comments on its PRs; it never approves or requests changes.
+PR_BODIES = ((re.compile(rf"pulls/{NUMBER}/reviews"), {"commit_id", "event", "body", "comments"}),
+             (re.compile(rf"pulls/{NUMBER}/comments"), {"commit_id", "path", "subject_type", "body"}),
+             (re.compile(rf"pulls/{NUMBER}/comments/{NUMBER}/replies"), {"body"}))
+PULL = re.compile(rf"pulls/(?P<pull>{NUMBER})(?:/comments/(?P<comment>{NUMBER})/replies|/.*)?")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 OID = re.compile(r"[0-9a-f]{40}")
 QUERY = re.compile(r"\s*query\b")
@@ -43,9 +52,14 @@ class Rejected(RuntimeError):
 
 
 def allowed(key, method, path, body, issue_node=None):
-    """Whether a write is on the allow-list for this task's repository and issue (`issue_node` for GraphQL)."""
+    """Whether a write's shape is on the allow-list for this task's repository and issue (`issue_node` for GraphQL).
+
+    PR writes and thread resolutions are further bound to the task's own PR and the App's own
+    threads by `MutationGateway.bound`, which needs reads.
+    """
     if path == "graphql":
-        return method == "POST" and issue_node is not None and linked_branch(body) == issue_node
+        return method == "POST" and (resolved_thread(body) is not None
+                                     or issue_node is not None and linked_branch(body) == issue_node)
     prefix = f"repos/{key[0]}/"
     if not path.startswith(prefix):
         return False
@@ -56,9 +70,26 @@ def allowed(key, method, path, body, issue_node=None):
             if "issue" in match.groupdict() and int(match["issue"]) != key[1]:
                 return False
             # Branch updates are fast-forward only.
-            return not relative.startswith("git/refs/") or (
-                isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False)
+            if relative.startswith("git/refs/"):
+                return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
+            for shape, fields in PR_BODIES:
+                if shape.fullmatch(relative):
+                    return (isinstance(body, dict) and set(body) == fields
+                            and body.get("event", "COMMENT") == "COMMENT"
+                            and body.get("subject_type", "file") == "file")
+            return True
     return False
+
+
+def resolved_thread(body):
+    """The thread ID of an exact engine `resolveReviewThread` request, or None for anything else."""
+    if not isinstance(body, dict) or set(body) != {"query", "variables"} or body["query"] != RESOLVE_THREAD:
+        return None
+    variables = body["variables"]
+    thread = variables.get("input") if isinstance(variables, dict) and set(variables) == {"input"} else None
+    if not isinstance(thread, dict) or set(thread) != {"threadId"} or not isinstance(thread["threadId"], str):
+        return None
+    return thread["threadId"]
 
 
 def linked_branch(body):
@@ -100,7 +131,9 @@ def settle(path, response, now):
         except ValueError:
             return "unknown", None, None
         data = payload.get("data") if isinstance(payload, dict) and "errors" not in payload else None
-        if status == 200 and isinstance(data, dict) and data.get("createLinkedBranch") is not None:
+        if status == 200 and isinstance(data, dict) and (
+                data.get("createLinkedBranch") is not None
+                or ((data.get("resolveReviewThread") or {}).get("thread") or {}).get("isResolved") is True):
             return "done", payload, None
         return "unknown", None, None
     if 200 <= status < 300:
@@ -118,13 +151,15 @@ def settle(path, response, now):
 class MutationGateway:
     """Admit, send and settle every write; grant and end ownership in the same per-task section."""
 
-    def __init__(self, registry, writer, reader):
+    def __init__(self, registry, writer, reader, bot_login=None):
         """`writer(repository)` and `reader(repository)` return that repository's write and read transports.
 
         A writer's `send(method, path, body)` returns a `transport.Response`; raising means the
-        outcome is unknown. The reader resolves each task's issue node ID.
+        outcome is unknown. The reader resolves each task's issue node ID and verifies PR and
+        thread bindings; without `bot_login`, replies and thread resolutions are refused.
         """
-        self.registry, self.writer, self.reader = registry, writer, reader
+        self.registry, self.writer, self.reader, self.bot_login = registry, writer, reader, bot_login
+        self.pulls = {}
         self.guard = threading.Lock()
         self.sections = {}
         self.sending = set()
@@ -144,6 +179,46 @@ class MutationGateway:
         if key not in self.nodes:
             self.nodes[key] = self.reader(key[0]).request("GET", f"repos/{key[0]}/issues/{key[1]}")["node_id"]
         return self.nodes[key]
+
+    def owned_pull(self, key, number):
+        """Whether a PR is this task's own: the engine's branch for this issue, in this repository."""
+        if (key, number) not in self.pulls:
+            pr = self.reader(key[0]).request("GET", f"repos/{key[0]}/pulls/{number}")
+            head = pr.get("head") or {}
+            self.pulls[(key, number)] = ((head.get("repo") or {}).get("full_name") == key[0] and isinstance(
+                head.get("ref"), str) and re.fullmatch(rf"concurro/issue-{key[1]}-[0-9a-f]{{12}}", head["ref"]) is not None)
+        return self.pulls[(key, number)]
+
+    def ours(self, login, body):
+        """Whether a comment is the App's own finding comment (GraphQL names a bot without `[bot]`)."""
+        return (self.bot_login is not None and login in (self.bot_login, self.bot_login.removesuffix("[bot]"))
+                and isinstance(body, str) and body.startswith(FINDING_MARKER))
+
+    def bound(self, key, path, body):
+        """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads."""
+        thread = resolved_thread(body) if path == "graphql" else None
+        if thread is not None:
+            query = ("query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
+                     "pullRequest { number repository { nameWithOwner } } "
+                     "comments(first:1) { nodes { author { login } body } } } } }")
+            node = ((self.reader(key[0]).request("POST", "graphql", {"query": query, "variables": {"id": thread}})
+                     or {}).get("data") or {}).get("node") or {}
+            pr = node.get("pullRequest") or {}
+            first = (node.get("comments") or {}).get("nodes") or [{}]
+            return ((pr.get("repository") or {}).get("nameWithOwner") == key[0] and isinstance(pr.get("number"), int)
+                    and self.owned_pull(key, pr["number"])
+                    and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body")))
+        prefix = f"repos/{key[0]}/"
+        match = PULL.fullmatch(path[len(prefix):]) if path.startswith(prefix + "pulls/") else None
+        if match is None:
+            return True
+        if not self.owned_pull(key, int(match["pull"])):
+            return False
+        if match["comment"] is None:
+            return True
+        comment = self.reader(key[0]).request("GET", f"{prefix}pulls/comments/{match['comment']}")
+        return (self.ours((comment.get("user") or {}).get("login"), comment.get("body"))
+                and str(comment.get("pull_request_url", "")).endswith(f"/pulls/{match['pull']}"))
 
     def acquire(self, key, worker, lease_seconds=LEASE_SECONDS, consume=True):
         """Grant a new generation only with no live owner, nothing in flight and nothing unresolved.
@@ -187,7 +262,8 @@ class MutationGateway:
         A task's writes are sent one at a time: a later write waits for the earlier one to
         settle, then rechecks ownership and unresolved writes before its own admission.
         """
-        if not allowed(key, method, path, body, self.node(key) if path == "graphql" else None):
+        if not allowed(key, method, path, body, self.node(key) if path == "graphql" else None) \
+                or not self.bound(key, path, body):
             raise Disallowed("write is not on the gateway allow-list")
         with self.section(key) as condition:
             condition.wait_for(lambda: key not in self.sending)

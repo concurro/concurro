@@ -74,7 +74,7 @@ class Daemon:
         readers = {r: Transport(r, self.identity.credential(r, "read"), time.time) for r in repositories}
         writers = {r: Transport(r, self.identity.credential(r, "write"), time.time) for r in repositories}
         self.registry = Registry.open(settings.state_dir, settings.registry_id, initialize=self.initialize)
-        gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__)
+        gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__, bot_login)
         self.reconciler = Reconciler(self.registry, readers.__getitem__, repositories, {bot_login})
         worker = Worker(settings, gateway, self.registry, self.reconciler, readers.__getitem__, bot_login)
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)

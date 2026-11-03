@@ -1,6 +1,6 @@
 # PR reviews
 
-Status: accepted (revision 5, reviewed); rollout step 1 implemented. Publishes
+Status: accepted (revision 5, reviewed); rollout steps 1–3 implemented. Publishes
 the engine's independent PR reviews as native GitHub reviews, with findings as threads that the engine replies to and
 resolves once a re-review verifies the fix, and that writers can answer to drive
 the next repair round.
@@ -89,7 +89,7 @@ writer replies, and returns:
   also `obsolete`.
 - `verdict`: `approve` requires no new findings and no `open` disposition;
   `changes_requested` requires a new finding or an `open` disposition; `reopen`
-  is unchanged.
+  is unchanged, and is published as a review stating the design issue.
 
 Each report records the input revision it answered. A report from an older
 input revision never counts toward the gates; a report's own dispositions never
@@ -293,10 +293,15 @@ Token permissions are unchanged. Reviews, comments and replies need
    withdrawn gate reasons, and the repair context, with publication still on the
    issue. The ledger's `thread`, `comment`, `resolution` and `replies` fields
    arrive with the steps that need them.
-2. Reviews on the PR: placement, the review, file-level comments, failures and
-   completion gates, and recovery, on both the Actions and service paths.
-3. Threads: disposition replies and at-most-once resolution. First confirm on the
-   fork that the App's write token can resolve a thread it opened on its own PR.
+2. Reviews on the PR (implemented): placement, the review, file-level comments,
+   failures and completion gates, and recovery, on both the Actions and service
+   paths. The issue keeps a short pointer event per review. The service gateway
+   admits only `COMMENT` reviews, file-level comments and replies on the task's
+   own PR, and the reconciler ignores the App's own reviews.
+3. Threads (implemented): disposition and withdrawal replies, at-most-once
+   resolution, and the gateway's binding of replies and resolutions to the App's
+   own finding threads, with per-mutation settlement. First confirm on the fork
+   that the App's write token can resolve a thread it opened on its own PR.
 4. Writer replies: intake, reopening, repair transitions and service observation.
 5. Live run on the fork with an issue whose first review requests a change, and
    a writer reply that reopens a fixed finding.
@@ -311,6 +316,8 @@ Token permissions are unchanged. Reviews, comments and replies need
 | Crash between the report's validation and its publication | Report and outbox saved together; published on the next tick |
 | Review rejected with 422 | Retried once with file-level comments; after three failures, blocked with a diagnostic |
 | Lost review, comment or reply response | Found by marker and bindings; nothing posted twice; a conflicting match blocks |
+| Opening comment or thread missing from a read | Review kept pending and retried; never recorded as unthreaded |
+| Opening comment edited under its marker | Blocked before any reply or resolution |
 | Resolution response lost, thread later reopened | `manual`; never resolved again |
 | Re-review marks a finding fixed, or open | Reply with the head and evidence; resolved once, or left open |
 | Design reopened with open findings | Findings withdrawn; one reply each; threads left unresolved |

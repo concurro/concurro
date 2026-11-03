@@ -101,6 +101,12 @@ class RestBackend:
             raise fault[1]
         if relative.startswith("contents/"):
             return self.content(relative)
+        if relative.startswith("pulls/comments/"):
+            identifier = int(relative.rsplit("/", 1)[1])
+            comment = next((c for c in self.fake.review_comments if c["id"] == identifier), None)
+            if comment is None:
+                raise NotFound("GitHub request failed: GET " + relative)
+            return {**deepcopy(comment), "pull_request_url": f"https://api.github.com/{self.root}pulls/9"}
         if PAGE in relative:
             base, page = relative.split(PAGE)
             base = base[:-1]
@@ -146,10 +152,22 @@ class RestBackend:
                      for b in sorted(self.fake.linked_branches)]
             page = {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
             return {"data": {"repository": {"issue": {"linkedBranches": page}}}}
+        if "node(id:" in data["query"]:
+            return {"data": {"node": self.thread_node(variables["id"])}}
         if "reviewThreads" in data["query"]:
             page = {"nodes": self.fake.threads(variables["number"]), "pageInfo": {"hasNextPage": False, "endCursor": None}}
             return {"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}
         raise AssertionError(data["query"])
+
+    def thread_node(self, thread_id):
+        """A review thread as the gateway's ownership lookup reads it; GraphQL names bots without `[bot]`."""
+        thread = next((t for t in self.fake.thread_list if t["id"] == thread_id), None)
+        if thread is None:
+            return None
+        first = next(c for c in self.fake.review_comments if c["id"] == thread["comments"]["nodes"][0]["databaseId"])
+        author = first["user"]["login"].removesuffix("[bot]")
+        return {"pullRequest": {"number": 9, "repository": {"nameWithOwner": self.fake.config["repository"]}},
+                "comments": {"nodes": [{"author": {"login": author}, "body": first["body"]}]}}
 
     def archive(self, path):
         """Serve the fake's source archive."""
@@ -176,6 +194,10 @@ class RestBackend:
     def apply(self, method, relative, body):
         """Mutate the fake's state as GitHub would."""
         issue = self.fake.issue
+        if relative == "graphql" and "resolveReviewThread" in body["query"]:
+            thread = body["variables"]["input"]["threadId"]
+            self.fake.resolve_thread(thread)
+            return {"data": {"resolveReviewThread": {"thread": {"id": thread, "isResolved": True}}}}
         if relative == "graphql":
             branch = body["variables"]["input"]
             self.fake.create_linked_branch(branch["issueId"], branch["name"], branch["oid"])
@@ -290,7 +312,8 @@ class ServiceFixture:
         self.config["autonomous"] = False
         self.fake = FakeGitHub(self.config)
         self.backend = RestBackend(self.fake)
-        self.gateway = MutationGateway(self.registry, lambda repository: self.backend, lambda repository: self.backend)
+        self.gateway = MutationGateway(self.registry, lambda repository: self.backend, lambda repository: self.backend,
+                                       self.config["bot_login"])
         self.reader = self.backend
         self.agents = FakeAgents()
 

@@ -71,7 +71,8 @@ class Reconciler:
             return None
         pr = reader.request("GET", root + f"pulls/{number}")
         head = pr["head"]["sha"]
-        reviews = sorted([r["id"], r["state"]] for r in pages(reader, root + f"pulls/{number}/reviews"))
+        reviews = sorted([r["id"], r["state"]] for r in pages(reader, root + f"pulls/{number}/reviews")
+                         if not self.ours((r.get("user") or {}).get("login")))
         checks = sorted([c["name"], c["status"], c.get("conclusion")]
                         for c in pages(reader, root + f"commits/{head}/check-runs", "check_runs"))
         return {"number": number, "head": head, "merged": bool(pr.get("merged")), "reviews": reviews, "checks": checks}
