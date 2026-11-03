@@ -48,6 +48,10 @@ class CheckpointTests(unittest.TestCase):
         """Locate a fixture's stored artifact and its version history."""
         return next(value for value in self.gh.artifacts[7].values() if value['artifact']['name'] == name)
 
+    def state_artifacts(self):
+        """The audit and plan artifacts, without report archives."""
+        return [v for v in self.gh.artifacts.get(7, {}).values() if v['artifact']['name'] in (AUDIT_NAME, PLAN_NAME)]
+
     def test_legacy_migration_preserves_approved_checkpoint_before_new_state(self):
         """Both old comment formats retain exact approvals and budgets as the first version."""
         for collapsed in (False, True):
@@ -114,7 +118,7 @@ class CheckpointTests(unittest.TestCase):
         recovered = self.controller()
         self.assertEqual(recovered.state['stage'], 'intake')
         recovered.save()
-        self.assertEqual(len(self.gh.artifacts[7]), 1)
+        self.assertEqual(len(self.state_artifacts()), 1)
         self.assertEqual(len([c for c in self.gh.comments if c["body"].startswith(MARKER)]), 1)
         self.assertEqual(self.controller().state['calls'], 0)
 
@@ -142,7 +146,7 @@ class CheckpointTests(unittest.TestCase):
         recovered = self.controller()
         self.assertEqual(recovered.state['calls'], state['calls'] + 1)
         recovered.save()
-        self.assertEqual(len(self.gh.artifacts[7]), 1)
+        self.assertEqual(len(self.state_artifacts()), 1)
         self.assertEqual(legacy_state(self.artifact()['versions'][-1]['body'])['state'], state)
 
     def test_lost_plan_or_comment_response_repairs_views_without_model_calls(self):
@@ -168,7 +172,7 @@ class CheckpointTests(unittest.TestCase):
                 recovered = self.controller()
                 self.assertEqual(recovered.state, controller.state)
                 recovered.save()
-                self.assertEqual(len(self.gh.artifacts[7]), 2)
+                self.assertEqual(len(self.state_artifacts()), 2)
                 self.assertEqual(len([c for c in self.gh.comments if c["body"].startswith(MARKER)]), 1)
                 self.assertEqual(len(self.agents.calls), 1)
                 self.assertIn('[Implementation plan]', self.gh.summary()['body'])
@@ -410,7 +414,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(repaired['artifact']['id'], identity['id'])
         self.assertIn(human_version, repaired['versions'])
         self.assertEqual(self.artifact(), audit)
-        self.assertEqual(len(self.gh.artifacts[7]), 2)
+        self.assertEqual(len(self.state_artifacts()), 2)
 
     def test_missing_origin_without_binding_stops_instead_of_adopting_or_duplicating(self):
         """An older unbound view outside the window cannot be mistaken for an unrelated artifact."""
@@ -475,7 +479,7 @@ class CheckpointTests(unittest.TestCase):
         before = deepcopy(self.gh.artifacts)
         recovered.save()
         self.assertEqual(self.gh.artifacts, before)
-        self.assertEqual(len(self.gh.artifacts[7]), 2)
+        self.assertEqual(len(self.state_artifacts()), 2)
 
     def test_unchanged_plan_is_read_on_load_but_not_on_each_save(self):
         """Repeated audit saves avoid downloading unchanged views without skipping audit concurrency checks."""
@@ -578,4 +582,4 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotEqual(recovered.checkpoints.plan_binding, old)
         self.assertEqual(recovered.checkpoints.plan_binding,
                          recovered.checkpoints.plan_identity(recovered.checkpoints.plan))
-        self.assertEqual(len(self.gh.artifacts[7]), 2)
+        self.assertEqual(len(self.state_artifacts()), 2)

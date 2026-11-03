@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 from agents import Agents
+import actions
 import conversation
 import markup
 from markup import block, code, link, text
@@ -36,6 +37,11 @@ from policy import (PR_REVIEW_LIMIT, Blocked, SessionFailure, approval_binding, 
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
+PR_TITLE_LIMIT = 72
+# The status comment's steps, and the stage each running stage belongs to.
+STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
+STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
+              "gates": 5, "merging": 5}
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 PROVIDERS = {"claude", "codex", "copilot"}
 PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixes", "protected_prefixes",
@@ -198,23 +204,15 @@ class Controller:
         state = self.state
         self.record_outcome()
         if publish_events:
-            conversation.transition(state)
+            self.transition(state)
+        # Plans are linked from the status comment; an intent saved by an earlier version is spent.
+        state.pop('plan_event_intent', None)
         self.checkpoint()
-        intent = state.get('plan_event_intent')
-        if intent:
-            artifact = self.checkpoints.plan
-            if not artifact or intent['plan'] != state.get('plan_id'):
-                raise Blocked('plan publication intent differs from checkpoint')
-            conversation.queue(state, None, source=('plan',), kind='plan_summary', details={
-                'plan': state['plan_id'], 'round': intent['round'], 'revision': artifact['revision'],
-                'actor': intent.get('actor') or intent['title'].split(' · ')[0],
-                'url': f"https://github.com/{self.config['repository']}/issues/{state['issue']}/artifacts/{artifact['number']}"})
-            del state['plan_event_intent']
-            self.checkpoint()
         self.sync_stage()
         if publish_events and conversation.publish(state, self.gh, self.config):
             self.checkpoint()
         if publish_events:
+            actions.publish(state, self.gh, self.checkpoint)
             findings.publish(state, self.gh, self.config, self.checkpoint)
         body = self.summary_body()
         if len(body.encode()) > SUMMARY_LIMIT:
@@ -232,6 +230,18 @@ class Controller:
             self.checkpoints.request(f"issues/comments/{self.comment_id}", "PATCH", {"body": body})
             self.stage_fallback = True
 
+    def transition(self, state):
+        """Post the comment a stage change asks of a human, if any."""
+        artifact = self.checkpoints.plan if self.checkpoints else None
+        plan_url = (f"https://github.com/{self.config['repository']}/issues/{state['issue']}/artifacts/{artifact['number']}"
+                    if artifact else None)
+        actions.transition(state, self.config, (self.issue or {}).get("user", {}).get("login"), plan_url)
+
+    def answerer(self, login):
+        """Whether a login may answer an Input needed request: the issue's author or a writer."""
+        return not self.identities.ours(login) and (login == self.issue.get("user", {}).get("login")
+                                                    or self.permitted(login))
+
     def summary_body(self):
         """The status comment: stage, plan, PR and votes first; reports and evidence collapsed.
 
@@ -244,64 +254,144 @@ class Controller:
         return body
 
     def summary_lines(self, compact):
-        """The status comment's text; `compact` omits model narrative beyond a short reason."""
+        """The status comment: a progress line, one row per step, every vote by round, and any action needed.
+
+        `compact` drops the rounds table; reports themselves live in their archives.
+        """
         state = self.state
-        lines = [MARKER, "## Concurro", ""]
-        plan = ""
-        if state.get("plan_id"):
-            plan = (f"{code(state['plan_id'][:12], cell=True)} · round {state.get('design_generation', 0) + 1}"
-                    f" · {text(state.get('design_phase', 'cooperative'))}")
-        pr = f"#{state['pr']} · head {code(state['head'][:7], cell=True)}" if state.get("pr") else ""
-        lines += [markup.table(["Stage", "Plan", "PR"], [[text(state["stage"].replace("_", " ").capitalize()),
-                                                         plan or "—", pr or "—"]]), ""]
-        if state.get("plan_id"):
-            rows = []
-            for member in design_roster(self.config):
-                decision = state.get("design_votes", {}).get(member["id"], {}).get("report", {}).get("decision")
-                design_cell = markup.label(markup.DECISION[decision]) if decision in markup.DECISION else "Pending"
-                review = state.get("reviews", {}).get(member["provider"]) if "review" in member["roles"] else None
-                review_cell = (markup.label(markup.VERDICT[review["verdict"]]) if review
-                               else "Pending" if "review" in member["roles"] else "—")
-                rows.append([text(member["provider"] + " / " + member["model"]), design_cell, review_cell])
-            lines += [markup.table(["Reviewer", "Design", "Code review"], rows), ""]
-        # A reason that only repeats a QC rationale stays in that report below; any other is shown in full.
-        reason = state.get("reason", "").strip()
-        if reason and reason not in {r["rationale"].strip() for r in state.get("qc", {}).values()}:
-            heading = {"gates": f"{markup.GATE} **Merge blocked**", "blocked": f"{markup.BLOCKED} **Blocked**",
-                       "escalated": f"{markup.ESCALATED} **Escalated**"}.get(state["stage"], "**Status**")
-            lines += [heading, "", text(reason, 2000) if compact else block(reason), ""]
-        still_open = [f["id"] for f in state.get("findings", []) if f["status"] in ("open", "withdrawn")]
-        if still_open:
-            lines += [f"{markup.label(markup.STATUS['open'])}: {len(still_open)} review finding"
-                      f"{'s' if len(still_open) != 1 else ''} ({text(', '.join(still_open))}). {markup.BLOCKING_NOTE}", ""]
-        if state["stage"] == "planned" and state.get("plan_id"):
-            lines += [f"A writer can approve with {code('/concurro approve ' + state['plan_id'])}.", ""]
-        hidden = []
-        for stage, report in state.get("qc", {}).items():
-            name = "Intake QC" if stage == "intake" else "Plan QC"
-            hidden += [f"**{name}: {markup.label(markup.DECISION[report['decision']])}**", "", block(report["rationale"]), ""]
-            if report["questions"] + report["concerns"]:
-                hidden += ["- " + text(v, 1000) for v in report["questions"] + report["concerns"]] + [""]
-        if state.get("plan"):
-            hidden += ["**Plan**", "", block(state["plan"]["summary"]), ""]
-            if state["plan"]["questions"]:
-                hidden += ["- " + text(question, 1000) for question in state["plan"]["questions"]] + [""]
-        if state.get("local_evidence"):
-            local = state["local_evidence"]
-            hidden += [f"**Local evidence** · commit {code(local['local_commit'][:7])} · checks "
-                       + ", ".join(code(c["name"]) for c in local["checks"])
-                       + f" · local review {markup.label(markup.VERDICT[local['review']['verdict']])}", ""]
-        for provider, report in state.get("reviews", {}).items():
-            hidden += [f"**Code review · {text(provider)}** · head {code(report['head'][:7])} · "
-                       f"{markup.label(markup.VERDICT[report['verdict']])}", "", block(report["summary"]), ""]
-        if hidden:
-            lines += [conversation.OMITTED if compact else
-                      markup.details("Plan, QC, reviews and local evidence", "\n".join(hidden).strip()), ""]
-        latest = state.get("conversation", {}).get("latest")
-        if latest:
-            lines += [link("Latest event", f"https://github.com/{self.config['repository']}/issues/"
-                                           f"{state['issue']}#issuecomment-{latest}"), ""]
+        current = self.current_step()
+        rows = [self.step_row(index, name, current) for index, name in enumerate(STEPS)]
+        progress = " → ".join(f"**{name} {status.split(' ')[0]}**" if index == current else
+                              f"{name} {status.split(' ')[0]}" if not status.startswith("Pending") else name
+                              for index, (name, status, _) in enumerate(rows))
+        lines = [MARKER, "## Concurro", "", progress, "",
+                 markup.table(["Step", "Status", "Detail"], [[name, status, detail] for name, status, detail in rows]), ""]
+        action = self.action_line()
+        if action:
+            lines += [action, ""]
+        if not compact and state.get("reports"):
+            lines += [markup.details("Rounds", self.rounds_table()), ""]
         return "\n".join(lines + self.checkpoints.links())
+
+    def artifact_url(self, number):
+        """An artifact of this issue on GitHub."""
+        return f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}/artifacts/{number}"
+
+    def current_step(self):
+        """The step the task is on, or the furthest it reached when paused; len(STEPS) once merged."""
+        state = self.state
+        stage = state["stage"]
+        if stage in ("merged", "observed_merged"):
+            return len(STEPS)
+        if stage in STAGE_STEP:
+            return STAGE_STEP[stage]
+        if state.get("pr"):
+            return 4 if len(state.get("reviews", {})) < len(self.config["reviewers"]) else 5
+        if state.get("local_status") or state.get("approval"):
+            return 3
+        if state.get("design_votes") or stage == "clarify" and not state.get("plan", {}).get("questions") and state.get("plan"):
+            return 2
+        return 1 if state.get("plan") else 0
+
+    def step_row(self, index, name, current):
+        """`(name, status, detail)` of one step; details are engine values and at most one headline."""
+        state = self.state
+        stage = state["stage"]
+        if index > current:
+            return name, "Pending", ""
+        paused = {"clarify": ("❓", "Input needed"), "blocked": (markup.BLOCKED, "Blocked"),
+                  "escalated": (markup.ESCALATED, "Escalated"), "rejected": (markup.BLOCKED, "Rejected"),
+                  "stopped": ("⏹️", "Stopped")}
+        done = index < current
+        intake = state.get("qc", {}).get("intake")
+        if name == "Intake":
+            status = markup.label(markup.DECISION[intake["decision"]]) if intake else "▶️ In progress"
+            detail = markup.headline(intake, "rationale") or "" if intake else ""
+        elif name == "Plan":
+            version = f"Version {state.get('plan_revisions', 0) + 1}"
+            status = f"✅ {version}" if done else "▶️ In progress"
+            plan = self.checkpoints.plan
+            detail = link("Implementation plan", self.artifact_url(plan["number"])) if plan else ""
+        elif name == "Design review":
+            roster = len(design_roster(self.config))
+            approve = sum(v["report"]["decision"] == "approve" for v in state.get("design_votes", {}).values())
+            objections = sum(not v["resolved"] for v in state.get("objections", []))
+            round_ = f"Round {state.get('design_generation', 0) + 1} · {state.get('design_phase', 'cooperative')}"
+            status = f"✅ {approve} of {roster} approve" if done else (
+                "Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
+            detail = f"{round_} · {objections} open objection{'s' if objections != 1 else ''}"
+        elif name == "Implement":
+            local = state.get("local_status") or state.get("local_evidence") or {}
+            checks = local.get("checks", [])
+            passed = sum(c.get("exit_code") == 0 for c in checks)
+            status = f"✅ {passed} of {len(checks)} checks" if done else "▶️ In progress"
+            parts = []
+            if local.get("review"):
+                parts.append("Local review " + markup.label(markup.VERDICT[local["review"]["verdict"]]))
+            if local.get("local_commit"):
+                parts.append("commit " + code(local["local_commit"][:7], cell=True))
+            detail = " · ".join(parts)
+        elif name == "Code review":
+            reviews = state.get("reviews", {})
+            approve = sum(r["verdict"] == "approve" for r in reviews.values())
+            total = len(self.config["reviewers"])
+            status = f"✅ {approve} of {total} approve" if done else f"▶️ {len(reviews)} of {total} reviewed"
+            open_findings = sum(f["status"] in ("open", "withdrawn") for f in state.get("findings", []))
+            pr = link(f"PR #{state['pr']}", self.pr_url(state["pr"])) if state.get("pr") else ""
+            detail = " · ".join(p for p in (pr, f"{open_findings} open finding{'s' if open_findings != 1 else ''}") if p)
+        else:
+            if current == len(STEPS):
+                status, detail = "✅ Merged", ""
+            elif stage == "gates" and state.get("handoff_ready"):
+                status, detail = "✅ Handed off", "A human reviews and merges"
+            else:
+                status = f"{markup.GATE} Blocked" if state.get("reason") and stage == "gates" else "▶️ Checking gates"
+                detail = text(state.get("reason", ""), 300) if stage == "gates" else ""
+        if not done and index == current and stage in paused:
+            status = markup.label(paused[stage])
+        return name, status, detail
+
+    def action_line(self):
+        """One line naming what a human must do, linking the comment that asks."""
+        state = self.state
+        journal = state.get("conversation", {})
+        latest = journal.get("latest")
+        url = (f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{latest}"
+               if latest else None)
+        open_request = next((r for r in reversed(state.get("requests", [])) if r["state"] == "open" and r.get("comment")), None)
+        if open_request:
+            url = (f"https://github.com/{self.config['repository']}/issues/{state['issue']}"
+                   f"#issuecomment-{open_request['comment']}")
+            return f"**Action needed:** {link('answer the questions', url)}."
+        needs = {"blocked": "a fix and a retry", "escalated": "a decision", "rejected": "an edit and a retry",
+                 "planned": "plan approval" if state.get("mode") == "manual" else None}.get(state["stage"])
+        if not needs and state["stage"] == "gates" and state.get("handoff_ready"):
+            needs = "a human review and merge"
+        if not needs:
+            return ""
+        line = f"**Action needed:** {needs}" + (f" ({link('details', url)})." if url else ".")
+        paused = {"blocked": (markup.BLOCKED, "Blocked"), "escalated": (markup.ESCALATED, "Escalated"),
+                  "rejected": (markup.BLOCKED, "Rejected")}.get(state["stage"])
+        if paused and state.get("reason"):
+            line = f"{paused[0]} **{paused[1]}:** {text(state['reason'], 300)}\n\n" + line
+        return line
+
+    def rounds_table(self):
+        """Every archived vote by step and round, each linking its full report."""
+        reports = self.state.get("reports", [])
+        providers = list(dict.fromkeys(r["provider"] for r in reports))
+        rounds = list(dict.fromkeys((r["step"], r["round"]) for r in reports))
+        rows = []
+        for step, round_ in rounds:
+            cells = []
+            for provider in providers:
+                entry = next((r for r in reversed(reports)
+                              if (r["step"], r["round"], r["provider"]) == (step, round_, provider)), None)
+                vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
+                cells.append(link(markup.label(vocabulary[entry["outcome"]]), self.artifact_url(entry["artifact"]))
+                             if entry else "—")
+            rows.append([text(step), text(round_)] + cells)
+        return markup.table(["Step", "Round"] + [text(p) for p in providers], rows)
 
     def sync_stage(self):
         """Mirror durable progress to labels without letting display failures authorize or block work."""
@@ -423,10 +513,6 @@ class Controller:
                 if not isinstance(error, SessionFailure) or not session:
                     raise
                 sessions.restart(self.state, session)
-                conversation.queue(self.state, "Controller · Session restarted",
-                    f"{text(provider)} · {text(stage)}: the prior session could not continue. "
-                    "The next attempt uses a new isolated session with full context. "
-                    "Consumed calls and approval requirements are unchanged.")
                 self.save()
                 if attempt:
                     raise Blocked("provider session failed twice; a fresh session is prepared for retry") from None
@@ -539,8 +625,6 @@ class Controller:
             return False
         self.state["plan_revisions"] += 1
         self.state.update(stage=stage, reason=reason)
-        conversation.queue(self.state, "Controller · Revision requested",
-                           f"Revision {self.state['plan_revisions']} of {self.config['max_plan_revisions']}.\n\n{block(reason)}")
         return True
 
     def invalidate_design(self, reason):
@@ -573,9 +657,6 @@ class Controller:
         state = self.state
         if state.get("pending"):
             raise Blocked("prepared publication must be reconciled before reopening design")
-        conversation.queue(state, f"{markup.VERDICT['reopen'][0]} Design reopened · {text(source)}",
-                           block(issue["explanation"]) + "\n\n" + conversation.items(issue["evidence"]),
-                           meta=("plan " + code(state["plan_id"][:12]),))
         state.setdefault("reopen_history", []).append({"source": source, "issue": issue,
             "head": state.get("head"), "plan": state["plan_id"]})
         state["design_feedback"] = issue
@@ -654,18 +735,7 @@ class Controller:
         if state.get("head") or state.get("pending"):
             if base != state["base"] or state.get("pending"):
                 raise Blocked("approved base or prepared publication changed; reconcile manually")
-            if (state["stage"] == "clarify"
-                    and all(requirements[key] == state["requirements"][key] for key in ("title", "body"))):
-                self.invalidate_design("Clarification answered for the open design.")
-                state.update(stage="plan", requirements=requirements)
-                self.save()
-                return True
-            self.reopen_design({"kind": "requirements", "explanation": "Authorized issue requirements changed.",
-                                "evidence": [digest(requirements)]}, "requirements")
-            state.update(requirements=requirements,
-                         issue_digest=digest([self.issue["title"], self.issue["body"]]))
-            self.save()
-            return state["stage"] == "plan"
+            return self.resume_with_head(requirements)
         if not self.revise_plan("intake", "Requirements or base changed; QC is reassessing."):
             return False
         state.update(requirements=requirements, base=base,
@@ -755,9 +825,6 @@ class Controller:
         else:
             state['review_repairs'] = state.get('review_repairs', 0) + 1
             state.update(stage='plan_qc', reason='Review output needs correction: ' + error.code)
-        conversation.queue(state, 'Controller · Review output repair',
-                           f"{text(member['provider'] + ' / ' + member['model'])}: "
-                           + text(state['reason'] + ' ' + design.REPAIR_DETAILS[error.code]))
         self.save()
 
     def quality_control(self, stage):
@@ -847,7 +914,7 @@ class Controller:
         try:
             self.finish_quality_control(stage, report)
             self.record_outcome()
-            conversation.transition(state)
+            self.transition(state)
             if member and len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 1000:
                 raise design.ReviewError('review_checkpoint')
         except Blocked:
@@ -886,11 +953,7 @@ class Controller:
             raise Blocked("unanimous design consensus missing or stale")
         if state.get("design_phase") != "fresh":
             state.update(design_phase="fresh", design_votes={})
-            conversation.queue(state, "Controller · Cooperative consensus reached",
-                               f"Plan {code(state['plan_id'][:12])} now requires fresh, independent approval from every reviewer.")
             return
-        conversation.queue(state, "Controller · Fresh design approval complete",
-                           f"Every participating model approved plan {code(state['plan_id'][:12])} in a fresh session.")
         if state.get("mode") == "manual":
             state["stage"] = "planned"
         else:
@@ -906,6 +969,24 @@ class Controller:
             self.state["reason"] = reason
         self.save(publish_events=publish_events)
 
+    def resume_with_head(self, requirements):
+        """Continue a design whose PR exists under changed requirements; whether planning resumes.
+
+        An answered clarification re-plans the open design; a changed issue reopens it.
+        """
+        state = self.state
+        if (state["stage"] == "clarify"
+                and all(requirements[key] == state["requirements"][key] for key in ("title", "body"))):
+            self.invalidate_design("Clarification answered for the open design.")
+            state.update(stage="plan", requirements=requirements)
+            self.save()
+            return True
+        self.reopen_design({"kind": "requirements", "explanation": "Authorized issue requirements changed.",
+                            "evidence": [digest(requirements)]}, "requirements")
+        state.update(requirements=requirements, issue_digest=digest([self.issue["title"], self.issue["body"]]))
+        self.save()
+        return state["stage"] == "plan"
+
     def commands(self, comments):
         """Apply exact writer commands; plan approval is bound to its full digest."""
         for comment in comments:
@@ -920,6 +1001,11 @@ class Controller:
                 if self.config["autonomous"]:
                     continue
                 if self.state and self.state["stage"] not in ("clarify", "blocked", "stopped"):
+                    continue
+                if self.state and self.state["stage"] == "clarify" and self.state.get("head") and not self.state.get("pending"):
+                    # A clarification with a PR resumes its open design, as autonomous refresh does.
+                    self.state["command_id"] = comment["id"]
+                    self.resume_with_head(self.requirements(comments))
                     continue
                 if self.state and any(self.state.get(key) for key in ("pr", "head", "pending")):
                     raise Blocked("existing PR or prepared publication requires manual reconciliation before restarting")
@@ -950,6 +1036,9 @@ class Controller:
                 if self.state["stage"] in ("rejected", "escalated") and not output_repair:
                     if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment."):
                         continue
+                    # Reassessment reads the issue as it is now, including edits made to answer the escalation.
+                    self.state.update(requirements=self.requirements(comments),
+                                      issue_digest=digest([self.issue["title"], self.issue["body"]]))
                     self.state.pop("retry_stage", None)
                     self.state["command_id"] = comment["id"]
                 else:
@@ -1006,8 +1095,6 @@ class Controller:
         self.state["approved_accumulated_files"] = self.state.get("changed_files", [])
         self.state["design_parent"] = self.state.get("head")
         self.state["stage"] = "clarify" if plan["questions"] else "plan_qc"
-        self.state['plan_event_intent'] = {'plan': self.state['plan_id'], 'round': self.state['design_generation'] + 1,
-            'title': f"{self.config['planner']} / {selected_model(self.config, self.config['planner'], 'plan')} · plan updated"}
         self.save()
 
     def repair_validation(self, plan, errors):
@@ -1023,7 +1110,6 @@ class Controller:
         else:
             state['validation_repairs'] = state.get('validation_repairs', 0) + 1
             state.update(stage='plan', reason='Validation contract needs repair: ' + ', '.join(errors))
-        conversation.queue(state, 'Controller · Validation repair', block(state['reason']))
         self.save()
 
     def local_report(self, attempt, report):
@@ -1034,7 +1120,8 @@ class Controller:
         compact.update(attempt=attempt, round=state["round"], run_id=os.environ.get("GITHUB_RUN_ID"))
         changed = state.get("local_status") != compact
         state["local_status"] = compact
-        if changed:
+        # Only an attempt's final status, with its local review, is archived.
+        if changed and compact.get("review"):
             conversation.queue(state, None, source=("local_status",), kind="local",
                                details={"reviewer": self.config["local_reviewer"]})
         directory = os.environ.get("CONCURRO_LOCAL_REPORT_DIR")
@@ -1221,21 +1308,34 @@ class Controller:
         if prs:
             pr = prs[0]
         else:
-            pr = self.gh.repo("pulls", "POST", {"title": f"fix: address issue #{state['issue']}",
-                "head": state["branch"], "base": self.config["base"],
-                "body": f"Closes #{state['issue']}\n\nPlan `{state['plan_id']}`.\n\n"
-                        + pending["summary"] + "\n\nGenerated changes; CI and independent reviews are pending."})
+            pr = self.gh.repo("pulls", "POST", {"title": self.pr_title(), "head": state["branch"],
+                                                "base": self.config["base"], "body": self.pr_body()})
         if state["reviews"]:
             state.setdefault("review_history", []).append(state["reviews"])
         state.update(head=pending["head"], pr=pr["number"], reviews={}, stage="review",
                      input_revision=state.get("input_revision", 0) + 1)
         state["changed_files"] = [f["filename"] for f in self.gh.pages(f"pulls/{pr['number']}/files")]
         del state["pending"]
-        number = pr["number"]
-        conversation.queue(state, "Controller · PR published",
-                           f"{link(f'PR #{number}', self.pr_url(number))} · commit {code(state['head'][:7])}. "
-                           "Local checks and review passed.")
         self.save()
+
+    def pr_title(self):
+        """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
+        plan, suffix = self.state["plan"], f" (#{self.state['issue']})"
+        title = (markup.one_line(plan.get("headline") or "") or markup.first_sentence(plan["summary"])
+                 or markup.one_line(plan["summary"]))
+        title = title.rstrip(".")
+        if not title:
+            return f"Address issue #{self.state['issue']}"
+        limit = PR_TITLE_LIMIT - len(suffix)
+        return (title if len(title) <= limit else title[:limit - 1].rstrip() + "…") + suffix
+
+    def pr_body(self):
+        """The plan's summary, its artifact, and the issue it closes; GitHub shows CI and reviews natively."""
+        plan = self.checkpoints.plan
+        lines = [block(self.state["plan"]["summary"]), ""]
+        if plan:
+            lines += [link("Implementation plan", self.artifact_url(plan["number"])), ""]
+        return "\n".join(lines + [f"Closes #{self.state['issue']}"])
 
     def pr_url(self, number):
         """The task's pull request on GitHub."""
@@ -1300,7 +1400,7 @@ class Controller:
                                 self.gh.pages(f"pulls/{state['pr']}/reviews"), self.config)
         if reasons:
             reason = "; ".join(reasons)
-            if state.get("reason") != reason:
+            if actions.handoff(state, self.config, reasons, pr) or state.get("reason") != reason:
                 state["reason"] = reason
                 self.save()
             return False
@@ -1400,6 +1500,9 @@ class Controller:
             enrollment = self.enrollment()
             if enrollment:
                 self.initialize(comments, "autonomous", enrollment=enrollment)
+        if self.state and actions.answers(self.state, self.config, comments,
+                                          digest([self.issue["title"], self.issue["body"]]), self.answerer):
+            self.save()
         self.commands(comments)
         if not self.state or self.state["stage"] in ("planned", "blocked", "stopped", "merged", "observed_merged", "rejected", "escalated"):
             return False

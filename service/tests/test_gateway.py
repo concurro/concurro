@@ -179,6 +179,23 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((self.backend.writes, self.registry.mutations(KEY, "in-flight")), ([], []))
         self.assertTrue(allowed(KEY, "PATCH", root + "git/refs/heads/concurro/7", {"sha": "a" * 40, "force": False}))
 
+    def test_issue_comment_edits_only_on_the_apps_marked_comments(self):
+        """A human comment, an unmarked App comment, or none are refused; a Concurro request is edited."""
+        bot = self.config["bot_login"]
+        self.fake.comment("<!-- concurro:event:v1:" + "e" * 64 + " -->\n### ❓ Input needed", bot)
+        request = self.fake.comments[-1]["id"]
+        self.fake.comment("<!-- concurro:event:v1:" + "f" * 64 + " -->\nforged by a human", "writer")
+        human = self.fake.comments[-1]["id"]
+        self.fake.comment("An unmarked note", bot)
+        unmarked = self.fake.comments[-1]["id"]
+        root = f"repos/{KEY[0]}/issues/comments/"
+        for refused in (human, unmarked):
+            with self.subTest(comment=refused), self.assertRaises(Disallowed):
+                self.gh.api(root + str(refused), "PATCH", {"body": "x"})
+        self.assertEqual(self.backend.writes, [])
+        self.gh.api(root + str(request), "PATCH", {"body": "<!-- concurro:event:v1:" + "e" * 64 + " -->\n✅ Answered"})
+        self.assertEqual(self.backend.writes, [("PATCH", f"issues/comments/{request}")])
+
     def test_only_the_engine_linked_branch_mutation_for_this_issue(self):
         """The exact engine document for this task's issue; appended mutations, other issues or extra input are refused."""
         def body(query=LINKED_BRANCH, issue="issue-7", **extra):

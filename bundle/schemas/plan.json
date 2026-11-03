@@ -1,6 +1,9 @@
 {
   "type": "object",
   "properties": {
+    "headline": {
+      "type": "string"
+    },
     "summary": {
       "type": "string"
     },
@@ -124,6 +127,7 @@
     }
   },
   "required": [
+    "headline",
     "summary",
     "questions",
     "files",

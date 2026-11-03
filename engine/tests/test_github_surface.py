@@ -58,7 +58,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertEqual(self.controller().state, controller.state)
         controller.state.update(stage="blocked", reason="Transport unavailable")
         controller.save()
-        self.assertIn("🛑 **Blocked**\n\nTransport unavailable", self.gh.summary()["body"].split("<details>")[0])
+        self.assertIn("🛑 **Blocked:** Transport unavailable", self.gh.summary()["body"].split("<details>")[0])
 
     def test_escalation_shows_rationale_once_and_keeps_action(self):
         """High risk and explicit escalations retain one explanation plus the required action."""
@@ -75,8 +75,10 @@ class SurfaceTests(unittest.TestCase):
                 self.assertEqual(recovered["outcomes"][-1]["status"], "escalated")
                 self.assertEqual(recovered["outcomes"][-1]["reason"], expected)
                 visible = self.gh.summary()["body"].split("<details>")[0]
-                self.assertEqual(visible.count(report["rationale"]), 1)
-                self.assertIn("📣 **Escalated**\n\n" + ESCALATION_REASON, visible)
+                self.assertIn("📣 **Escalated:** " + ESCALATION_REASON, visible)
+                notices = [c["body"] for c in self.gh.comments if "### 📣 Escalated" in c["body"]]
+                self.assertEqual(len(notices), 1, "one actionable comment per escalation")
+                self.assertIn("/concurro retry", notices[0])
                 self.assertFalse(self.gh.refs)
 
     def test_legacy_escalation_reason_is_deduplicated_without_changing_state(self):
@@ -89,11 +91,10 @@ class SurfaceTests(unittest.TestCase):
         recovered = self.controller()
         self.assertEqual(recovered.state, controller.state)
         visible = self.gh.summary()["body"].split("<details>")[0]
-        self.assertEqual(visible.count(rationale), 1)
-        self.assertIn("📣 **Escalated**\n\n" + ESCALATION_REASON, visible)
+        self.assertIn("📣 **Escalated:** " + ESCALATION_REASON, visible)
         recovered.state["reason"] = "Transport failed after QC: " + rationale
         recovered.save()
-        self.assertIn("📣 **Escalated**\n\n" + recovered.state["reason"], self.gh.summary()["body"])
+        self.assertIn("📣 **Escalated:** " + recovered.state["reason"], self.gh.summary()["body"])
 
     def test_old_expanded_state_remains_readable(self):
         """Changing the comment presentation does not reset existing budgets or evidence."""

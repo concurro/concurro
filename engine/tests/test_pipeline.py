@@ -127,6 +127,11 @@ class FakeGitHub:
         self.authorized = True
         self.fail_after_ref = False
 
+    def archives(self):
+        """The bodies of the report archive artifacts, oldest first."""
+        items = self.artifacts.get(7, {}).values()
+        return [i["artifact"]["body"] for i in items if i["artifact"]["name"].startswith("Concurro report ")]
+
     def summary(self):
         """Find the current-state comment independently of conversation chronology."""
         return next(c for c in self.comments if c["body"].startswith(MARKER))
@@ -266,7 +271,8 @@ class FakeGitHub:
             return {"object": {"sha": self.base}}
         if path.startswith("issues/comments/"):
             target = next(c for c in self.comments if c["id"] == int(path.rsplit("/", 1)[1]))
-            target["body"] = data["body"]
+            if method == "PATCH":
+                target["body"] = data["body"]
             return deepcopy(target)
         if path == "issues/7/comments":
             self.comment(data["body"], self.config["bot_login"])
@@ -320,7 +326,7 @@ class FakeGitHub:
             comment = self.review_comment(data, in_reply_to_id=parent)
             return deepcopy(comment)
         if path == "pulls":
-            self.pr = {"number": 9, "state": "open", "draft": False, "mergeable": True,
+            self.pr = {"number": 9, "title": data["title"], "body": data["body"], "state": "open", "draft": False, "mergeable": True,
                        "mergeable_state": "clean", "head": {"sha": self.refs[data["head"]],
                         "ref": data["head"], "repo": {"full_name": self.config["repository"]}},
                        "base": {"ref": "main", "sha": self.base}, "merged": False}

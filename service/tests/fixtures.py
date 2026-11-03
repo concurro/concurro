@@ -101,6 +101,12 @@ class RestBackend:
             raise fault[1]
         if relative.startswith("contents/"):
             return self.content(relative)
+        if relative.startswith("issues/comments/"):
+            identifier = int(relative.rsplit("/", 1)[1])
+            comment = next((c for c in self.fake.comments if c["id"] == identifier), None)
+            if comment is None:
+                raise NotFound("GitHub request failed: GET " + relative)
+            return {**deepcopy(comment), "issue_url": f"https://api.github.com/{self.root}issues/7"}
         if relative.startswith("pulls/comments/"):
             identifier = int(relative.rsplit("/", 1)[1])
             comment = next((c for c in self.fake.review_comments if c["id"] == identifier), None)

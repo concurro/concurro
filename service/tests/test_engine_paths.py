@@ -160,8 +160,10 @@ class ReconstructionTests(Recovery, unittest.TestCase):
     def test_audit_artifact(self):
         """The audit artifact is found by creator and name, not created twice."""
         self.lose("POST", "issues/7/artifacts")
-        kinds = [item["artifact"]["type"] for item in self.fake.artifacts[7].values()]
-        self.assertEqual(sorted(kinds), ["generic", "plan"])
+        items = [item["artifact"] for item in self.fake.artifacts[7].values()]
+        archives = [i["name"] for i in items if i["name"].startswith("Concurro report ")]
+        self.assertEqual(sorted(i["type"] for i in items if i["name"] not in archives), ["generic", "plan"])
+        self.assertEqual(len(archives), len(set(archives)), "no report archive is created twice")
 
     def test_summary_comment(self):
         """The summary comment is found by its marker and author."""

@@ -61,14 +61,13 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual([s["turn"] for s in sessions], [0, 1, 2])
             self.assertEqual(len({s["scope"] for s in sessions}), 1)
             self.assertNotEqual(sessions[0]["scope"], plans[0]["controller_session"]["scope"])
-        timeline = "\n".join(c["body"] for c in self.events())
-        self.assertEqual(timeline.count("### Plan updated ·"), 3)
-        self.assertIn("Define the error behavior.", timeline)
-        self.assertIn("**Review focus**", timeline)
-        self.assertIn("| Objection | ✅ Resolved |", timeline)
-        self.assertIn("Fresh design approval complete", timeline)
-        self.assertEqual(sum("### ✅ Plan QC · " in c["body"] and " · Approve\n" in c["body"] for c in self.events()), 6)
-        self.assertIn(f"| claude / {self.config['models']['claude']} | ✅ Approve |", self.gh.summary()["body"])
+        self.assertEqual(self.events(), [], "progress posts no issue comments")
+        archives = self.gh.archives()
+        self.assertIn("Define the error behavior.", "\n".join(archives))
+        self.assertEqual(sum(a.split("\n")[1].startswith("### ✅ Plan QC · ") for a in archives), 6)
+        summary = self.gh.summary()["body"]
+        self.assertIn("| Design review | ✅ 2 of 2 approve |", summary)
+        self.assertIn("| Design review | 3 fresh | [✅ Approve]", summary)
         self.assertFalse(state["conversation"]["pending"])
         before = deepcopy(self.events())
         controller.save()
@@ -77,27 +76,28 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.gh.merges, 0)
 
     def test_lost_event_response_reconciles_before_next_model_call(self):
-        """An accepted POST with a lost response is found without duplicate publication."""
+        """An accepted archive with a lost response is found without duplicate publication."""
         original = self.gh.repo
         failed = False
 
         def lose_response(path, method="GET", data=None):
-            """Disconnect once after the server stores the first event."""
+            """Disconnect once after the server stores the first archive."""
             nonlocal failed
             result = original(path, method, data)
-            if not failed and method == "POST" and data.get("body", "").startswith(conversation.MARKER):
+            if not failed and method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER):
                 failed = True
                 raise RuntimeError("lost response")
             return result
 
         with patch.object(self.gh, "repo", side_effect=lose_response), self.assertRaises(conversation.PublicationError):
             self.tick()
-        self.assertFalse(self.agents.calls)
-        first = deepcopy(self.events()[0])
-        self.tick()
-        self.assertEqual(self.events()[0], first)
-        self.assertEqual(sum(c["body"] == first["body"] for c in self.events()), 1)
         self.assertEqual(len(self.agents.calls), 1)
+        first = deepcopy(self.gh.archives())
+        self.assertEqual(len(first), 1)
+        self.tick()
+        self.assertEqual(self.gh.archives()[:1], first, "found by marker, not posted again")
+        self.assertEqual(sum(a == first[0] for a in self.gh.archives()), 1)
+        self.assertEqual(len(self.agents.calls), 2, "the next tick moves on to planning")
 
     def test_foreign_marker_does_not_acknowledge_event_and_modified_bot_event_blocks(self):
         """Only the actual App's exact publication can acknowledge pending intent."""

@@ -6,6 +6,9 @@ import json
 import re
 import threading
 
+from checkpoint_health import MARKER as HEALTH_MARKER
+from checkpoints import MARKER as STATUS_MARKER
+from conversation import MARKER as EVENT_MARKER
 from github import GitHub, LINKED_BRANCH, NotFound, RESOLVE_THREAD, Transient
 from reviews import FINDING_MARKER
 
@@ -37,6 +40,9 @@ WRITES = (
 PR_BODIES = ((re.compile(rf"pulls/{NUMBER}/reviews"), {"commit_id", "event", "body", "comments"}),
              (re.compile(rf"pulls/{NUMBER}/comments"), {"commit_id", "path", "subject_type", "body"}),
              (re.compile(rf"pulls/{NUMBER}/comments/{NUMBER}/replies"), {"body"}))
+ISSUE_COMMENT = re.compile(rf"issues/comments/(?P<comment>{NUMBER})")
+# The App's issue comments it edits: the status comment, its health notice and Input needed requests.
+EDITABLE = (STATUS_MARKER, HEALTH_MARKER, EVENT_MARKER)
 PULL = re.compile(rf"pulls/(?P<pull>{NUMBER})(?:/comments/(?P<comment>{NUMBER})/replies|/.*)?")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 OID = re.compile(r"[0-9a-f]{40}")
@@ -195,7 +201,8 @@ class MutationGateway:
                 and isinstance(body, str) and body.startswith(FINDING_MARKER))
 
     def bound(self, key, path, body):
-        """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads."""
+        """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads;
+        issue comment edits only on the App's own marked comments on the task's issue."""
         thread = resolved_thread(body) if path == "graphql" else None
         if thread is not None:
             query = ("query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
@@ -209,6 +216,12 @@ class MutationGateway:
                     and self.owned_pull(key, pr["number"])
                     and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body")))
         prefix = f"repos/{key[0]}/"
+        edit = ISSUE_COMMENT.fullmatch(path[len(prefix):]) if path.startswith(prefix) else None
+        if edit:
+            comment = self.reader(key[0]).request("GET", path) or {}
+            return (self.bot_login is not None and (comment.get("user") or {}).get("login") == self.bot_login
+                    and str(comment.get("body", "")).startswith(EDITABLE)
+                    and str(comment.get("issue_url", "")).endswith(f"/issues/{key[1]}"))
         match = PULL.fullmatch(path[len(prefix):]) if path.startswith(prefix + "pulls/") else None
         if match is None:
             return True

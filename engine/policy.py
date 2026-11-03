@@ -252,7 +252,8 @@ def merge_path_allowed(path, config, execution):
 
 def validate_plan(plan, config, execution):
     """Require a bounded, reviewable plan or explicit clarification questions."""
-    if not isinstance(plan, dict) or set(plan) != {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}:
+    fields = {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}
+    if not isinstance(plan, dict) or set(plan) != presentation(plan, fields, {"headline"}):
         raise Blocked("invalid plan fields")
     publication = plan['publication']
     if (not isinstance(publication, dict) or set(publication) != {'changes', 'review_focus'}

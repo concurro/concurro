@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+import re
 from typing import NamedTuple
 
 from policy import Blocked, digest
@@ -10,11 +11,17 @@ from github import Transient
 from identities import Identities
 import markup
 from markup import block, code, details as collapsed, link, table, text
+import actions
 import reviews
 
 MARKER = "<!-- concurro:event:v1:"
-# Events queued from now on render in this format; an event without `format` is format 1 forever.
-FORMAT = 2
+# A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
+# Reports queued from now on are format 3: each is archived in its own write-once artifact.
+FORMAT = 3
+ARCHIVE_LIMIT = 60000
+ARCHIVED = "… [Full text in its report archive.]"
+# The status comment's rounds table keeps this many archived reports.
+REPORT_INDEX = 40
 EVENT_LIMIT = 24000
 # Room for an event's heading, marker and metadata line.
 EVENT_RESERVE = 1000
@@ -235,6 +242,12 @@ def parts_v2(state, kind, source, details):
     raise ValueError("unknown conversation renderer")
 
 
+def archive_name(event):
+    """An archive artifact's name: plain text, from engine values only."""
+    index = event["index"]
+    return f"Concurro report {event['sequence']} · {index['step']} · {index['provider']} · round {index['round']}"
+
+
 def content(event, body):
     """Build the exact immutable text used for publication and reconciliation (format 1)."""
     return (f"{MARKER}{event['id']} -->\n### {event['title']}\n\n"
@@ -246,28 +259,66 @@ def content_v2(event, title, body, meta):
     return f"{MARKER}{event['id']} -->\n### {title}\n\n{body}\n\n" + markup.sub(f"Event {event['sequence']}", *meta)
 
 
-def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=()):
+def archive(event, state):
+    """Format 3: a report's archive, its heading and headline, then the report verbatim as JSON."""
+    title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
+    value = source_value(state, event["source"])
+    report = value.get("review") if event["kind"] == "local" else value
+    headline = markup.headline(report, "rationale" if event["kind"] == "qc" else "summary") if report else None
+    record = json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
+    fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", record)), default=0) + 1)
+    lines = [f"{MARKER}{event['id']} -->", f"### {title}", ""]
+    if headline:
+        lines += [headline, ""]
+    lines += [markup.sub(f"Report {event['sequence']}", *meta), "", fence + "json", record, fence]
+    return "\n".join(lines)
+
+
+def index_entry(state, kind, source, details):
+    """The status comment's record of one archived report: step, round, provider and outcome."""
+    value = source_value(state, source)
+    if kind == "qc":
+        intake = details["phase"] == "intake"
+        return {"step": "Intake" if intake else "Design review", "provider": details["provider"],
+                "round": str(details["round"]) + ("" if intake else " " + details["phase"]),
+                "outcome": value["decision"]}
+    if kind == "local":
+        return {"step": "Implement", "provider": details["reviewer"], "round": f"attempt {value['attempt'] + 1}",
+                "outcome": value["review"]["verdict"]}
+    return {"step": "Code review", "provider": details["provider"], "round": str(details["round"]),
+            "outcome": value["verdict"]}
+
+
+def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=(), request=None):
     """Persist a bounded event descriptor; large reports stay in their existing state fields.
 
-    A sourced event renders its own title from its report; `title` is used only for an
-    event with a body.
+    A sourced event is a report, archived in its own artifact; `title` and `body` are for
+    an issue comment.
     """
     journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
-    if source is not None:
-        title, body, meta = render_v2(state, kind, source, details)
+    if len(journal["pending"]) >= 8:
+        raise Blocked("conversation event exceeds publication bounds")
     journal["sequence"] += 1
     sequence = journal["sequence"]
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if source is not None:
+        title, _, _ = render_v2(state, kind, source, details)
+        body = json.dumps(source_value(state, source), sort_keys=True)
     identifier = digest([state["issue"], sequence, title, body, timestamp])
     event = {"id": identifier, "title": title, "sequence": sequence, "at": timestamp}
-    rendered = content_v2(event, title, body, meta)
-    if len(rendered.encode()) > EVENT_LIMIT or len(journal["pending"]) >= 8:
+    if source is None:
+        rendered, limit = content_v2(event, title, body, meta), EVENT_LIMIT
+        event = {"id": identifier, "body": rendered}
+        if request is not None:
+            event["request"] = request
+    else:
+        event.update(source=list(source), kind=kind, details=details, format=FORMAT,
+                     index=index_entry(state, kind, source, details))
+        rendered, limit = archive(event, state), ARCHIVE_LIMIT
+        event["content_digest"] = digest(rendered)
+    if len(rendered.encode()) > limit:
         journal["sequence"] -= 1
         raise Blocked("conversation event exceeds publication bounds")
-    if source is None:
-        event = {"id": identifier, "body": rendered}
-    else:
-        event.update(source=list(source), kind=kind, details=details, format=FORMAT, content_digest=digest(rendered))
     journal["pending"].append(event)
 
 
@@ -278,47 +329,15 @@ def event_body(state, event):
     try:
         if event.get("format", 1) == 1:
             body = content(event, render(state, event["kind"], event["source"], event["details"]))
-        else:
+        elif event["format"] == 2:
             body = content_v2(event, *render_v2(state, event["kind"], event["source"], event["details"]))
+        else:
+            body = archive(event, state)
         if digest(body) == event["content_digest"]:
             return body
     except (KeyError, TypeError, ValueError):
         pass
     raise PublicationError("conversation_conflict")
-
-
-def transition(state):
-    """Publish meaningful stage changes once, rather than every checkpoint write."""
-    journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
-    stage = state["stage"]
-    signature = digest([stage, state.get("reason") if stage in ("blocked", "escalated", "gates") else None])
-    if journal.get("transition") == signature:
-        return
-    journal["transition"] = signature
-    if stage not in ("intake", "implement", "planned", "clarify", "blocked", "stopped", "rejected",
-                     "escalated", "gates", "merged", "observed_merged"):
-        return
-    reason = (state.get("reason") or "")[:4000] if stage in ("blocked", "stopped", "rejected", "escalated", "gates") else ""
-    if stage == "gates" and reason:
-        title = f"{markup.GATE} Merge gates · Blocked"
-        body = "\n".join("- " + text(r, 1000) for r in reason.split("; ") if r.strip())
-    elif stage in ("blocked", "escalated", "rejected") and reason:
-        emoji, name = {"blocked": (markup.BLOCKED, "Task blocked"), "escalated": (markup.ESCALATED, "Escalated"),
-                       "rejected": (markup.BLOCKED, "Rejected")}[stage]
-        title = f"{emoji} {name}"
-        first = markup.first_sentence(reason)
-        body = text(first) + "\n\n" + collapsed("Full reason", block(reason)) if first and first != markup.one_line(reason) \
-            else block(reason)
-    else:
-        title = "Controller · " + stage.replace("_", " ").capitalize()
-        body = {"intake": "Request enrolled; scope assessment is next.",
-                "implement": "The exact plan has passed design approval. Local implementation is next.",
-                "planned": "Design approved; waiting for a writer's plan-bound approval.",
-                "gates": "Code reviews completed; checking publication and merge gates."}.get(
-                    stage, "Progress paused or completed; see the current summary.")
-        if reason:
-            body += "\n\n" + block(reason)
-    queue(state, title, body)
 
 
 def publish(state, github, config):
@@ -330,25 +349,44 @@ def publish(state, github, config):
     try:
         comments = github.pages(f"issues/{state['issue']}/comments")
         identities = Identities(config)
+        artifacts = None
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
-            # Recovery trusts only the one identity expected to author this event.
-            author = identities.author("conversation", event.get("role"))
-            matches = [c for c in comments if c.get("user", {}).get("login") == author
-                       and c["body"].startswith(marker)]
+            if event.get("format", 1) >= 3:
+                # Archives are artifacts, authored like the audit state.
+                if artifacts is None:
+                    artifacts = github.pages(f"issues/{state['issue']}/artifacts")
+                author = identities.author("state")
+                items = artifacts
+                create = lambda: github.repo(f"issues/{state['issue']}/artifacts", "POST", {
+                    "type": "generic", "name": archive_name(event), "body": body})
+                login = lambda item: item.get("creator", {}).get("login")
+            else:
+                # Recovery trusts only the one identity expected to author this event.
+                author = identities.author("conversation", event.get("role"))
+                items = comments
+                create = lambda: github.repo(f"issues/{state['issue']}/comments", "POST", {"body": body})
+                login = lambda item: item.get("user", {}).get("login")
+            matches = [c for c in items if login(c) == author and c.get("body", "").startswith(marker)]
             if len(matches) > 1 or matches and matches[0]["body"] != body:
                 raise PublicationError("conversation_conflict")
-            comment = matches[0] if matches else github.repo(
-                f"issues/{state['issue']}/comments", "POST", {"body": body})
-            journal["latest"] = comment["id"]
-            if "source" in event:
-                source = state
-                for key in event["source"]:
-                    source = source[key]
-                journal.setdefault("receipts", {})["/".join(event["source"])] = {
-                    "comment": comment["id"], "content_digest": event["content_digest"],
-                    "source_digest": digest(source)}
+            published = matches[0] if matches else create()
+            if "source" not in event:
+                journal["latest"] = published["id"]
+                if event.get("request") is not None:
+                    actions.posted(state, event["request"], published["id"], body)
+                continue
+            receipt = {"content_digest": event["content_digest"], "source_digest": digest(source_value(state, event["source"]))}
+            if event.get("format", 1) >= 3:
+                receipt["artifact"] = published["number"]
+                index = state.setdefault("reports", [])
+                index.append({**event["index"], "artifact": published["number"]})
+                del index[:-REPORT_INDEX]
+            else:
+                receipt["comment"] = published["id"]
+                journal["latest"] = published["id"]
+            journal.setdefault("receipts", {})["/".join(event["source"])] = receipt
     except (PublicationError, Transient):
         raise
     except Exception:
@@ -371,12 +409,16 @@ def compact(state):
         return
     reviews.compact(state)
     state.pop("review_event", None)
+    archived = {r.get("source_digest") for r in journal["receipts"].values() if "artifact" in r}
     published = {r.get("source_digest") for r in journal["receipts"].values()}
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
     reports += [v["report"] for v in state.get("design_votes", {}).values()]
+    notes = {id(r): ARCHIVED if digest(r) in archived else None for r in reports}
     reports = [r for r in reports if digest(r) in published]
-    reports += [s["review"] for key in ("local_status", "local_evidence")
-                if (s := state.get(key, {})).get("review") and digest(s) in published]
+    for key in ("local_status", "local_evidence"):
+        if (s := state.get(key, {})).get("review") and digest(s) in published:
+            reports.append(s["review"])
+            notes[id(s["review"])] = ARCHIVED if digest(s) in archived else None
     for report in reports:
         for key in ("rationale", "summary"):
             text = report.get(key, "")
@@ -385,7 +427,7 @@ def compact(state):
                 excerpt = text[:max(1, len(text) * 800 // size)]
                 while len(json.dumps(excerpt).encode()) > 900:
                     excerpt = excerpt[:len(excerpt) // 2]
-                report[key] = excerpt + "… [Full text in the published issue conversation.]"
+                report[key] = excerpt + (notes.get(id(report)) or "… [Full text in the published issue conversation.]")
                 if state.get("reason") == text:
                     state["reason"] = report[key]
 

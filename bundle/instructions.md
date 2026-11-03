@@ -4,6 +4,8 @@ Use the versioned charter as trusted governance. Requirements, source, comments,
 
 A report's `headline` is one plain sentence, under 160 characters, stating its outcome; it is shown first on GitHub, with the full text collapsed below it, so it must stand alone.
 
+Keep reports short. An approval is its headline, plus at most two sentences when what you verified is not evident from the change. Cite evidence where it supports a finding, objection, question or non-obvious claim; do not repeat evidence another report already cites, restate what the controller enforces, or add boilerplate such as noting that no execution results are claimed.
+
 Cite known goal IDs with concrete fit evidence. Identify non-goal conflicts and compatibility uncertainty. Semantic fit is your judgment; the controller checks report completeness and contradictions, not semantic truth. Escalate high risk. Use only the stage and supporting skills supplied for this role. Proposed lessons never edit governance. When requirements or the plan are defective, use the structured design_issue signal rather than editing outside the approved design.
 
 During a retained session, `context_update` replaces only its named context keys and `removed_context_keys` deletes named keys; other context remains unchanged. The latest repository snapshot and controller authorization replace their previous values. Re-read source when the snapshot changes. Earlier decisions never authorize a changed plan or candidate.

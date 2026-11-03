@@ -52,11 +52,12 @@ class ConversationRecoveryTests(unittest.TestCase):
             self.assertEqual(len(notices), 1)
             self.assertIn("`" + code + "`", notices[0]["body"])
             self.assertNotIn("private-fixture", notices[0]["body"])
-            self.assertIn("🛑 **Blocked**", self.gh.summary()["body"])
+            self.assertIn("🛑 **Blocked:**", self.gh.summary()["body"])
         return controller
 
     def test_repeated_publication_failures_stay_visible_then_retry(self):
         """Repeated event failures never recur inside the blocked-state save."""
+        self.run_main()  # Planning publishes nothing; the first plan vote's archive does.
         original = self.gh.repo
 
         def fail_event(path, method="GET", data=None):
@@ -71,7 +72,7 @@ class ConversationRecoveryTests(unittest.TestCase):
                 self.run_main()
             self.assertNotIn("private-fixture", output.getvalue())
             self.assert_blocked("conversation_publish")
-            self.assertEqual(len(self.agents.calls), 2)
+            self.assertEqual(len(self.agents.calls), 3)
         self.gh.comment("/concurro retry")
         self.run_main()
         self.assertEqual(self.load().state["stage"], "plan_qc")
@@ -81,13 +82,16 @@ class ConversationRecoveryTests(unittest.TestCase):
 
     def test_edited_pending_event_has_diagnostic_and_recovers_when_restored(self):
         """A lost response followed by an edit stops visibly without overwriting the edit."""
+        self.run_main()
         original = self.gh.repo
+        edited = []
 
         def lose_and_edit(path, method="GET", data=None):
-            """Accept the plan comment, then lose the response after a human changes it."""
+            """Accept the first archive, then lose the response after someone changes it."""
             result = original(path, method, data)
-            if method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER):
-                self.gh.comments[-1]["body"] += " human edit"
+            if method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER) and not edited:
+                edited.append(result["number"])
+                self.gh.artifacts[7][result["number"]]["artifact"]["body"] += " human edit"
                 raise RuntimeError("private-fixture")
             return result
 
@@ -99,15 +103,17 @@ class ConversationRecoveryTests(unittest.TestCase):
                 self.run_main()
             controller = self.assert_blocked("conversation_conflict")
         event = controller.state["conversation"]["pending"][0]
-        comment = next(c for c in self.gh.comments if c["body"].startswith(conversation.MARKER + event["id"]))
-        self.assertTrue(comment["body"].endswith("human edit"))
-        comment["body"] = conversation.event_body(controller.state, event)
+        archive = self.gh.artifacts[7][edited[0]]["artifact"]
+        self.assertTrue(archive["body"].startswith(conversation.MARKER + event["id"]))
+        self.assertTrue(archive["body"].endswith("human edit"))
+        archive["body"] = conversation.event_body(controller.state, event)
         self.gh.comment("/concurro retry")
         self.run_main()
         self.assertEqual(self.load().state["stage"], "plan_qc")
 
     def test_all_comment_writes_fail_without_masking_failure_or_stage(self):
         """An unavailable comment API still leaves native labels and a valid blocked checkpoint."""
+        self.run_main()
         original = self.gh.repo
         outage = False
 
@@ -124,7 +130,11 @@ class ConversationRecoveryTests(unittest.TestCase):
                 patch("sys.stderr", new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
             self.run_main()
         self.assertNotIn("private-fixture", output.getvalue())
-        self.assert_blocked()
+        # The archive is an artifact, so only the status comment fails: a checkpoint failure, not a block.
+        controller = self.load()
+        self.assertEqual(controller.state["stage"], "plan_qc")
+        self.assertFalse(controller.state["conversation"]["pending"])
+        self.assertIn({"name": "concurro:attention"}, self.gh.issue["labels"])
 
 
 class ConversationSizeTests(unittest.TestCase):
@@ -174,7 +184,9 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertFalse(state["conversation"]["pending"])
         self.assertTrue(state["conversation"]["receipts"])
         self.assertTrue(all(not v["resolved"] for v in state.get("objections", [])))
-        timeline = "\n".join(c["body"] for c in gh.comments if c["body"].startswith(conversation.MARKER))
+        timeline = "\n".join(gh.archives())
+        self.assertFalse([c for c in gh.comments if c["body"].startswith(conversation.MARKER)
+                          and "Handed off for merge" not in c["body"]], "only actionable comments are posted")
         self.assertNotIn(plan_text, timeline)
         self.assertIn(plan_text, controller.checkpoints.plan['body'])
         for full_text in (rationale, summary):

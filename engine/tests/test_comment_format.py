@@ -203,35 +203,46 @@ class ContractTests(unittest.TestCase):
 class SizeTests(unittest.TestCase):
     """Rendered comments stay within their bounds."""
 
-    def test_oversized_event_drops_collapsed_sections(self):
+    def v2(self, state, kind, source, details):
+        """A format 2 event as a pending pre-change event renders it."""
+        return conversation.content_v2({"id": "e" * 64, "sequence": 3}, *conversation.render_v2(state, kind, source, details))
+
+    def test_oversized_format2_event_drops_collapsed_sections(self):
         state, source, details = format_samples.qc_state()
         state["qc"]["plan_qc"]["objection_updates"] = [
             {"id": f"O{i}", "status": "open", "detail": "d" * 600, "evidence": "e_" * 250,
              "counterexample": "x*" * 150, "closure": "y[" * 200} for i in range(24)]
-        details = format_samples.v2_details(details, disposition_ids=[f"O{i}" for i in range(24)])
-        conversation.queue(state, None, source=source, kind="qc", details=details)
-        event = state["conversation"]["pending"][0]
-        body = conversation.event_body(state, event)
+        body = self.v2(state, "qc", source, format_samples.v2_details(details, disposition_ids=[f"O{i}" for i in range(24)]))
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn(conversation.OMITTED, body)
         self.assertIn("| `O23` | Objection | 📌 Open |", body)
 
-    def test_long_expanded_text_is_dropped(self):
+    def test_long_expanded_format2_text_is_dropped(self):
         """Text shown without a headline goes too: an approval's summary, a review's, a design issue's."""
         status = {"attempt": 0, "local_commit": "c" * 40, "checks": [],
                   "review": {"verdict": "approve", "summary": "<" * 12700, "findings": [], "design_issue": None}}
-        state = {"issue": 7, "local_status": status}
-        conversation.queue(state, None, source=("local_status",), kind="local", details={"reviewer": "claude"})
-        body = conversation.event_body(state, state["conversation"]["pending"][0])
+        body = self.v2({"issue": 7, "local_status": status}, "local", ("local_status",), {"reviewer": "claude"})
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn(conversation.OMITTED, body)
         self.assertIn("**✅ Local review · claude · Approve**", body)
         state, source, details = format_samples.review_state()
         state["reviews"]["claude"].update(headline="", summary="<" * 20000)
-        conversation.queue(state, None, source=source, kind="review", details=format_samples.v2_details(details))
-        body = conversation.event_body(state, state["conversation"]["pending"][0])
+        body = self.v2(state, "review", source, format_samples.v2_details(details))
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn("[Review on PR #9]", body)
+
+    def test_archive_keeps_the_report_verbatim(self):
+        """An archive holds the whole report as JSON, in a fence no report text can close."""
+        state, source, details = format_samples.review_state()
+        state["reviews"]["claude"]["summary"] = "<" * 20000 + "\n````\n</details>"
+        conversation.queue(state, None, source=source, kind="review", details=format_samples.v2_details(details))
+        event = state["conversation"]["pending"][0]
+        body = conversation.event_body(state, event)
+        self.assertLessEqual(len(body.encode()), conversation.ARCHIVE_LIMIT)
+        record = body.split("`````json\n", 1)[1].rsplit("\n`````", 1)[0]
+        self.assertEqual(json.loads(record), state["reviews"]["claude"])
+        self.assertEqual(conversation.archive_name(event), "Concurro report 1 · Code review · claude · round 2")
+        assert_structure(self, body)
 
     def test_largest_review_fits_a_github_review(self):
         findings = [{**FINDING, "severity": "low", "title": "t" * 100, "detail": "*_[" * 360} for _ in range(20)]
@@ -252,16 +263,25 @@ class SizeTests(unittest.TestCase):
 class StatusSizeTests(Harness, unittest.TestCase):
     """The status comment keeps its status when its narrative would exceed GitHub's limit."""
 
-    def test_oversized_status_comment_keeps_status(self):
+    def test_status_comment_stays_small_with_huge_reports(self):
+        """Reports live in their archives; the status comment carries at most a shortened reason."""
         controller = self.run_to(Reviewers(set()), "gates")
         for review in controller.state["reviews"].values():
             review["summary"] = "<" * 17000
         controller.state["reason"] = "autonomous merge is disabled; " + "<" * 20000
         body = controller.summary_body()
+        self.assertLess(len(body.encode()), 8000)
+        self.assertNotIn("<" * 400, body)
+        self.assertIn("| Merge |", body)
+
+    def test_oversized_status_comment_drops_the_rounds_table(self):
+        controller = self.run_to(Reviewers(set()), "gates")
+        controller.state["reports"] = [{"step": "Code review", "round": "x" * 2000 + str(i), "provider": "claude",
+                                        "outcome": "approve", "artifact": i} for i in range(40)]
+        body = controller.summary_body()
         self.assertLessEqual(len(body.encode()), SUMMARY_LIMIT)
-        self.assertIn(conversation.OMITTED, body)
-        self.assertIn("| Gates |", body)
-        self.assertIn("🚧 **Merge blocked**\n\nautonomous merge is disabled;", body)
+        self.assertNotIn("<summary>Rounds</summary>", body)
+        self.assertIn("| Merge |", body)
 
 
 class UpgradeTests(Harness, unittest.TestCase):

@@ -233,9 +233,9 @@ class LifecycleTests(Harness, unittest.TestCase):
                          [("F1", "claude", "fixed"), ("F2", "codex", "fixed")])
         self.assertNotIn("claude approval missing or stale", self.reasons(state))
         self.assertNotIn("codex approval missing or stale", self.reasons(state))
-        events = "\n".join(c["body"] for c in self.gh.comments if "Code review ·" in c["body"])
-        self.assertIn("[Review on PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 1 new finding", events)
-        self.assertIn("earlier: F1 ✅ Fixed", events)
+        archives = [a for a in self.gh.archives() if "Code review ·" in a.split("\n")[1]]
+        self.assertEqual(len(archives), 4, "each review is archived; none is copied to the issue")
+        self.assertIn('"finding_ids": [\n    "F1"\n  ]', "\n".join(archives))
         self.assertEqual([r["event"] for r in self.gh.app_reviews], ["COMMENT"] * 4)
         self.assertEqual([t["isResolved"] for t in self.gh.thread_list], [True, True])
 
@@ -535,8 +535,8 @@ class PublicationTests(Harness, unittest.TestCase):
         agents.ask = long_summary
         state = self.run_to(agents, "gates").state
         self.assertEqual([summary in r["body"] for r in self.gh.app_reviews], [True, True])
-        self.assertTrue(all(r["summary"].endswith("[Full text in the published issue conversation.]")
-                            for r in state["reviews"].values()), "compacted once published")
+        self.assertTrue(all(r["summary"].endswith(conversation.ARCHIVED) for r in state["reviews"].values()),
+                        "compacted once archived")
 
     def test_hidden_opening_comment_is_retried_not_unthreaded(self):
         """An opening comment missing from one read keeps the review pending; it is never recorded as body-only."""
@@ -619,9 +619,8 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertEqual(reopen["event"], "COMMENT")
         self.assertIn("**Design issue** · plan\n\nThe plan misses a case.", reopen["body"])
         self.assertIn("- The guide omits it.", reopen["body"])
-        events = "\n".join(c["body"] for c in self.gh.comments if "Code review ·" in c["body"] and "Design reopened" in c["body"])
-        self.assertIn("[Review on PR #9]", events)
-        self.assertIn("**Design issue:**", events)
+        [archived] = [a for a in self.gh.archives() if "Code review · claude · Design reopened" in a]
+        self.assertIn('"explanation": "The plan misses a case."', archived)
 
 
 if __name__ == "__main__":

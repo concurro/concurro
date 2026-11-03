@@ -97,10 +97,9 @@ class DesignContractTests(unittest.TestCase):
                                  decision('revise', concerns=['Clarify enrollment.', 'Validate the full diff.'])]
         for _ in range(4): self.tick()
         old = deepcopy(self.load().state['objections'])
-        first_review = '\n'.join(c['body'] for c in self.gh.comments)
+        first_review = '\n'.join(self.gh.archives())
         for item in old:
-            self.assertIn('**' + item['id'] + '** · Concern\n\n' + item['text'], first_review)
-            self.assertIn('**' + item['id'] + '** · 📌 Open', first_review)
+            self.assertIn(json.dumps(item['text']), first_review, 'the revise vote is archived in full')
         self.tick()
         self.tick()
         original = self.agents.ask
@@ -119,8 +118,9 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(len(controller.state['objections']), 1)
         self.assertEqual(controller.state['objections'][0]['id'], old[1]['id'])
         self.assertEqual(controller.state['objection_sequence'], 2)
-        timeline = '\n'.join(c['body'] for c in self.gh.comments)
-        self.assertIn('| `' + old[0]['id'] + '` | Objection | ✅ Resolved |', timeline)
+        latest = json.loads(self.gh.archives()[-1].rsplit("```json\n", 1)[1].rsplit("\n```", 1)[0])
+        self.assertIn({'id': old[0]['id'], 'status': 'resolved'},
+                      [{k: u[k] for k in ('id', 'status')} for u in latest['objection_updates']])
         self.tick()
         plan_context = [c for _, stage, c in self.agents.calls if stage == 'plan'][-1]
         self.assertEqual([v['id'] for v in plan_context['open_objections']], [old[1]['id']])
@@ -183,30 +183,14 @@ class DesignContractTests(unittest.TestCase):
                 self.assertEqual(state['validation_repairs'], 1)
                 self.assertFalse(self.gh.refs)
 
-    def test_plan_summary_recovers_after_artifact_write_without_reposting_plan(self):
-        """A crash between the artifact and event preserves the exact versioned intent."""
-        self.reach('plan')
-        original = conversation.queue
-
-        def interrupt(state, title, body=None, **kwargs):
-            """Stop at the first summary publication after the artifact is durable."""
-            if kwargs.get('kind') == 'plan_summary':
-                raise KeyboardInterrupt()
-            return original(state, title, body, **kwargs)
-
-        with patch.object(conversation, 'queue', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
-            self.tick()
-        recovered = self.load()
-        self.assertTrue(recovered.state['plan_event_intent'])
-        self.assertIn(PLAN['steps'][0], recovered.checkpoints.plan['body'])
-        recovered.advance(7)
-        events = [c['body'] for c in self.gh.comments if '### Plan updated ·' in c['body']]
-        self.assertEqual(len(events), 1)
-        self.assertIn('/issues/7/artifacts/', events[0])
-        self.assertIn('artifact version', events[0])
-        self.assertIn(recovered.state['plan_id'][:12], events[0])
-        self.assertNotIn(PLAN['steps'][0], events[0])
+    def test_plan_is_linked_without_an_event_and_an_old_intent_is_dropped(self):
+        """The plan is linked from the status comment; an intent saved by an earlier version posts nothing."""
+        controller = self.reach('plan_qc')
+        controller.state['plan_event_intent'] = {'plan': controller.state['plan_id'], 'round': 1, 'title': 'x · plan updated'}
+        controller.save()
         self.assertNotIn('plan_event_intent', self.load().state)
+        self.assertFalse([c for c in self.gh.comments if c['body'].startswith(conversation.MARKER)])
+        self.assertIn('| Plan | ✅ Version 1 | [Implementation plan](', self.gh.summary()['body'])
 
     def test_fresh_review_omits_summary_verdicts_and_publication_hints(self):
         """A final reviewer cannot inherit a planner's announcement of prior approval."""
