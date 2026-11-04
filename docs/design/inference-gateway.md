@@ -356,6 +356,7 @@ for a session issued with the claim table pinned to Concurro's `main` commit.
 | Codex (ChatGPT subscription) | Fixed the bug with tool calls and streaming, then answered a resumed second turn from the first's context; 33,024 of 44,354 and 44,288 of 55,762 input tokens cached. Tests pass offline |
 | No credential in agent containers | No `ACTIONS_*`, `GITHUB_TOKEN` or provider key in their environment |
 | Session end | The job ended its session with a fresh OIDC token; the key then got 401 |
+| Retained Codex session ([run 41874000038](https://github.com/cylewitruk/stacks-core-autobot/actions/runs/41874000038)) | A first turn's home held 82 MiB of regenerable `.tmp` caches, over the 24 MiB archive limit; archived without them it was 264 KiB, and a fresh container restored it and resumed the same thread with the first turn's context |
 
 With the local phase this covers every "done when" item above.
 
