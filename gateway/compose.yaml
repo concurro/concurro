@@ -1,0 +1,60 @@
+# Concurro's inference gateway: agentgateway and the key exchange (sharing the gateway's
+# network namespace, so it alone reaches the loopback admin API). Nothing is published:
+# the host's edge Caddy reaches both on the `edge` network as `concurro-gateway`, through
+# the routes in concurro.caddy.
+name: concurro-gateway
+
+services:
+  # Gives the distroless gateway (uid 65532) its data volume.
+  init:
+    image: concurro-exchange:local
+    build: ./exchange
+    user: "0:0"
+    entrypoint: ["chown", "65532:65532", "/gateway-data"]
+    network_mode: none
+    mem_limit: 64m
+    volumes:
+      - gateway-data:/gateway-data
+
+  gateway:
+    image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
+    command: ["-f", "/config/agentgateway.yaml"]
+    env_file:
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro-gateway}/secrets.env
+    volumes:
+      - ./agentgateway.yaml:/config/agentgateway.yaml:ro
+      - gateway-data:/data
+    networks:
+      edge:
+        aliases:
+          - concurro-gateway
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    pids_limit: 512
+    restart: unless-stopped
+
+  exchange:
+    image: concurro-exchange:local
+    build: ./exchange
+    network_mode: "service:gateway"
+    environment:
+      EXCHANGE_AUDIENCE: concurro-gateway
+      EXCHANGE_LISTEN: 0.0.0.0:8080
+    volumes:
+      - exchange-data:/data
+    depends_on:
+      - gateway
+    mem_limit: 256m
+    pids_limit: 64
+    restart: unless-stopped
+
+volumes:
+  gateway-data:
+  exchange-data:
+
+networks:
+  edge:
+    external: true
+    name: edge

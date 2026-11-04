@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# Concurro's inference gateway. Provider credentials come from the environment
+# (secrets.env); session keys are minted by the exchange through the admin API,
+# which listens only on this container's loopback.
+config:
+  adminAddr: "127.0.0.1:15000"
+  statsAddr: "127.0.0.1:15020"
+  storage:
+    mode: hybrid
+  database:
+    url: "sqlite:///data/agentgateway.db"
+llm:
+  port: 4000
+  policies:
+    apiKey:
+      mode: strict
+      keys: []
+  models:
+  # Codex on a ChatGPT subscription, selected by the client's x-concurro-plan header.
+  - name: "gpt-*"
+    provider: openAI
+    passthrough: detect
+    matches:
+    - headers:
+      - name: x-concurro-plan
+        value:
+          exact: chatgpt
+    params:
+      baseUrl: "https://chatgpt.com/backend-api/codex"
+    auth:
+      key: "$CHATGPT_ACCESS_TOKEN"
+      location:
+        header:
+          name: authorization
+          prefix: "Bearer "
+    requestTransformation:
+      set:
+        chatgpt-account-id: '"$CHATGPT_ACCOUNT_ID"'
+      remove:
+      - x-concurro-plan
+  # Codex on an OpenAI API key.
+  - name: "gpt-*"
+    provider: openAI
+    passthrough: detect
+    params:
+      apiKey: "$OPENAI_API_KEY"
+  # Claude Code on a Claude subscription: the OAuth token replaces the client's credential,
+  # and the OAuth beta joins the client's own betas.
+  - name: "claude-*"
+    provider: anthropic
+    passthrough: detect
+    auth:
+      key: "$CLAUDE_OAUTH_TOKEN"
+      location:
+        header:
+          name: authorization
+          prefix: "Bearer "
+    requestTransformation:
+      set:
+        anthropic-beta: '"anthropic-beta" in request.headers ? request.headers["anthropic-beta"] + ",oauth-2025-04-20" : "oauth-2025-04-20"'
+      remove:
+      - x-api-key

@@ -1,0 +1,21 @@
+# Concurro's routes on the shared edge (installed as /etc/edge/sites/concurro.caddy).
+# Everything under /concurro/ reaches the gateway with the prefix removed:
+# /concurro/v1/* is inference, /concurro/exchange/* the key exchange.
+handle /concurro/* {
+	uri strip_prefix /concurro
+
+	handle /exchange/* {
+		reverse_proxy concurro-gateway:8080
+	}
+
+	handle /v1/* {
+		reverse_proxy concurro-gateway:4000 {
+			# Stream server-sent events as they arrive.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

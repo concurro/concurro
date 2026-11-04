@@ -1,6 +1,6 @@
 # Inference gateway
 
-Status: proposed. Promotes the [service design](service.md)'s inference proxy and
+Status: accepted (reviewed); the proof is in progress. Promotes the [service design](service.md)'s inference proxy and
 proxied API keys to the default for every model call, wherever the agent runs.
 Revises the credential parts of [the runner executor](runner-executor.md) and
 [the agent sandbox](agent-sandbox.md).
@@ -30,7 +30,7 @@ such as an MCP server we give the agent, beside it.
 | Which protocols? | Native ones: Anthropic Messages for Claude Code, OpenAI Responses for Codex. Copilot's bring-your-own-key mode speaks either. No translation into a common chat format |
 | How does a runner get its key? | Its job's GitHub OIDC token goes to Concurro's executor endpoint, which checks the claims and the session and mints the key |
 | How does a service-host agent get its key? | The controller mints it directly; it needs no OIDC |
-| Subscriptions | Gateway-side only, never on a runner; a separate experiment after the API-key proof (see [Subscriptions](#subscriptions)) |
+| Subscriptions | Gateway-side only, never on a runner: the gateway injects the Claude or ChatGPT subscription credential, proven for both (see [Subscriptions](#subscriptions)) |
 | Tool container | Retired from the agent path. Agents use their CLIs' native tools and any MCP servers we provide, in one container |
 
 ## Gateway
@@ -87,6 +87,11 @@ Whichever runs, it gets its own container and only the provider credentials it
 needs; it never sees the controller's GitHub App key or the registry. The gateway
 is reachable over public HTTPS (or a tailnet later). Its reverse proxy must not
 buffer server-sent events and must allow long idle streams.
+
+On the pilot host the gateway publishes no ports. The host's shared edge Caddy
+(`gateway/edge`) owns 443 with the host's Let's Encrypt IP certificate and imports
+one route file per service; Concurro's (`gateway/concurro.caddy`) serves everything
+under `/concurro/`, so clients use `https://<host>/concurro` as the base URL.
 
 ## Keys
 
@@ -155,17 +160,12 @@ and `skipWebFetchPreflight`, Codex's analytics and update checks, and
 Technically, a subscription is a bearer credential like any other, so it can
 live in the gateway:
 
-- **Codex.** LiteLLM's `chatgpt/` provider logs into a ChatGPT subscription once,
-  on the server (device flow), keeps the token there, and serves Responses.
-  Mechanically, a ChatGPT login is a bearer token plus a `chatgpt-account-id`
-  header to `chatgpt.com/backend-api/codex`, which a passthrough gateway could
-  inject as well.
+- **Codex.** A ChatGPT login is a bearer token plus a `chatgpt-account-id` header
+  to `chatgpt.com/backend-api/codex`, which the gateway injects.
 - **Claude.** A subscription is an OAuth bearer plus an OAuth `anthropic-beta`
-  value. Gateways document only the client-held form, where Claude Code sends its
-  own token through; injecting a server-held token is unverified.
+  value, which the gateway injects alongside the client's own betas.
 
-API keys come first. Subscriptions follow once the API-key proof works, as a
-separate experiment.
+Both work server-side; see the proof results below.
 
 ## Consequences
 
@@ -238,6 +238,64 @@ Bifrost, then LiteLLM.
   API keys are the default credential type.
 - [Open workspaces](open-workspaces.md): the service-host tool container and its
   `git` tool give way to native tools, per the open choice above.
+
+### Proof results: local phase (2026-11-04)
+
+agentgateway v1.7.0 (`cr.agentgateway.dev/agentgateway:v1.7.0`, image
+`sha256:60216aaf…`) in Docker with an OpenAI key, `passthrough: detect` models,
+SQLite, and the admin API on loopback. The exchange ran in a container sharing
+the gateway's network namespace; clients ran in Concurro's agent image.
+
+| Check | Result |
+| ---- | ---- |
+| Mint a scoped key through the admin API | Works: Concurro supplies the key; `allowedModels` and `budgets` are fields of the record. Budgeted keys need `metadata.name`. Keys were active within a second |
+| Codex on `/v1/responses` | Works: a multi-request turn with tool calls and streaming, and a resumed second turn answering from the first's context. Prompt caching survives (22,043 of 35,431 input tokens cached) |
+| Usage accounting | The gateway's per-key total matched Codex's own report (49,114 tokens) |
+| Model allow-list | A model outside it gets 403 `model_not_allowed` |
+| Budget | Blocks with 429 `budget_exceeded` once exceeded. Twenty concurrent requests against 120 remaining tokens all passed, ending 80% over the limit: overshoot is bounded by what is in flight |
+| Deletion | The next request gets 401; a second delete gets 404 |
+| Admin isolation | The admin API is unreachable from an agent container and from the host |
+
+Findings for the implementation:
+
+- **Stats listener.** `statsAddr` defaults to all interfaces (port 15020) and is
+  reachable from containers on the gateway's network. Its metrics carry only
+  per-model aggregates, but it binds to loopback in production, and agent
+  containers reach the gateway only through the published inference port.
+- **Codex's model list.** Codex cannot decode the gateway's `/v1/models` (it
+  expects its own catalog format) and falls back; harmless.
+- **Codex's sandbox.** `bwrap` cannot create namespaces in an unprivileged
+  container, so commands fail under `workspace-write`. Inside our container,
+  Codex runs with its own sandbox off, as the agent sandbox note specifies.
+
+**Claude Code through a server-held subscription token.** The `claude-*` model
+forwards natively (`passthrough: detect`) and injects the token as
+`Authorization: Bearer`, appending `oauth-2025-04-20` to the client's own
+`anthropic-beta` value and removing the client's `x-api-key`. Claude Code, holding
+only its session key, completed a four-turn task (test run, edit, rerun) with
+cache reads of 45,686 tokens; the gateway charged the key exactly Claude Code's
+reported total (69,432 tokens). Claude Code takes the session key from
+`ANTHROPIC_AUTH_TOKEN`; an `apiKeyHelper` in user settings was ignored in
+headless mode ("Not logged in"), which a session-long key does not need.
+
+**Codex through a server-held ChatGPT subscription.** A second `gpt-*` model,
+selected by a header Codex's provider config sends (`x-concurro-plan: chatgpt`,
+removed before forwarding), uses `baseUrl: https://chatgpt.com/backend-api/codex`,
+injects the ChatGPT access token as `Authorization: Bearer` and sets
+`chatgpt-account-id`. Codex, holding only its session key, completed a
+multi-request turn with caching (33,920 of 46,335 input tokens cached); the request
+log records `endpoint: chatgpt.com:443`, and per-key usage again matched Codex's
+report. The gateway also priced each request from its model catalog, so dollar
+budgets work for these models.
+
+**Subscription token lifetimes.** The ChatGPT access token lasts 10 days and
+needs refreshing with its refresh token; `claude setup-token` issues a one-year
+token. agentgateway reloads a credential given as a file when it changes, so a
+small refresher that rewrites the file keeps a subscription current without a
+restart.
+
+Not yet covered: the runner and OIDC phase, which needs the gateway and exchange
+reachable from GitHub's runners.
 
 ## Later: MCP and agent-to-agent traffic
 
