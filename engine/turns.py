@@ -28,6 +28,10 @@ WORKSPACE, SCRATCH, RETAINED = "/work", "/scratch", "/retained"
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 MAX_RESPONSE = 300_000
 MAX_RETAINED = 24 * 1024 * 1024
+# Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),
+# relative to the retained root; resuming needs only its transcript and thread state.
+RETAINED_CACHES = ("codex/.tmp", "codex/tmp", "codex/plugins", "codex/cache", "codex/log", "codex/logs_*.sqlite*",
+                   "codex/models_cache*.json")
 MAX_WORKSPACE_CHANGES = 500
 # A turn's workspace name, also its mirror borrow name.
 NAME = re.compile(r"turn-[0-9a-f]{32}")
@@ -136,17 +140,37 @@ def unpack(archive, directory):
         bundle.extractall(directory, filter="data")
 
 
+def retained_entries(directory):
+    """A retained directory's archived entries, sorted: everything but the CLIs' regenerable caches."""
+    root = Path(directory)
+    caches = {path for pattern in RETAINED_CACHES for path in root.glob(pattern)}
+    return [path for path in sorted(root.rglob("*"))
+            if not caches.intersection((path, *path.parents))
+            and (path.is_file() and not path.is_symlink() or path.is_dir())]
+
+
 def pack(directory):
     """A retained transcript directory as a base64 archive."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
-        for path in sorted(Path(directory).rglob("*")):
-            if path.is_file() and not path.is_symlink() or path.is_dir():
-                bundle.add(path, arcname=str(path.relative_to(directory)), recursive=False)
+        for path in retained_entries(directory):
+            bundle.add(path, arcname=str(path.relative_to(directory)), recursive=False)
     data = buffer.getvalue()
     if len(data) > MAX_RETAINED:
-        raise TurnError("retained session archive is too large")
+        raise TurnError("retained session archive is too large; largest (uncompressed): " + largest(directory))
     return base64.b64encode(data).decode()
+
+
+def largest(directory, count=5):
+    """The biggest archived entries two levels down, by escaped path and size, to diagnose an oversized archive."""
+    root = Path(directory)
+    sizes = {}
+    for path in retained_entries(root):
+        if path.is_file():
+            entry = Path(*path.relative_to(root).parts[:2])
+            sizes[entry] = sizes.get(entry, 0) + path.stat().st_size
+    ranked = sorted(sizes.items(), key=lambda item: -item[1])[:count]
+    return ", ".join(f"{json.dumps(str(entry))} {size // 1024} KiB" for entry, size in ranked)
 
 
 def outcome(code, stdout):

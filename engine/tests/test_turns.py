@@ -210,6 +210,31 @@ class ExecuteTests(Workspace):
         with patch.object(turns, "MAX_RETAINED", 10), self.assertRaises(turns.TurnError):
             turns.unpack(archive, tempfile.mkdtemp())
 
+    def test_an_oversized_retained_archive_names_its_largest_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "codex/sessions").mkdir(parents=True)
+            Path(directory, "codex/sessions/r.jsonl").write_bytes(os.urandom(4096))
+            Path(directory, 'codex/a"\nb').write_text("{}")
+            with patch.object(turns, "MAX_RETAINED", 10), self.assertRaisesRegex(
+                    turns.TurnError, r'largest \(uncompressed\): "codex/sessions" 4 KiB, "codex/a\\"\\nb" 0 KiB$'):
+                turns.pack(directory)
+
+    def test_a_retained_codex_home_is_archived_without_its_caches(self):
+        kept = ["codex/sessions/2026/11/04/rollout.jsonl", "codex/state_5.sqlite", "codex/state_5.sqlite-wal",
+                "codex/thread_history_1.sqlite", "home/.config/x", "turn.json"]
+        cached = ["codex/.tmp/bundled-marketplaces/m.json", "codex/.tmp/plugins/p.json", "codex/tmp/arg0/x",
+                  "codex/plugins/cache/c", "codex/cache/remote_plugin_catalog/c", "codex/log/codex.log",
+                  "codex/logs_2.sqlite", "codex/logs_2.sqlite-wal", "codex/models_cache.json"]
+        with tempfile.TemporaryDirectory() as directory:
+            for name in kept + cached:
+                Path(directory, name).parent.mkdir(parents=True, exist_ok=True)
+                Path(directory, name).write_text("x")
+            archive = turns.pack(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            turns.unpack(archive, directory)
+            self.assertEqual(sorted(str(p.relative_to(directory)) for p in Path(directory).rglob("*") if p.is_file()),
+                             sorted(kept))
+
 
 class FakeExecutor:
     gateway = GATEWAY
