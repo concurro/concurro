@@ -4,6 +4,7 @@ import base64
 import http.client
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -86,6 +87,7 @@ class ExchangeTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        self.directory = directory.name
         self.signer = Signer(directory.name)
         self.gateway = FakeGateway()
         self.exchange = Exchange(str(Path(directory.name) / "exchange.db"), self.gateway,
@@ -236,9 +238,46 @@ class RelayTests(unittest.TestCase):
         ExchangeTests.setUp(self)
         self.runner = self.exchange.key(self.session, self.signer.token(), now=NOW)["token"]
 
-    def submit(self, expected=None, payload=None, turn=None):
+    def submit(self, expected=None, payload=None, turn=None, pin=None):
         return self.exchange.submit(turn or str(uuid.uuid4()), dict(expected or EXPECTED), ["claude-*"], 1000, 3600,
-                                    payload or {"stage": "plan"}, now=NOW)
+                                    payload or {"stage": "plan"}, pin=pin, now=NOW)
+
+    def test_a_pinned_turn_is_served_only_to_its_session_and_lost_with_it(self):
+        other = self.exchange.issue(dict(EXPECTED), ["claude-*"], 1000, 3600)
+        second = self.exchange.key(other, self.signer.token(run_id="91"), now=NOW)["token"]
+        pinned = self.submit(pin=self.session)
+        self.assertIsNone(pinned["dispatch"], "a pinned turn never staffs a new session")
+        self.assertEqual(self.exchange.next(other, second, 4, 0, now=NOW), {"turns": []})
+        self.assertEqual([t["id"] for t in self.exchange.next(self.session, self.runner, 4, 0, now=NOW)["turns"]],
+                         [pinned["turn"]])
+        waiting = self.submit(pin=self.session)
+        later = NOW + exchange.HEARTBEAT_SECONDS + 1
+        self.assertEqual(self.exchange.poll(waiting["turn"], 0, now=later)["status"], "lost",
+                         "only its session could serve it")
+        with self.assertRaises(Refused) as raised:
+            self.submit(expected={**EXPECTED, "repository_id": "9"}, pin=other)
+        self.assertEqual(raised.exception.status, 409, "a pin names a session of the turn's own target")
+        with self.assertRaises(ValueError):
+            self.submit(pin="not-a-session")
+
+    def test_an_older_database_gains_the_new_turn_columns(self):
+        database = Path(tempfile.mkdtemp(dir=self.directory)) / "exchange.db"
+        with sqlite3.connect(database) as db:
+            db.executescript("""
+                CREATE TABLE turns (id TEXT PRIMARY KEY, expected TEXT NOT NULL, models TEXT NOT NULL,
+                    budget INTEGER NOT NULL, lease REAL NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
+                    session TEXT, result TEXT, created REAL NOT NULL, started REAL, finished REAL);""")
+            db.execute("INSERT INTO turns (id, expected, models, budget, lease, payload, status, created) "
+                       "VALUES ('old', ?, '[\"claude-*\"]', 1000, 3600, '{}', 'queued', ?)",
+                       (json.dumps(EXPECTED, sort_keys=True), NOW))
+        for _ in range(2):
+            self.exchange = Exchange(str(database), self.gateway, Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
+                                     AUDIENCE)
+        self.session = self.exchange.issue(dict(EXPECTED), ["claude-*"], 1000, 3600)
+        self.runner = self.exchange.key(self.session, self.signer.token(), now=NOW)["token"]
+        pinned = self.submit(pin=self.session)
+        served = self.exchange.next(self.session, self.runner, 4, 0, now=NOW)["turns"]
+        self.assertEqual({t["id"] for t in served}, {"old", pinned["turn"]})
 
     def test_a_resubmitted_turn_returns_its_original_admission(self):
         self.exchange.end(self.session, runner=self.runner, now=NOW)

@@ -11,6 +11,7 @@ import threading
 from urllib.parse import quote
 
 from agents import Agents, HostExecutor, RunnerExecutor
+from bench import RemoteBench
 from bundle import CHARTER, Bundle, RESOURCE_LIMIT, profile_paths
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
@@ -164,6 +165,12 @@ class Worker:
                 self.claims[repository] = claims
         return RunnerExecutor(operator, request, claims, list(gateway.models), gateway.budget, github.dispatch)
 
+    def workspaces(self, executor):
+        """Where the trusted workbench runs: on the target's runners with its turns, or on this host."""
+        if self.workspace_factory is not None:
+            return self.workspace_factory
+        return RemoteBench(executor) if isinstance(executor, RunnerExecutor) else None
+
     def load(self, repository):
         """The target's configuration and bundle, read afresh for each tick."""
         return load_target(self.targets[repository], self.reader(repository), self.settings.engine,
@@ -198,9 +205,10 @@ class Worker:
                 snapshot = self.reconciler.snapshot(key)
                 target = self.load(key[0])
                 facade = GatewayGitHub(key[0], key[1], generation, self.gateway, self.reader(key[0]))
-                agents = self.agents(target.config, self.make_executor(key[0], facade), bundle=target.bundle,
+                executor = self.make_executor(key[0], facade)
+                agents = self.agents(target.config, executor, bundle=target.bundle,
                                      retained=self.settings.state_dir / "sessions" / key[0].replace("/", "__"))
-                controller = Controller(facade, agents, target.config, self.workspace_factory, bundle=target.bundle,
+                controller = Controller(facade, agents, target.config, self.workspaces(executor), bundle=target.bundle,
                                         controller_id=self.settings.controller_id)
                 outcome = controller.advance(key[1])
                 if controller.state:

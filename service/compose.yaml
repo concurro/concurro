@@ -1,0 +1,39 @@
+# The Concurro service on the gateway's host: webhooks arrive through the shared edge Caddy
+# (`/concurro/webhook` in gateway/concurro.caddy), model turns and the trusted workbench run on the
+# targets' GitHub-hosted runners. Settings and secrets, and the state directory, are mounted at the
+# same paths as on the host, so the paths in settings.json hold in both. See gateway/README.md.
+name: concurro-service
+
+services:
+  service:
+    image: concurro-service:local
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    volumes:
+      - /etc/concurro/service:/etc/concurro/service:ro
+      - /var/lib/concurro/service:/var/lib/concurro/service
+    networks:
+      edge:
+        aliases:
+          - concurro-service
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+    stop_grace_period: 15m
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true
+    name: edge

@@ -164,7 +164,7 @@ class RunnerExecutor:
         self.models, self.budget, self.dispatch, self.lease = models, budget, dispatch, lease
         self.clock, self.sleep = clock, sleep
 
-    def admit(self, identifier, turn):
+    def admit(self, identifier, turn, pin=None):
         """Queue the turn under its own ID; the reply, or None when its admission stays unknown.
 
         A refusal admitted nothing. A lost reply may have admitted it, so the same turn is
@@ -174,15 +174,16 @@ class RunnerExecutor:
             if attempt:
                 self.sleep(15)
             try:
-                return self.operator.submit(identifier, self.expected, self.models, self.budget, self.lease, turn)
+                return self.operator.submit(identifier, self.expected, self.models, self.budget, self.lease, turn, pin)
             except ExchangeError as error:
                 if 400 <= error.status < 500 and error.status not in (408, 429):
                     raise GatewayUnavailable("unavailable") from None
         return None
 
-    def run(self, turn, label):
+    def run(self, turn, label, pin=None):
+        """Queue the turn (for the runner session `pin` alone, when given) and wait for its result."""
         identifier = str(uuid.uuid4())
-        submitted = self.admit(identifier, turn)
+        submitted = self.admit(identifier, turn, pin)
         if submitted is None:
             self.withdraw(identifier)
             return {"outcome": "uncertain", "response": None, "retained": None, "workspace": None}

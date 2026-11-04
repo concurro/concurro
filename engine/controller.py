@@ -1304,6 +1304,20 @@ class Controller:
                                       "decision": "approve"}
                                      for member in roster]}
 
+    def open_workspace(self, parent):
+        """The workbench for `parent`, with the approved base staged too.
+
+        Preparation reads only the base, and `scope` judges the candidate against it. A factory
+        taking `commits` (a runner's workbench) builds the archives itself.
+        """
+        state = self.state
+        if getattr(self.workspace_factory, "commits", False):
+            return self.workspace_factory(self.config, parent, state["branch"], self.bundle.execution, state["base"])
+        archive = self.gh.archive(parent)
+        base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
+        return self.workspace_factory(self.config, archive, state["branch"], execution=self.bundle.execution,
+                                      base_archive=base_archive)
+
     def develop_locally(self, parent, originals):
         """Iterate edits, real tests and one local review before creating any remote Git objects."""
         state = self.state
@@ -1317,11 +1331,7 @@ class Controller:
         attempts = state.setdefault("local_attempts", {})
         if attempts.get(round_key, 0) > self.config["max_local_fix_rounds"]:
             raise Blocked("local repair budget exhausted")
-        archive = self.gh.archive(parent)
-        # The approved base is always staged: preparation reads only it, and `scope` judges the candidate against it.
-        base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
-        with self.workspace_factory(self.config, archive, state["branch"], execution=self.bundle.execution,
-                                    base_archive=base_archive) as workspace:
+        with self.open_workspace(parent) as workspace:
             if workspace.files(state["plan"]["files"]) != originals:
                 raise Blocked("source archive does not match the pinned GitHub files")
             scope = checks.scope_of(state["plan"])

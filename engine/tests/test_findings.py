@@ -186,10 +186,10 @@ class Harness:
         self.config["autonomous"] = False
         self.gh = FakeGitHub(self.config)
 
-    def run_to(self, agents, stage, ticks=30, until=lambda state: True):
+    def run_to(self, agents, stage, ticks=30, until=lambda state: True, workspaces=FakeWorkspace):
         """Tick, approving the plan when asked, until `stage` (and `until`); return the controller."""
         for _ in range(ticks):
-            controller = Controller(self.gh, agents, self.config, workspace_factory=FakeWorkspace)
+            controller = Controller(self.gh, agents, self.config, workspace_factory=workspaces)
             controller.advance(7)
             state = controller.state
             if state["stage"] == "planned":

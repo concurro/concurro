@@ -18,6 +18,8 @@ REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 REGISTRY = re.compile(r"[A-Za-z0-9._-]{1,64}")
 FIELDS = {"controller_id", "engine", "app_id", "private_key_path", "webhook_secret_path", "state_dir",
           "registry_id", "targets", "agent_image", "execution_image", "limits", "gateway"}
+IMAGES = ("agent_image", "execution_image")
+OPTIONAL = {"engine", *IMAGES}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
 WORKFLOW_REF = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/\.github/workflows/[A-Za-z0-9._-]+\.ya?ml"
@@ -69,7 +71,8 @@ class Limits:
 class Settings:
     """Validated operator settings; host checks (engine HEAD, local images) run when `serve` starts.
 
-    `engine` is None when the settings leave it to the checkout's HEAD, resolved at startup.
+    `engine` is None when the settings leave it to the checkout's HEAD, resolved at startup. The
+    images exist only for the host executor: with runners, nothing runs on this host.
     """
 
     controller_id: str
@@ -80,8 +83,8 @@ class Settings:
     state_dir: Path
     registry_id: str
     targets: tuple
-    agent_image: str
-    execution_image: str
+    agent_image: str | None
+    execution_image: str | None
     limits: Limits
     gateway: Gateway
 
@@ -142,12 +145,10 @@ def load(path):
         data = json.loads(private.read(path, (CHECKOUT,)))
     except (OSError, ValueError, Blocked):
         raise SettingsError("settings file is missing, unreadable or not owner-only") from None
-    require(isinstance(data, dict) and set(data) in (FIELDS, FIELDS - {"engine"}), "fields")
+    require(isinstance(data, dict) and FIELDS - OPTIONAL <= set(data) <= FIELDS, "fields")
     require(isinstance(data["controller_id"], str) and CONTROLLER.fullmatch(data["controller_id"]), "controller_id")
     require("engine" not in data or isinstance(data["engine"], str) and COMMIT.fullmatch(data["engine"]), "engine")
     require(isinstance(data["registry_id"], str) and REGISTRY.fullmatch(data["registry_id"]), "registry_id")
-    for field in ("agent_image", "execution_image"):
-        require(isinstance(data[field], str) and IMAGE.fullmatch(data[field]), field)
     # Every secret file is distinct by filesystem identity, not by spelling.
     key, key_identity = secret(data["private_key_path"], "private_key_path")
     webhook, webhook_identity = secret(data["webhook_secret_path"], "webhook_secret_path")
@@ -162,6 +163,10 @@ def load(path):
         repositories.add(repository.lower())
         targets.append(Target(repository))
     gateway = gateway_settings(data["gateway"], identities)
+    for field in IMAGES:
+        # Only the host executor runs containers here.
+        require(isinstance(data.get(field), str) and IMAGE.fullmatch(data[field]) if gateway.executor == "host"
+                else field not in data, field)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
     total = integer(limits["global"], "limits.global")
@@ -170,7 +175,7 @@ def load(path):
         controller_id=data["controller_id"], engine=data.get("engine"), app_id=integer(data["app_id"], "app_id"),
         private_key_path=key, webhook_secret_path=webhook,
         state_dir=state(data["state_dir"]), registry_id=data["registry_id"],
-        targets=tuple(targets), agent_image=data["agent_image"], execution_image=data["execution_image"],
+        targets=tuple(targets), agent_image=data.get("agent_image"), execution_image=data.get("execution_image"),
         limits=Limits(total, limits["per_repository"]), gateway=gateway)
 
 

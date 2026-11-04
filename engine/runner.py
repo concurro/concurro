@@ -2,8 +2,10 @@
 
 Runs on a GitHub-hosted runner of the target, from the Concurro commit the session pins. It holds
 the job's OIDC request token and the session's runner token; agent containers get only the
-gateway key. Turns run concurrently up to `--capacity`; the loop calls the exchange at least
-every HEARTBEAT seconds, and ends the session once no turn has arrived for `--idle` seconds.
+gateway key. Turns are model turns or calls on the controller's workbenches, which live here
+(`bench.Benches`). Turns run concurrently up to `--capacity`; the loop calls the exchange at least
+every HEARTBEAT seconds, and ends the session once no turn has arrived for `--idle` seconds, or
+BENCH_IDLE seconds while a workbench is open.
 """
 
 import argparse
@@ -17,12 +19,15 @@ import time
 import traceback
 import urllib.request
 
+from bench import Benches
 from mirror import Mirror
 from relay import ExchangeError, Runner
 import turns
 
 AUDIENCE = "concurro-gateway"
 HEARTBEAT = 30
+# A develop turn and a local review may run between two calls on a workbench.
+BENCH_IDLE = 3600
 
 
 def oidc_token():
@@ -40,9 +45,10 @@ def log(message):
 class Loop:
     """Take turns while they come; run each in its own directory; report every result."""
 
-    def __init__(self, runner, key, image, mirror, root, capacity, idle, limits):
+    def __init__(self, runner, key, image, mirror, root, capacity, idle, limits, benches=None):
         self.runner, self.key, self.image, self.mirror, self.root = runner, key, image, mirror, Path(root)
         self.capacity, self.idle, self.limits = capacity, idle, limits
+        self.benches = benches
         self.running, self.guard = 0, threading.Lock()
 
     def serve(self):
@@ -66,9 +72,10 @@ class Loop:
                     pool.submit(self.run, turn)
                 with self.guard:
                     busy = self.running
+                idle = BENCH_IDLE if self.benches and self.benches.open else self.idle
                 if taken or busy:
                     last = time.monotonic()
-                elif time.monotonic() - last > self.idle:
+                elif time.monotonic() - last > idle:
                     log("idle; ending the session")
                     return
                 if not free:
@@ -76,12 +83,19 @@ class Loop:
 
     def run(self, turn):
         """Run one turn and report it; a turn that cannot run reports a failure, never silence."""
-        identifier = turn["id"]
-        directory = turns.directory(self.root)
-        log(f"turn {identifier}: {turn['payload']['request']['stage']} ({turn['payload']['request']['provider']})")
+        identifier, payload = turn["id"], turn["payload"]
+        bench = payload.get("kind") == "bench"
+        directory = None if bench else turns.directory(self.root)
+        log(f"turn {identifier}: " + (f"workbench {payload.get('op')}" if bench else
+                                      f"{payload['request']['stage']} ({payload['request']['provider']})"))
         try:
             try:
-                result = turns.execute(turn["payload"], self.image, self.key, self.mirror, directory, self.limits)
+                if bench:
+                    if self.benches is None:
+                        raise RuntimeError("this session runs no workbenches")
+                    result = self.benches.handle(payload)
+                else:
+                    result = turns.execute(payload, self.image, self.key, self.mirror, directory, self.limits)
             except Exception as error:
                 log(f"turn {identifier} could not run: {type(error).__name__}: {error}")
                 traceback.print_exc(file=sys.stdout)
@@ -97,7 +111,8 @@ class Loop:
                         break
                     time.sleep(5 * (attempt + 1))
         finally:
-            turns.remove(directory)
+            if directory is not None:
+                turns.remove(directory)
             with self.guard:
                 self.running -= 1
 
@@ -108,8 +123,9 @@ def main():
     parser.add_argument("--gateway", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--execution-image", help="the trusted workbench's image; without one, no workbenches")
     parser.add_argument("--root", required=True)
-    parser.add_argument("--capacity", type=int, default=2)
+    parser.add_argument("--capacity", type=int, default=3)
     parser.add_argument("--idle", type=int, default=600)
     parser.add_argument("--memory", default="7g")
     parser.add_argument("--cpus", type=int, default=4)
@@ -120,9 +136,15 @@ def main():
     root = Path(args.root)
     mirror = Mirror(root / "mirrors", args.repository)
     limits = turns.Limits(memory=args.memory, cpus=args.cpus, pids=8192, tmp="4g")
+    benches = None
+    if args.execution_image:
+        os.environ["CONCURRO_EXECUTION_IMAGE"] = args.execution_image
+        benches = Benches(args.session, mirror)
     try:
-        Loop(runner, grant["key"], args.image, mirror, root / "turns", args.capacity, args.idle, limits).serve()
+        Loop(runner, grant["key"], args.image, mirror, root / "turns", args.capacity, args.idle, limits, benches).serve()
     finally:
+        if benches is not None:
+            benches.close_all()
         try:
             runner.end()
         except ExchangeError as error:

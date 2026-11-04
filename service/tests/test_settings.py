@@ -1,6 +1,7 @@
 """Operator settings are private and strictly valid, or the service does not start."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,8 @@ from service import __main__ as daemon, settings, use_gateway
 from service.settings import SettingsError
 
 IMAGE = "sha256:" + "a" * 64
+# Only the host executor runs containers on the service host, so only it names images.
+IMAGES = {"agent_image": IMAGE, "execution_image": "repo/execution@" + IMAGE}
 
 
 class SettingsTests(unittest.TestCase):
@@ -34,7 +37,6 @@ class SettingsTests(unittest.TestCase):
             "private_key_path": str(self.root / "app.pem"), "webhook_secret_path": str(self.root / "webhook"),
             "state_dir": str(self.root / "state"), "registry_id": "registry-1",
             "targets": [{"repository": "owner/one"}, {"repository": "owner/two"}],
-            "agent_image": IMAGE, "execution_image": "repo/execution@" + IMAGE,
             "limits": {"global": 4, "per_repository": 2},
             "gateway": {"url": "https://gateway.invalid/concurro", "operator_token_path": str(self.root / "operator"),
                         "executor": "runner", "workflow_ref": "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
@@ -61,8 +63,14 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((loaded.limits.global_ticks, loaded.limits.per_repository), (4, 2))
         self.assertEqual((loaded.gateway.executor, loaded.gateway.models, loaded.gateway.operator_token_path),
                          ("runner", ("claude-*", "gpt-*"), self.root / "operator"))
-        host = self.load({**self.data, "gateway": {**self.data["gateway"], "executor": "host", "workflow_ref": None}})
+        self.assertEqual((loaded.agent_image, loaded.execution_image), (None, None))
+        self.assertEqual(daemon.images(replace(loaded, engine="e" * 40)),
+                         ("runner:agent@" + "e" * 40, "runner:execution@" + "e" * 40),
+                         "with runners, the engine commit pins the recipes the runners build the images from")
+        host = self.load({**self.data, **IMAGES,
+                          "gateway": {**self.data["gateway"], "executor": "host", "workflow_ref": None}})
         self.assertIsNone(host.gateway.workflow_ref)
+        self.assertEqual(host.agent_image, IMAGE)
         with self.assertRaises(AttributeError):
             loaded.engine = "c" * 40
         unpinned = deepcopy(self.data)
@@ -72,7 +80,7 @@ class SettingsTests(unittest.TestCase):
     def test_older_settings_move_to_the_gateway(self):
         """Provider credentials and the engine pin go; the result must validate before it replaces the file."""
         path = self.root / "settings.json"
-        old = {k: v for k, v in self.data.items() if k != "gateway"}
+        old = {**{k: v for k, v in self.data.items() if k != "gateway"}, **IMAGES}
         old["targets"] = [{"repository": "owner/one", "credentials_file": str(self.root / "two.json")}]
         path.write_text(json.dumps(old))
         path.chmod(0o600)
@@ -102,7 +110,10 @@ class SettingsTests(unittest.TestCase):
             "unknown": changed(extra=1), "missing": changed(app_id=KeyError),
             "controller": changed(controller_id="actions"), "engine": changed(engine="main"),
             "boolean app": changed(app_id=True), "string app": changed(app_id="123"), "zero app": changed(app_id=0),
-            "image": changed(agent_image="concurro-agent:latest"),
+            "runner images": changed(**IMAGES),
+            **{"host " + name: changed(**images, gateway={**self.data["gateway"], "executor": "host", "workflow_ref": None})
+               for name, images in {"without images": {}, "mutable image": {**IMAGES, "agent_image": "concurro-agent:latest"},
+                                    "one image": {"agent_image": IMAGE}}.items()},
             "relative": changed(state_dir="state"), "no targets": changed(targets=[]),
             "bad repository": changed(targets=[{"repository": "owner"}]),
             "repeated": changed(targets=[self.data["targets"][0], {"repository": "Owner/One"}]),

@@ -120,6 +120,25 @@ class ImplementationTests(Harness, unittest.TestCase):
         self.assertIn("outside the approved scope or of a protected path: .gitignore",
                       developments[1]["local_feedback"]["scope"])
 
+    def test_a_runner_workbench_is_opened_by_commit(self):
+        """The controller fetches no archive; the workbench's side builds them from the commits."""
+        gh = self.gh
+
+        class ByCommit:
+            commits, opened = True, []
+
+            def __call__(self, config, parent, branch, execution, base):
+                self.opened.append((parent, base))
+                return FakeWorkspace(config, type(gh).archive(gh, parent), branch)
+
+        def refuse(sha):
+            raise AssertionError("the controller fetched an archive")
+
+        gh.archive = refuse
+        factory = ByCommit()
+        self.run_to(EnvelopeAgents(outside=0), "gates", workspaces=factory)
+        self.assertEqual(factory.opened[0], (gh.base, gh.base))
+
     def test_repair_turns_inspect_current_non_primary_edits_and_their_instructions(self):
         self.gh.trees[self.gh.base][".github/instructions/caller.instructions.md"] = (
             '---\napplyTo: "docs/caller.md"\n---\nReview callers.\n')

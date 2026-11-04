@@ -47,8 +47,9 @@ images.
 
 ## Status
 
-v1 is in supervised pilot. Model calls go through an [inference gateway](docs/design/inference-gateway.md)
-and run on GitHub-hosted runners of the target; Claude and Codex are routed, Copilot not yet. It supports
+v1 is in supervised pilot. Model calls go through an [inference gateway](docs/design/inference-gateway.md);
+they and the trusted build/test workbench run on GitHub-hosted runners of the target, so the service
+host only coordinates ([deployment](gateway/README.md)); Claude and Codex are routed, Copilot not yet. It supports
 pluggable [execution profiles](docs/design/execution-profiles.md); `rust` is built in.
 The webhook-driven [service](docs/design/service.md) replaces the Actions controller. Read the [trust boundaries](docs/concurro.md#trust-boundaries)
 before running it: model containers hold a capped gateway session key, run with a

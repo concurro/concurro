@@ -47,9 +47,9 @@ class Operator:
     def end(self, session):
         call(self.gateway, self.token, "POST", f"operator/sessions/{session}/end", {})
 
-    def submit(self, turn, expected, models, budget, lease, payload):
+    def submit(self, turn, expected, models, budget, lease, payload, pin=None):
         return call(self.gateway, self.token, "POST", "operator/turns", {"turn": turn, "expected": expected,
-                    "models": models, "budget": budget, "lease": lease, "payload": payload})
+                    "models": models, "budget": budget, "lease": lease, "payload": payload, "pin": pin})
 
     def poll(self, turn, wait=WAIT):
         return call(self.gateway, self.token, "GET", f"operator/turns/{turn}?wait={wait}")

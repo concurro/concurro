@@ -212,10 +212,11 @@ A turn runs the same way wherever it runs (`engine/turns.py`):
   no live runner session, the exchange issues one and the service dispatches
   `concurro-agent` to the target. The target's caller workflow runs
   `agent.yml`, which fetches Concurro at its own `job_workflow_sha`, builds the
-  agent image on the Rust toolchain image and runs `engine/runner.py`. The
-  runner trades its OIDC token for the session key and a runner token, then
-  long-polls for turns (its heartbeat), runs up to two at once and ends the
-  session after ten idle minutes. A session silent for three minutes, or not
+  agent and execution images on the Rust toolchain image and runs
+  `engine/runner.py`. The runner trades its OIDC token for the session key and a
+  runner token, then long-polls for turns (its heartbeat), runs up to three at
+  once and ends the session after ten idle minutes, or an hour while a
+  workbench is open. A session silent for three minutes, or not
   started within twenty, is ended and its running turns are lost (uncertain to
   the controller). A runner refused for a claim of the target's own repository
   is reported to the service, which blocks the task with the reason; refusals
@@ -223,6 +224,12 @@ A turn runs the same way wherever it runs (`engine/turns.py`):
   service names each turn; submitting it again returns its first admission, so
   a lost reply never queues a second turn, and an admission that stays unknown
   is withdrawn and reported uncertain.
+
+  The controller's trusted workbench (`engine/bench.py`) runs there too: the
+  service opens it by commit, the runner builds the source archives from its
+  mirror, and every later call is a turn pinned to that session, lost with it
+  (the tick is retried). The service then runs no containers and no target
+  code: it coordinates, and needs neither Docker nor local images.
 - **`host`**: the service mints a key per turn through the exchange's operator
   API and runs the turn on its own Docker, deleting the key afterwards. The
   Actions controller, the local pilot and evaluations use this path, configured

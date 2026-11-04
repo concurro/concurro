@@ -1,8 +1,8 @@
 """Move a service settings file to the inference gateway: `python3 -m service.use_gateway --help`.
 
-Drops per-target provider credentials and any engine pin (the service then runs its checkout's
-HEAD, which runner sessions must match), adds the `gateway` block, and replaces the file only
-once the result validates.
+Drops per-target provider credentials, any engine pin (the service then runs its checkout's
+HEAD, which runner sessions must match) and, for runners, the local images; adds the `gateway`
+block, and replaces the file only once the result validates.
 """
 
 import argparse
@@ -19,7 +19,9 @@ WORKFLOW_REF = "concurro/concurro/.github/workflows/agent.yml@refs/heads/main"
 def migrate(data, url, token, executor="runner", workflow_ref=WORKFLOW_REF, models=("claude-*", "gpt-*"),
             budget=20_000_000, headers=None):
     """The settings with the gateway block in place of provider credentials and the engine pin."""
-    data = {k: v for k, v in data.items() if k != "engine"}
+    # With runners, this host runs no containers, so it names no images.
+    dropped = {"engine"} | ({"agent_image", "execution_image"} if executor == "runner" else set())
+    data = {k: v for k, v in data.items() if k not in dropped}
     data["targets"] = [{"repository": t["repository"]} for t in data["targets"]]
     data["gateway"] = {"url": url, "operator_token_path": str(token), "executor": executor,
                        "workflow_ref": workflow_ref if executor == "runner" else None, "models": list(models),

@@ -52,9 +52,17 @@ def host_checks(settings):
     if settings.engine not in (None, engine):
         raise StartupError("the engine checkout must be at the configured engine commit")
     for image in (settings.agent_image, settings.execution_image):
-        if subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode:
+        if image and subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode:
             raise StartupError("a configured image is unavailable locally")
     return replace(settings, engine=engine)
+
+
+def images(settings):
+    """The image identities tasks record: the host's local images, or, with runners, the engine commit,
+    whose workflow pins the recipes the runners build them from."""
+    if settings.gateway.executor == "host":
+        return settings.agent_image, settings.execution_image
+    return ("runner:agent@" + settings.engine, "runner:execution@" + settings.engine)
 
 
 class Daemon:
@@ -73,7 +81,8 @@ class Daemon:
         # Process-wide values, fixed at startup; nothing per task enters the environment.
         reports = settings.state_dir / "reports"
         reports.mkdir(mode=0o700, exist_ok=True)
-        os.environ.update(CONCURRO_AGENT_IMAGE=settings.agent_image, CONCURRO_EXECUTION_IMAGE=settings.execution_image,
+        agent, execution = images(settings)
+        os.environ.update(CONCURRO_AGENT_IMAGE=agent, CONCURRO_EXECUTION_IMAGE=execution,
                           CONCURRO_LOCAL_REPORT_DIR=str(reports))
         secret = private.read(settings.webhook_secret_path, (CHECKOUT,)).strip()
         self.identity = Identity(settings)

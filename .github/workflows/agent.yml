@@ -1,10 +1,11 @@
 name: Concurro agent session
 
-# A runner session for one target: takes the target's model turns from Concurro's exchange and runs
-# each agent in a container holding only the session's gateway key. Called by the target's caller
-# workflow on `repository_dispatch`. The gateway address, image recipe and engine commit live here,
-# where the exchange's `job_workflow_sha` check covers them; the caller passes only the session ID.
-# See docs/design/inference-gateway.md.
+# A runner session for one target: takes the target's turns from Concurro's exchange. Model turns run
+# each agent in a container holding only the session's gateway key; the controller's trusted
+# workbench builds and tests candidates here too, so the Concurro service never runs target code.
+# Called by the target's caller workflow on `repository_dispatch`. The gateway address, image recipes
+# and engine commit live here, where the exchange's `job_workflow_sha` check covers them; the caller
+# passes only the session ID. See docs/design/inference-gateway.md.
 
 on:
   workflow_call:
@@ -50,14 +51,23 @@ jobs:
           git -C concurro checkout -q FETCH_HEAD
           echo "Concurro $repository@$sha"
 
-      - name: Build the agent image
+      - name: Free disk space for builds
+        run: |
+          # Toolchains this job never uses; target builds and their caches need the room.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - name: Build the agent and execution images
         run: |
           docker build -q -t concurro-agent:session -f concurro/docker/agent.Dockerfile \
             --build-arg NODE_IMAGE="$NODE_IMAGE" --build-arg BASE_IMAGE="$TOOLCHAIN_IMAGE" \
             --build-arg EXTRA_PACKAGES="clang libclang-dev" --build-arg CODEX_VERSION="$CODEX_VERSION" \
             --build-arg CLAUDE_VERSION="$CLAUDE_VERSION" --build-arg COPILOT_VERSION="$COPILOT_VERSION" concurro
+          docker build -q -t concurro-execution:session -f concurro/docker/execution-rust.Dockerfile \
+            --build-arg BASE_IMAGE="$TOOLCHAIN_IMAGE" concurro
 
       - name: Serve the session's turns
         run: |
           python3 concurro/engine/runner.py --session "$SESSION" --gateway "$GATEWAY" \
-            --repository "$GITHUB_REPOSITORY" --image concurro-agent:session --root "$RUNNER_TEMP/concurro"
+            --repository "$GITHUB_REPOSITORY" --image concurro-agent:session --root "$RUNNER_TEMP/concurro" \
+            --execution-image "$(docker image inspect concurro-execution:session --format '{{.Id}}')"

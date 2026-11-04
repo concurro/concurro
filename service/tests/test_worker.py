@@ -20,6 +20,7 @@ from service.reconciler import Reconciler
 from service.scheduler import Scheduler, fair
 from service.registry import WorkItem
 from service.settings import Gateway, Limits, Target
+from bench import RemoteBench
 from service.worker import Worker, runner_claims
 from agents import HostExecutor, RunnerExecutor
 
@@ -363,6 +364,16 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(runner.gateway, {"url": "https://gateway.invalid/concurro",
                                           "headers": {"codex": {"x-concurro-plan": "chatgpt"}}})
         self.assertIsInstance(self.worker("host").executor("owner/one", github), HostExecutor)
+
+    def test_with_runners_the_workbench_runs_there_too(self):
+        github = type("GitHub", (), {"dispatch": lambda self, session: None})()
+        worker = self.worker("runner")
+        executor = worker.executor("owner/one", github)
+        workspaces = worker.workspaces(executor)
+        self.assertIsInstance(workspaces, RemoteBench)
+        self.assertIs(workspaces.executor, executor)
+        host = self.worker("host")
+        self.assertIsNone(host.workspaces(host.executor("owner/one", github)), "the controller's own workbench")
 
 
 class FairnessTests(unittest.TestCase):

@@ -368,7 +368,7 @@ class ExecutorTests(unittest.TestCase):
                                                    {"status": "running"}, {"status": "done", "result": result}])
         self.assertEqual(executor.run(TURN, "label"), result)
         self.assertEqual(started, ["s-2"])
-        self.assertEqual(operator.calls[0], ("submit", ("t", {"repository_id": "1"}, ["claude-*"], 5000, 21600, TURN)))
+        self.assertEqual(operator.calls[0], ("submit", ("t", {"repository_id": "1"}, ["claude-*"], 5000, 21600, TURN, None)))
 
     def test_a_lost_submission_reply_is_recovered_under_the_same_turn(self):
         result = {"outcome": "ok", "response": {}}
