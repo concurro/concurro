@@ -4,8 +4,8 @@ import hashlib
 import json
 import re
 from pathlib import PurePosixPath
-from checks import (MAX_PLAN_FILES, build_checked, contract_errors, glob_matches as instruction_matches, in_scope,
-                    mandatory, protected as profile_protected, scope_errors, scope_of, triggered)
+from checks import (MAX_PLAN_FILES, build_checked, contract_errors, generated, glob_matches as instruction_matches,
+                    in_scope, mandatory, protected as profile_protected, scope_errors, scope_of, triggered)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 PROVIDER_CREDENTIALS = {
@@ -292,6 +292,8 @@ def validate_plan(plan, config, execution):
         raise Blocked("plan must name 1–8 distinct files")
     if not all(path_allowed(p, config, execution) for p in plan["files"]):
         raise Blocked("plan includes protected or unsupported files")
+    if any(generated(p, execution) for p in plan["files"]):
+        raise Blocked("a primary file cannot be generated; a lockfile belongs in the scope envelope")
     problem = scope_errors(plan)
     if problem:
         raise Blocked(problem)
@@ -319,7 +321,9 @@ def validate_edits(result, plan, originals, config, execution):
         path, content = edit["path"], edit["content"]
         if not path_allowed(path, config, execution) or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
-        if not isinstance(content, str) or "\x00" in content or len(content.encode()) > 128000:
+        # A generated file (a lockfile) has no per-file limit; the response's aggregate bound still applies.
+        if (not isinstance(content, str) or "\x00" in content
+                or len(content.encode()) > 128000 and not generated(path, execution)):
             raise Blocked("invalid text replacement")
         if originals.get(path) == content:
             raise Blocked("unchanged replacement")
@@ -329,9 +333,28 @@ def validate_edits(result, plan, originals, config, execution):
     return edits
 
 
-def validate_review(review):
+def manifest_fields(review, manifests):
+    """`{"manifests"}` when a review assesses manifests; every changed one needs a bounded assessment.
+
+    Reviews recorded before assessments existed have none, which is valid when no manifest changed.
+    """
+    entries = review.get("manifests", []) if isinstance(review, dict) else []
+    if (not isinstance(entries, list) or len(entries) > 16
+            or not all(isinstance(e, dict) and set(e) == {"path", "assessment"} and isinstance(e["path"], str)
+                       and isinstance(e["assessment"], str) and 1 <= len(e["assessment"].strip()) <= 2000
+                       for e in entries)
+            or len({e["path"] for e in entries}) != len(entries)):
+        raise Blocked("invalid manifest assessments")
+    missing = set(manifests) - {e["path"] for e in entries}
+    if missing:
+        raise Blocked("review must assess every changed manifest: " + ", ".join(sorted(missing)))
+    return {"manifests"} if isinstance(review, dict) and "manifests" in review else set()
+
+
+def validate_review(review, manifests=()):
     """Reject contradictory approvals and incomplete structured findings."""
-    if set(review) != presentation(review, {"verdict", "summary", "findings", "design_issue"}, {"headline"}):
+    if set(review) != presentation(review, {"verdict", "summary", "findings", "design_issue"},
+                                   {"headline"}) | manifest_fields(review, manifests):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")
@@ -384,12 +407,13 @@ def validate_pr_finding(finding):
         raise Blocked("finding detail must be bounded non-empty text")
 
 
-def validate_pr_review(review, open_ids, withdrawn_ids):
+def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
     """Reject inconsistent PR reviews; dispositions answer exactly the reviewer's open and withdrawn findings.
 
     Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
     """
-    if not isinstance(review, dict) or set(review) != presentation(review, PR_REVIEW_FIELDS, {"headline"}):
+    if (not isinstance(review, dict)
+            or set(review) != presentation(review, PR_REVIEW_FIELDS, {"headline"}) | manifest_fields(review, manifests)):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")

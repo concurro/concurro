@@ -63,7 +63,8 @@ class PathPolicyTests(unittest.TestCase):
         config = {**CONFIG, "policy_documents": ["docs/policy.md"],
                   "paths": {**CONFIG["paths"], "protected_files": ["docs/frozen.md"]}}
         self.assertTrue(path_allowed("docs/guide.md", config, EXECUTION))
-        for path in ("Cargo.toml", "crates/a/Cargo.lock", "rust-toolchain.toml", "scripts/a.md",
+        self.assertTrue(path_allowed("Cargo.toml", config, EXECUTION), "manifests are ordinary code")
+        for path in ("rust-toolchain.toml", "scripts/a.md",
                      "docs/frozen.md", "docs/policy.md", "docs/image.png"):
             with self.subTest(path=path):
                 self.assertFalse(path_allowed(path, config, EXECUTION))

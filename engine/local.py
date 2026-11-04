@@ -58,6 +58,19 @@ def bounded_process(command, env, timeout):
             "output": tail.decode("utf-8", errors="replace"), "output_sha": hashlib.sha256(tail).hexdigest()}
 
 
+def budget(timeout, message):
+    """`remaining(limit)`: a step's timeout within a shared budget, refusing when under a second is left."""
+    deadline = time.monotonic() + timeout
+
+    def remaining(limit):
+        left = deadline - time.monotonic()
+        if left < 1:
+            raise Blocked(message)
+        return min(limit, left)
+
+    return remaining
+
+
 def cache_path(profile, cache):
     """Engine-assigned cache mount point; profiles name caches but never choose paths."""
     return f"{CACHE_ROOT}/{profile}/{cache}"
@@ -76,8 +89,13 @@ class LocalWorkspace:
         self.prefix = "concurro-local-" + uuid.uuid4().hex
         self.profiles = {p["id"]: p for p in execution["profiles"]}
         self.volumes = {kind: self.prefix + "-" + kind for kind in ("source", "state", "stage")}
-        # Fresh per workbench: caches written by earlier candidates are never reused for preparation.
-        self.caches = {(p, c): f"{self.prefix}-cache-{p}-{c}" for p in self.profiles for c in self.profiles[p]["caches"]}
+        # Caches preparation writes are prepared homes: each preparation writes a fresh volume, seeded only
+        # from an earlier preparation, and checks get a fresh copy, so nothing candidate code writes is reused.
+        self.prepared_caches = {(p, c) for p, spec in self.profiles.items() if spec["prepare"]
+                                for c in spec["prepare"]["caches"]}
+        self.caches = {(p, c): f"{self.prefix}-cache-{p}-{c}" for p in self.profiles for c in self.profiles[p]["caches"]
+                       if (p, c) not in self.prepared_caches}
+        self.homes, self.copies, self.digests, self.generation = {}, {}, {}, 0
         self.inputs = {p: f"{self.prefix}-input-{p}" for p, spec in self.profiles.items() if spec["prepare"]}
         self.env = {k: os.environ[k] for k in ("PATH", "DOCKER_HOST", "DOCKER_CONTEXT") if k in os.environ}
         self.current = None
@@ -106,15 +124,20 @@ class LocalWorkspace:
 
     def close(self):
         """Clean only resources allocated by this workbench."""
-        for volume in [*self.volumes.values(), *self.caches.values(), *self.inputs.values()]:
+        for volume in [*self.volumes.values(), *self.caches.values(), *self.inputs.values(),
+                       *self.homes.values(), *self.copies.values()]:
             cleanup.remove(["docker", "volume", "rm", "-f", volume], self.env)
 
     def expand(self, profile, value):
         """Resolve a profile's cache placeholders to its engine-assigned mount points."""
         return PLACEHOLDER.sub(lambda match: cache_path(profile, match[1]), value)
 
-    def command(self, name, control=False, network=False, mode="check", profile=None):
-        """Build a container invocation with explicit mounts and no inherited secrets."""
+    def command(self, name, control=False, network=False, mode="check", profile=None, view="stage"):
+        """Build a container invocation with explicit mounts and no inherited secrets.
+
+        Preparation reads `view` (the staged approved base, or the candidate `source`) and writes only
+        its profile's current prepared homes; checks get copies of those homes.
+        """
         mode = "control" if control else mode
         args = ["docker", "run", "--rm", "--init", "--name", name, "--read-only",
                 "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512",
@@ -130,16 +153,16 @@ class LocalWorkspace:
             mounts += [(volume, cache_path(p, c), False) for (p, c), volume in self.caches.items()]
             args += ["--workdir=/workspace", "-i"]
         elif mode == "prepare":
-            # Neutral working directory; inputs and the optional source view come from the approved base.
+            # Neutral working directory; inputs and the optional source view come from the same tree.
             args += ["--tmpfs=/prepare:rw,nosuid,nodev,size=64m,mode=1777", "--workdir=/prepare"]
             mounts += [(self.inputs[profile], "/prepare/input", True)]
             if self.profiles[profile]["prepare"]["source"]:
-                mounts += [(self.volumes["stage"], "/workspace", True)]
-            mounts += [(volume, cache_path(p, c), False) for (p, c), volume in self.caches.items() if p == profile]
+                mounts += [(self.volumes[view], "/workspace", True)]
+            mounts += [(volume, cache_path(p, c), False) for (p, c), volume in self.homes.items() if p == profile]
         else:
             args += ["--workdir=/workspace"]
             mounts += [(self.volumes["source"], "/workspace", True)]
-            mounts += [(volume, cache_path(p, c), False) for (p, c), volume in self.caches.items()]
+            mounts += [(volume, cache_path(p, c), False) for (p, c), volume in {**self.caches, **self.copies}.items()]
         for volume, target, readonly in mounts:
             args += ["--mount", f"type=volume,source={volume},target={target}" + (",readonly" if readonly else "")]
         if mode != "control" and profile is not None:
@@ -163,10 +186,10 @@ class LocalWorkspace:
         finally:
             cleanup.remove(["docker", "rm", "-f", name], self.env)
 
-    def execute(self, name, command, timeout, network=False, control=False, mode="check", profile=None):
+    def execute(self, name, command, timeout, network=False, control=False, mode="check", profile=None, view="stage"):
         """Run one bounded command and bind its actual exit status to the current tree."""
         container = self.prefix + "-run"
-        args = self.command(container, control=control, network=network, mode=mode, profile=profile)
+        args = self.command(container, control=control, network=network, mode=mode, profile=profile, view=view)
         args += ["--entrypoint", command[0], self.image, *command[1:]]
         try:
             report = bounded_process(args, self.env, timeout)
@@ -178,25 +201,85 @@ class LocalWorkspace:
         """Prepare each selected profile from the approved base, before any candidate edit."""
         if self.current != self.baseline:
             raise Blocked("dependency preparation must precede candidate edits")
-        deadline = time.monotonic() + timeout
-
-        def remaining(limit):
-            """Bound each helper or step by what is left of the shared preparation budget."""
-            left = deadline - time.monotonic()
-            if left < 1:
-                raise Blocked("dependency preparation exceeded its shared time budget")
-            return min(limit, left)
-
+        remaining = budget(timeout, "dependency preparation exceeded its shared time budget")
         for profile in preparing(selected, self.execution):
-            spec = self.profiles[profile]["prepare"]
             self.stage_base(remaining(120))
-            self.control("inputs", profile, data=spec["requires"], timeout=remaining(120))
-            for index, step in enumerate(spec["steps"], 1):
-                report = self.execute(f"prepare:{profile}:{index}", [self.expand(profile, v) for v in step],
-                                      remaining(timeout), network=True, mode="prepare", profile=profile)
-                if report["exit_code"] or report["timed_out"] or report["output_limited"]:
-                    raise Blocked("dependency preparation failed; repair the execution environment")
+            report = self.prepare_profile(profile, "base", remaining)
+            if report is not None:
+                raise Blocked("dependency preparation failed; repair the execution environment")
             self.prepared.add(profile)
+
+    def prepare_profile(self, profile, origin, remaining):
+        """Prepare one profile from the base or the candidate into fresh homes; a failed step's report, or None.
+
+        A candidate whose inputs match the last preparation keeps it. Fresh homes are seeded from the
+        last preparation's, which no candidate code ever mounts writable.
+        """
+        spec = self.profiles[profile]["prepare"]
+        digest = self.control("inputs", profile, origin, data=spec["requires"], timeout=remaining(120))["digest"]
+        if self.digests.get(profile) == digest:
+            return None
+        self.generation += 1
+        previous = {key: volume for key, volume in self.homes.items() if key[0] == profile}
+        for key in sorted(k for k in self.prepared_caches if k[0] == profile):
+            volume = f"{self.prefix}-home{self.generation}-{key[0]}-{key[1]}"
+            self.homes[key] = volume
+            self.seed(volume, previous.get(key), remaining(600))
+        for volume in previous.values():
+            cleanup.remove(["docker", "volume", "rm", "-f", volume], self.env)
+        view = "stage" if origin == "base" else "source"
+        for index, step in enumerate(spec["steps"], 1):
+            report = self.execute(f"prepare:{profile}:{index}", [self.expand(profile, v) for v in step],
+                                  remaining(3600), network=True, mode="prepare", profile=profile, view=view)
+            if report["exit_code"] or report["timed_out"] or report["output_limited"]:
+                # Nothing half-prepared is ever used: the next attempt prepares again.
+                self.digests.pop(profile, None)
+                return report
+        self.digests[profile] = digest
+        return None
+
+    def seed(self, volume, source, timeout):
+        """Create a volume owned by the check user, then copy `source` into it as that user."""
+        subprocess.run(["docker", "volume", "create", volume], env=self.env, check=True, capture_output=True, timeout=30)
+        self.helper(["chown", "10001:10001", "/to"], [(volume, "/to", False)], "0:0", timeout, capabilities=["CHOWN"])
+        if source:
+            self.helper(["cp", "-a", "/from/.", "/to/"], [(source, "/from", True), (volume, "/to", False)],
+                        "10001:10001", timeout)
+
+    def helper(self, argv, mounts, user, timeout, capabilities=()):
+        """One bounded, offline volume operation in the execution image."""
+        name = self.prefix + "-helper"
+        args = ["docker", "run", "--rm", "--name", name, "--network=none", "--read-only", "--cap-drop=ALL",
+                *("--cap-add=" + c for c in capabilities), "--security-opt=no-new-privileges", "--user=" + user]
+        for volume, target, readonly in mounts:
+            args += ["--mount", f"type=volume,source={volume},target={target}" + (",readonly" if readonly else "")]
+        try:
+            result = subprocess.run(args + ["--entrypoint", argv[0], self.image, *argv[1:]], env=self.env,
+                                    capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise Blocked("cache preparation timed out") from None
+        finally:
+            cleanup.remove(["docker", "rm", "-f", name], self.env)
+        if result.returncode:
+            raise Blocked("cache preparation failed")
+
+    def refresh(self, remaining):
+        """Prepare again from the candidate when its inputs changed, then give checks fresh copies of the homes.
+
+        Returns the failed preparation step's report, as check evidence the implementer can act on.
+        """
+        for profile in sorted(self.prepared):
+            report = self.prepare_profile(profile, "candidate", remaining)
+            if report is not None:
+                return report
+        for volume in self.copies.values():
+            cleanup.remove(["docker", "volume", "rm", "-f", volume], self.env)
+        self.copies = {}
+        for key, home in sorted(self.homes.items()):
+            if key[0] in self.prepared:
+                self.copies[key] = f"{home}-check-{uuid.uuid4().hex[:8]}"
+                self.seed(self.copies[key], home, remaining(600))
+        return None
 
     def stage_base(self, timeout=120):
         """Extract the approved base once: preparation reads it, and `scope` judges the candidate against it."""
@@ -236,6 +319,9 @@ class LocalWorkspace:
             raise Blocked("plan requires an unknown local check")
         if not set(names).issubset(executable(self.execution, self.prepared)):
             raise Blocked("checks needing dependencies must be prepared before candidate edits; revise the plan's checks")
+        failed = self.refresh(budget(deadline - time.monotonic(), "local execution time budget exhausted"))
+        if failed is not None:
+            return [failed]
         reports = []
         for name in names:
             remaining = deadline - time.monotonic()

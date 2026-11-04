@@ -38,6 +38,8 @@
     "editable_extensions": [
       ".rs",
       ".md",
+      ".toml",
+      ".lock",
       ".added",
       ".changed",
       ".fixed",

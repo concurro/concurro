@@ -22,6 +22,7 @@ from markup import block, code, link, text
 import sessions
 import checks
 import design
+import lockfiles
 import reviews as findings
 from copy import deepcopy
 from repository import MAX_FILE
@@ -170,12 +171,20 @@ def transport_size(context):
     return len(json.dumps({k: v for k, v in context.items() if not k.startswith("controller_")}).encode())
 
 
-def changes(before, after):
-    """Each changed file as status, digests, line counts and a unified diff against the base, bounded per file."""
+def changes(before, after, execution=None, dependencies=None):
+    """Each changed file as status, digests, line counts and a unified diff against the base, bounded per file.
+
+    A generated file (a lockfile) carries its dependency delta instead of a diff.
+    """
     result = []
     for path in sorted(set(before) | set(after)):
         old, new = before.get(path), after.get(path)
         if old == new:
+            continue
+        if execution and checks.generated(path, execution):
+            result.append({"path": path, "status": "added" if old is None else "deleted" if new is None else "modified",
+                           "base_sha256": sha256(old), "head_sha256": sha256(new), "generated": True,
+                           "dependencies": (dependencies or {}).get(path)})
             continue
         lines = list(difflib.unified_diff(lf_lines(old or ""), lf_lines(new or ""), "a/" + path, "b/" + path))
         body = lines[2:]
@@ -188,6 +197,21 @@ def changes(before, after):
                        "added": sum(line.startswith("+") for line in body),
                        "removed": sum(line.startswith("-") for line in body), "diff": diff, "truncated": truncated})
     return result
+
+
+def dependency_summary(path, delta):
+    """One line: a lockfile's changed packages (the first few by name) and its added and removed counts."""
+    counts = delta["counts"]
+    named = [f"{c['name']} {c['change']}" for c in delta["changed"][:3]]
+    more = counts["changed"] - len(named)
+    parts = [", ".join(named) + (f" and {more} more" if more > 0 else "")] if named else []
+    parts += [f"{counts[k]} {k}" for k in ("added", "removed") if counts[k]]
+    return f"Dependencies ({path}): " + ("; ".join(parts) or "checksums only")
+
+
+def workspace_reader(workspace):
+    """A reader of the workbench's current files, or None without one."""
+    return (lambda path: workspace.files([path])[path]) if workspace else None
 
 
 def lf_lines(text):
@@ -313,6 +337,8 @@ class Controller:
                               for index, (name, status, _) in enumerate(rows))
         lines = [MARKER, "## Concurro", "", progress, "",
                  markup.table(["Step", "Status", "Detail"], [[name, status, detail] for name, status, detail in rows]), ""]
+        for path, delta in sorted((state.get("local_evidence", {}).get("dependencies") or {}).items()):
+            lines += ["📦 " + text(dependency_summary(path, delta)), ""]
         action = self.action_line()
         if action:
             lines += [action, ""]
@@ -469,8 +495,13 @@ class Controller:
         self.trees[sha] = {v["path"]: v for v in result["tree"]}
         return self.trees[sha]
 
-    def packages(self, paths):
-        """For each profile that scopes checks, the packages owning the planned paths at the base (None: all)."""
+    def packages(self, paths, workspace=None):
+        """For each profile that scopes checks, the packages to test (None: all).
+
+        The packages owning the changed paths at the base, plus, when the profile's lockfile changed,
+        the nearest workspace members depending on a changed package. A lockfile change that reaches
+        no member tests everything.
+        """
         tree = self.tree(self.state["base"])
 
         def read(path):
@@ -480,8 +511,48 @@ class Controller:
             except (Blocked, UnicodeError):
                 return None
 
-        return {p["id"]: checks.packages(p, paths, tree, read) for p in self.bundle.execution["profiles"]
-                if p.get("package_manifest")}
+        result = {}
+        for profile in self.bundle.execution["profiles"]:
+            if not profile.get("package_manifest"):
+                continue
+            lock = (profile.get("lockfile") or {}).get("path")
+            owned = [path for path in paths if path != lock]
+            found = checks.packages(profile, owned, tree, read) if any(checks.triggered(profile, [p]) for p in owned) else []
+            if lock in paths and found is not None:
+                locks = self.locks(profile, workspace_reader(workspace))
+                members = lockfiles.affected_members(*locks) if None not in locks else None
+                members = checks.member_packages(profile, members, tree, read) if members else None
+                found = None if members is None else sorted(set(found) | set(members))
+            result[profile["id"]] = found if found and len(found) <= checks.MAX_PACKAGES else None
+        return result
+
+    def locks(self, profile, read):
+        """A profile's parsed lockfile at the approved base and in the candidate `read` returns (None when unreadable)."""
+        path = profile["lockfile"]["path"]
+        try:
+            base = self.files(self.state["base"], [path], inspection=True)[path]
+        except (Blocked, UnicodeError):
+            base = None
+        return lockfiles.cargo(base), lockfiles.cargo(read(path) if read else None)
+
+    def dependencies(self, changed, read):
+        """The bounded dependency delta of each changed lockfile, or None when none changed."""
+        result = {}
+        for profile in self.bundle.execution["profiles"]:
+            lock = (profile.get("lockfile") or {}).get("path")
+            if lock in changed:
+                before, after = self.locks(profile, read)
+                result[lock] = lockfiles.bounded(lockfiles.delta(before or {}, after or {}))
+        return result or None
+
+    def committed(self, sha):
+        """A reader of one commit's files, for lockfiles of any size."""
+        return lambda path: self.files(sha, [path], inspection=True)[path]
+
+    def manifests(self, paths):
+        """Changed package manifests, each of which every review must assess."""
+        names = {p["package_manifest"] for p in self.bundle.execution["profiles"] if p.get("package_manifest")}
+        return sorted(path for path in paths if path.rsplit("/", 1)[-1] in names)
 
     def files(self, sha, paths, inspection=False):
         """Read bounded text blobs; executable source is evidence-only, never editable."""
@@ -497,7 +568,7 @@ class Controller:
                 result[path] = None
                 continue
             modes = ('100644', '100755') if inspection else ('100644',)
-            limit = MAX_FILE if inspection else 128000
+            limit = MAX_FILE if inspection or checks.generated(path, self.bundle.execution) else 128000
             if entry["mode"] not in modes or entry["type"] != "blob" or entry.get("size", 0) > limit:
                 raise Blocked("source must be a bounded regular text file")
             blob = self.gh.repo("git/blobs/" + entry["sha"])
@@ -1145,7 +1216,9 @@ class Controller:
         if self.state.get("head"):
             paths = self.state["changed_files"]
             context["accumulated_changes"] = changes(self.files(self.state["base"], paths, inspection=True),
-                                                     self.files(self.state["head"], paths, inspection=True))
+                                                     self.files(self.state["head"], paths, inspection=True),
+                                                     self.bundle.execution,
+                                                     self.dependencies(paths, self.committed(self.state["head"])))
         plan = self.ask(self.config["planner"], "plan", context)
         validate_plan(plan, self.config, self.state["execution"])
         expected = {v["id"] for v in context["open_objections"]}
@@ -1254,6 +1327,7 @@ class Controller:
             scope = checks.scope_of(state["plan"])
             workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']), {
                 "paths": scope["paths"], "max_files": scope["max_files"], "max_changed_lines": scope["max_changed_lines"],
+                "generated": checks.generated_globs(state["execution"]),
                 "accumulated": accumulated, "unapproved": checks.unapproved_triggers(approved_profile_ids(state), state["execution"])})
             workspace.prepare(required, min(600, deadline - time.monotonic()))
             executable = checks.executable(state["execution"], checks.preparing(required, state["execution"]))
@@ -1296,7 +1370,7 @@ class Controller:
                     raise Blocked("initial development attempt must propose changes")
                 checkpoint = workspace.checkpoint(result["edits"])
                 changed = self.changed(workspace, accumulated)
-                workspace.scope(self.packages(changed))
+                workspace.scope(self.packages(changed, workspace))
                 reports = workspace.run_checks(required, result["checks"], deadline)
                 export = workspace.export()
                 record = {**export, "checks": reports, "image": state["execution_image"]}
@@ -1309,15 +1383,17 @@ class Controller:
                 if deadline - time.monotonic() < 600:
                     raise Blocked("local time budget cannot accommodate pre-publication review")
                 before, after = self.files(state["base"], changed, inspection=True), workspace.files(changed)
+                dependencies = self.dependencies(changed, workspace_reader(workspace))
                 review_context = self.context(changed)
-                review_context.update(changes=changes(before, after), controller_candidate=after,
+                review_context.update(changes=changes(before, after, self.bundle.execution, dependencies),
+                                      manifests_to_assess=self.manifests(changed), controller_candidate=after,
                                       local_checks=reports, local_commit=checkpoint["local_commit"])
-                oversized = self.oversized(review_context, before, after)
+                oversized = self.oversized(review_context, before, after, dependencies)
                 if oversized:
                     feedback = {"checks": reports, "capacity": oversized}
                     continue
                 review = self.ask(self.config["local_reviewer"], "local_review", review_context)
-                validate_review(review)
+                validate_review(review, self.manifests(changed))
                 if review["verdict"] == "reopen":
                     self.reopen_design(review["design_issue"], "local_review")
                     return None
@@ -1331,7 +1407,7 @@ class Controller:
                                self.config, state["execution"])
                 evidence = {k: v for k, v in record.items() if k != "edits"}
                 evidence["checks"] = [{k: v for k, v in c.items() if k != "output"} for c in reports]
-                evidence.update(parent=parent, edits_digest=digest(export["edits"]),
+                evidence.update(parent=parent, edits_digest=digest(export["edits"]), dependencies=dependencies,
                                 reviewer=self.config["local_reviewer"],
                                 model=selected_model(self.config, self.config["local_reviewer"], "local_review") or "CLI default")
                 return final, evidence
@@ -1342,14 +1418,14 @@ class Controller:
         """Files the candidate changes since the approved base: this round's and earlier published rounds'."""
         return sorted({e["path"] for e in workspace.export()["edits"]} | set(accumulated))
 
-    def oversized(self, local_context, before, after):
+    def oversized(self, local_context, before, after, dependencies=None):
         """Why a review of this candidate would not fit, or None.
 
         Measures the local review and each reviewer's prospective PR review as they would be sent,
         with the same serialization and limit as `ask()`. Files are never omitted to make one fit.
         """
         contexts = [("local review", local_context)]
-        contexts += [(provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40))
+        contexts += [(provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40, dependencies))
                      for provider in self.config["reviewers"]]
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [f"{name} ({size} of {limit} bytes)" for name, context in contexts
@@ -1359,10 +1435,11 @@ class Controller:
         return ("The change is too large to review: " + ", ".join(over) + ". Reduce it, or return a design_issue "
                 "to split the work.")
 
-    def pr_review_context(self, provider, before, after, head):
+    def pr_review_context(self, provider, before, after, head, dependencies=None):
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
-        context.update(changes=changes(before, after), head=head)
+        context.update(changes=changes(before, after, self.bundle.execution, dependencies),
+                       manifests_to_assess=self.manifests(sorted(after)), head=head)
         context["own_findings"] = findings.context(self.state, provider)
         context["review_output_budget"] = self.pr_review_output_budget()
         return context
@@ -1473,11 +1550,13 @@ class Controller:
         return title + suffix
 
     def pr_body(self):
-        """The plan's summary, its artifact, and the issue it closes; GitHub shows CI and reviews natively."""
+        """The plan's summary, its artifact, any dependency change, and the issue it closes."""
         plan = self.checkpoints.plan
         lines = [block(self.state["plan"]["summary"]), ""]
         if plan:
             lines += [link("Implementation plan", self.artifact_url(plan["number"])), ""]
+        for path, delta in sorted((self.state.get("local_evidence", {}).get("dependencies") or {}).items()):
+            lines += ["📦 " + text(dependency_summary(path, delta)), ""]
         return "\n".join(lines + [f"Closes #{self.state['issue']}"])
 
     def pr_url(self, number):
@@ -1491,11 +1570,12 @@ class Controller:
         if provider:
             changed = state["changed_files"]
             context = self.pr_review_context(provider, self.files(state["base"], changed, inspection=True),
-                                             self.files(state["head"], changed, inspection=True), state["head"])
+                                             self.files(state["head"], changed, inspection=True), state["head"],
+                                             self.dependencies(changed, self.committed(state["head"])))
             report = self.ask(provider, "review", context)
             owned = findings.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],
-                               [f["id"] for f in owned if f["status"] == "withdrawn"])
+                               [f["id"] for f in owned if f["status"] == "withdrawn"], self.manifests(changed))
             if pr_review_cost(report) > self.pr_review_room():
                 raise Blocked("PR review exceeds the checkpoint budget")
             self.record_pr_review(state, provider, report)

@@ -65,6 +65,26 @@
         "additionalProperties": false
       }
     },
+    "manifests": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "assessment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "assessment"
+        ],
+        "additionalProperties": false
+      }
+    },
     "dispositions": {
       "type": "array",
       "items": {
@@ -133,6 +153,7 @@
     "headline",
     "summary",
     "findings",
+    "manifests",
     "dispositions",
     "design_issue"
   ],

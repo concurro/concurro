@@ -46,7 +46,7 @@ class WorkbenchValidationTests(unittest.TestCase):
             'checks': ['diff', 'scope', 'text'], 'files': [
                 {'path': path, 'change': 'add', 'max_lines': 3, 'required_text': ['Required']}
                 for path in ('docs/a.md', 'docs/b.md')]},
-            'scope': {'paths': ['docs/a.md', 'docs/b.md'], 'max_files': 2, 'max_changed_lines': None,
+            'scope': {'paths': ['docs/a.md', 'docs/b.md'], 'max_files': 2, 'max_changed_lines': None, 'generated': ['**/Cargo.lock'],
                       'accumulated': [], 'unapproved': ['**/*.rs']}}
 
     def add(self, path, content='Required\n', commit=True):
@@ -140,6 +140,24 @@ class WorkbenchValidationTests(unittest.TestCase):
         self.assertEqual(workspace.changed_lines('a\u2028b\n', 'a\u2028c\n'), 2, 'one LF line replaced')
         self.assertEqual(workspace.changed_lines('a', 'a\n'), 1, 'any difference counts')
         self.assertEqual(workspace.changed_lines(None, 'a\nb\n'), 2)
+
+    def test_a_pilot_scale_lockfile_counts_as_a_file_not_lines(self):
+        """A ~150 KB lockfile bump passes a 5-line budget; it still counts toward the file budget."""
+        from test_dependencies import WORKSPACE, bumped, lock
+        many = {**WORKSPACE, **{(f"crate{i}", "1.0.0"): ([], f"{i:064x}", True) for i in range(1300)}}
+        base, candidate = lock(many), lock(bumped(many, ("p256", "0.13.2"), "0.14.0", "f" * 64))
+        self.assertGreater(len(base.encode()), 140000)
+        (self.stage / 'Cargo.lock').write_text(base)
+        self.add('docs/a.md')
+        self.add('docs/b.md')
+        self.add('Cargo.lock', candidate)
+        envelope = self.envelope(paths=['docs/**', 'Cargo.lock'], max_changed_lines=5)
+        workspace.check_scope(envelope)
+        with self.assertRaisesRegex(ValueError, '3 files, over the approved budget of 2'):
+            workspace.check_scope(self.envelope(paths=['docs/**', 'Cargo.lock'], max_files=2))
+        without = self.envelope(paths=['docs/**', 'Cargo.lock'], max_changed_lines=5, generated=[])
+        with self.assertRaisesRegex(ValueError, '6 lines, over the approved budget of 5'):
+            workspace.check_scope(without)
 
     def test_a_new_execution_profile_is_a_design_change(self):
         self.add('docs/a.md')

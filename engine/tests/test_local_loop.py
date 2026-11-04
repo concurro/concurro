@@ -220,8 +220,8 @@ class ExecutionBoundaryTests(unittest.TestCase):
         with patch.dict(os.environ, {"CONCURRO_EXECUTION_IMAGE": "sha256:" + "a" * 64}):
             workspace = LocalWorkspace(CONFIG, b"", "concurro/test", EXECUTION, base_archive=b"base")
         success = {"exit_code": 0, "timed_out": False, "output_limited": False}
-        with patch.object(workspace, "execute", return_value=success) as execute, \
-                patch.object(workspace, "control", return_value={}) as control:
+        with patch.object(workspace, "execute", return_value=success) as execute, patch.object(workspace, "seed"), \
+                patch.object(workspace, "control", return_value={"digest": "base"}) as control:
             workspace.prepare(["diff"], 30)
             control.assert_not_called()
             for requested in (["check"], ["nextest"]):
@@ -242,8 +242,8 @@ class ExecutionBoundaryTests(unittest.TestCase):
             workspace = LocalWorkspace(CONFIG, b"", "concurro/test", EXECUTION, base_archive=b"base")
         success = {"exit_code": 0, "timed_out": False, "output_limited": False}
         exhausted = {"exit_code": -9, "timed_out": True, "output_limited": False}
-        with patch.object(workspace, "execute", side_effect=[success, exhausted]) as execute, \
-                patch.object(workspace, "control", return_value={}):
+        with patch.object(workspace, "execute", side_effect=[success, exhausted]) as execute, patch.object(workspace, "seed"), \
+                patch.object(workspace, "control", return_value={"digest": "base"}):
             workspace.prepare(["check"], 30)
             self.assertEqual(workspace.run_checks(["check", "nextest"], [], time.monotonic() + 30), [exhausted])
             self.assertEqual(execute.call_count, 2)

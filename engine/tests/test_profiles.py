@@ -23,7 +23,7 @@ import workspace_entry
 RUST = json.loads((ROOT / "bundle/profiles/rust.json").read_text())
 DOCS = {"version": 1, "id": "docs", "triggers": ["docs/**/*.md"], "protected": ["docs/.lint.json"],
         "caches": ["lint"], "env": {"LINT_HOME": "{cache:lint}"},
-        "prepare": {"requires": ["docs/.lint.json"], "source": False,
+        "prepare": {"requires": ["docs/.lint.json"], "source": False, "caches": ["lint"],
                     "steps": [["lint-setup", "--config", "/prepare/input/docs/.lint.json", "--home", "{cache:lint}"]]},
         "checks": [{"id": "markdown", "purpose": "Lint changed documentation offline.",
                     "command": ["lint", "--home", "{cache:lint}", "docs"], "prepared": True, "mandatory": True},
@@ -64,7 +64,13 @@ class ProfileSchemaTests(unittest.TestCase):
             "stray_brace": lambda p: p["checks"][0]["command"].append("{oops}"),
             "absolute_trigger": lambda p: p["triggers"].append("/etc/*"),
             "traversal_protected": lambda p: p["protected"].append("../x"),
-            "unprotected_input": lambda p: p["prepare"]["requires"].append("README.md"),
+            "undeclared_prepared_cache": lambda p: p["prepare"].update(caches=["missing"]),
+            "no_prepared_cache": lambda p: p["prepare"].update(caches=[]),
+            "step_writes_another_cache": lambda p: p.update(caches=["lint", "other"]) or p["prepare"]["steps"][0].append("{cache:other}"),
+            "traversal_generated": lambda p: p.update(generated=["../x.lock"]),
+            "lockfile_not_generated": lambda p: p.update(lockfile={"path": "docs/x.lock", "format": "cargo"}),
+            "lockfile_glob": lambda p: p.update(generated=["*.lock"], lockfile={"path": "*.lock", "format": "cargo"}),
+            "lockfile_format": lambda p: p.update(generated=["x.lock"], lockfile={"path": "x.lock", "format": "npm"}),
             "glob_input": lambda p: p["prepare"]["requires"].append("docs/*.json"),
             "control_collision": lambda p: p["checks"][0].update(id="diff"),
             "duplicate_check": lambda p: p["checks"].append(deepcopy(p["checks"][0])),
@@ -109,12 +115,19 @@ class ProfileSchemaTests(unittest.TestCase):
                       catalog["checks"])
 
     def test_nested_profile_protections_and_merge_risk(self):
-        """Profile globs protect nested manifests; triggered paths never merge autonomously."""
-        for path in ("Cargo.toml", "crates/a/Cargo.toml", "crates/a/build.rs", "nested/Cargo.lock",
-                     "rust-toolchain.toml"):
+        """Manifests, lockfiles and build scripts are ordinary code; check definitions stay protected.
+
+        Manifests and lockfiles trigger the profile, so they never merge autonomously.
+        """
+        for path in ("rust-toolchain.toml", "crates/rustfmt.toml", ".cargo/config.toml", ".config/nextest.toml"):
             with self.subTest(path=path):
                 self.assertFalse(path_allowed(path, CONFIG, EXECUTION))
-        self.assertTrue(path_allowed("crates/a/src/lib.rs", CONFIG, EXECUTION))
+        for path in ("Cargo.toml", "crates/a/Cargo.toml", "crates/a/build.rs", "nested/Cargo.lock", "crates/a/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertTrue(path_allowed(path, CONFIG, EXECUTION))
+                self.assertTrue(checks.build_checked(path, EXECUTION))
+        self.assertTrue(checks.generated("nested/Cargo.lock", EXECUTION))
+        self.assertFalse(checks.generated("Cargo.toml", EXECUTION))
         execution = composed(RUST, DOCS)
         self.assertFalse(merge_path_allowed("docs/guide/a.md", CONFIG, execution))
         self.assertTrue(merge_path_allowed("docs/guide/a.md", CONFIG, EXECUTION))
@@ -200,7 +213,8 @@ class PackageScopeTests(unittest.TestCase):
         workspace.current = {"local_commit": "c", "tree": "t"}
         workspace.scope({"rust": ["stacks-common"]})
         success = {"name": "nextest", "exit_code": 0, "timed_out": False, "output_limited": False}
-        with patch.object(workspace, "execute", return_value=success) as execute:
+        with patch.object(workspace, "execute", return_value=success) as execute, \
+                patch.object(workspace, "refresh", return_value=None):
             workspace.run_checks(["nextest"], [], float("inf"))
         self.assertIn("--package stacks-common --lib", " ".join(execute.call_args.args[1]))
 
@@ -259,8 +273,9 @@ class PreparationIsolationTests(unittest.TestCase):
             return LocalWorkspace(CONFIG, b"", "concurro/test", composed(*profiles), base_archive=b"base")
 
     def test_prepare_container_is_neutral_and_reads_only_the_approved_base(self):
-        """No candidate source, Git state or other profile caches; source view only when declared."""
+        """No candidate source, Git state, check caches or other profile caches; source view only when declared."""
         workspace = self.workspace(RUST, DOCS)
+        workspace.homes = {("rust", "cargo"): "home-rust", ("docs", "lint"): "home-docs"}
         rust = " ".join(workspace.command("x", network=True, mode="prepare", profile="rust"))
         docs = " ".join(workspace.command("x", network=True, mode="prepare", profile="docs"))
         for command in (rust, docs):
@@ -271,8 +286,12 @@ class PreparationIsolationTests(unittest.TestCase):
             self.assertNotIn("--network=none", command)
         self.assertIn(f"source={workspace.volumes['stage']},target=/workspace,readonly", rust)
         self.assertNotIn("target=/workspace", docs)
-        self.assertIn("target=/cache/rust/cargo", rust)
+        self.assertIn("source=home-rust,target=/cache/rust/cargo", rust)
+        self.assertNotIn("target=/cache/rust/target", rust, "preparation never sees a cache checks write")
         self.assertNotIn("/cache/docs/", rust)
+        candidate = " ".join(workspace.command("x", network=True, mode="prepare", profile="rust", view="source"))
+        self.assertIn(f"source={workspace.volumes['source']},target=/workspace,readonly", candidate)
+        self.assertNotIn(workspace.volumes["state"], candidate)
         self.assertNotIn("/cache/rust/", docs)
         self.assertIn("--env CARGO_HOME=/cache/rust/cargo", rust)
         self.assertNotIn("LINT_HOME", rust)
@@ -292,14 +311,14 @@ class PreparationIsolationTests(unittest.TestCase):
         workspace = self.workspace(RUST, DOCS)
         workspace.current = workspace.baseline = {"local_commit": "base", "tree": "t"}
         success = {"exit_code": 0, "timed_out": False, "output_limited": False}
-        clock = iter([0, 1, 2, 3, 60])
-        with patch.object(workspace, "control", return_value={}) as control, \
-                patch.object(workspace, "execute", return_value=success) as execute, \
+        clock = iter([0, 1, 2, 3, 4, 60])
+        with patch.object(workspace, "control", return_value={"digest": "d"}) as control, \
+                patch.object(workspace, "execute", return_value=success) as execute, patch.object(workspace, "seed"), \
                 patch("local.time.monotonic", side_effect=lambda: next(clock)):
             with self.assertRaisesRegex(Blocked, "shared time budget"):
                 workspace.prepare(["check", "markdown"], 30)
         self.assertEqual([c.args[0] for c in execute.call_args_list], ["prepare:rust:1"])
-        self.assertEqual(execute.call_args.args[2], 27)
+        self.assertEqual(execute.call_args.args[2], 26)
         self.assertEqual([c.args[:2] for c in control.call_args_list], [("stage",), ("inputs", "rust")])
         self.assertEqual([c.kwargs["timeout"] for c in control.call_args_list], [29, 28])
         workspace.current = {"local_commit": "edited", "tree": "u"}
@@ -329,7 +348,8 @@ class PreparationIsolationTests(unittest.TestCase):
         workspace = self.workspace(RUST, DOCS)
         workspace.current = {"local_commit": "base", "tree": "t"}
         success = {"exit_code": 0, "timed_out": False, "output_limited": False}
-        with patch.object(workspace, "execute", return_value=success) as execute:
+        with patch.object(workspace, "execute", return_value=success) as execute, \
+                patch.object(workspace, "refresh", return_value=None):
             with self.assertRaisesRegex(Blocked, "prepared before candidate edits"):
                 workspace.run_checks(["diff"], ["markdown"], 10 ** 9)
             workspace.prepared.add("docs")
@@ -354,27 +374,35 @@ class HelperPreparationTests(unittest.TestCase):
                 handle.addfile(item, io.BytesIO(data))
         return output.getvalue()
 
-    def test_inputs_come_from_the_staged_base_only(self):
-        """Declared files are copied read-only; missing, linked or escaping inputs are rejected."""
+    def test_inputs_come_from_the_base_or_the_candidate(self):
+        """Declared files are copied read-only and digested; missing, linked or escaping inputs are rejected."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stage, inputs = root / "stage", root / "input"
             stage.mkdir()
             inputs.mkdir()
             stream = io.TextIOWrapper(io.BytesIO(self.archive({"Cargo.lock": "lock\n", "src/lib.rs": "fn x() {}\n"})))
-            with patch.multiple(workspace_entry, STAGE=stage, INPUT=inputs), patch.object(sys, "stdin", stream):
+            candidate = root / "candidate"
+            candidate.mkdir()
+            (candidate / "Cargo.lock").write_text("bumped\n")
+            with patch.multiple(workspace_entry, STAGE=stage, INPUT=inputs, ROOT=candidate), patch.object(sys, "stdin", stream):
                 workspace_entry.stage()
-                workspace_entry.inputs("rust", ["Cargo.lock"])
+                base = workspace_entry.inputs("rust", "base", ["Cargo.lock"])["digest"]
                 copied = inputs / "rust/Cargo.lock"
                 self.assertEqual(copied.read_text(), "lock\n")
                 self.assertEqual(copied.stat().st_mode & 0o777, 0o444)
                 self.assertFalse((inputs / "rust/src").exists())
+                self.assertEqual(workspace_entry.inputs("rust", "base", ["Cargo.lock"])["digest"], base)
+                bumped = workspace_entry.inputs("rust", "candidate", ["Cargo.lock"])["digest"]
+                self.assertNotEqual(bumped, base)
+                self.assertEqual(copied.read_text(), "bumped\n", "the candidate's inputs replace the base's")
                 (stage / "link.lock").symlink_to(stage / "Cargo.lock")
                 for bad in (["missing.lock"], ["../Cargo.lock"], ["/etc/passwd"], ["link.lock"], [".git/config"]):
                     with self.subTest(bad=bad), self.assertRaises(ValueError):
-                        workspace_entry.inputs("rust", bad)
-                with self.assertRaises(ValueError):
-                    workspace_entry.inputs("../rust", ["Cargo.lock"])
+                        workspace_entry.inputs("rust", "base", bad)
+                for profile, origin in (("../rust", "base"), ("rust", "elsewhere")):
+                    with self.subTest(profile=profile, origin=origin), self.assertRaises(ValueError):
+                        workspace_entry.inputs(profile, origin, ["Cargo.lock"])
 
     def test_cache_mounts_must_be_engine_assigned(self):
         """Initialization accepts only /cache/<profile>/<name> mount points."""

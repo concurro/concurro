@@ -612,7 +612,7 @@ class PipelineTests(unittest.TestCase):
     def test_forbidden_paths_and_scope_escape(self):
         """Traversal, hooks, dependency manifests and automation edits are rejected."""
         for path in ("../escape.md", "/docs/x.md", "docs/../x.md", ".github/a.md", "docs/.git/a.md",
-                     "docs/CLAUDE.md", "src/build.rs", "tools/a.rs", "docs/x\\y.md", "docs//a.md"):
+                     "docs/CLAUDE.md", "tools/a.rs", "docs/x\\y.md", "docs//a.md"):
             with self.subTest(path=path):
                 self.assertFalse(path_allowed(path, self.config, EXECUTION))
         with self.assertRaises(Blocked):

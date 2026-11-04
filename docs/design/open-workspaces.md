@@ -1,6 +1,6 @@
 # Open workspaces
 
-Status: accepted (revision 3, reviewed); rollout step 1 implemented. Builds on [the agent sandbox](agent-sandbox.md)
+Status: accepted (revision 3, reviewed); rollout steps 1–2 implemented (see [Implementation notes](#implementation-notes)). Builds on [the agent sandbox](agent-sandbox.md)
 and [the runner executor](runner-executor.md), and settles two questions they
 leave open: agents may change dependencies, and every model works with the
 target's real Git repository.
@@ -221,6 +221,20 @@ Git.
 - Review capacity measures the full serialized context each reviewer will
   receive, its open and withdrawn findings included, as `oversized()` does now.
   The 128,000-byte cap applies only to replacements an agent writes.
+
+## Implementation notes
+
+Where step 2 differs from the text above:
+
+- **Test scope** reads the dependency graph from both lockfiles in the controller rather than running
+  `cargo metadata`: the same resolved graph, with no candidate code involved.
+- **Prepared caches** are declared per profile (`prepare.caches`, `cargo` for Rust). Preparation
+  mounts only those, never a cache checks write (`target`).
+- **A failed candidate preparation** is returned as a check report, so the implementer gets it as
+  feedback; a hand-edited lockfile fails Cargo's checksum verification there.
+- **`rustfmt.toml`** joins the protected files, since it defines the `format` check.
+- **Within one check run**, a candidate's `build.rs` can still affect later checks through that run's
+  copy of the Cargo home, as before; every run and every preparation starts from a fresh copy.
 
 ## Changes to existing notes
 

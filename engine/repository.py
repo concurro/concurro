@@ -105,7 +105,7 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
     if candidate is not None:
         files = candidate.get("files") if isinstance(candidate, dict) else None
         if (set(candidate) != {"files"} or not isinstance(files, dict) or not 1 <= len(files) <= MAX_OVERLAY_FILES
-                or not all(path_safe(path) and (text is None or isinstance(text, str) and len(text.encode()) <= 128000)
+                or not all(path_safe(path) and (text is None or isinstance(text, str) and len(text.encode()) <= MAX_FILE)
                            for path, text in files.items())):
             raise ValueError("invalid snapshot candidate")
     environment = git_environment(root)

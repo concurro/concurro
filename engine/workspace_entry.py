@@ -1,6 +1,7 @@
 """Trusted local Git operations inside a credential-free container, never on the host."""
 
 import difflib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -118,30 +119,35 @@ def stage():
     return {"staged": True}
 
 
-def inputs(profile, paths):
-    """Copy only a profile's protected preparation inputs from the approved base snapshot."""
-    if not NAME.fullmatch(profile) or not isinstance(paths, list) or not 1 <= len(paths) <= 16:
+def inputs(profile, origin, paths):
+    """Copy a profile's preparation inputs from the approved base or the candidate, and digest them."""
+    if (not NAME.fullmatch(profile) or origin not in ("base", "candidate") or not isinstance(paths, list)
+            or not 1 <= len(paths) <= 16):
         raise ValueError("invalid preparation inputs")
     destination = INPUT / profile
-    for name in paths:
+    for entry in destination.iterdir() if destination.exists() else ():
+        shutil.rmtree(entry) if entry.is_dir() and not entry.is_symlink() else entry.unlink()
+    digest = hashlib.sha256()
+    for name in sorted(paths):
         if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name or any(
                 part in ("", ".", "..", ".git") for part in name.split("/")):
             raise ValueError("invalid preparation input path")
-        source = STAGE
+        source = STAGE if origin == "base" else ROOT
         for part in name.split("/"):
             source = source / part
             if source.is_symlink():
                 raise ValueError("preparation input is a symlink")
         if not source.is_file():
-            raise ValueError("preparation input is missing at the approved base")
+            raise ValueError("preparation input is missing")
         target = destination.joinpath(*name.split("/"))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         target.chmod(0o444)
+        digest.update(json.dumps([name, hashlib.sha256(target.read_bytes()).hexdigest()]).encode())
     for directory in [destination, *destination.rglob("*")]:
         if directory.is_dir():
             directory.chmod(0o755)
-    return {"inputs": sorted(paths)}
+    return {"inputs": sorted(paths), "digest": digest.hexdigest()}
 
 
 def snapshot():
@@ -199,7 +205,9 @@ def check_scope(payload):
         before, after = read_under(STAGE, path), read_under(ROOT, path)
         if before != after:
             actual[path] = 'A' if before is None else 'D' if after is None else 'M'
-            lines += changed_lines(before, after)
+            # Generated files (lockfiles) count toward the file budget, not the line budget.
+            if not any(glob_matches(path, g) for g in scope['generated']):
+                lines += changed_lines(before, after)
     if not actual:
         raise ValueError('candidate changes nothing')
     outside = [p for p in actual if not any(glob_matches(p, g) for g in scope['paths'])]
@@ -230,10 +238,11 @@ def check_text(payload):
 
 
 def scope_valid(scope):
-    """The scope payload: envelope globs, unapproved triggers, accumulated paths and a budget."""
+    """The scope payload: envelope globs, unapproved triggers, generated globs, accumulated paths and a budget."""
     globs = lambda v: isinstance(v, list) and all(isinstance(g, str) and g and not g.startswith("/") for g in v)
-    return (isinstance(scope, dict) and set(scope) == {'paths', 'unapproved', 'accumulated', 'max_files', 'max_changed_lines'}
-            and globs(scope['paths']) and globs(scope['unapproved'])
+    return (isinstance(scope, dict)
+            and set(scope) == {'paths', 'unapproved', 'generated', 'accumulated', 'max_files', 'max_changed_lines'}
+            and globs(scope['paths']) and globs(scope['unapproved']) and globs(scope['generated'])
             and isinstance(scope['accumulated'], list) and all(path_safe(p) for p in scope['accumulated'])
             and type(scope['max_files']) is int and scope['max_files'] >= 1
             and (scope['max_changed_lines'] is None or type(scope['max_changed_lines']) is int))
@@ -247,7 +256,7 @@ def main():
     elif operation == "stage":
         result = stage()
     elif operation == "inputs":
-        result = inputs(sys.argv[2], json.load(sys.stdin))
+        result = inputs(sys.argv[2], sys.argv[3], json.load(sys.stdin))
     elif operation == "checkpoint":
         payload = json.load(sys.stdin)
         if git("rev-parse", "HEAD") != payload["expected"]:

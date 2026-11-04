@@ -19,6 +19,8 @@ REPAIR_DETAILS = {
     'validation_change': 'The declared add/modify status disagrees with file existence at the approved source base.',
 }
 PROFILE_KEYS = {"version", "id", "triggers", "protected", "caches", "env", "prepare", "checks"}
+OPTIONAL_PROFILE_KEYS = {"package_manifest", "generated", "lockfile"}
+LOCKFILE_FORMATS = ("cargo",)
 CHECK_KEYS = {"id", "purpose", "command", "prepared", "mandatory"}
 NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -107,7 +109,7 @@ def load_profile(text, expected_id):
         profile = json.loads(text)
     except ValueError:
         raise ProfileError("profile is not valid JSON") from None
-    if (not isinstance(profile, dict) or set(profile) - {"package_manifest"} != PROFILE_KEYS
+    if (not isinstance(profile, dict) or set(profile) - OPTIONAL_PROFILE_KEYS != PROFILE_KEYS
             or profile["version"] != 1):
         raise ProfileError("profile fields are invalid")
     manifest = profile.get("package_manifest")
@@ -120,6 +122,15 @@ def load_profile(text, expected_id):
         raise ProfileError("profile triggers are invalid")
     if not _strings(profile["protected"], 0, 64) or not all(_relative(v) for v in profile["protected"]):
         raise ProfileError("profile protected paths are invalid")
+    generated = profile.get("generated", [])
+    if not _strings(generated, 0, 16) or not all(_relative(v) for v in generated):
+        raise ProfileError("profile generated paths are invalid")
+    lockfile = profile.get("lockfile")
+    if lockfile is not None and not (
+            isinstance(lockfile, dict) and set(lockfile) == {"path", "format"} and lockfile["format"] in LOCKFILE_FORMATS
+            and _relative(lockfile["path"]) and "*" not in lockfile["path"]
+            and any(glob_matches(lockfile["path"], g) for g in generated)):
+        raise ProfileError("profile lockfile is invalid; it must be a generated path")
     caches = profile["caches"]
     if not _strings(caches, 0, 8, 32) or not all(NAME.fullmatch(v) for v in caches):
         raise ProfileError("profile caches are invalid")
@@ -132,14 +143,15 @@ def load_profile(text, expected_id):
         raise ProfileError("profile environment is invalid")
     prepare = profile["prepare"]
     if prepare is not None:
-        if (not isinstance(prepare, dict) or set(prepare) != {"requires", "source", "steps"}
+        # Preparation writes only its own caches, which it re-creates whenever its inputs change.
+        if (not isinstance(prepare, dict) or set(prepare) != {"requires", "source", "caches", "steps"}
                 or type(prepare["source"]) is not bool
                 or not _strings(prepare["requires"], 1, 16)
                 or not all(_relative(v) and "*" not in v for v in prepare["requires"])
-                or not all(any(glob_matches(v, p) for p in profile["protected"]) for v in prepare["requires"])
+                or not _strings(prepare["caches"], 1, 8, 32) or not set(prepare["caches"]) <= set(caches)
                 or not isinstance(prepare["steps"], list) or not 1 <= len(prepare["steps"]) <= 8
-                or not all(_argv(step, caches) for step in prepare["steps"])):
-            raise ProfileError("profile preparation is invalid; inputs must be protected")
+                or not all(_argv(step, prepare["caches"]) for step in prepare["steps"])):
+            raise ProfileError("profile preparation is invalid")
     items = profile["checks"]
     if not isinstance(items, list) or not 1 <= len(items) <= 16:
         raise ProfileError("profile checks are invalid")
@@ -170,6 +182,7 @@ def compose(profiles):
 def summary(execution):
     """Return the compact, argv-free view that durable state and policy decisions use."""
     return {"profiles": [{"id": p["id"], "triggers": p["triggers"], "protected": p["protected"],
+                          "generated": p.get("generated", []),
                           "checks": [{k: c[k] for k in ("id", "prepared", "mandatory")} for c in p["checks"]]}
                          for p in execution["profiles"]]}
 
@@ -273,11 +286,11 @@ def packages(profile, paths, tree, read):
     cannot be read. A path belongs to the nearest enclosing directory with the profile's manifest,
     named by its `[package] name`. When a scoped check runs library targets only, a changed
     package without one also falls back to everything, since scoping to it would select nothing.
+    A changed manifest that also declares the workspace affects every member, so it does too.
     """
     manifest = profile.get("package_manifest")
     if manifest is None:
         return None
-    needs_library = any(c.get("scope", {}).get("library") for c in profile["checks"])
     found = set()
     for path in paths:
         if not triggered(profile, [path]):
@@ -290,10 +303,37 @@ def packages(profile, paths, tree, read):
         name = package.get("name") if isinstance(package, dict) else None
         if not isinstance(name, str) or not PACKAGE.fullmatch(name):
             return None
-        if needs_library and not library(owner, data, tree):
+        if path == owner and "workspace" in data or needs_library(profile) and not library(owner, data, tree):
             return None
         found.add(name)
     return sorted(found) if 0 < len(found) <= MAX_PACKAGES else None
+
+
+def needs_library(profile):
+    """Whether a profile's scoped checks run library targets only."""
+    return any(c.get("scope", {}).get("library") for c in profile["checks"])
+
+
+def member_packages(profile, names, tree, read):
+    """Lockfile-selected members, validated as owning packages are, or None when any cannot be scoped to.
+
+    Each name must be the `[package] name` of a manifest at the base, with a library target when the
+    scoped checks need one.
+    """
+    manifest, wanted, found = profile.get("package_manifest"), set(names), {}
+    for path in sorted(p for p in tree if p.rsplit("/", 1)[-1] == manifest):
+        if wanted <= set(found):
+            break
+        data = manifest_data(read(path))
+        package = data.get("package") if data else None
+        name = package.get("name") if isinstance(package, dict) else None
+        if name in wanted and name not in found:
+            found[name] = (path, data)
+    if set(found) != wanted or not all(PACKAGE.fullmatch(name) for name in found):
+        return None
+    if needs_library(profile) and not all(library(path, data, tree) for path, data in found.values()):
+        return None
+    return sorted(found)
 
 
 def command(check, packages):
@@ -312,6 +352,16 @@ def protected(path, execution):
     return any(glob_matches(path, pattern) for p in execution["profiles"] for pattern in p["protected"])
 
 
+def generated(path, execution):
+    """Whether a path is a tool-generated file: no line budget, text rules or per-file size limit."""
+    return any(glob_matches(path, pattern) for p in execution["profiles"] for pattern in p.get("generated", []))
+
+
+def generated_globs(execution):
+    """Every profile's generated-file globs."""
+    return [pattern for p in execution["profiles"] for pattern in p.get("generated", [])]
+
+
 def catalog(paths, execution):
     """Describe capabilities from the same identifiers used by execution dispatch."""
     offered = [{"id": name, "profile": "engine", "purpose": CONTROL_DESCRIPTIONS[name], "prepared": False}
@@ -320,7 +370,7 @@ def catalog(paths, execution):
                 for p in execution["profiles"] for c in p["checks"]]
     return {"version": 2, "checks": offered, "mandatory": required(paths, execution),
             "baseline": "Archive content is imported into a new local Git repository. The remote commit SHA is provenance, not a usable local Git revision.",
-            "execution": "Request named checks and file rules, never shell commands. Checks that need preparation run only when the approved plan selects them; preparation happens before any candidate edit. The controller checkpoints all edits before checks; inspection exposes read-only file tools and no Git history.",
+            "execution": "Request named checks and file rules, never shell commands. Checks that need preparation run only when the approved plan selects them; preparation runs from the approved base, and again from the candidate whenever its preparation inputs (such as a lockfile) change. The controller checkpoints all edits before checks; inspection exposes read-only file and Git tools.",
             "limits": "Named checks do not prove prose accuracy or requirement coverage. Reviewers must assess those against source evidence."}
 
 
