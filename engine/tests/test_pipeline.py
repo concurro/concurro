@@ -12,11 +12,10 @@ from unittest.mock import patch
 from support import CONFIG, EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
-from agents import Agents
 from controller import Controller, MARKER, validate_config
 from credentials import Credential
 from github import NotFound
-from policy import Blocked, digest, merge_reasons, path_allowed, protection_errors, validate_edits, validate_review
+from policy import Blocked, digest, merge_reasons, path_allowed, path_safe, protection_errors, validate_edits, validate_review
 
 PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.md"],
         "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": [],
@@ -370,7 +369,9 @@ class FakeWorkspace:
         """No dependencies are needed by the fixture."""
 
     def files(self, paths):
-        """Return the current complete contents for approved paths."""
+        """Return the current complete contents for approved paths; like the helper, refuse unsafe ones."""
+        if not all(path_safe(p) for p in paths):
+            raise Blocked("forbidden source path")
         return {p: self.source.get(p) for p in paths}
 
     def checkpoint(self, edits):
@@ -461,11 +462,12 @@ class PipelineTests(unittest.TestCase):
             state = self.tick()
         self.assertEqual(state["reviews"]["copilot"]["model"], "chosen-model")
         self.assertEqual(self.tick()["stage"], "merged")
-        for provider in ("claude", "codex", "copilot"):
-            cmd = command_for({"provider": provider, "model": "chosen-model", "schema": {}}, "s", "o")
+        gateway = {"url": "https://gateway.invalid", "headers": {}}
+        for provider in ("claude", "codex"):
+            cmd = command_for({"provider": provider, "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o")
             self.assertEqual(cmd[cmd.index("--model") + 1], "chosen-model")
-            if provider == "copilot":
-                self.assertNotIn("-p", cmd)
+        with self.assertRaises(ValueError, msg="Copilot has no gateway route yet"):
+            command_for({"provider": "copilot", "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o")
 
     def test_untrusted_or_wrong_approval_does_not_advance(self):
         """Neither an outsider nor an approval for another plan authorizes changes."""
@@ -701,26 +703,6 @@ class PipelineTests(unittest.TestCase):
         config["reviewers"] = ["copilot"]
         with self.assertRaises(Blocked):
             validate_config(config)
-
-    def test_container_never_receives_github_write_credentials(self):
-        """Only the chosen provider's inference secret enters the isolated process."""
-        environment = {"CONCURRO_AGENT_IMAGE": "example/agent@sha256:" + "a" * 64,
-                       "CODEX_API_KEY": "inference", "GH_TOKEN": "write-secret", "PATH": "/usr/bin"}
-        with patch.dict("os.environ", environment, clear=True), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
-                patch("agents.subprocess.run") as run:
-            snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=fixture,target=/repository,readonly"
-            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
-            run.return_value.returncode = 0
-            run.return_value.stdout = '{"ok":true}'
-            self.assertEqual(Agents({**CONFIG, "models": {**CONFIG["models"], "codex": "explicit-model"}}).ask(
-                "codex", "review", {"bundle_id": Controller(self.gh, self.agents, self.config).bundle.identity, "repository_commit": "a" * 40,
-                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}), {"ok": True})
-        args, kwargs = run.call_args_list[0]
-        self.assertNotIn("GH_TOKEN", kwargs["env"])
-        self.assertNotIn("--volume", args[0])
-        self.assertIn("--read-only", args[0])
-        self.assertEqual(kwargs["env"]["CODEX_API_KEY"], "inference")
-
 
 
 class ProtectionTests(unittest.TestCase):

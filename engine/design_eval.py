@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from agents import Agents
+from agents import host_agents
 from bundle import Bundle
 from checks import catalog, contract_errors
 from design import criteria, validate_evidence, report_limit
@@ -106,15 +106,15 @@ def score(results):
 
 
 def main():
-    """Run explicitly selected model evaluations with existing inference-only credentials."""
+    """Run explicitly selected model evaluations through the gateway (see `agents.host_agents`)."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--provider', choices=('claude', 'codex', 'copilot'), required=True)
+    parser.add_argument('--provider', choices=('claude', 'codex'), required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     config = json.loads(Path('.concurro/config.json').read_text())
     mirror, commit = fixture_mirror(tempfile.mkdtemp(), config['repository'])
-    agents = Agents(config, mirror=mirror)
+    agents = host_agents(config, mirror=mirror)
     results = []
     for case in cases():
         if contract_errors(case['plan'], agents.bundle.execution):

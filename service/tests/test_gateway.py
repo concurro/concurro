@@ -8,7 +8,7 @@ from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from github import ATTENTION_LABEL, LINKED_BRANCH, NotFound, Transient
 from service.errors import OwnershipLost, Unresolved
-from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed
+from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed, settle
 from service.transport import Response
 
 COMMENTS = f"repos/{KEY[0]}/issues/7/comments"
@@ -179,6 +179,19 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((self.backend.writes, self.registry.mutations(KEY, "in-flight")), ([], []))
         self.assertTrue(allowed(KEY, "PATCH", root + "git/refs/heads/concurro/7", {"sha": "a" * 40, "force": False}))
 
+    def test_only_exact_runner_dispatches(self):
+        """A dispatch starts a runner session and carries nothing but its ID."""
+        path, session = f"repos/{KEY[0]}/dispatches", "0f0e0d0c-0b0a-4908-8706-050403020100"
+        self.assertTrue(allowed(KEY, "POST", path, {"event_type": "concurro-agent", "client_payload": {"session": session}}))
+        for body in ({"event_type": "deploy", "client_payload": {"session": session}},
+                     {"event_type": "concurro-agent", "client_payload": {"session": session, "ref": "x"}},
+                     {"event_type": "concurro-agent", "client_payload": {"session": "not-a-uuid"}},
+                     {"event_type": "concurro-agent"}):
+            with self.subTest(body=body):
+                self.assertFalse(allowed(KEY, "POST", path, body))
+        self.assertFalse(allowed(KEY, "POST", "repos/other/repo/dispatches",
+                                 {"event_type": "concurro-agent", "client_payload": {"session": session}}))
+
     def test_issue_comment_edits_only_on_the_apps_marked_comments(self):
         """A human comment, an unmarked App comment, or none are refused; a Concurro request is edited."""
         bot = self.config["bot_login"]
@@ -290,6 +303,10 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
         with self.assertRaises(Rejected) as raised:
             self.comment()
         self.assertNotIsInstance(raised.exception, Transient)
+
+    def test_no_content_is_done(self):
+        """`repository_dispatch` answers 204 with no body: the write applied, and nothing was lost."""
+        self.assertEqual(settle(f"repos/{KEY[0]}/dispatches", Response(True, 204, {}, b""), 0), ("done", None, None))
 
     def test_rest_success_with_a_lost_body_is_done(self):
         """The status line shows the write applied; the engine gets `response_lost`, the task stays schedulable."""

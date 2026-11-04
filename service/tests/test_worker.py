@@ -19,8 +19,9 @@ from service.gateway import LEASE_SECONDS, MutationGateway
 from service.reconciler import Reconciler
 from service.scheduler import Scheduler, fair
 from service.registry import WorkItem
-from service.settings import Limits, Target
-from service.worker import Worker
+from service.settings import Gateway, Limits, Target
+from service.worker import Worker, runner_claims
+from agents import HostExecutor, RunnerExecutor
 
 
 class FlakyAgents(FakeAgents):
@@ -294,33 +295,74 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
         backends["owner/two"].files = target_files(second, json.dumps({**charter, "id": "second-charter"}))
         seen, barrier = {}, threading.Barrier(2, timeout=30)
 
-        def agents(config, mirror, credentials, bundle):
+        def agents(config, executor, bundle, retained):
             repository = config["repository"]
-            credential = credentials.resolve("codex", "intake", None)
-            seen[repository] = {"config": config["repository"], "bundle": bundle.identity, "mirror": mirror.path,
-                                "credentials": credentials.material(credential)}
+            seen[repository] = {"config": config["repository"], "bundle": bundle.identity, "executor": executor,
+                                "retained": retained}
             barrier.wait()
             return FakeAgents()
 
-        targets = (Target(KEY[0], self.credentials("one.json")), Target("owner/two", self.credentials("two.json")))
+        targets = (Target(KEY[0]), Target("owner/two"))
         settings = type("Settings", (), {"controller_id": "service:primary", "engine": ENGINE, "targets": targets,
                                          "limits": Limits(2, 1), "state_dir": Path(self.directory.name)})
         gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__)
         reconciler = Reconciler(self.registry, backends.__getitem__, list(fakes), {bot}, clock=self.clock)
         worker = Worker(settings, gateway, self.registry, reconciler, backends.__getitem__, bot, agents=agents,
-                        workspace_factory=FakeWorkspace)
+                        workspace_factory=FakeWorkspace, executor=lambda repository, github: ("executor", repository))
         with ThreadPoolExecutor(2) as pool:
             scheduler = Scheduler(self.registry, gateway, worker, settings.limits, clock=self.clock, executor=pool)
             self.assertEqual(sorted(reconciler.poll()), [(KEY[0], 7), ("owner/two", 7)])
             self.assertEqual(len(scheduler.dispatch()), 2)
             self.assertTrue(scheduler.wait(30))
-        self.assertEqual(seen[KEY[0]]["credentials"], {"CODEX_API_KEY": "fixture-one.json"})
-        self.assertEqual(seen["owner/two"]["credentials"], {"CODEX_API_KEY": "fixture-two.json"})
         self.assertNotEqual(seen[KEY[0]]["bundle"], seen["owner/two"]["bundle"])
         for repository in fakes:
             self.assertEqual(seen[repository]["config"], repository)
-            self.assertEqual(seen[repository]["mirror"],
-                             Path(self.directory.name) / "mirrors" / (repository.replace("/", "__") + ".git"))
+            self.assertEqual(seen[repository]["executor"], ("executor", repository))
+            self.assertEqual(seen[repository]["retained"],
+                             Path(self.directory.name) / "sessions" / repository.replace("/", "__"))
+
+
+class ExecutorTests(unittest.TestCase):
+    """Turns run on the target's runners, under claims GitHub will put in their OIDC tokens, or on this host."""
+
+    class Reader:
+        def request(self, method, path, data=None):
+            if path == "graphql":
+                return {"data": {"repository": {"databaseId": 11, "owner": {"databaseId": 22},
+                                                "defaultBranchRef": {"name": "trunk", "target": {"oid": "a" * 40}}}}}
+            return {"users/concurro%5Bbot%5D": {"id": 33, "login": "concurro[bot]"}}[path]
+
+    def worker(self, executor):
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        token = root / "operator"
+        token.write_text("operator-secret\n")
+        token.chmod(0o600)
+        gateway = Gateway("https://gateway.invalid/concurro", token, executor,
+                          "concurro/concurro/.github/workflows/agent.yml@refs/heads/main", ("claude-*",), 1000,
+                          {"codex": {"x-concurro-plan": "chatgpt"}})
+        settings = type("Settings", (), {"controller_id": "service:primary", "engine": "e" * 40, "targets": (Target("owner/one"),),
+                                         "state_dir": root, "gateway": gateway, "agent_image": "sha256:" + "a" * 64})
+        return Worker(settings, None, None, None, lambda repository: self.Reader(), "concurro[bot]")
+
+    def test_runner_claims_name_the_target_workflow_commit_and_bot(self):
+        self.assertEqual(runner_claims(self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main",
+                                       "e" * 40, "concurro[bot]"),
+                         {"repository_id": "11", "repository_owner_id": "22",
+                          "job_workflow_ref": "o/r/.github/workflows/agent.yml@refs/heads/main", "job_workflow_sha": "e" * 40,
+                          "event_name": "repository_dispatch", "ref": "refs/heads/trunk", "actor_id": "33"})
+
+    def test_the_gateway_settings_choose_the_executor(self):
+        github = type("GitHub", (), {"dispatch": lambda self, session: None})()
+        runner = self.worker("runner").executor("owner/one", github)
+        self.assertIsInstance(runner, RunnerExecutor)
+        self.assertEqual((runner.expected["job_workflow_sha"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000))
+        self.assertEqual(runner.operator.token, "operator-secret")
+        self.assertEqual(runner.gateway, {"url": "https://gateway.invalid/concurro",
+                                          "headers": {"codex": {"x-concurro-plan": "chatgpt"}}})
+        self.assertIsInstance(self.worker("host").executor("owner/one", github), HostExecutor)
 
 
 class FairnessTests(unittest.TestCase):

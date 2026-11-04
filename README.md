@@ -47,8 +47,9 @@ images.
 
 ## Status
 
-v1 is in supervised pilot. It supports Claude, Codex and Copilot CLIs and
+v1 is in supervised pilot. Model calls go through an [inference gateway](docs/design/inference-gateway.md)
+and run on GitHub-hosted runners of the target; Claude and Codex are routed, Copilot not yet. It supports
 pluggable [execution profiles](docs/design/execution-profiles.md); `rust` is built in.
-A webhook-driven [service](docs/design/service.md) is proposed to replace the Actions controller. Read the [trust boundaries](docs/concurro.md#trust-boundaries)
-before running it: model containers hold inference credentials and need a
-dedicated, disposable host.
+The webhook-driven [service](docs/design/service.md) replaces the Actions controller. Read the [trust boundaries](docs/concurro.md#trust-boundaries)
+before running it: model containers hold a capped gateway session key, run with a
+shell and network, and belong on a disposable host such as a GitHub-hosted runner.

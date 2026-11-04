@@ -1,0 +1,80 @@
+"""Clients of the gateway's exchange: the operator side (the service) and a runner job's side."""
+
+import json
+import urllib.error
+import urllib.request
+
+# Long polls wait up to this long on the exchange; the HTTP timeout leaves room beyond it.
+WAIT = 45
+
+
+class ExchangeError(RuntimeError):
+    """The exchange refused a call or could not be reached (`status` 0)."""
+
+    def __init__(self, status, reason):
+        super().__init__(f"exchange {status}: {reason}")
+        self.status = status
+
+
+def call(base, token, method, path, body=None, timeout=WAIT + 30):
+    """One JSON call with a bearer token; the token never appears in an error."""
+    request = urllib.request.Request(base.rstrip("/") + "/exchange/" + path, method=method,
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            reason = json.loads(error.read()).get("error", "")
+        except (ValueError, AttributeError):
+            reason = ""
+        raise ExchangeError(error.code, str(reason)[:200]) from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise ExchangeError(0, "unreachable") from None
+
+
+class Operator:
+    """The service's side: host keys, and turns for runner sessions."""
+
+    def __init__(self, gateway, token):
+        self.gateway, self.token = gateway, token
+
+    def mint(self, models, budget, lease, label):
+        return call(self.gateway, self.token, "POST", "operator/keys",
+                    {"models": models, "budget": budget, "lease": lease, "label": label})
+
+    def end(self, session):
+        call(self.gateway, self.token, "POST", f"operator/sessions/{session}/end", {})
+
+    def submit(self, turn, expected, models, budget, lease, payload):
+        return call(self.gateway, self.token, "POST", "operator/turns", {"turn": turn, "expected": expected,
+                    "models": models, "budget": budget, "lease": lease, "payload": payload})
+
+    def poll(self, turn, wait=WAIT):
+        return call(self.gateway, self.token, "GET", f"operator/turns/{turn}?wait={wait}")
+
+    def cancel(self, turn):
+        call(self.gateway, self.token, "DELETE", f"operator/turns/{turn}")
+
+
+class Runner:
+    """A runner job's side: its key for an OIDC token, then turns with its runner token."""
+
+    def __init__(self, gateway, session):
+        self.gateway, self.session, self.token = gateway, session, None
+
+    def key(self, oidc):
+        grant = call(self.gateway, oidc, "POST", f"sessions/{self.session}/key", {})
+        self.token = grant["token"]
+        return grant
+
+    def next(self, capacity, wait):
+        return call(self.gateway, self.token, "POST", f"sessions/{self.session}/next",
+                    {"capacity": capacity, "wait": wait})["turns"]
+
+    def complete(self, turn, result):
+        call(self.gateway, self.token, "POST", f"sessions/{self.session}/turns/{turn}", {"result": result})
+
+    def end(self):
+        call(self.gateway, self.token, "POST", f"sessions/{self.session}/end", {})

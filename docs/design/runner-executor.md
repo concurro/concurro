@@ -1,6 +1,10 @@
 # Runner executor
 
-Status: proposed direction. Runs [the agent sandbox](agent-sandbox.md) on
+Status: implemented in revised form for model turns; see
+[the inference gateway](inference-gateway.md#turns). Turns, not sessions with
+diff-only results, are the unit; the exchange relays them; credentials are
+gateway keys; trusted checks still run on the service host. The text below is the
+original direction. Runs [the agent sandbox](agent-sandbox.md) on
 GitHub-hosted runners in the target repository, with credentials fetched from
 the Concurro service over OIDC. It implements the service's CI-runner executor
 ([service.md](service.md#execution-contract), migration step 8) earlier.

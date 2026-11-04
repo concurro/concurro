@@ -1,15 +1,19 @@
-"""Concurro's key exchange: a GitHub Actions OIDC token in, one agentgateway session key out.
+"""Concurro's key exchange and turn relay, beside agentgateway.
 
-Runs beside the gateway in its network namespace, the only process that reaches the gateway's
-unauthenticated admin API. Sessions are issued by the operator (later, the Concurro service);
-a runner job trades its OIDC token for its session's key, and the key is deleted when the
-session ends, its deadline passes, or reconciliation finds it orphaned.
+Runs in the gateway's network namespace, the only process that reaches the gateway's
+unauthenticated admin API. A runner job trades its GitHub Actions OIDC token for its session's
+key and a runner token, then takes the turns the operator (the Concurro service) queues for its
+target and returns their results. The operator can also mint keys for agents it runs itself.
+A key is deleted when its session ends, its deadline passes, its runner stops calling, or
+reconciliation finds it orphaned.
 """
 
 import argparse
 import base64
 from contextlib import contextmanager
 import fcntl
+import hashlib
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -31,8 +35,19 @@ JWKS_URL = ISSUER + "/.well-known/jwks"
 # Clock skew tolerated on time claims, and the oldest token accepted.
 SKEW, MAX_AGE = 60, 600
 # Requests served at once, and how long one connection may stay idle.
-MAX_REQUESTS, REQUEST_TIMEOUT = 16, 30
-SESSION_PATH = re.compile(r"/exchange/sessions/([0-9a-f-]{36})/(key|end)")
+# Long polls hold a request each: runners waiting for turns and the operator waiting for results.
+MAX_REQUESTS, REQUEST_TIMEOUT = 64, 60
+# Turn payloads and results carry repository text and retained transcripts; only an authenticated
+# submission or result may be that large, and bodies held at once share BODY_BUDGET.
+MAX_BODY, SMALL_BODY, BODY_BUDGET = 48 * 1024 * 1024, 64 * 1024, 160 * 1024 * 1024
+POLL_SECONDS = 1
+# A dispatched session must start within START_SECONDS; a started one calls at least every HEARTBEAT_SECONDS.
+START_SECONDS, HEARTBEAT_SECONDS = 1200, 180
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+SESSION_PATH = re.compile(rf"/exchange/sessions/(?P<session>{UUID})/(?:(?P<action>key|end|next)|turns/(?P<turn>{UUID}))")
+OPERATOR_PATH = re.compile(rf"(?P<kind>sessions|turns)/(?P<id>{UUID})(?:/(?P<action>end))?")
+RUNNER_TOKEN = re.compile(r"[0-9a-f]{64}")
+LABEL = re.compile(r"[A-Za-z0-9._:/#-]{1,200}")
 EXPECTED = ("repository_id", "repository_owner_id", "job_workflow_ref", "job_workflow_sha", "event_name", "ref")
 
 
@@ -182,7 +197,12 @@ class Gateway:
 
 
 class Exchange:
-    """Sessions, their keys and their run bindings, kept durably in SQLite."""
+    """Sessions, their keys, their run bindings and the turns they serve, kept durably in SQLite.
+
+    A `runner` session is served to one GitHub Actions run, proven by its OIDC token; a `host`
+    session is a key minted directly for the operator (the Concurro service). Turns are queued by
+    the operator for a target and served to a live runner session of that target.
+    """
 
     def __init__(self, database, gateway, keys, audience):
         self.db = sqlite3.connect(database, check_same_thread=False, isolation_level=None)
@@ -192,7 +212,16 @@ class Exchange:
             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, expected TEXT NOT NULL, models TEXT NOT NULL,
                 budget INTEGER NOT NULL, deadline REAL NOT NULL, run_id TEXT, key TEXT, key_id TEXT,
                 ended REAL, created REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS seen (jti TEXT PRIMARY KEY, exp REAL NOT NULL);""")
+            CREATE TABLE IF NOT EXISTS seen (jti TEXT PRIMARY KEY, exp REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, expected TEXT NOT NULL, models TEXT NOT NULL,
+                budget INTEGER NOT NULL, lease REAL NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
+                session TEXT, result TEXT, created REAL NOT NULL, started REAL, finished REAL, digest TEXT,
+                staff TEXT);""")
+        present = {row[1] for row in self.db.execute("PRAGMA table_info(sessions)")}
+        for column, kind in (("kind", "TEXT NOT NULL DEFAULT 'runner'"), ("token", "TEXT"), ("seen", "REAL"),
+                             ("refusal", "TEXT")):
+            if column not in present:
+                self.db.execute(f"ALTER TABLE sessions ADD COLUMN {column} {kind}")
 
     @contextmanager
     def locked(self):
@@ -201,39 +230,73 @@ class Exchange:
             fcntl.flock(handle, fcntl.LOCK_EX)
             yield
 
-    def issue(self, expected, models, budget, lease):
-        """Record a session the operator authorizes; returns its ID."""
-        if set(expected) - set(EXPECTED) - {"actor_id"} or not all(isinstance(v, str) for v in expected.values()):
-            raise ValueError("unknown or non-string expected claims")
-        if not models or type(budget) is not int or budget <= 0 or lease <= 0:
+    @staticmethod
+    def validate(models, budget, lease):
+        if (not isinstance(models, list) or not models or not all(isinstance(m, str) and m for m in models)
+                or type(budget) is not int or budget <= 0 or not isinstance(lease, (int, float)) or lease <= 0):
             raise ValueError("a session needs models, a positive budget and a positive lease")
-        session = str(uuid.uuid4())
+
+    def issue(self, expected, models, budget, lease):
+        """Record a runner session the operator authorizes; returns its ID."""
+        if (not isinstance(expected, dict) or set(expected) - set(EXPECTED) - {"actor_id"}
+                or not set(EXPECTED) <= set(expected) or not all(isinstance(v, str) for v in expected.values())):
+            raise ValueError("unknown, missing or non-string expected claims")
+        self.validate(models, budget, lease)
         with self.locked():
-            self.db.execute("INSERT INTO sessions (id, expected, models, budget, deadline, created) VALUES (?,?,?,?,?,?)",
-                            (session, json.dumps(expected), json.dumps(models), budget, time.time() + lease, time.time()))
+            return self.create(expected, models, budget, lease)
+
+    def create(self, expected, models, budget, lease, kind="runner"):
+        session, now = str(uuid.uuid4()), time.time()
+        self.db.execute("INSERT INTO sessions (id, expected, models, budget, deadline, created, kind) VALUES (?,?,?,?,?,?,?)",
+                        (session, json.dumps(expected, sort_keys=True), json.dumps(models), budget, now + lease, now, kind))
         return session
 
+    def mint(self, models, budget, lease, label):
+        """A host session with its key minted at once, for an agent the operator runs itself."""
+        self.validate(models, budget, lease)
+        if not isinstance(label, str) or not LABEL.fullmatch(label):
+            raise ValueError("invalid label")
+        with self.locked():
+            session = self.create({"host": label}, models, budget, lease, kind="host")
+            key = "sk-agw-" + secrets.token_hex(24)
+            self.db.execute("UPDATE sessions SET key = ? WHERE id = ?", (key, session))
+            key_id = self.gateway.create(key, session, models, budget)
+            self.db.execute("UPDATE sessions SET key_id = ? WHERE id = ?", (key_id, session))
+            return {"session": session, "key": key, "deadline": time.time() + lease}
+
     def row(self, session):
-        found = self.db.execute("SELECT expected, models, budget, deadline, run_id, key, key_id, ended FROM sessions "
-                                "WHERE id = ?", (session,)).fetchone()
+        found = self.db.execute("SELECT expected, models, budget, deadline, run_id, key, key_id, ended, kind, token, "
+                                "seen, created FROM sessions WHERE id = ?", (session,)).fetchone()
         if not found:
             raise Refused(404, "unknown session")
-        return dict(zip(("expected", "models", "budget", "deadline", "run_id", "key", "key_id", "ended"), found))
+        return dict(zip(("expected", "models", "budget", "deadline", "run_id", "key", "key_id", "ended", "kind",
+                         "token", "seen", "created"), found))
+
+    def refuse(self, session, status, reason):
+        """Refuse a runner and record why, so the operator can see why a session never started."""
+        self.db.execute("UPDATE sessions SET refusal = ? WHERE id = ?", (reason, session))
+        raise Refused(status, reason)
 
     def authorize(self, session, token, now):
-        """Check a token against a live session, binding the session to the token's run on first use."""
+        """Check a token against a live runner session, binding the session to the token's run on first use."""
         payload = claims(token, self.audience, self.keys, now)
         record = self.row(session)
+        if record["kind"] != "runner":
+            raise Refused(403, "not a runner session")
         if record["ended"] or record["deadline"] < now:
             raise Refused(403, "session has ended")
         expected = json.loads(record["expected"])
-        if any(str(payload.get(k)) != v for k, v in expected.items()):
+        wrong = sorted(k for k, v in expected.items() if str(payload.get(k)) != v)
+        if {"repository_id", "repository_owner_id"} & set(wrong):
+            # Anyone can present a token from another repository; only the target's own runs are reported.
             raise Refused(403, "token does not match the session")
+        if wrong:
+            self.refuse(session, 403, "token does not match the session: " + ", ".join(wrong))
         if payload.get("runner_environment") != "github-hosted":
-            raise Refused(403, "only GitHub-hosted runners are served")
+            self.refuse(session, 403, "only GitHub-hosted runners are served")
         run = f"{payload.get('run_id')}/{payload.get('run_attempt')}"
         if str(payload.get("run_attempt")) != "1" or record["run_id"] not in (None, run):
-            raise Refused(403, "session is bound to another run")
+            self.refuse(session, 403, "session is bound to another run")
         self.db.execute("DELETE FROM seen WHERE exp < ?", (now - SKEW,))
         try:
             self.db.execute("INSERT INTO seen (jti, exp) VALUES (?, ?)", (payload["jti"], payload["exp"]))
@@ -244,13 +307,15 @@ class Exchange:
         return record
 
     def key(self, session, token, now=None):
-        """The session's key, minted on first request; a retry from the bound run gets the same key."""
+        """The session's key and runner token, minted on first request; a retry from the bound run gets the same."""
         now = time.time() if now is None else now
         with self.locked():
             record = self.authorize(session, token, now)
-            key = record["key"]
+            key, runner = record["key"], record["token"] or secrets.token_hex(32)
+            self.db.execute("UPDATE sessions SET token = ?, seen = ? WHERE id = ?", (runner, now, session))
+            reply = {"key": None, "token": runner, "models": json.loads(record["models"]), "deadline": record["deadline"]}
             if key and record["key_id"]:
-                return {"key": key, "models": json.loads(record["models"]), "deadline": record["deadline"]}
+                return reply | {"key": key}
             if not key:
                 key = "sk-agw-" + secrets.token_hex(24)
                 # Durable before the gateway sees it, so reconciliation can always find it.
@@ -262,61 +327,334 @@ class Exchange:
             else:
                 key_id = self.gateway.create(key, session, json.loads(record["models"]), record["budget"])
             self.db.execute("UPDATE sessions SET key_id = ? WHERE id = ?", (key_id, session))
-            return {"key": key, "models": json.loads(record["models"]), "deadline": record["deadline"]}
+            return reply | {"key": key}
 
-    def end(self, session, token=None, now=None):
-        """End a session and delete its key. `token` is required unless the operator ends it."""
+    def runner(self, session, token, now):
+        """The live runner session that `token` proves; every runner call is also its heartbeat. The lock is held."""
+        record = self.row(session)
+        if record["kind"] != "runner" or not record["token"] or not hmac.compare_digest(record["token"], token):
+            raise Refused(401, "invalid runner token")
+        if record["ended"] or record["deadline"] < now:
+            raise Refused(410, "session has ended")
+        self.db.execute("UPDATE sessions SET seen = ? WHERE id = ?", (now, session))
+        return record
+
+    def prove(self, session, token):
+        """Check a runner token before its request body is read."""
+        with self.locked():
+            self.runner(session, token, time.time())
+
+    def next(self, session, token, capacity, wait, now=None):
+        """Up to `capacity` queued turns of the session's target, waiting up to `wait` seconds for one."""
+        if type(capacity) is not int or not 0 <= capacity <= 8 or not isinstance(wait, (int, float)) or not 0 <= wait <= 50:
+            raise Refused(400, "invalid capacity or wait")
+        stop = time.monotonic() + wait
+        while True:
+            with self.locked():
+                current = time.time() if now is None else now
+                record = self.runner(session, token, current)
+                turns = [] if not capacity else self.db.execute(
+                    "SELECT id, payload FROM turns WHERE status = 'queued' AND expected = ? ORDER BY created LIMIT ?",
+                    (record["expected"], capacity)).fetchall()
+                for turn, _ in turns:
+                    self.db.execute("UPDATE turns SET status = 'running', session = ?, started = ? WHERE id = ?",
+                                    (session, current, turn))
+            if turns or time.monotonic() >= stop:
+                return {"turns": [{"id": turn, "payload": json.loads(payload)} for turn, payload in turns]}
+            time.sleep(POLL_SECONDS)
+
+    def complete(self, session, token, turn, result, now=None):
+        """Record a running turn's result; a turn no longer running for this session is refused."""
+        now = time.time() if now is None else now
+        if not isinstance(result, dict):
+            raise Refused(400, "a result must be an object")
+        with self.locked():
+            self.runner(session, token, now)
+            changed = self.db.execute("UPDATE turns SET status = 'done', result = ?, finished = ? "
+                                      "WHERE id = ? AND session = ? AND status = 'running'",
+                                      (json.dumps(result), now, turn, session)).rowcount
+            if not changed:
+                raise Refused(409, "turn is not running in this session")
+
+    def end(self, session, token=None, runner=None, now=None):
+        """End a session and delete its key: by OIDC token, by runner token, or (neither) by the operator."""
         now = time.time() if now is None else now
         with self.locked():
-            record = self.authorize(session, token, now) if token is not None else self.row(session)
+            if runner is not None:
+                record = self.runner(session, runner, now)
+            elif token is not None:
+                record = self.authorize(session, token, now)
+            else:
+                record = self.row(session)
             self.retire(session, record, now)
 
     def retire(self, session, record, now):
         """End a session, then delete its key; a failed deletion is retried by reconciliation."""
         self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
+        self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE session = ? AND status = 'running'",
+                        (now, session))
         key_id = record["key_id"] or (self.gateway.find(record["key"]) if record["key"] else None)
         if key_id and not self.gateway.delete(key_id):
             raise Refused(502, "gateway did not delete the key; reconciliation will retry")
+        self.forget(session)
 
-    def reconcile(self, now=None):
-        """Delete keys of ended or expired sessions and gateway keys no session owns; return what was deleted."""
+    def forget(self, session):
+        """Drop an ended session's key once the gateway no longer has it."""
+        self.db.execute("UPDATE sessions SET key = NULL, key_id = NULL WHERE id = ?", (session,))
+
+    def live(self, record, now):
+        """Whether a runner session can still serve turns: dispatched recently, or bound and heartbeating."""
+        if record["ended"] or record["deadline"] < now:
+            return False
+        if record["run_id"] is None:
+            return now - record["created"] < START_SECONDS
+        return now - (record["seen"] or record["created"]) < HEARTBEAT_SECONDS
+
+    def submit(self, turn, expected, models, budget, lease, payload, now=None):
+        """Queue a turn under the caller's ID; returns it and a new session ID to dispatch, if one is needed.
+
+        Submitting the same turn again returns its original admission, so a caller that lost the
+        reply can recover it: the session it was given while that session is unbound, or its
+        status once it was withdrawn. A different turn under a used ID is refused.
+        """
+        if not isinstance(turn, str) or not re.fullmatch(UUID, turn):
+            raise ValueError("a turn ID must be a UUID")
+        if not isinstance(expected, dict) or set(expected) - set(EXPECTED) - {"actor_id"} or not set(EXPECTED) <= set(expected):
+            raise ValueError("unknown or missing expected claims")
+        self.validate(models, budget, lease)
+        if not isinstance(payload, dict):
+            raise ValueError("a turn payload must be an object")
+        now = time.time() if now is None else now
+        digest = hashlib.sha256(json.dumps([expected, models, budget, lease, payload], sort_keys=True).encode()).hexdigest()
+        with self.locked():
+            found = self.db.execute("SELECT digest, status, staff, result FROM turns WHERE id = ?", (turn,)).fetchone()
+            if found and found[0] is None:
+                # Withdrawn before its admission arrived.
+                return {"turn": turn, "dispatch": None, "status": found[1]}
+            if found and found[0] != digest:
+                raise Refused(409, "the turn ID is in use")
+            if found:
+                staff = found[2] and self.row(found[2])
+                pending = staff and staff["run_id"] is None and self.live(staff, now)
+                admitted = {"turn": turn, "dispatch": found[2] if pending else None, "status": found[1]}
+                return {**admitted, "result": json.loads(found[3])} if found[1] == "done" else admitted
+            self.db.execute("INSERT INTO turns (id, expected, models, budget, lease, payload, status, created, digest) "
+                            "VALUES (?,?,?,?,?,?,'queued',?,?)", (turn, json.dumps(expected, sort_keys=True),
+                                                                  json.dumps(models), budget, lease, json.dumps(payload),
+                                                                  now, digest))
+            staff = self.staffed(turn, now)
+            self.db.execute("UPDATE turns SET staff = ? WHERE id = ?", (staff, turn))
+            return {"turn": turn, "dispatch": staff, "status": "queued"}
+
+    def staffed(self, turn, now):
+        """For a queued turn whose target has no live runner session, issue one and return it to dispatch. The lock is held."""
+        found = self.db.execute("SELECT expected, models, budget, lease, status FROM turns WHERE id = ?", (turn,)).fetchone()
+        if not found or found[4] != "queued":
+            return None
+        expected, models, budget, lease, _ = found
+        for row in self.db.execute("SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL AND expected = ?",
+                                   (expected,)).fetchall():
+            if self.live(self.row(row[0]), now):
+                return None
+        return self.create(json.loads(expected), json.loads(models), budget, lease)
+
+    def poll(self, turn, wait, now=None):
+        """A turn's status, waiting up to `wait` seconds for it to finish.
+
+        A queued turn whose target has no live session gets one: its ID comes back as `dispatch`,
+        with the latest refusal of a runner for that target since the turn was queued.
+        """
+        if not isinstance(wait, (int, float)) or not 0 <= wait <= 50:
+            raise Refused(400, "invalid wait")
+        stop = time.monotonic() + wait
+        while True:
+            with self.locked():
+                current = time.time() if now is None else now
+                found = self.db.execute("SELECT status, session, result, expected, created FROM turns WHERE id = ?",
+                                        (turn,)).fetchone()
+                if not found:
+                    raise Refused(404, "unknown turn")
+                status, session, result, expected, created = found
+                if status == "done":
+                    return {"status": status, "result": json.loads(result)}
+                if status == "running":
+                    record = self.row(session)
+                    if not self.live(record, current):
+                        try:
+                            self.retire(session, record, current)
+                        except Refused:
+                            pass
+                        status = "lost"
+                if status not in ("queued", "running"):
+                    return {"status": status}
+                if time.monotonic() >= stop:
+                    if status == "running":
+                        return {"status": status}
+                    refusal = self.db.execute(
+                        "SELECT refusal FROM sessions WHERE kind = 'runner' AND expected = ? AND created >= ? "
+                        "AND refusal IS NOT NULL ORDER BY created DESC LIMIT 1", (expected, created)).fetchone()
+                    return {"status": status, "dispatch": self.staffed(turn, current),
+                            "refusal": refusal[0] if refusal else None}
+            time.sleep(POLL_SECONDS)
+
+    def cancel(self, turn, now=None):
+        """Withdraw a queued or running turn; a runner's later result for it is refused."""
         now = time.time() if now is None else now
         with self.locked():
-            live = set()
+            self.db.execute("UPDATE turns SET status = 'cancelled', finished = ? WHERE id = ? AND status IN "
+                            "('queued', 'running')", (now, turn))
+            # An unknown turn may still be in flight: its admission must find it withdrawn.
+            self.db.execute("INSERT OR IGNORE INTO turns (id, expected, models, budget, lease, payload, status, created, "
+                            "finished) VALUES (?, '', '[]', 0, 0, '{}', 'cancelled', ?, ?)", (turn, now, now))
+
+    def reconcile(self, now=None):
+        """End dead sessions; delete keys of ended or expired sessions and gateway keys no session owns.
+
+        Returns what was deleted. Finished turns are dropped after a day.
+        """
+        now = time.time() if now is None else now
+        with self.locked():
+            for (session,) in self.db.execute("SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL").fetchall():
+                record = self.row(session)
+                if not self.live(record, now):
+                    self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
+                    self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE session = ? AND status = 'running'",
+                                    (now, session))
+            self.db.execute("DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (now - 86400,))
+            live, retired = set(), {}
             for session, key, deadline, ended in self.db.execute(
                     "SELECT id, key, deadline, ended FROM sessions WHERE key IS NOT NULL").fetchall():
                 if ended or deadline < now:
                     self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
+                    retired[key] = session
                 else:
                     live.add(key)
-            removed = []
+            removed, kept = [], set()
             for resource in self.gateway.list():
-                if resource["value"].get("key") not in live and self.gateway.delete(resource["id"]):
+                key = resource["value"].get("key")
+                if key in live:
+                    continue
+                if self.gateway.delete(resource["id"]):
                     removed.append(resource["value"].get("metadata", {}).get("concurro.session") or resource["id"])
+                else:
+                    kept.add(key)
+            for key, session in retired.items():
+                if key not in kept:
+                    self.forget(session)
             return removed
 
 
-def server(exchange, address):
-    """The runner-facing HTTP API: POST /exchange/sessions/<id>/key and /end, with the OIDC token as bearer."""
+class Budget:
+    """Bytes of request bodies held at once; a request that cannot reserve its share soon is turned away."""
+
+    def __init__(self, total):
+        self.free, self.condition = total, threading.Condition()
+
+    @contextmanager
+    def reserve(self, size, wait=5):
+        with self.condition:
+            if not self.condition.wait_for(lambda: self.free >= size, wait):
+                raise Refused(503, "busy")
+            self.free -= size
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.free += size
+                self.condition.notify_all()
+
+
+def server(exchange, address, operator=None):
+    """The HTTP API. Runners: `/exchange/sessions/<id>/{key,end}` with an OIDC token, then `next`, `turns/<id>`
+    and `end` with the session's runner token. The operator: `/exchange/operator/...` with its token."""
+    digest = hashlib.sha256(operator.encode()).digest() if operator else None
+    budget = Budget(BODY_BUDGET)
 
     class Handler(BaseHTTPRequestHandler):
         timeout = REQUEST_TIMEOUT
 
+        def do_GET(self):
+            self.handle_request("GET")
+
         def do_POST(self):
-            match = SESSION_PATH.fullmatch(self.path)
+            self.handle_request("POST")
+
+        def do_DELETE(self):
+            self.handle_request("DELETE")
+
+        def handle_request(self, method):
             auth = self.headers.get("Authorization", "")
+            bearer = auth[7:] if auth.startswith("Bearer ") else None
+            path, _, query = self.path.partition("?")
             try:
-                if not match:
-                    raise Refused(404, "not found")
-                if not auth.startswith("Bearer "):
-                    raise Refused(401, "a bearer OIDC token is required")
-                session, action = match.groups()
-                body = exchange.key(session, auth[7:]) if action == "key" else (exchange.end(session, auth[7:]) or {})
-                self.reply(200, body)
+                # Authenticate first: only a proven caller's submission or result may be large.
+                if path.startswith("/exchange/operator/"):
+                    if not digest or not bearer or not hmac.compare_digest(hashlib.sha256(bearer.encode()).digest(), digest):
+                        raise Refused(401, "operator token required")
+                    limit = MAX_BODY if path == "/exchange/operator/turns" else SMALL_BODY
+                    handle = lambda body: self.operator(method, path[len("/exchange/operator/"):], query, body)
+                else:
+                    match = SESSION_PATH.fullmatch(path)
+                    if not match or method != "POST":
+                        raise Refused(404, "not found")
+                    if not bearer:
+                        raise Refused(401, "a bearer token is required")
+                    limit = SMALL_BODY
+                    if match["turn"]:
+                        exchange.prove(match["session"], bearer)
+                        limit = MAX_BODY
+                    handle = lambda body: self.runner(match["session"], match["action"], match["turn"], bearer, body)
+                size = int(self.headers.get("Content-Length") or 0) if method == "POST" else 0
+                if not 0 <= size <= limit:
+                    raise Refused(413, "request too large")
+                with budget.reserve(size):
+                    reply = handle(self.body(size) if method == "POST" else {})
+                self.reply(200, reply)
             except Refused as error:
                 self.reply(error.status, {"error": str(error)})
+            except ValueError as error:
+                self.reply(400, {"error": str(error)})
             except Exception:
                 self.reply(500, {"error": "internal error"})
+
+        def runner(self, session, action, turn, bearer, body):
+            if action == "key":
+                return exchange.key(session, bearer)
+            if action == "end":
+                # A runner token is 64 hex characters; anything else is an OIDC token.
+                runner = RUNNER_TOKEN.fullmatch(bearer)
+                exchange.end(session, token=None if runner else bearer, runner=bearer if runner else None)
+                return {}
+            if action == "next":
+                return exchange.next(session, bearer, body.get("capacity", 1), body.get("wait", 0))
+            exchange.complete(session, bearer, turn, body.get("result"))
+            return {}
+
+        def operator(self, method, path, query, body):
+            wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
+            if method == "POST" and path == "keys":
+                return exchange.mint(body.get("models"), body.get("budget"), body.get("lease"), body.get("label"))
+            if method == "POST" and path == "turns":
+                return exchange.submit(body.get("turn"), body.get("expected"), body.get("models"), body.get("budget"),
+                                       body.get("lease"), body.get("payload"))
+            match = OPERATOR_PATH.fullmatch(path)
+            if match and match["kind"] == "sessions" and method == "POST" and match["action"] == "end":
+                exchange.end(match["id"])
+                return {}
+            if match and match["kind"] == "turns" and not match["action"]:
+                if method == "GET":
+                    return exchange.poll(match["id"], wait)
+                if method == "DELETE":
+                    exchange.cancel(match["id"])
+                    return {}
+            raise Refused(404, "not found")
+
+        def body(self, size):
+            data = self.rfile.read(size) if size else b"{}"
+            parsed = json.loads(data)
+            if not isinstance(parsed, dict):
+                raise Refused(400, "a JSON object is required")
+            return parsed
 
         def reply(self, status, body):
             data = json.dumps(body).encode()
@@ -382,6 +720,7 @@ def main():
     issue.add_argument("--budget", type=int, required=True, help="token budget")
     issue.add_argument("--lease-hours", type=float, default=6)
     sub.add_parser("list")
+    sub.add_parser("turns")
     end = sub.add_parser("end")
     end.add_argument("session")
     sub.add_parser("reconcile")
@@ -392,15 +731,18 @@ def main():
                         Keys(), env("EXCHANGE_AUDIENCE", "concurro-gateway"))
     if args.command == "serve":
         threading.Thread(target=reconciling, args=(exchange,), daemon=True).start()
-        server(exchange, env("EXCHANGE_LISTEN", "0.0.0.0:8080")).serve_forever()
+        server(exchange, env("EXCHANGE_LISTEN", "0.0.0.0:8080"), env("EXCHANGE_OPERATOR_TOKEN") or None).serve_forever()
     elif args.command == "issue":
         expected = {k: getattr(args, k) for k in EXPECTED}
         if args.actor_id:
             expected["actor_id"] = args.actor_id
         print(exchange.issue(expected, args.models.split(","), args.budget, args.lease_hours * 3600))
     elif args.command == "list":
-        for row in exchange.db.execute("SELECT id, run_id, key_id IS NOT NULL, deadline, ended FROM sessions"):
-            print(json.dumps(dict(zip(("session", "run", "has_key", "deadline", "ended"), row))))
+        for row in exchange.db.execute("SELECT id, kind, run_id, key IS NOT NULL, deadline, ended, refusal FROM sessions"):
+            print(json.dumps(dict(zip(("session", "kind", "run", "has_key", "deadline", "ended", "refusal"), row))))
+    elif args.command == "turns":
+        for row in exchange.db.execute("SELECT id, status, session, created, started, finished FROM turns"):
+            print(json.dumps(dict(zip(("turn", "status", "session", "created", "started", "finished"), row))))
     elif args.command == "end":
         exchange.end(args.session)
     elif args.command == "reconcile":

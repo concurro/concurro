@@ -54,11 +54,11 @@ class PilotTests(unittest.TestCase):
                 pilot.capture_secrets("/unused")
             prompt.assert_not_called()
 
-    def test_credentials_allowlist_and_exactly_one_claude_method(self):
-        """Personal GitHub tokens and ambiguous provider credentials are rejected."""
-        valid = {"CODEX_API_KEY": "fixture", "CLAUDE_CODE_OAUTH_TOKEN": "fixture"}
+    def test_credentials_hold_only_the_gateway_token(self):
+        """Personal GitHub tokens and provider credentials are rejected; only the gateway's token is held."""
+        valid = {"CONCURRO_GATEWAY_TOKEN": "fixture"}
         for data, accepted in ((valid, True), ({**valid, "GH_TOKEN": "owner"}, False),
-                               ({**valid, "ANTHROPIC_API_KEY": "another"}, False)):
+                               ({"CODEX_API_KEY": "provider"}, False), ({"CONCURRO_GATEWAY_TOKEN": " "}, False)):
             with self.subTest(accepted=accepted), patch.object(pilot, "private_file", return_value=json.dumps(data).encode()):
                 if accepted:
                     self.assertEqual(pilot.read_secrets("/unused", CONFIG), valid)
@@ -110,13 +110,14 @@ class PilotTests(unittest.TestCase):
     def test_temporary_token_revoked_after_controller_failure(self):
         """Limit credential lifetime even when the controller returns failure."""
         with tempfile.TemporaryDirectory() as directory, patch.object(pilot, "DIRECTORY", Path(directory)), \
-                patch.object(pilot, "preflight", return_value=[]), patch.object(pilot, "read_secrets", return_value={"CODEX_API_KEY": "fixture"}), \
+                patch.object(pilot, "preflight", return_value=[]), patch.object(pilot, "read_secrets", return_value={"CONCURRO_GATEWAY_TOKEN": "fixture"}), \
                 patch.object(pilot, "installation_token", return_value="temporary"), patch.object(pilot, "revoke") as revoke, \
                 patch.object(pilot.subprocess, "run") as run, patch("sys.stdout", new_callable=io.StringIO) as output:
             run.return_value.returncode = 1
             run.return_value.stdout = b"fixture output"
             run.return_value.stderr = b"temporary token: fixture"
-            result = pilot.advance({"credentials_file": "/fixture", "agent_image": "image", "execution_image": "image"}, CONFIG, 7)
+            result = pilot.advance({"credentials_file": "/fixture", "agent_image": "image", "execution_image": "image",
+                                    "gateway_url": "https://gateway.invalid"}, CONFIG, 7)
             self.assertEqual(result, 1)
             environment = run.call_args.kwargs["env"]
             self.assertEqual(environment["CONCURRO_ISSUE"], "7")

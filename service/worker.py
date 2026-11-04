@@ -1,4 +1,4 @@
-"""Run one controller tick for one owned task, with that target's own configuration, bundle and credentials."""
+"""Run one controller tick for one owned task, with that target's own configuration and bundle."""
 
 import base64
 from contextlib import contextmanager
@@ -10,17 +10,17 @@ import tempfile
 import threading
 from urllib.parse import quote
 
-from agents import Agents
+from agents import Agents, HostExecutor, RunnerExecutor
 from bundle import CHARTER, Bundle, RESOURCE_LIMIT, profile_paths
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from controller import Controller, validate_config
 from conversation import PublicationError
-from credentials import EnvironmentCredentials
 from github import Transient
 from mirror import Mirror
-from policy import Blocked, SECRET_NAMES
+from policy import Blocked
 import private
+from relay import Operator
 
 from . import failures
 from .errors import GatewayStop
@@ -33,28 +33,56 @@ RENEW_SECONDS = LEASE_SECONDS // 3
 DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
   repository(owner:$owner,name:$name) { defaultBranchRef { name target { oid } } }
 }"""
+RUNNER_IDENTITY = """query($owner:String!,$name:String!) {
+  repository(owner:$owner,name:$name) {
+    databaseId defaultBranchRef { name }
+    owner { ... on User { databaseId } ... on Organization { databaseId } }
+  }
+}"""
 
 log = logging.getLogger("concurro.service")
 
 
 @dataclass(frozen=True)
 class Target:
-    """One repository's validated configuration, bundle and credentials at its default-branch head."""
+    """One repository's validated configuration and bundle at its default-branch head."""
 
     config: dict
     bundle: Bundle
-    credentials: EnvironmentCredentials
 
 
-def head(reader, repository):
-    """The default branch's head commit."""
+def default_branch(reader, repository):
+    """The default branch's name and head commit."""
     owner, name = repository.split("/")
     response = reader.request("POST", "graphql", {"query": DEFAULT_BRANCH, "variables": {"owner": owner, "name": name}})
     branch = ((response or {}).get("data") or {}).get("repository", {}).get("defaultBranchRef") or {}
     sha = (branch.get("target") or {}).get("oid")
-    if response.get("errors") or not isinstance(sha, str) or len(sha) != 40:
+    if response.get("errors") or not isinstance(sha, str) or len(sha) != 40 or not isinstance(branch.get("name"), str):
         raise Blocked("cannot establish the target's default branch")
-    return sha
+    return branch["name"], sha
+
+
+def head(reader, repository):
+    """The default branch's head commit."""
+    return default_branch(reader, repository)[1]
+
+
+def runner_claims(reader, repository, workflow_ref, engine, bot_login):
+    """The OIDC claims a runner session of this target must present: the target, the pinned agent
+    workflow at the served engine commit, a dispatch by the App's bot on the default branch."""
+    owner, name = repository.split("/")
+    response = reader.request("POST", "graphql", {"query": RUNNER_IDENTITY, "variables": {"owner": owner, "name": name}})
+    found = ((response or {}).get("data") or {}).get("repository") or {}
+    branch = (found.get("defaultBranchRef") or {}).get("name")
+    # A bot is not a GraphQL `user`; its public profile is the one read outside the repository.
+    bot = reader.request("GET", "users/" + quote(bot_login))
+    if (response.get("errors") or not isinstance(found.get("databaseId"), int)
+            or not isinstance((found.get("owner") or {}).get("databaseId"), int) or not isinstance(branch, str)
+            or not isinstance(bot, dict) or not isinstance(bot.get("id"), int) or bot.get("login") != bot_login):
+        raise Blocked("cannot establish the target's runner identity")
+    return {"repository_id": str(found["databaseId"]), "repository_owner_id": str(found["owner"]["databaseId"]),
+            "job_workflow_ref": workflow_ref, "job_workflow_sha": engine, "event_name": "repository_dispatch",
+            "ref": "refs/heads/" + branch, "actor_id": str(bot["id"])}
 
 
 def content(reader, repository, path, sha, limit):
@@ -67,15 +95,6 @@ def content(reader, repository, path, sha, limit):
     if len(data) != item["size"]:
         raise Blocked("target configuration must be bounded regular files")
     return data.decode("utf-8")
-
-
-def secrets(path):
-    """A target's provider credentials file: only known credential names with non-empty values."""
-    data = json.loads(private.read(path, (CHECKOUT,)))
-    if (not isinstance(data, dict) or not set(data).issubset(SECRET_NAMES)
-            or not all(isinstance(v, str) and v.strip() and "\x00" not in v for v in data.values())):
-        raise Blocked("credential file has invalid or unsupported entries")
-    return data
 
 
 def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT):
@@ -109,24 +128,44 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT):
             file.write_text(content(reader, repository, path, sha, RESOURCE_LIMIT), encoding="utf-8")
             file.chmod(0o600)
         bundle = Bundle(engine_root, target=root, profiles=config["execution_profiles"])
-    return Target(config, bundle, EnvironmentCredentials(secrets(target.credentials_file)))
+    return Target(config, bundle)
 
 
 class Worker:
     """Snapshot, load, advance and classify one task under one generation."""
 
     def __init__(self, settings, gateway, registry, reconciler, reader, bot_login, engine_root=CHECKOUT,
-                 agents=Agents, workspace_factory=None, renew_seconds=RENEW_SECONDS):
-        """`reader(repository)` returns a read transport; `agents` and `workspace_factory` are injectable for tests."""
+                 agents=Agents, workspace_factory=None, renew_seconds=RENEW_SECONDS, executor=None):
+        """`reader(repository)` returns a read transport; `agents`, `workspace_factory` and `executor` are injectable."""
         self.settings, self.gateway, self.registry, self.reconciler = settings, gateway, registry, reconciler
         self.reader, self.bot_login, self.engine_root = reader, bot_login, engine_root
         self.agents, self.workspace_factory, self.renew_seconds = agents, workspace_factory, renew_seconds
+        self.make_executor = executor or self.executor
         self.targets = {target.repository: target for target in settings.targets}
         self.guard = threading.Lock()
         self.failures = {}
+        self.claims = {}
+
+    def executor(self, repository, github):
+        """Where this target's turns run: its runners, dispatched through the gateway, or this host."""
+        gateway = self.settings.gateway
+        operator = Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+        request = {"url": gateway.url, "headers": gateway.headers}
+        if gateway.executor == "host":
+            return HostExecutor(operator, request, self.settings.agent_image,
+                                Mirror(self.settings.state_dir / "mirrors", repository),
+                                self.settings.state_dir / "turns", gateway.budget)
+        with self.guard:
+            claims = self.claims.get(repository)
+        if claims is None:
+            claims = runner_claims(self.reader(repository), repository, gateway.workflow_ref, self.settings.engine,
+                                   self.bot_login)
+            with self.guard:
+                self.claims[repository] = claims
+        return RunnerExecutor(operator, request, claims, list(gateway.models), gateway.budget, github.dispatch)
 
     def load(self, repository):
-        """The target's configuration, bundle and credentials, read afresh for each tick."""
+        """The target's configuration and bundle, read afresh for each tick."""
         return load_target(self.targets[repository], self.reader(repository), self.settings.engine,
                            self.bot_login, self.engine_root)
 
@@ -159,8 +198,8 @@ class Worker:
                 snapshot = self.reconciler.snapshot(key)
                 target = self.load(key[0])
                 facade = GatewayGitHub(key[0], key[1], generation, self.gateway, self.reader(key[0]))
-                agents = self.agents(target.config, mirror=Mirror(self.settings.state_dir / "mirrors", key[0]),
-                                     credentials=target.credentials, bundle=target.bundle)
+                agents = self.agents(target.config, self.make_executor(key[0], facade), bundle=target.bundle,
+                                     retained=self.settings.state_dir / "sessions" / key[0].replace("/", "__"))
                 controller = Controller(facade, agents, target.config, self.workspace_factory, bundle=target.bundle,
                                         controller_id=self.settings.controller_id)
                 outcome = controller.advance(key[1])

@@ -14,6 +14,7 @@ from service.errors import Unresolved
 from service.gateway import MutationGateway
 from service import transport
 from service.transport import Transport
+from service.worker import runner_claims
 
 SHA = "a" * 40
 OTHER = "other-owner/other-repo"
@@ -196,6 +197,21 @@ class ReadTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.reader.request("GET", path)
         self.assertEqual((self.credential.gets, self.net.seen()), (0, []))
+
+    def test_runner_claims_are_read_through_the_repositorys_transport(self):
+        """GraphQL for the repository and one public bot profile; no other account or repository is readable."""
+        self.net.route("POST", "graphql", reply(200, {"data": {"repository": {
+            "databaseId": 11, "owner": {"databaseId": 22}, "defaultBranchRef": {"name": "main"}}}}))
+        self.net.route("GET", "users/concurro%5Bbot%5D", reply(200, {"id": 33, "login": "concurro[bot]"}))
+        claims = runner_claims(self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", SHA, "concurro[bot]")
+        self.assertEqual((claims["repository_id"], claims["repository_owner_id"], claims["actor_id"], claims["ref"]),
+                         ("11", "22", "33", "refs/heads/main"))
+        for method, path in (("GET", "users/concurro%5Bbot%5D/repos"), ("GET", "users/a/../../orgs"),
+                             ("GET", f"repos/{KEY[0]}"), ("PATCH", "users/concurro%5Bbot%5D")):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.reader.request(method, path)
+        with self.assertRaises(ValueError):
+            self.reader.send("GET", "users/concurro%5Bbot%5D")
 
     def test_each_repository_carries_its_own_token(self):
         """Two targets' transports never mix tokens."""

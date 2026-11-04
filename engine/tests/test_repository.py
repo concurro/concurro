@@ -14,15 +14,13 @@ from unittest.mock import patch
 
 from support import EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_entry import command_for
-from agents import Agents
 from checks import MAX_OVERLAY_FILES
 from controller import MAX_DIFF, changes, transport_size
 from gitfixture import Upstream, build, mirror_of
 from policy import Blocked, path_allowed
 import repository
 from repository import Repository, TOOL_NAMES, ToolTimeout, relay, run_git, serve
-from snapshot import SOCKET_DIRECTORY, Snapshot, Tools, inspection
+from snapshot import Snapshot, Tools, inspection
 from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
 
 
@@ -137,30 +135,6 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(repo.search("third")["matches"][0]["line"], 1)
             self.assertEqual(repo.search("fourth")["matches"][0]["line"], 2)
             self.assertEqual(repo.read_file("source", offset=2)["lines"][0]["text"], "fifth")
-
-    def test_provider_tools_are_explicit_and_mcp_relays_with_an_empty_environment(self):
-        """All adapters reach the same relay, with no implicit repository configuration."""
-        for provider in ("codex", "claude", "copilot"):
-            cmd = command_for({"provider": provider, "model": "test", "schema": {}}, "schema", "out")
-            joined = " ".join(cmd)
-            self.assertIn("/usr/bin/env", joined)
-            self.assertIn('"-i"', joined)
-            self.assertIn("repository.py", joined)
-            self.assertIn("relay", joined)
-            self.assertNotIn('"serve"', joined)
-            self.assertNotIn("--allow-all-tools", cmd)
-            if provider == "claude":
-                self.assertEqual(cmd[cmd.index("--tools") + 1], "")
-                self.assertIn("mcp__repository__git", cmd[cmd.index("--allowedTools") + 1])
-                self.assertIn("--strict-mcp-config", cmd)
-            elif provider == "codex":
-                self.assertIn("features.shell_tool=false", cmd)
-                self.assertIn("mcp_servers.repository.required=true", cmd)
-            else:
-                self.assertIn("--no-custom-instructions", cmd)
-                self.assertIn("--disable-builtin-mcps", cmd)
-                config = json.loads(cmd[cmd.index("--additional-mcp-config") + 1])
-                self.assertEqual(config["mcpServers"]["repository"]["type"], "local")
 
 
 class GitSnapshotTests(unittest.TestCase):
@@ -286,47 +260,7 @@ class FakeMirror:
 
 
 class TransportTests(unittest.TestCase):
-    """Credentials stay in the agent container; the repository only in the credential-free tool container."""
-
-    def ask(self, agents, stage="review", candidate=None):
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
-                   "repository": {"refs": {"main": "a" * 40, "concurro/issue-1": "b" * 40}, "head": "concurro/issue-1"}}
-        if candidate is not None:
-            context["controller_candidate"] = candidate
-        with patch.dict(os.environ, {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64, "CODEX_API_KEY": "secret-key",
-                                     "PATH": "/usr/bin"}, clear=True), \
-                patch("subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}")
-            agents.ask("codex", stage, context)
-        return run.call_args_list
-
-    def test_containers_split_credentials_from_the_repository(self):
-        mirror = FakeMirror()
-        agents = Agents({**CONFIG, "models": {**CONFIG["models"], "codex": "m"}}, mirror=mirror)
-        calls = self.ask(agents, "local_review", {"docs/guide.md": "candidate"})
-        commands = [c.args[0] for c in calls if c.args[0][:2] == ["docker", "run"]]
-        prepare, owner, tools, agent = commands
-        payload = json.loads(next(c for c in calls if c.args[0] is prepare).kwargs["input"])
-        self.assertEqual(payload["candidate"], {"files": {"docs/guide.md": "candidate"}})
-        for command in (prepare, owner, tools):
-            self.assertIn("--network=none", command)
-            self.assertIn("--read-only", command)
-            self.assertIn("--cap-drop=ALL", command)
-            self.assertNotIn("--env", command)
-        self.assertIn("--user=10001:10001", tools)
-        mounts = [tools[i + 1] for i, a in enumerate(tools) if a == "--mount"]
-        self.assertTrue(any("target=/repository,readonly" in m for m in mounts))
-        self.assertTrue(any(m.startswith("type=bind,source=/srv/mirrors/owner__target.git,target=/mirror,readonly")
-                            for m in mounts))
-        agent_mounts = [agent[i + 1] for i, a in enumerate(agent) if a == "--mount"]
-        self.assertEqual(agent_mounts, [f"type=volume,source={tools[tools.index('--name') + 1]}-socket,target={SOCKET_DIRECTORY}"])
-        self.assertIn("CODEX_API_KEY", agent)
-        environments = [c.kwargs.get("env", {}) for c in calls if c.args[0] in (prepare, owner, tools)]
-        self.assertTrue(environments)
-        self.assertFalse(any("CODEX_API_KEY" in e for e in environments))
-        self.assertEqual(mirror.pins, [])
-        prompt = json.loads(next(c for c in calls if c.args[0] is agent).kwargs["input"])
-        self.assertNotIn("controller_candidate", prompt["context"])
+    """Snapshot preparation and the refs each stage inspects."""
 
     def test_a_failed_preparation_releases_the_pins_and_volume(self):
         mirror = FakeMirror()
@@ -338,14 +272,6 @@ class TransportTests(unittest.TestCase):
                 self.fail("preparation should fail")
         self.assertEqual(mirror.pins, [])
         self.assertIn(["docker", "volume", "rm", "-f", snapshot.volume], [c.args[0] for c in run.call_args_list])
-
-    def test_sessions_get_distinct_tool_containers_and_sockets(self):
-        agents = Agents({**CONFIG, "models": {**CONFIG["models"], "codex": "m"}}, mirror=FakeMirror())
-        first = [c.args[0] for c in self.ask(agents)]
-        second = [c.args[0] for c in self.ask(agents)]
-        volumes = lambda commands: {m for c in commands for i, a in enumerate(c) if a == "--mount"
-                                    for m in [c[i + 1]] if SOCKET_DIRECTORY in m}
-        self.assertTrue(volumes(first).isdisjoint(volumes(second)))
 
     def test_inspection_requires_refs_and_candidates_only_for_candidate_stages(self):
         refs = {"refs": {"main": "a" * 40}, "head": "main"}

@@ -202,27 +202,19 @@ engine by full SHA and upgrade it through a reviewed change to that line.
 
 ## Credentials and model selection
 
-Verified against official documentation on 2026-10-29:
+Provider credentials live only in the [inference gateway](design/inference-gateway.md).
+Every model call holds a gateway key bound to one session, and nothing else:
 
-| Provider | Supported credential in this pipeline | Model selection |
+| Provider | Route | Model selection |
 | ---- | ---- | ---- |
-| Codex | `CODEX_API_KEY`; API-backed only for this public repository | `models.codex` passed as `--model` |
-| Claude Code | Exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | `models.claude` passed as `--model` |
-| Copilot CLI | Separate `COPILOT_GITHUB_TOKEN`, with Copilot Requests access and no repository write permissions | `models.copilot` passed as `--model` |
+| Codex | The gateway's OpenAI Responses route; a header selects the ChatGPT subscription or the API key | `models.codex` passed as `--model` |
+| Claude Code | The gateway's Anthropic route, with the subscription token or API key held there | `models.claude` passed as `--model` |
+| Copilot CLI | None yet; a role assigned to Copilot is refused | — |
 
-OpenAI documents advanced account-backed CI, but explicitly says not to use that
-workflow for public/open-source repositories and recommends API keys for
-automation. This implementation never mounts or copies Codex account `auth.json`.
-Claude documents `claude setup-token` for subscription OAuth use in CI; such tokens
-still have plan usage and expiry limits. Copilot documents programmatic CLI use
-and model selection. CLI support does not guarantee model entitlement, unlimited
-quota, or compatibility with every organization's policies.
-
-Sources: [Codex non-interactive authentication](https://learn.chatgpt.com/docs/non-interactive-mode),
-[Claude authentication](https://code.claude.com/docs/en/iam),
-[Claude programmatic mode](https://code.claude.com/docs/en/headless),
-[Copilot programmatic reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference),
-[Copilot piped input](https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/run-cli-programmatically).
+The service configures the gateway in its settings (`gateway`); the Actions
+controller, the local pilot and evaluations read `CONCURRO_GATEWAY_URL` and
+`CONCURRO_GATEWAY_TOKEN` (the exchange's operator token) from their environment.
+`python3 -m service.use_gateway` moves older service settings to the gateway.
 
 Edit `.concurro/config.json` only on the trusted branch. Any supported provider
 can fill the planner, implementer, QC or local-review role. Defaults select Claude

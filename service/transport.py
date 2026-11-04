@@ -25,6 +25,8 @@ KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location")
 SECONDARY_SECONDS = 60
 API_VERSION = "2022-11-28"
 USER_AGENT = "concurro-service"
+# A user or App bot login, as `users/<login>` (the bot suffix percent-encoded).
+PROFILE = re.compile(r"users/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:%5Bbot%5D)?")
 
 
 @dataclass(frozen=True)
@@ -134,8 +136,10 @@ class Transport:
         """`credential` has `get()` (raising when no token can be had) and `drop(token)` (after a 401)."""
         self.repository, self.credential, self.clock, self.connection = repository, credential, clock, connection
 
-    def check(self, path):
-        """Only this repository's endpoints and GraphQL."""
+    def check(self, path, read=False):
+        """Only this repository's endpoints and GraphQL; reads may also fetch one account's public profile."""
+        if read and PROFILE.fullmatch(path):
+            return
         if path != "graphql" and not path.startswith(f"repos/{self.repository}/"):
             raise ValueError("path outside the transport's repository")
 
@@ -185,7 +189,7 @@ class Transport:
 
     def request(self, method, path, data=None):
         """Read: parsed JSON, or `NotFound`, `Transient`, or a `RuntimeError` naming only the status."""
-        self.check(path)
+        self.check(path, read=method == "GET")
         try:
             response = self.call(method, path, data)
         except (OSError, http.client.HTTPException):

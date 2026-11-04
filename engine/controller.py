@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from agents import Agents
+from agents import host_agents
 import actions
 import conversation
 import markup
@@ -126,7 +126,7 @@ def validate_config(config):
         raise Blocked("invalid outcome retrieval bound")
     if config["local_reviewer"] not in PROVIDERS or not isinstance(config["local_review_model"], str):
         raise Blocked("invalid local reviewer")
-    if not 0 <= config["max_local_fix_rounds"] <= 3 or not 600 <= config["local_timeout_seconds"] <= 2400:
+    if not 0 <= config["max_local_fix_rounds"] <= 3 or not 600 <= config["local_timeout_seconds"] <= 14400:
         raise Blocked("invalid local iteration budget")
     if not 1 <= config["local_check_timeout_seconds"] <= 900:
         raise Blocked("invalid local check timeout")
@@ -1357,8 +1357,10 @@ class Controller:
                     return None
                 proposal = {"summary": result["summary"], "edits": result["edits"]}
                 if result["edits"]:
-                    current = workspace.files(sorted({e.get("path") for e in result["edits"]
-                                                      if isinstance(e, dict) and isinstance(e.get("path"), str)}))
+                    # Only paths an edit may change are read; the rest come back to the implementer as feedback.
+                    current = workspace.files(sorted({e.get("path") for e in result["edits"] if isinstance(e, dict)
+                                                      and path_allowed(e.get("path"), self.config, state["execution"])
+                                                      and checks.in_scope(e["path"], state["plan"])}))
                     try:
                         validate_edits(proposal, state["plan"], current, self.config, state["execution"])
                     except OutsideScope as error:
@@ -1789,7 +1791,7 @@ def main():
     else:
         numbers = QueueScan(gh, config)
     for number in numbers:
-        controller = Controller(gh, Agents(config), config)
+        controller = Controller(gh, host_agents(config), config)
         try:
             advanced = controller.advance(number)
             if controller.state:

@@ -4,25 +4,6 @@
     "summary": {
       "type": "string"
     },
-    "edits": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "content"
-        ],
-        "additionalProperties": false
-      }
-    },
     "checks": {
       "type": "array",
       "items": {
@@ -66,7 +47,6 @@
   },
   "required": [
     "summary",
-    "edits",
     "checks",
     "design_issue"
   ],

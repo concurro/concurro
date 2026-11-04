@@ -8,12 +8,6 @@ from checks import (MAX_PLAN_FILES, build_checked, contract_errors, generated, g
                     in_scope, mandatory, protected as profile_protected, scope_errors, scope_of, triggered)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
-PROVIDER_CREDENTIALS = {
-    "codex": ("CODEX_API_KEY",),
-    "claude": ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
-    "copilot": ("COPILOT_GITHUB_TOKEN",),
-}
-SECRET_NAMES = frozenset(name for names in PROVIDER_CREDENTIALS.values() for name in names)
 
 
 PROTECTED_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"})
@@ -76,7 +70,7 @@ class OutsideScope(Blocked):
 
     def __init__(self, paths):
         self.paths = sorted(paths)
-        super().__init__("edit outside the approved scope: " + ", ".join(self.paths))
+        super().__init__("edit outside the approved scope or of a protected path: " + ", ".join(self.paths))
 
 
 def local_evidence_valid(state):
@@ -311,9 +305,10 @@ def validate_edits(result, plan, originals, config, execution):
         raise Blocked(f"implementation must contain 1–{limit} edits")
     if not all(isinstance(edit, dict) and set(edit) == {"path", "content"} for edit in edits):
         raise Blocked("invalid edit fields")
-    # A proposal reaching outside the envelope is refused whole, before anything is applied.
-    outside = {e["path"] for e in edits if isinstance(e["path"], str) and path_allowed(e["path"], config, execution)
-               and not in_scope(e["path"], plan)}
+    # A proposal reaching outside the envelope, or touching a path no edit may change, is refused
+    # whole before anything is applied; the implementer gets the paths back as feedback.
+    outside = {e["path"] for e in edits if isinstance(e["path"], str)
+               and (not path_allowed(e["path"], config, execution) or not in_scope(e["path"], plan))}
     if outside:
         raise OutsideScope(outside)
     seen = set()

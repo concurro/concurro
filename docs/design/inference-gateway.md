@@ -1,6 +1,6 @@
 # Inference gateway
 
-Status: accepted (reviewed); the proof is in progress. Promotes the [service design](service.md)'s inference proxy and
+Status: accepted (reviewed); proven locally and on a GitHub-hosted runner. Promotes the [service design](service.md)'s inference proxy and
 proxied API keys to the default for every model call, wherever the agent runs.
 Revises the credential parts of [the runner executor](runner-executor.md) and
 [the agent sandbox](agent-sandbox.md).
@@ -186,19 +186,58 @@ Both work server-side; see the proof results below.
 - **The gateway is critical.** Its availability bounds every model call; a
   runner job without it fails like a provider outage.
 
-## Open choice: agent shells on the service host
+## Turns
 
-Retiring the tool container leaves the agent container's own boundary. On a
-runner that is an ephemeral VM. On the service host it is plain Docker on the
-machine that also runs the gateway (provider keys) and holds the App key. Either:
+Every model call is a **turn**: the agent request, the snapshot spec (pinned
+refs and any candidate files) and the role's retained transcript as an archive.
+A turn runs the same way wherever it runs (`engine/turns.py`):
 
-1. **Full native tools, including a shell**, in a read-only, unprivileged,
-   capability-free container whose network reaches only the gateway; or
-2. **Native read-only tools without a shell** (Claude's Read, Grep and Glob;
-   Codex's read-only sandbox), until runners take over every role.
+1. A workspace is built from the spec on the target's Git mirror: real history,
+   the base and head under their branch names, the candidate committed on the
+   head. A copy of its `.git` is kept outside the agent's reach.
+2. The agent container gets the workspace, scratch space, the mirror read-only,
+   the transcript, and the gateway key as its only secret. It runs as an
+   unprivileged user with no capabilities, with network, and the CLIs use their
+   native tools with their own sandboxes off: the container is the sandbox.
+3. For `develop`, the controller takes the files the agent changed, found with
+   the kept `.git` copy so nothing the agent wrote under `.git` takes part;
+   submodules are never entered, since Git would read their configuration. The
+   implementer no longer returns file contents; policy, scope and budgets apply
+   to the extracted edits as before, and a protected or out-of-scope path comes
+   back to it as feedback.
 
-Option 1 matches the runner experience; its residual risk is a kernel escape on
-the service host. The proof runs on runners, so this choice is not on its path.
+**Executors.** The service's `gateway.executor` setting picks one:
+
+- **`runner`**: turns queue at the exchange for their target. When a target has
+  no live runner session, the exchange issues one and the service dispatches
+  `concurro-agent` to the target. The target's caller workflow runs
+  `agent.yml`, which fetches Concurro at its own `job_workflow_sha`, builds the
+  agent image on the Rust toolchain image and runs `engine/runner.py`. The
+  runner trades its OIDC token for the session key and a runner token, then
+  long-polls for turns (its heartbeat), runs up to two at once and ends the
+  session after ten idle minutes. A session silent for three minutes, or not
+  started within twenty, is ended and its running turns are lost (uncertain to
+  the controller). A runner refused for a claim of the target's own repository
+  is reported to the service, which blocks the task with the reason; refusals
+  of other repositories' tokens are not, since anyone can present one. The
+  service names each turn; submitting it again returns its first admission, so
+  a lost reply never queues a second turn, and an admission that stays unknown
+  is withdrawn and reported uncertain.
+- **`host`**: the service mints a key per turn through the exchange's operator
+  API and runs the turn on its own Docker, deleting the key afterwards. The
+  Actions controller, the local pilot and evaluations use this path, configured
+  by environment (`agents.host_agents`).
+
+The exchange's operator API (`/exchange/operator/...`) takes the service's
+operator token, so the service can run anywhere that reaches the gateway. Every
+caller is authenticated before its request body is read; only turn submissions
+and results may be large, and bodies held at once share a fixed memory budget.
+Copilot has no gateway route yet, and a role assigned to it is refused.
+
+**Agent shells on the service host.** The host executor gives agents the same
+full native tools as runners, in the unprivileged container above. Its network is
+not yet limited to the gateway, so a kernel escape or a reachable local service
+is the residual risk on that host; runners are the default.
 
 ## Proof
 
@@ -238,7 +277,7 @@ Bifrost, then LiteLLM.
 - [Service design](service.md): the inference proxy is this gateway, and proxied
   API keys are the default credential type.
 - [Open workspaces](open-workspaces.md): the service-host tool container and its
-  `git` tool give way to native tools, per the open choice above.
+  `git` tool give way to native tools in the turn workspace (see [Turns](#turns)).
 
 ### Proof results: local phase (2026-11-04)
 
@@ -295,8 +334,23 @@ token. agentgateway reloads a credential given as a file when it changes, so a
 small refresher that rewrites the file keeps a subscription current without a
 restart.
 
-Not yet covered: the runner and OIDC phase, which needs the gateway and exchange
-reachable from GitHub's runners.
+### Proof results: runner phase (2026-11-04)
+
+The gateway and exchange on the pilot host behind the shared edge
+(`https://144.76.56.188/concurro`), deployed as in `gateway/README.md`. The fork's
+`workflow_dispatch` caller ran `gateway-proof.yml@main` on a GitHub-hosted runner
+([run 41820856875](https://github.com/cylewitruk/stacks-core-autobot/actions/runs/41820856875)),
+for a session issued with the claim table pinned to Concurro's `main` commit.
+
+| Check | Result |
+| ---- | ---- |
+| OIDC exchange | The job's token, checked against the claim table, returned the session key; nothing else crossed to the runner |
+| Claude Code (Claude subscription) | Fixed the bug in six turns; 69,000 of 92,678 input tokens read from cache. Tests pass in a fresh offline container |
+| Codex (ChatGPT subscription) | Fixed the bug with tool calls and streaming, then answered a resumed second turn from the first's context; 33,024 of 44,354 and 44,288 of 55,762 input tokens cached. Tests pass offline |
+| No credential in agent containers | No `ACTIONS_*`, `GITHUB_TOKEN` or provider key in their environment |
+| Session end | The job ended its session with a fresh OIDC token; the key then got 401 |
+
+With the local phase this covers every "done when" item above.
 
 ## Later: MCP and agent-to-agent traffic
 

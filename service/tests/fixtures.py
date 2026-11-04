@@ -352,22 +352,16 @@ class ServiceFixture:
         finally:
             self.gateway.release(KEY, generation, outcome)
 
-    def credentials(self, name="credentials.json", data=None):
-        """A private provider credentials file for one target."""
-        path = Path(self.directory.name) / name
-        path.write_text(json.dumps(data or {"CODEX_API_KEY": "fixture-" + name}))
-        path.chmod(0o600)
-        return path
-
     def service(self, workspace=FakeWorkspace, executor=None, limits=None):
         """The reconciler, worker and scheduler over the fakes, with the fake agents."""
         bot = self.config["bot_login"]
         self.settings = SimpleNamespace(controller_id=SERVICE, engine=ENGINE, limits=limits or Limits(4, 2),
-                                        targets=(Target(KEY[0], self.credentials()),),
+                                        targets=(Target(KEY[0]),),
                                         state_dir=Path(self.directory.name))
         self.reconciler = Reconciler(self.registry, lambda repository: self.backend, [KEY[0]], {bot}, clock=self.clock)
         self.worker = Worker(self.settings, self.gateway, self.registry, self.reconciler, lambda repository: self.backend,
-                             bot, agents=lambda *args, **kwargs: self.agents, workspace_factory=workspace)
+                             bot, agents=lambda *args, **kwargs: self.agents, workspace_factory=workspace,
+                             executor=lambda repository, github: None)
         self.scheduler = Scheduler(self.registry, self.gateway, self.worker, self.settings.limits, clock=self.clock,
                                    executor=executor or Inline())
         return self.scheduler

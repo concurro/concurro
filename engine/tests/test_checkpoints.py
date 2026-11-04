@@ -329,7 +329,7 @@ class CheckpointTests(unittest.TestCase):
 
         with patch.object(self.gh, 'repo', side_effect=fail), \
                 patch.object(controller_module, 'GitHub', return_value=self.gh), \
-                patch.object(controller_module, 'Agents', return_value=self.agents), \
+                patch.object(controller_module, 'host_agents', return_value=self.agents), \
                 patch.object(Controller, 'suspend') as suspend, \
                 patch.dict(os.environ, {'CONCURRO_ISSUE': '7'}), \
                 patch('sys.stderr', new_callable=io.StringIO) as output, self.assertRaises(SystemExit):

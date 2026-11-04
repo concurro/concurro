@@ -1,0 +1,63 @@
+name: Concurro agent session
+
+# A runner session for one target: takes the target's model turns from Concurro's exchange and runs
+# each agent in a container holding only the session's gateway key. Called by the target's caller
+# workflow on `repository_dispatch`. The gateway address, image recipe and engine commit live here,
+# where the exchange's `job_workflow_sha` check covers them; the caller passes only the session ID.
+# See docs/design/inference-gateway.md.
+
+on:
+  workflow_call:
+    inputs:
+      session:
+        description: Session ID issued by the exchange
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  session:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      id-token: write
+    env:
+      GATEWAY: https://144.76.56.188/concurro
+      SESSION: ${{ inputs.session }}
+      NODE_IMAGE: node:24-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
+      # The rust profile's toolchain, so agents can build and test; a pinned rust-toolchain installs on use.
+      TOOLCHAIN_IMAGE: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+      CODEX_VERSION: 0.163.0
+      CLAUDE_VERSION: 2.1.301
+      COPILOT_VERSION: 1.0.37
+    steps:
+      - name: Fetch Concurro at this workflow's commit
+        run: |
+          set -euo pipefail
+          [[ "$SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+          # This job's own OIDC claims name the commit and repository of this reusable workflow. The
+          # audience differs from the exchange's, so this token cannot be presented there.
+          token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=concurro-workflow" | jq -r .value)
+          echo "::add-mask::$token"
+          read -r repository sha < <(python3 -c 'import base64, json, sys
+          p = sys.argv[1].split(".")[1]
+          c = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+          print("/".join(c["job_workflow_ref"].split("/")[:2]), c["job_workflow_sha"])' "$token")
+          git init -q concurro
+          git -C concurro fetch -q --depth 1 "https://github.com/$repository.git" "$sha"
+          git -C concurro checkout -q FETCH_HEAD
+          echo "Concurro $repository@$sha"
+
+      - name: Build the agent image
+        run: |
+          docker build -q -t concurro-agent:session -f concurro/docker/agent.Dockerfile \
+            --build-arg NODE_IMAGE="$NODE_IMAGE" --build-arg BASE_IMAGE="$TOOLCHAIN_IMAGE" \
+            --build-arg EXTRA_PACKAGES="clang libclang-dev" --build-arg CODEX_VERSION="$CODEX_VERSION" \
+            --build-arg CLAUDE_VERSION="$CLAUDE_VERSION" --build-arg COPILOT_VERSION="$COPILOT_VERSION" concurro
+
+      - name: Serve the session's turns
+        run: |
+          python3 concurro/engine/runner.py --session "$SESSION" --gateway "$GATEWAY" \
+            --repository "$GITHUB_REPOSITORY" --image concurro-agent:session --root "$RUNNER_TEMP/concurro"

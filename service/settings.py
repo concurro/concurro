@@ -17,7 +17,14 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 REGISTRY = re.compile(r"[A-Za-z0-9._-]{1,64}")
 FIELDS = {"controller_id", "engine", "app_id", "private_key_path", "webhook_secret_path", "state_dir",
-          "registry_id", "targets", "agent_image", "execution_image", "limits"}
+          "registry_id", "targets", "agent_image", "execution_image", "limits", "gateway"}
+GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
+GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
+WORKFLOW_REF = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/\.github/workflows/[A-Za-z0-9._-]+\.ya?ml"
+                          r"@refs/(?:heads|tags)/[A-Za-z0-9._/-]{1,100}")
+MODEL_PATTERN = re.compile(r"[A-Za-z0-9.*_:-]{1,100}")
+HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
+PROVIDERS = ("claude", "codex")
 
 
 class SettingsError(ValueError):
@@ -26,10 +33,28 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class Target:
-    """One enabled repository and its own provider credentials file."""
+    """One enabled repository."""
 
     repository: str
-    credentials_file: Path
+
+
+@dataclass(frozen=True)
+class Gateway:
+    """The inference gateway every model call goes through, and where turns run.
+
+    `executor` is `runner` (GitHub-hosted runners of the target, started by `repository_dispatch`
+    and running `workflow_ref`) or `host` (this host's Docker). `models` are the patterns a
+    session key allows, `budget` its token budget, and `headers` the route-selecting headers
+    each provider's CLI sends.
+    """
+
+    url: str
+    operator_token_path: Path
+    executor: str
+    workflow_ref: str | None
+    models: tuple
+    budget: int
+    headers: dict
 
 
 @dataclass(frozen=True)
@@ -58,6 +83,7 @@ class Settings:
     agent_image: str
     execution_image: str
     limits: Limits
+    gateway: Gateway
 
 
 def require(condition, field):
@@ -129,15 +155,13 @@ def load(path):
     targets, repositories, identities = [], set(), {key_identity, webhook_identity}
     require(isinstance(data["targets"], list) and data["targets"], "targets")
     for entry in data["targets"]:
-        require(isinstance(entry, dict) and set(entry) == {"repository", "credentials_file"}, "targets")
+        require(isinstance(entry, dict) and set(entry) == {"repository"}, "targets")
         repository = entry["repository"]
         require(isinstance(repository, str) and REPOSITORY.fullmatch(repository)
                 and repository.lower() not in repositories, "targets.repository")
-        credentials, identity = secret(entry["credentials_file"], "targets.credentials_file")
-        require(identity not in identities, "targets.credentials_file")
         repositories.add(repository.lower())
-        identities.add(identity)
-        targets.append(Target(repository, credentials))
+        targets.append(Target(repository))
+    gateway = gateway_settings(data["gateway"], identities)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
     total = integer(limits["global"], "limits.global")
@@ -147,4 +171,26 @@ def load(path):
         private_key_path=key, webhook_secret_path=webhook,
         state_dir=state(data["state_dir"]), registry_id=data["registry_id"],
         targets=tuple(targets), agent_image=data["agent_image"], execution_image=data["execution_image"],
-        limits=Limits(total, limits["per_repository"]))
+        limits=Limits(total, limits["per_repository"]), gateway=gateway)
+
+
+def gateway_settings(data, identities):
+    """The `gateway` block; its operator token is a secret file distinct from every other."""
+    require(isinstance(data, dict) and set(data) == GATEWAY_FIELDS, "gateway")
+    require(isinstance(data["url"], str) and GATEWAY_URL.fullmatch(data["url"]), "gateway.url")
+    token, identity = secret(data["operator_token_path"], "gateway.operator_token_path")
+    require(identity not in identities, "gateway.operator_token_path")
+    require(data["executor"] in ("runner", "host"), "gateway.executor")
+    workflow = data["workflow_ref"]
+    require(workflow is None and data["executor"] == "host"
+            or isinstance(workflow, str) and WORKFLOW_REF.fullmatch(workflow), "gateway.workflow_ref")
+    models = data["models"]
+    require(isinstance(models, list) and models and all(isinstance(m, str) and MODEL_PATTERN.fullmatch(m)
+                                                        for m in models), "gateway.models")
+    headers = data["headers"]
+    require(isinstance(headers, dict) and set(headers) <= set(PROVIDERS) and all(
+        isinstance(h, dict) and all(isinstance(k, str) and HEADER.fullmatch(k) and isinstance(v, str)
+                                    and v.isprintable() and len(v) <= 200 for k, v in h.items())
+        for h in headers.values()), "gateway.headers")
+    return Gateway(data["url"], token, data["executor"], workflow, tuple(models), integer(data["budget"], "gateway.budget"),
+                   headers)

@@ -36,7 +36,7 @@ class ConversationRecoveryTests(unittest.TestCase):
     def run_main(self):
         """Use real error handling with deterministic GitHub and provider transports."""
         with patch.object(controller_module, "GitHub", return_value=self.gh), \
-                patch.object(controller_module, "Agents", return_value=self.agents), \
+                patch.object(controller_module, "host_agents", return_value=self.agents), \
                 patch.dict(os.environ, {"CONCURRO_ISSUE": "7"}):
             controller_module.main()
 

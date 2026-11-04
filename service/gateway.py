@@ -10,7 +10,7 @@ import threading
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
-from github import GitHub, LINKED_BRANCH, NotFound, RESOLVE_THREAD, Transient
+from github import DISPATCH_EVENT, GitHub, LINKED_BRANCH, NotFound, RESOLVE_THREAD, Transient
 from reviews import FINDING_MARKER
 
 from .errors import OwnershipLost, Unresolved
@@ -38,7 +38,10 @@ WRITES = (
     ("POST", rf"pulls/{NUMBER}/reviews"),
     ("POST", rf"pulls/{NUMBER}/comments"),
     ("POST", rf"pulls/{NUMBER}/comments/{NUMBER}/replies"),
+    ("POST", r"dispatches"),
 )
+# A runner session's start: the agent event type, carrying only the session's ID.
+DISPATCH = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The App only ever comments on its PRs; it never approves or requests changes.
 PR_BODIES = ((re.compile(rf"pulls/{NUMBER}/reviews"), {"commit_id", "event", "body", "comments"}),
              (re.compile(rf"pulls/{NUMBER}/comments"), {"commit_id", "path", "subject_type", "body"}),
@@ -78,6 +81,8 @@ def allowed(key, method, path, body, issue_node=None):
         if match:
             if "issue" in match.groupdict() and int(match["issue"]) != key[1]:
                 return False
+            if relative == "dispatches":
+                return dispatch_session(body) is not None
             # Branch updates are fast-forward only.
             if relative.startswith("git/refs/"):
                 return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
@@ -88,6 +93,16 @@ def allowed(key, method, path, body, issue_node=None):
                             and body.get("subject_type", "file") == "file")
             return True
     return False
+
+
+def dispatch_session(body):
+    """The session ID of an exact runner dispatch, or None for anything else."""
+    if (not isinstance(body, dict) or set(body) != {"event_type", "client_payload"}
+            or body["event_type"] != DISPATCH_EVENT or not isinstance(body["client_payload"], dict)
+            or set(body["client_payload"]) != {"session"} or not isinstance(body["client_payload"]["session"], str)
+            or not DISPATCH.fullmatch(body["client_payload"]["session"])):
+        return None
+    return body["client_payload"]["session"]
 
 
 def resolved_thread(body):
@@ -145,6 +160,8 @@ def settle(path, response, now):
                 or ((data.get("resolveReviewThread") or {}).get("thread") or {}).get("isResolved") is True):
             return "done", payload, None
         return "unknown", None, None
+    if status == 204:
+        return "done", None, None
     if 200 <= status < 300:
         try:
             return "done", response.json(), None

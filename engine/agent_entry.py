@@ -8,52 +8,62 @@ import sys
 
 from bundle import Bundle
 from policy import KILLED, UNCERTAIN_EXIT
-from repository import TOOL_NAMES
 from session_entry import SessionTurn
+
+KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 
 
 class ProviderUncertain(RuntimeError):
     """The provider was killed; it may have completed upstream."""
 
 
+def toml(value):
+    """A TOML value for `-c` overrides: strings, booleans and inline tables."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(k)} = {toml(v)}" for k, v in value.items()) + "}"
+    raise ValueError("unsupported configuration value")
+
+
 def command_for(request, schema_path, output_path):
-    """Construct provider-specific invocations with explicit model selection."""
+    """Construct provider-specific invocations: native tools, the gateway as the only model endpoint."""
     model = ["--model", request["model"]] if request["model"] else []
     provider = request["provider"]
     session = request.get("session")
     resume = request.get("resume_id")
-    # A relay to the tool container's socket; this container holds no repository.
-    server = {"command": "/usr/bin/env", "args": ["-i", "PATH=/usr/bin:/bin", "python3", "-I",
-              "/opt/concurro/engine/repository.py", "relay"]}
-    mcp = json.dumps({"mcpServers": {"repository": server}})
+    gateway = request["gateway"]
     if provider == "codex":
+        endpoint = {"name": "Concurro gateway", "base_url": gateway["url"] + "/v1", "wire_api": "responses",
+                    "supports_websockets": False, "env_key": KEY_VARIABLE,
+                    "http_headers": gateway.get("headers", {}).get("codex", {})}
+        # The container is the sandbox: Codex's own needs namespaces it cannot create there.
         return ["codex", "exec", *(["resume"] if resume else []),
                 "--ignore-user-config", "--ignore-rules", *([] if session else ["--ephemeral"]),
-                "--json", "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "--output-schema", schema_path,
-                "--output-last-message", output_path, "-c", "web_search=\"disabled\"",
-                "-c", "features.shell_tool=false",
-                "-c", 'mcp_servers.repository.command="/usr/bin/env"',
-                "-c", "mcp_servers.repository.args=" + json.dumps(server["args"]),
-                "-c", "mcp_servers.repository.enabled_tools=" + json.dumps(list(TOOL_NAMES)),
-                "-c", "mcp_servers.repository.required=true", *model, *([resume] if resume else []), "-"]
+                "--json", "--skip-git-repo-check", "--output-schema", schema_path,
+                "--output-last-message", output_path, "-c", 'sandbox_mode="danger-full-access"',
+                "-c", 'approval_policy="never"', "-c", 'model_provider="concurro"',
+                "-c", "model_providers.concurro=" + toml(endpoint), "-c", "analytics.enabled=false",
+                "-c", "check_for_update_on_startup=false", *model, *([resume] if resume else []), "-"]
     if provider == "claude":
-        return ["claude", "-p", "--tools", "", "--setting-sources", "",
-                "--disable-slash-commands", "--settings", '{"disableAllHooks":true}',
-                "--mcp-config", mcp, "--allowedTools", ",".join("mcp__repository__" + t for t in TOOL_NAMES),
-                "--strict-mcp-config", *(["--resume", resume] if resume else
-                    ["--session-id", request["session_id"]] if session else ["--no-session-persistence"]),
-                "--output-format", "json",
-                "--json-schema", json.dumps(request["schema"]), *model]
-    if provider == "copilot":
-        server.update(type="local", tools=list(TOOL_NAMES))
-        return ["copilot", "--no-ask-user", "--disable-builtin-mcps", "--no-custom-instructions",
-                "--additional-mcp-config", json.dumps({"mcpServers": {"repository": server}}),
-                "--available-tools", ",".join("repository-" + t for t in TOOL_NAMES),
-                "--allow-tool", "repository",
-                "--deny-tool", "shell,write,read,url,memory", "--no-remote", "--no-auto-update",
-                "--config-dir", os.environ.get("COPILOT_HOME", "/tmp/copilot"),
-                *(["--resume=" + request["session_id"]] if session else []), "--silent", *model]
+        settings = {"disableAllHooks": True, "skipWebFetchPreflight": True}
+        return ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--settings", json.dumps(settings),
+                "--permission-mode", "bypassPermissions",
+                *(["--resume", resume] if resume else
+                  ["--session-id", request["session_id"]] if session else ["--no-session-persistence"]),
+                "--output-format", "json", "--json-schema", json.dumps(request["schema"]), *model]
     raise ValueError("unsupported provider")
+
+
+def provider_environment(request):
+    """The CLI's endpoint and credential: the gateway and the session key, nothing else."""
+    key = os.environ[KEY_VARIABLE]
+    if request["provider"] == "claude":
+        return {"ANTHROPIC_BASE_URL": request["gateway"]["url"], "ANTHROPIC_AUTH_TOKEN": key,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+    return {}
 
 
 def prompt_for(request, bundle):
@@ -61,11 +71,10 @@ def prompt_for(request, bundle):
     context = dict(request["context"])
     authorization = context.pop("design_authorization", None)
     prompt = {"instructions": bundle.instructions(request["stage"]),
-              "repository_snapshot": {"commit": context["repository_commit"],
+              "repository_snapshot": {"workspace": request["workspace"], "commit": context["repository_commit"],
                   "refs": context["repository"]["refs"], "head": context["repository"]["head"],
                   "local_checkpoint": context.get("local_commit"),
-                  "head_is_local_candidate": request["stage"] in ("develop", "local_review"),
-                  "tools": list(TOOL_NAMES)},
+                  "head_is_local_candidate": request["stage"] in ("develop", "local_review")},
               "response_schema": request["schema"], "untrusted_context": context}
     if authorization is not None:
         if request["stage"] != "develop":
@@ -75,7 +84,7 @@ def prompt_for(request, bundle):
 
 
 def main():
-    """Run in an empty directory, ignoring all repository configuration and hooks."""
+    """Run in the workspace, ignoring the CLIs' user and repository configuration and hooks."""
     request = json.load(sys.stdin)
     os.umask(0o077)
     if request.get("session"):
@@ -84,8 +93,8 @@ def main():
             os.environ[name] = "/retained/" + directory
     for name in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "COPILOT_HOME"):
         Path(os.environ[name]).mkdir(parents=True, exist_ok=True)
-    os.makedirs("/tmp/session", exist_ok=True)
-    os.chdir("/tmp/session")
+    os.chdir(request["workspace"])
+    # Outside the workspace, so they never become part of a candidate.
     schema_path, output_path = "/tmp/schema.json", "/tmp/result.json"
     bundle = Bundle(Path(__file__).resolve().parents[1], charter_text=request["charter"],
                     profiles=request["profiles"], profile_texts=request["profile_texts"])
@@ -104,21 +113,19 @@ def main():
         request["resume_id"] = turn.identifier if turn.previous else None
         prompt = turn.start()
     command = command_for(request, schema_path, output_path)
-    # Copilot's piped stdin is already programmatic; -p would discard that input.
-    result = subprocess.run(command, input=prompt, text=True, capture_output=True, timeout=550)
+    result = subprocess.run(command, input=prompt, text=True, capture_output=True, timeout=request["timeout"],
+                            env={**os.environ, **provider_environment(request)})
     if result.returncode in KILLED:
         raise ProviderUncertain()
     if result.returncode:
         raise RuntimeError("provider invocation failed")
     if request["provider"] == "codex":
         response = json.loads(Path(output_path).read_text())
-    elif request["provider"] == "claude":
+    else:
         envelope = json.loads(result.stdout)
         if envelope.get("is_error") or envelope.get("subtype") != "success":
             raise RuntimeError("Claude did not complete successfully")
         response = envelope["structured_output"]
-    else:
-        response = json.loads(result.stdout)
     if turn:
         identifier = turn.identifier
         if request["provider"] == "codex":

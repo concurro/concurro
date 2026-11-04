@@ -63,7 +63,7 @@ class SchedulerTests(unittest.TestCase):
         worker = Mock(state=None)
         worker.advance.side_effect = dispatch
         with patch.object(controller, "GitHub", return_value=github), \
-                patch.object(controller, "Agents"), \
+                patch.object(controller, "host_agents"), \
                 patch.object(controller, "Controller", return_value=worker), \
                 patch.dict(os.environ, {"CONCURRO_ISSUE": issue, "GITHUB_REPOSITORY": CONFIG["repository"]}):
             controller.main()

@@ -13,7 +13,7 @@ import controller as controller_module
 from controller import Controller
 from policy import Blocked, SessionFailure, UncertainOutcome
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
-from credentials import EnvironmentCredentials
+import turns
 
 
 class Interrupted(BaseException):
@@ -306,19 +306,27 @@ class ContainerBoundaryTests(unittest.TestCase):
                               capture_output=True, text=True, timeout=30)
 
     def host(self, completed, session=None):
-        """Feed an entry-point result to the host transport in place of Docker."""
-        agents = Agents(CONFIG, credentials=EnvironmentCredentials({"CODEX_API_KEY": "k"}))
+        """Feed an entry-point result through the turn outcome mapping and the agents, in place of Docker."""
+        result, response = turns.outcome(completed.returncode, completed.stdout)
+
+        class Executor:
+            gateway = {"url": "https://gateway.invalid", "headers": {}}
+
+            def run(self, turn, label):
+                return {"outcome": result, "response": response, "retained": None, "workspace": None}
+
+        agents = Agents(CONFIG, Executor(), retained=self.retained())
         context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
                    "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
         if session:
             context["controller_session"] = session
-        with patch.dict("os.environ", {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64}), \
-                patch("agents.inspection", return_value=("a" * 40, {})), patch("agents.Snapshot") as snapshot, patch("agents.Tools") as tools, \
-                patch("agents.SessionVolume"), \
-                patch("agents.subprocess.run", side_effect=[completed, subprocess.CompletedProcess([], 0)]):
-            snapshot.return_value.__enter__.return_value.mount.return_value = "type=volume,source=x,target=/repo"
-            tools.return_value.__enter__.return_value.mount.return_value = "type=volume,source=t,target=/run/concurro-tools"
-            agents.ask("codex", "review", context)
+        agents.ask("codex", "review", context)
+
+    def retained(self):
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return directory.name
 
     def test_provider_timeout_is_uncertain_on_the_host(self):
         """A provider timeout inside the container becomes UncertainOutcome or an uncertain session failure."""

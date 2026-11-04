@@ -2,20 +2,14 @@
 
 from copy import deepcopy
 import json
-import os
-import subprocess
 from pathlib import Path
 import tempfile
 import unittest
-import uuid
-from unittest.mock import patch
 
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from agent_entry import command_for
-from agents import Agents
-from policy import Blocked, SessionFailure
 from session_entry import SessionTurn
-from sessions import prepare, SessionVolume
+from sessions import prepare
 from test_pipeline import CONFIG
 
 
@@ -50,12 +44,12 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(prepare(state, CONFIG, "claude", stage, {}))
         self.assertIsNone(prepare(state, CONFIG, "claude", "plan_qc", {"review_phase": "fresh"}))
 
-    def test_provider_resume_uses_exact_identity_and_keeps_tools_restricted(self):
+    def test_provider_resume_uses_exact_identity(self):
         """All configured models resume only their own explicit session; no latest-session lookup."""
         identifier = "12345678-1234-1234-1234-123456789abc"
-        for provider in ("claude", "codex", "copilot"):
+        for provider in ("claude", "codex"):
             request = {"provider": provider, "model": "chosen-model", "schema": {},
-                       "session": {"scope": "a" * 64, "turn": 1},
+                       "session": {"scope": "a" * 64, "turn": 1}, "gateway": {"url": "https://gateway.invalid"},
                        "session_id": identifier, "resume_id": identifier}
             command = command_for(request, "schema", "output")
             self.assertNotIn("--last", command)
@@ -65,16 +59,9 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(command[command.index("--model") + 1], "chosen-model")
             if provider == "codex":
                 self.assertEqual(command[:3], ["codex", "exec", "resume"])
-                self.assertIn('sandbox_mode="read-only"', command)
-                self.assertIn("features.shell_tool=false", command)
                 self.assertIn(identifier, command)
-            elif provider == "claude":
-                self.assertIn("--strict-mcp-config", command)
-                self.assertEqual(command[command.index("--resume") + 1], identifier)
             else:
-                self.assertIn("--resume=" + identifier, command)
-                self.assertIn("--no-remote", command)
-                self.assertIn("--disable-builtin-mcps", command)
+                self.assertEqual(command[command.index("--resume") + 1], identifier)
 
     def prompt(self, **context):
         """Represent the stable instruction prefix and replaceable untrusted input."""
@@ -117,58 +104,6 @@ class SessionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing"):
                 SessionTurn({"scope": "b" * 64, "turn": 1}, self.prompt(), Path(directory))
 
-    def test_volume_setup_never_receives_provider_or_github_secrets(self):
-        """Only named private storage reaches preparation; a missing resumed volume blocks."""
-        with patch.dict(os.environ, {"GH_TOKEN": "owner", "CODEX_API_KEY": "provider"}), \
-                patch("sessions.subprocess.run") as run:
-            run.return_value.returncode = 0
-            volume = SessionVolume("sha256:" + "a" * 64, {"scope": "b" * 64, "turn": 0})
-            volume.ensure()
-            for call in run.call_args_list:
-                self.assertNotIn("GH_TOKEN", call.kwargs["env"])
-                self.assertNotIn("CODEX_API_KEY", call.kwargs["env"])
-            self.assertIn("--network=none", run.call_args.args[0])
-            self.assertNotIn("type=bind", volume.mount())
-            run.return_value.returncode = 1
-            with self.assertRaises(SessionFailure):
-                SessionVolume(volume.image, {"scope": "b" * 64, "turn": 1}).ensure()
 
-    def test_failed_provider_transport_rotates_only_retained_sessions(self):
-        """Nonzero exits, malformed output and timeouts signal recovery without exposing stderr."""
-        environment = {"CONCURRO_AGENT_IMAGE": "sha256:" + "a" * 64, "CODEX_API_KEY": "fixture", "PATH": "/usr/bin"}
-        for retained in (False, True):
-            for failure in (subprocess.CompletedProcess([], 1, "", "private-fixture"),
-                            subprocess.CompletedProcess([], 0, "not-json", "private-fixture"),
-                            subprocess.TimeoutExpired("provider", 600, output="private-fixture")):
-                with self.subTest(retained=retained, failure=type(failure).__name__), \
-                        patch.dict(os.environ, environment, clear=True), patch("agents.Snapshot"), patch("agents.Tools"), \
-                        patch("agents.SessionVolume"), patch("agents.subprocess.run") as run:
-                    agents = Agents(CONFIG)
-                    context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
-                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
-                    if retained:
-                        context["controller_session"] = {"scope": "b" * 64, "turn": 1}
-                    run.side_effect = [failure, subprocess.CompletedProcess([], 0)]
-                    expected = SessionFailure if retained else (Blocked, json.JSONDecodeError, subprocess.TimeoutExpired)
-                    with self.assertRaises(expected) as raised:
-                        agents.ask("codex", "plan", context)
-                    if retained:
-                        self.assertNotIn("private-fixture", str(raised.exception))
-                    self.assertEqual(run.call_args.args[0][:3], ["docker", "rm", "-f"])
-
-    @unittest.skipUnless(os.environ.get("CONCURRO_TEST_AGENT_IMAGE"), "requires pinned agent Docker image")
-    def test_private_volume_can_be_reopened_after_nonroot_ownership(self):
-        """A second container can reuse a prepared volume without changing existing workloads."""
-        scope = uuid.uuid4().hex + uuid.uuid4().hex
-        volume = SessionVolume(os.environ["CONCURRO_TEST_AGENT_IMAGE"], {"scope": scope, "turn": 0})
-        try:
-            volume.ensure()
-            volume.session["turn"] = 1
-            volume.ensure()
-            result = volume.run(["run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
-                                 "--mount", volume.mount(), "--entrypoint", "python3", volume.image,
-                                 "-c", "import os; open('/retained/probe', 'w').write('private'); print(os.getuid())"])
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), b"10001")
-        finally:
-            volume.run(["volume", "rm", volume.name])
+if __name__ == "__main__":
+    unittest.main()

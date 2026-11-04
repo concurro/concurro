@@ -1,4 +1,4 @@
-"""Prepare credentials and advance one supervised local task, with merging disabled."""
+"""Prepare the gateway credential and advance one supervised local task, with merging disabled."""
 
 import argparse
 import base64
@@ -17,7 +17,7 @@ import urllib.request
 
 from bundle import Bundle
 from controller import validate_config
-from policy import Blocked, IMAGE, PROVIDER_CREDENTIALS, SECRET_NAMES, design_roster
+from policy import Blocked, IMAGE, design_roster
 import private
 
 # Run from the target repository checkout; the engine is this file's checkout.
@@ -26,6 +26,7 @@ TARGET = Path.cwd()
 WORKFLOW = ".github/workflows/concurro.yml"
 ENGINE_PIN = re.compile(r"uses:\s*[\w.-]+/concurro@([0-9a-f]{40})\b")
 DIRECTORY = Path.home() / ".config/concurro-pilot"
+GATEWAY_TOKEN = "CONCURRO_GATEWAY_TOKEN"
 PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write",
                "checks": "read", "administration": "read"}
 
@@ -41,28 +42,21 @@ def write_private(path, data):
 
 
 def read_secrets(path, config):
-    """Accept only provider credentials; owner GitHub tokens cannot be supplied here."""
+    """Accept only the gateway's operator token; provider and GitHub credentials never live here."""
     data = json.loads(private_file(path))
-    if (not isinstance(data, dict) or not set(data).issubset(SECRET_NAMES)
+    if (not isinstance(data, dict) or set(data) != {GATEWAY_TOKEN}
             or not all(isinstance(v, str) and v.strip() and "\x00" not in v for v in data.values())):
-        raise Blocked("credential file has invalid or unsupported entries")
-    providers = {identity["provider"] for identity in design_roster(config)}
-    for provider, names in PROVIDER_CREDENTIALS.items():
-        if provider in providers and len(set(data) & set(names)) != 1:
-            raise Blocked("configure exactly one dedicated credential for " + provider)
+        raise Blocked("credential file must hold only " + GATEWAY_TOKEN)
     return data
 
 
-def capture_secrets(path, claude_api_key=False, copilot=False):
+def capture_secrets(path):
     """Prompt on a real terminal without echoing or accepting secrets as arguments."""
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise Blocked("credential capture requires an interactive terminal")
     if Path(path).expanduser().exists():
         raise Blocked("credential file already exists; use a new private filename for rotation")
-    names = ["CODEX_API_KEY", "ANTHROPIC_API_KEY" if claude_api_key else "CLAUDE_CODE_OAUTH_TOKEN"]
-    if copilot:
-        names.append("COPILOT_GITHUB_TOKEN")
-    data = {name: getpass.getpass(name + " (hidden): ").strip() for name in names}
+    data = {GATEWAY_TOKEN: getpass.getpass(GATEWAY_TOKEN + " (hidden): ").strip()}
     if not all(data.values()):
         raise Blocked("empty credentials were not saved")
     write_private(path, data)
@@ -169,7 +163,9 @@ def preflight(settings, config):
     try:
         read_secrets(settings["credentials_file"], config)
     except (OSError, ValueError):
-        problems.append("dedicated provider credentials are missing or invalid")
+        problems.append("the gateway operator token is missing or invalid")
+    if not str(settings.get("gateway_url", "")).startswith("https://"):
+        problems.append("gateway_url is not configured")
     for kind in ("agent", "execution"):
         image = settings.get(kind + "_image", "")
         if not IMAGE.fullmatch(image):
@@ -252,7 +248,8 @@ def advance(settings, config, issue):
             home.mkdir(mode=0o700)
             environment.update(credentials, HOME=str(home), XDG_STATE_HOME=str(home / ".local/state"),
                                XDG_CONFIG_HOME=str(home / ".config"), XDG_CACHE_HOME=str(home / ".cache"),
-                               GH_TOKEN=token, CONCURRO_ISSUE=str(issue),
+                               GH_TOKEN=token, CONCURRO_ISSUE=str(issue), CONCURRO_GATEWAY_URL=settings["gateway_url"],
+                               CONCURRO_GATEWAY_HEADERS=json.dumps(settings.get("gateway_headers", {})),
                                CONCURRO_LOCAL_REPORT_DIR=str(reports),
                                CONCURRO_AGENT_IMAGE=settings["agent_image"], CONCURRO_EXECUTION_IMAGE=settings["execution_image"])
             result = subprocess.run([sys.executable, "-B", str(ENGINE / "engine/controller.py")], cwd=TARGET,
@@ -279,13 +276,11 @@ def main():
     parser.add_argument("command", choices=("preflight", "capture-secrets", "advance"))
     parser.add_argument("--settings", type=Path, default=DIRECTORY / "pilot.json")
     parser.add_argument("--credentials", type=Path, default=DIRECTORY / "credentials.json")
-    parser.add_argument("--claude-api-key", action="store_true")
-    parser.add_argument("--copilot", action="store_true")
     parser.add_argument("--issue", type=int)
     args = parser.parse_args()
     try:
         if args.command == "capture-secrets":
-            capture_secrets(args.credentials, args.claude_api_key, args.copilot)
+            capture_secrets(args.credentials)
             return 0
         settings = json.loads(private_file(args.settings))
         config = json.loads((TARGET / ".concurro/config.json").read_text())

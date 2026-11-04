@@ -24,9 +24,9 @@ class EnvelopeAgents(Reviewers):
     A repair turn after that edit changes only the primary file.
     """
 
-    def __init__(self, outside=1):
+    def __init__(self, outside=1, stray="guides/elsewhere.md"):
         super().__init__(set())
-        self.outside = outside
+        self.outside, self.stray = outside, stray
 
     def ask(self, provider, stage, context):
         if stage == "plan":
@@ -36,7 +36,7 @@ class EnvelopeAgents(Reviewers):
             self.calls.append((provider, stage, deepcopy(context)))
             if self.outside:
                 self.outside -= 1
-                return {"summary": "Too wide.", "edits": [{"path": "guides/elsewhere.md", "content": "x\n"},
+                return {"summary": "Too wide.", "edits": [{"path": self.stray, "content": "x\n"},
                                                           {"path": "docs/guide.md", "content": "Updated\n"}],
                         "checks": [], "design_issue": None}
             if context["files"].get("docs/guide.md") == "Updated guide\n":
@@ -100,7 +100,8 @@ class ImplementationTests(Harness, unittest.TestCase):
         agents = EnvelopeAgents()
         state = self.run_to(agents, "gates").state
         developments = [c for _, stage, c in agents.calls if stage == "develop"]
-        self.assertIn("outside the approved scope: guides/elsewhere.md", developments[1]["local_feedback"]["scope"])
+        self.assertIn("outside the approved scope or of a protected path: guides/elsewhere.md",
+                      developments[1]["local_feedback"]["scope"])
         self.assertEqual(sorted(state["changed_files"]), ["docs/caller.md", "docs/guide.md"])
         reviews = [c for _, stage, c in agents.calls if stage == "review"]
         self.assertEqual([c["path"] for c in reviews[0]["changes"]], ["docs/caller.md", "docs/guide.md"],
@@ -111,6 +112,13 @@ class ImplementationTests(Harness, unittest.TestCase):
         self.assertEqual(sorted(local["controller_candidate"]), ["docs/caller.md", "docs/guide.md"])
         self.assertNotIn("unapproved path", self.reasons(state))
         self.assertNotIn("guides/elsewhere.md", json.dumps(self.gh.trees))
+
+    def test_a_protected_path_is_feedback_even_where_the_workspace_cannot_read_it(self):
+        agents = EnvelopeAgents(stray=".gitignore")
+        self.run_to(agents, "gates")
+        developments = [c for _, stage, c in agents.calls if stage == "develop"]
+        self.assertIn("outside the approved scope or of a protected path: .gitignore",
+                      developments[1]["local_feedback"]["scope"])
 
     def test_repair_turns_inspect_current_non_primary_edits_and_their_instructions(self):
         self.gh.trees[self.gh.base][".github/instructions/caller.instructions.md"] = (

@@ -21,6 +21,9 @@ class NotFound(RuntimeError):
     """The resource does not exist or is not visible to this token."""
 
 
+DISPATCH_EVENT = "concurro-agent"
+
+
 class Transient(RuntimeError):
     """GitHub did not apply a request, or its result was not read; retry later.
 
@@ -63,6 +66,10 @@ class GitHub:
     def repo(self, path, method="GET", data=None):
         """Address a repository endpoint."""
         return self.api(self.root + "/" + path, method, data)
+
+    def dispatch(self, session):
+        """Start a runner session on the target: a `repository_dispatch` that carries only its ID."""
+        self.repo("dispatches", "POST", {"event_type": DISPATCH_EVENT, "client_payload": {"session": session}})
 
     def archive(self, sha):
         """Download a pinned source archive without extracting candidate files on the host."""
