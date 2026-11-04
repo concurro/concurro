@@ -2,7 +2,7 @@
 # Certbot deploy hook: give the edge Caddy the renewed IP certificate and reload it.
 # Installed as /etc/letsencrypt/renewal-hooks/deploy/60-edge.
 set -eu
-EDGE_COMPOSE="${EDGE_COMPOSE:-/opt/concurro/gateway/edge/compose.yaml}"
+EDGE_COMPOSE="${EDGE_COMPOSE:-/etc/edge/compose.yaml}"
 LINEAGE="${RENEWED_LINEAGE:-/etc/letsencrypt/live/sbgh-fleet-ip}"
 [ "${LINEAGE##*/}" = "sbgh-fleet-ip" ] || exit 0
 install -d -m 0750 /etc/edge/tls

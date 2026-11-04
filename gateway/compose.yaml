@@ -20,7 +20,7 @@ services:
     image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
     command: ["-f", "/config/agentgateway.yaml"]
     env_file:
-      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro-gateway}/secrets.env
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/secrets.env
     volumes:
       - ./agentgateway.yaml:/config/agentgateway.yaml:ro
       - gateway-data:/data

@@ -92,6 +92,7 @@ On the pilot host the gateway publishes no ports. The host's shared edge Caddy
 (`gateway/edge`) owns 443 with the host's Let's Encrypt IP certificate and imports
 one route file per service; Concurro's (`gateway/concurro.caddy`) serves everything
 under `/concurro/`, so clients use `https://<host>/concurro` as the base URL.
+`gateway/README.md` records the host layout and operator commands.
 
 ## Keys
 

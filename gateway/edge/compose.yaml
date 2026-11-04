@@ -1,5 +1,6 @@
 # The host's shared HTTPS entry point. Services join the `edge` network and add a route
-# file to ${EDGE_ETC}/sites; none publishes ports of its own.
+# file to ${EDGE_ETC}/sites; none publishes ports of its own. Installed as
+# /etc/edge/compose.yaml beside the Caddyfile; see gateway/README.md.
 name: edge
 
 services:
