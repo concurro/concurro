@@ -1,5 +1,10 @@
 # Concurro
 
+Design update (not yet implemented): the [simplified MVP](docs/design/mvp.md)
+replaces the execution workbench with native runner agents and marks PRs ready for
+review when CI and agent reviews pass. See its [implementation plan](docs/design/mvp-implementation.md).
+The description below documents the current implementation.
+
 An engine for end-to-end autonomous, agentic implementation of GitHub issues.
 
 A writer enrolls an issue with the `concurro` label. Concurro checks it against the
