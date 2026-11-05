@@ -128,9 +128,10 @@ def allowed_target(key, binding, method, path, body):
     if repository != binding.upstream:
         return False
     if method == "POST" and relative == "pulls":
-        return (isinstance(body, dict) and set(body) == {"head", "head_repo", "base", "title", "body", "draft"}
+        return (isinstance(body, dict) and set(body) == {"head", "head_repo", "base", "title", "body", "draft", "maintainer_can_modify"}
                 and body["head"] == binding.fork.split("/")[0] + ":" + branch
                 and body["head_repo"] == binding.fork.split("/")[1] and body["draft"] is True
+                and body["maintainer_can_modify"] is False
                 and all(isinstance(body[k], str) for k in ("base", "title", "body"))
                 and BRANCH.fullmatch(body["base"]) is not None)
     return (relative.startswith("pulls/") and method == "POST"
@@ -232,12 +233,33 @@ def settle(path, response, now, body=None):
 
 
 def rejection(response):
-    """GitHub's message for a rejected write, as one bounded line."""
+    """Bounded, single-line GitHub validation details for operator logs, excluding arbitrary payload fields."""
+    def clean(value):
+        """Keep string diagnostics printable and bounded, including terminal control characters."""
+        if not isinstance(value, str):
+            return ""
+        return " ".join("".join(c if c.isprintable() else " " for c in value).split())[:300]
+
     try:
-        message = response.json().get("message")
-    except (ValueError, AttributeError):
-        message = None
-    return " ".join(message.split())[:300] if isinstance(message, str) and message.strip() else "no message"
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        return "no message"
+    parts = [clean(payload.get("message")) or "no message"]
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        for error in errors[:5]:
+            if isinstance(error, dict):
+                detail = " ".join(f"{key}={value}" for key in ("resource", "field", "code", "message")
+                                  if (value := clean(error.get(key))))
+            else:
+                detail = clean(error)
+            if detail:
+                parts.append(detail)
+        if len(errors) > 5:
+            parts.append("additional errors omitted")
+    return "; ".join(parts)[:2000]
 
 
 class MutationGateway:

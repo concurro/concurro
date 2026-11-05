@@ -22,6 +22,7 @@ from service.scheduler import Scheduler, fair
 from service.registry import WorkItem
 from service.settings import Gateway, Limits, Target
 from service.worker import Worker, runner_claims
+from service.transport import Response
 from agents import RunnerExecutor
 
 
@@ -182,6 +183,37 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         self.drain()
         self.assertEqual(self.stage(), "planned")
         self.assertEqual(len(notices()), 1, "the retry posts no stale notice")
+
+    def test_pr_rejection_details_stay_in_operator_logs(self):
+        """The cause reaches logs while the public issue gets a fixed diagnostic and retains its candidate."""
+        self.service()
+        self.reconciler.poll()
+        self.drain()
+        self.fake.comment("/concurro approve " + self.state()["plan_id"])
+        send = self.backend.send
+
+        def reject(method, path, body):
+            """Return the reported cross-fork validation failure only for PR creation."""
+            if method == "POST" and path.endswith("/pulls"):
+                return Response(True, 422, {}, json.dumps({"message": "Validation Failed", "errors": [
+                    {"field": "fork_collab", "code": "custom", "message": "Operator-only error detail"}]}).encode())
+            return send(method, path, body)
+
+        with patch.object(self.backend, "send", side_effect=reject), self.assertLogs("concurro.service", "WARNING") as logged:
+            self.reconciler.poll()
+            self.drain()
+        self.assertIn("field=fork_collab", "\n".join(logged.output))
+        self.assertIn("Operator-only error detail", "\n".join(logged.output))
+        state = self.state()
+        self.assertEqual((state["stage"], state["retry_stage"]), ("blocked", "publish"))
+        self.assertEqual(state["pending"]["head"], state["candidate"]["head"])
+        public = "\n".join(c["body"] for c in self.fake.comments)
+        public += "\n".join(v["artifact"]["body"] for v in self.fake.artifacts[7].values())
+        self.assertNotIn("fork_collab", public)
+        self.assertNotIn("Operator-only error detail", public)
+        self.assertEqual(self.registry.unresolved(KEY), [])
+        self.assertEqual(self.registry.outcome(KEY).kind, "blocked")
+        self.assertEqual(self.reconciler.poll(), [])
 
     def test_exhausted_pr_publication_stays_blocked(self):
         """Persistent review rejections block after the attempt limit, and nothing retries them until a writer acts."""

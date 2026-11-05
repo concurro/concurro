@@ -1410,7 +1410,8 @@ class Controller:
                 raise Blocked("recorded PR disappeared; reconcile manually")
             pr = self.pulls.repo("pulls", "POST", {
                 "title": self.pr_title(), "head": owner + ":" + state["branch"], "head_repo": repository,
-                "base": self.config["base"], "body": self.pr_body(), "draft": True})
+                "base": self.config["base"], "body": self.pr_body(), "draft": True,
+                "maintainer_can_modify": False})
         if pr.get("user", {}).get("login") != self.config["bot_login"]:
             raise Blocked("PR is not authored by the controller App")
         published_files = candidates.changed_paths(self.pulls.pages(f"pulls/{pr['number']}/files"))

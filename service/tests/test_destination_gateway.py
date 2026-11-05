@@ -70,7 +70,7 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
     def test_only_draft_pr_from_the_task_fork_branch(self):
         """PR creation is bound before the registry has a PR number; reviews remain COMMENT-only."""
         body = {"head": "owner:" + task_branch(*KEY), "head_repo": "project-fork", "base": "main",
-                "title": "Improve it", "body": "Issue link", "draft": True}
+                "title": "Improve it", "body": "Issue link", "draft": True, "maintainer_can_modify": False}
         path = f"repos/{UPSTREAM}/pulls"
         self.assertTrue(allowed_target(KEY, self.binding, "POST", path, body))
         for change in ({"head": "owner:other"}, {"head_repo": "other"}, {"draft": False}):
@@ -82,6 +82,22 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
             self.gateway.mutate(KEY, self.generation, "POST", path + "/9/reviews", {**review, "event": "APPROVE"})
         self.assertEqual([repository for repository, *_ in self.sent], [UPSTREAM, UPSTREAM])
         self.assertIsNone(self.registry.pull(KEY), "binding did not depend on an end-of-tick PR link")
+
+    def test_pr_creation_cannot_grant_fork_collaboration(self):
+        """Missing, true and merely false-like values are refused before a write is admitted."""
+        body = {"head": "owner:" + task_branch(*KEY), "head_repo": "project-fork", "base": "main",
+                "title": "Improve it", "body": "Issue link", "draft": True}
+        invalid = [body] + [{**body, "maintainer_can_modify": value} for value in (True, None, 0, "false")]
+        for value in invalid:
+            with self.subTest(body=value), self.assertRaises(Disallowed):
+                self.gateway.mutate(KEY, self.generation, "POST", f"repos/{UPSTREAM}/pulls", value)
+        self.assertEqual(self.sent, [])
+        for status in ("in-flight", "done", "failed", "unknown"):
+            self.assertEqual(self.registry.mutations(KEY, status), [])
+        self.gateway.mutate(KEY, self.generation, "POST", f"repos/{UPSTREAM}/pulls",
+                            {**body, "maintainer_can_modify": False})
+        self.assertEqual(len(self.sent), 1)
+        self.assertIs(self.sent[0][3]["maintainer_can_modify"], False)
 
     def test_stale_generation_cannot_write_any_destination(self):
         """The original issue ownership fences fork and upstream writes alike."""

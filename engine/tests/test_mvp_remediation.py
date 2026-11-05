@@ -115,6 +115,27 @@ class PublicationTests(unittest.TestCase):
                 return controller
         self.fail('not publishing')
 
+    def test_pr_creation_explicitly_disables_maintainer_modification(self):
+        """The real publisher must not ask the upstream installation to grant fork collaboration."""
+        controller = self.pending()
+        original = self.gh.repo
+        requests = []
+
+        def repo(path, method="GET", data=None):
+            """Model GitHub's fork-collaboration rejection when the flag is missing or enabled."""
+            if path == "pulls" and method == "POST":
+                requests.append(deepcopy(data))
+                if data.get("maintainer_can_modify") is not False:
+                    raise RuntimeError("fork_collab cannot be granted")
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=repo):
+            controller.publish()
+        self.assertEqual(controller.state["stage"], "review")
+        self.assertEqual(len(requests), 1)
+        self.assertIs(requests[0]["maintainer_can_modify"], False)
+        self.assertIs(requests[0]["draft"], True)
+
     def test_foreign_author_and_different_recorded_pr_are_refused(self):
         controller = self.pending()
         controller.publish()

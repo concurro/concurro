@@ -8,7 +8,7 @@ from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from github import ATTENTION_LABEL, MARK_READY, NotFound, Transient
 from service.errors import OwnershipLost, Unresolved
-from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed, settle
+from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed, rejection, settle
 from service.transport import Response
 
 COMMENTS = f"repos/{KEY[0]}/issues/7/comments"
@@ -267,6 +267,47 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
             self.comment()
         self.assertEqual(self.registry.unresolved(KEY), [])
         self.assertEqual(self.comment()["body"], "hello")
+
+    def test_validation_details_reach_operator_logs(self):
+        """GitHub's nested 422 cause survives without dumping arbitrary response fields."""
+        response = Response(True, 422, {}, json.dumps({
+            "message": "Validation Failed", "token": "do-not-log-this",
+            "errors": [{"resource": "PullRequest", "field": "fork_collab", "code": "custom",
+                        "message": "Fork collab can't be granted by someone without permission",
+                        "value": "do-not-log-this"}, "A second validation error"]}).encode())
+        with self.assertLogs("concurro.service", "WARNING") as logged:
+            status, payload, error = settle("repos/upstream/project/pulls", response, 0)
+        self.assertEqual((status, payload), ("failed", None))
+        self.assertIsInstance(error, Rejected)
+        for detail in ("Validation Failed", "resource=PullRequest", "field=fork_collab", "code=custom",
+                       "Fork collab can't be granted", "A second validation error"):
+            self.assertIn(detail, logged.output[0])
+            self.assertIn(detail, str(error))
+        self.assertNotIn("do-not-log-this", logged.output[0])
+        self.assertNotIn("do-not-log-this", str(error))
+
+    def test_validation_diagnostics_are_bounded_and_single_line(self):
+        """Malformed, large and control-bearing errors cannot break settlement or forge log lines."""
+        diagnostic = {"message": "Validation\nFailed\x1b[31m", "errors": [
+            {"field": "head\r\nInjected", "message": "bad\x00value"}] + ["x" * 500] * 20}
+        response = Response(True, 422, {}, json.dumps(diagnostic).encode())
+        detail = rejection(response)
+        self.assertLessEqual(len(detail), 2000)
+        self.assertTrue(all(c.isprintable() for c in detail))
+        self.assertIn("field=head Injected", detail)
+        self.assertIn("message=bad value", detail)
+        self.assertIn("additional errors omitted", detail)
+        self.assertNotIn("x" * 301, detail)
+        huge = Response(True, 422, {}, json.dumps({"message": "m" * 10000, "errors": [
+            {k: "x" * 10000 for k in ("resource", "field", "code", "message")} for _ in range(20)]}).encode())
+        self.assertLessEqual(len(rejection(huge)), 2000)
+        for body in (b"not JSON", b"null", b"[]", b'"error"', b'{"message": [], "errors": {}}',
+                     b'{"errors": [null, 42, [], {"message": {}, "field": 3}]}'):
+            with self.subTest(body=body), self.assertLogs("concurro.service", "WARNING"):
+                status, _, error = settle(COMMENTS, Response(True, 422, {}, body), 0)
+                self.assertEqual(status, "failed")
+                self.assertIsInstance(error, Rejected)
+                self.assertIn("no message", str(error))
 
     def test_requests_not_sent_or_refused_before_execution(self):
         """Not sent, 401 and a throttled 403 did not apply: `failed`, `Transient`, and nothing to resolve."""
