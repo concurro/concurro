@@ -343,8 +343,8 @@ restart.
 
 ### Proof results: runner phase (2026-11-04)
 
-The gateway and exchange on the pilot host behind the shared edge
-(`https://144.76.56.188/concurro`), deployed as in `gateway/README.md`. The fork's
+The gateway and exchange ran on the pilot host behind the shared edge, deployed
+as in `gateway/README.md`. The deployment URL is held in `CONCURRO_GATEWAY_URL`. The fork's
 `workflow_dispatch` caller ran `gateway-proof.yml@main` on a GitHub-hosted runner
 ([run 41820856875](https://github.com/cylewitruk/stacks-core-autobot/actions/runs/41820856875)),
 for a session issued with the claim table pinned to Concurro's `main` commit.

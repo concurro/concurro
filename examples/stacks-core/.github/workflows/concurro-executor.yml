@@ -16,6 +16,8 @@ jobs:
       id-token: write
     cache-mode: read
     uses: concurro/concurro/.github/workflows/agent.yml@deployed
+    secrets:
+      CONCURRO_GATEWAY_URL: ${{ secrets.CONCURRO_GATEWAY_URL }}
     with:
       session: ${{ inputs.session }}
       runs-on: ubuntu-24.04

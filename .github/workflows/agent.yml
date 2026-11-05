@@ -7,14 +7,15 @@ on:
         description: Centrally issued task/role session
         type: string
         required: true
-      gateway:
-        description: Public Concurro gateway base URL
-        type: string
-        default: https://144.76.56.188/concurro
       runs-on:
         description: GitHub-hosted Linux runner label
         type: string
         default: ubuntu-24.04
+
+    secrets:
+      CONCURRO_GATEWAY_URL:
+        description: Deployment gateway base URL
+        required: true
 
 permissions: {}
 
@@ -26,7 +27,7 @@ jobs:
     permissions:
       id-token: write
     env:
-      GATEWAY: ${{ inputs.gateway }}
+      GATEWAY: ${{ secrets.CONCURRO_GATEWAY_URL }}
       SESSION: ${{ inputs.session }}
       CODEX_VERSION: 0.163.0
       CLAUDE_VERSION: 2.1.301
@@ -35,6 +36,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "$GATEWAY" ]]; then
+            echo '::error::CONCURRO_GATEWAY_URL must be configured and passed by the caller.'
+            exit 1
+          fi
           [[ "$SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=concurro-workflow" | jq -r .value)

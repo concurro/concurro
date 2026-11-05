@@ -38,8 +38,30 @@ The target fork needs the [caller workflow](../examples/stacks-core/.github/work
 on its default branch, calling `agent.yml@deployed`, and the current `.concurro/` config
 and charter. The upstream and fork must be public and in the same fork network. No new
 fork is created. Optional setup is a composite action at `.concurro/setup/action.yml`.
-The caller may pass `gateway` and `runs-on` to the reusable workflow; the service dispatch
-input is only the issued session ID. Both jobs use `cache-mode: read`.
+The caller passes the repository secret `CONCURRO_GATEWAY_URL` explicitly to the reusable
+workflow and may set `runs-on`; the service dispatch input is only the issued session ID.
+Both jobs use `cache-mode: read`. Store the deployment URL as a secret, not a workflow
+input, variable or source default, so GitHub masks it from the start of the job:
+
+```bash
+gh secret set CONCURRO_GATEWAY_URL --repo OWNER/FORK
+```
+
+Enter the URL at the prompt. It must match `gateway.url` in the service settings: the
+workflow uses the secret for the exchange, while turn payloads use the service setting
+for inference. Never pass provider keys or the exchange operator token to runner workflows,
+and do not use `secrets: inherit`.
+
+For the secret-interface migration, finish active tasks and runner jobs, then stop the
+service before landing the updated fork caller. Keep dispatch stopped while deploying the
+matching engine and moving `deployed`; restart only after both sides are updated. A new
+caller forwarding an undeclared secret and an old caller omitting a required secret are
+both incompatible. Ordinary pushes to Concurro's `main` do not move `deployed`.
+
+Secret forwarding requires the updated caller in the task's pinned configuration commit.
+Changing the default branch does not update existing task pins; reconcile those explicitly
+before resuming them. Masking prevents routine disclosure in future logs, not discovery of
+the public endpoint, and does not redact old logs or Git history.
 
 Install the controller App on the selected repositories. Grant Contents read/write,
 Pull requests read/write, Checks read, Commit statuses read, Actions read on the upstream, Issues read/write where
@@ -100,7 +122,7 @@ svc build
 svc run --rm --volume /etc/concurro/service:/etc/concurro/service:rw \
   --entrypoint python3 service -m service.use_gateway \
   --settings /etc/concurro/service/settings.json \
-  --url https://144.76.56.188/concurro \
+  --url https://gateway.example.com/concurro \
   --operator-token /etc/concurro/service/gateway-operator-token \
   --upstream stacks-network/stacks-core \
   --fork cylewitruk/stacks-core-autobot --issues fork

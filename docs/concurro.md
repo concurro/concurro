@@ -16,7 +16,9 @@ In the fork's default branch, install:
 
 - `.concurro/config.json` and `.concurro/charter.json` from the example, adapted to the project.
 - `.github/workflows/concurro-executor.yml`, calling `agent.yml@deployed` with only its
-  centrally issued session ID. Both jobs must specify `cache-mode: read`.
+  centrally issued session ID and explicitly forwarding the repository secret
+  `CONCURRO_GATEWAY_URL`. Store the deployment URL in that secret, not in source or
+  workflow inputs. Both jobs must specify `cache-mode: read`.
 - Optionally `.concurro/setup/action.yml`, receiving an absolute `base` checkout path.
   Install shared tools and restore download caches here. Workspace installs belong in
   agent workspaces. A missing cache must not prevent normal installation.
