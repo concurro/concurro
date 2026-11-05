@@ -138,7 +138,7 @@ class Transport:
 
     def check(self, path, read=False):
         """Only this repository's endpoints and GraphQL; reads may also fetch one account's public profile."""
-        if read and PROFILE.fullmatch(path):
+        if read and (PROFILE.fullmatch(path) or path == f"repos/{self.repository}"):
             return
         if path != "graphql" and not path.startswith(f"repos/{self.repository}/"):
             raise ValueError("path outside the transport's repository")

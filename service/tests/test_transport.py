@@ -198,6 +198,12 @@ class ReadTests(unittest.TestCase):
                 self.reader.request("GET", path)
         self.assertEqual((self.credential.gets, self.net.seen()), (0, []))
 
+    def test_repository_metadata_uses_only_its_read_token(self):
+        self.net.route("GET", f"repos/{KEY[0]}", reply(200, {"full_name": KEY[0], "private": False}))
+        self.assertEqual(self.reader.request("GET", f"repos/{KEY[0]}")["full_name"], KEY[0])
+        with self.assertRaises(ValueError):
+            self.reader.request("PATCH", f"repos/{KEY[0]}", {})
+
     def test_runner_claims_are_read_through_the_repositorys_transport(self):
         """GraphQL for the repository and one public bot profile; no other account or repository is readable."""
         self.net.route("POST", "graphql", reply(200, {"data": {"repository": {
@@ -205,9 +211,9 @@ class ReadTests(unittest.TestCase):
         self.net.route("GET", "users/concurro%5Bbot%5D", reply(200, {"id": 33, "login": "concurro[bot]"}))
         claims = runner_claims(self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", SHA, "concurro[bot]")
         self.assertEqual((claims["repository_id"], claims["repository_owner_id"], claims["actor_id"], claims["ref"]),
-                         ("11", "22", "33", "refs/heads/main"))
+                         ("11", "22", "33", ""))
         for method, path in (("GET", "users/concurro%5Bbot%5D/repos"), ("GET", "users/a/../../orgs"),
-                             ("GET", f"repos/{KEY[0]}"), ("PATCH", "users/concurro%5Bbot%5D")):
+                             ("PATCH", "users/concurro%5Bbot%5D")):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.reader.request(method, path)
         with self.assertRaises(ValueError):

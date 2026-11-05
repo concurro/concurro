@@ -21,9 +21,7 @@ class FakeCodex:
         self.forget, self.calls = forget, []
 
     def __call__(self, command, input, **_):
-        mounts = {target.removeprefix("target="): Path(source.removeprefix("source=")) for _, source, target in
-                  (m.split(",") for m in command if m.startswith("type=bind"))}
-        codex = mounts["/retained"] / "codex"
+        codex = Path(_["env"]["CODEX_HOME"])
         self.calls.append(command)
         if "resume" in command:
             transcript = codex / "sessions/t.jsonl"
@@ -35,7 +33,7 @@ class FakeCodex:
             (codex / ".tmp/plugins").mkdir(parents=True)
             (codex / ".tmp/plugins/big").write_bytes(b"x" * 8192)
             answer = "noted"
-        (mounts["/proof"] / "result.json").write_text(json.dumps({"answer": answer}))
+        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps({"answer": answer}))
         stdout = json.dumps({"type": "thread.started", "thread_id": "0190a1a7-6de4-7733-87b3-42daa52eb665"}) + "\n"
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -47,7 +45,7 @@ class ResumeProofTests(unittest.TestCase):
         (root / "key").write_text("session-key\n")
         output = io.StringIO()
         with patch.object(resume_proof.subprocess, "run", codex), redirect_stdout(output):
-            resume_proof.main(["--image", "cli", "--gateway", "https://gateway.invalid", "--key", str(root / "key"),
+            resume_proof.main(["--gateway", "https://gateway.invalid", "--key", str(root / "key"),
                                "--model", "gpt-test", "--root", str(root / "proof")])
         return output.getvalue()
 

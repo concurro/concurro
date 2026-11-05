@@ -9,13 +9,14 @@ ENGINE = Path(__file__).resolve().parents[1]
 ROOT = ENGINE.parent
 TARGET = ROOT / "examples/stacks-core"
 CONFIG = json.loads((TARGET / ".concurro/config.json").read_text())
-PROFILES = CONFIG["execution_profiles"]
+PROFILES = []
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENGINE))
 
 # Imported once the engine directory is on the module path.
 from bundle import Bundle
 
-EXECUTION = Bundle(target=TARGET, profiles=PROFILES).execution
+EXECUTION = CONFIG["paths"]
 
 _previous = []
 

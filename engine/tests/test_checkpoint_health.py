@@ -17,7 +17,7 @@ from checkpoints import CheckpointError, DIAGNOSTICS
 from controller import Controller
 from github import ATTENTION_LABEL, GitHub
 from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 
 class CheckpointHealthTests(unittest.TestCase):
@@ -29,69 +29,13 @@ class CheckpointHealthTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
         self.agents.qc_reports = [decision('escalate')]
-        Controller(self.gh, self.agents, self.config, FakeWorkspace).advance(7)
+        Controller(self.gh, self.agents, self.config).advance(7)
 
     def notices(self):
         """Find only the configured App's separate health comments."""
         return [c for c in self.gh.comments if c['body'].startswith(MARKER)
                 and c['user']['login'] == self.config['bot_login']]
 
-    def run_main(self):
-        """Exercise the production entry point with fake model and GitHub transports."""
-        with patch.object(controller_module, 'GitHub', return_value=self.gh), \
-                patch.object(controller_module, 'host_agents', return_value=self.agents), \
-                patch.dict(os.environ, {'CONCURRO_ISSUE': '7'}):
-            controller_module.main()
-
-    def test_unverified_checkpoint_failure_reports_only_to_the_runner(self):
-        """Before ownership is verified nothing is written to the issue; the runner gets the diagnostic."""
-        before = deepcopy(self.gh.artifacts)
-        summary = deepcopy(self.gh.comments[0])
-        labels = deepcopy(self.gh.issue['labels'])
-        original = self.gh.repo
-
-        def fail_checkpoint(path, method='GET', data=None):
-            """Keep health APIs reachable while checkpoint reads are unavailable."""
-            if '/artifacts/' in path and method == 'GET':
-                raise RuntimeError('private-token-fixture')
-            return original(path, method, data)
-
-        for _ in range(2):
-            with patch.object(self.gh, 'repo', side_effect=fail_checkpoint) as repo, \
-                    patch('sys.stderr', new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
-                self.run_main()
-            self.assertNotIn('private-token-fixture', output.getvalue())
-            self.assertIn(CheckpointError('artifact_request').public_detail(), output.getvalue())
-            self.assertFalse([c for c in repo.call_args_list if len(c.args) > 1 and c.args[1] != 'GET'])
-            self.assertEqual(self.gh.artifacts, before)
-            self.assertEqual(self.gh.comments[0], summary)
-            self.assertEqual(self.notices(), [])
-            self.assertEqual(self.gh.issue['labels'], labels)
-        with patch.object(self.gh, 'repo', wraps=self.gh.repo) as repo:
-            self.run_main()
-        self.assertFalse([call for call in repo.call_args_list if len(call.args) > 1 and call.args[1] in ('POST', 'PATCH')])
-        self.assertEqual(self.gh.artifacts, before)
-        self.assertEqual(self.gh.issue['labels'], labels)
-        self.assertEqual(len(self.agents.calls), 1)
-        self.assertEqual(self.gh.merges, 0)
-
-    def test_checkpoint_failure_while_recording_another_error_is_reported(self):
-        """A failed error-state save also gets a warning without replacing the audit artifact."""
-        before = deepcopy(self.gh.artifacts)
-        original = Controller.advance
-
-        def fail_after_load(controller, number):
-            """Read valid state, then simulate a non-checkpoint failure during execution."""
-            original(controller, number)
-            raise RuntimeError('private-model-error')
-
-        with patch.object(Controller, 'advance', fail_after_load), \
-                patch.object(Controller, 'suspend', side_effect=CheckpointError('write_unconfirmed')), \
-                patch('sys.stderr', new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
-            self.run_main()
-        self.assertIn(CheckpointError('write_unconfirmed').public_detail(), self.notices()[0]['body'])
-        self.assertEqual(self.gh.artifacts, before)
-        self.assertNotIn('private-', output.getvalue())
 
     def test_health_channels_fail_independently_without_leaking_errors(self):
         """A failure in one display API cannot prevent the other channel or mask checkpoint failure."""

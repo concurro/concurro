@@ -7,7 +7,7 @@ import unittest
 
 from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import FakeAgents, FakeWorkspace
+from test_pipeline import FakeAgents
 from controller import ACTIONS, Controller
 from github import NotFound
 from service import control
@@ -60,7 +60,7 @@ class CutoverFixture(ServiceFixture):
         """A task the Actions controller created, and a disabled, idle, marker-aware Actions workflow."""
         super().setUp()
         self.service()
-        Controller(self.fake, FakeAgents(), self.config, workspace_factory=FakeWorkspace).advance(7)
+        Controller(self.fake, FakeAgents(), self.config).advance(7)
         self.assertEqual(self.state()["controller"], ACTIONS)
         self.backend.files[WORKFLOW] = f"jobs:\n  advance:\n    steps:\n      - uses: concurro/concurro@{PIN}\n"
         self.identity, self.actions, self.comparisons = FakeIdentity(), ActionsApi(), {PIN: "ahead"}
@@ -86,7 +86,7 @@ class CutoverTests(CutoverFixture, unittest.TestCase):
         self.drain()
         self.assertNotEqual(self.state()["stage"], stage, "the service advances an adopted task")
         before = deepcopy((self.fake.comments, self.fake.artifacts, self.fake.issue["labels"]))
-        Controller(self.fake, FakeAgents(), self.config, workspace_factory=FakeWorkspace).advance(7)
+        Controller(self.fake, FakeAgents(), self.config).advance(7)
         self.assertEqual(deepcopy((self.fake.comments, self.fake.artifacts, self.fake.issue["labels"])), before,
                          "a re-enabled Actions controller writes nothing to an adopted task")
         self.registry.enqueue(KEY, "retry", self.clock() + 300)

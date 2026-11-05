@@ -1,0 +1,15 @@
+name: stacks-core tools
+description: Install the toolchain from the approved upstream base; agents choose their validation.
+inputs:
+  base:
+    description: Absolute path to the approved upstream checkout
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install the repository's Rust toolchain
+      shell: bash
+      working-directory: ${{ inputs.base }}
+      run: |
+        rustup show active-toolchain
+        rustup component add rustfmt clippy

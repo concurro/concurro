@@ -11,7 +11,7 @@ from support import CONFIG, EXECUTION, PROFILES, ROOT, TARGET, setUpModule, tear
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config
-from policy import Blocked, merge_path_allowed, path_allowed, path_safe
+from policy import Blocked, path_allowed, path_safe
 
 
 class TargetConfigTests(unittest.TestCase):
@@ -27,16 +27,12 @@ class TargetConfigTests(unittest.TestCase):
             "repository": ("repository", "not a repository"),
             "base": ("base", "../main"),
             "bot": ("bot_login", "concurro"),
-            "no_checks": ("required_checks", []),
-            "duplicate_checks": ("required_checks", ["Rust", "Rust"]),
             "absolute_document": ("policy_documents", ["/etc/passwd"]),
             "escaping_document": ("policy_documents", ["docs/../../secret.md"]),
-            "no_profiles": ("execution_profiles", []),
-            "duplicate_profiles": ("execution_profiles", ["rust", "rust"]),
             "missing_rule": ("paths", {k: v for k, v in CONFIG["paths"].items() if k != "protected_files"}),
             "no_extensions": ("paths", {**CONFIG["paths"], "editable_extensions": []}),
             "bare_extension": ("paths", {**CONFIG["paths"], "editable_extensions": ["md"]}),
-            "prefix_without_slash": ("paths", {**CONFIG["paths"], "autonomous_merge_prefixes": ["docs"]}),
+            "prefix_without_slash": ("paths", {**CONFIG["paths"], "protected_prefixes": ["docs"]}),
         }
         for name, (key, value) in mutations.items():
             with self.subTest(name=name), self.assertRaises(Blocked):
@@ -68,24 +64,17 @@ class PathPolicyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(path_allowed(path, config, EXECUTION))
 
-    def test_autonomous_merge_paths_exclude_build_checked_sources(self):
-        """Only configured prefixes that need no execution-profile checks can merge autonomously."""
-        self.assertTrue(merge_path_allowed("docs/guide.md", CONFIG, EXECUTION))
-        self.assertTrue(merge_path_allowed("changelog.d/x.added", CONFIG, EXECUTION))
-        self.assertFalse(merge_path_allowed("docs/example.rs", CONFIG, EXECUTION))
-        self.assertFalse(merge_path_allowed("src/lib.md", CONFIG, EXECUTION))
-
 
 class BundleSplitTests(unittest.TestCase):
     """Engine resources and the target charter bind into one identity."""
 
     def test_container_charter_text_reproduces_controller_identity(self):
         """An agent image without the charter derives the same identity from supplied text."""
-        controller = Bundle(target=TARGET, profiles=PROFILES)
-        container = Bundle(ROOT, charter_text=controller.charter_text, profiles=PROFILES, profile_texts={})
+        controller = Bundle(target=TARGET)
+        container = Bundle(ROOT, charter_text=controller.charter_text, instruction_texts=controller.instruction_texts)
         self.assertEqual(container.identity, controller.identity)
         self.assertEqual(container.engine_identity, controller.engine_identity)
-        altered = Bundle(ROOT, charter_text=controller.charter_text + "\n", profiles=PROFILES, profile_texts={})
+        altered = Bundle(ROOT, charter_text=controller.charter_text + "\n", instruction_texts=controller.instruction_texts)
         self.assertNotEqual(altered.identity, controller.identity)
         self.assertEqual(altered.engine_identity, controller.engine_identity)
 
@@ -94,13 +83,13 @@ class BundleSplitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             with self.assertRaises(FileNotFoundError):
-                Bundle(target=target, profiles=PROFILES)
+                Bundle(target=target)
             shutil.copytree(TARGET / ".concurro", target / ".concurro")
-            self.assertEqual(Bundle(target=target, profiles=PROFILES).identity, Bundle(profiles=PROFILES).identity)
+            self.assertEqual(Bundle(target=target).identity, Bundle().identity)
             charter = json.loads((target / CHARTER).read_text())
             charter["id"] = "another-target"
             (target / CHARTER).write_text(json.dumps(charter))
-            self.assertNotEqual(Bundle(target=target, profiles=PROFILES).identity, Bundle(profiles=PROFILES).identity)
+            self.assertNotEqual(Bundle(target=target).identity, Bundle().identity)
 
     def test_agent_payload_carries_exact_charter_text(self):
         """The controller sends the charter bytes that the container must hash."""
@@ -119,9 +108,24 @@ class BundleSplitTests(unittest.TestCase):
                    "repository": {"refs": {"main": "a" * 40}, "head": "main"}})
         payload = turns[0]["request"]
         self.assertEqual(payload["charter"], agents.bundle.charter_text)
-        self.assertEqual(payload["profiles"], PROFILES)
-        self.assertEqual(payload["bundle_id"], Bundle(ROOT, charter_text=payload["charter"], profiles=payload["profiles"],
-                                                      profile_texts=payload["profile_texts"]).identity)
+        self.assertEqual(payload["bundle_id"], Bundle(ROOT, charter_text=payload["charter"], instruction_texts=payload["instruction_texts"]).identity)
+
+    def test_target_instructions_are_role_scoped_and_hash_bound(self):
+        """Only approved target files travel, with shared guidance and the selected role."""
+        charter = Bundle(target=TARGET).charter_text
+        texts = {".concurro/instructions/shared.md": "Use target tools.",
+                 ".concurro/instructions/planner.md": "Plan small changes.",
+                 ".concurro/instructions/reviewer.md": "Check compatibility."}
+        bundle = Bundle(ROOT, charter_text=charter, instruction_texts=texts)
+        self.assertEqual(bundle.instructions("intake")["target"], {"shared": texts[".concurro/instructions/shared.md"]})
+        self.assertEqual(set(bundle.instructions("plan")["target"]), {"shared", "planner"})
+        self.assertEqual(set(bundle.instructions("review")["target"]), {"shared", "reviewer"})
+        self.assertEqual(bundle.identity, Bundle(ROOT, charter_text=charter, instruction_texts=bundle.instruction_texts).identity)
+        self.assertNotEqual(bundle.identity, Bundle(ROOT, charter_text=charter).identity)
+        with self.assertRaises(Blocked):
+            Bundle(ROOT, charter_text=charter, instruction_texts={"../untrusted.md": "x"})
+        with self.assertRaises(Blocked):
+            Bundle(ROOT, charter_text=charter, instruction_texts={".concurro/instructions/shared.md": "x" * 24001})
 
 
 if __name__ == "__main__":

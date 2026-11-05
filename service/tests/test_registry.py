@@ -8,7 +8,7 @@ from fixtures import KEY, REGISTRY_ID, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from controller import Outcome
 from service.errors import RegistryError, RegistryFailure
-from service.registry import DATABASE, Registry
+from service.registry import DATABASE, PullRequest, Registry
 
 
 class StartupTests(ServiceFixture, unittest.TestCase):
@@ -199,13 +199,55 @@ class StateTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.registry.due(self.clock() + 300), [])
 
     def test_pull_requests_map_back_to_their_task(self):
-        """A pull request belongs to one task; relinking moves it."""
-        self.assertIsNone(self.registry.task(KEY[0], 9))
-        self.registry.link(KEY, 9)
-        self.assertEqual((self.registry.task(KEY[0], 9), self.registry.pull(KEY)), (KEY, 9))
-        self.registry.link((KEY[0], 8), 9)
-        self.assertEqual(self.registry.task(KEY[0], 9), (KEY[0], 8))
-        self.assertEqual(self.open_again().pull(KEY), None)
+        """PR repository is independent of issue repository; an association cannot be stolen."""
+        other = ("upstream/repo", KEY[1])
+        self.registry.link(KEY, 9, "upstream/repo")
+        self.registry.link(other, 10, "upstream/repo")
+        self.registry.link(KEY, 9, "upstream/repo")
+        with self.assertRaisesRegex(ValueError, "another task"):
+            self.registry.link(other, 9, "upstream/repo")
+        with self.assertRaisesRegex(ValueError, "another pull"):
+            self.registry.link(KEY, 11, "upstream/repo")
+        registry = self.open_again()
+        self.assertEqual(registry.pull(KEY), PullRequest("upstream/repo", 9))
+        self.assertEqual(registry.task("upstream/repo", 9), KEY)
+        self.assertEqual(registry.task("upstream/repo", 10), other)
+        self.assertIsNone(registry.task(KEY[0], 9))
+
+    def test_same_pr_number_in_different_repositories_is_distinct(self):
+        """The number alone never identifies a PR or its owning task."""
+        other = ("other/issues", KEY[1])
+        self.registry.link(KEY, 9, "upstream/one")
+        self.registry.link(other, 9, "upstream/two")
+        self.assertEqual(self.registry.task("upstream/one", 9), KEY)
+        self.assertEqual(self.registry.task("upstream/two", 9), other)
+
+    def test_v2_migration_preserves_tasks_and_unresolved_writes(self):
+        """Upgrade the old PR table without losing unknown writes, queued work or generation history."""
+        generation = self.registry.grant(KEY, "worker", 60)
+        intent = self.registry.admit(KEY, generation, "POST", "repos/x/y/pulls", "digest")
+        self.registry.enqueue(KEY, "retry", self.clock() + 20)
+        self.registry.close()
+        with sqlite3.connect(Path(self.directory.name, DATABASE)) as db:
+            db.execute("DROP TABLE pulls")
+            db.execute("DROP TABLE bindings")
+            db.execute("DROP TABLE runner_sessions")
+            db.execute("CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
+                       "pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (repository, pull))")
+            db.execute("INSERT INTO pulls VALUES (?, ?, ?)", (*KEY, 9))
+            db.execute("UPDATE meta SET value = '2' WHERE name = 'schema'")
+        # A wrong identity must refuse before migrating anything.
+        with self.assertRaises(RegistryError):
+            Registry.open(self.directory.name, "wrong-identity")
+        with sqlite3.connect(Path(self.directory.name, DATABASE)) as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE name = 'schema'").fetchone()[0], "2")
+        registry = self.open()
+        self.assertEqual(registry.pull(KEY), PullRequest(KEY[0], 9))
+        self.assertEqual([record.intent for record in registry.unresolved(KEY)], [intent])
+        self.assertEqual(registry.current(KEY).generation, generation)
+        self.assertIn("retry", registry.due(self.clock() + 20)[0].causes)
+        registry.close()
+        self.assertEqual(self.open().pull(KEY), PullRequest(KEY[0], 9))
 
 
 if __name__ == "__main__":

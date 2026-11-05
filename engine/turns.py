@@ -1,13 +1,6 @@
-"""One model turn, run anywhere: a workspace from a snapshot spec, the agent container, and its results.
-
-A turn is self-contained: the agent request, the snapshot spec, and the role's retained
-transcript as an archive. The service host and runner jobs run turns the same way; only the
-agent container's resources differ. The container holds the gateway key and nothing else, and
-works on a real Git workspace with its CLI's native tools.
-"""
+"""Native runner turns: isolated role transcripts, workspace extraction and bounded results."""
 
 import base64
-from dataclasses import dataclass
 import io
 import json
 import os
@@ -18,13 +11,14 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
+import signal
+import sys
 
-import cleanup
-from policy import IMAGE, KILLED, UNCERTAIN_EXIT
+import processes
+
+from policy import KILLED, UNCERTAIN_EXIT
 from repository import MAX_FILE, snapshot
 
-# Inside the agent container.
-WORKSPACE, SCRATCH, RETAINED = "/work", "/scratch", "/retained"
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 MAX_RESPONSE = 300_000
 MAX_RETAINED = 24 * 1024 * 1024
@@ -37,23 +31,23 @@ MAX_WORKSPACE_CHANGES = 500
 NAME = re.compile(r"turn-[0-9a-f]{32}")
 
 
-@dataclass(frozen=True)
-class Limits:
-    """The agent container's resources."""
-
-    memory: str = "4g"
-    cpus: int = 2
-    pids: int = 1024
-    tmp: str = "1g"
-
-
 class TurnError(RuntimeError):
     """The turn could not be run; nothing reached a provider."""
 
 
-def docker_environment():
-    """A Docker client environment with no provider or GitHub credentials."""
-    return {k: os.environ[k] for k in ("PATH", "DOCKER_HOST", "DOCKER_CONTEXT") if k in os.environ}
+def agent_environment(root, key, retained):
+    """Keep target toolchains and HOME, excluding job credentials from the child environment.
+
+    This is hygiene, not a sandbox: native tools can access their own ephemeral job.
+    """
+    excluded = ("ACTIONS_", "GITHUB_", "GIT_", "CONCURRO_", "OPENAI_", "ANTHROPIC_", "CLAUDE_", "CODEX_", "COPILOT_")
+    environment = {k: v for k, v in os.environ.items()
+                   if not k.startswith(excluded) and k not in ("GH_TOKEN", "GH_ENTERPRISE_TOKEN")}
+    home = root / ("retained" if retained else "scratch")
+    return {**environment, KEY_VARIABLE: key, "CODEX_HOME": str(home / "codex"),
+            "CLAUDE_CONFIG_DIR": str(home / "claude"), "COPILOT_HOME": str(home / "copilot"),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
 
 
 def git_environment(work, git_dir, index):
@@ -89,9 +83,9 @@ def extract(work, pristine, root):
 
     git("read-tree", "HEAD")
     # Submodules are never entered: Git would read the agent's configuration inside them.
-    gitlinks = {line.split("\t", 1)[1] for line in
-                git("ls-tree", "-r", "-z", "--full-tree", "HEAD").decode("utf-8", errors="surrogateescape").split("\0")
-                if line.startswith("160000 ")}
+    tree = {line.split("\t", 1)[1]: line.split(" ", 1)[0] for line in
+            git("ls-tree", "-r", "-z", "--full-tree", "HEAD").decode("utf-8", errors="surrogateescape").split("\0") if line}
+    gitlinks = {path for path, mode in tree.items() if mode == "160000"}
     listed = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
     edits, removed, skipped = [], [], []
     entries = [e for e in listed.decode("utf-8", errors="surrogateescape").split("\0") if e]
@@ -111,17 +105,23 @@ def extract(work, pristine, root):
         except UnicodeEncodeError:
             raise TurnError("the workspace changes a path that is not UTF-8: " + json.dumps(path)) from None
         if "D" in code:
+            if tree.get(path) not in ("100644", "100755"):
+                raise TurnError("deletion requires an existing regular file: " + path)
             removed.append(path)
             continue
         file = Path(work, path)
         if file.is_symlink() or not file.is_file():
             raise TurnError("the workspace changes a path that is not a regular file: " + path)
+        mode = "100755" if file.stat().st_mode & 0o111 else "100644"
+        if mode != tree.get(path, "100644"):
+            raise TurnError("mode changes are not supported: " + path)
         data = file.read_bytes()
         if len(data) > MAX_FILE:
             raise TurnError("the workspace changes a file larger than the engine accepts: " + path)
         if "?" not in code and unchanged(path, data):
-            # Only its mode changed, which a candidate does not carry.
-            continue
+            raise TurnError("mode-only changes are not supported: " + path)
+        if b"\0" in data:
+            raise TurnError("the workspace changes a binary file: " + path)
         try:
             edits.append({"path": path, "content": data.decode("utf-8")})
         except UnicodeDecodeError:
@@ -189,69 +189,84 @@ def outcome(code, stdout):
         return "failed", None
 
 
-def command(name, image, root, mirror, retained, limits):
-    """The agent container: unprivileged, the workspace and scratch space, the mirror read-only."""
-    user = f"{os.getuid()}:{os.getgid()}"
-    mounts = [f"type=bind,source={root / 'work'},target={WORKSPACE}",
-              f"type=bind,source={root / 'scratch'},target={SCRATCH}",
-              # The workspace's alternates name the mirror's own path.
-              f"type=bind,source={mirror},target={mirror},readonly"]
-    if retained:
-        mounts.append(f"type=bind,source={root / 'retained'},target={RETAINED}")
-    return ["docker", "run", "--rm", "--init", "-i", "--name", name, "--cap-drop=ALL",
-            "--security-opt=no-new-privileges", f"--pids-limit={limits.pids}", f"--memory={limits.memory}",
-            f"--cpus={limits.cpus}", f"--user={user}", f"--tmpfs=/tmp:rw,nosuid,nodev,size={limits.tmp},mode=1777",
-            *(arg for mount in mounts for arg in ("--mount", mount)),
-            "--env", KEY_VARIABLE, "--env", f"HOME={SCRATCH}/home", "--env", f"CODEX_HOME={SCRATCH}/codex",
-            "--env", f"CLAUDE_CONFIG_DIR={SCRATCH}/claude", "--env", f"COPILOT_HOME={SCRATCH}/copilot",
-            # Bind-mounted files may show another owner; the agent's Git must still open its workspace.
-            "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*",
-            "--workdir", WORKSPACE, image]
+def command(root):
+    """The native agent entry point; stdout is the bounded structured response."""
+    return [sys.executable, str(Path(__file__).with_name("agent_entry.py"))]
 
 
-def execute(turn, image, key, mirror, root, limits=Limits()):
-    """Run one turn under `root` (a fresh directory) and return its outcome.
-
-    `turn` is `{"request": agent request, "spec": snapshot spec, "retained": archive or None,
-    "timeout": seconds}`; `mirror` is a `Mirror` holding the target's history. Returns
-    `{"outcome": "ok" | "failed" | "uncertain", "response", "workspace", "retained"}`;
-    `workspace` (develop only) holds the extracted changes.
-    """
-    if not IMAGE.fullmatch(image) and not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+", image):
-        raise TurnError("the agent image must be pinned")
+def execute(turn, key, mirror, root, stopped=None):
+    """Run one native agent process group and return JSON, extracted files and its retained journal."""
     request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
     if type(timeout) is not int or not 60 <= timeout <= 7200:
         raise TurnError("invalid turn timeout")
-    root = Path(root)
+    root = Path(root).resolve()
     name = root.name
     if not NAME.fullmatch(name):
         raise TurnError("invalid turn directory")
     session = request.get("session")
     for directory in ("work", "scratch", "retained"):
         (root / directory).mkdir(parents=True)
+    if request.get("evaluation"):
+        if request["stage"] != "plan_qc" or session is not None:
+            raise TurnError("evaluation is limited to fresh design review")
+        from design_eval import fixture_mirror
+        mirror, commit = fixture_mirror(root / "evaluation", "concurro/evaluation")
+        spec = {"refs": {"fixture": commit}, "head": "fixture", "base_branch": "fixture", "candidate": None}
+        context = {**request["context"], "base": commit, "repository_commit": commit,
+                   "repository": {"refs": spec["refs"], "head": "fixture"}}
+        request = {**request, "context": context}
     mirror.borrow(name, spec["base_branch"], sorted(set(spec["refs"].values())))
-    environment = {**docker_environment(), KEY_VARIABLE: key}
-    container = "concurro-" + uuid.uuid4().hex
     try:
         snapshot({k: spec[k] for k in ("refs", "head", "candidate")}, root=root / "work", mirror=mirror.path)
         shutil.copytree(root / "work" / ".git", root / "pristine.git", symlinks=True)
         if session:
             unpack(turn.get("retained"), root / "retained")
-        payload = {**request, "workspace": WORKSPACE, "timeout": timeout}
-        try:
-            result = subprocess.run(command(container, image, root, mirror.path, bool(session), limits),
-                                    input=json.dumps(payload), capture_output=True, text=True,
-                                    timeout=timeout + 60, env=environment)
-            code, stdout = result.returncode, result.stdout
-        except subprocess.TimeoutExpired:
-            code, stdout = KILLED[0], ""
-        finally:
-            cleanup.remove(["docker", "rm", "-f", container], environment)
+        payload = {**request, "workspace": str(root / "work"), "scratch": str(root / "scratch"),
+                   "retained_root": str(root / "retained"), "timeout": timeout}
+        baseline = processes.begin()
+        with subprocess.Popen(command(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              text=True, env=agent_environment(root, key, bool(session)), start_new_session=True) as process:
+            timer = None
+            if stopped is not None:
+                import threading
+                def cancel():
+                    while process.poll() is None:
+                        if stopped.wait(1):
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            return
+                timer = threading.Thread(target=cancel, daemon=True)
+                timer.start()
+            try:
+                stdout, _ = process.communicate(json.dumps(payload), timeout=timeout + 60)
+                code = process.returncode
+            except subprocess.TimeoutExpired:
+                code, stdout = KILLED[0], ""
+            finally:
+                # Stop descendants before taking the diff or archiving session state.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                if timer:
+                    timer.join(2)
+                try:
+                    processes.finish(baseline)
+                except Exception:
+                    if stopped is not None:
+                        stopped.set()
+                    raise
         result, response = outcome(code, stdout)
         reply = {"outcome": result, "response": response, "workspace": None,
                  "retained": pack(root / "retained") if session else None}
         if result == "ok" and request["stage"] == "develop":
-            reply["workspace"] = extract(root / "work", root / "pristine.git", root)
+            try:
+                reply["workspace"] = extract(root / "work", root / "pristine.git", root)
+            except TurnError as error:
+                reply["workspace"] = {"error": str(error)}
         return reply
     finally:
         mirror.release(name)

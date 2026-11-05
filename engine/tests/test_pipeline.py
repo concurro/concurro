@@ -15,12 +15,11 @@ from agent_entry import command_for
 from controller import Controller, MARKER, validate_config
 from credentials import Credential
 from github import NotFound
-from policy import Blocked, digest, merge_reasons, path_allowed, path_safe, protection_errors, validate_edits, validate_review
+from readiness import review_reasons
+from policy import Blocked, digest, path_allowed, path_safe, validate_edits, validate_review
 
 PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.md"],
         "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": [],
-        "validation": {"checks": ["diff", "scope", "text"], "files": [
-            {"path": "docs/guide.md", "change": "modify", "max_lines": None, "required_text": []}]},
         "publication": {"changes": ["Clarify the guide."], "review_focus": ["Verify wording and links."]}}
 APPROVE = {"verdict": "approve", "summary": "The change satisfies the plan.", "findings": [], "design_issue": None}
 FINDING = {"path": "docs/guide.md", "start_line": None, "line": None, "detail": "Define the term."}
@@ -74,7 +73,7 @@ class FakeAgents:
             return {**deepcopy(PLAN), "responses": [{"id": v["id"], "response": "Updated the plan to address this finding."} for v in context.get("open_objections", [])]}
         if stage == "develop":
             return {"summary": "Explain the guide.", "edits": [{"path": "docs/guide.md",
-                    "content": "Updated guide " + str(len(self.calls)) + "\n"}], "checks": [], "design_issue": None}
+                    "content": "Updated guide " + str(len(self.calls)) + "\n"}], "validation": "Read the edited documentation.", "design_issue": None}
         if stage == "review":
             # Each earlier finding of this provider is answered as fixed by the new head.
             dispositions = [{"id": f["id"], "status": "fixed", "evidence": "The updated guide defines the term."}
@@ -89,7 +88,7 @@ class FakeAgents:
 
 RULES = [{"type": "required_status_checks", "ruleset_id": 1, "parameters": {
              "strict_required_status_checks_policy": True,
-             "required_status_checks": [{"context": name} for name in CONFIG["required_checks"]]}},
+             "required_status_checks": [{"context": name} for name in ["Concurro Rust"]]}},
          {"type": "pull_request", "ruleset_id": 1, "parameters": {"required_review_thread_resolution": True}}]
 
 
@@ -105,6 +104,7 @@ class FakeGitHub:
         self.events = [{"id": 2, "event": "labeled", "label": {"name": "concurro"}, "actor": {"login": "writer"}}]
         self.comments = [{"id": 1, "user": {"login": "writer"}, "body": "/concurro start"}]
         self.refs = {}
+        self.publication_source = self
         self.linked_branches = set()
         self.artifacts = {}
         self.artifact_counter = 0
@@ -118,13 +118,22 @@ class FakeGitHub:
         self.human_reviews = []
         self.app_reviews = []
         self.review_comments = []
-        self.protection = {"required_status_checks": {"strict": True, "contexts": config["required_checks"]},
+        self.protection = {"required_status_checks": {"strict": True, "contexts": config.get("required_checks", ["Concurro Rust"])},
                            "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
         self.rules = []
         self.rulesets = {}
         self.checks_green = True
         self.authorized = True
         self.fail_after_ref = False
+
+    def mark_ready(self, node_id):
+        """Apply draft-to-ready; simulate a lost response without replaying the transition."""
+        assert node_id == self.pr["node_id"]
+        self.pr["draft"] = False
+        self.ready_calls = getattr(self, "ready_calls", 0) + 1
+        if getattr(self, "fail_after_ready", False):
+            self.fail_after_ready = False
+            raise RuntimeError("lost readiness response")
 
     def archives(self):
         """The bodies of the report archive artifacts, oldest first."""
@@ -192,10 +201,12 @@ class FakeGitHub:
             return deepcopy(self.human_reviews + self.app_reviews)
         if path == "rules/branches/main":
             return deepcopy(self.rules)
+        if path.endswith(("/statuses", "/check-suites")) or path.startswith("actions/runs?"):
+            return []
         if path.startswith("commits/"):
             return [{"name": name, "head_sha": self.pr["head"]["sha"], "status": "completed",
                      "conclusion": "success" if self.checks_green else "failure",
-                     "app": {"slug": "github-actions"}} for name in self.config["required_checks"]]
+                     "app": {"slug": "github-actions"}} for name in self.config.get("required_checks", ["Concurro Rust"])]
         raise AssertionError(path)
 
     def outcome_candidates(self, limit):
@@ -205,7 +216,7 @@ class FakeGitHub:
     def pull_files(self):
         """Each changed file with a unified patch against the base, as GitHub lists them."""
         base = self.trees[self.base]
-        head = self.trees[self.commits[self.pr["head"]["sha"]]["tree"]["sha"]] if self.pr else base
+        head = self.publication_source.trees[self.publication_source.commits[self.pr["head"]["sha"]]["tree"]["sha"]] if self.pr else base
         files = []
         for name in sorted(set(base) | set(head)):
             if base.get(name) != head.get(name):
@@ -290,7 +301,11 @@ class FakeGitHub:
             self.counter += 1
             sha = f"{self.counter:040x}"
             self.trees[sha] = deepcopy(self.trees[data["base_tree"]])
-            self.trees[sha].update({v["path"]: v["content"] for v in data["tree"]})
+            for entry in data["tree"]:
+                if "sha" in entry and entry["sha"] is None:
+                    self.trees[sha].pop(entry["path"], None)
+                else:
+                    self.trees[sha][entry["path"]] = entry["content"]
             return {"sha": sha}
         if path == "git/commits":
             self.counter += 1
@@ -325,9 +340,9 @@ class FakeGitHub:
             comment = self.review_comment(data, in_reply_to_id=parent)
             return deepcopy(comment)
         if path == "pulls":
-            self.pr = {"number": 9, "title": data["title"], "body": data["body"], "state": "open", "draft": False, "mergeable": True,
-                       "mergeable_state": "clean", "head": {"sha": self.refs[data["head"]],
-                        "ref": data["head"], "repo": {"full_name": self.config["repository"]}},
+            self.pr = {"user": {"login": self.config["bot_login"]}, "node_id": "PR_9", "number": 9, "title": data["title"], "body": data["body"], "state": "open", "draft": data["draft"], "mergeable": True,
+                       "mergeable_state": "clean", "head": {"sha": self.publication_source.refs[data["head"].split(":", 1)[-1]],
+                        "ref": data["head"].split(":", 1)[-1], "repo": {"full_name": self.config.get("fork", self.config["repository"])}},
                        "base": {"ref": "main", "sha": self.base}, "merged": False}
             return deepcopy(self.pr)
         if path == "pulls/9":
@@ -348,58 +363,6 @@ class FakeGitHub:
         raise AssertionError((path, method, data))
 
 
-class FakeWorkspace:
-    """Model local checkpoints and execution evidence without Docker or network access."""
-
-    def __init__(self, config, archive, branch, execution=None, base_archive=None):
-        """Seed an isolated candidate from the fake archive."""
-        self.original = json.loads(archive)
-        self.source = deepcopy(self.original)
-        self.branch = branch
-        self.current = {"local_commit": "local-base", "tree": digest(self.source), "branch": branch}
-
-    def __enter__(self):
-        """Expose the workbench for one local loop."""
-        return self
-
-    def __exit__(self, *_):
-        """Discard the in-memory workspace."""
-
-    def prepare(self, required, timeout):
-        """No dependencies are needed by the fixture."""
-
-    def files(self, paths):
-        """Return the current complete contents for approved paths; like the helper, refuse unsafe ones."""
-        if not all(path_safe(p) for p in paths):
-            raise Blocked("forbidden source path")
-        return {p: self.source.get(p) for p in paths}
-
-    def checkpoint(self, edits):
-        """Create a new content-addressed local checkpoint."""
-        self.source.update({e["path"]: e["content"] for e in edits})
-        self.current = {"local_commit": digest(self.source), "tree": digest(self.source), "branch": self.branch}
-        return self.current
-
-    def scope(self, packages):
-        """Record the packages scoped checks would cover."""
-        self.packages = dict(packages)
-
-    def configure_validation(self, spec, originals, scope):
-        """Retain declared checks and scope without replacing real-workbench integration coverage."""
-        self.validation, self.scope_payload = deepcopy(spec), deepcopy(scope)
-
-    def run_checks(self, required, requested, deadline):
-        """Return successful evidence bound to this exact source tree."""
-        return [{"name": name, "tree": self.current["tree"], "exit_code": 0,
-                 "timed_out": False, "output_limited": False, "output": "passed", "output_sha": "test"}
-                for name in dict.fromkeys(required + requested)]
-
-    def export(self):
-        """Return only net changes relative to the fixture baseline."""
-        return {**self.current, "edits": [{"path": p, "content": v} for p, v in self.source.items()
-                                        if v != self.original.get(p)]}
-
-
 class PipelineTests(unittest.TestCase):
     """Exercise restartable stages and rejection of unsafe evidence."""
 
@@ -407,16 +370,15 @@ class PipelineTests(unittest.TestCase):
         """Create fresh transports and opt in to merging for gate tests."""
         self.config = deepcopy(CONFIG)
         self.config["autonomous"] = False
-        self.config["merge_enabled"] = True
         self.gh = FakeGitHub(self.config)
         self.agents = FakeAgents()
 
     def tick(self):
         """Reconstruct the controller each time to prove state survives process exit."""
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         while controller.state and controller.state["stage"] in ("plan", "plan_qc"):
-            controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+            controller = Controller(self.gh, self.agents, self.config)
             controller.advance(7)
         return controller.state
 
@@ -430,12 +392,12 @@ class PipelineTests(unittest.TestCase):
         return state
 
     def test_complete_lifecycle_and_replay(self):
-        """A valid lifecycle merges once, even when the job is replayed."""
+        """A valid lifecycle marks ready once and never merges, including on replay."""
         self.ready()
-        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertTrue(self.tick()["handoff_ready"])
         self.tick()
-        self.assertEqual(self.gh.merges, 1)
-        self.assertEqual(len(self.agents.calls), 10)
+        self.assertEqual(self.gh.merges, 0)
+        self.assertEqual(len(self.agents.calls), 9)
 
     def test_independent_reviews_and_fix_round(self):
         """Both reviewers assess each head; one failure triggers a bounded new revision."""
@@ -450,7 +412,7 @@ class PipelineTests(unittest.TestCase):
         for _, stage, context in self.agents.calls:
             if stage == "review":
                 self.assertNotIn("prior_reviews", context)
-        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertTrue(self.tick()["handoff_ready"])
 
     def test_copilot_model_selection_and_required_review(self):
         """Copilot can participate with an explicit model and adds a required verdict."""
@@ -461,7 +423,7 @@ class PipelineTests(unittest.TestCase):
         for _ in range(5):
             state = self.tick()
         self.assertEqual(state["reviews"]["copilot"]["model"], "chosen-model")
-        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertTrue(self.tick()["handoff_ready"])
         gateway = {"url": "https://gateway.invalid", "headers": {}}
         for provider in ("claude", "codex"):
             cmd = command_for({"provider": provider, "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o")
@@ -485,7 +447,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.tick()["stage"], "stopped")
         self.assertEqual(self.gh.merges, 0)
         self.gh.comment("/concurro retry")
-        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertTrue(self.tick()["handoff_ready"])
         self.assertEqual(len(self.agents.calls), calls)
 
     def test_forged_state_is_ignored(self):
@@ -503,30 +465,22 @@ class PipelineTests(unittest.TestCase):
             self.tick()
         self.assertEqual(self.tick()["stage"], "review")
         self.assertEqual(len(self.gh.refs), 1)
-        self.assertEqual(len(self.agents.calls), 8)
+        self.assertEqual(len(self.agents.calls), 7)
 
-    def test_lost_merge_response_reconciles_closed_issue(self):
-        """A merge may close the issue before the controller receives its response."""
+    def test_external_merge_reconciles_closed_issue(self):
+        """A human merge ends observation without claiming that Concurro merged it."""
         self.ready()
-        original = self.gh.repo
-
-        def lost_response(path, method="GET", data=None):
-            """Apply the merge, then simulate a broken connection."""
-            result = original(path, method, data)
-            if path == "pulls/9/merge":
-                self.gh.issue["state"] = "closed"
-                raise RuntimeError("lost merge response")
-            return result
-
-        with patch.object(self.gh, "repo", side_effect=lost_response):
-            with self.assertRaises(RuntimeError):
-                self.tick()
-        self.assertEqual(self.tick()["stage"], "merged")
-        self.assertEqual(self.gh.merges, 1)
+        self.gh.pr.update(merged=True, merge_commit_sha="f" * 40, state="closed", merged_by={"login": "writer"})
+        self.gh.issue["state"] = "closed"
+        state = self.tick()
+        self.assertEqual(state["stage"], "observed_merged")
+        self.assertEqual(state["completion"]["kind"], "observed_external")
+        self.assertFalse(state["completion"]["gates_verified"])
+        self.assertEqual(self.gh.merges, 0)
 
     def test_mutated_issue_base_head_or_configuration_blocks(self):
         """Approval cannot survive changes to its inputs or controller policy."""
-        for mutation in ("issue", "base", "head", "config", "permission"):
+        for mutation in ("issue", "head", "config", "permission"):
             with self.subTest(mutation=mutation):
                 self.setUp()
                 self.ready()
@@ -559,12 +513,6 @@ class PipelineTests(unittest.TestCase):
                     self.tick()
                 self.assertEqual(self.gh.merges, 0)
 
-    def test_image_drift_blocks(self):
-        """Changing the pinned worker image invalidates existing approvals."""
-        self.ready()
-        with patch.dict("os.environ", {"CONCURRO_AGENT_IMAGE": "sha256:" + "f" * 64}):
-            with self.assertRaises(Blocked):
-                self.tick()
 
     def test_ci_threads_and_human_review_block_then_recover(self):
         """Missing CI and human objections cannot be overridden by model approval."""
@@ -575,30 +523,18 @@ class PipelineTests(unittest.TestCase):
         state = self.tick()
         self.assertIn("unsuccessful", state["reason"])
         self.assertIn("unresolved", state["reason"])
-        self.assertIn("human", state["reason"])
         self.assertEqual(self.gh.merges, 0)
         self.gh.checks_green = True
         self.gh.thread_list[0]["isResolved"] = True
         self.gh.human_reviews.append({"user": {"login": "writer"}, "state": "APPROVED"})
-        self.assertEqual(self.tick()["stage"], "merged")
+        self.assertTrue(self.tick()["handoff_ready"])
 
-    def test_gate_rejects_missing_duplicate_stale_and_wrong_app_checks(self):
-        """Every required check must be unique, current, successful and from Actions."""
-        state = self.ready()
-        checks = self.gh.pages("commits/test")
-        variants = [[], checks + [checks[0]], deepcopy(checks), deepcopy(checks), deepcopy(checks)]
-        variants[2][0]["head_sha"] = "0" * 40
-        variants[3][0]["app"]["slug"] = "spoof"
-        variants[4][0]["conclusion"] = "skipped"
-        for candidate in variants:
-            with self.subTest(checks=candidate):
-                self.assertTrue(merge_reasons(state, self.gh.pr, ["docs/guide.md"], candidate, [], [], self.config))
 
     def test_stale_or_missing_provider_review_blocks(self):
         """Independent verdicts cannot be recycled from another commit."""
         state = self.ready()
         state["reviews"]["codex"]["head"] = "0" * 40
-        reasons = merge_reasons(state, self.gh.pr, ["docs/guide.md"], self.gh.pages("commits/test"), [], [], self.config)
+        reasons = review_reasons(state, self.gh.pr, ["docs/guide.md"], [], self.config)
         self.assertIn("codex approval missing or stale", reasons)
 
     def test_budget_is_charged_before_model_failure(self):
@@ -638,51 +574,19 @@ class PipelineTests(unittest.TestCase):
                 with self.assertRaises(Blocked):
                     controller.files(self.gh.base, ["docs/guide.md"])
 
-    def test_protection_is_required_before_merge(self):
-        """A clean PR alone cannot bypass missing server-side protection."""
+    def test_readiness_does_not_evaluate_merge_protection(self):
+        """Human merge policy stays GitHub's responsibility; readiness needs only reviews and CI."""
         self.ready()
         original = self.gh.repo
-
-        def unprotected(path, method="GET", data=None):
-            """Remove the race protection from the fake branch configuration."""
-            return {} if path == "branches/main/protection" else original(path, method, data)
-
-        with patch.object(self.gh, "repo", side_effect=unprotected):
-            with self.assertRaises(Blocked):
-                self.tick()
+        def no_policy_reads(path, method="GET", data=None):
+            self.assertNotIn("protection", path)
+            self.assertFalse(path.startswith(("rules/", "rulesets/")))
+            self.assertNotIn("/merge", path)
+            return original(path, method, data)
+        with patch.object(self.gh, "repo", side_effect=no_policy_reads):
+            self.assertTrue(self.tick()["handoff_ready"])
         self.assertEqual(self.gh.merges, 0)
 
-    def test_ruleset_only_protection_guards_merge(self):
-        """Active rulesets the App cannot bypass replace classic protection."""
-        self.ready()
-        self.gh.protection = None
-        self.gh.rules = RULES
-        self.gh.rulesets = {1: {"id": 1, "enforcement": "active", "current_user_can_bypass": "never"}}
-        self.assertEqual(self.tick()["stage"], "merged")
-        self.assertEqual(self.gh.merges, 1)
-
-    def test_bypassable_ruleset_does_not_guard_merge(self):
-        """A ruleset the App could bypass leaves the merge race unguarded."""
-        self.ready()
-        self.gh.protection = None
-        self.gh.rules = RULES
-        self.gh.rulesets = {1: {"id": 1, "enforcement": "active", "current_user_can_bypass": "always"}}
-        with self.assertRaisesRegex(Blocked, "cannot bypass"):
-            self.tick()
-        self.assertEqual(self.gh.merges, 0)
-
-    def test_default_merge_switch_and_rust_paths_block(self):
-        """Autonomous merge is opt-in and cannot include Rust source."""
-        state = self.ready()
-        checks = self.gh.pages("commits/test")
-        config = deepcopy(self.config)
-        config["merge_enabled"] = False
-        self.assertIn("autonomous merge is disabled", merge_reasons(
-            state, self.gh.pr, ["docs/guide.md"], checks, [], [], config))
-        state["changed_files"] = ["stackslib/src/lib.rs"]
-        state["plan"]["files"] = state["changed_files"]
-        self.assertIn("autonomous merge is limited to configured low-risk paths", merge_reasons(
-            state, self.gh.pr, state["changed_files"], checks, [], [], self.config))
 
     def test_model_attempt_budget_stops_calls(self):
         """A spent budget never starts another inference request."""
@@ -704,39 +608,6 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(Blocked):
             validate_config(config)
 
-
-class ProtectionTests(unittest.TestCase):
-    """Only protection the App cannot bypass counts, whether classic or ruleset-based."""
-
-    CLASSIC = {"required_status_checks": {"strict": True, "contexts": ["Concurro Rust"]},
-               "required_conversation_resolution": {"enabled": True}, "enforce_admins": {"enabled": True}}
-    ACTIVE = {1: {"enforcement": "active", "current_user_can_bypass": "never"}}
-
-    def test_classic_and_ruleset_sources(self):
-        """Either source satisfies the gate, and requirements may be split across them."""
-        self.assertEqual(protection_errors(self.CLASSIC, [], {}, ["Concurro Rust"]), [])
-        self.assertEqual(protection_errors(None, RULES, self.ACTIVE, CONFIG["required_checks"]), [])
-        classic = {**self.CLASSIC, "required_conversation_resolution": {"enabled": False}}
-        self.assertEqual(protection_errors(classic, RULES[1:], self.ACTIVE, ["Concurro Rust"]), [])
-
-    def test_weak_sources_are_ignored(self):
-        """Unenforced, bypassable, evaluate-only, non-strict and unknown sources never count."""
-        weak_classic = [{**self.CLASSIC, "enforce_admins": {"enabled": False}},
-                        {**self.CLASSIC, "required_status_checks": {"strict": False, "contexts": ["Concurro Rust"]}}]
-        for classic in weak_classic:
-            with self.subTest(classic=classic):
-                self.assertTrue(protection_errors(classic, [], {}, ["Concurro Rust"]))
-        weak_rulesets = [{1: {"enforcement": "active", "current_user_can_bypass": mode}}
-                         for mode in ("always", "pull_requests_only", None)]
-        weak_rulesets += [{1: {"enforcement": "evaluate", "current_user_can_bypass": "never"}}, {}]
-        for rulesets in weak_rulesets:
-            with self.subTest(rulesets=rulesets):
-                self.assertEqual(len(protection_errors(None, RULES, rulesets, CONFIG["required_checks"])), 2)
-        lax = deepcopy(RULES)
-        lax[0]["parameters"]["strict_required_status_checks_policy"] = False
-        self.assertEqual(protection_errors(None, lax, self.ACTIVE, ["Concurro Rust"]),
-                         ["strict branch protection the App cannot bypass must require: Concurro Rust"])
-        self.assertTrue(protection_errors(None, RULES, self.ACTIVE, ["Concurro Rust", "Other CI"]))
 
 if __name__ == "__main__":
     unittest.main()

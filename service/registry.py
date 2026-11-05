@@ -15,12 +15,18 @@ from policy import digest
 
 from .errors import RegistryError, RegistryFailure
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
 DISPOSITIONS = {"applied": "done", "not-applied": "failed"}
-SCHEMA = """
+BINDINGS = """CREATE TABLE bindings (
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,
+    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
+RUNNER_SESSIONS = """CREATE TABLE runner_sessions (
+    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,
+    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)"""
+SCHEMA = BINDINGS + ";" + RUNNER_SESSIONS + ";" + """
 CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL);
 CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,
@@ -39,9 +45,27 @@ CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TE
                        PRIMARY KEY (repository, issue));
 CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,
                        PRIMARY KEY (repository, issue));
-CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, pull INTEGER NOT NULL,
-                    PRIMARY KEY (repository, issue), UNIQUE (repository, pull));
+CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,
+                    pull_repository TEXT NOT NULL, pull INTEGER NOT NULL,
+                    PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull));
 """
+
+
+@dataclass(frozen=True)
+class TaskBinding:
+    """The immutable publication destinations and configuration commit for a task."""
+
+    upstream: str
+    fork: str
+    config_sha: str
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    """The repository and number of a task's published PR."""
+
+    repository: str
+    number: int
 
 
 @dataclass(frozen=True)
@@ -88,9 +112,20 @@ def queue(db, key, cause, due_at):
                (*key, json.dumps(causes), min(row[1], due_at) if row else due_at))
 
 
+def human_input(snapshot):
+    """Separate task inputs from CI-only observation and saved stage metadata."""
+    if snapshot is None:
+        return None
+    result = {k: v for k, v in snapshot.items() if k != "_stage"}
+    if result.get("pull"):
+        result["pull"] = {k: v for k, v in result["pull"].items()
+                          if k not in ("checks", "statuses", "suites", "runs", "merge_head")}
+    return result
+
+
 def poll_cause(snapshot):
-    """The queue cause for a poll that observed exactly this input."""
-    return "poll:" + digest(snapshot)
+    """The poll cause for human/PR input; CI has its own non-model wakeup."""
+    return "poll:" + digest(human_input(snapshot))
 
 
 def drop_polls(db, key, snapshot):
@@ -98,7 +133,7 @@ def drop_polls(db, key, snapshot):
     row = db.execute("SELECT causes FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
     if not row:
         return
-    causes = [cause for cause in json.loads(row[0]) if cause != poll_cause(snapshot)]
+    causes = [cause for cause in json.loads(row[0]) if cause not in (poll_cause(snapshot), "ci")]
     if causes:
         db.execute("UPDATE queue SET causes = ? WHERE repository = ? AND issue = ?", (json.dumps(causes), *key))
     else:
@@ -154,7 +189,22 @@ class Registry:
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise RegistryError("registry integrity check failed")
             meta = dict(db.execute("SELECT name, value FROM meta").fetchall())
-            if meta != {"registry_id": registry_id, "schema": str(SCHEMA_VERSION)}:
+            if meta.get("registry_id") != registry_id or set(meta) != {"registry_id", "schema"}:
+                raise RegistryError("registry identity or schema version mismatch")
+            if meta["schema"] == "2":
+                # Old PRs lived beside their issues. Preserve that identity and all journals.
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("ALTER TABLE pulls RENAME TO pulls_v2")
+                db.execute("CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
+                           "pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, "
+                           "PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))")
+                db.execute("INSERT INTO pulls SELECT repository, issue, repository, pull FROM pulls_v2")
+                db.execute("DROP TABLE pulls_v2")
+                db.execute(BINDINGS)
+                db.execute(RUNNER_SESSIONS)
+                db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
+                db.execute("COMMIT")
+            elif meta["schema"] != str(SCHEMA_VERSION):
                 raise RegistryError("registry identity or schema version mismatch")
         except (RegistryError, sqlite3.Error) as error:
             if db is not None:
@@ -217,6 +267,13 @@ class Registry:
         """Add a cause to the task's work item, keeping its earliest due time."""
         with self.transaction() as db:
             queue(db, key, cause, due_at)
+
+    def enqueue_ci(self, key):
+        """CI may wake completed reviews, never a model stage or a deferred failure."""
+        with self.transaction() as db:
+            snapshot = stored(db, "snapshots", key)
+            if (snapshot or {}).get("_stage") == "gates" and stored(db, "deferred", key) is None:
+                queue(db, key, "ci", self.clock())
 
     def due(self, now):
         """Work items due by `now`, oldest first."""
@@ -380,7 +437,13 @@ class Registry:
                 new = (acknowledged is not None and acknowledged["issue"]["state"] == "closed"
                        and snapshot["issue"]["state"] == "open")
             else:
-                new = snapshot != acknowledged and snapshot != stored(db, "deferred", key)
+                deferred = stored(db, "deferred", key)
+                new = human_input(snapshot) != human_input(acknowledged) and human_input(snapshot) != human_input(deferred)
+                if (not new and deferred is None and (acknowledged or {}).get("_stage") == "gates"
+                        and {k: v for k, v in snapshot.items() if k != "_stage"}
+                            != {k: v for k, v in acknowledged.items() if k != "_stage"}):
+                    queue(db, key, "ci", self.clock())
+                    return True
             if new:
                 queue(db, key, poll_cause(snapshot), self.clock())
             return new
@@ -392,23 +455,55 @@ class Registry:
                              "WHERE repository = ? AND issue = ?", key).fetchone()
         return Outcome(row[0], bool(row[1]), row[2]) if row else None
 
-    def link(self, key, pull):
-        """Record the task's pull request, so PR and check events map back to it."""
+    def binding(self, key):
+        """The task's pinned configuration and destinations, or None before enrollment."""
         with self.transaction() as db:
-            db.execute("DELETE FROM pulls WHERE repository = ? AND pull = ? AND issue != ?", (key[0], pull, key[1]))
-            db.execute("INSERT OR REPLACE INTO pulls VALUES (?, ?, ?)", (*key, pull))
+            row = db.execute("SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?",
+                             key).fetchone()
+        return TaskBinding(*row) if row else None
+
+    def bind(self, key, upstream, fork, config_sha):
+        """Pin the first configuration; refuse retargeting and reuse it on subsequent ticks."""
+        with self.transaction() as db:
+            row = db.execute("SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?",
+                             key).fetchone()
+            if row is not None:
+                if tuple(row[:2]) != (upstream, fork):
+                    raise ValueError("task target changed; reconcile before continuing")
+                return TaskBinding(*row)
+            db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, ?)", (*key, upstream, fork, config_sha))
+            return TaskBinding(upstream, fork, config_sha)
+
+    def link(self, key, pull, repository=None):
+        """Record one PR identity; a different task cannot take over the association.
+
+        The default repository preserves old single-repository callers during migration.
+        """
+        repository = repository or key[0]
+        with self.transaction() as db:
+            owner = db.execute("SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?",
+                               (repository, pull)).fetchone()
+            if owner is not None and tuple(owner) != key:
+                raise ValueError("pull request already belongs to another task")
+            current = db.execute("SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?",
+                                 key).fetchone()
+            if current is not None and tuple(current) != (repository, pull):
+                raise ValueError("task already has another pull request")
+            db.execute("INSERT OR IGNORE INTO pulls VALUES (?, ?, ?, ?)", (*key, repository, pull))
 
     def pull(self, key):
-        """The task's recorded pull request number, or None."""
+        """The task's recorded PR identity, or None."""
         with self.transaction() as db:
-            row = db.execute("SELECT pull FROM pulls WHERE repository = ? AND issue = ?", key).fetchone()
-        return row[0] if row else None
+            row = db.execute("SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?",
+                             key).fetchone()
+        return PullRequest(*row) if row else None
 
     def task(self, repository, pull):
-        """The task that owns a pull request, or None."""
+        """The issue identity owning a PR in `repository`, or None."""
         with self.transaction() as db:
-            row = db.execute("SELECT issue FROM pulls WHERE repository = ? AND pull = ?", (repository, pull)).fetchone()
-        return (repository, row[0]) if row else None
+            row = db.execute("SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?",
+                             (repository, pull)).fetchone()
+        return tuple(row) if row else None
 
     def status(self):
         """Every task the registry knows: queue, ownership, outcome and unknown writes."""
@@ -430,6 +525,45 @@ class Registry:
                               "outcome": {"kind": outcome[0], "retry_after": outcome[1], "recorded": outcome[2]}
                               if outcome else None, "unresolved": unknown})
         return tasks
+
+    def runner_session(self, session):
+        """The task and configuration authorized for a recorded run ref, or None."""
+        with self.transaction() as db:
+            row = db.execute("SELECT repository, issue, generation, config_sha, removed FROM runner_sessions WHERE id = ?",
+                             (session,)).fetchone()
+        return dict(zip(("repository", "issue", "generation", "config_sha", "removed"), row)) if row else None
+
+    def register_runner(self, key, generation, session, config_sha):
+        """Record a session before creating its branch or dispatching its job."""
+        with self.transaction() as db:
+            prior = db.execute("SELECT repository, issue, generation, config_sha FROM runner_sessions WHERE id = ?",
+                               (session,)).fetchone()
+            expected = (*key, generation, config_sha)
+            if prior and tuple(prior) != expected:
+                raise RegistryError("runner session is already bound to another task")
+            db.execute("INSERT OR IGNORE INTO runner_sessions (id, repository, issue, generation, config_sha) "
+                       "VALUES (?, ?, ?, ?, ?)", (session, *expected))
+
+    def runner_sessions(self):
+        """Run refs not yet confirmed removed, for reconciliation."""
+        with self.transaction() as db:
+            rows = db.execute("SELECT id, repository, issue, generation FROM runner_sessions WHERE removed = 0").fetchall()
+        return [tuple(row) for row in rows]
+
+    def remove_runner(self, session):
+        """Record confirmation that the session's run ref is gone."""
+        with self.transaction() as db:
+            db.execute("UPDATE runner_sessions SET removed = 1 WHERE id = ?", (session,))
+
+    def commit_tasks(self, repository, sha):
+        """Tasks whose last observed upstream PR uses this head or test-merge commit."""
+        with self.transaction() as db:
+            rows = db.execute("SELECT p.repository, p.issue, s.snapshot FROM pulls p JOIN snapshots s "
+                              "ON p.repository = s.repository AND p.issue = s.issue "
+                              "WHERE p.pull_repository = ?", (repository,)).fetchall()
+            return [(row[0], row[1]) for row in rows
+                    if sha in ((json.loads(row[2]).get("pull") or {}).get("head"),
+                               (json.loads(row[2]).get("pull") or {}).get("merge_head"))]
 
     def active(self, repository):
         """Every task of the repository with a non-terminal outcome."""

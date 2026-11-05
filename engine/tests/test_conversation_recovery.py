@@ -13,130 +13,7 @@ import conversation
 from checkpoint_health import MARKER as HEALTH_MARKER
 from controller import Controller
 from policy import approval_valid, digest
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
-
-
-class ConversationRecoveryTests(unittest.TestCase):
-    """Exercise failure reporting through the production entry point."""
-
-    def setUp(self):
-        """Prepare durable state before injecting transport failures."""
-        self.config = deepcopy(CONFIG)
-        self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
-        self.gh.comments = []
-        Controller(self.gh, self.agents, self.config, FakeWorkspace).advance(7)
-
-    def load(self):
-        """Recover a fresh controller without running another stage."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
-
-    def run_main(self):
-        """Use real error handling with deterministic GitHub and provider transports."""
-        with patch.object(controller_module, "GitHub", return_value=self.gh), \
-                patch.object(controller_module, "host_agents", return_value=self.agents), \
-                patch.dict(os.environ, {"CONCURRO_ISSUE": "7"}):
-            controller_module.main()
-
-    def assert_blocked(self, code=None):
-        """Both native status and durable state remain visible without losing the outbox."""
-        controller = self.load()
-        self.assertEqual(controller.state["stage"], "blocked")
-        self.assertTrue(controller.state["conversation"]["pending"])
-        labels = {v["name"] for v in self.gh.issue["labels"]}
-        self.assertTrue({"concurro:stage:blocked", "concurro:attention"}.issubset(labels))
-        if code:
-            notices = [c for c in self.gh.comments if c["body"].startswith(HEALTH_MARKER)]
-            self.assertEqual(len(notices), 1)
-            self.assertIn("`" + code + "`", notices[0]["body"])
-            self.assertNotIn("private-fixture", notices[0]["body"])
-            self.assertIn("🛑 **Blocked:**", self.gh.summary()["body"])
-        return controller
-
-    def test_repeated_publication_failures_stay_visible_then_retry(self):
-        """Repeated event failures never recur inside the blocked-state save."""
-        self.run_main()  # Planning publishes nothing; the first plan vote's archive does.
-        original = self.gh.repo
-
-        def fail_event(path, method="GET", data=None):
-            """Reject only conversation POSTs, leaving checkpoints and notices reachable."""
-            if method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER):
-                raise RuntimeError("private-fixture")
-            return original(path, method, data)
-
-        for _ in range(2):
-            with patch.object(self.gh, "repo", side_effect=fail_event), \
-                    patch("sys.stderr", new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
-                self.run_main()
-            self.assertNotIn("private-fixture", output.getvalue())
-            self.assert_blocked("conversation_publish")
-            self.assertEqual(len(self.agents.calls), 3)
-        self.gh.comment("/concurro retry")
-        self.run_main()
-        self.assertEqual(self.load().state["stage"], "plan_qc")
-        self.assertFalse(self.load().state["conversation"]["pending"])
-        self.assertFalse([c for c in self.gh.comments if "### 🛑 Blocked" in c["body"]],
-                         "a publication failure is reported by the health notice, never a late Blocked comment")
-        self.assertNotIn({"name": "concurro:attention"}, self.gh.issue["labels"])
-        self.assertEqual(self.gh.merges, 0)
-
-    def test_edited_pending_event_has_diagnostic_and_recovers_when_restored(self):
-        """A lost response followed by an edit stops visibly without overwriting the edit."""
-        self.run_main()
-        original = self.gh.repo
-        edited = []
-
-        def lose_and_edit(path, method="GET", data=None):
-            """Accept the first archive, then lose the response after someone changes it."""
-            result = original(path, method, data)
-            if method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER) and not edited:
-                edited.append(result["number"])
-                self.gh.artifacts[7][result["number"]]["artifact"]["body"] += " human edit"
-                raise RuntimeError("private-fixture")
-            return result
-
-        with patch.object(self.gh, "repo", side_effect=lose_and_edit), \
-                patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
-            self.run_main()
-        for _ in range(2):
-            with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
-                self.run_main()
-            controller = self.assert_blocked("conversation_conflict")
-        event = controller.state["conversation"]["pending"][0]
-        archive = self.gh.artifacts[7][edited[0]]["artifact"]
-        self.assertTrue(archive["body"].startswith(conversation.MARKER + event["id"]))
-        self.assertTrue(archive["body"].endswith("human edit"))
-        archive["body"] = conversation.event_body(controller.state, event)
-        self.gh.comment("/concurro retry")
-        self.run_main()
-        self.assertEqual(self.load().state["stage"], "plan_qc")
-
-    def test_all_comment_writes_fail_without_masking_failure_or_stage(self):
-        """An unavailable comment API still leaves native labels and a valid blocked checkpoint."""
-        self.run_main()
-        original = self.gh.repo
-        outage = False
-
-        def fail_comments(path, method="GET", data=None):
-            """Keep artifact and label endpoints available during a comment outage."""
-            nonlocal outage
-            if (data or {}).get("body", "").startswith(conversation.MARKER):
-                outage = True
-            if outage and "comments" in path and method in ("POST", "PATCH"):
-                raise RuntimeError("private-fixture")
-            return original(path, method, data)
-
-        with patch.object(self.gh, "repo", side_effect=fail_comments), \
-                patch("sys.stderr", new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
-            self.run_main()
-        self.assertNotIn("private-fixture", output.getvalue())
-        # The archive is an artifact, so only the status comment fails: a checkpoint failure, not a block.
-        controller = self.load()
-        self.assertEqual(controller.state["stage"], "plan_qc")
-        self.assertFalse(controller.state["conversation"]["pending"])
-        self.assertIn({"name": "concurro:attention"}, self.gh.issue["labels"])
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 
 class ConversationSizeTests(unittest.TestCase):
@@ -175,7 +52,7 @@ class ConversationSizeTests(unittest.TestCase):
 
         with patch.object(agents, "ask", side_effect=large_report), patch.object(gh, "repo", side_effect=measure):
             for _ in range(11):
-                controller = Controller(gh, agents, config, FakeWorkspace)
+                controller = Controller(gh, agents, config)
                 controller.advance(7)
         state = controller.state
         self.assertEqual(state["stage"], "gates")
@@ -188,13 +65,12 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertTrue(all(not v["resolved"] for v in state.get("objections", [])))
         timeline = "\n".join(gh.archives())
         self.assertFalse([c for c in gh.comments if c["body"].startswith(conversation.MARKER)
-                          and "Handed off for merge" not in c["body"]], "only actionable comments are posted")
+                          and not any(label in c["body"] for label in ("Ready for review", "Implementation started"))], "only actionable comments are posted")
         self.assertNotIn(plan_text, timeline)
         self.assertIn(plan_text, controller.checkpoints.plan['body'])
-        for full_text in (rationale, summary):
+        for full_text in (rationale,):
             self.assertIn(full_text, timeline)
         self.assertLess(len(state["reviews"]["claude"]["summary"]), 1000)
-        self.assertFalse(config["merge_enabled"])
         self.assertEqual(gh.merges, 0)
 
     def test_compaction_preserves_pending_and_unpublished_evidence(self):

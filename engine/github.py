@@ -7,13 +7,14 @@ from urllib.parse import quote
 STAGE_LABEL_PREFIX = "concurro:stage:"
 ATTENTION_LABEL = "concurro:attention"
 STAGES = {"intake", "clarify", "plan", "plan_qc", "planned", "implement", "publish", "review",
-          "gates", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
+          "gates", "closed", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
 # The engine's only GraphQL mutations; the service gateway admits exactly these documents.
-LINKED_BRANCH = """mutation($input:CreateLinkedBranchInput!) {
-          createLinkedBranch(input:$input) { linkedBranch { ref { name target { oid } } } }
-        }"""
 RESOLVE_THREAD = """mutation($input:ResolveReviewThreadInput!) {
           resolveReviewThread(input:$input) { thread { id isResolved } }
+        }"""
+
+MARK_READY = """mutation($input:MarkPullRequestReadyForReviewInput!) {
+          markPullRequestReadyForReview(input:$input) { pullRequest { id isDraft headRefOid } }
         }"""
 
 
@@ -109,42 +110,6 @@ class GitHub:
         elif not failed and ATTENTION_LABEL in current:
             self.repo(f"issues/{number}/labels/" + quote(ATTENTION_LABEL, safe=""), "DELETE")
 
-    def branch_linked(self, number, branch):
-        """Check the issue's native Development links with bounded pagination and repo identity."""
-        owner, name = self.repository.split("/")
-        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
-          repository(owner:$owner,name:$name) { issue(number:$number) {
-            linkedBranches(first:100,after:$cursor) {
-              nodes { ref { name repository { nameWithOwner } } }
-              pageInfo { hasNextPage endCursor }
-            }
-          } }
-        }"""
-        cursor = None
-        for _ in range(100):
-            response = self.api("graphql", "POST", {"query": query, "variables": {
-                "owner": owner, "name": name, "number": number, "cursor": cursor}})
-            if response.get("errors"):
-                raise RuntimeError("cannot establish issue Development links")
-            page = response["data"]["repository"]["issue"]["linkedBranches"]
-            if any(node.get("ref") and node["ref"]["name"] == branch
-                   and node["ref"]["repository"]["nameWithOwner"] == self.repository for node in page["nodes"]):
-                return True
-            if not page["pageInfo"]["hasNextPage"]:
-                return False
-            cursor = page["pageInfo"]["endCursor"]
-        raise RuntimeError("Development link pagination exceeded safety bound")
-
-    def create_linked_branch(self, issue_id, branch, sha):
-        """Create a repository branch linked to its issue without publishing candidate edits."""
-        result = self.api("graphql", "POST", {"query": LINKED_BRANCH, "variables": {"input": {
-            "issueId": issue_id, "name": branch, "oid": sha}}})
-        if result.get("errors"):
-            raise RuntimeError("linked branch creation failed; reconcile on retry")
-        ref = result["data"]["createLinkedBranch"]["linkedBranch"]["ref"]
-        if ref["name"] != branch or ref["target"]["oid"] != sha:
-            raise RuntimeError("created Development branch differs from reserved name or commit")
-
     def pages(self, path, key=None):
         """Read all pages or fail if the bounded traversal cannot finish."""
         result = []
@@ -200,6 +165,15 @@ class GitHub:
                 return result
             cursor = page["pageInfo"]["endCursor"]
         raise RuntimeError("review-thread pagination exceeded safety bound")
+
+    def mark_ready(self, node_id):
+        """Mark the bound draft PR ready; callers verify the current head before and after."""
+        result = self.api("graphql", "POST", {"query": MARK_READY,
+                          "variables": {"input": {"pullRequestId": node_id}}})
+        pr = ((result.get("data") or {}).get("markPullRequestReadyForReview") or {}).get("pullRequest")
+        if result.get("errors") or not pr or pr.get("isDraft") is not False:
+            raise RuntimeError("GitHub did not confirm PR readiness")
+        return pr
 
     def resolve_thread(self, thread_id):
         """Resolve one review thread; return whether GitHub reports it resolved."""

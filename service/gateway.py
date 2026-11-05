@@ -10,8 +10,9 @@ import threading
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
-from github import DISPATCH_EVENT, GitHub, LINKED_BRANCH, NotFound, RESOLVE_THREAD, Transient
+from github import GitHub, NotFound, RESOLVE_THREAD, MARK_READY, Transient
 from reviews import FINDING_MARKER
+from policy import task_branch
 
 from .errors import OwnershipLost, Unresolved
 from .transport import throttle
@@ -30,15 +31,14 @@ WRITES = (
     ("PATCH", rf"issues/comments/{NUMBER}"),
     ("POST", rf"issues/(?P<issue>{NUMBER})/artifacts"),
     ("PATCH", rf"issues/(?P<issue>{NUMBER})/artifacts/{NUMBER}"),
+    ("POST", r"git/refs"),
     ("POST", r"git/trees"),
     ("POST", r"git/commits"),
     ("PATCH", r"git/refs/heads/[A-Za-z0-9._/-]{1,100}"),
     ("POST", r"pulls"),
-    ("PUT", rf"pulls/{NUMBER}/merge"),
     ("POST", rf"pulls/{NUMBER}/reviews"),
     ("POST", rf"pulls/{NUMBER}/comments"),
     ("POST", rf"pulls/{NUMBER}/comments/{NUMBER}/replies"),
-    ("POST", r"dispatches"),
 )
 # A runner session's start: the agent event type, carrying only the session's ID.
 DISPATCH = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -63,15 +63,14 @@ class Rejected(RuntimeError):
     """GitHub rejected a write; it did not take effect."""
 
 
-def allowed(key, method, path, body, issue_node=None):
-    """Whether a write's shape is on the allow-list for this task's repository and issue (`issue_node` for GraphQL).
+def allowed(key, method, path, body):
+    """Whether a write's shape is on the allow-list for this task's repository and issue.
 
     PR writes and thread resolutions are further bound to the task's own PR and the App's own
     threads by `MutationGateway.bound`, which needs reads.
     """
     if path == "graphql":
-        return method == "POST" and (resolved_thread(body) is not None
-                                     or issue_node is not None and linked_branch(body) == issue_node)
+        return method == "POST" and (resolved_thread(body) is not None or ready_pull(body) is not None)
     prefix = f"repos/{key[0]}/"
     if not path.startswith(prefix):
         return False
@@ -81,8 +80,10 @@ def allowed(key, method, path, body, issue_node=None):
         if match:
             if "issue" in match.groupdict() and int(match["issue"]) != key[1]:
                 return False
-            if relative == "dispatches":
-                return dispatch_session(body) is not None
+            if relative == "git/refs":
+                return (isinstance(body, dict) and set(body) == {"ref", "sha"}
+                        and body["ref"] == "refs/heads/" + task_branch(*key)
+                        and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
             # Branch updates are fast-forward only.
             if relative.startswith("git/refs/"):
                 return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
@@ -95,14 +96,75 @@ def allowed(key, method, path, body, issue_node=None):
     return False
 
 
-def dispatch_session(body):
-    """The session ID of an exact runner dispatch, or None for anything else."""
-    if (not isinstance(body, dict) or set(body) != {"event_type", "client_payload"}
-            or body["event_type"] != DISPATCH_EVENT or not isinstance(body["client_payload"], dict)
-            or set(body["client_payload"]) != {"session"} or not isinstance(body["client_payload"]["session"], str)
-            or not DISPATCH.fullmatch(body["client_payload"]["session"])):
+def destination(key, binding, path):
+    """The token repository for a request; GraphQL PR mutations use upstream."""
+    if path == "graphql":
+        return binding.upstream if binding else key[0]
+    parts = path.split("/", 3)
+    return "/".join(parts[1:3]) if len(parts) == 4 and parts[0] == "repos" else None
+
+
+def allowed_target(key, binding, method, path, body):
+    """Admit only issue writes, fork publication, and upstream COMMENT reviews for a bound target."""
+    if path == "graphql":
+        return method == "POST" and (resolved_thread(body) is not None or ready_pull(body) is not None)
+    repository = destination(key, binding, path)
+    relative = path.split("/", 3)[-1]
+    if relative.startswith(("issues/", "labels")):
+        return repository == key[0] and allowed(key, method, path, body)
+    branch = task_branch(*key)
+    if relative.startswith("git/"):
+        if repository != binding.fork:
+            return False
+        if method == "POST" and relative in ("git/trees", "git/commits"):
+            return isinstance(body, dict)
+        if method == "POST" and relative == "git/refs":
+            return (isinstance(body, dict) and set(body) == {"ref", "sha"}
+                    and body["ref"] == "refs/heads/" + branch
+                    and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
+        return (method == "PATCH" and relative == "git/refs/heads/" + branch and isinstance(body, dict)
+                and set(body) == {"sha", "force"} and body["force"] is False
+                and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
+    if repository != binding.upstream:
+        return False
+    if method == "POST" and relative == "pulls":
+        return (isinstance(body, dict) and set(body) == {"head", "head_repo", "base", "title", "body", "draft"}
+                and body["head"] == binding.fork.split("/")[0] + ":" + branch
+                and body["head_repo"] == binding.fork.split("/")[1] and body["draft"] is True
+                and all(isinstance(body[k], str) for k in ("base", "title", "body"))
+                and BRANCH.fullmatch(body["base"]) is not None)
+    return (relative.startswith("pulls/") and method == "POST"
+            and allowed((repository, key[1]), method, path, body))
+
+
+def runner_write(path, method, body):
+    """The session ID of an exact session-ref or workflow dispatch request, or None."""
+    relative = path.split("/", 3)[-1]
+    if method == "POST" and relative == "git/refs" and isinstance(body, dict) and set(body) == {"ref", "sha"}:
+        ref = body["ref"]
+        prefix = "refs/heads/concurro/runs/"
+        return ref[len(prefix):] if isinstance(ref, str) and ref.startswith(prefix) and DISPATCH.fullmatch(ref[len(prefix):]) else None
+    if method == "DELETE" and relative.startswith("git/refs/heads/concurro/runs/") and body is None:
+        value = relative.removeprefix("git/refs/heads/concurro/runs/")
+        return value if DISPATCH.fullmatch(value) else None
+    if (method == "POST" and relative == "actions/workflows/concurro-executor.yml/dispatches"
+            and isinstance(body, dict) and set(body) == {"ref", "inputs"}
+            and isinstance(body["inputs"], dict) and set(body["inputs"]) == {"session"}):
+        session = body["inputs"]["session"]
+        if isinstance(session, str) and DISPATCH.fullmatch(session) and body["ref"] == "concurro/runs/" + session:
+            return session
+    return None
+
+
+def ready_pull(body):
+    """The PR ID of the exact draft-to-ready mutation, or None."""
+    if not isinstance(body, dict) or set(body) != {"query", "variables"} or body["query"] != MARK_READY:
         return None
-    return body["client_payload"]["session"]
+    variables = body["variables"]
+    value = variables.get("input") if isinstance(variables, dict) and set(variables) == {"input"} else None
+    if not isinstance(value, dict) or set(value) != {"pullRequestId"}:
+        return None
+    return value["pullRequestId"] if isinstance(value["pullRequestId"], str) and value["pullRequestId"] else None
 
 
 def resolved_thread(body):
@@ -116,25 +178,12 @@ def resolved_thread(body):
     return thread["threadId"]
 
 
-def linked_branch(body):
-    """The issue node ID of an exact engine `createLinkedBranch` request, or None for anything else."""
-    if not isinstance(body, dict) or set(body) != {"query", "variables"} or body["query"] != LINKED_BRANCH:
-        return None
-    variables = body["variables"]
-    branch = variables.get("input") if isinstance(variables, dict) and set(variables) == {"input"} else None
-    if (not isinstance(branch, dict) or set(branch) != {"issueId", "name", "oid"}
-            or not all(isinstance(v, str) for v in branch.values())
-            or not BRANCH.fullmatch(branch["name"]) or not OID.fullmatch(branch["oid"])):
-        return None
-    return branch["issueId"]
-
-
 def request_digest(method, path, body):
     """Audit digest of one request; it never identifies an occurrence."""
     return hashlib.sha256(json.dumps([method, path, body], sort_keys=True).encode()).hexdigest()
 
 
-def settle(path, response, now):
+def settle(path, response, now, body=None):
     """`(recorded status, payload, error for the engine)` for one write's response.
 
     A REST 2xx establishes that the write applied even when its body is lost; a GraphQL
@@ -155,10 +204,15 @@ def settle(path, response, now):
         except ValueError:
             return "unknown", None, None
         data = payload.get("data") if isinstance(payload, dict) and "errors" not in payload else None
-        if status == 200 and isinstance(data, dict) and (
-                data.get("createLinkedBranch") is not None
-                or ((data.get("resolveReviewThread") or {}).get("thread") or {}).get("isResolved") is True):
-            return "done", payload, None
+        if status == 200 and isinstance(data, dict):
+            if ready_pull(body) is not None:
+                pr = (data.get("markPullRequestReadyForReview") or {}).get("pullRequest") or {}
+                if pr.get("id") == ready_pull(body) and pr.get("isDraft") is False:
+                    return "done", payload, None
+            elif resolved_thread(body) is not None:
+                thread = (data.get("resolveReviewThread") or {}).get("thread") or {}
+                if thread.get("isResolved") is True:
+                    return "done", payload, None
         return "unknown", None, None
     if status == 204:
         return "done", None, None
@@ -201,7 +255,6 @@ class MutationGateway:
         self.guard = threading.Lock()
         self.sections = {}
         self.sending = set()
-        self.nodes = {}
         self.stops = {}
 
     @contextmanager
@@ -212,20 +265,28 @@ class MutationGateway:
         with condition:
             yield condition
 
-    def node(self, key):
-        """The task's issue node ID, which never changes."""
-        if key not in self.nodes:
-            self.nodes[key] = self.reader(key[0]).request("GET", f"repos/{key[0]}/issues/{key[1]}")["node_id"]
-        return self.nodes[key]
+    def binding(self, key):
+        """The immutable destination pair recorded for this task."""
+        return self.registry.binding(key)
 
     def owned_pull(self, key, number):
-        """Whether a PR is this task's own: the engine's branch for this issue, in this repository."""
-        if (key, number) not in self.pulls:
-            pr = self.reader(key[0]).request("GET", f"repos/{key[0]}/pulls/{number}")
+        """Verify the PR's head repository and task branch, independently of a later registry link."""
+        binding = self.binding(key)
+        repository = binding.upstream if binding else key[0]
+        fork = binding.fork if binding else key[0]
+        recorded = self.registry.pull(key)
+        if recorded and (recorded.number != number or recorded.repository.lower() != repository.lower()):
+            return False
+        identity = (key, repository, number)
+        if identity not in self.pulls:
+            pr = self.reader(repository).request("GET", f"repos/{repository}/pulls/{number}")
             head = pr.get("head") or {}
-            self.pulls[(key, number)] = ((head.get("repo") or {}).get("full_name") == key[0] and isinstance(
-                head.get("ref"), str) and re.fullmatch(rf"concurro/issue-{key[1]}-[0-9a-f]{{12}}", head["ref"]) is not None)
-        return self.pulls[(key, number)]
+            branch = head.get("ref")
+            ours = binding is not None and branch == task_branch(*key)
+            self.pulls[identity] = (ours and self.bot_login is not None
+                and (pr.get("user") or {}).get("login") == self.bot_login
+                and (head.get("repo") or {}).get("full_name", "").lower() == fork.lower())
+        return self.pulls[identity]
 
     def ours(self, login, body):
         """Whether a comment is the App's own finding comment (GraphQL names a bot without `[bot]`)."""
@@ -235,16 +296,25 @@ class MutationGateway:
     def bound(self, key, path, body):
         """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads;
         issue comment edits only on the App's own marked comments on the task's issue."""
+        binding = self.binding(key)
+        repository = destination(key, binding, path)
+        ready = ready_pull(body) if path == "graphql" else None
+        if ready is not None:
+            query = "query($id:ID!) { node(id:$id) { ... on PullRequest { number repository { nameWithOwner } } } }"
+            node = ((self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": ready}})
+                     or {}).get("data") or {}).get("node") or {}
+            return ((node.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
+                    and type(node.get("number")) is int and self.owned_pull(key, node["number"]))
         thread = resolved_thread(body) if path == "graphql" else None
         if thread is not None:
             query = ("query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
                      "pullRequest { number repository { nameWithOwner } } "
                      "comments(first:1) { nodes { author { login } body } } } } }")
-            node = ((self.reader(key[0]).request("POST", "graphql", {"query": query, "variables": {"id": thread}})
+            node = ((self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": thread}})
                      or {}).get("data") or {}).get("node") or {}
             pr = node.get("pullRequest") or {}
             first = (node.get("comments") or {}).get("nodes") or [{}]
-            return ((pr.get("repository") or {}).get("nameWithOwner") == key[0] and isinstance(pr.get("number"), int)
+            return ((pr.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower() and isinstance(pr.get("number"), int)
                     and self.owned_pull(key, pr["number"])
                     and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body")))
         prefix = f"repos/{key[0]}/"
@@ -254,6 +324,7 @@ class MutationGateway:
             return (self.bot_login is not None and (comment.get("user") or {}).get("login") == self.bot_login
                     and str(comment.get("body", "")).startswith(EDITABLE)
                     and str(comment.get("issue_url", "")).endswith(f"/issues/{key[1]}"))
+        prefix = f"repos/{repository}/"
         match = PULL.fullmatch(path[len(prefix):]) if path.startswith(prefix + "pulls/") else None
         if match is None:
             return True
@@ -261,9 +332,59 @@ class MutationGateway:
             return False
         if match["comment"] is None:
             return True
-        comment = self.reader(key[0]).request("GET", f"{prefix}pulls/comments/{match['comment']}")
+        comment = self.reader(repository).request("GET", f"{prefix}pulls/comments/{match['comment']}")
         return (self.ours((comment.get("user") or {}).get("login"), comment.get("body"))
                 and str(comment.get("pull_request_url", "")).endswith(f"/pulls/{match['pull']}"))
+
+    def check_owner(self, key, generation):
+        """Refuse model work and stale results once task ownership or mutation authority is lost."""
+        with self.section(key):
+            if (key, generation) in self.stops:
+                self.halt(key, generation, self.stops[(key, generation)])
+            owner = self.registry.current(key)
+            if not owner or not owner.live or owner.generation != generation:
+                self.halt(key, generation, OwnershipLost("runner task ownership changed"))
+            if self.registry.unresolved(key):
+                self.halt(key, generation, Unresolved("runner task has an unresolved mutation"))
+
+    def dispatch_runner(self, key, generation, session):
+        """Reserve the config-pinned fork ref, then dispatch its exact caller workflow."""
+        if not isinstance(session, str) or not DISPATCH.fullmatch(session):
+            raise Disallowed("invalid runner session")
+        binding = self.registry.binding(key)
+        if binding is None:
+            raise Disallowed("runner task has no target binding")
+        with self.section(key):
+            owner = self.registry.current(key)
+            if not owner or not owner.live or owner.generation != generation:
+                self.halt(key, generation, OwnershipLost("runner task ownership changed"))
+            self.registry.register_runner(key, generation, session, binding.config_sha)
+        root, ref = f"repos/{binding.fork}/", "concurro/runs/" + session
+        refs = self.reader(binding.fork).request("GET", root + "git/matching-refs/heads/" + ref)
+        found = [item for item in refs if item["ref"] == "refs/heads/" + ref]
+        if found:
+            if found[0]["object"]["sha"] != binding.config_sha:
+                raise Disallowed("session ref moved outside the controller")
+        else:
+            self.mutate(key, generation, "POST", root + "git/refs", {"ref": "refs/heads/" + ref, "sha": binding.config_sha})
+        self.mutate(key, generation, "POST", root + "actions/workflows/concurro-executor.yml/dispatches",
+                    {"ref": ref, "inputs": {"session": session}})
+
+    def runner_allowed(self, key, generation, method, path, body):
+        """Authorize session writes only against a prior durable record for this task."""
+        session = runner_write(path, method, body)
+        if session is None:
+            return False
+        record = self.registry.runner_session(session)
+        target = self.registry.binding(key)
+        if (not record or not target or (record["repository"], record["issue"]) != key or record["removed"]
+                or destination(key, target, path) != target.fork):
+            return False
+        if method == "DELETE":
+            return True
+        if record["generation"] != generation:
+            return False
+        return body.get("sha", record["config_sha"]) == record["config_sha"]
 
     def acquire(self, key, worker, lease_seconds=LEASE_SECONDS, consume=True):
         """Grant a new generation only with no live owner, nothing in flight and nothing unresolved.
@@ -307,8 +428,12 @@ class MutationGateway:
         A task's writes are sent one at a time: a later write waits for the earlier one to
         settle, then rechecks ownership and unresolved writes before its own admission.
         """
-        if not allowed(key, method, path, body, self.node(key) if path == "graphql" else None) \
-                or not self.bound(key, path, body):
+        binding = self.binding(key)
+        admitted = (self.runner_allowed(key, generation, method, path, body)
+                    or (allowed_target(key, binding, method, path, body) if binding else
+                        (path.startswith(f"repos/{key[0]}/issues/") or path == f"repos/{key[0]}/labels")
+                        and allowed(key, method, path, body)))
+        if not admitted or not self.bound(key, path, body):
             raise Disallowed("write is not on the gateway allow-list")
         with self.section(key) as condition:
             condition.wait_for(lambda: key not in self.sending)
@@ -324,8 +449,8 @@ class MutationGateway:
             self.sending.add(key)
         try:
             try:
-                result, payload, error = settle(path, self.writer(key[0]).send(method, path, body),
-                                                self.registry.clock())
+                result, payload, error = settle(path, self.writer(destination(key, binding, path)).send(method, path, body),
+                                                self.registry.clock(), body)
             except Exception:
                 result, payload, error = "unknown", None, None
             self.registry.settle(intent, result)
@@ -343,10 +468,10 @@ class MutationGateway:
 class GatewayGitHub(GitHub):
     """The engine's GitHub client for one owned task: direct reads, writes only through the gateway."""
 
-    def __init__(self, repository, issue, generation, gateway, reader):
+    def __init__(self, repository, issue, generation, gateway, reader, task_key=None):
         """`reader` holds read access only: `request(method, path, data)` and `archive(path)`."""
         super().__init__(repository)
-        self.key, self.generation = (repository, issue), generation
+        self.key, self.generation = task_key or (repository, issue), generation
         self.gateway, self.reader = gateway, reader
 
     def api(self, path, method="GET", data=None):

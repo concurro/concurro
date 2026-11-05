@@ -4,12 +4,6 @@
     "summary": {
       "type": "string"
     },
-    "checks": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
     "design_issue": {
       "anyOf": [
         {
@@ -43,11 +37,15 @@
           "additionalProperties": false
         }
       ]
+    },
+    "validation": {
+      "type": "string",
+      "description": "Agent-reported commands, outcomes and any tests not run. At most 4000 bytes."
     }
   },
   "required": [
     "summary",
-    "checks",
+    "validation",
     "design_issue"
   ],
   "additionalProperties": false

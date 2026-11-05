@@ -20,7 +20,7 @@ from gitfixture import Upstream, build, mirror_of
 from policy import Blocked, path_allowed
 import repository
 from repository import Repository, TOOL_NAMES, ToolTimeout, relay, run_git, serve
-from snapshot import Snapshot, Tools, inspection
+from snapshot import inspection
 from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
 
 
@@ -189,7 +189,6 @@ class GitSnapshotTests(unittest.TestCase):
                 ({"main": "f" * 40}, "main", None),
                 ({"bad..name": self.base}, "bad..name", None),
                 ({"main": self.base, "x.lock": self.head}, "main", None),
-                ({**self.refs}, "concurro/issue-1", {"files": {"docs/guide.md": None}}),
                 ({**self.refs}, "concurro/issue-1", {"files": {"../escape": "x"}}),
                 ({**self.refs}, "concurro/issue-1", {"files": {"CONTRIBUTING.md": "x"}}),
                 ({**self.refs}, "concurro/issue-1", {"files": {f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES + 1)}})):
@@ -243,35 +242,9 @@ class GitSnapshotTests(unittest.TestCase):
         self.assertEqual([t["name"] for t in replies[1]["result"]["tools"]], list(TOOL_NAMES))
 
 
-class FakeMirror:
-    """Records mirror use without Git."""
-
-    def __init__(self):
-        self.path, self.pins = Path("/srv/mirrors/owner__target.git"), []
-
-    def borrow(self, name, branch, commits):
-        self.pins.append(name)
-
-    def release(self, name):
-        self.pins.remove(name)
-
-    def maintain(self):
-        pass
-
-
 class TransportTests(unittest.TestCase):
     """Snapshot preparation and the refs each stage inspects."""
 
-    def test_a_failed_preparation_releases_the_pins_and_volume(self):
-        mirror = FakeMirror()
-        spec = {"refs": {"main": "a" * 40}, "head": "main", "base_branch": "main", "candidate": None}
-        with patch("subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess([], 1)
-            snapshot = Snapshot("sha256:" + "a" * 64, mirror, spec)
-            with self.assertRaisesRegex(Blocked, "preparation failed"), snapshot:
-                self.fail("preparation should fail")
-        self.assertEqual(mirror.pins, [])
-        self.assertIn(["docker", "volume", "rm", "-f", snapshot.volume], [c.args[0] for c in run.call_args_list])
 
     def test_inspection_requires_refs_and_candidates_only_for_candidate_stages(self):
         refs = {"refs": {"main": "a" * 40}, "head": "main"}
@@ -350,56 +323,6 @@ class ReviewContextTests(unittest.TestCase):
     def test_controller_only_keys_are_not_measured(self):
         context = {"changes": [], "controller_candidate": {"big.rs": "x" * 500000}}
         self.assertLess(transport_size(context), 100)
-
-
-@unittest.skipUnless(os.environ.get("CONCURRO_TEST_AGENT_IMAGE"), "requires pinned agent Docker image")
-class RepositoryDockerTests(unittest.TestCase):
-    """The real tool container: a read-only Git snapshot, reachable only through its own socket, holding no secret."""
-
-    def test_tool_container_reads_no_agent_secret_and_sessions_are_separate(self):
-        image = os.environ["CONCURRO_TEST_AGENT_IMAGE"]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            upstream = Upstream(root / "upstream.git")
-            base = upstream.commit({"README.md": "Base\n"}, branch="main", message="base")
-            mirror = mirror_of(upstream, root / "mirrors")
-            spec = {"refs": {"main": base}, "head": "main", "base_branch": "main", "candidate": None}
-            retained = "concurro-test-retained-" + os.urandom(6).hex()
-            subprocess.run(["docker", "volume", "create", retained], check=True, capture_output=True)
-            self.addCleanup(subprocess.run, ["docker", "volume", "rm", "-f", retained], capture_output=True)
-            subprocess.run(["docker", "run", "--rm", "--network=none", "--user=0:0", "--mount",
-                            f"type=volume,source={retained},target=/retained", "--entrypoint", "sh", image, "-c",
-                            "echo retained-sentinel > /retained/s && chmod 644 /retained/s"], check=True, capture_output=True)
-            with Snapshot(image, mirror, spec) as first, Tools(first) as first_tools, \
-                    Snapshot(image, mirror, spec) as second, Tools(second) as second_tools:
-
-                def agent(tools, script, data=""):
-                    """A container shaped like the agent's: a secret in its environment, home and retained volume."""
-                    return subprocess.run(
-                        ["docker", "run", "--rm", "-i", "--network=none", "--read-only", "--cap-drop=ALL",
-                         "--security-opt=no-new-privileges", "--user=10001:10001", "--env", "SENTINEL_ENV=env-sentinel",
-                         "--mount", tools.mount(), "--mount", f"type=volume,source={retained},target=/retained",
-                         "--tmpfs=/tmp:rw,size=8m", "--entrypoint", "sh", image, "-c",
-                         "mkdir -p /tmp/home && echo home-sentinel > /tmp/home/s && " + script],
-                        input=data, text=True, capture_output=True, timeout=120)
-
-                control = agent(first_tools, "cat /retained/s /tmp/home/s && echo $SENTINEL_ENV")
-                for sentinel in ("env-sentinel", "retained-sentinel", "home-sentinel"):
-                    self.assertIn(sentinel, control.stdout, "the agent side holds every planted secret")
-                reads = [["diff", "--no-index", "/proc/1/environ", "README.md"], ["diff", "README.md", "/proc/self/environ"],
-                         ["diff", "--no-index", "/retained/s", "README.md"], ["diff", "--no-index", "/tmp/home/s", "README.md"],
-                         ["grep", "--open-files-in-pager=cat /proc/1/environ /retained/s /tmp/home/s;", "Base"],
-                         ["log", "--format=%s"]]
-                requests = [{"id": n, "method": "tools/call", "params": {"name": "git", "arguments": {"args": a}}}
-                            for n, a in enumerate(reads)]
-                result = agent(first_tools, "exec python3 -I /opt/concurro/engine/repository.py relay",
-                               "\n".join(map(json.dumps, requests)) + "\n")
-                self.assertEqual(len(result.stdout.splitlines()), len(reads))
-                for sentinel in ("env-sentinel", "retained-sentinel", "home-sentinel"):
-                    self.assertNotIn(sentinel, result.stdout)
-                self.assertIn("base", result.stdout)
-                self.assertNotEqual(first_tools.volume, second_tools.volume)
-                self.assertEqual(agent(first_tools, "ls /run/concurro-tools").stdout.split(), ["repository.sock"])
 
 
 if __name__ == "__main__":

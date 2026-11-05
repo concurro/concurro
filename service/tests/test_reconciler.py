@@ -21,7 +21,7 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
 
     def settle(self):
         """Acknowledge current input, as a completed tick would."""
-        self.registry.acknowledge(KEY, self.reconciler.snapshot(KEY))
+        self.registry.acknowledge(KEY, {**self.reconciler.snapshot(KEY), "_stage": "gates"})
         self.assertEqual(self.reconciler.poll(), [])
 
     def human(self):
@@ -34,6 +34,55 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
         self.fake.pr = {"number": 9, "state": "open", "merged": False, "head": {"sha": "c" * 40, "ref": "concurro/7"}}
         self.fake.human_reviews = [{"id": 1, "state": "COMMENTED", "user": {"login": "writer"}}]
         self.registry.link(KEY, 9)
+
+    def test_pr_observation_uses_its_repository_not_the_issues(self):
+        """A fork issue polls its upstream PR without confusing matching issue or PR numbers."""
+        self.registry.link(KEY, 9, "upstream/project")
+        calls = []
+
+        class Upstream:
+            def request(inner, method, path):
+                calls.append((method, path))
+                if path == "repos/upstream/project/pulls/9":
+                    return {"head": {"sha": "c" * 40}, "merged": False}
+                if "/status?" in path:
+                    return {"statuses": []}
+                if "/reviews?" in path:
+                    return []
+                if "/check-suites?" in path:
+                    return {"check_suites": []}
+                if "/actions/runs?" in path:
+                    return {"workflow_runs": []}
+                if "/check-runs?" in path:
+                    return {"check_runs": [{"name": "CI", "status": "completed", "conclusion": "success"}]}
+                raise AssertionError(path)
+
+        self.reconciler.reader = lambda repository: (Upstream() if repository == "upstream/project" else self.backend)
+        snapshot = self.reconciler.snapshot(KEY)
+        self.assertEqual(snapshot["pull"]["number"], 9)
+        self.assertEqual(snapshot["pull"]["checks"], [["c" * 40, None, None, "CI", "completed", "success"]])
+        self.assertEqual(len(calls), 6)
+        self.assertTrue(all(path.startswith("repos/upstream/project/") for _, path in calls))
+
+    def test_status_and_test_merge_updates_wake_after_missed_webhooks(self):
+        """Polling observes statuses and draft/closure state even without a check-run event."""
+        self.link_pull()
+        request = self.backend.request
+        status = {"context": "external", "state": "pending"}
+        def reading(method, path, data=None):
+            if "/status?" in path:
+                return {"statuses": [dict(status)]}
+            return request(method, path, data)
+        self.reconciler.reader = lambda _: type("Reader", (), {"request": staticmethod(reading)})()
+        self.settle()
+        status["state"] = "success"
+        self.assertEqual(self.reconciler.poll(), [KEY])
+        self.settle()
+        self.fake.pr["merge_commit_sha"] = "d" * 40
+        self.assertEqual(self.reconciler.poll(), [KEY])
+        self.settle()
+        self.fake.pr["state"] = "closed"
+        self.assertEqual(self.reconciler.poll(), [KEY])
 
     def test_lost_webhooks_are_found(self):
         """Clarification, approval, retry, edits, deletions, requirements, reviews and checks each wake the task."""
@@ -102,7 +151,7 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
         self.fake.issue["state"] = "closed"
         generation = self.gateway.acquire(KEY, "test")
         self.gateway.release(KEY, generation, Outcome("terminal"))
-        self.registry.acknowledge(KEY, self.reconciler.snapshot(KEY))
+        self.registry.acknowledge(KEY, {**self.reconciler.snapshot(KEY), "_stage": "gates"})
         self.fake.comment("Late remark.")
         self.assertEqual(self.reconciler.poll(KEY[:1]), [])
         self.assertEqual(self.reconciler.candidates(KEY[0]), [])

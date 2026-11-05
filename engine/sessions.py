@@ -9,7 +9,7 @@ def prepare(state, config, provider, stage, context):
         return None
     model = context.get("reviewer_identity", {}).get("model") or selected_model(config, provider, stage)
     scope = digest([config["repository"], state["issue"], provider, model, stage,
-                    state["base"], state["requirements"], state["bundle_id"], state["agent_image"],
+                    state["base"], state["requirements"], state["bundle_id"],
                     state["config_digest"], state.get("design_reopens", 0),
                     state.get("plan_id") if stage == "develop" else None])
     role = stage + ":" + provider + ":" + model

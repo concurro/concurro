@@ -25,6 +25,7 @@ from .registry import Registry
 from .scheduler import Scheduler
 from .settings import CHECKOUT, SettingsError
 from .transport import Transport
+from .targets import verify
 from .worker import Worker
 
 POLL_SECONDS = 300
@@ -39,7 +40,7 @@ class StartupError(RuntimeError):
 
 
 def host_checks(settings):
-    """Settings with the engine resolved: the checkout is clean at its HEAD, and both images exist locally.
+    """Settings with the engine resolved: the checkout is clean at its HEAD, without target execution on this host.
 
     Settings that name an engine commit require the checkout to be at it; without one, the
     service serves the checkout's HEAD.
@@ -51,18 +52,7 @@ def host_checks(settings):
     engine = head.stdout.strip()
     if settings.engine not in (None, engine):
         raise StartupError("the engine checkout must be at the configured engine commit")
-    for image in (settings.agent_image, settings.execution_image):
-        if image and subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30).returncode:
-            raise StartupError("a configured image is unavailable locally")
     return replace(settings, engine=engine)
-
-
-def images(settings):
-    """The image identities tasks record: the host's local images, or, with runners, the engine commit,
-    whose workflow pins the recipes the runners build them from."""
-    if settings.gateway.executor == "host":
-        return settings.agent_image, settings.execution_image
-    return ("runner:agent@" + settings.engine, "runner:execution@" + settings.engine)
 
 
 class Daemon:
@@ -78,27 +68,24 @@ class Daemon:
         """Check the host, verify the App, open the registry and start serving."""
         self.settings = settings = host_checks(self.settings)
         log.info("serving engine %s", settings.engine)
-        # Process-wide values, fixed at startup; nothing per task enters the environment.
-        reports = settings.state_dir / "reports"
-        reports.mkdir(mode=0o700, exist_ok=True)
-        agent, execution = images(settings)
-        os.environ.update(CONCURRO_AGENT_IMAGE=agent, CONCURRO_EXECUTION_IMAGE=execution,
-                          CONCURRO_LOCAL_REPORT_DIR=str(reports))
         secret = private.read(settings.webhook_secret_path, (CHECKOUT,)).strip()
         self.identity = Identity(settings)
         bot_login = self.identity.verify()
-        repositories = [target.repository for target in settings.targets]
+        repositories = sorted({repository for target in settings.targets for repository in target.repositories})
+        issue_repositories = sorted({repository for target in settings.targets for repository in target.issue_repositories})
         installations = {repository: self.identity.installation(repository) for repository in repositories}
         readers = {r: Transport(r, self.identity.credential(r, "read"), time.time) for r in repositories}
+        verify(settings.targets, readers.__getitem__)
         writers = {r: Transport(r, self.identity.credential(r, "write"), time.time) for r in repositories}
         self.registry = Registry.open(settings.state_dir, settings.registry_id, initialize=self.initialize)
         gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__, bot_login)
-        self.reconciler = Reconciler(self.registry, readers.__getitem__, repositories, {bot_login})
+        self.reconciler = Reconciler(self.registry, readers.__getitem__, issue_repositories, {bot_login})
         worker = Worker(settings, gateway, self.registry, self.reconciler, readers.__getitem__, bot_login)
+        self.reconciler.cleanup = worker.cleanup_runners
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
-        self.http = ingress.server(ingress.Ingress(secret, self.registry, installations, {bot_login}), *self.listen)
-        self.control = control.server(control.Control(self.registry, self.reconciler, cutover), settings.state_dir)
+        self.http = ingress.server(ingress.Ingress(secret, self.registry, installations, {bot_login}, issue_repositories=issue_repositories), *self.listen)
+        self.control = control.server(control.Control(self.registry, self.reconciler, cutover, worker.evaluate), settings.state_dir)
         for name, target in (("ingress", self.http.serve_forever), ("control", self.control.serve_forever)):
             threading.Thread(target=target, name=name, daemon=True).start()
         log.info("serving %d repositories as %s on %s:%d", len(repositories), bot_login, *self.listen)
@@ -144,6 +131,8 @@ def command(arguments):
     if arguments.command == "resolve":
         return {"command": "resolve", "intent": arguments.intent, "disposition": arguments.disposition,
                 "evidence": arguments.evidence, "operator": arguments.operator}
+    if arguments.command == "evaluate":
+        return {"command": "evaluate", "repository": arguments.repository, "issue": arguments.issue, "provider": arguments.provider}
     if arguments.command == "adopt":
         return {"command": "adopt", "repository": arguments.repository, "issues": arguments.issues}
     if arguments.command == "release":
@@ -168,6 +157,10 @@ def parser():
     release = commands.add_parser("release", help="hand an idle task back to the Actions controller")
     release.add_argument("repository")
     release.add_argument("issue", type=int)
+    evaluation = commands.add_parser("evaluate", help="run four fresh design-review fixtures on GitHub runners (uses model budget)")
+    evaluation.add_argument("repository")
+    evaluation.add_argument("issue", type=int)
+    evaluation.add_argument("provider", choices=("claude", "codex"))
     resolve = commands.add_parser("resolve", help="record what happened to a write of unknown outcome")
     resolve.add_argument("intent")
     resolve.add_argument("disposition", choices=("applied", "not-applied"))

@@ -13,7 +13,7 @@ from controller import Controller
 from policy import Blocked, approval_valid, validate_qc
 from repository import MAX_FILE, Repository, source_lines
 from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace, design_report
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub, design_report
 
 
 def sized_report(context, width=300):
@@ -88,7 +88,7 @@ class ReviewerRepairTests(unittest.TestCase):
 
     def tick(self):
         """Recover state from artifacts between every provider attempt."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         return controller
 
@@ -226,7 +226,7 @@ class ReviewerRepairTests(unittest.TestCase):
             return original(controller, sha, paths, inspection)
         with patch.object(Controller, 'files', unavailable), self.assertRaises(RuntimeError):
             self.tick()
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         self.assertEqual(controller.state['calls'], 3)

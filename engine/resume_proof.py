@@ -1,8 +1,8 @@
-"""Prove a retained Codex session resumes in a fresh container from the runner's archive.
+"""Prove a retained Codex session resumes in a fresh native process from the runner's archive.
 
-Run by `gateway-proof.yml` on a GitHub-hosted runner holding the proof session's key. A
-first turn runs in one container; its retained directory is packed as runners pack it,
-restored into a fresh directory, and the same thread is resumed in a new container with
+Optional diagnostic on a GitHub-hosted runner holding its issued session key. A
+first turn runs in one native process; its retained directory is packed as runners pack it,
+restored into a fresh directory, and the same thread is resumed in a new native process with
 a question only the first turn's context answers. Prints what the archive held and what it
 left out. Uses the agent's own Codex invocation (`agent_entry.command_for`).
 """
@@ -34,20 +34,12 @@ def prepare(directory):
     return directory
 
 
-def turn(image, key, directory, request, prompt):
-    """Run one Codex turn as the agent container does; returns its thread ID and answer."""
-    command = agent_entry.command_for(request, "/proof/schema.json", "/proof/result.json")
-    retained = turns.RETAINED
-    docker = ["docker", "run", "-i", "--rm", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
-              "--security-opt=no-new-privileges", "-e", f"HOME={retained}/home", "-e", f"CODEX_HOME={retained}/codex",
-              "-e", agent_entry.KEY_VARIABLE, "-w", "/work",
-              "--mount", f"type=bind,source={directory / 'retained'},target={retained}",
-              "--mount", f"type=bind,source={directory / 'work'},target=/work",
-              "--mount", f"type=bind,source={directory / 'proof'},target=/proof", image, *command]
-    for home in ("home", "codex"):
-        (directory / "retained" / home).mkdir(exist_ok=True)
-    result = subprocess.run(docker, input=prompt, capture_output=True, text=True, timeout=900,
-                            env={**os.environ, agent_entry.KEY_VARIABLE: key})
+def turn(key, directory, request, prompt):
+    """Run one Codex turn as the agent native process does; returns its thread ID and answer."""
+    command = agent_entry.command_for(request, str(directory / "proof/schema.json"), str(directory / "proof/result.json"))
+    (directory / "retained/codex").mkdir(exist_ok=True)
+    result = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=900,
+                            cwd=directory / "work", env=turns.agent_environment(directory, key, True))
     if result.returncode:
         raise ProofFailed(f"Codex exited {result.returncode}")
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
@@ -72,7 +64,6 @@ def report(directory):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True, help="image with the pinned Codex CLI")
     parser.add_argument("--gateway", required=True, help="gateway base URL")
     parser.add_argument("--key", required=True, type=Path, help="file holding the session key")
     parser.add_argument("--model", required=True)
@@ -84,7 +75,7 @@ def main(argv=None):
                "gateway": {"url": args.gateway, "headers": {"codex": {"x-concurro-plan": "chatgpt"}}}}
     first, second = prepare(args.root / "first"), prepare(args.root / "second")
 
-    thread, _ = turn(args.image, key, first, request,
+    thread, _ = turn(key, first, request,
                      f"Remember this codeword for a later turn: {codeword}. Answer with the single word: noted.")
     print(f"first turn: thread {thread}; retained directory:")
     report(first / "retained")
@@ -92,9 +83,9 @@ def main(argv=None):
     print(f"archive: {len(archive) * 3 // 4 // 1024} KiB compressed (limit {turns.MAX_RETAINED // 1024} KiB)")
 
     turns.unpack(archive, second / "retained")
-    resumed, answer = turn(args.image, key, second, {**request, "resume_id": thread},
+    resumed, answer = turn(key, second, {**request, "resume_id": thread},
                            "What codeword did I give you in the earlier turn? Answer with the codeword alone.")
-    print(f"resumed turn in a fresh container and directory: thread {resumed}; answer {json.dumps(answer)}")
+    print(f"resumed turn in a fresh native process and directory: thread {resumed}; answer {json.dumps(answer)}")
     if resumed != thread:
         raise ProofFailed("Codex resumed a different thread")
     if codeword not in answer:

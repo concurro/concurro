@@ -1,0 +1,21 @@
+name: Concurro executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      session:
+        description: Session issued by Concurro
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  role:
+    permissions:
+      id-token: write
+    cache-mode: read
+    uses: concurro/concurro/.github/workflows/agent.yml@deployed
+    with:
+      session: ${{ inputs.session }}
+      runs-on: ubuntu-24.04

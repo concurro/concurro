@@ -8,11 +8,6 @@
   "max_plan_revisions": 2,
   "planner": "claude",
   "implementer": "codex",
-  "local_reviewer": "claude",
-  "local_review_model": "",
-  "max_local_fix_rounds": 2,
-  "local_timeout_seconds": 7200,
-  "local_check_timeout_seconds": 900,
   "reviewers": [
     "claude",
     "codex"
@@ -22,17 +17,10 @@
     "codex": "gpt-6.1-sol",
     "copilot": ""
   },
-  "merge_enabled": false,
-  "required_checks": [
-    "Concurro Rust"
-  ],
   "policy_documents": [
     "CONTRIBUTING.md",
     ".github/copilot-instructions.md",
     ".agents/skills/stacks-pr-review/SKILL.md"
-  ],
-  "execution_profiles": [
-    "rust"
   ],
   "paths": {
     "editable_extensions": [
@@ -55,9 +43,12 @@
     "protected_files": [
       "docs/concurro.md"
     ],
-    "autonomous_merge_prefixes": [
-      "docs/",
-      "changelog.d/"
+    "protected": [
+      "**/rust-toolchain*",
+      "**/rustfmt.toml"
+    ],
+    "generated": [
+      "**/Cargo.lock"
     ]
   },
   "max_fix_rounds": 2,
@@ -67,6 +58,5 @@
   "max_design_reopens": 2,
   "max_outcome_issues": 10,
   "max_outcome_lessons": 3,
-  "max_validation_repairs": 3,
   "max_review_repairs": 4
 }

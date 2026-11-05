@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from controller import Controller, ESCALATION_REASON, STATE_PREFIX, MARKER
 from github import GitHub, NotFound
 from policy import Blocked
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 from test_autonomy import decision
 
 
@@ -28,7 +28,7 @@ class SurfaceTests(unittest.TestCase):
 
     def controller(self):
         """Load the most recent durable state as a fresh controller process would."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         return controller
@@ -158,7 +158,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertFalse([call for call in repo.call_args_list if len(call.args) > 1 and call.args[1] == "PATCH"])
         self.assertEqual(len(self.agents.calls), 1)
 
-    def test_branch_links_only_after_approval_and_before_candidate_work(self):
+    def test_branch_is_reserved_after_approval_before_candidate_work(self):
         """Development shows the approved base while candidate objects await local acceptance."""
         controller = self.approved()
         self.assertFalse(self.gh.refs)
@@ -169,7 +169,8 @@ class SurfaceTests(unittest.TestCase):
             """Observe the external branch at the actual model invocation boundary."""
             if stage == "develop":
                 self.assertEqual(self.gh.refs, {branch: self.gh.base})
-                self.assertTrue(self.gh.branch_linked(7, branch))
+                self.assertFalse(self.gh.linked_branches)
+                self.assertEqual(sum("Work branch:" in c["body"] for c in self.gh.comments), 1)
                 self.assertEqual(len(self.gh.commits), 1)
                 self.assertIsNone(self.gh.pr)
             return ask(provider, stage, context)
@@ -187,60 +188,52 @@ class SurfaceTests(unittest.TestCase):
         """Durable intent recovers an existing linked base instead of creating another branch."""
         controller = self.approved()
         calls, branch = controller.state["calls"], controller.state["branch"]
-        self.gh.fail_after_link = True
+        self.gh.fail_after_ref = True
         with self.assertRaises(RuntimeError):
             controller.advance(7)
         recovered = self.controller()
         self.assertEqual(recovered.state["calls"], calls)
-        self.assertFalse(recovered.state["development_branches"][branch]["linked"])
+        self.assertFalse(recovered.state["development_branches"][branch]["created"])
         recovered.advance(7)
-        self.assertTrue(recovered.state["development_branches"][branch]["linked"])
+        self.assertTrue(recovered.state["development_branches"][branch]["created"])
         self.assertEqual(len(self.gh.refs), 1)
 
-    def test_unlinked_or_moved_branch_blocks_before_model_spending(self):
-        """Matching a branch name or base alone does not establish ownership of a reservation."""
-        for linked, sha in ((False, "a" * 40), (True, "f" * 40)):
-            with self.subTest(linked=linked, sha=sha):
-                self.setUp()
-                controller = self.approved()
-                branch, calls = controller.state["branch"], controller.state["calls"]
-                self.gh.refs[branch] = sha
-                if linked:
-                    self.gh.linked_branches.add(branch)
-                with self.assertRaisesRegex(Blocked, "moved or is not linked"):
-                    controller.advance(7)
-                self.assertEqual(controller.state["calls"], calls)
-                self.assertEqual(self.gh.refs[branch], sha)
+    def test_preexisting_branch_blocks_before_model_spending(self):
+        """An existing branch is not adopted without a previously saved creation intent."""
+        controller = self.approved()
+        branch, calls = controller.state["branch"], controller.state["calls"]
+        self.gh.refs[branch] = self.gh.base
+        with self.assertRaisesRegex(Blocked, "without controller intent"):
+            controller.advance(7)
+        self.assertEqual(controller.state["calls"], calls)
 
-    def test_deleted_or_unlinked_reservation_cannot_publish_candidate(self):
-        """Publication cannot recreate a deleted reservation or overwrite an unlinked base."""
+    def test_deleted_or_moved_reservation_cannot_publish_candidate(self):
+        """Publication cannot recreate a deleted reservation or overwrite a foreign tip."""
         for deleted in (False, True):
             with self.subTest(deleted=deleted):
                 self.setUp()
                 controller = self.approved()
                 controller.advance(7)
                 branch = controller.state["branch"]
-                self.gh.linked_branches.clear()
                 if deleted:
                     del self.gh.refs[branch]
+                else:
+                    self.gh.refs[branch] = "f" * 40
                 with self.assertRaises(Blocked):
                     self.controller().advance(7)
                 self.assertIsNone(self.gh.pr)
-                self.assertEqual(set(self.gh.refs.values()), set() if deleted else {self.gh.base})
 
-    def test_legacy_prepared_publication_creates_native_link_at_validated_head(self):
-        """Existing prepared work remains resumable without inventing a baseline reservation."""
+    def test_recovered_branch_link_is_published_once(self):
+        """Lost branch responses recover through intent and emit one issue link."""
         controller = self.approved()
-        controller.advance(7)
-        del controller.state["development_branches"]
-        self.gh.refs.clear()
-        self.gh.linked_branches.clear()
-        controller.save()
-        resumed = self.controller()
-        resumed.advance(7)
-        self.assertEqual(resumed.state["stage"], "review")
-        self.assertEqual(self.gh.refs[resumed.state["branch"]], resumed.state["head"])
-        self.assertTrue(self.gh.branch_linked(7, resumed.state["branch"]))
+        self.gh.fail_after_ref = True
+        with self.assertRaises(RuntimeError):
+            controller.advance(7)
+        self.controller().advance(7)
+        self.controller().advance(7)
+        self.assertEqual(sum("Work branch:" in c["body"] for c in self.gh.comments), 1)
+        self.assertTrue(self.gh.pr["draft"])
+        self.assertFalse(self.gh.linked_branches)
 
 
 class GitHubSurfaceAdapterTests(unittest.TestCase):
@@ -268,32 +261,3 @@ class GitHubSurfaceAdapterTests(unittest.TestCase):
                 with self.assertRaises(error) as raised:
                     gh.repo("branches/main/protection")
                 self.assertEqual(type(raised.exception), error)
-
-    def test_development_query_paginates_and_checks_repository_identity(self):
-        """A same-named branch in another repository is not our Development link."""
-        gh = GitHub(CONFIG["repository"])
-        pages = []
-        for repository, more in (("another/repo", True), (CONFIG["repository"], False)):
-            pages.append({"data": {"repository": {"issue": {"linkedBranches": {
-                "nodes": [{"ref": None}, {"ref": {"name": "concurro/test", "repository": {"nameWithOwner": repository}}}],
-                "pageInfo": {"hasNextPage": more, "endCursor": "next"}}}}}})
-        with patch.object(gh, "api", side_effect=pages) as api:
-            self.assertTrue(gh.branch_linked(4, "concurro/test"))
-            self.assertEqual(api.call_args_list[1].args[2]["variables"]["cursor"], "next")
-        with patch.object(gh, "api", return_value={"errors": [{"message": "private"}]}):
-            with self.assertRaisesRegex(RuntimeError, "cannot establish"):
-                gh.branch_linked(4, "concurro/test")
-
-    def test_create_linked_branch_binds_issue_name_and_commit(self):
-        """The server must confirm the exact approved-base branch requested by the controller."""
-        gh = GitHub(CONFIG["repository"])
-        reply = {"data": {"createLinkedBranch": {"linkedBranch": {"ref": {
-            "name": "concurro/test", "target": {"oid": "a" * 40}}}}}}
-        with patch.object(gh, "api", return_value=reply) as api:
-            gh.create_linked_branch("issue-id", "concurro/test", "a" * 40)
-            self.assertEqual(api.call_args.args[2]["variables"]["input"], {
-                "issueId": "issue-id", "name": "concurro/test", "oid": "a" * 40})
-        reply["data"]["createLinkedBranch"]["linkedBranch"]["ref"]["target"]["oid"] = "f" * 40
-        with patch.object(gh, "api", return_value=reply):
-            with self.assertRaisesRegex(RuntimeError, "differs"):
-                gh.create_linked_branch("issue-id", "concurro/test", "a" * 40)

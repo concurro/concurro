@@ -14,28 +14,26 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from agents import host_agents
 import actions
+import readiness
+import candidates
 import conversation
 import markup
 from markup import block, code, link, text
 import sessions
 import checks
 import design
-import lockfiles
 import reviews as findings
 from copy import deepcopy
 from repository import MAX_FILE
 from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from checkpoint_health import sync_checkpoint_health
-from github import GitHub, NotFound
+from github import GitHub, NotFound, Transient
 from identities import Identities
-from local import LocalWorkspace, resource_exhausted
-from scheduler import QueueScan
-from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid, approved_checks,
-                    approved_profile_ids, digest, local_evidence_valid, merge_reasons,
-                    consensus_valid, design_roster, path_allowed, protection_errors, selected_model,
+from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid,
+                    digest, task_branch,
+                    consensus_valid, design_roster, path_allowed, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
                     validate_qc, validate_review)
 
@@ -53,7 +51,7 @@ STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 PROVIDERS = {"claude", "codex", "copilot"}
 PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixes", "protected_prefixes",
-               "protected_files", "autonomous_merge_prefixes"}
+               "protected_files", "protected", "generated"}
 REPOSITORY = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -78,6 +76,10 @@ def pr_review_cost(report):
 
 def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
+    removed = {"execution_profiles", "required_checks", "merge_enabled", "local_reviewer", "local_review_model",
+               "max_local_fix_rounds", "local_timeout_seconds", "local_check_timeout_seconds", "max_validation_repairs"}
+    if removed & set(config):
+        raise Blocked("obsolete target execution settings; migrate the target configuration for the MVP")
     if (not isinstance(config["repository"], str) or not REPOSITORY.fullmatch(config["repository"])
             or not isinstance(config["base"], str) or not BRANCH.fullmatch(config["base"])
             or ".." in config["base"] or config["base"].startswith(("/", "-"))):
@@ -97,26 +99,20 @@ def validate_config(config):
         raise Blocked("QC must use a different provider from the planner")
     if type(config["max_plan_revisions"]) is not int or not 0 <= config["max_plan_revisions"] <= 3:
         raise Blocked("invalid plan revision budget")
-    if type(config.get('max_validation_repairs')) is not int or not 0 <= config['max_validation_repairs'] <= 6:
-        raise Blocked('invalid validation repair budget')
     if type(config.get('max_review_repairs')) is not int or not 0 <= config['max_review_repairs'] <= 8:
         raise Blocked('invalid review repair budget')
     if set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values()):
         raise Blocked("model map must name each provider")
-    if not strings(config["required_checks"], 10) or not config["required_checks"]:
-        raise Blocked("required checks must name the target's CI checks")
     documents = config["policy_documents"]
     if not strings(documents, 10) or not all(
             not PurePosixPath(p).is_absolute() and ".." not in p.split("/") for p in documents):
         raise Blocked("policy documents must be relative repository paths")
-    selection = config["execution_profiles"]
-    if not strings(selection, 4) or not selection:
-        raise Blocked("execution_profiles must list one to four profiles")
     paths = config["paths"]
     if (not isinstance(paths, dict) or set(paths) != PATH_POLICY
             or not all(strings(v) for v in paths.values()) or not paths["editable_extensions"]
             or not all(e.startswith(".") for e in paths["editable_extensions"])
-            or not all(p.endswith("/") for p in paths["protected_prefixes"] + paths["autonomous_merge_prefixes"])):
+            or not all(p.endswith("/") for p in paths["protected_prefixes"])
+            or not all(checks._relative(p) for p in paths["protected"] + paths["generated"])):
         raise Blocked("invalid editable path policy")
     if not 0 <= config["max_fix_rounds"] <= 3 or not 1 <= config["max_model_calls"] <= 64:
         raise Blocked("invalid budget")
@@ -124,12 +120,6 @@ def validate_config(config):
         raise Blocked("invalid design reopen budget")
     if not 1 <= config["max_outcome_issues"] <= 10 or not 1 <= config["max_outcome_lessons"] <= 3:
         raise Blocked("invalid outcome retrieval bound")
-    if config["local_reviewer"] not in PROVIDERS or not isinstance(config["local_review_model"], str):
-        raise Blocked("invalid local reviewer")
-    if not 0 <= config["max_local_fix_rounds"] <= 3 or not 600 <= config["local_timeout_seconds"] <= 14400:
-        raise Blocked("invalid local iteration budget")
-    if not 1 <= config["local_check_timeout_seconds"] <= 900:
-        raise Blocked("invalid local check timeout")
     if "engine" in config and not (isinstance(config["engine"], str) and COMMIT.fullmatch(config["engine"])):
         raise Blocked("engine must name a full engine commit")
 
@@ -172,30 +162,26 @@ def transport_size(context):
 
 
 def changes(before, after, execution=None, dependencies=None):
-    """Each changed file as status, digests, line counts and a unified diff against the base, bounded per file.
-
-    A generated file (a lockfile) carries its dependency delta instead of a diff.
-    """
+    """Every changed file carries a bounded diff; the exact head remains available through repository tools."""
     result = []
     for path in sorted(set(before) | set(after)):
         old, new = before.get(path), after.get(path)
         if old == new:
             continue
-        if execution and checks.generated(path, execution):
-            result.append({"path": path, "status": "added" if old is None else "deleted" if new is None else "modified",
-                           "base_sha256": sha256(old), "head_sha256": sha256(new), "generated": True,
-                           "dependencies": (dependencies or {}).get(path)})
-            continue
-        lines = list(difflib.unified_diff(lf_lines(old or ""), lf_lines(new or ""), "a/" + path, "b/" + path))
+        left, right = lf_lines(old or ""), lf_lines(new or "")
+        expensive = candidates.diff_work(left, right) > candidates.DIFF_WORK_LIMIT
+        lines = ([] if expensive else list(difflib.unified_diff(left, right, "a/" + path, "b/" + path)))
         body = lines[2:]
         diff = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
-        truncated = len(diff.encode()) > MAX_DIFF
-        if truncated:
+        truncated = expensive or len(diff.encode()) > MAX_DIFF
+        if expensive:
+            diff = "[diff comparison limit reached; inspect the complete file in the repository]\n"
+        elif truncated:
             diff = diff.encode()[:MAX_DIFF].decode(errors="ignore") + "\n[diff truncated; read the rest in the repository]\n"
         result.append({"path": path, "status": "added" if old is None else "deleted" if new is None else "modified",
                        "base_sha256": sha256(old), "head_sha256": sha256(new),
-                       "added": sum(line.startswith("+") for line in body),
-                       "removed": sum(line.startswith("-") for line in body), "diff": diff, "truncated": truncated})
+                       "added": len(right) if expensive else sum(line.startswith("+") for line in body),
+                       "removed": len(left) if expensive else sum(line.startswith("-") for line in body), "diff": diff, "truncated": truncated})
     return result
 
 
@@ -207,11 +193,6 @@ def dependency_summary(path, delta):
     parts = [", ".join(named) + (f" and {more} more" if more > 0 else "")] if named else []
     parts += [f"{counts[k]} {k}" for k in ("added", "removed") if counts[k]]
     return f"Dependencies ({path}): " + ("; ".join(parts) or "checksums only")
-
-
-def workspace_reader(workspace):
-    """A reader of the workbench's current files, or None without one."""
-    return (lambda path: workspace.files([path])[path]) if workspace else None
 
 
 def lf_lines(text):
@@ -228,23 +209,24 @@ def sha256(text):
 class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
 
-    def __init__(self, github, agents, config, workspace_factory=None, bundle_root=None, target_root=None,
-                 controller_id=ACTIONS, bundle=None):
+    def __init__(self, github, agents, config, bundle_root=None, target_root=None,
+                 controller_id=ACTIONS, bundle=None, code=None, pulls=None, enroll=None):
         """Inject transports so complete lifecycles can be tested without credentials.
 
         `bundle`, when given, is the instance the agents also use; otherwise it is built here.
         """
         self.gh, self.agents, self.config = github, agents, config
+        self.code, self.pulls = code or github, pulls or github
         self.controller_id = controller_id
+        self.enroll = enroll or (lambda: None)
         self.comment_id = None
         self.checkpoints = None
         self.state = None
         self.issue = None
         self.permissions = {}
         self.trees = {}
-        self.workspace_factory = workspace_factory or LocalWorkspace
         self.identities = Identities(config)
-        self.bundle = bundle or Bundle(bundle_root, target_root, profiles=config["execution_profiles"])
+        self.bundle = bundle or Bundle(bundle_root, target_root)
         self.stage_synced = None
         self.foreign = False
         self.consuming = None
@@ -284,7 +266,7 @@ class Controller:
             self.checkpoint()
         if publish_events and outboxes:
             actions.publish(state, self.gh, self.checkpoint)
-            findings.publish(state, self.gh, self.config, self.checkpoint)
+            findings.publish(state, self.pulls, self.config, self.checkpoint)
         body = self.summary_body()
         if len(body.encode()) > SUMMARY_LIMIT:
             raise Blocked("summary exceeds comment limit")
@@ -337,7 +319,7 @@ class Controller:
                               for index, (name, status, _) in enumerate(rows))
         lines = [MARKER, "## Concurro", "", progress, "",
                  markup.table(["Step", "Status", "Detail"], [[name, status, detail] for name, status, detail in rows]), ""]
-        for path, delta in sorted((state.get("local_evidence", {}).get("dependencies") or {}).items()):
+        for path, delta in sorted((state.get("candidate", {}).get("dependencies") or {}).items()):
             lines += ["📦 " + text(dependency_summary(path, delta)), ""]
         action = self.action_line()
         if action:
@@ -354,7 +336,7 @@ class Controller:
         """The step the task is on, or the furthest it reached when paused; len(STEPS) once merged."""
         state = self.state
         stage = state["stage"]
-        if stage in ("merged", "observed_merged"):
+        if stage in ("merged", "observed_merged", "closed"):
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
@@ -394,16 +376,9 @@ class Controller:
                 "Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
             detail = f"{round_} · {objections} open objection{'s' if objections != 1 else ''}"
         elif name == "Implement":
-            local = state.get("local_status") or state.get("local_evidence") or {}
-            checks = local.get("checks", [])
-            passed = sum(c.get("exit_code") == 0 for c in checks)
-            status = f"✅ {passed} of {len(checks)} checks" if done else "▶️ In progress"
-            parts = []
-            if local.get("review"):
-                parts.append("Local review " + markup.label(markup.VERDICT[local["review"]["verdict"]]))
-            if local.get("local_commit"):
-                parts.append("commit " + code(local["local_commit"][:7], cell=True))
-            detail = " · ".join(parts)
+            candidate = state.get("candidate", {})
+            status = "✅ Candidate published" if done else "▶️ In progress"
+            detail = "Agent-reported validation; independent reviews and CI follow" if candidate else ""
         elif name == "Code review":
             reviews = state.get("reviews", {})
             approve = sum(r["verdict"] == "approve" for r in reviews.values())
@@ -461,7 +436,7 @@ class Controller:
                 entry = next((r for r in reversed(reports)
                               if (r["step"], r["round"], r["provider"]) == (step, round_, provider)), None)
                 vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
-                cells.append(link(markup.label(vocabulary[entry["outcome"]]), self.artifact_url(entry["artifact"]))
+                cells.append(link(markup.label(vocabulary.get(entry["outcome"], ("📝", "Agent report"))), self.artifact_url(entry["artifact"]))
                              if entry else "—")
             rows.append([text(step), text(round_)] + cells)
         return markup.table(["Step", "Round"] + [text(p) for p in providers], rows)
@@ -485,74 +460,20 @@ class Controller:
         self.comment_id = comment["id"] if comment else None
         self.stage_fallback = bool(comment and comment["body"].startswith(MARKER + "\n## Concurro\n\nStage: **"))
 
+    def source(self, sha):
+        """Read the approved base from upstream and published candidates from the fork."""
+        return self.pulls if not self.state or sha == self.state.get("base") else self.code
+
     def tree(self, sha):
         """Fetch a complete tree; never silently treat truncation as missing files."""
         if sha in self.trees:
             return self.trees[sha]
-        result = self.gh.repo(f"git/trees/{sha}?recursive=1")
+        result = self.source(sha).repo(f"git/trees/{sha}?recursive=1")
         if result.get("truncated"):
             raise Blocked("repository tree is truncated")
         self.trees[sha] = {v["path"]: v for v in result["tree"]}
         return self.trees[sha]
 
-    def packages(self, paths, workspace=None):
-        """For each profile that scopes checks, the packages to test (None: all).
-
-        The packages owning the changed paths at the base, plus, when the profile's lockfile changed,
-        the nearest workspace members depending on a changed package. A lockfile change that reaches
-        no member tests everything.
-        """
-        tree = self.tree(self.state["base"])
-
-        def read(path):
-            # Only content problems fall back to the workspace; transient GitHub errors still propagate.
-            try:
-                return self.files(self.state["base"], [path], inspection=True)[path]
-            except (Blocked, UnicodeError):
-                return None
-
-        result = {}
-        for profile in self.bundle.execution["profiles"]:
-            if not profile.get("package_manifest"):
-                continue
-            lock = (profile.get("lockfile") or {}).get("path")
-            owned = [path for path in paths if path != lock]
-            found = checks.packages(profile, owned, tree, read) if any(checks.triggered(profile, [p]) for p in owned) else []
-            if lock in paths and found is not None:
-                locks = self.locks(profile, workspace_reader(workspace))
-                members = lockfiles.affected_members(*locks) if None not in locks else None
-                members = checks.member_packages(profile, members, tree, read) if members else None
-                found = None if members is None else sorted(set(found) | set(members))
-            result[profile["id"]] = found if found and len(found) <= checks.MAX_PACKAGES else None
-        return result
-
-    def locks(self, profile, read):
-        """A profile's parsed lockfile at the approved base and in the candidate `read` returns (None when unreadable)."""
-        path = profile["lockfile"]["path"]
-        try:
-            base = self.files(self.state["base"], [path], inspection=True)[path]
-        except (Blocked, UnicodeError):
-            base = None
-        return lockfiles.cargo(base), lockfiles.cargo(read(path) if read else None)
-
-    def dependencies(self, changed, read):
-        """The bounded dependency delta of each changed lockfile, or None when none changed."""
-        result = {}
-        for profile in self.bundle.execution["profiles"]:
-            lock = (profile.get("lockfile") or {}).get("path")
-            if lock in changed:
-                before, after = self.locks(profile, read)
-                result[lock] = lockfiles.bounded(lockfiles.delta(before or {}, after or {}))
-        return result or None
-
-    def committed(self, sha):
-        """A reader of one commit's files, for lockfiles of any size."""
-        return lambda path: self.files(sha, [path], inspection=True)[path]
-
-    def manifests(self, paths):
-        """Changed package manifests, each of which every review must assess."""
-        names = {p["package_manifest"] for p in self.bundle.execution["profiles"] if p.get("package_manifest")}
-        return sorted(path for path in paths if path.rsplit("/", 1)[-1] in names)
 
     def files(self, sha, paths, inspection=False):
         """Read bounded text blobs; executable source is evidence-only, never editable."""
@@ -568,10 +489,10 @@ class Controller:
                 result[path] = None
                 continue
             modes = ('100644', '100755') if inspection else ('100644',)
-            limit = MAX_FILE if inspection or checks.generated(path, self.bundle.execution) else 128000
+            limit = MAX_FILE if inspection or checks.generated(path, self.config["paths"]) else 128000
             if entry["mode"] not in modes or entry["type"] != "blob" or entry.get("size", 0) > limit:
                 raise Blocked("source must be a bounded regular text file")
-            blob = self.gh.repo("git/blobs/" + entry["sha"])
+            blob = self.source(sha).repo("git/blobs/" + entry["sha"])
             if blob["encoding"] != "base64":
                 raise Blocked("unsupported blob encoding")
             data = base64.b64decode(blob['content'])
@@ -605,7 +526,6 @@ class Controller:
         return {"issue": self.state["requirements"], "policy": selected,
                 "plan": self.state.get("plan"), "base": self.state["base"],
                 "bundle_id": self.bundle.identity, "charter": self.bundle.charter,
-                "validation_capabilities": checks.catalog(self.state.get('plan', {}).get('files', []), self.bundle.execution),
                 "prior_outcomes_untrusted": self.state.get("prior_outcomes", [])}
 
     def repository_refs(self, candidate):
@@ -749,20 +669,20 @@ class Controller:
 
     def initialize(self, comments, mode, command_id=0, enrollment=None):
         """Create a bounded task while preserving explicit manual mode compatibility."""
-        base = self.gh.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
+        base = self.pulls.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
+        self.enroll()
         self.state = {"version": 2, "issue": self.issue["number"], "mode": mode, "controller": self.controller_id,
                       "stage": "intake", "enrollment": enrollment,
                       "base": base, "calls": 0, "round": 0, "plan_revisions": 0, "reviews": {},
                       "command_id": command_id, "requirements": self.requirements(comments),
                       "issue_digest": digest([self.issue["title"], self.issue["body"]]),
-                      "agent_image": os.environ.get("CONCURRO_AGENT_IMAGE", ""),
-                      "execution_image": os.environ.get("CONCURRO_EXECUTION_IMAGE", ""),
                       "config_digest": config_digest(self.config), "bundle_id": self.bundle.identity,
                       "charter_id": digest(self.bundle.charter),
-                      "charter": self.bundle.charter, "execution": self.bundle.execution_summary,
+                      "charter": self.bundle.charter, "execution": self.config["paths"],
                       "design_generation": 0,
                       "design_reopens": 0, "design_votes": {}, "design_history": [],
                       "design_phase": "cooperative"}
+        self.state.update({key: self.config[key] for key in ("upstream", "fork", "config_sha") if key in self.config})
         self.state["prior_outcomes"] = self.retrieve_outcomes()
         self.save()
 
@@ -786,7 +706,7 @@ class Controller:
             state["design_history"].append({"generation": state["design_generation"],
                 "plan": state["plan_id"], "summary": state["plan"]["summary"][:500],
                 "parent": state.get("head"), "reason": reason[:1000],
-                "local_evidence_digest": digest(state.get("local_evidence")),
+                "candidate_digest": digest(state.get("candidate")),
                 "votes": [{"identity": v["identity"], "binding": v["binding"],
                     "decision": v["report"]["decision"], "report_digest": digest(v["report"]),
                     "concerns": v["report"]["concerns"]} for v in state.get("design_votes", {}).values()]})
@@ -822,7 +742,7 @@ class Controller:
             return
         state["design_parent"] = state.get("head")
         if state.get("pr"):
-            changed = [f["filename"] for f in self.gh.pages(f"pulls/{state['pr']}/files")]
+            changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
             if not changed or not all(path_allowed(p, self.config, self.state["execution"]) for p in changed):
                 raise Blocked("cannot reconcile accumulated PR changes")
             state["changed_files"] = changed
@@ -840,7 +760,7 @@ class Controller:
                              for goal in vote["report"]["scope"]["goal_ids"]}),
             "files": state.get("plan", {}).get("files", []), "head": state.get("head"),
             "plan": state.get("plan_id"), "bundle": state.get("bundle_id"),
-            "calls": state["calls"], "local_evidence_digest": digest(state.get("local_evidence")),
+            "calls": state["calls"], "candidate_digest": digest(state.get("candidate")),
             "reviews_digest": digest(state.get("reviews", {})),
             "completion": state.get("completion")}
         history = state.setdefault("outcomes", [])
@@ -880,8 +800,8 @@ class Controller:
         if self.enrollment() != state["enrollment"]:
             raise Blocked("autonomous enrollment removed, changed or no longer authorized")
         requirements = self.requirements(comments)
-        base = self.gh.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
-        changed = requirements != state["requirements"] or base != state["base"]
+        base = state["base"]
+        changed = requirements != state["requirements"]
         if not changed:
             return state["stage"] != "clarify"
         if state.get("head") or state.get("pending"):
@@ -986,8 +906,6 @@ class Controller:
         member = None
         phase = state.get("design_phase", "cooperative")
         if stage == "plan_qc":
-            if checks.contract_errors(state['plan'], state['execution']):
-                raise Blocked('design review requires a valid executable validation contract')
             roster = design_roster(self.config)
             member = next((m for m in roster if m["id"] not in state["design_votes"]), None)
             if member is None:
@@ -1139,6 +1057,33 @@ class Controller:
         self.save()
         return state["stage"] == "plan"
 
+    def retry_reviewed(self, comment, comments):
+        """A writer may request a bounded repair with fresh feedback; CI events alone never do."""
+        state = self.state
+        if state["issue_digest"] != digest([self.issue["title"], self.issue["body"]]):
+            state["command_id"] = comment["id"]
+            self.resume_with_head(self.requirements(comments))
+            return
+        previous = state["requirements"].get("discussion", [])
+        feedback = [c for c in comments if state.get("command_id", 0) < c["id"] < comment["id"]
+                    and not c["body"].strip().startswith("/concurro ")
+                    and not self.identities.ours(c["user"]["login"]) and self.permitted(c["user"]["login"])
+                    and {"author": c["user"]["login"], "body": c["body"]} not in previous]
+        if feedback:
+            latest = max(feedback, key=lambda c: c["id"])
+            if len(latest["body"].encode()) > 4000:
+                raise Blocked("repair feedback exceeds 4000 bytes; provide a shorter writer comment")
+            if state["round"] >= self.config["max_fix_rounds"]:
+                raise Blocked("writer-requested repair allowance exhausted")
+            state.update(round=state["round"] + 1, stage="implement", handoff_ready=False,
+                         input_revision=state.get("input_revision", 0) + 1)
+            key = f"{state['design_generation']}:{state['round']}"
+            state.setdefault("implementation_feedback", {})[key] = (
+                "Writer-supplied feedback (untrusted evidence, not a change to the approved scope):\n" + latest["body"])
+            state.pop("reason", None)
+        state["command_id"] = comment["id"]
+        self.save()
+
     def commands(self, comments):
         """Apply exact writer commands; plan approval is bound to its full digest."""
         for comment in comments:
@@ -1164,7 +1109,7 @@ class Controller:
                 if self.state:
                     if not self.revise_plan("intake", "Writer requested reassessment."):
                         continue
-                    base = self.gh.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
+                    base = self.pulls.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
                     self.state.update(base=base, requirements=self.requirements(comments), command_id=comment["id"],
                         issue_digest=digest([self.issue["title"], self.issue["body"]]))
                     for key in ("plan", "plan_id", "branch", "qc", "design_parent", "approved_accumulated_files"):
@@ -1182,6 +1127,8 @@ class Controller:
                                                 "plan": self.state["plan_id"],
                                                 "actor": comment["user"]["login"], "comment": comment["id"]})
                     self.save()
+            elif self.state and text == "/concurro retry" and self.state["stage"] == "gates":
+                self.retry_reviewed(comment, comments)
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
                 output_repair = self.state.get('review_repair') and self.state['retry_stage'] == 'plan_qc'
@@ -1207,18 +1154,13 @@ class Controller:
         """Triage and attach a structured plan without making code changes."""
         context = self.context()
         context["design_feedback"] = self.state.get("design_feedback")
-        context['validation_feedback'] = self.state.get('validation_feedback', [])
-        if self.state.get('plan_draft'):
-            context['plan'] = self.state['plan_draft']
-            context['validation_capabilities'] = checks.catalog(context['plan']['files'], self.bundle.execution)
         context["open_objections"] = [v for v in self.state.get("objections", []) if not v["resolved"]]
         context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if self.state.get("head"):
             paths = self.state["changed_files"]
             context["accumulated_changes"] = changes(self.files(self.state["base"], paths, inspection=True),
                                                      self.files(self.state["head"], paths, inspection=True),
-                                                     self.bundle.execution,
-                                                     self.dependencies(paths, self.committed(self.state["head"])))
+                                                     self.config["paths"])
         plan = self.ask(self.config["planner"], "plan", context)
         validate_plan(plan, self.config, self.state["execution"])
         expected = {v["id"] for v in context["open_objections"]}
@@ -1227,18 +1169,7 @@ class Controller:
         if self.state.get("head") and not plan["questions"]:
             if not all(checks.in_scope(path, plan) for path in self.state.get("changed_files", [])):
                 raise Blocked("revised scope does not reconcile the accumulated PR diff")
-        tree = self.tree(self.state['base'])
-        profiles = checks.approved_profiles(plan, tree, self.state['execution']) if not plan['questions'] else []
-        errors = checks.contract_errors(plan, self.state['execution'], profiles) if not plan['questions'] else []
-        if not errors and not plan['questions']:
-            if any((r['change'] == 'modify') != (r['path'] in tree) for r in plan['validation']['files']):
-                errors = ['validation_change']
-        if errors:
-            self.repair_validation(plan, errors)
-            return
         self.state["plan"] = plan
-        # Derived from the plan and the approved base, so the design's approval binding covers it.
-        self.state["approved_profiles"] = profiles
         self.state.pop('design_feedback', None)
         self.state.pop('review_repair', None)
         for key in ('plan_draft', 'validation_feedback', 'validation_failure', 'validation_stalls'):
@@ -1246,7 +1177,7 @@ class Controller:
         self.state["plan_id"] = digest({"plan": plan, "base": self.state["base"],
                                         "requirements": self.state["requirements"]})
         if not self.state.get("head"):
-            self.state["branch"] = f"concurro/issue-{self.issue['number']}-{self.state['plan_id'][:12]}"
+            self.state["branch"] = task_branch(self.config["repository"], self.issue["number"])
         self.state["design_votes"] = {}
         self.state["design_phase"] = "cooperative"
         self.state["approved_accumulated_files"] = self.state.get("changed_files", [])
@@ -1254,39 +1185,6 @@ class Controller:
         self.state["stage"] = "clarify" if plan["questions"] else "plan_qc"
         self.save()
 
-    def repair_validation(self, plan, errors):
-        """Repair machine-checkable contract defects separately from semantic design revisions."""
-        state = self.state
-        signature = digest([errors, plan.get('validation')])
-        stalls = state.get('validation_stalls', 0) + 1 if state.get('validation_failure') == signature else 0
-        state.update(plan_draft=plan, validation_feedback=[{'code': c, 'detail': checks.REPAIR_DETAILS[c]} for c in errors],
-                     validation_failure=signature, validation_stalls=stalls)
-        if stalls or state.get('validation_repairs', 0) >= self.config['max_validation_repairs']:
-            state.update(stage='escalated', reason='Validation repair made no progress or exhausted its budget.', retry_stage='plan')
-            state.pop('approval', None)
-        else:
-            state['validation_repairs'] = state.get('validation_repairs', 0) + 1
-            state.update(stage='plan', reason='Validation contract needs repair: ' + ', '.join(errors))
-        self.save()
-
-    def local_report(self, attempt, report):
-        """Persist compact evidence to GitHub and optional full diagnostics as a CI artifact."""
-        state = self.state
-        compact = {k: v for k, v in report.items() if k not in ("edits", "checks")}
-        compact["checks"] = [{k: v for k, v in c.items() if k != "output"} for c in report.get("checks", [])]
-        compact.update(attempt=attempt, round=state["round"], run_id=os.environ.get("GITHUB_RUN_ID"))
-        changed = state.get("local_status") != compact
-        state["local_status"] = compact
-        # Only an attempt's final status, with its local review, is archived.
-        if changed and compact.get("review"):
-            conversation.queue(state, None, source=("local_status",), kind="local",
-                               details={"reviewer": self.config["local_reviewer"]})
-        directory = os.environ.get("CONCURRO_LOCAL_REPORT_DIR")
-        if directory:
-            path = Path(directory)
-            path.mkdir(parents=True, exist_ok=True)
-            path.joinpath(f"issue-{state['issue']}-round-{state['round']}-attempt-{attempt}.json").write_text(json.dumps(report))
-        self.save()
 
     def design_authorization(self):
         """Attest the supplied implementation plan only from current validated controller consensus."""
@@ -1304,131 +1202,51 @@ class Controller:
                                       "decision": "approve"}
                                      for member in roster]}
 
-    def open_workspace(self, parent):
-        """The workbench for `parent`, with the approved base staged too.
-
-        Preparation reads only the base, and `scope` judges the candidate against it. A factory
-        taking `commits` (a runner's workbench) builds the archives itself.
-        """
-        state = self.state
-        if getattr(self.workspace_factory, "commits", False):
-            return self.workspace_factory(self.config, parent, state["branch"], self.bundle.execution, state["base"])
-        archive = self.gh.archive(parent)
-        base_archive = archive if parent == state["base"] else self.gh.archive(state["base"])
-        return self.workspace_factory(self.config, archive, state["branch"], execution=self.bundle.execution,
-                                      base_archive=base_archive)
-
-    def develop_locally(self, parent, originals):
-        """Iterate edits, real tests and one local review before creating any remote Git objects."""
+    def develop(self, parent):
+        """Ask the implementer for a native-workspace change, then validate its bytes centrally."""
         state = self.state
         self.design_authorization()
-        deadline = time.monotonic() + self.config["local_timeout_seconds"]
-        required = list(dict.fromkeys(approved_checks(state) + state['plan']['validation']['checks']))
-        # Files earlier published rounds changed; with the parent's changes they make the cumulative change.
-        accumulated = state.get("changed_files", []) if state.get("head") else []
-        feedback = None
         round_key = f"{state['design_generation']}:{state['round']}"
-        attempts = state.setdefault("local_attempts", {})
-        if attempts.get(round_key, 0) > self.config["max_local_fix_rounds"]:
-            raise Blocked("local repair budget exhausted")
-        with self.open_workspace(parent) as workspace:
-            if workspace.files(state["plan"]["files"]) != originals:
-                raise Blocked("source archive does not match the pinned GitHub files")
-            scope = checks.scope_of(state["plan"])
-            workspace.configure_validation(state['plan']['validation'], self.files(state['base'], state['plan']['files']), {
-                "paths": scope["paths"], "max_files": scope["max_files"], "max_changed_lines": scope["max_changed_lines"],
-                "generated": checks.generated_globs(state["execution"]),
-                "accumulated": accumulated, "unapproved": checks.unapproved_triggers(approved_profile_ids(state), state["execution"])})
-            workspace.prepare(required, min(600, deadline - time.monotonic()))
-            executable = checks.executable(state["execution"], checks.preparing(required, state["execution"]))
-            for attempt in range(attempts.get(round_key, 0), self.config["max_local_fix_rounds"] + 1):
-                if deadline - time.monotonic() < 600:
-                    raise Blocked("local time budget cannot accommodate another agent turn")
-                attempts[round_key] = attempt + 1
-                changed = self.changed(workspace, accumulated)
-                context = self.context(changed)
-                # Inspection overlays these current texts, so non-primary edits are visible to repair turns.
-                overlay = sorted({*state["plan"]["files"], *changed})
-                if len(overlay) > checks.MAX_OVERLAY_FILES:
-                    raise Blocked("candidate changes too many files to inspect; it is far over the approved budget")
-                files = workspace.files(overlay)
-                context.update(files=files, controller_candidate=files,
-                               prior_reviews=state["reviews"], changed_files=changed,
-                               review_findings=findings.open_findings(state),
-                               local_feedback=feedback, available_checks=executable, required_checks=required,
-                               design_authorization=self.design_authorization())
-                result = self.ask(self.config["implementer"], "develop", context)
-                if not isinstance(result, dict) or set(result) != {"summary", "edits", "checks", "design_issue"}:
-                    raise Blocked("invalid local development response")
-                if result["design_issue"] is not None:
-                    if result["edits"] or result["checks"]:
-                        raise Blocked("design reopening cannot include candidate edits or checks")
-                    self.reopen_design(result["design_issue"], "implementation")
-                    return None
-                proposal = {"summary": result["summary"], "edits": result["edits"]}
-                if result["edits"]:
-                    # Only paths an edit may change are read; the rest come back to the implementer as feedback.
-                    current = workspace.files(sorted({e.get("path") for e in result["edits"] if isinstance(e, dict)
-                                                      and path_allowed(e.get("path"), self.config, state["execution"])
-                                                      and checks.in_scope(e["path"], state["plan"])}))
-                    try:
-                        validate_edits(proposal, state["plan"], current, self.config, state["execution"])
-                    except OutsideScope as error:
-                        # Refused whole, before anything is applied; the implementer may reopen the design.
-                        feedback = {"scope": str(error) + ". Keep edits inside the approved scope, or return a "
-                                             "design_issue if the change needs them."}
-                        continue
-                elif not workspace.export()["edits"]:
-                    raise Blocked("initial development attempt must propose changes")
-                checkpoint = workspace.checkpoint(result["edits"])
-                changed = self.changed(workspace, accumulated)
-                workspace.scope(self.packages(changed, workspace))
-                reports = workspace.run_checks(required, result["checks"], deadline)
-                export = workspace.export()
-                record = {**export, "checks": reports, "image": state["execution_image"]}
-                self.local_report(attempt, record)
-                if any(resource_exhausted(c) for c in reports):
-                    raise Blocked("local check exhausted execution resources; inspect diagnostics and runner capacity before retrying")
-                if any(c["exit_code"] != 0 for c in reports):
-                    feedback = {"checks": reports}
-                    continue
-                if deadline - time.monotonic() < 600:
-                    raise Blocked("local time budget cannot accommodate pre-publication review")
-                before, after = self.files(state["base"], changed, inspection=True), workspace.files(changed)
-                dependencies = self.dependencies(changed, workspace_reader(workspace))
-                review_context = self.context(changed)
-                review_context.update(changes=changes(before, after, self.bundle.execution, dependencies),
-                                      manifests_to_assess=self.manifests(changed), controller_candidate=after,
-                                      local_checks=reports, local_commit=checkpoint["local_commit"])
-                oversized = self.oversized(review_context, before, after, dependencies)
-                if oversized:
-                    feedback = {"checks": reports, "capacity": oversized}
-                    continue
-                review = self.ask(self.config["local_reviewer"], "local_review", review_context)
-                validate_review(review, self.manifests(changed))
-                if review["verdict"] == "reopen":
-                    self.reopen_design(review["design_issue"], "local_review")
-                    return None
-                record["review"] = review
-                self.local_report(attempt, record)
-                if review["verdict"] != "approve":
-                    feedback = {"checks": reports, "review": review}
-                    continue
-                final = {"summary": result["summary"], "edits": export["edits"]}
-                validate_edits(final, state["plan"], self.files(parent, [e["path"] for e in export["edits"]]),
-                               self.config, state["execution"])
-                evidence = {k: v for k, v in record.items() if k != "edits"}
-                evidence["checks"] = [{k: v for k, v in c.items() if k != "output"} for c in reports]
-                evidence.update(parent=parent, edits_digest=digest(export["edits"]), dependencies=dependencies,
-                                reviewer=self.config["local_reviewer"],
-                                model=selected_model(self.config, self.config["local_reviewer"], "local_review") or "CLI default")
-                return final, evidence
-        raise Blocked("local tests or review still fail; local repair budget exhausted")
-
-    @staticmethod
-    def changed(workspace, accumulated):
-        """Files the candidate changes since the approved base: this round's and earlier published rounds'."""
-        return sorted({e["path"] for e in workspace.export()["edits"]} | set(accumulated))
+        attempts = state.setdefault("implementation_attempts", {})
+        feedbacks = state.setdefault("implementation_feedback", {})
+        feedback = feedbacks.get(round_key)
+        for attempt in range(attempts.get(round_key, 0), self.config["max_fix_rounds"] + 1):
+            context = self.context()
+            context.update(prior_reviews=state["reviews"], review_findings=findings.open_findings(state),
+                           implementation_feedback=feedback, design_authorization=self.design_authorization())
+            report = self.ask(self.config["implementer"], "develop", context)
+            extraction_error = report.get("workspace_error")
+            report = {key: value for key, value in report.items() if key != "workspace_error"}
+            candidates.development(report)
+            if report["design_issue"] is not None:
+                self.reopen_design(report["design_issue"], "implementation")
+                return None
+            proposal = {"summary": report["summary"], "edits": report["edits"]}
+            names = [e.get("path") for e in report["edits"] if isinstance(e, dict)] if isinstance(report["edits"], list) else []
+            # Validate paths before reading them, and refuse the entire proposal before creating Git objects.
+            readable = sorted({p for p in names if path_allowed(p, self.config, state["execution"])
+                               and checks.in_scope(p, state["plan"])})
+            try:
+                if extraction_error:
+                    raise Blocked(extraction_error)
+                originals = self.files(parent, readable, inspection=True)
+                edits = validate_edits(proposal, state["plan"], originals, self.config, state["execution"])
+                all_paths = sorted(set(readable) | set(state.get("changed_files", [])))
+                before = self.files(state["base"], all_paths, inspection=True)
+                after = {**self.files(parent, all_paths, inspection=True), **{e["path"]: e["content"] for e in edits}}
+                changed = candidates.validate(before, after, state["plan"], self.config, state["execution"])
+                before, after = ({p: values[p] for p in changed} for values in (before, after))
+                over = self.oversized(None, before, after)
+                if over:
+                    raise Blocked(over)
+            except Blocked as error:
+                feedback = str(error) + ". Reduce the change or request a design reopen. Nothing was applied."
+                feedbacks[round_key], attempts[round_key] = feedback, attempt + 1
+                self.save()
+                continue
+            return proposal, {"changed_files": changed, "validation": report["validation"],
+                              "edits_digest": digest(edits)}
+        raise Blocked("implementation exceeds the approved scope or capacity; repair allowance exhausted")
 
     def oversized(self, local_context, before, after, dependencies=None):
         """Why a review of this candidate would not fit, or None.
@@ -1436,7 +1254,7 @@ class Controller:
         Measures the local review and each reviewer's prospective PR review as they would be sent,
         with the same serialization and limit as `ask()`. Files are never omitted to make one fit.
         """
-        contexts = [("local review", local_context)]
+        contexts = [("local review", local_context)] if local_context is not None else []
         contexts += [(provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40, dependencies))
                      for provider in self.config["reviewers"]]
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
@@ -1450,99 +1268,125 @@ class Controller:
     def pr_review_context(self, provider, before, after, head, dependencies=None):
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
-        context.update(changes=changes(before, after, self.bundle.execution, dependencies),
-                       manifests_to_assess=self.manifests(sorted(after)), head=head)
+        context.update(changes=changes(before, after), head=head)
         context["own_findings"] = findings.context(self.state, provider)
         context["review_output_budget"] = self.pr_review_output_budget()
         return context
 
     def reserve_development_branch(self):
-        """Create a linked base-only branch after approval, with durable intent for lost responses."""
+        """Reserve a fork branch and publish its issue link with recoverable intent."""
         state = self.state
         if state.get("head"):
             return
         branch, base = state["branch"], state["base"]
+        refs = [ref for ref in self.code.repo("git/matching-refs/heads/" + branch)
+                if ref["ref"] == "refs/heads/" + branch]
         reservations = state.setdefault("development_branches", {})
         if branch not in reservations:
-            reservations[branch] = {"base": base, "linked": False}
+            if refs:
+                raise Blocked("implementation branch already exists without controller intent")
+            reservations[branch] = {"base": base, "created": False}
             self.save()
-        if reservations[branch]["base"] != base:
+        reservation = reservations[branch]
+        if reservation["base"] != base:
             raise Blocked("development branch reservation base changed")
-        refs = self.gh.repo("git/matching-refs/heads/" + branch)
-        refs = [ref for ref in refs if ref["ref"] == "refs/heads/" + branch]
         if refs:
-            if refs[0]["object"]["sha"] != base or not self.gh.branch_linked(state["issue"], branch):
-                raise Blocked("development branch moved or is not linked to this issue")
+            if refs[0]["object"]["sha"] != base:
+                raise Blocked("implementation branch moved outside the controller")
         else:
-            self.gh.create_linked_branch(self.issue["node_id"], branch, base)
-            if not self.gh.branch_linked(state["issue"], branch):
-                raise Blocked("development branch link was not confirmed")
-        reservations[branch]["linked"] = True
-        self.save()
+            if reservation["created"]:
+                raise Blocked("implementation branch disappeared")
+            self.code.repo("git/refs", "POST", {"ref": "refs/heads/" + branch, "sha": base})
+        if not reservation["created"]:
+            reservation["created"] = True
+            fork = self.config.get("fork", self.config["repository"])
+            conversation.queue(state, "Implementation started",
+                               "Work branch: " + link(branch, f"https://github.com/{fork}/tree/{branch}"))
+            self.save()
 
     def implement(self):
-        """Reserve a linked base branch; publish candidate objects only after local acceptance."""
+        """Reserve the fork branch; publish candidate objects only after local acceptance."""
         self.design_authorization()
         self.reserve_development_branch()
         state = self.state
         parent = state.get("head", state["base"])
-        originals = self.files(parent, state["plan"]["files"])
-        developed = self.develop_locally(parent, originals)
+        developed = self.develop(parent)
         if developed is None:
             return
         result, evidence = developed
-        edits = validate_edits(result, state["plan"], self.files(parent, [e["path"] for e in result["edits"]]),
+        edits = validate_edits(result, state["plan"], self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
                                self.config, state["execution"])
         # Git Trees API accepts content directly, avoiding filesystem extraction and hooks.
-        parent_commit = self.gh.repo("git/commits/" + parent)
-        tree = self.gh.repo("git/trees", "POST", {"base_tree": parent_commit["tree"]["sha"], "tree": [
-            {"path": e["path"], "mode": "100644", "type": "blob", "content": e["content"]} for e in edits]})
-        commit = self.gh.repo("git/commits", "POST", {
+        parent_commit = self.code.repo("git/commits/" + parent)
+        tree = self.code.repo("git/trees", "POST", {"base_tree": parent_commit["tree"]["sha"], "tree": [
+            {"path": e["path"], "mode": self.tree(parent).get(e["path"], {}).get("mode", "100644"), "type": "blob",
+             **({"sha": None} if e["content"] is None else {"content": e["content"]})} for e in edits]})
+        commit = self.code.repo("git/commits", "POST", {
             "message": f"fix(concurro): address issue #{state['issue']} (round {state['round']})",
             "tree": tree["sha"], "parents": [parent]})
         state["pending"] = {"head": commit["sha"], "parent": parent,
                             "summary": result["summary"], "initial": "head" not in state}
-        state["local_evidence"] = {**evidence, "head": commit["sha"]}
+        state["candidate"] = {**evidence, "summary": result["summary"], "head": commit["sha"], "parent": parent,
+                              "base": state["base"], "plan": state["plan_id"]}
         state["stage"] = "publish"
+        conversation.queue(state, None, source=("candidate",), kind="implementation",
+                           details={"provider": self.config["implementer"], "round": state["round"]})
         self.save()
 
     def publish(self):
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
         state, pending = self.state, self.state["pending"]
-        if not local_evidence_valid(state):
-            raise Blocked("local tests and review do not authorize this publication")
-        refs = self.gh.repo("git/matching-refs/heads/" + state["branch"])
+        candidate = state.get("candidate", {})
+        if (not approval_valid(state, self.config) or not candidate.get("edits_digest")
+                or any(candidate.get(key) != value for key, value in (
+                    ("head", pending["head"]), ("parent", pending["parent"]),
+                    ("base", state["base"]), ("plan", state["plan_id"])))):
+            raise Blocked("candidate does not match its recorded approval and publication intent")
+        refs = self.code.repo("git/matching-refs/heads/" + state["branch"])
         refs = [r for r in refs if r["ref"] == "refs/heads/" + state["branch"]]
         if refs:
             current = refs[0]["object"]["sha"]
             if current != pending["head"]:
                 reservation = state.get("development_branches", {}).get(state["branch"])
                 if current != pending["parent"] or (pending["initial"] and (
-                        reservation != {"base": pending["parent"], "linked": True}
-                        or not self.gh.branch_linked(state["issue"], state["branch"]))):
+                        reservation != {"base": pending["parent"], "created": True})):
                     raise Blocked("branch moved outside the controller")
-                self.gh.repo("git/refs/heads/" + state["branch"], "PATCH",
+                self.code.repo("git/refs/heads/" + state["branch"], "PATCH",
                              {"sha": pending["head"], "force": False})
-        elif pending["initial"] and state["branch"] not in state.get("development_branches", {}):
-            # Recover prepared publication from controllers predating branch reservations.
-            self.gh.create_linked_branch(self.issue["node_id"], state["branch"], pending["head"])
         else:
             raise Blocked("implementation branch disappeared")
-        owner = self.config["repository"].split("/")[0]
-        prs = self.gh.pages("pulls?state=all&head=" + quote(owner + ":" + state["branch"]) +
-                            "&base=" + self.config["base"])
+        fork = self.config.get("fork", self.config["repository"])
+        owner, repository = fork.split("/")
+        prs = self.pulls.pages("pulls?state=all&head=" + quote(owner + ":" + state["branch"]) +
+                              "&base=" + self.config["base"])
         if len(prs) > 1 or (prs and prs[0]["state"] != "open"):
             raise Blocked("PR was closed or duplicated; reconcile manually")
         if prs:
             pr = prs[0]
+            if (pr.get("user", {}).get("login") != self.config["bot_login"]
+                    or state.get("pr", pr["number"]) != pr["number"]
+                    or pr["head"].get("repo", {}).get("full_name", "").lower() != fork.lower()
+                    or pr["head"]["ref"] != state["branch"]
+                    or pr["base"]["ref"] != self.config["base"]):
+                raise Blocked("PR does not match the controller's fork branch and author")
+            if pr["head"]["sha"] != pending["head"]:
+                raise Transient("unavailable", 30)
         else:
-            pr = self.gh.repo("pulls", "POST", {"title": self.pr_title(), "head": state["branch"],
-                                                "base": self.config["base"], "body": self.pr_body()})
+            if state.get("pr"):
+                raise Blocked("recorded PR disappeared; reconcile manually")
+            pr = self.pulls.repo("pulls", "POST", {
+                "title": self.pr_title(), "head": owner + ":" + state["branch"], "head_repo": repository,
+                "base": self.config["base"], "body": self.pr_body(), "draft": True})
+        if pr.get("user", {}).get("login") != self.config["bot_login"]:
+            raise Blocked("PR is not authored by the controller App")
+        published_files = candidates.changed_paths(self.pulls.pages(f"pulls/{pr['number']}/files"))
+        if set(published_files) != set(candidate["changed_files"]):
+            raise Transient("unavailable", 30)
         if state["reviews"]:
             state.setdefault("review_history", []).append(state["reviews"])
         state.update(head=pending["head"], pr=pr["number"], reviews={}, stage="review",
                      input_revision=state.get("input_revision", 0) + 1)
-        state["changed_files"] = [f["filename"] for f in self.gh.pages(f"pulls/{pr['number']}/files")]
+        state["changed_files"] = published_files
         del state["pending"]
         self.save()
 
@@ -1567,13 +1411,15 @@ class Controller:
         lines = [block(self.state["plan"]["summary"]), ""]
         if plan:
             lines += [link("Implementation plan", self.artifact_url(plan["number"])), ""]
-        for path, delta in sorted((self.state.get("local_evidence", {}).get("dependencies") or {}).items()):
+        for path, delta in sorted((self.state.get("candidate", {}).get("dependencies") or {}).items()):
             lines += ["📦 " + text(dependency_summary(path, delta)), ""]
-        return "\n".join(lines + [f"Closes #{self.state['issue']}"])
+        issue = f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}"
+        closing = f"Closes #{self.state['issue']}" if self.config.get("upstream", self.config["repository"]) == self.config["repository"] else f"Closes {issue}"
+        return "\n".join(lines + [closing])
 
     def pr_url(self, number):
         """The task's pull request on GitHub."""
-        return f"https://github.com/{self.config['repository']}/pull/{number}"
+        return f"https://github.com/{self.config.get('upstream', self.config['repository'])}/pull/{number}"
 
     def review(self):
         """Run one fresh provider review of the same immutable change."""
@@ -1583,11 +1429,11 @@ class Controller:
             changed = state["changed_files"]
             context = self.pr_review_context(provider, self.files(state["base"], changed, inspection=True),
                                              self.files(state["head"], changed, inspection=True), state["head"],
-                                             self.dependencies(changed, self.committed(state["head"])))
+                                             None)
             report = self.ask(provider, "review", context)
             owned = findings.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],
-                               [f["id"] for f in owned if f["status"] == "withdrawn"], self.manifests(changed))
+                               [f["id"] for f in owned if f["status"] == "withdrawn"])
             if pr_review_cost(report) > self.pr_review_room():
                 raise Blocked("PR review exceeds the checkpoint budget")
             self.record_pr_review(state, provider, report)
@@ -1611,48 +1457,61 @@ class Controller:
                 raise Blocked("independent reviews still request changes; fix budget exhausted")
             self.save()
 
-    def protection_errors(self):
-        """Evaluate classic protection and every active rule GitHub applies to the base branch."""
-        base = self.config["base"]
-        try:
-            classic = self.gh.repo(f"branches/{base}/protection")
-        except NotFound:
-            classic = None
-        rules = self.gh.pages(f"rules/branches/{base}")
-        identifiers = sorted({r.get("ruleset_id") for r in rules if type(r.get("ruleset_id")) is int})
-        rulesets = {i: self.gh.repo(f"rulesets/{i}") for i in identifiers}
-        return protection_errors(classic, rules, rulesets, self.config["required_checks"])
-
     def gates(self):
-        """Check fresh GitHub evidence and merge only the reviewed SHA, without admin bypass."""
+        """Observe current reviews and CI; mark ready once, never merge or rerun CI."""
         state = self.state
-        pr = self.gh.repo(f"pulls/{state['pr']}")
-        files = [f["filename"] for f in self.gh.pages(f"pulls/{state['pr']}/files")]
-        checks = self.gh.pages(f"commits/{state['head']}/check-runs?filter=latest", "check_runs")
-        reasons = merge_reasons(state, pr, files, checks, self.gh.threads(state["pr"]),
-                                self.gh.pages(f"pulls/{state['pr']}/reviews"), self.config)
-        if reasons:
-            reason = "; ".join(reasons)
-            if actions.handoff(state, self.config, reasons, pr) or state.get("reason") != reason:
-                state["reason"] = reason
-                self.save()
-            return False
-        # Require server-side protection so a concurrent base/check change cannot bypass gates.
-        errors = self.protection_errors()
-        if errors:
-            raise Blocked("; ".join(errors))
-        # Save intent: a lost merge response is reconciled from GitHub on the next tick.
-        state["stage"] = "merging"
-        self.save()
-        response = self.gh.repo(f"pulls/{state['pr']}/merge", "PUT",
-                                {"sha": state["head"], "merge_method": "squash"})
-        if not response.get("merged"):
-            raise Blocked("GitHub rejected the guarded merge")
-        state.update(stage="merged", merge_sha=response["sha"], reason="All merge gates passed.",
-                     completion={"kind": "controller", "head": state["head"], "merge_sha": response["sha"],
-                                 "pr": state["pr"], "gates_verified": True})
-        self.save()
-        return True
+        pr = self.pulls.repo(f"pulls/{state['pr']}")
+        files = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
+        threads = self.pulls.threads(state["pr"])
+        reasons = readiness.review_reasons(state, pr, files, threads, self.config)
+        refs = readiness.ci_refs(pr)
+        if len(refs) > 1:
+            commit = self.pulls.repo("git/commits/" + refs[1])
+            if [parent["sha"] for parent in commit.get("parents", [])] != [pr["base"]["sha"], state["head"]]:
+                reasons.append("GitHub test-merge commit is not current")
+        observations = [(sha, self.pulls.pages(f"commits/{sha}/check-runs?filter=all", "check_runs"),
+                         self.pulls.pages(f"commits/{sha}/statuses"),
+                         self.pulls.pages(f"commits/{sha}/check-suites", "check_suites"),
+                         self.pulls.pages(f"actions/runs?head_sha={sha}", "workflow_runs")) for sha in refs]
+        reasons += readiness.ci_reasons(observations)
+        latest = self.pulls.repo(f"pulls/{state['pr']}")
+        if readiness.ci_refs(latest) != readiness.ci_refs(pr) or latest["base"] != pr["base"]:
+            reasons.append("PR changed while observing CI")
+        reasons += readiness.review_reasons(state, latest, files, threads, self.config)
+        pr = latest
+        seen_before = state.get("ready_seen", False)
+        if not pr["draft"]:
+            state["ready_seen"] = True
+        # Never reverse a human's later conversion back to draft, even on a new head.
+        if pr["draft"] and state.get("ready_seen"):
+            reasons.append("PR returned to draft; a human must mark it ready")
+        if not reasons and pr["draft"]:
+            # The response can be lost; the next tick reconstructs completion from isDraft.
+            state["ready_intent"] = state["head"]
+            self.save()
+            pr = self.pulls.repo(f"pulls/{state['pr']}")
+            if (readiness.ci_refs(pr) != readiness.ci_refs(latest) or pr["base"] != latest["base"]
+                    or pr["state"] != "open"):
+                return False
+            if pr["draft"]:
+                self.pulls.mark_ready(pr["node_id"])
+            pr = self.pulls.repo(f"pulls/{state['pr']}")
+            if pr["draft"] or pr["head"]["sha"] != state["head"]:
+                raise Blocked("PR readiness response did not confirm the reviewed head")
+            state["ready_seen"] = True
+        ready = not reasons and not pr["draft"]
+        reason = "; ".join(dict.fromkeys(reasons)) if reasons else "CI passed and all Concurro reviewers approved. Ready for human review."
+        changed = (state.get("handoff_ready") != ready or state.get("reason") != reason
+                   or state.get("ready_seen", False) != seen_before)
+        state["handoff_ready"], state["reason"] = ready, reason
+        if ready and state.get("handoff") != state["head"]:
+            state["handoff"] = state["head"]
+            conversation.queue(state, "Ready for review", link(f"PR #{state['pr']}", self.pr_url(state["pr"])) +
+                               " has passing CI and current approvals from all Concurro reviewers. Human review and merge remain yours.")
+            changed = True
+        if changed:
+            self.save()
+        return False
 
     def observe_merge(self, pr):
         """Record external completion without claiming that controller gates authorized it."""
@@ -1661,16 +1520,11 @@ class Controller:
             raise Blocked("merged PR head differs from the exact published controller head")
         if not pr.get("merge_commit_sha"):
             raise Blocked("merged PR lacks completion evidence")
-        intent = state["stage"] == "merging" or (state["stage"] == "blocked" and state.get("retry_stage") == "merging")
-        actor = (pr.get("merged_by") or {}).get("login")
-        controlled = intent and actor == self.identities.author("merge")
-        state["completion"] = {"kind": "controller_reconciled" if controlled else "observed_external",
-            "head": state["head"], "merge_sha": pr["merge_commit_sha"], "pr": state["pr"],
-            "gates_verified": controlled, "observed_stage": state["stage"],
-            "merged_by": actor}
-        state.update(stage="merged" if controlled else "observed_merged", merge_sha=pr["merge_commit_sha"],
-            reason="Controller merge response reconciled." if controlled else
-                   "Observed an external merge of the exact published head; controller merge gates are not attested.")
+        state["completion"] = {"kind": "observed_external", "head": state["head"],
+            "merge_sha": pr["merge_commit_sha"], "pr": state["pr"], "gates_verified": False,
+            "observed_stage": state["stage"], "merged_by": (pr.get("merged_by") or {}).get("login")}
+        state.update(stage="observed_merged", merge_sha=pr["merge_commit_sha"],
+                     reason="Observed an external merge of the published head.")
         self.save()
 
     def advance(self, number):
@@ -1685,7 +1539,7 @@ class Controller:
         if not self.state:
             return Outcome("await-human")
         stage = self.state["stage"]
-        if stage in ("merged", "observed_merged"):
+        if stage in ("merged", "observed_merged", "closed"):
             return Outcome("terminal", progressed)
         if stage in ("blocked", "stopped", "rejected", "escalated"):
             return Outcome("blocked", progressed)
@@ -1711,7 +1565,7 @@ class Controller:
         if self.state and (self.state.get("bundle_id") != self.bundle.identity
                            or self.state.get("charter_id") != digest(self.bundle.charter)
                            or digest(self.state.get("charter")) != self.state.get("charter_id")
-                           or self.state.get("execution") != self.bundle.execution_summary):
+                           or self.state.get("execution") != self.config["paths"]):
             raise Blocked("trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required")
         self.sync_stage()
         if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
@@ -1719,10 +1573,15 @@ class Controller:
                                    or self.state.get("pr_outbox"))):
             self.save()
         if self.state and self.state.get("pr") and self.state["stage"] not in ("merged", "observed_merged"):
-            pr = self.gh.repo(f"pulls/{self.state['pr']}")
+            pr = self.pulls.repo(f"pulls/{self.state['pr']}")
             if pr.get("merged"):
                 self.observe_merge(pr)
                 return True
+            if pr["state"] == "closed":
+                if self.state["stage"] != "closed":
+                    self.state.update(stage="closed", reason="PR closed without merging.")
+                    self.save()
+                return False
         if self.issue["state"] != "open":
             if self.state and self.state["stage"] not in ("merged", "observed_merged", "stopped"):
                 self.state.update(stage="stopped", reason="Issue closed without a confirmed exact-head merge.")
@@ -1744,10 +1603,6 @@ class Controller:
             state["stage"] = "gates"
         if state["config_digest"] != config_digest(self.config):
             raise Blocked("controller configuration changed; re-plan required")
-        if state["agent_image"] != os.environ.get("CONCURRO_AGENT_IMAGE", ""):
-            raise Blocked("agent image changed; re-plan required")
-        if state["execution_image"] != os.environ.get("CONCURRO_EXECUTION_IMAGE", ""):
-            raise Blocked("execution image changed; re-plan required")
         if state.get("mode") == "autonomous":
             if not self.refresh_autonomous(comments):
                 return False
@@ -1755,14 +1610,12 @@ class Controller:
             return False
         if state["issue_digest"] != digest([self.issue["title"], self.issue["body"]]):
             raise Blocked("issue requirements changed; re-plan required")
-        if self.gh.repo("git/ref/heads/" + self.config["base"])["object"]["sha"] != state["base"]:
-            raise Blocked("base moved; re-plan required")
         if state.get("mode") == "manual" and state.get("approval"):
             self.check_human_approval(comments)
         if state["stage"] in ("implement", "publish", "review", "gates") and not approval_valid(state, self.config):
             raise Blocked("approved plan missing or stale")
         if state.get("head") and state["stage"] != "publish":
-            pr = self.gh.repo(f"pulls/{state['pr']}")
+            pr = self.pulls.repo(f"pulls/{state['pr']}")
             if pr["state"] != "open" or pr["head"]["sha"] != state["head"]:
                 raise Blocked("PR closed or head changed outside the controller")
         method = {"intake": lambda: self.quality_control("intake"),
@@ -1784,53 +1637,3 @@ class Controller:
                 and c["user"]["login"] == state["approval"]["actor"]
                 and c["body"].strip() == "/concurro approve " + state["plan_id"] for c in comments):
             raise Blocked("approval comment changed or was removed")
-
-
-def main():
-    """Run from the trusted default branch; schedule scans the opt-in label."""
-    config = json.loads(Path(".concurro/config.json").read_text())
-    validate_config(config)
-    if os.environ.get("GITHUB_REPOSITORY", config["repository"]) != config["repository"]:
-        raise Blocked("repository identity mismatch")
-    gh = GitHub(config["repository"])
-    number = os.environ.get("CONCURRO_ISSUE", "")
-    if number:
-        if not number.isdecimal() or int(number) <= 0:
-            raise Blocked("invalid issue number")
-        numbers = [int(number)]
-    else:
-        numbers = QueueScan(gh, config)
-    for number in numbers:
-        controller = Controller(gh, host_agents(config), config)
-        try:
-            advanced = controller.advance(number)
-            if controller.state:
-                sync_checkpoint_health(gh, config, number, failed=False)
-            if advanced:
-                break
-        except Exception as error:
-            # Do not publish raw CLI/provider errors: they can contain credentials or injected text.
-            if not controller.state:
-                # Ownership was never established (or belongs elsewhere): no issue-level writes.
-                detail = error.public_detail() if isinstance(error, CheckpointError) else "unverified task state"
-                print(f"Concurro diagnostic for issue {number}: {detail}", file=sys.stderr)
-            elif isinstance(error, CheckpointError) and not isinstance(error, conversation.PublicationError):
-                sync_checkpoint_health(gh, config, number, failed=True, error=error)
-            else:
-                reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect runner health."
-                try:
-                    # The Blocked comment is posted now; a publication failure has the health notice instead.
-                    controller.suspend("blocked", reason, outboxes=False,
-                                       publish_events=not isinstance(error, conversation.PublicationError))
-                except Exception as display_error:
-                    diagnostic = display_error if isinstance(display_error, CheckpointError) else CheckpointError("failure_display")
-                    sync_checkpoint_health(gh, config, number, failed=True, error=diagnostic)
-                else:
-                    if isinstance(error, conversation.PublicationError):
-                        sync_checkpoint_health(gh, config, number, failed=True, error=error)
-            print(f"Concurro stopped safely on issue {number}", file=sys.stderr)
-            raise SystemExit(1) from None
-
-
-if __name__ == "__main__":
-    main()

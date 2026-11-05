@@ -6,12 +6,13 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import APPROVE, FINDING, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import APPROVE, FINDING, FakeAgents, FakeGitHub
 from checkpoints import LIMIT, Checkpoints
 from controller import PR_REVIEW_RESERVE, Controller
 import conversation
-from policy import Blocked, digest, merge_reasons, validate_pr_review, validate_review
+from policy import Blocked, digest, validate_pr_review, validate_review
 import reviews
+from readiness import review_reasons
 
 DESIGN_ISSUE = {"kind": "plan", "explanation": "The plan misses a case.", "evidence": ["The guide omits it."]}
 
@@ -166,7 +167,7 @@ class Reviewers(FakeAgents):
         if stage == "develop" and self.reopen_once and context["review_findings"]:
             self.reopen_once = False
             self.calls.append((provider, stage, deepcopy(context)))
-            return {"summary": "Reconsider the plan.", "edits": [], "checks": [], "design_issue": DESIGN_ISSUE}
+            return {"summary": "Reconsider the plan.", "edits": [], "validation": "", "design_issue": DESIGN_ISSUE}
         if stage != "review":
             return super().ask(provider, stage, context)
         self.calls.append((provider, stage, deepcopy(context)))
@@ -186,10 +187,10 @@ class Harness:
         self.config["autonomous"] = False
         self.gh = FakeGitHub(self.config)
 
-    def run_to(self, agents, stage, ticks=30, until=lambda state: True, workspaces=FakeWorkspace):
+    def run_to(self, agents, stage, ticks=30, until=lambda state: True):
         """Tick, approving the plan when asked, until `stage` (and `until`); return the controller."""
         for _ in range(ticks):
-            controller = Controller(self.gh, agents, self.config, workspace_factory=workspaces)
+            controller = Controller(self.gh, agents, self.config)
             controller.advance(7)
             state = controller.state
             if state["stage"] == "planned":
@@ -216,8 +217,7 @@ class Harness:
     def reasons(self, state):
         """The merge gates' reasons for this state against the fake's PR."""
         files = [f["filename"] for f in self.gh.pages("pulls/9/files")]
-        return merge_reasons(state, self.gh.pr, files, self.gh.pages("commits/x/check-runs"), self.gh.threads(9),
-                             self.gh.human_reviews, self.config)
+        return review_reasons(state, self.gh.pr, files, self.gh.threads(9), self.config)
 
 
 class LifecycleTests(Harness, unittest.TestCase):
@@ -254,7 +254,7 @@ class LifecycleTests(Harness, unittest.TestCase):
         reopened["findings"][0]["status"] = "open"
         self.assertIn("open review findings", self.reasons(reopened))
         reopened["findings"][0]["status"] = "withdrawn"
-        self.assertIn("withdrawn findings awaiting retirement: F1", self.reasons(reopened))
+        self.assertIn("withdrawn findings awaiting retirement", self.reasons(reopened))
 
     def test_retirement_through_a_replan(self):
         """The implementer reopens the design; the new plan's review retires the withdrawn finding."""
@@ -293,7 +293,7 @@ class LifecycleTests(Harness, unittest.TestCase):
         controller = None
         with self.assertRaisesRegex(Blocked, "exceeds the checkpoint budget"):
             controller = self.run_to(agents, "gates")
-        controller = Controller(self.gh, agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, agents, self.config)
         controller.issue = self.gh.repo("issues/7")
         controller.load(self.gh.pages("issues/7/comments"))
         state = controller.state
@@ -327,7 +327,7 @@ class LifecycleTests(Harness, unittest.TestCase):
         agents = FakeAgents()
         agents.ask = lambda provider, stage, context: report(
             "reopen", design_issue={**DESIGN_ISSUE, "explanation": "e" * 500}) | {"summary": "s" * 2500}
-        controller = Controller(self.gh, agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, agents, self.config)
         with self.assertRaisesRegex(Blocked, "checkpoint budget"):
             controller.advance(7)
         controller.suspend("blocked", "PR review exceeds the checkpoint budget", publish_events=False)
@@ -409,7 +409,7 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertIn("✅ **Fixed** in `", reply["body"])
         finding = state["findings"][0]
         self.assertEqual((finding["thread"], finding["comment"], finding["resolution"]), ("T1", opening["id"], "done"))
-        self.assertNotIn("PR review publication incomplete", self.reasons(state))
+        self.assertNotIn("review publication incomplete", self.reasons(state))
         self.assertNotIn("unresolved review threads", self.reasons(state))
 
     def test_unanchored_and_general_findings(self):
@@ -503,7 +503,7 @@ class PublicationTests(Harness, unittest.TestCase):
         controller = self.run_to(agents, "review")
         state = deepcopy(controller.state)
         state["pr_outbox"] = [{"kind": "review"}]
-        self.assertIn("PR review publication incomplete", self.reasons(state))
+        self.assertIn("review publication incomplete", self.reasons(state))
         controller = self.run_to(agents, "review", until=lambda state: state.get("reviews"))
         posted = len(self.gh.app_reviews)
         [report] = controller.state["reviews"].values()

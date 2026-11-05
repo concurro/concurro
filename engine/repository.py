@@ -136,7 +136,9 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
             listed = git("ls-tree", parent, "--", path)
             if text is None:
                 if listed:
-                    raise ValueError("a candidate cannot remove an existing file")
+                    if listed.split()[0] not in ("100644", "100755"):
+                        raise ValueError("a candidate can only remove regular files")
+                    git("update-index", "--force-remove", "--", path, extra=index)
                 continue
             mode = listed.split()[0] if listed else "100644"
             if mode not in ("100644", "100755"):

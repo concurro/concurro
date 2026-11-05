@@ -12,6 +12,7 @@ import time
 import private
 
 from . import transport
+from .targets import permissions
 
 READ = {"contents": "read", "issues": "read", "pull_requests": "read", "checks": "read",
         "administration": "read"}
@@ -63,6 +64,7 @@ class Identity:
     def __init__(self, settings, connection=transport.connect, clock=time.time, signer=sign):
         """`settings` supplies `app_id` and `private_key_path`; the key is checked on each signature."""
         self.app_id, self.key_path = settings.app_id, settings.private_key_path
+        self.permissions = permissions(settings.targets) if hasattr(settings, "targets") else None
         self.connection, self.clock, self.signer = connection, clock, signer
         self.guard = threading.Lock()
         self.locks = {}
@@ -119,14 +121,19 @@ class Identity:
             found = self.api("GET", f"repos/{repository}/installation", self.app_jwt())
             if found.get("repository_selection") != "selected":
                 raise IdentityError("install the App on selected repositories, not all repositories")
-            if found.get("account", {}).get("login") != repository.split("/")[0]:
+            if found.get("account", {}).get("login", "").lower() != repository.split("/")[0].lower():
                 raise IdentityError("App installation owner differs from the repository owner")
             self.installations[repository] = found["id"]
         return self.installations[repository]
 
     def mint(self, repository, kind):
         """A new token for one repository with exactly the kind's permissions; revoked if it differs."""
-        wanted = KINDS[kind]
+        if self.permissions is not None and kind in ("read", "write"):
+            wanted = self.permissions.get(repository, {}).get(kind)
+            if not wanted:
+                raise IdentityError("repository is not enabled for this token use")
+        else:
+            wanted = KINDS[kind]
         granted = self.api("POST", f"app/installations/{self.installation(repository)}/access_tokens",
                            self.app_jwt(), {"repositories": [repository.split("/")[1]], "permissions": wanted})
         token = granted.get("token")
@@ -137,7 +144,7 @@ class Identity:
             if permissions != wanted:
                 raise IdentityError("App token permissions differ from the requested least-privilege scope")
             listed = self.api("GET", "installation/repositories?per_page=100", token)
-            if listed.get("total_count") != 1 or [r.get("full_name") for r in listed.get("repositories", [])] != [repository]:
+            if listed.get("total_count") != 1 or [r.get("full_name", "").lower() for r in listed.get("repositories", [])] != [repository.lower()]:
                 raise IdentityError("App token repository scope differs from the requested repository")
             expires = datetime.fromisoformat(granted["expires_at"]).timestamp()
         except BaseException as error:

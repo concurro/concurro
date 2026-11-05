@@ -12,7 +12,7 @@ import design
 from controller import Controller
 from policy import Blocked, approval_valid, consensus_valid, digest
 from test_autonomy import decision
-from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub, FakeWorkspace, design_report
+from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub, design_report
 
 
 class DesignContractTests(unittest.TestCase):
@@ -26,13 +26,13 @@ class DesignContractTests(unittest.TestCase):
 
     def tick(self):
         """Use the ordinary controller without replacing authorization or publication logic."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         return controller
 
     def load(self):
         """Recover the authoritative artifact without advancing work."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         return controller
@@ -137,51 +137,6 @@ class DesignContractTests(unittest.TestCase):
             with self.assertRaises(Blocked):
                 design.validate_evidence(candidate, self.gh.issue, own)
 
-    def test_contract_repair_precedes_review_and_preserves_design_budget(self):
-        """Invalid named checks get bounded planner feedback without spending semantic revisions."""
-        self.reach('plan')
-        original = self.agents.ask
-
-        def unsupported(provider, stage, context):
-            """Return an otherwise valid plan with an invented shell check."""
-            result = original(provider, stage, context)
-            result['validation']['checks'] = ['git diff BASE HEAD']
-            return result
-
-        with patch.object(self.agents, 'ask', side_effect=unsupported):
-            state = self.tick().state
-        self.assertEqual((state['stage'], state['plan_revisions'], state['validation_repairs']), ('plan', 0, 1))
-        self.assertFalse(state.get('approval'))
-        self.assertFalse([c for c in self.agents.calls if c[1] == 'plan_qc'])
-        state = self.tick().state
-        self.assertEqual(state['stage'], 'plan_qc')
-        self.assertEqual(state['calls'], 3)
-        context = self.agents.calls[-1][2]
-        self.assertEqual(context['validation_feedback'][0]['code'], 'validation_checks')
-        self.assertIn('synthetic', context['validation_capabilities']['checks'][0]['purpose'])
-        self.assertEqual(state['sessions'][next(iter(state['sessions']))]['turn'], 2)
-
-    def test_no_progress_and_global_repair_budget_stop_without_reset(self):
-        """Repeated defects or changed-but-still-invalid contracts cannot loop forever."""
-        for repeat in (True, False):
-            with self.subTest(repeat=repeat):
-                self.setUp()
-                self.config['max_validation_repairs'] = 1
-                self.reach('plan')
-                original = self.agents.ask
-
-                def invalid(provider, stage, context):
-                    """Change the attempted identifier only in the budget-exhaustion case."""
-                    result = original(provider, stage, context)
-                    result['validation']['checks'] = ['bad' if repeat else 'bad-' + str(len(self.agents.calls))]
-                    return result
-
-                with patch.object(self.agents, 'ask', side_effect=invalid):
-                    self.tick()
-                    state = self.tick().state
-                self.assertEqual((state['stage'], state['calls'], state['plan_revisions']), ('escalated', 3, 0))
-                self.assertEqual(state['validation_repairs'], 1)
-                self.assertFalse(self.gh.refs)
 
     def test_plan_is_linked_without_an_event_and_an_old_intent_is_dropped(self):
         """The plan is linked from the status comment; an intent saved by an earlier version posts nothing."""

@@ -4,8 +4,8 @@ import hashlib
 import json
 import re
 from pathlib import PurePosixPath
-from checks import (MAX_PLAN_FILES, build_checked, contract_errors, generated, glob_matches as instruction_matches,
-                    in_scope, mandatory, protected as profile_protected, scope_errors, scope_of, triggered)
+from checks import (MAX_PLAN_FILES, generated, glob_matches as instruction_matches,
+                    in_scope, scope_errors, scope_of)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 
@@ -43,26 +43,16 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def task_branch(repository, issue):
+    """A stable fork branch whose suffix distinguishes same-numbered issues in different repositories."""
+    return f"concurro/issue-{issue}-{digest([repository, issue])[:12]}"
+
+
 def selected_model(config, provider, stage):
     """Allow a separate QC model while retaining provider defaults for other roles."""
     if stage in ("intake", "plan_qc") and config["qc_model"]:
         return config["qc_model"]
-    if stage == "local_review" and config["local_review_model"]:
-        return config["local_review_model"]
     return config["models"][provider]
-
-
-def approved_profile_ids(state):
-    """The plan's approved profiles; a plan approved before envelopes has those its files trigger."""
-    profiles = state.get("approved_profiles")
-    if profiles is None:
-        return [p["id"] for p in state["execution"]["profiles"] if triggered(p, state["plan"]["files"])]
-    return profiles
-
-
-def approved_checks(state):
-    """The mandatory checks of the plan's approved profiles."""
-    return mandatory(approved_profile_ids(state), state['execution'])
 
 
 class OutsideScope(Blocked):
@@ -71,30 +61,6 @@ class OutsideScope(Blocked):
     def __init__(self, paths):
         self.paths = sorted(paths)
         super().__init__("edit outside the approved scope or of a protected path: " + ", ".join(self.paths))
-
-
-def local_evidence_valid(state):
-    """Require passing execution and local review evidence for the commit being published."""
-    evidence = state.get("local_evidence", {})
-    head = state.get("pending", {}).get("head", state.get("head"))
-    if not head or evidence.get("head") != head or not evidence.get("tree") or not evidence.get("local_commit"):
-        return False
-    if evidence.get("image") != state.get("execution_image"):
-        return False
-    checks = evidence.get("checks", [])
-    names = [c.get("name") for c in checks]
-    required = set(approved_checks(state)) | set(state['plan']['validation']['checks'])
-    if len(names) != len(set(names)) or not required.issubset(names):
-        return False
-    if any(c.get("exit_code") != 0 or c.get("timed_out") or c.get("output_limited")
-           or c.get("tree") != evidence["tree"] for c in checks):
-        return False
-    review = evidence.get("review", {})
-    try:
-        validate_review({k: v for k, v in review.items() if k not in ("head", "model")})
-    except (Blocked, TypeError):
-        return False
-    return review["verdict"] == "approve"
 
 
 def presentation(report, fields, optional):
@@ -154,7 +120,7 @@ def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=
 def design_roster(config):
     """Deduplicate every participating provider/model identity, retaining role provenance."""
     members = [(config["planner"], "plan"), (config["implementer"], "develop"),
-               (config["qc"], "intake"), (config["local_reviewer"], "local_review")]
+               (config["qc"], "intake")]
     members += [(provider, "review") for provider in config["reviewers"]]
     roster = {}
     for provider, stage in members:
@@ -170,7 +136,6 @@ def approval_binding(state, config):
     """Bind every vote to the exact design generation, governance and participating identities."""
     return digest({"plan": state["plan_id"], "plan_content": state["plan"], "base": state["base"],
                    "requirements": state["requirements"], "config": state["config_digest"],
-                   "image": state["agent_image"], "execution_image": state["execution_image"],
                    "bundle": state.get("bundle_id"), "charter": state.get("charter_id"),
                    "generation": state.get("design_generation"), "phase": state.get("design_phase"), "roster": design_roster(config),
                    "parent": state.get("design_parent"), "changed_files": state.get("approved_accumulated_files", [])})
@@ -185,8 +150,6 @@ def consensus_valid(state, config, require_fresh=True):
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
     binding = approval_binding(state, config)
-    if not state.get("execution") or contract_errors(state['plan'], state['execution'], state.get("approved_profiles")):
-        return False
     for member in roster:
         vote = votes[member["id"]]
         if vote.get("identity") != member or vote.get("binding") != binding:
@@ -240,7 +203,7 @@ def path_safe(path):
 
 def path_allowed(path, config, execution):
     """Apply the target's editable-path policy and profile protections on top of engine invariants."""
-    if not path_safe(path) or profile_protected(path, execution):
+    if not path_safe(path) or any(instruction_matches(path, g) for g in config["paths"].get("protected", [])):
         return False
     policy = config["paths"]
     return (
@@ -253,15 +216,9 @@ def path_allowed(path, config, execution):
     )
 
 
-def merge_path_allowed(path, config, execution):
-    """Autonomous merge accepts only configured low-risk paths that trigger no execution profile."""
-    return (path.startswith(tuple(config["paths"]["autonomous_merge_prefixes"]))
-            and not build_checked(path, execution))
-
-
 def validate_plan(plan, config, execution):
     """Require a bounded, reviewable plan or explicit clarification questions."""
-    fields = {"summary", "questions", "files", "steps", "tests", "responses", "validation", "publication"}
+    fields = {"summary", "questions", "files", "steps", "tests", "responses", "publication"}
     if not isinstance(plan, dict) or set(plan) - {"scope"} != presentation(plan, fields, {"headline"}):
         raise Blocked("invalid plan fields")
     publication = plan['publication']
@@ -286,8 +243,6 @@ def validate_plan(plan, config, execution):
         raise Blocked("plan must name 1–8 distinct files")
     if not all(path_allowed(p, config, execution) for p in plan["files"]):
         raise Blocked("plan includes protected or unsupported files")
-    if any(generated(p, execution) for p in plan["files"]):
-        raise Blocked("a primary file cannot be generated; a lockfile belongs in the scope envelope")
     problem = scope_errors(plan)
     if problem:
         raise Blocked(problem)
@@ -317,8 +272,11 @@ def validate_edits(result, plan, originals, config, execution):
         if not path_allowed(path, config, execution) or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
         # A generated file (a lockfile) has no per-file limit; the response's aggregate bound still applies.
-        if (not isinstance(content, str) or "\x00" in content
-                or len(content.encode()) > 128000 and not generated(path, execution)):
+        if content is None:
+            if originals.get(path) is None:
+                raise Blocked("a deletion must name an existing regular text file")
+        elif (not isinstance(content, str) or "\x00" in content
+              or len(content.encode()) > 128000 and not generated(path, config["paths"])):
             raise Blocked("invalid text replacement")
         if originals.get(path) == content:
             raise Blocked("unchanged replacement")
@@ -441,94 +399,3 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
     still_open = review["findings"] or any(d["status"] == "open" for d in review["dispositions"])
     if (review["verdict"] == "approve") == bool(still_open):
         raise Blocked("review verdict contradicts findings")
-
-
-def protection_errors(classic, rules, rulesets, required_checks):
-    """Return why server-side protection the App cannot bypass would not guard a merge race.
-
-    Classic protection counts only when enforced for administrators. Ruleset rules count only
-    from active rulesets reporting that the requesting App can never bypass them.
-    """
-    names, resolution = set(), False
-    if classic and classic.get("enforce_admins", {}).get("enabled"):
-        required = classic.get("required_status_checks") or {}
-        if required.get("strict"):
-            names |= set(required.get("contexts", [])) | {c["context"] for c in required.get("checks", [])}
-        resolution = bool(classic.get("required_conversation_resolution", {}).get("enabled"))
-    for rule in rules:
-        ruleset = rulesets.get(rule.get("ruleset_id")) or {}
-        if ruleset.get("enforcement") != "active" or ruleset.get("current_user_can_bypass") != "never":
-            continue
-        parameters = rule.get("parameters") or {}
-        if rule.get("type") == "required_status_checks" and parameters.get("strict_required_status_checks_policy"):
-            names |= {c["context"] for c in parameters.get("required_status_checks", [])}
-        elif rule.get("type") == "pull_request" and parameters.get("required_review_thread_resolution"):
-            resolution = True
-    errors = []
-    missing = sorted(set(required_checks) - names)
-    if missing:
-        errors.append("strict branch protection the App cannot bypass must require: " + ", ".join(missing))
-    if not resolution:
-        errors.append("branch protection the App cannot bypass must require conversation resolution")
-    return errors
-
-
-def merge_reasons(state, pr, files, checks, threads, reviews, config):
-    """Return every failed merge gate; missing evidence always blocks."""
-    reasons = []
-    head = pr["head"]["sha"]
-    if not config["merge_enabled"]:
-        reasons.append("autonomous merge is disabled")
-    if pr["state"] != "open" or pr["draft"] or pr.get("mergeable") is not True:
-        reasons.append("PR is not open, ready and mergeable")
-    if pr.get("mergeable_state") != "clean":
-        reasons.append("GitHub mergeability is not clean")
-    if pr["base"]["ref"] != config["base"] or pr["base"]["sha"] != state["base"]:
-        reasons.append("base moved; a new plan is required")
-    if pr["head"]["repo"]["full_name"] != config["repository"]:
-        reasons.append("foreign head repository")
-    if pr["head"]["ref"] != state["branch"] or head != state.get("head"):
-        reasons.append("head changed outside the controller")
-    if not approval_valid(state, config):
-        reasons.append("approved plan missing or stale")
-    if not local_evidence_valid(state):
-        reasons.append("local test or review evidence missing or stale")
-    reports = state.get("reviews", {})
-    for provider in config["reviewers"]:
-        report = reports.get(provider, {})
-        if (report.get("head") != head or report.get("verdict") != "approve" or report.get("findings")
-                or report.get("input_revision") != state.get("input_revision", 0)):
-            reasons.append(provider + " approval missing or stale")
-    ledger = state.get("findings", [])
-    if state.get("pr_outbox"):
-        reasons.append("PR review publication incomplete")
-    if any(f["status"] == "open" for f in ledger):
-        reasons.append("open review findings")
-    withdrawn = [f["id"] for f in ledger if f["status"] == "withdrawn"]
-    if withdrawn:
-        reasons.append("withdrawn findings awaiting retirement: " + ", ".join(withdrawn))
-    if not files or set(files) != set(state.get("changed_files", [])):
-        reasons.append("PR file set differs from controller evidence")
-    if not all(path_allowed(p, config, state["execution"]) and in_scope(p, state["plan"]) for p in files):
-        reasons.append("unapproved path")
-    if not all(merge_path_allowed(p, config, state["execution"]) for p in files):
-        reasons.append("autonomous merge is limited to configured low-risk paths")
-    for name in config["required_checks"]:
-        candidates = [c for c in checks if c["name"] == name]
-        if len(candidates) != 1:
-            reasons.append("required check missing or ambiguous: " + name)
-        else:
-            check = candidates[0]
-            if (check.get("head_sha") != head or check.get("status") != "completed"
-                    or check.get("conclusion") != "success"
-                    or check.get("app", {}).get("slug") != "github-actions"):
-                reasons.append("required check unsuccessful or untrusted: " + name)
-    if any(not t["isResolved"] for t in threads):
-        reasons.append("unresolved review threads")
-    latest = {}
-    for review in reviews:
-        if review["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-            latest[review["user"]["login"]] = review["state"]
-    if "CHANGES_REQUESTED" in latest.values():
-        reasons.append("outstanding human changes requested")
-    return reasons

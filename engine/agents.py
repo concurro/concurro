@@ -1,6 +1,7 @@
 """Model calls as turns: a gateway session key and native tools on a real workspace, here or on a runner."""
 
 import base64
+from fnmatch import fnmatchcase
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,7 @@ import uuid
 from bundle import Bundle
 from credentials import Credential
 from github import Transient
-from mirror import Mirror, default_root
-from policy import Blocked, IMAGE, SessionFailure, UncertainOutcome, selected_model
+from policy import Blocked, SessionFailure, UncertainOutcome, selected_model
 from relay import ExchangeError, Operator
 from snapshot import inspection
 import turns
@@ -63,12 +63,12 @@ class Agents:
     """Run each model call as a turn through an executor; every call holds only a gateway key."""
 
     def __init__(self, config, executor, bundle=None, retained=None):
-        """`executor` runs turns (`HostExecutor` or `RunnerExecutor`); `retained` is a directory for transcripts.
+        """`executor` runs turns (`RunnerExecutor`); `retained` is a directory for transcripts.
 
         `bundle` is the controller's own instance; by default it is built from the working directory.
         """
         self.config, self.executor = config, executor
-        self.bundle = bundle or Bundle(profiles=config["execution_profiles"])
+        self.bundle = bundle or Bundle()
         self.retained = Retained(retained) if retained else None
 
     def credential(self, provider, stage, task):
@@ -83,6 +83,10 @@ class Agents:
         session = context.pop("controller_session", None)
         selected = context.pop("controller_credential", None)
         candidate = context.pop("controller_candidate", None)
+        evaluation = context.pop("controller_evaluation", None)
+        if evaluation is not None and (stage != "plan_qc" or session is not None
+                                       or not re.fullmatch(r"[a-f0-9]{32}", evaluation)):
+            raise Blocked("evaluation requires a fresh design-review turn")
         model = (context["reviewer_identity"]["model"] if stage == "plan_qc"
                  else selected_model(self.config, provider, stage))
         if not model.strip():
@@ -95,9 +99,8 @@ class Agents:
         if session and not self.retained:
             raise Blocked("retained sessions need a transcript store")
         request = {"provider": provider, "model": model, "stage": stage, "gateway": self.executor.gateway,
-                   "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text,
-                   "profiles": self.config["execution_profiles"], "profile_texts": self.bundle.target_profile_texts,
-                   "context": context, "session": session}
+                   "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text, "instruction_texts": self.bundle.instruction_texts,
+                   "context": context, "session": session, "local_candidate": candidate is not None, "evaluation": evaluation}
         turn = {"request": request, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
                 "retained": self.retained.load(session) if session else None,
                 "timeout": TURN_SECONDS.get(stage, DEFAULT_TURN_SECONDS)}
@@ -121,48 +124,24 @@ def workspace_response(response, workspace):
     """The implementer's report with the edits it made in its workspace; a design issue keeps none."""
     if not isinstance(workspace, dict):
         raise Blocked("implementation turn returned no workspace changes")
-    if workspace["removed"]:
-        raise Blocked("the implementer deleted tracked files, which candidates cannot express yet: "
-                      + ", ".join(workspace["removed"][:10]))
-    edits = [] if response.get("design_issue") is not None else workspace["edits"]
+    if workspace.get("error") and response.get("design_issue") is None:
+        return {**response, "edits": [], "workspace_error": str(workspace["error"])[:1000]}
+    edits = [] if response.get("design_issue") is not None else [
+        *workspace["edits"], *({"path": path, "content": None} for path in workspace["removed"])]
     return {**{k: v for k, v in response.items() if k != "edits"}, "edits": edits}
-
-
-class HostExecutor:
-    """Turns on this host's Docker: a key minted for each turn and deleted after it."""
-
-    def __init__(self, operator, gateway, image, mirror, root, budget, limits=turns.Limits()):
-        """`gateway` is the request's gateway block (`url`, `headers`); `root` holds turn directories."""
-        self.operator, self.gateway, self.image, self.mirror = operator, gateway, image, mirror
-        self.root, self.budget, self.limits = Path(root), budget, limits
-
-    def run(self, turn, label):
-        try:
-            grant = self.operator.mint([turn["request"]["model"]], self.budget, turn["timeout"] + 600, label)
-        except ExchangeError:
-            raise GatewayUnavailable("unavailable") from None
-        directory = turns.directory(self.root)
-        try:
-            return turns.execute(turn, self.image, grant["key"], self.mirror, directory, self.limits)
-        except turns.TurnError as error:
-            raise Blocked(str(error)) from None
-        finally:
-            try:
-                self.operator.end(grant["session"])
-            except ExchangeError:
-                pass  # Reconciliation deletes the key once its deadline passes.
-            turns.remove(directory)
 
 
 class RunnerExecutor:
     """Turns on GitHub-hosted runners of the target, queued at the exchange and served by runner sessions."""
 
     def __init__(self, operator, gateway, expected, models, budget, dispatch, lease=6 * 3600, clock=time.monotonic,
-                 sleep=time.sleep):
+                 sleep=time.sleep, task=None, check_owner=None):
         """`expected` are the OIDC claims a runner of this target must present; `dispatch(session)` starts one."""
         self.operator, self.gateway, self.expected = operator, gateway, expected
         self.models, self.budget, self.dispatch, self.lease = models, budget, dispatch, lease
-        self.clock, self.sleep = clock, sleep
+        self.clock, self.sleep, self.task = clock, sleep, task
+        self.check_owner = check_owner or (lambda: None)
+        self.sessions = set()
 
     def admit(self, identifier, turn, pin=None):
         """Queue the turn under its own ID; the reply, or None when its admission stays unknown.
@@ -170,11 +149,19 @@ class RunnerExecutor:
         A refusal admitted nothing. A lost reply may have admitted it, so the same turn is
         submitted again, which returns the original admission rather than a second turn.
         """
+        request = turn.get("request", {})
+        model = request.get("model", "")
+        if self.task is None or not model or not any(fnmatchcase(model, allowed) for allowed in self.models):
+            raise Blocked("runner turn lacks its task binding or allowed model")
+        role = str(request.get("stage")) + ":" + str(request.get("provider"))
+        base = request.get("context", {}).get("base") or turn["spec"]["refs"][turn["spec"]["base_branch"]]
+        phase = request.get("evaluation") or (request.get("session") or {}).get("scope") or request.get("context", {}).get("review_phase", "single")
+        binding = {**self.task, "base": base, "role": role, "phase": phase}
         for attempt in range(SUBMIT_ATTEMPTS):
             if attempt:
                 self.sleep(15)
             try:
-                return self.operator.submit(identifier, self.expected, self.models, self.budget, self.lease, turn, pin)
+                return self.operator.submit(identifier, self.expected, [model], self.budget, self.lease, turn, pin, binding)
             except ExchangeError as error:
                 if 400 <= error.status < 500 and error.status not in (408, 429):
                     raise GatewayUnavailable("unavailable") from None
@@ -183,6 +170,20 @@ class RunnerExecutor:
     def run(self, turn, label, pin=None):
         """Queue the turn (for the runner session `pin` alone, when given) and wait for its result."""
         identifier = str(uuid.uuid4())
+        try:
+            return self.wait(identifier, turn, pin)
+        except BaseException:
+            self.withdraw(identifier)
+            for session in self.sessions:
+                try:
+                    self.operator.end(session)
+                except ExchangeError:
+                    pass
+            raise
+
+    def wait(self, identifier, turn, pin):
+        """Wait only while this generation owns the task; completed stale results are discarded."""
+        self.check_owner()
         submitted = self.admit(identifier, turn, pin)
         if submitted is None:
             self.withdraw(identifier)
@@ -190,6 +191,7 @@ class RunnerExecutor:
         deadline = self.clock() + turn["timeout"] + QUEUE_SECONDS
         reply, failures, started = submitted, 0, set()
         while True:
+            self.check_owner()
             if reply.get("dispatch") and reply["dispatch"] not in started:
                 started.add(reply["dispatch"])
                 self.start(reply["dispatch"], identifier)
@@ -215,44 +217,11 @@ class RunnerExecutor:
 
     def start(self, session, identifier):
         """Dispatch a runner for a new session; a failed dispatch ends the session and withdraws the turn."""
-        try:
-            self.dispatch(session)
-        except BaseException:
-            self.withdraw(identifier)
-            try:
-                self.operator.end(session)
-            except ExchangeError:
-                pass
-            raise
+        self.sessions.add(session)
+        self.dispatch(session)
 
     def withdraw(self, identifier):
         try:
             self.operator.cancel(identifier)
         except ExchangeError:
             pass
-
-
-def host_agents(config, mirror=None, bundle=None, environ=None):
-    """Agents running turns on this host, configured by the environment.
-
-    For the Actions controller, the local pilot and evaluations: `CONCURRO_GATEWAY_URL`,
-    `CONCURRO_GATEWAY_TOKEN` (the exchange's operator token) and `CONCURRO_AGENT_IMAGE`, with
-    optional `CONCURRO_GATEWAY_HEADERS` (JSON, per provider) and `CONCURRO_GATEWAY_BUDGET`.
-    """
-    environ = os.environ if environ is None else environ
-    url, token, image = (environ.get(k, "") for k in ("CONCURRO_GATEWAY_URL", "CONCURRO_GATEWAY_TOKEN",
-                                                      "CONCURRO_AGENT_IMAGE"))
-    if not url.startswith("https://") or not token.strip():
-        raise Blocked("set CONCURRO_GATEWAY_URL and CONCURRO_GATEWAY_TOKEN: every model call goes through the gateway")
-    if not IMAGE.fullmatch(image):
-        raise Blocked("CONCURRO_AGENT_IMAGE must use an immutable digest or local image ID")
-    try:
-        headers = json.loads(environ.get("CONCURRO_GATEWAY_HEADERS") or "{}")
-        budget = int(environ.get("CONCURRO_GATEWAY_BUDGET") or 4_000_000)
-    except ValueError:
-        raise Blocked("CONCURRO_GATEWAY_HEADERS must be JSON and CONCURRO_GATEWAY_BUDGET an integer") from None
-    mirror = mirror or Mirror(default_root(), config["repository"])
-    scratch = Path(tempfile.gettempdir()) / "concurro"
-    executor = HostExecutor(Operator(url.rstrip("/"), token.strip()), {"url": url.rstrip("/"), "headers": headers},
-                            image, mirror, scratch / "turns", budget)
-    return Agents(config, executor, bundle=bundle, retained=scratch / "sessions" / config["repository"].replace("/", "__"))

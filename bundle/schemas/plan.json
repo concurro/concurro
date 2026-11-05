@@ -73,59 +73,6 @@
         "additionalProperties": false
       }
     },
-    "validation": {
-      "type": "object",
-      "properties": {
-        "checks": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "files": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "change": {
-                "type": "string",
-                "enum": [
-                  "add",
-                  "modify"
-                ]
-              },
-              "max_lines": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "required_text": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "path",
-              "change",
-              "max_lines",
-              "required_text"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": [
-        "checks",
-        "files"
-      ],
-      "additionalProperties": false
-    },
     "publication": {
       "type": "object",
       "properties": {
@@ -158,7 +105,6 @@
     "steps",
     "tests",
     "responses",
-    "validation",
     "publication"
   ],
   "additionalProperties": false

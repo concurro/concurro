@@ -7,12 +7,10 @@ from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture, Wire
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import FakeWorkspace
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from controller import MARKER, Outcome
 from policy import Blocked, UncertainOutcome
-import cleanup
 import conversation
 from github import Transient
 from service import failures
@@ -21,18 +19,6 @@ from service.gateway import LEASE_SECONDS
 from service.transport import Transport
 
 
-class CleanupWorkspace(FakeWorkspace):
-    """Removes a Docker resource on exit, as the local workbench does."""
-
-    inside = False
-
-    def __enter__(self):
-        CleanupWorkspace.inside = True
-        return self
-
-    def __exit__(self, *_):
-        CleanupWorkspace.inside = False
-        cleanup.remove(["docker", "volume", "rm", "-f", "fixture"], {})
 
 
 class Token:
@@ -48,7 +34,7 @@ class Token:
 class StopTests(ServiceFixture, unittest.TestCase):
     """A takeover mid-tick stops the old generation inside each best-effort or wrapping engine path."""
 
-    def stop_on(self, matches, workspace=FakeWorkspace, ticks=12):
+    def stop_on(self, matches, ticks=12):
         """Tick until a matching write, take over just before it, and return the escaping exception."""
         original = self.gateway.mutate
         self.after = None
@@ -65,7 +51,7 @@ class StopTests(ServiceFixture, unittest.TestCase):
         with patch.object(self.gateway, "mutate", side_effect=mutate):
             for _ in range(ticks):
                 try:
-                    self.tick(workspace)
+                    self.tick()
                 except BaseException as error:  # noqa: B036  (the type itself is under test)
                     self.assertEqual(self.after, 0, "a write was attempted after the stop")
                     return error
@@ -101,13 +87,6 @@ class StopTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(mutate.call_count, 1)
         self.assertEqual(self.backend.writes, [])
 
-    def test_cleanup_timeout_after_a_stop(self):
-        """Workbench cleanup times out while the stop propagates; the stop still reaches the worker."""
-        timeout = subprocess.TimeoutExpired("docker", 30)
-        with patch("cleanup.subprocess.run", side_effect=timeout) as run:
-            error = self.stop_on(lambda *_: CleanupWorkspace.inside, workspace=CleanupWorkspace)
-        self.assert_lost(error)
-        run.assert_called_once()
 
 
 class Recovery(ServiceFixture):
@@ -223,14 +202,18 @@ class TransientTests(Recovery, unittest.TestCase):
         self.assertEqual(len(published), len(set(published)))
 
     def test_graphql_query_throttled_with_http_200(self):
-        """A rate-limited Development-link query waits, through the real transport, and resumes."""
+        """A throttled PR-thread read propagates unchanged through the actual transport and controller."""
+        self.to_review()
         wire = Wire(self.backend)
         reader = Transport(KEY[0], Token(), self.clock, wire.connection)
         self.reader = SimpleNamespace(request=reader.request, archive=self.backend.archive)
-        wire.reply(lambda method, path, data: path == "graphql" and "linkedBranches" in data["query"], 200,
+        wire.reply(lambda method, path, data: path == "graphql" and "reviewThreads" in data["query"], 200,
                    {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
                    {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(self.clock()) + 90)})
-        self.assert_resumes("throttled", 90)
+        with self.assertRaises(Transient) as raised:
+            self.tick()
+        self.assertEqual((raised.exception.code, raised.exception.retry_after), ("throttled", 90))
+        self.tick()
         self.assertEqual(wire.replies, [])
 
     def test_outcome_lessons_do_not_skip_a_transient_read(self):

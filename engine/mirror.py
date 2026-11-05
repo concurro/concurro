@@ -33,13 +33,16 @@ def default_root():
 class Mirror:
     """One bare repository per target; commits are fetched by full SHA and pinned while snapshots use them."""
 
-    def __init__(self, root, repository, url=None):
+    def __init__(self, root, repository, url=None, sources=()):
         """`url` defaults to the public GitHub repository; an empty URL serves only commits already present."""
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise Blocked("invalid mirror repository")
         self.root = Path(root)
         self.path = self.root / (repository.replace("/", "__") + ".git")
         self.url = f"https://github.com/{repository}.git" if url is None else url
+        if any(not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source) for source in sources):
+            raise Blocked("invalid mirror source")
+        self.sources = tuple(f"https://github.com/{source}.git" for source in sources)
 
     def git(self, *args, timeout=60):
         """Run Git against the mirror only."""
@@ -97,10 +100,17 @@ class Mirror:
         """Fetch missing commits with the base branch, so later fetches negotiate incrementally; the lock is held."""
         missing = sorted({c for c in commits if not self.present(c)})
         if missing and self.url:
-            fetched = self.git("fetch", "--quiet", "--no-tags", self.url,
-                               f"+refs/heads/{branch}:refs/heads/{branch}", *missing, timeout=1800)
-            if fetched.returncode:
-                raise Blocked("repository mirror fetch failed")
+            self.git("fetch", "--quiet", "--no-tags", self.url,
+                     f"+refs/heads/{branch}:refs/heads/{branch}", timeout=1800)
+            missing = [sha for sha in missing if not self.present(sha)]
+        for url in dict.fromkeys((self.url, *self.sources)):
+            if not missing or not url:
+                continue
+            # The approved base and published fork head may be reachable in different repositories.
+            for sha in tuple(missing):
+                self.git("fetch", "--quiet", "--no-tags", url, sha, timeout=1800)
+                if self.present(sha):
+                    missing.remove(sha)
         if not all(self.present(c) for c in missing):
             raise Blocked("repository mirror lacks a pinned commit")
 

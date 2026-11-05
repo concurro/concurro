@@ -8,7 +8,7 @@ import logging
 import time
 
 ENROLLMENT = "concurro"
-EVENTS = {"issues", "issue_comment", "pull_request", "pull_request_review", "check_suite", "check_run"}
+EVENTS = {"issues", "issue_comment", "pull_request", "pull_request_review", "check_suite", "check_run", "status", "pull_request_review_comment", "pull_request_review_thread"}
 # The Actions workflow's triggers and filters, kept for parity.
 ISSUE_ACTIONS = {"opened", "labeled", "unlabeled", "edited", "reopened", "closed"}
 DISPLAY_LABELS = ("concurro:stage:", "concurro:attention")
@@ -23,12 +23,13 @@ log = logging.getLogger("concurro.service")
 class Ingress:
     """Map verified deliveries from enabled repositories and the App's own installations to tasks."""
 
-    def __init__(self, secret, registry, installations, identities, clock=time.time):
+    def __init__(self, secret, registry, installations, identities, clock=time.time, issue_repositories=None):
         """`installations` maps each enabled repository to the App's installation ID on it."""
         self.secret, self.registry, self.clock = secret, registry, clock
         self.installations = dict(installations)
         self.repositories = {repository.lower(): repository for repository in installations}
         self.identities = frozenset(identities)
+        self.issue_repositories = frozenset(installations if issue_repositories is None else issue_repositories)
 
     def handle(self, headers, body):
         """`(HTTP status, short text)` for one delivery; anything rejected has no side effect."""
@@ -60,7 +61,10 @@ class Ingress:
         if self.registry.seen(delivery):
             return 200, "duplicate"
         for key in keys:
-            self.registry.enqueue(key, "webhook:" + event, self.clock())
+            if event in ("check_run", "check_suite", "status"):
+                self.registry.enqueue_ci(key)
+            else:
+                self.registry.enqueue(key, "webhook:" + event, self.clock())
         return 202, "accepted"
 
     def ours(self, login):
@@ -72,14 +76,21 @@ class Ingress:
         if self.ours(payload["sender"]["login"]):
             return []
         action = payload.get("action")
+        if event in ("issues", "issue_comment") and repository not in self.issue_repositories:
+            return []
         if event == "issues":
             return self.issue(repository, action, payload)
         if event == "issue_comment":
             return self.comment(repository, action, payload)
-        if event in ("pull_request", "pull_request_review"):
+        if event == "status":
+            return self.registry.commit_tasks(repository, payload["sha"])
+        if event in ("pull_request", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"):
             numbers = [payload["pull_request"]["number"]]
         else:
-            numbers = [pr["number"] for pr in payload[event]["pull_requests"]]
+            check = payload[event]
+            numbers = [pr["number"] for pr in check.get("pull_requests", [])]
+            by_head = self.registry.commit_tasks(repository, check.get("head_sha")) if check.get("head_sha") else []
+            return sorted(set(by_head) | {key for key in (self.registry.task(repository, n) for n in numbers) if key})
         return sorted({key for key in (self.registry.task(repository, n) for n in numbers) if key})
 
     def tracked(self, key, labels):

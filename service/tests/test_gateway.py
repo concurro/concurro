@@ -6,7 +6,7 @@ import unittest
 
 from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from github import ATTENTION_LABEL, LINKED_BRANCH, NotFound, Transient
+from github import ATTENTION_LABEL, MARK_READY, NotFound, Transient
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed, settle
 from service.transport import Response
@@ -179,10 +179,10 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((self.backend.writes, self.registry.mutations(KEY, "in-flight")), ([], []))
         self.assertTrue(allowed(KEY, "PATCH", root + "git/refs/heads/concurro/7", {"sha": "a" * 40, "force": False}))
 
-    def test_only_exact_runner_dispatches(self):
+    def test_repository_dispatch_is_retired(self):
         """A dispatch starts a runner session and carries nothing but its ID."""
         path, session = f"repos/{KEY[0]}/dispatches", "0f0e0d0c-0b0a-4908-8706-050403020100"
-        self.assertTrue(allowed(KEY, "POST", path, {"event_type": "concurro-agent", "client_payload": {"session": session}}))
+        self.assertFalse(allowed(KEY, "POST", path, {"event_type": "concurro-agent", "client_payload": {"session": session}}))
         for body in ({"event_type": "deploy", "client_payload": {"session": session}},
                      {"event_type": "concurro-agent", "client_payload": {"session": session, "ref": "x"}},
                      {"event_type": "concurro-agent", "client_payload": {"session": "not-a-uuid"}},
@@ -209,24 +209,18 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
         self.gh.api(root + str(request), "PATCH", {"body": "<!-- concurro:event:v1:" + "e" * 64 + " -->\n✅ Answered"})
         self.assertEqual(self.backend.writes, [("PATCH", f"issues/comments/{request}")])
 
-    def test_only_the_engine_linked_branch_mutation_for_this_issue(self):
-        """The exact engine document for this task's issue; appended mutations, other issues or extra input are refused."""
-        def body(query=LINKED_BRANCH, issue="issue-7", **extra):
-            return {"query": query, "variables": {"input": {"issueId": issue, "name": "concurro/7", "oid": "a" * 40}, **extra}}
-
-        appended = LINKED_BRANCH + "\nmutation { updateIssue(input: {id: \"issue-7\", title: \"x\"}) { clientMutationId } }"
-        for refused in (body(appended), body(issue="issue-8"), body(clientMutationId="x"),
-                        {**body(), "operationName": "x"}):
-            with self.subTest(body=refused), self.assertRaises(Disallowed):
-                self.gh.api("graphql", "POST", refused)
+    def test_linked_branches_and_merges_are_never_admitted(self):
+        """No compatibility path can merge or create GitHub Development links."""
+        with self.assertRaises(Disallowed):
+            self.gh.api("graphql", "POST", {"query": "mutation { createLinkedBranch(input:{}) { clientMutationId } }",
+                                             "variables": {}})
+        with self.assertRaises(Disallowed):
+            self.gh.repo("pulls/9/merge", "PUT", {"sha": "a" * 40})
         self.assertEqual(self.backend.writes, [])
-        self.gh.create_linked_branch("issue-7", "concurro/7", "a" * 40)
-        self.assertEqual(self.backend.writes, [("POST", "graphql")])
-        self.assertEqual(self.fake.refs, {"concurro/7": "a" * 40})
 
     def test_graphql_queries_are_reads(self):
-        """A query document never reaches the gateway."""
-        self.assertFalse(self.gh.branch_linked(7, "concurro/7"))
+        """A PR-thread query document never reaches the gateway."""
+        self.assertEqual(self.gh.threads(9), [])
         self.assertEqual(self.backend.writes, [])
 
 
@@ -318,23 +312,17 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.fake.comments[-1]["body"], "hello")
 
     def test_graphql_settles_done_only_on_a_complete_result(self):
-        """Errors of any type, a null result, or an unreadable body leave the linked branch unknown."""
-        ref = {"linkedBranch": {"ref": {"name": "concurro/7", "target": {"oid": "a" * 40}}}}
-        responses = [{"errors": [{"type": "INTERNAL"}], "data": {"createLinkedBranch": ref}},
-                     {"errors": [{"type": "UNPROCESSABLE"}], "data": {"createLinkedBranch": None}},
+        """GraphQL errors, null data and unreadable bodies are ambiguous even alongside a result."""
+        pr = {"pullRequest": {"id": "PR_9", "isDraft": False}}
+        responses = [{"errors": [{"type": "INTERNAL"}], "data": {"markPullRequestReadyForReview": pr}},
+                     {"errors": [{"type": "UNPROCESSABLE"}], "data": {"markPullRequestReadyForReview": None}},
                      {"errors": [{"type": "NOT_FOUND"}], "data": None},
-                     {"data": {"createLinkedBranch": None}}, None]
-        for index, payload in enumerate(responses):
-            with self.subTest(case=index):
-                body = None if payload is None else json.dumps(payload).encode()
-                self.backend.send = lambda *_: Response(True, 200, {}, body, None if body else "incomplete")
-                with self.assertRaises(Unresolved):
-                    self.gh.create_linked_branch("issue-7", "concurro/7", "a" * 40)
-                [record] = self.registry.unresolved(KEY)
-                self.gateway.release(KEY, self.generation, None)
-                self.registry.resolve(record.intent, "not-applied", "no linked branch", "operator")
-                self.generation = self.gateway.acquire(KEY, "worker")
-                self.gh = self.facade(self.generation)
+                     {"data": {"markPullRequestReadyForReview": None}}, None]
+        request = {"query": MARK_READY, "variables": {"input": {"pullRequestId": "PR_9"}}}
+        for payload in responses:
+            body = None if payload is None else json.dumps(payload).encode()
+            response = Response(True, 200, {}, body, None if body else "incomplete")
+            self.assertEqual(settle("graphql", response, 0, request)[0], "unknown")
 
     def test_resolution_makes_the_task_schedulable_without_resending(self):
         """An applied resolution settles the occurrence as done; nothing is sent again."""

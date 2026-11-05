@@ -4,7 +4,7 @@ from copy import deepcopy
 import unittest
 
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
 from controller import validate_config
 from policy import Blocked, approval_valid, selected_model, validate_qc
 
@@ -22,14 +22,13 @@ class AutonomousTests(unittest.TestCase):
     def setUp(self):
         """Seed a writer-enrolled issue without any slash commands."""
         self.config = deepcopy(CONFIG)
-        self.config["merge_enabled"] = True
         self.gh = FakeGitHub(self.config)
         self.gh.comments = []
         self.agents = FakeAgents()
 
     def tick(self):
         """Recreate the controller to exercise persistence between every stage."""
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         initial = None
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
@@ -37,7 +36,7 @@ class AutonomousTests(unittest.TestCase):
             initial = controller.state["stage"]
         controller.advance(7)
         while initial == "plan_qc" and controller.state["stage"] == "plan_qc":
-            controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+            controller = Controller(self.gh, self.agents, self.config)
             controller.advance(7)
         return controller.state
 
@@ -53,10 +52,11 @@ class AutonomousTests(unittest.TestCase):
         state = self.approved()
         self.assertEqual(state["approval"]["kind"], "consensus")
         self.assertTrue(approval_valid(state, self.config))
-        for expected in ("publish", "review", "review", "gates", "merged"):
+        for expected in ("publish", "review", "review", "gates", "gates"):
             self.assertEqual(self.tick()["stage"], expected)
-        self.assertEqual(self.gh.merges, 1)
-        self.assertEqual(len(self.agents.calls), 10)
+        self.assertEqual(self.gh.merges, 0)
+        self.assertEqual(self.gh.ready_calls, 1)
+        self.assertEqual(len(self.agents.calls), 9)
         self.assertTrue(all(not c["body"].startswith("/concurro ") for c in self.gh.comments))
         qc = next(context for _, stage, context in self.agents.calls if stage == "plan_qc")
         self.assertEqual(qc["files"]["docs/guide.md"], "Original guide\n")
@@ -157,7 +157,7 @@ class AutonomousTests(unittest.TestCase):
 
     def test_changed_inputs_require_fresh_qc_before_implementation(self):
         """New requirements or a moving base invalidate QC approval before edits."""
-        for mode in ("body", "reply", "base"):
+        for mode in ("body", "reply"):
             with self.subTest(mode=mode):
                 self.setUp()
                 self.approved()
@@ -219,7 +219,7 @@ class AutonomousTests(unittest.TestCase):
     def test_qc_approval_binding_and_contradictions_fail_closed(self):
         """Tampered evidence or contradictory structured decisions cannot authorize work."""
         state = self.approved()
-        for field in ("base", "agent_image", "config_digest", "plan_id"):
+        for field in ("base", "bundle_id", "config_digest", "plan_id"):
             changed = deepcopy(state)
             changed[field] = "changed"
             self.assertFalse(approval_valid(changed, self.config))

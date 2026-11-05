@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 from support import CONFIG, EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
 from test_findings import Harness, Reviewers
-from test_pipeline import APPROVE, PLAN, FakeWorkspace
+from test_pipeline import APPROVE, PLAN
 import checks
 from controller import DISPATCH_ALLOWANCE, Controller
-from local import LocalWorkspace
-from policy import Blocked, OutsideScope, local_evidence_valid, merge_reasons, validate_edits, validate_plan
+from policy import Blocked, OutsideScope, validate_edits, validate_plan
 from snapshot import inspection
+from readiness import review_reasons
 
 SCOPE = {"paths": ["docs/**"], "max_files": 3, "max_changed_lines": 50}
 
@@ -38,11 +38,11 @@ class EnvelopeAgents(Reviewers):
                 self.outside -= 1
                 return {"summary": "Too wide.", "edits": [{"path": self.stray, "content": "x\n"},
                                                           {"path": "docs/guide.md", "content": "Updated\n"}],
-                        "checks": [], "design_issue": None}
-            if context["files"].get("docs/guide.md") == "Updated guide\n":
-                return {"summary": "Repair the guide.", "checks": [], "design_issue": None,
+                        "validation": "", "design_issue": None}
+            if context.get("files", {}).get("docs/guide.md") == "Updated guide\n":
+                return {"summary": "Repair the guide.", "validation": "", "design_issue": None,
                         "edits": [{"path": "docs/guide.md", "content": "Repaired guide\n"}]}
-            return {"summary": "Explain the guide and update its caller.", "checks": [], "design_issue": None,
+            return {"summary": "Explain the guide and update its caller.", "validation": "", "design_issue": None,
                     "edits": [{"path": "docs/guide.md", "content": "Updated guide\n"},
                               {"path": "docs/caller.md", "content": "See the updated guide.\n"}]}
         return super().ask(provider, stage, context)
@@ -65,13 +65,6 @@ class ContractTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(Blocked):
                 validate_plan({**deepcopy(PLAN), "scope": scope}, CONFIG, EXECUTION)
 
-    def test_envelope_approves_the_profiles_of_its_base_files(self):
-        plan = {**deepcopy(PLAN), "scope": {**SCOPE, "paths": ["docs/**", "src/**"]}}
-        self.assertEqual(checks.approved_profiles(plan, {"docs/guide.md": {}, "src/lib.rs": {}}, EXECUTION), ["rust"])
-        self.assertEqual(checks.approved_profiles(deepcopy(PLAN), {"src/lib.rs": {}}, EXECUTION), [],
-                         "without an envelope, only the plan's files count")
-        self.assertEqual(checks.contract_errors(plan, EXECUTION, ["rust"]), ["validation_checks"],
-                         "an approved profile's mandatory checks must be selected")
 
     def test_out_of_envelope_proposals_are_refused_whole(self):
         plan = {**deepcopy(PLAN), "scope": deepcopy(SCOPE)}
@@ -82,16 +75,6 @@ class ContractTests(unittest.TestCase):
         validate_edits({"summary": "s", "edits": [edits[0], {"path": "docs/new.md", "content": "c"}]},
                        plan, {}, CONFIG, EXECUTION)
 
-    def test_local_evidence_requires_the_approved_profiles_checks(self):
-        def state(names):
-            checks = [{"name": n, "exit_code": 0, "tree": "t"} for n in names]
-            return {"plan": deepcopy(PLAN), "execution": EXECUTION, "approved_profiles": ["rust"], "head": "h",
-                    "execution_image": "i", "local_evidence": {"head": "h", "tree": "t", "local_commit": "c",
-                                                               "image": "i", "checks": checks, "review": APPROVE}}
-        planned = PLAN["validation"]["checks"]
-        self.assertTrue(local_evidence_valid(state(list(dict.fromkeys(planned + checks.mandatory(["rust"], EXECUTION))))))
-        self.assertFalse(local_evidence_valid(state(planned)), "the plan's files trigger no profile, the envelope does")
-
 
 class ImplementationTests(Harness, unittest.TestCase):
     """The implementer edits inside the envelope; reaching outside it is feedback, not a block."""
@@ -101,15 +84,11 @@ class ImplementationTests(Harness, unittest.TestCase):
         state = self.run_to(agents, "gates").state
         developments = [c for _, stage, c in agents.calls if stage == "develop"]
         self.assertIn("outside the approved scope or of a protected path: guides/elsewhere.md",
-                      developments[1]["local_feedback"]["scope"])
+                      developments[1]["implementation_feedback"])
         self.assertEqual(sorted(state["changed_files"]), ["docs/caller.md", "docs/guide.md"])
         reviews = [c for _, stage, c in agents.calls if stage == "review"]
         self.assertEqual([c["path"] for c in reviews[0]["changes"]], ["docs/caller.md", "docs/guide.md"],
                          "reviews see every changed file")
-        local = next(c for _, stage, c in agents.calls if stage == "local_review")
-        self.assertEqual([c["path"] for c in local["changes"]], ["docs/caller.md", "docs/guide.md"])
-        self.assertNotIn("after", local)
-        self.assertEqual(sorted(local["controller_candidate"]), ["docs/caller.md", "docs/guide.md"])
         self.assertNotIn("unapproved path", self.reasons(state))
         self.assertNotIn("guides/elsewhere.md", json.dumps(self.gh.trees))
 
@@ -118,54 +97,17 @@ class ImplementationTests(Harness, unittest.TestCase):
         self.run_to(agents, "gates")
         developments = [c for _, stage, c in agents.calls if stage == "develop"]
         self.assertIn("outside the approved scope or of a protected path: .gitignore",
-                      developments[1]["local_feedback"]["scope"])
+                      developments[1]["implementation_feedback"])
 
-    def test_a_runner_workbench_is_opened_by_commit(self):
-        """The controller fetches no archive; the workbench's side builds them from the commits."""
-        gh = self.gh
-
-        class ByCommit:
-            commits, opened = True, []
-
-            def __call__(self, config, parent, branch, execution, base):
-                self.opened.append((parent, base))
-                return FakeWorkspace(config, type(gh).archive(gh, parent), branch)
-
-        def refuse(sha):
-            raise AssertionError("the controller fetched an archive")
-
-        gh.archive = refuse
-        factory = ByCommit()
-        self.run_to(EnvelopeAgents(outside=0), "gates", workspaces=factory)
-        self.assertEqual(factory.opened[0], (gh.base, gh.base))
-
-    def test_repair_turns_inspect_current_non_primary_edits_and_their_instructions(self):
-        self.gh.trees[self.gh.base][".github/instructions/caller.instructions.md"] = (
-            '---\napplyTo: "docs/caller.md"\n---\nReview callers.\n')
-        agents = EnvelopeAgents(outside=0)
-        sizes = iter(["The change is too large to review."])
-        with patch.object(Controller, "oversized", lambda *_: next(sizes, None)):
-            self.run_to(agents, "gates")
-        first, repair = [c for _, stage, c in agents.calls if stage == "develop"][:2]
-        rule = ".github/instructions/caller.instructions.md"
-        self.assertNotIn(rule, first["policy"], "nothing has touched the call site yet")
-        self.assertIn(rule, repair["policy"])
-        self.assertEqual(repair["files"]["docs/caller.md"], "See the updated guide.\n")
-        spec = inspection(repair["repository"], repair["controller_candidate"], "develop", "main")
-        self.assertEqual(spec["candidate"]["files"]["docs/caller.md"], "See the updated guide.\n")
-        self.assertEqual(spec["head"], self.load()[1]["branch"], "the candidate is committed on the task branch")
-        reviews = [c for _, stage, c in agents.calls if stage in ("local_review", "review")]
-        self.assertTrue(reviews and all(rule in c["policy"] for c in reviews), "reviews apply the call site's rules")
 
     def test_repeated_refusals_exhaust_the_local_repair_budget(self):
-        with self.assertRaisesRegex(Blocked, "local repair budget exhausted"):
+        with self.assertRaisesRegex(Blocked, "repair allowance exhausted"):
             self.run_to(EnvelopeAgents(outside=10), "review")
 
     def test_merge_gate_refuses_a_path_outside_the_envelope(self):
         state = self.run_to(EnvelopeAgents(), "gates").state
         files = state["changed_files"] + ["src/other.md"]
-        reasons = merge_reasons({**state, "changed_files": files}, self.gh.pr, files,
-                                self.gh.pages("commits/x/check-runs"), self.gh.threads(9), [], self.config)
+        reasons = review_reasons({**state, "changed_files": files}, self.gh.pr, files, self.gh.threads(9), self.config)
         self.assertIn("unapproved path", reasons)
 
 
@@ -203,19 +145,6 @@ class CapacityTests(Harness, unittest.TestCase):
         controller.config["max_context_bytes"] = 100
         with self.assertRaisesRegex(Blocked, "review context exceeds the size limit"):
             controller.ask("claude", "review", controller.context())
-
-
-class WorkbenchTests(unittest.TestCase):
-    """The approved base is always staged, docs-only work included."""
-
-    def test_validation_stages_the_approved_base(self):
-        with patch.dict(os.environ, {"CONCURRO_EXECUTION_IMAGE": "sha256:" + "a" * 64}):
-            workspace = LocalWorkspace(CONFIG, b"", "concurro/test", EXECUTION, base_archive=b"base")
-        with patch.object(workspace, "control", return_value={}) as control:
-            workspace.configure_validation({"checks": [], "files": []}, {}, {"paths": ["docs/**"]})
-            workspace.configure_validation({"checks": [], "files": []}, {}, {"paths": ["docs/**"]})
-        self.assertEqual([c.args[0] for c in control.call_args_list], ["stage", "validation", "validation"])
-        self.assertEqual(control.call_args_list[0].kwargs["data"], b"base")
 
 
 if __name__ == "__main__":

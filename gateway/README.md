@@ -2,8 +2,8 @@
 
 agentgateway plus Concurro's key exchange, and the Concurro service, behind the host's
 shared edge Caddy. The host only coordinates and proxies inference: model turns and the
-trusted workbench run on the targets' GitHub-hosted runners. Design:
-[docs/design/inference-gateway.md](../docs/design/inference-gateway.md).
+exploratory builds run on the targets' GitHub-hosted runners. Design:
+[MVP execution](../docs/design/mvp-execution.md).
 
 ## Host layout
 
@@ -30,53 +30,149 @@ the base URL, and the GitHub App delivers webhooks to `https://<host>/concurro/w
 The service reaches the exchange's operator API at the same base URL with the operator
 token; runner jobs reach it with their OIDC token and then their session's runner token.
 The service's image holds the clone's commit, which it serves; runner sessions must run
-the same commit, so rebuild the service whenever `main` moves.
+the same commit, so deploy the service and the `deployed` workflow ref together. Ordinary `main` pushes do not change the deployed release.
 
-## Commands
+## Target and App prerequisites
 
-Shorthand used below:
+The target fork needs the [caller workflow](../examples/stacks-core/.github/workflows/concurro-executor.yml)
+on its default branch, calling `agent.yml@deployed`, and the current `.concurro/` config
+and charter. The upstream and fork must be public and in the same fork network. No new
+fork is created. Optional setup is a composite action at `.concurro/setup/action.yml`.
+The caller may pass `gateway` and `runs-on` to the reusable workflow; the service dispatch
+input is only the issued session ID. Both jobs use `cache-mode: read`.
+
+Install the controller App on the selected repositories. Grant Contents read/write,
+Pull requests read/write, Checks read, Commit statuses read, Actions read on the upstream, Issues read/write where
+issues enroll, and Actions write on the fork. Token requests narrow these permissions
+per repository; the write gateway narrows permitted endpoints further. Retain Contents
+write upstream for the tested review-thread resolution permission combination. No
+Administration permission is needed for readiness. Historical `adopt` additionally needs
+Actions, Variables and Environments read to verify the retired Actions controller is off.
+
+Subscribe to issues, issue comments, pull requests, pull request reviews, pull request
+review comments, pull request review threads, check runs, check suites and commit statuses.
+The webhook URL is `https://<host>/concurro/webhook`. Periodic polling covers lost events.
+Upstream may require a maintainer to approve the first fork PR's workflow runs; Concurro
+shows that wait and does not bypass it.
+
+The stacks-core example charter requires an upstream that permits the contribution. Use
+a permitted test upstream for the pilot; the target's contribution policy still governs.
+
+## Upgrade from the workbench release
+
+Commit and push the reviewed source before building the service: it refuses a dirty
+checkout. The following are operator-run deployment instructions, not automatic actions.
+No step runs a controller, model or build agent on a Mac.
+
+1. Stop dispatch by stopping the service on the Linux host. Let its active ticks finish,
+   cancel any remaining old runner jobs, and end their exchange sessions using the
+   exchange CLI. Resolve unknown GitHub writes from observed evidence before retiring
+   their tasks. Do not blindly re-dispatch an uncertain workflow start.
+2. Stop the exchange and gateway briefly and back up `/etc/concurro` and
+   `/var/lib/concurro` with owner-only access, including SQLite WAL files. If using named
+   volumes instead of the existing host override, back those volumes up too. Keep the
+   registry ID. Never use `down -v`, delete the registry or reinitialize an existing store.
+3. Check out the exact reviewed release on the host. Install the fork's updated caller
+   and target configuration through its normal review process. Convert a legacy Rust
+   target config to a separate file with `python3 -m service.migrate_target INPUT OUTPUT`,
+   review its path policy and replace the config in the fork. Remove an old optional
+   target `engine` pin, or update it to the reviewed release. Custom profiles require
+   manual translation to setup, instructions and protected/generated paths.
+4. Build the new server images and migrate service settings as shown below. The target
+   settings now use `{upstream, fork, issues}`; execution-image and per-target credential
+   settings are gone. Preserve all service secrets, state paths and `registry_id`.
+5. While the service remains stopped, move Concurro's `deployed` branch to the same
+   reviewed engine commit. Start the gateway and service; verify the logged served SHA
+   equals that release ref. Only then enroll a fresh pilot issue.
+
+Use the existing host mounts and Compose project names:
 
 ```bash
 gw() { sudo docker compose -p concurro-gateway -f ~/concurro/gateway/compose.yaml -f /etc/concurro/gateway/compose.host.yaml "$@"; }
-```
-
-```bash
 svc() { sudo docker compose -f ~/concurro/service/compose.yaml "$@"; }
 ```
 
-Update both:
+After stopping/backing up and checking out the committed release:
 
 ```bash
-git -C ~/concurro pull --ff-only && gw up -d --build && svc up -d --build
+gw build
+svc build
+svc run --rm --volume /etc/concurro/service:/etc/concurro/service:rw \
+  --entrypoint python3 service -m service.use_gateway \
+  --settings /etc/concurro/service/settings.json \
+  --url https://144.76.56.188/concurro \
+  --operator-token /etc/concurro/service/gateway-operator-token \
+  --upstream stacks-network/stacks-core \
+  --fork cylewitruk/stacks-core-autobot --issues fork
 ```
 
-Service commands (`status`, `reconcile-once`, `adopt`, `release`, `resolve`) and logs:
+The one-off command overrides the normally read-only settings mount. It runs as the
+service's uid 65533, validates a private temporary file, then atomically replaces settings.
+The running service keeps its read-only mount. Multi-target settings must be edited
+explicitly; the helper refuses to guess their pairs. Back up settings before replacing them.
+
+With the host checkout at the reviewed commit and dispatch still stopped, an authorized
+operator updates the release ref (this is a GitHub write):
+
+```bash
+git -C ~/concurro push origin HEAD:refs/heads/deployed
+gw up -d
+svc up -d
+svc logs --tail 30 service
+```
+
+A non-fast-forward release move needs explicit operator reconciliation, not a blind
+force push. The new registry migrates schema 2 to 3 transactionally. Exchange columns are
+added without clearing history; old unbound pending turns are lost rather than staffed
+under new authority. In-flight checkpoints retain their old bundle identity and block
+for reconciliation. A fresh issue is the straightforward pilot path; never replace a
+checkpoint's bundle hash to make old approvals look current.
+
+For rollback, stop the new service and jobs first. Restore the matching backed-up stores,
+settings and old committed server release together, then align its workflow ref. Do not
+run old code against a newer registry schema or discard unknown-write records.
+
+## Operation and pilot
 
 ```bash
 svc exec service python3 -m service --settings /etc/concurro/service/settings.json status
+svc exec service python3 -m service --settings /etc/concurro/service/settings.json reconcile-once
+svc logs -f service
+gw exec -T exchange python3 -I /app/exchange.py list
+gw exec -T exchange python3 -I /app/exchange.py turns
 ```
+
+An end-to-end pilot should show native setup and model turns, a fork branch link, an
+upstream draft PR, independent COMMENT reviews, then readiness after current CI passes.
+Check that another role cannot claim its session, failed CI leaves the PR draft, session
+keys expire/end, and recorded session refs are swept without deleting contribution branches.
+No model job should remain alive merely waiting for CI. These live checks have not been
+run for this refactor; offline tests do not prove GitHub workflow compatibility.
+
+Optional design evaluation uses the normal runner dispatch path and model budget:
 
 ```bash
-svc logs -f service
+svc exec service python3 -m service --settings /etc/concurro/service/settings.json \
+  evaluate cylewitruk/stacks-core-autobot 123 codex
 ```
 
-When `concurro.caddy` or `edge/renewal-hook.sh` changed, re-install the copy and
-reload the edge:
+Use an idle configured task. Results remain under `/var/lib/concurro/service/evaluations/`.
+
+## Shared edge
+
+Keep the existing edge and SBGH routes. Concurro publishes no host ports; its route file
+serves only `/concurro/*`. The gateway's unauthenticated admin listener remains on shared
+loopback with the exchange, not the edge network. Other edge services can reach the
+inference/exchange listeners, whose key/operator/OIDC authorization still applies.
+
+When a route or renewal hook changes, install only Concurro's reviewed file and validate
+before reloading; do not replace unrelated route files:
 
 ```bash
 sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.caddy
-```
-
-```bash
-sudo install -m 0755 ~/concurro/gateway/edge/renewal-hook.sh /etc/letsencrypt/renewal-hooks/deploy/60-edge
-```
-
-```bash
+sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile
 sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force
 ```
 
-Exchange operator commands (`issue`, `list`, `turns`, `end`, `reconcile`):
-
-```bash
-gw exec -T exchange python3 -I /app/exchange.py list
-```
+The existing `60-edge` renewal hook handles `sbgh-fleet-ip`; port 80 stays with certbot.
+This refactor does not require changing certificates, SBGH's listener or its routes.

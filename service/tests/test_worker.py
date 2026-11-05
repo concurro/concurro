@@ -4,12 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 from pathlib import Path
+from unittest.mock import patch
 import threading
 import unittest
 
 from fixtures import ENGINE, KEY, Inline, RestBackend, ServiceFixture, target_files
 from support import setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import FakeAgents, FakeGitHub
 from controller import Controller, Outcome, config_digest
 from github import Transient
 import reviews
@@ -20,9 +21,8 @@ from service.reconciler import Reconciler
 from service.scheduler import Scheduler, fair
 from service.registry import WorkItem
 from service.settings import Gateway, Limits, Target
-from bench import RemoteBench
 from service.worker import Worker, runner_claims
-from agents import HostExecutor, RunnerExecutor
+from agents import RunnerExecutor
 
 
 class FlakyAgents(FakeAgents):
@@ -46,7 +46,7 @@ class EndToEndTests(ServiceFixture, unittest.TestCase):
         """The same task through the Actions controller: its model calls and final stage."""
         fake, agents = FakeGitHub(deepcopy(self.config)), FakeAgents()
         for _ in range(12):
-            controller = Controller(fake, agents, fake.config, workspace_factory=FakeWorkspace)
+            controller = Controller(fake, agents, fake.config)
             controller.advance(7)
             if controller.state["stage"] == "planned":
                 fake.comment("/concurro approve " + controller.state["plan_id"])
@@ -72,8 +72,8 @@ class EndToEndTests(ServiceFixture, unittest.TestCase):
         self.assertGreater(len(self.agents.calls), calls)
         state = self.state()
         self.assertEqual(state["controller"], "service:primary")
-        self.assertEqual(state["config_digest"], config_digest(self.config))
-        self.assertEqual(self.registry.pull(KEY), state["pr"])
+        self.assertEqual(state["config_digest"], config_digest(self.worker.load(*KEY).config))
+        self.assertEqual(self.registry.pull(KEY).number, state["pr"])
         expected = self.actions_path()
         self.assertEqual(([(p, s) for p, s, _ in self.agents.calls], self.stage()), expected)
 
@@ -303,13 +303,13 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
             barrier.wait()
             return FakeAgents()
 
-        targets = (Target(KEY[0]), Target("owner/two"))
+        targets = (Target(KEY[0], KEY[0], "both"), Target("owner/two", "owner/two", "both"))
         settings = type("Settings", (), {"controller_id": "service:primary", "engine": ENGINE, "targets": targets,
                                          "limits": Limits(2, 1), "state_dir": Path(self.directory.name)})
         gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__)
         reconciler = Reconciler(self.registry, backends.__getitem__, list(fakes), {bot}, clock=self.clock)
         worker = Worker(settings, gateway, self.registry, reconciler, backends.__getitem__, bot, agents=agents,
-                        workspace_factory=FakeWorkspace, executor=lambda repository, github: ("executor", repository))
+                        executor=lambda repository, github: ("executor", repository))
         with ThreadPoolExecutor(2) as pool:
             scheduler = Scheduler(self.registry, gateway, worker, settings.limits, clock=self.clock, executor=pool)
             self.assertEqual(sorted(reconciler.poll()), [(KEY[0], 7), ("owner/two", 7)])
@@ -344,36 +344,31 @@ class ExecutorTests(unittest.TestCase):
         gateway = Gateway("https://gateway.invalid/concurro", token, executor,
                           "concurro/concurro/.github/workflows/agent.yml@refs/heads/main", ("claude-*",), 1000,
                           {"codex": {"x-concurro-plan": "chatgpt"}})
-        settings = type("Settings", (), {"controller_id": "service:primary", "engine": "e" * 40, "targets": (Target("owner/one"),),
+        settings = type("Settings", (), {"controller_id": "service:primary", "engine": "e" * 40, "targets": (Target("owner/one", "owner/one", "both"),),
                                          "state_dir": root, "gateway": gateway, "agent_image": "sha256:" + "a" * 64})
-        return Worker(settings, None, None, None, lambda repository: self.Reader(), "concurro[bot]")
+        from service.registry import Registry
+        registry = Registry.open(root, "test", initialize=True)
+        self.addCleanup(registry.close)
+        registry.bind(("owner/one", 7), "owner/one", "owner/one", "b" * 40)
+        return Worker(settings, None, registry, None, lambda repository: self.Reader(), "concurro[bot]")
 
     def test_runner_claims_name_the_target_workflow_commit_and_bot(self):
         self.assertEqual(runner_claims(self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main",
                                        "e" * 40, "concurro[bot]"),
                          {"repository_id": "11", "repository_owner_id": "22",
                           "job_workflow_ref": "o/r/.github/workflows/agent.yml@refs/heads/main", "job_workflow_sha": "e" * 40,
-                          "event_name": "repository_dispatch", "ref": "refs/heads/trunk", "actor_id": "33"})
+                          "event_name": "workflow_dispatch", "ref": "", "actor_id": "33"})
 
     def test_the_gateway_settings_choose_the_executor(self):
-        github = type("GitHub", (), {"dispatch": lambda self, session: None})()
+        github = type("GitHub", (), {"key": ("owner/one", 7), "generation": 1})()
         runner = self.worker("runner").executor("owner/one", github)
         self.assertIsInstance(runner, RunnerExecutor)
         self.assertEqual((runner.expected["job_workflow_sha"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000))
         self.assertEqual(runner.operator.token, "operator-secret")
         self.assertEqual(runner.gateway, {"url": "https://gateway.invalid/concurro",
                                           "headers": {"codex": {"x-concurro-plan": "chatgpt"}}})
-        self.assertIsInstance(self.worker("host").executor("owner/one", github), HostExecutor)
+        self.assertEqual(runner.task["config_sha"], "b" * 40)
 
-    def test_with_runners_the_workbench_runs_there_too(self):
-        github = type("GitHub", (), {"dispatch": lambda self, session: None})()
-        worker = self.worker("runner")
-        executor = worker.executor("owner/one", github)
-        workspaces = worker.workspaces(executor)
-        self.assertIsInstance(workspaces, RemoteBench)
-        self.assertIs(workspaces.executor, executor)
-        host = self.worker("host")
-        self.assertIsNone(host.workspaces(host.executor("owner/one", github)), "the controller's own workbench")
 
 
 class FairnessTests(unittest.TestCase):
@@ -420,6 +415,21 @@ class LeaseTests(ServiceFixture, unittest.TestCase):
         self.drain()
         self.assertTrue(renewed.is_set())
         self.assertEqual(self.registry.outcome(KEY).kind, "await-human")
+
+
+class EvaluationWorkerTests(ServiceFixture, unittest.TestCase):
+    """Explicit evaluation uses the runner adapter while preserving queued issue work."""
+
+    def test_evaluation_releases_ownership_and_preserves_the_queue(self):
+        self.service()
+        self.registry.enqueue(KEY, "input", self.clock())
+        with patch("design_eval.evaluate", return_value={"cases": 4}) as evaluate, \
+                patch.object(self.worker, "cleanup_runners") as cleanup:
+            self.assertEqual(self.worker.evaluate(*KEY, "codex"), {"cases": 4})
+        self.assertEqual(evaluate.call_args.args[2], "codex")
+        self.assertFalse(self.registry.current(KEY).live)
+        self.assertEqual(self.registry.due(self.clock())[0].causes, ("input",))
+        cleanup.assert_called_once()
 
 
 if __name__ == "__main__":

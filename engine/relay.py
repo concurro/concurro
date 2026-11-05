@@ -35,21 +35,18 @@ def call(base, token, method, path, body=None, timeout=WAIT + 30):
 
 
 class Operator:
-    """The service's side: host keys, and turns for runner sessions."""
+    """The service's side of task-bound runner turns."""
 
     def __init__(self, gateway, token):
         self.gateway, self.token = gateway, token
 
-    def mint(self, models, budget, lease, label):
-        return call(self.gateway, self.token, "POST", "operator/keys",
-                    {"models": models, "budget": budget, "lease": lease, "label": label})
 
     def end(self, session):
         call(self.gateway, self.token, "POST", f"operator/sessions/{session}/end", {})
 
-    def submit(self, turn, expected, models, budget, lease, payload, pin=None):
+    def submit(self, turn, expected, models, budget, lease, payload, pin=None, binding=None):
         return call(self.gateway, self.token, "POST", "operator/turns", {"turn": turn, "expected": expected,
-                    "models": models, "budget": budget, "lease": lease, "payload": payload, "pin": pin})
+                    "models": models, "budget": budget, "lease": lease, "payload": payload, "pin": pin, "binding": binding})
 
     def poll(self, turn, wait=WAIT):
         return call(self.gateway, self.token, "GET", f"operator/turns/{turn}?wait={wait}")

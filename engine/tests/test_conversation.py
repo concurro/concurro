@@ -9,7 +9,7 @@ import conversation
 from controller import Controller
 from policy import Blocked, approval_valid
 from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 
 class ConversationTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class ConversationTests(unittest.TestCase):
 
     def tick(self):
         """Reload authoritative GitHub state between every provider invocation."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         return controller
 

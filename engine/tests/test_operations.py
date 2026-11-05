@@ -12,7 +12,7 @@ from checkpoints import Checkpoints
 import controller as controller_module
 from controller import Controller
 from policy import Blocked, SessionFailure, UncertainOutcome
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 import turns
 
 
@@ -31,7 +31,7 @@ class OperationTests(unittest.TestCase):
 
     def advance(self):
         """Run one controller process; an interruption ends it like a crash."""
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         try:
             controller.advance(7)
         except Interrupted:
@@ -43,7 +43,7 @@ class OperationTests(unittest.TestCase):
         for _ in range(10):
             if (self.stored() or {}).get("stage") == stage:
                 return
-            Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+            Controller(self.gh, self.agents, self.config).advance(7)
         self.fail("stage not reached: " + stage)
 
     def dispatches(self, stage, effect):
@@ -61,7 +61,7 @@ class OperationTests(unittest.TestCase):
 
     def stored(self):
         """Read the durable state a fresh process would see."""
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.repo("issues/7")
         controller.load(self.gh.pages("issues/7/comments"))
         return controller.state
@@ -78,7 +78,7 @@ class OperationTests(unittest.TestCase):
             self.assertEqual(second["id"], first["id"])
             self.assertNotEqual(second["attempt"], first["attempt"])
             self.assertEqual((second["attempts"], second["uncertain"]), (2, 1))
-            controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+            controller = Controller(self.gh, self.agents, self.config)
             with self.assertRaisesRegex(Blocked, "uncertain twice"):
                 controller.advance(7)
             self.assertEqual(self.agents.ask.call_count, 2)
@@ -93,7 +93,7 @@ class OperationTests(unittest.TestCase):
 
     def test_reported_failures_are_not_uncertain(self):
         """A provider failure the controller observed never consumes the uncertain allowance."""
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         with patch.object(self.agents, "ask", side_effect=Blocked("provider failed")):
             with self.assertRaises(Blocked):
                 controller.advance(7)
@@ -124,7 +124,7 @@ class OperationTests(unittest.TestCase):
 
         with patch.object(self.gh, "repo", side_effect=repo), patch.object(self.agents, "ask", side_effect=answer):
             with self.assertRaises(Exception):
-                Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+                Controller(self.gh, self.agents, self.config).advance(7)
         self.assertTrue(lost)
         operation = self.stored()["operation"]
         self.assertEqual(operation["status"], "completed")
@@ -147,7 +147,7 @@ class OperationTests(unittest.TestCase):
             self.advance()
             self.advance()
             with self.assertRaisesRegex(Blocked, "uncertain twice"):
-                Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+                Controller(self.gh, self.agents, self.config).advance(7)
         # The retry keeps the original response contract despite the recomputed budget.
         self.assertEqual(seen, [{"max_json_bytes": 9000, "encoding": "JSON"}] * 2)
         controller = Controller(self.gh, self.agents, self.config)
@@ -199,7 +199,7 @@ class OperationTests(unittest.TestCase):
             self.assertNotIn("response", self.stored()["operation"])
             self.advance()
             with self.assertRaisesRegex(Blocked, "uncertain twice"):
-                Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+                Controller(self.gh, self.agents, self.config).advance(7)
         self.assertEqual(len(seen), 2)
 
     def test_timeouts_share_the_uncertain_allowance(self):
@@ -216,7 +216,7 @@ class OperationTests(unittest.TestCase):
         with patched:
             self.advance()
             with self.assertRaisesRegex(Blocked, "uncertain twice"):
-                Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+                Controller(self.gh, self.agents, self.config).advance(7)
         self.assertEqual(len(seen), 2)
 
     def test_reported_session_failures_do_not_consume_the_allowance(self):
@@ -271,7 +271,7 @@ class OperationTests(unittest.TestCase):
     def test_review_capacity_ignores_the_temporary_retained_copy(self):
         """Checkpoint room for a review excludes a result that the stage's next save drops."""
         self.until("plan_qc")
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.repo("issues/7")
         controller.load(self.gh.pages("issues/7/comments"))
         context = {"review_criteria": [{"id": "c"}] * 4, "own_objections": []}

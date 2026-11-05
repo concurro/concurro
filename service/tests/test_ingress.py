@@ -126,6 +126,30 @@ class IngressTests(ServiceFixture, unittest.TestCase):
                                               labels=()))
         self.assertEqual(self.queued(), [KEY])
 
+    def test_publication_repository_does_not_implicitly_enroll_issues(self):
+        """PR access to upstream does not enable upstream issue enrollment when only fork issues are selected."""
+        self.ingress = Ingress(SECRET, self.registry,
+                               {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock,
+                               issue_repositories={KEY[0]})
+        data = payload(action="labeled", label={"name": "concurro"}, issue=issue())
+        data.update(repository={"full_name": "upstream/project"}, installation={"id": 43})
+        self.assertEqual(self.deliver("issues", data), 202)
+        self.assertEqual(self.queued(), [])
+        self.registry.link(KEY, 9, "upstream/project")
+        self.assertEqual(self.deliver("pull_request", {**data, "action": "opened", "pull_request": {"number": 9}}), 202)
+        self.assertEqual(self.queued(), [KEY])
+
+    def test_upstream_pr_event_wakes_its_fork_issue_only(self):
+        """An upstream PR belongs to the recorded fork issue, not the same-numbered upstream issue."""
+        self.ingress = Ingress(SECRET, self.registry,
+                               {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock)
+        self.registry.link(KEY, 9, "upstream/project")
+        self.registry.link(("upstream/project", KEY[1]), 10, "upstream/project")
+        data = payload(action="synchronize", pull_request={"number": 9})
+        data.update(repository={"full_name": "upstream/project"}, installation={"id": 43})
+        self.assertEqual(self.deliver("pull_request", data), 202)
+        self.assertEqual(self.queued(), [KEY])
+
     def test_pull_request_and_check_events_map_through_recorded_pulls(self):
         """PR, review and check events reach the task that owns the PR; unknown PRs are dropped."""
         events = [("pull_request", payload(action="synchronize", pull_request={"number": 9})),
@@ -136,6 +160,7 @@ class IngressTests(ServiceFixture, unittest.TestCase):
             self.assertEqual(self.deliver(event, data), 202)
         self.assertEqual(self.queued(), [])
         self.registry.link(KEY, 9)
+        self.registry.acknowledge(KEY, {"_stage": "gates"})
         for event, data in events:
             self.registry.enqueue(KEY, "reset", self.clock() + 1000)
             self.deliver(event, deepcopy(data))

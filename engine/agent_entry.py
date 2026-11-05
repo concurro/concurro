@@ -1,4 +1,4 @@
-"""Container entry point: consume context on stdin and emit only validated JSON."""
+"""Native runner entry point: consume context on stdin and emit only validated JSON."""
 
 import json
 import os
@@ -39,7 +39,7 @@ def command_for(request, schema_path, output_path):
         endpoint = {"name": "Concurro gateway", "base_url": gateway["url"] + "/v1", "wire_api": "responses",
                     "supports_websockets": False, "env_key": KEY_VARIABLE,
                     "http_headers": gateway.get("headers", {}).get("codex", {})}
-        # The container is the sandbox: Codex's own needs namespaces it cannot create there.
+        # The ephemeral role job is the execution boundary; native tools may run freely.
         return ["codex", "exec", *(["resume"] if resume else []),
                 "--ignore-user-config", "--ignore-rules", *([] if session else ["--ephemeral"]),
                 "--json", "--skip-git-repo-check", "--output-schema", schema_path,
@@ -74,7 +74,7 @@ def prompt_for(request, bundle):
               "repository_snapshot": {"workspace": request["workspace"], "commit": context["repository_commit"],
                   "refs": context["repository"]["refs"], "head": context["repository"]["head"],
                   "local_checkpoint": context.get("local_commit"),
-                  "head_is_local_candidate": request["stage"] in ("develop", "local_review")},
+                  "head_is_local_candidate": bool(request.get("local_candidate"))},
               "response_schema": request["schema"], "untrusted_context": context}
     if authorization is not None:
         if request["stage"] != "develop":
@@ -87,23 +87,20 @@ def main():
     """Run in the workspace, ignoring the CLIs' user and repository configuration and hooks."""
     request = json.load(sys.stdin)
     os.umask(0o077)
-    if request.get("session"):
-        for name, directory in (("HOME", "home"), ("CODEX_HOME", "codex"),
-                                ("CLAUDE_CONFIG_DIR", "claude"), ("COPILOT_HOME", "copilot")):
-            os.environ[name] = "/retained/" + directory
-    for name in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "COPILOT_HOME"):
+    # HOME and toolchain directories come from target setup, not the provider transcript.
+    for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "COPILOT_HOME"):
         Path(os.environ[name]).mkdir(parents=True, exist_ok=True)
     os.chdir(request["workspace"])
-    # Outside the workspace, so they never become part of a candidate.
-    schema_path, output_path = "/tmp/schema.json", "/tmp/result.json"
+    schema_path = str(Path(request["scratch"]) / "schema.json")
+    output_path = str(Path(request["scratch"]) / "result.json")
     bundle = Bundle(Path(__file__).resolve().parents[1], charter_text=request["charter"],
-                    profiles=request["profiles"], profile_texts=request["profile_texts"])
+                    instruction_texts=request.get("instruction_texts", {}))
     if request["bundle_id"] != bundle.identity or not request["model"].strip():
         raise ValueError("unbound bundle or model")
     request["schema"] = bundle.schema(request["stage"])
     Path(schema_path).write_text(json.dumps(request["schema"]))
     prompt = prompt_for(request, bundle)
-    turn = SessionTurn(request["session"], prompt) if request.get("session") else None
+    turn = SessionTurn(request["session"], prompt, Path(request["retained_root"])) if request.get("session") else None
     if turn:
         if turn.cached is not None:
             print(json.dumps(turn.cached))

@@ -19,7 +19,7 @@ from checkpoints import (AUDIT_MARKER, AUDIT_NAME, PLAN_MARKER, PLAN_NAME, MARKE
 from github import GitHub
 from policy import digest
 from test_autonomy import decision
-from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub
 
 
 class CheckpointTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class CheckpointTests(unittest.TestCase):
 
     def controller(self):
         """Reconstruct a controller from durable GitHub data."""
-        controller = Controller(self.gh, self.agents, self.config, FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         return controller
@@ -192,7 +192,7 @@ class CheckpointTests(unittest.TestCase):
                     self.gh.artifacts[7][99] = deepcopy(value)
                     self.gh.artifacts[7][99]['artifact']['number'] = 99
                 with self.assertRaises(CheckpointError):
-                    Controller(self.gh, self.agents, self.config, FakeWorkspace).advance(7)
+                    Controller(self.gh, self.agents, self.config).advance(7)
                 self.assertEqual(len(self.agents.calls), 1)
                 self.assertFalse(self.gh.refs)
 
@@ -223,7 +223,7 @@ class CheckpointTests(unittest.TestCase):
                     self.gh.summary()['body'] = self.gh.summary()['body'].replace('"digest":"', '"digest":"bad')
                 calls = len(self.agents.calls)
                 with self.assertRaises(CheckpointError):
-                    Controller(self.gh, self.agents, self.config, FakeWorkspace).advance(7)
+                    Controller(self.gh, self.agents, self.config).advance(7)
                 self.assertEqual(len(self.agents.calls), calls)
 
     def test_human_plan_edits_are_repaired_without_changing_checkpoint_or_approval(self):
@@ -276,7 +276,7 @@ class CheckpointTests(unittest.TestCase):
             'name': AUDIT_NAME, 'body': body, 'actor': {'login': 'writer'}})
         edited = deepcopy(audit)
         with self.assertRaises(CheckpointError):
-            Controller(self.gh, self.agents, self.config, FakeWorkspace).advance(7)
+            Controller(self.gh, self.agents, self.config).advance(7)
         self.assertEqual(self.artifact(), edited)
         self.assertEqual(len(self.agents.calls), 1)
         self.assertFalse(self.gh.refs)
@@ -327,15 +327,8 @@ class CheckpointTests(unittest.TestCase):
                 raise RuntimeError('private error')
             return original(path, method, data)
 
-        with patch.object(self.gh, 'repo', side_effect=fail), \
-                patch.object(controller_module, 'GitHub', return_value=self.gh), \
-                patch.object(controller_module, 'host_agents', return_value=self.agents), \
-                patch.object(Controller, 'suspend') as suspend, \
-                patch.dict(os.environ, {'CONCURRO_ISSUE': '7'}), \
-                patch('sys.stderr', new_callable=io.StringIO) as output, self.assertRaises(SystemExit):
-            controller_module.main()
-        suspend.assert_not_called()
-        self.assertNotIn('private error', output.getvalue())
+        with patch.object(self.gh, 'repo', side_effect=fail), self.assertRaises(CheckpointError):
+            Controller(self.gh, self.agents, self.config).advance(7)
         self.assertEqual(len(self.agents.calls), 1)
 
     def test_artifact_outcomes_reach_related_planner(self):

@@ -8,9 +8,9 @@ import unittest
 
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from controller import Controller
-from policy import Blocked, SessionFailure, approval_valid, digest, local_evidence_valid
+from policy import Blocked, SessionFailure, approval_valid, digest
 from session_entry import SessionTurn
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 
 class JournalAgents(FakeAgents):
@@ -61,9 +61,9 @@ class SessionRecoveryTests(unittest.TestCase):
         self.gh.comments = []
         self.agents = JournalAgents(self.directory.name)
 
-    def load(self, factory=FakeWorkspace):
+    def load(self, ):
         """Reload only durable checkpoints, without reusing the previous controller object."""
-        controller = Controller(self.gh, self.agents, self.config, factory)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         return controller
@@ -128,39 +128,3 @@ class SessionRecoveryTests(unittest.TestCase):
         state = self.load().state
         self.assertEqual(state["calls"], self.config["max_model_calls"])
         self.assertFalse(self.gh.refs)
-
-    def test_kill_during_second_repair_check_preserves_completed_turn_counter(self):
-        """A rebuilt workbench can continue after a kill despite different repair context."""
-        approved = self.reach("implement").state
-
-        class InterruptedChecks(FakeWorkspace):
-            """First request repair, then simulate a hard interruption during execution."""
-            calls = 0
-
-            def run_checks(self, required, requested, deadline):
-                """The third check is the remaining allowed repair attempt after restart."""
-                InterruptedChecks.calls += 1
-                reports = super().run_checks(required, requested, deadline)
-                if self.calls == 1:
-                    reports[0]["exit_code"] = 1
-                elif self.calls == 2:
-                    raise KeyboardInterrupt()
-                return reports
-
-        with self.assertRaises(KeyboardInterrupt):
-            self.load(InterruptedChecks).advance(7)
-        interrupted = self.load().state
-        role = "develop:codex:" + CONFIG["models"]["codex"]
-        self.assertEqual(interrupted["sessions"][role]["turn"], 2)
-        self.assertEqual(interrupted["sessions"][role]["completed"]["call"], interrupted["calls"])
-        self.assertTrue(approval_valid(interrupted, self.config))
-        resumed = self.load(InterruptedChecks)
-        resumed.advance(7)
-        self.assertEqual(resumed.state["stage"], "publish")
-        self.assertTrue(local_evidence_valid(resumed.state))
-        self.assertEqual(resumed.state["sessions"][role]["restarts"], 0)
-        self.assertEqual(resumed.state["sessions"][role]["turn"], 3)
-        self.assertEqual(resumed.state["calls"], approved["calls"] + 4)
-        self.assertEqual(resumed.state["local_attempts"]["0:0"], 3)
-        self.assertIsNone(self.gh.pr)
-        self.assertEqual(self.gh.merges, 0)

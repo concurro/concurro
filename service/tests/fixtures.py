@@ -24,7 +24,7 @@ from service.scheduler import Scheduler  # noqa: E402
 from service.settings import Limits, Target  # noqa: E402
 from service.worker import Worker  # noqa: E402
 from support import CONFIG, TARGET  # noqa: E402
-from test_pipeline import FakeAgents, FakeGitHub, FakeWorkspace  # noqa: E402
+from test_pipeline import FakeAgents, FakeGitHub  # noqa: E402
 from checkpoints import Checkpoints  # noqa: E402
 from controller import Controller  # noqa: E402
 
@@ -116,7 +116,8 @@ class RestBackend:
         if PAGE in relative:
             base, page = relative.split(PAGE)
             base = base[:-1]
-            key = "check_runs" if "/check-runs" in base else None
+            key = next((key for part, key in (("/check-runs", "check_runs"), ("/check-suites", "check_suites"),
+                                              ("actions/runs?", "workflow_runs")) if part in base), None)
             items = self.page(base) if page == "1" else []
             return {key: items} if key else items
         if relative.startswith("issues?"):
@@ -145,6 +146,8 @@ class RestBackend:
             return deepcopy(self.fake.issue["labels"])
         if base == "labels":
             return [{"name": name} for name in sorted(self.repository_labels)]
+        if base.startswith("commits/") and base.endswith("/status"):
+            return {"statuses": []}
         return self.fake.pages(base)
 
     def query(self, data):
@@ -158,6 +161,8 @@ class RestBackend:
                      for b in sorted(self.fake.linked_branches)]
             page = {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
             return {"data": {"repository": {"issue": {"linkedBranches": page}}}}
+        if "node(id:" in data["query"] and variables["id"] == "PR_9":
+            return {"data": {"node": {"number": 9, "repository": {"nameWithOwner": self.fake.config["repository"]}}}}
         if "node(id:" in data["query"]:
             return {"data": {"node": self.thread_node(variables["id"])}}
         if "reviewThreads" in data["query"]:
@@ -200,6 +205,10 @@ class RestBackend:
     def apply(self, method, relative, body):
         """Mutate the fake's state as GitHub would."""
         issue = self.fake.issue
+        if relative == "graphql" and "markPullRequestReadyForReview" in body["query"]:
+            self.fake.mark_ready(body["variables"]["input"]["pullRequestId"])
+            return {"data": {"markPullRequestReadyForReview": {"pullRequest": {
+                "id": "PR_9", "isDraft": False, "headRefOid": self.fake.pr["head"]["sha"]}}}}
         if relative == "graphql" and "resolveReviewThread" in body["query"]:
             thread = body["variables"]["input"]["threadId"]
             self.fake.resolve_thread(thread)
@@ -333,16 +342,17 @@ class ServiceFixture:
         """The engine client for issue 7 under one generation."""
         return GatewayGitHub(KEY[0], KEY[1], generation, gateway or self.gateway, self.reader)
 
-    def controller(self, generation, workspace=FakeWorkspace):
+    def controller(self, generation):
         """A service-owned controller for one tick."""
-        return Controller(self.facade(generation), self.agents, self.config, workspace_factory=workspace,
+        self.registry.bind(KEY, KEY[0], KEY[0], ENGINE)
+        return Controller(self.facade(generation), self.agents, self.config,
                           controller_id=SERVICE)
 
-    def tick(self, workspace=FakeWorkspace):
+    def tick(self):
         """Acquire, advance once and release, as the worker will; approve any plan awaiting a writer."""
         generation = self.gateway.acquire(KEY, "worker")
         self.assertIsNotNone(generation)
-        controller = self.controller(generation, workspace)
+        controller = self.controller(generation)
         outcome = None
         try:
             outcome = controller.advance(7)
@@ -352,15 +362,15 @@ class ServiceFixture:
         finally:
             self.gateway.release(KEY, generation, outcome)
 
-    def service(self, workspace=FakeWorkspace, executor=None, limits=None):
+    def service(self, executor=None, limits=None):
         """The reconciler, worker and scheduler over the fakes, with the fake agents."""
         bot = self.config["bot_login"]
         self.settings = SimpleNamespace(controller_id=SERVICE, engine=ENGINE, limits=limits or Limits(4, 2),
-                                        targets=(Target(KEY[0]),),
+                                        targets=(Target(KEY[0], KEY[0], "both"),),
                                         state_dir=Path(self.directory.name))
         self.reconciler = Reconciler(self.registry, lambda repository: self.backend, [KEY[0]], {bot}, clock=self.clock)
         self.worker = Worker(self.settings, self.gateway, self.registry, self.reconciler, lambda repository: self.backend,
-                             bot, agents=lambda *args, **kwargs: self.agents, workspace_factory=workspace,
+                             bot, agents=lambda *args, **kwargs: self.agents,
                              executor=lambda repository, github: None)
         self.scheduler = Scheduler(self.registry, self.gateway, self.worker, self.settings.limits, clock=self.clock,
                                    executor=executor or Inline())

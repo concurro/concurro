@@ -23,8 +23,9 @@ log = logging.getLogger("concurro.service")
 class Control:
     """Serve `status`, `resolve`, `reconcile-once`, `adopt` and `release` against the daemon's own registry."""
 
-    def __init__(self, registry, reconciler, cutover):
+    def __init__(self, registry, reconciler, cutover, evaluate=None):
         self.registry, self.reconciler, self.cutover = registry, reconciler, cutover
+        self.evaluate = evaluate
 
     def handle(self, request):
         """One command's JSON reply; refusals carry a short reason and change nothing."""
@@ -35,6 +36,8 @@ class Control:
 
     def run(self, request):
         command = request["command"]
+        if command == "evaluate" and self.evaluate is not None:
+            return self.evaluate(request["repository"], number(request["issue"]), request["provider"])
         if command == "status":
             return self.registry.status()
         if command == "resolve":
@@ -105,7 +108,7 @@ def server(control, state_dir):
 def request(state_dir, payload):
     """Send one command to the running daemon and return its reply."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(TIMEOUT)
+        client.settimeout(14_400 if payload.get("command") == "evaluate" else TIMEOUT)
         try:
             client.connect(str(Path(state_dir) / SOCKET))
         except OSError:

@@ -29,7 +29,7 @@ class SessionTests(unittest.TestCase):
         state["sessions"][first["role"]]["turn"] = 2
         self.assertEqual(prepare(state, CONFIG, "claude", "plan", {})["turn"], 2)
         for key, value in (("issue", 8), ("base", "b" * 40), ("requirements", {}),
-                           ("bundle_id", "other"), ("agent_image", "other"),
+                           ("bundle_id", "other"),
                            ("config_digest", "other"), ("design_reopens", 1)):
             changed = {**deepcopy(state), key: value}
             fresh = prepare(changed, CONFIG, "claude", "plan", {})

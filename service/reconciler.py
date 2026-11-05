@@ -5,6 +5,7 @@ import threading
 import time
 
 from policy import digest
+from readiness import ci_refs
 
 ENROLLMENT = "concurro"
 PAGE_LIMIT = 100
@@ -31,13 +32,14 @@ def pages(reader, path, key=None):
 class Reconciler:
     """Snapshot task inputs through read tokens; compare with what the last completed tick acknowledged."""
 
-    def __init__(self, registry, reader, repositories, identities, clock=time.time):
+    def __init__(self, registry, reader, repositories, identities, clock=time.time, cleanup=None):
         """`reader(repository)` returns that repository's read transport; `identities` are Concurro logins."""
         self.registry, self.reader, self.clock = registry, reader, clock
         self.repositories = tuple(repositories)
         self.identities = frozenset(identities)
         self.guard = threading.Lock()
         self.hints = {}
+        self.cleanup = cleanup
 
     def ours(self, login):
         """Whether a login is a Concurro identity, whose writes are never task input."""
@@ -66,16 +68,29 @@ class Reconciler:
 
     def pull(self, reader, root, key):
         """The linked pull request's head, merge state, reviews and check runs, or None."""
-        number = self.registry.pull(key)
-        if number is None:
+        pull = self.registry.pull(key)
+        if pull is None:
             return None
+        reader, root = self.reader(pull.repository), f"repos/{pull.repository}/"
+        number = pull.number
         pr = reader.request("GET", root + f"pulls/{number}")
         head = pr["head"]["sha"]
         reviews = sorted([r["id"], r["state"]] for r in pages(reader, root + f"pulls/{number}/reviews")
                          if not self.ours((r.get("user") or {}).get("login")))
-        checks = sorted([c["name"], c["status"], c.get("conclusion")]
-                        for c in pages(reader, root + f"commits/{head}/check-runs", "check_runs"))
-        return {"number": number, "head": head, "merged": bool(pr.get("merged")), "reviews": reviews, "checks": checks}
+        checks, statuses, suites, runs = [], [], [], []
+        for sha in ci_refs(pr):
+            checks.extend([sha, c.get("id"), (c.get("check_suite") or {}).get("id"), c["name"], c["status"], c.get("conclusion")]
+                          for c in pages(reader, root + f"commits/{sha}/check-runs?filter=all", "check_runs"))
+            statuses.extend([sha, c["context"], c["state"]]
+                            for c in pages(reader, root + f"commits/{sha}/status", "statuses"))
+            suites.extend([sha, c["id"], c["status"], c.get("conclusion")]
+                          for c in pages(reader, root + f"commits/{sha}/check-suites", "check_suites"))
+            runs.extend([sha, r["id"], r["status"], r.get("conclusion")]
+                        for r in pages(reader, root + f"actions/runs?head_sha={sha}", "workflow_runs"))
+        return {"number": number, "head": head, "merge_head": pr.get("merge_commit_sha"),
+                "state": pr.get("state"), "draft": pr.get("draft"), "merged": bool(pr.get("merged")),
+                "reviews": reviews, "checks": sorted(checks), "statuses": sorted(statuses),
+                "suites": sorted(suites), "runs": sorted(runs)}
 
     def candidates(self, repository):
         """Open enrolled issues, plus every task the registry still holds active (its label may be gone)."""
@@ -85,6 +100,8 @@ class Reconciler:
 
     def poll(self, repositories=None):
         """Enqueue every candidate whose inputs changed; reads only, so no model call without a change."""
+        if self.cleanup is not None:
+            self.cleanup()
         enqueued = []
         for repository in repositories or self.repositories:
             try:

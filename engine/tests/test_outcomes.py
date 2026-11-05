@@ -5,7 +5,6 @@ import unittest
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from controller import OUTCOMES, WAIT_SECONDS, Controller
 import test_pipeline
-from test_pipeline import FakeWorkspace
 
 
 class OutcomeTests(unittest.TestCase):
@@ -16,7 +15,7 @@ class OutcomeTests(unittest.TestCase):
 
     def outcome(self):
         """Run one tick and return its outcome."""
-        outcome = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
+        outcome = Controller(self.gh, self.agents, self.config).advance(7)
         self.assertIn(outcome.kind, OUTCOMES)
         return outcome
 
@@ -53,6 +52,8 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual(self.outcome().kind, "blocked")
         self.idle("blocked")
         self.gh.comment("/concurro retry")
+        self.assertEqual(self.outcome().kind, "wait-until")
+        self.gh.pr.update(merged=True, merge_commit_sha="f" * 40, state="closed", merged_by={"login": "writer"})
         self.assertEqual(self.outcome().kind, "terminal")
         self.idle("terminal")
 

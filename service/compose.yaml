@@ -1,5 +1,5 @@
 # The Concurro service on the gateway's host: webhooks arrive through the shared edge Caddy
-# (`/concurro/webhook` in gateway/concurro.caddy), model turns and the trusted workbench run on the
+# (`/concurro/webhook` in gateway/concurro.caddy), all model turns run natively on the
 # targets' GitHub-hosted runners. Settings and secrets, and the state directory, are mounted at the
 # same paths as on the host, so the paths in settings.json hold in both. See gateway/README.md.
 name: concurro-service

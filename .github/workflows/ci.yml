@@ -24,6 +24,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - run: python3 -m pip install markdown-it-py==3.0.0
       - run: python3 -m unittest discover -s engine/tests -v
       - run: python3 -m unittest discover -s service/tests -v
       - run: python3 -m unittest discover -s gateway/tests -v

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
 from test_autonomy import decision
 from test_findings import Harness, Reviewers
-from test_pipeline import Controller, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import Controller, FakeAgents, FakeGitHub
 import actions
 import conversation
 from github import Transient
@@ -25,7 +25,7 @@ class HappyPathTests(Harness, unittest.TestCase):
     def test_only_actionable_comments_are_posted(self):
         for _ in range(3):  # reach the gates, check them, and check them again on the same head
             controller = self.run_to(Reviewers(set()), "gates")
-        self.assertEqual(actionable(self.gh), ["### Plan ready for approval", "### ✅ Handed off for merge"])
+        self.assertEqual(actionable(self.gh), ["### Plan ready for approval", "### Implementation started", "### Ready for review"])
         plan_ready = next(c["body"] for c in self.gh.comments if "Plan ready for approval" in c["body"])
         self.assertIn(f"`/concurro approve {controller.state['plan_id']}`", plan_ready)
         summary = self.gh.summary()["body"]
@@ -46,27 +46,25 @@ class HappyPathTests(Harness, unittest.TestCase):
         self.run_to(Reviewers(set()), "gates")
         summary = self.gh.summary()["body"]
         self.assertIn("| Merge | 🚧 Blocked |", summary)
-        self.assertIn("required check unsuccessful or untrusted", summary)
+        self.assertIn("CI unsuccessful", summary)
         self.assertNotIn("a human review and merge", summary)
         self.gh.checks_green = True
         self.run_to(Reviewers(set()), "gates")
         self.assertIn("| Merge | ✅ Handed off |", self.gh.summary()["body"])
-        self.assertEqual(actionable(self.gh).count("### ✅ Handed off for merge"), 1)
+        self.assertEqual(actionable(self.gh).count("### Ready for review"), 1)
 
     def test_hand_off_waits_for_concurros_own_gates(self):
         """A failing configured check, or a conflict, is not handed off."""
         self.gh.checks_green = False
         self.run_to(Reviewers(set()), "gates")
         self.run_to(Reviewers(set()), "gates")  # the gates are checked on the tick after the reviews
-        self.assertNotIn("### ✅ Handed off for merge", actionable(self.gh))
+        self.assertNotIn("### Ready for review", actionable(self.gh))
         self.assertIn("🚧 Blocked", self.gh.summary()["body"])
         self.gh.checks_green = True
+        # GitHub merge policy is not a condition for requesting human review.
         self.gh.pr["mergeable"] = False
         self.run_to(Reviewers(set()), "gates")
-        self.assertNotIn("### ✅ Handed off for merge", actionable(self.gh))
-        self.gh.pr["mergeable"] = True
-        self.run_to(Reviewers(set()), "gates")
-        self.assertEqual(actionable(self.gh).count("### ✅ Handed off for merge"), 1)
+        self.assertEqual(actionable(self.gh).count("### Ready for review"), 1)
 
 
 class PullRequestTests(Harness, unittest.TestCase):
@@ -88,32 +86,6 @@ class PullRequestTests(Harness, unittest.TestCase):
         self.assertEqual(controller.pr_title(), "README section 3 recommends plain `cargo build` for everyday… (#7)")
         controller.state["plan"]["headline"] = "x" * 100
         self.assertEqual(controller.pr_title(), "x" * 66 + "… (#7)", "one long word is cut where it must be")
-
-
-class CheckScopeTests(Harness, unittest.TestCase):
-    """The controller hands the workbench the packages owning the planned files, before any check runs."""
-
-    def test_packages_reach_the_workbench(self):
-        scopes = []
-        original = FakeWorkspace.scope if hasattr(FakeWorkspace, "scope") else None
-
-        def record(workspace, packages):
-            scopes.append(dict(packages))
-            return original(workspace, packages)
-
-        with patch.object(FakeWorkspace, "scope", record):
-            controller = self.run_to(Reviewers(set()), "review")
-        self.assertEqual(scopes, [{"rust": None}], "a docs-only plan touches no Rust package")
-        tree = {"stacks-common/Cargo.toml": {}, "stacks-common/src/lib.rs": {}}
-        with patch.object(controller, "tree", return_value=tree), \
-                patch.object(controller, "files", return_value={"stacks-common/Cargo.toml": '[package]\nname = "stacks-common"'}):
-            self.assertEqual(controller.packages(["stacks-common/src/lib.rs"]), {"rust": ["stacks-common"]})
-        with patch.object(controller, "tree", return_value=tree), \
-                patch.object(controller, "files", side_effect=Blocked("source must be a bounded regular text file")):
-            self.assertEqual(controller.packages(["stacks-common/src/lib.rs"]), {"rust": None}, "unreadable: workspace")
-        with patch.object(controller, "tree", return_value=tree), \
-                patch.object(controller, "files", side_effect=Transient("unavailable")), self.assertRaises(Transient):
-            controller.packages(["stacks-common/src/lib.rs"])
 
 
 class CompactionTests(unittest.TestCase):
@@ -142,7 +114,7 @@ class InputNeededTests(unittest.TestCase):
         self.agents.qc_reports = [decision("clarify", questions=["Which behavior is desired?"])]
 
     def tick(self):
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         return controller.state
 
@@ -236,7 +208,7 @@ class ManualContinuationTests(Harness, unittest.TestCase):
         controller.save()
         self.gh.comment("Use the shorter wording.", "writer")
         self.gh.comment("/concurro start", "writer")
-        controller = Controller(self.gh, Reviewers(set()), self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, Reviewers(set()), self.config)
         controller.advance(7)
         self.assertEqual(controller.state["stage"], "plan_qc")
         self.assertTrue(controller.state["pr"])
@@ -248,7 +220,7 @@ class ManualContinuationTests(Harness, unittest.TestCase):
         self.assertIn("### 📣 Escalated", actionable(self.gh))
         self.gh.issue["body"] += " Only the README."
         self.gh.comment("/concurro retry", "writer")
-        controller = Controller(self.gh, agents, self.config, workspace_factory=FakeWorkspace)
+        controller = Controller(self.gh, agents, self.config)
         controller.advance(7)
         self.assertNotEqual(controller.state["stage"], "blocked")
         self.assertEqual(controller.state["issue_digest"], digest([self.gh.issue["title"], self.gh.issue["body"]]))

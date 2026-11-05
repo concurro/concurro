@@ -12,7 +12,7 @@ from controller import ACTIONS, Controller
 import conversation
 from policy import Blocked
 import test_pipeline
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, FakeWorkspace
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 SERVICE = "service:primary"
 MUTATORS = ("sync_stage", "sync_attention", "create_linked_branch")
@@ -41,14 +41,13 @@ class OwnershipFixture:
                 writes.append((method, path))
             return original(path, method, data)
 
-        controller = Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace,
+        controller = Controller(self.gh, self.agents, self.config,
                                 controller_id=controller_id)
         with patch.object(self.gh, "repo", side_effect=repo), \
                 patch.multiple(self.gh, **{name: DEFAULT for name in MUTATORS}) as recorded:
             advanced = run() if run else controller.advance(7)
         writes += [(name, call.args) for name, mock in recorded.items() for call in mock.call_args_list]
         return controller, advanced, writes
-
 
 
 class OwnershipTests(OwnershipFixture, unittest.TestCase):
@@ -79,8 +78,8 @@ class OwnershipTests(OwnershipFixture, unittest.TestCase):
         self.ready()
         self.transfer(SERVICE)
         controller, advanced, writes = self.mutations(SERVICE)
-        self.assertTrue(advanced)
-        self.assertEqual(controller.state["stage"], "merged")
+        self.assertEqual(advanced.kind, "wait-until")
+        self.assertTrue(controller.state["handoff_ready"])
         self.assertTrue(writes)
 
     def test_engine_pin_is_not_part_of_the_configuration_digest(self):
@@ -102,32 +101,6 @@ class OwnershipTests(OwnershipFixture, unittest.TestCase):
                     _, advanced, writes = self.mutations(owner)
                     self.assertFalse(advanced)
                     self.assertEqual(writes, [])
-
-
-
-class EntryPointOwnershipTests(OwnershipFixture, unittest.TestCase):
-    """The production entry point, including health and failure paths, honours ownership."""
-
-    def setUp(self):
-        """Use the shipped configuration, as main() loads it from the target checkout."""
-        self.config = deepcopy(CONFIG)
-        self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
-        Controller(self.gh, self.agents, self.config, workspace_factory=FakeWorkspace).advance(7)
-
-    def main(self):
-        """Run main() for issue 7 with fake transports."""
-        with patch.object(controller_module, "GitHub", return_value=self.gh), \
-                patch.object(controller_module, "host_agents", return_value=self.agents), \
-                patch.dict(os.environ, {"CONCURRO_ISSUE": "7"}):
-            controller_module.main()
-
-    def test_main_writes_nothing_for_a_service_task(self):
-        """No stage label, outbox, health notice or failure handling for a foreign task."""
-        self.transfer(SERVICE, bundle_id="drifted")
-        calls = len(self.agents.calls)
-        _, _, writes = self.mutations(ACTIONS, run=self.main)
-        self.assertEqual(writes, [])
-        self.assertEqual(len(self.agents.calls), calls)
 
 
 if __name__ == "__main__":

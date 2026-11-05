@@ -189,7 +189,7 @@ def opening_matches(finding, comment):
 
 def thread_url(state, config, finding):
     """A finding's opening comment on the PR."""
-    return f"https://github.com/{config['repository']}/pull/{state['pr']}#discussion_r{finding['comment']}"
+    return f"https://github.com/{config.get('upstream', config['repository'])}/pull/{state['pr']}#discussion_r{finding['comment']}"
 
 
 def where(finding):

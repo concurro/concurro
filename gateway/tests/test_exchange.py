@@ -28,6 +28,11 @@ EXPECTED = {"repository_id": "1001", "repository_owner_id": "2002",
             "job_workflow_ref": "concurro/concurro/.github/workflows/gateway-proof.yml@refs/heads/main",
             "job_workflow_sha": "a" * 40, "event_name": "workflow_dispatch", "ref": "refs/heads/main"}
 
+BINDING = {"repository": "upstream/project", "issue": 7, "role": "plan:claude", "generation": 1,
+           "config_sha": "b" * 40, "base": "c" * 40, "upstream": "upstream/project", "fork": "owner/project",
+           "phase": "cooperative"}
+TURN = {"request": {"provider": "claude", "stage": "plan"}}
+
 
 def segment(value):
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
@@ -46,7 +51,7 @@ class Signer:
     def token(self, header=None, **overrides):
         payload = {"iss": ISSUER, "aud": AUDIENCE, "exp": NOW + 300, "nbf": NOW - 5, "iat": NOW - 5,
                    "jti": overrides.pop("jti") if "jti" in overrides else os.urandom(8).hex(),
-                   "runner_environment": "github-hosted", "run_id": "77", "run_attempt": "1", **EXPECTED}
+                   "runner_environment": "github-hosted", "run_id": "77", "run_attempt": "1", **EXPECTED, "ref": getattr(self, "ref", EXPECTED["ref"])}
         payload.update(overrides)
         payload = {k: v for k, v in payload.items() if v is not None}
         head = segment(json.dumps(header or {"alg": "RS256", "kid": "test-kid", "typ": "JWT"}).encode())
@@ -92,10 +97,17 @@ class ExchangeTests(unittest.TestCase):
         self.gateway = FakeGateway()
         self.exchange = Exchange(str(Path(directory.name) / "exchange.db"), self.gateway,
                                  Keys(fetch=lambda: {"keys": [self.signer.jwk]}), AUDIENCE)
-        self.session = self.exchange.issue(dict(EXPECTED), ["gpt-*", "claude-*"], 100000, 3600)
+        self.session = self.exchange.issue(dict(EXPECTED), ["gpt-*", "claude-*"], 100000, 3600, binding=BINDING)
+        self.signer.ref = "refs/heads/concurro/runs/" + self.session
 
     def mint(self, **overrides):
         return self.exchange.key(self.session, self.signer.token(**overrides), now=NOW)
+
+    def test_unbound_session_cannot_mint_a_key(self):
+        unbound = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600)
+        with self.assertRaisesRegex(Refused, "no task/role binding"):
+            self.exchange.key(unbound, self.signer.token(ref=EXPECTED["ref"]), now=NOW)
+        self.assertEqual(self.gateway.list(), [])
 
     def test_a_valid_token_mints_a_scoped_key_once(self):
         first = self.mint()
@@ -157,8 +169,8 @@ class ExchangeTests(unittest.TestCase):
 
     def test_reconciliation_deletes_expired_and_orphaned_keys(self):
         self.mint()
-        live = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 7200)
-        live_key = self.exchange.key(live, self.signer.token(run_id="90"), now=NOW)["key"]
+        live = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 7200, binding=BINDING)
+        live_key = self.exchange.key(live, self.signer.token(run_id="90", ref="refs/heads/concurro/runs/" + live), now=NOW)["key"]
         self.gateway.create("sk-agw-orphan", "unknown", ["*"], 1)
         # The live session's runner keeps calling; the first session's has stopped.
         self.exchange.db.execute("UPDATE sessions SET seen = ? WHERE id = ?", (NOW + 5000, live))
@@ -174,9 +186,9 @@ class ExchangeTests(unittest.TestCase):
         self.gateway.create("sk-agw-pending", self.session, ["gpt-*"], 1)
         self.assertEqual(self.mint()["key"], "sk-agw-pending")
         self.assertEqual(len(self.gateway.list()), 1, "adopted, not duplicated")
-        other = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600)
+        other = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600, binding=BINDING)
         self.exchange.db.execute("UPDATE sessions SET key = 'sk-agw-lost' WHERE id = ?", (other,))
-        self.assertEqual(self.exchange.key(other, self.signer.token(run_id="91"), now=NOW)["key"], "sk-agw-lost")
+        self.assertEqual(self.exchange.key(other, self.signer.token(run_id="91", ref="refs/heads/concurro/runs/" + other), now=NOW)["key"], "sk-agw-lost")
         self.assertIsNotNone(self.gateway.find("sk-agw-lost"))
 
     def test_a_failed_deletion_still_ends_the_session_and_is_retried(self):
@@ -232,155 +244,112 @@ class ExchangeTests(unittest.TestCase):
 
 
 class RelayTests(unittest.TestCase):
-    """Turns queued by the operator, served to a live runner session of their target."""
+    """Task/role staffing, run-ref authentication, sequential turns and durable recovery."""
 
     def setUp(self):
         ExchangeTests.setUp(self)
-        self.runner = self.exchange.key(self.session, self.signer.token(), now=NOW)["token"]
+        self.expected = {**EXPECTED, "actor_id": "3003"}
+        self.session = self.exchange.issue(self.expected, ["claude-*"], 1000, 3600, binding=BINDING)
+        self.runner = self.claim(self.session)["token"]
 
-    def submit(self, expected=None, payload=None, turn=None, pin=None):
-        return self.exchange.submit(turn or str(uuid.uuid4()), dict(expected or EXPECTED), ["claude-*"], 1000, 3600,
-                                    payload or {"stage": "plan"}, pin=pin, now=NOW)
+    def claim(self, session, **overrides):
+        """Present the exact session ref in a separately signed hosted-runner identity."""
+        return self.exchange.key(session, self.signer.token(**{
+            **self.expected, "ref": "refs/heads/concurro/runs/" + session, **overrides}), now=NOW)
 
-    def test_a_pinned_turn_is_served_only_to_its_session_and_lost_with_it(self):
-        other = self.exchange.issue(dict(EXPECTED), ["claude-*"], 1000, 3600)
-        second = self.exchange.key(other, self.signer.token(run_id="91"), now=NOW)["token"]
-        pinned = self.submit(pin=self.session)
-        self.assertIsNone(pinned["dispatch"], "a pinned turn never staffs a new session")
-        self.assertEqual(self.exchange.next(other, second, 4, 0, now=NOW), {"turns": []})
-        self.assertEqual([t["id"] for t in self.exchange.next(self.session, self.runner, 4, 0, now=NOW)["turns"]],
-                         [pinned["turn"]])
-        waiting = self.submit(pin=self.session)
-        later = NOW + exchange.HEARTBEAT_SECONDS + 1
-        self.assertEqual(self.exchange.poll(waiting["turn"], 0, now=later)["status"], "lost",
-                         "only its session could serve it")
-        with self.assertRaises(Refused) as raised:
-            self.submit(expected={**EXPECTED, "repository_id": "9"}, pin=other)
-        self.assertEqual(raised.exception.status, 409, "a pin names a session of the turn's own target")
-        with self.assertRaises(ValueError):
-            self.submit(pin="not-a-session")
+    def submit(self, binding=None, payload=None, turn=None, pin=None):
+        """Queue a model turn through the operator contract."""
+        bound = binding or BINDING
+        stage, provider = bound["role"].split(":")
+        return self.exchange.submit(turn or str(uuid.uuid4()), self.expected, ["claude-*"], 1000, 3600,
+            payload or {"request": {"provider": provider, "stage": stage}}, pin=pin, now=NOW, binding=bound)
 
-    def test_an_older_database_gains_the_new_turn_columns(self):
-        database = Path(tempfile.mkdtemp(dir=self.directory)) / "exchange.db"
-        with sqlite3.connect(database) as db:
-            db.executescript("""
-                CREATE TABLE turns (id TEXT PRIMARY KEY, expected TEXT NOT NULL, models TEXT NOT NULL,
-                    budget INTEGER NOT NULL, lease REAL NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
-                    session TEXT, result TEXT, created REAL NOT NULL, started REAL, finished REAL);""")
-            db.execute("INSERT INTO turns (id, expected, models, budget, lease, payload, status, created) "
-                       "VALUES ('old', ?, '[\"claude-*\"]', 1000, 3600, '{}', 'queued', ?)",
-                       (json.dumps(EXPECTED, sort_keys=True), NOW))
-        for _ in range(2):
-            self.exchange = Exchange(str(database), self.gateway, Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
-                                     AUDIENCE)
-        self.session = self.exchange.issue(dict(EXPECTED), ["claude-*"], 1000, 3600)
-        self.runner = self.exchange.key(self.session, self.signer.token(), now=NOW)["token"]
-        pinned = self.submit(pin=self.session)
-        served = self.exchange.next(self.session, self.runner, 4, 0, now=NOW)["turns"]
-        self.assertEqual({t["id"] for t in served}, {"old", pinned["turn"]})
+    def test_task_role_generation_config_and_phase_cannot_share_jobs(self):
+        own = self.submit()
+        self.assertIsNone(own["dispatch"])
+        for changes in ({"issue": 8}, {"repository": "owner/project"}, {"role": "review:claude"},
+                        {"role": "plan:codex"}, {"generation": 2}, {"config_sha": "d" * 40}, {"phase": "fresh"}):
+            other = self.submit(binding={**BINDING, **changes})
+            self.assertIsNotNone(other["dispatch"])
+            record = self.exchange.row(other["dispatch"])
+            self.assertEqual(json.loads(record["binding"]), {**BINDING, **changes})
+            self.assertEqual(json.loads(record["expected"])["ref"], "refs/heads/concurro/runs/" + other["dispatch"])
+        served = self.exchange.next(self.session, self.runner, 8, 0, now=NOW)["turns"]
+        self.assertEqual([turn["id"] for turn in served], [own["turn"]])
 
-    def test_a_resubmitted_turn_returns_its_original_admission(self):
-        self.exchange.end(self.session, runner=self.runner, now=NOW)
-        turn = str(uuid.uuid4())
-        first = self.submit(turn=turn)
-        self.assertIsNotNone(first["dispatch"])
-        self.assertEqual(self.submit(turn=turn), first, "the lost reply is recovered, with its session")
-        self.assertEqual(self.exchange.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0], 1)
-        with self.assertRaises(Refused) as raised:
-            self.submit(turn=turn, payload={"stage": "review"})
-        self.assertEqual(raised.exception.status, 409)
-        runner = self.exchange.key(first["dispatch"], self.signer.token(run_id="90"), now=NOW)["token"]
-        self.assertIsNone(self.submit(turn=turn)["dispatch"], "a bound session is not handed out again")
-        served = self.exchange.next(first["dispatch"], runner, 1, 0, now=NOW)
-        self.assertEqual([t["id"] for t in served["turns"]], [turn])
-        self.exchange.complete(first["dispatch"], runner, turn, {"exit": 0}, now=NOW)
-        self.assertEqual(self.submit(turn=turn), {"turn": turn, "dispatch": None, "status": "done", "result": {"exit": 0}},
-                         "a turn completed before its admission was recovered returns its result")
+    def test_other_session_ref_and_rerun_cannot_claim(self):
+        other = self.submit(binding={**BINDING, "role": "review:claude"})["dispatch"]
+        for overrides in ({"ref": "refs/heads/concurro/runs/" + self.session}, {"run_attempt": "2"}):
+            with self.assertRaises(Refused):
+                self.claim(other, **overrides)
+        self.assertIsNone(self.exchange.row(other)["key"])
+        self.assertEqual(self.claim(other)["binding"]["role"], "review:claude")
+        with self.assertRaises(Refused):
+            self.claim(other, run_id="78")
+
+    def test_turns_run_sequentially_and_result_is_returned(self):
+        first, second = self.submit(), self.submit()
+        [turn] = self.exchange.next(self.session, self.runner, 8, 0, now=NOW)["turns"]
+        self.assertEqual(turn["id"], first["turn"])
+        self.assertEqual(self.exchange.next(self.session, self.runner, 8, 0, now=NOW), {"turns": []})
+        self.exchange.complete(self.session, self.runner, first["turn"], {"ok": True}, now=NOW)
+        self.exchange.complete(self.session, self.runner, first["turn"], {"ok": True}, now=NOW)
+        self.assertEqual(self.exchange.poll(first["turn"], 0, now=NOW), {"status": "done", "result": {"ok": True}})
+        [turn] = self.exchange.next(self.session, self.runner, 8, 0, now=NOW)["turns"]
+        self.assertEqual(turn["id"], second["turn"])
+        with self.assertRaises(Refused):
+            self.exchange.complete(self.session, self.runner, first["turn"], {"ok": False}, now=NOW)
+
+    def test_resubmission_after_lost_reply_and_completion(self):
+        identifier = str(uuid.uuid4())
+        first = self.submit(turn=identifier)
+        self.assertEqual(self.submit(turn=identifier), first)
+        with self.assertRaises(Refused):
+            self.submit(turn=identifier, binding={**BINDING, "issue": 8})
+        self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
+        self.exchange.complete(self.session, self.runner, identifier, {"ok": True}, now=NOW)
+        self.assertEqual(self.submit(turn=identifier), {"turn": identifier, "dispatch": None,
+                                                       "status": "done", "result": {"ok": True}})
         late = str(uuid.uuid4())
         self.exchange.cancel(late, now=NOW)
-        self.assertEqual(self.submit(turn=late), {"turn": late, "dispatch": None, "status": "cancelled"},
-                         "an admission arriving after its withdrawal stays withdrawn")
-        with self.assertRaises(ValueError):
-            self.submit(turn="not-a-uuid")
+        self.assertEqual(self.submit(turn=late)["status"], "cancelled")
 
-    def test_a_turn_is_served_to_its_targets_runner_and_its_result_returned(self):
-        queued = self.submit(payload={"stage": "plan", "n": 1})
-        self.assertIsNone(queued["dispatch"], "the target already has a live session")
-        other = self.submit(expected={**EXPECTED, "repository_id": "9"})
-        self.assertIsNotNone(other["dispatch"], "another target gets its own session")
-        served = self.exchange.next(self.session, self.runner, 4, 0, now=NOW)
-        self.assertEqual(served["turns"], [{"id": queued["turn"], "payload": {"stage": "plan", "n": 1}}])
-        self.assertEqual(self.exchange.poll(queued["turn"], 0, now=NOW), {"status": "running"})
-        self.exchange.complete(self.session, self.runner, queued["turn"], {"exit": 0}, now=NOW)
-        self.assertEqual(self.exchange.poll(queued["turn"], 0, now=NOW), {"status": "done", "result": {"exit": 0}})
-        with self.assertRaises(Refused) as raised:
-            self.exchange.complete(self.session, self.runner, queued["turn"], {"exit": 1}, now=NOW)
-        self.assertEqual(raised.exception.status, 409, "a result is accepted once")
-        self.assertEqual(self.exchange.next(self.session, self.runner, 4, 0, now=NOW), {"turns": []})
-
-    def test_runner_calls_need_the_sessions_runner_token(self):
-        for token in ("0" * 64, "short"):
-            with self.subTest(token=token), self.assertRaises(Refused) as raised:
-                self.exchange.next(self.session, token, 1, 0, now=NOW)
-            self.assertEqual(raised.exception.status, 401)
-        with self.assertRaises(Refused) as raised:
-            self.exchange.next(self.session, self.runner, 9, 0, now=NOW)
-        self.assertEqual(raised.exception.status, 400)
-        self.exchange.end(self.session, runner=self.runner, now=NOW)
-        self.assertEqual(self.gateway.list(), [])
-        with self.assertRaises(Refused) as raised:
-            self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
-        self.assertEqual(raised.exception.status, 410, "an ended session tells its runner to stop")
-
-    def test_a_silent_runner_loses_its_turns_and_its_target_gets_a_new_session(self):
-        lost = self.submit()
+    def test_dead_job_loses_running_turn_and_replaces_only_queued_turn(self):
+        running, waiting = self.submit(), self.submit()
         self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
-        waiting = self.submit()
         later = NOW + exchange.HEARTBEAT_SECONDS + 1
-        self.assertEqual(self.exchange.poll(lost["turn"], 0, now=later), {"status": "lost"})
-        self.assertEqual(self.gateway.list(), [], "the silent session's key is deleted")
-        polled = self.exchange.poll(waiting["turn"], 0, now=later)
-        self.assertEqual(polled["status"], "queued")
-        self.assertIsNotNone(polled["dispatch"])
-        self.assertIsNone(self.exchange.poll(waiting["turn"], 0, now=later)["dispatch"], "dispatched once")
-        replacement = self.exchange.row(polled["dispatch"])
-        self.assertEqual(json.loads(replacement["expected"]), EXPECTED)
+        self.assertEqual(self.exchange.poll(running["turn"], 0, now=later)["status"], "lost")
+        replacement = self.exchange.poll(waiting["turn"], 0, now=later)["dispatch"]
+        self.assertIsNotNone(replacement)
+        self.assertEqual(json.loads(self.exchange.row(replacement)["binding"]), BINDING)
+        self.assertNotEqual(replacement, self.session)
+        self.assertEqual(self.gateway.list(), [])
 
-    def test_a_refused_runner_is_reported_to_the_operator(self):
+    def test_pin_cannot_cross_role_and_dies_with_its_job(self):
+        other = self.submit(binding={**BINDING, "role": "review:claude"})["dispatch"]
+        with self.assertRaises(Refused):
+            self.submit(pin=other)
+        waiting = self.submit(pin=self.session)
         self.exchange.end(self.session, runner=self.runner, now=NOW)
-        queued = self.submit()
-        session = queued["dispatch"]
+        self.assertEqual(self.exchange.poll(waiting["turn"], 0, now=NOW)["status"], "lost")
         with self.assertRaises(Refused):
-            self.exchange.key(session, self.signer.token(repository_id="9", run_id="79"), now=NOW)
-        self.assertIsNone(self.exchange.poll(queued["turn"], 0, now=NOW)["refusal"],
-                          "another repository's token is not the target's problem")
-        with self.assertRaises(Refused):
-            self.exchange.key(session, self.signer.token(job_workflow_sha="b" * 40, run_id="80"), now=NOW)
-        polled = self.exchange.poll(queued["turn"], 0, now=NOW)
-        self.assertEqual(polled["refusal"], "token does not match the session: job_workflow_sha")
+            self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
 
-    def test_a_cancelled_turn_is_not_served_and_its_result_refused(self):
-        waiting, running = self.submit(), self.submit()
-        self.exchange.cancel(waiting["turn"], now=NOW)
-        served = self.exchange.next(self.session, self.runner, 4, 0, now=NOW)
-        self.assertEqual([t["id"] for t in served["turns"]], [running["turn"]])
-        self.exchange.cancel(running["turn"], now=NOW)
-        with self.assertRaises(Refused) as raised:
-            self.exchange.complete(self.session, self.runner, running["turn"], {}, now=NOW)
-        self.assertEqual(raised.exception.status, 409)
-        self.assertEqual(self.exchange.poll(running["turn"], 0, now=NOW), {"status": "cancelled"})
+    def test_invalid_binding_and_workbench_are_refused(self):
+        for changes in ({"issue": 0}, {"role": "local_review:claude"}, {"generation": 0}, {"config_sha": "main"}):
+            with self.assertRaises(ValueError):
+                self.submit(binding={**BINDING, **changes})
+        with self.assertRaises(ValueError):
+            self.submit(payload={"kind": "bench", "op": "open"})
+        with self.assertRaises(ValueError):
+            self.submit(payload={"request": {"stage": "review", "provider": "claude"}})
 
-    def test_host_keys_are_minted_at_once_and_refuse_runners(self):
-        minted = self.exchange.mint(["claude-*"], 500, 600, "owner/repo#5:plan")
-        self.assertTrue(minted["key"].startswith("sk-agw-"))
-        self.assertIsNotNone(self.gateway.find(minted["key"]))
-        with self.assertRaisesRegex(Refused, "not a runner session"):
-            self.exchange.key(minted["session"], self.signer.token(run_id="81"), now=NOW)
-        self.exchange.end(minted["session"])
-        self.assertIsNone(self.gateway.find(minted["key"]))
-        for label in ("", "bad label", "x" * 201):
-            with self.subTest(label=label), self.assertRaises(ValueError):
-                self.exchange.mint(["*"], 1, 1, label)
+    def test_legacy_turns_are_preserved_but_never_served(self):
+        self.exchange.db.execute("INSERT INTO turns (id,expected,models,budget,lease,payload,status,created) "
+            "VALUES ('old',?,'[]',0,1,'{}','queued',?)", (json.dumps(EXPECTED, sort_keys=True), NOW))
+        self.assertEqual(self.exchange.next(self.session, self.runner, 1, 0, now=NOW)["turns"], [])
+        self.assertIsNone(self.exchange.staffed("old", NOW))
+        self.assertIsNotNone(self.exchange.db.execute("SELECT id FROM turns WHERE id='old'").fetchone())
 
 
 class HttpTests(unittest.TestCase):
@@ -416,23 +385,22 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.gateway.list(), [])
 
     def test_a_turn_round_trip_over_http(self):
-        submit = {"turn": str(uuid.uuid4()), "expected": EXPECTED, "models": ["claude-*"], "budget": 1000, "lease": 3600,
-                  "payload": {"stage": "plan"}}
+        submit = {"turn": str(uuid.uuid4()), "expected": {**EXPECTED, "actor_id": "3003"}, "models": ["claude-*"], "budget": 1000, "lease": 3600,
+                  "payload": TURN, "binding": BINDING}
         self.assertEqual(self.post("/exchange/operator/turns", None, submit)[0], 401)
         self.assertEqual(self.post("/exchange/operator/turns", "wrong", submit)[0], 401)
         status, queued = self.post("/exchange/operator/turns", "operator-secret", submit)
-        self.assertEqual((status, queued["dispatch"]), (200, None))
-        runner = self.post(f"/exchange/sessions/{self.session}/key", self.signer.token())[1]["token"]
+        self.assertEqual(status, 200)
+        self.session = queued["dispatch"]
+        runner = self.post(f"/exchange/sessions/{self.session}/key", self.signer.token(
+            actor_id="3003", ref="refs/heads/concurro/runs/" + self.session))[1]["token"]
         status, served = self.post(f"/exchange/sessions/{self.session}/next", runner, {"capacity": 1, "wait": 0})
         self.assertEqual((status, [t["id"] for t in served["turns"]]), (200, [queued["turn"]]))
         status, _ = self.post(f"/exchange/sessions/{self.session}/turns/{queued['turn']}", runner, {"result": {"exit": 0}})
         self.assertEqual(status, 200)
         status, polled = self.post(f"/exchange/operator/turns/{queued['turn']}?wait=0", "operator-secret", method="GET")
         self.assertEqual((status, polled), (200, {"status": "done", "result": {"exit": 0}}))
-        status, minted = self.post("/exchange/operator/keys", "operator-secret",
-                                   {"models": ["claude-*"], "budget": 10, "lease": 60, "label": "host"})
-        self.assertEqual(status, 200)
-        self.assertEqual(self.post(f"/exchange/operator/sessions/{minted['session']}/end", "operator-secret")[0], 200)
+        self.assertEqual(self.post("/exchange/operator/keys", "operator-secret", {})[0], 404)
         self.assertEqual(self.post(f"/exchange/sessions/{self.session}/end", runner)[0], 200)
         self.assertEqual(self.gateway.list(), [])
 

@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
 import agent_entry
-from agents import Agents, GatewayUnavailable, HostExecutor, Retained, RunnerExecutor
+from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from credentials import Credential
 from gitfixture import Upstream, mirror_of
 from policy import Blocked, SessionFailure, UncertainOutcome
@@ -31,7 +31,7 @@ import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 request = json.load(sys.stdin)
 assert os.environ["CONCURRO_GATEWAY_KEY"] == "sk-agw-test" and "GH_TOKEN" not in os.environ
-assert request["workspace"] == "/work" and request["timeout"] == 1800
+assert request["workspace"] == str(root / "work") and request["timeout"] == 1800
 work = root / "work"
 (work / "docs/guide.md").write_text("Guide\\nEdited\\n")
 (work / "docs/new.md").write_text("New\\n")
@@ -72,7 +72,6 @@ class ExtractionTests(Workspace):
         work = root / "work"
         self.assertEqual((work / "docs/guide.md").read_text(), "Candidate\n", "the head is the candidate")
         (work / "src/lib.rs").write_text("fn main() { run(); }\n")
-        (work / ".gitignore").chmod(0o755)
         (work / "src/run.rs").write_text("pub fn run() {}\n")
         (work / "docs/guide.md").unlink()
         (work / "target").mkdir()
@@ -154,12 +153,11 @@ class ExecuteTests(Workspace):
 
     def execute(self, request, retained=None):
         root = turns.directory(self.tmp / "turns")
-        fake = lambda name, image, directory, mirror, kept, limits: [sys.executable, "-c", AGENT, str(directory)]
+        fake = lambda directory: [sys.executable, "-c", AGENT, str(directory)]
         turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": 1800}
-        with patch.object(turns, "command", side_effect=fake), patch.object(turns.cleanup, "remove") as removed, \
+        with patch.object(turns, "command", side_effect=fake), \
                 patch.dict(os.environ, {"GH_TOKEN": "owner-secret"}):
-            result = turns.execute(turn, IMAGE, "sk-agw-test", self.mirror, root)
-        removed.assert_called_once()
+            result = turns.execute(turn, "sk-agw-test", self.mirror, root)
         return result, root
 
     def test_a_develop_turn_returns_its_workspace_and_transcript(self):
@@ -186,19 +184,45 @@ class ExecuteTests(Workspace):
             with self.subTest(code=code, stdout=stdout[:10]):
                 self.assertEqual(turns.outcome(code, stdout)[0], expected)
 
-    def test_the_container_holds_the_key_by_name_and_mounts_nothing_else(self):
+    def test_native_tools_keep_target_home_and_tools_but_not_job_credentials(self):
         root = Path("/runner/turn-" + "0" * 32)
-        command = turns.command("c", IMAGE, root, "/srv/mirror.git", True, turns.Limits())
-        self.assertEqual([command[i + 1] for i, a in enumerate(command) if a == "--mount"],
-                         [f"type=bind,source={root}/work,target=/work", f"type=bind,source={root}/scratch,target=/scratch",
-                          "type=bind,source=/srv/mirror.git,target=/srv/mirror.git,readonly",
-                          f"type=bind,source={root}/retained,target=/retained"])
-        variables = [command[i + 1] for i, a in enumerate(command) if a == "--env"]
-        self.assertIn(turns.KEY_VARIABLE, variables)
-        self.assertFalse([v for v in variables if "=" not in v and v != turns.KEY_VARIABLE])
-        for option in ("--cap-drop=ALL", "--security-opt=no-new-privileges", f"--user={os.getuid()}:{os.getgid()}"):
-            self.assertIn(option, command)
-        self.assertNotIn("--privileged", command)
+        with patch.dict(os.environ, {"HOME": "/home/runner", "CARGO_HOME": "/toolchain/cargo", "PATH": "/target/bin",
+                                     "GITHUB_TOKEN": "github-secret", "GH_TOKEN": "gh-secret",
+                                     "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-secret", "OPENAI_API_KEY": "provider-secret"}):
+            env = turns.agent_environment(root, "session-key", True)
+        self.assertEqual((env["HOME"], env["CARGO_HOME"], env["PATH"]),
+                         ("/home/runner", "/toolchain/cargo", "/target/bin"))
+        self.assertEqual(env["CODEX_HOME"], str(root / "retained/codex"))
+        self.assertEqual(env[turns.KEY_VARIABLE], "session-key")
+        self.assertFalse(set(env) & {"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OPENAI_API_KEY"})
+        self.assertNotIn("docker", turns.command(root))
+
+    def test_mode_only_and_nul_binary_changes_are_rejected(self):
+        root = self.prepare()
+        path = root / "work/src/lib.rs"
+        path.chmod(0o755)
+        with self.assertRaisesRegex(turns.TurnError, "mode changes"):
+            turns.extract(root / "work", root / "pristine.git", root)
+        path.chmod(0o644)
+        path.write_bytes(b"text\0binary")
+        with self.assertRaisesRegex(turns.TurnError, "binary"):
+            turns.extract(root / "work", root / "pristine.git", root)
+
+    def test_content_and_mode_change_is_not_silently_dropped(self):
+        root = self.prepare()
+        path = root / "work/src/lib.rs"
+        path.write_text("changed\n")
+        path.chmod(0o755)
+        with self.assertRaisesRegex(turns.TurnError, "mode changes"):
+            turns.extract(root / "work", root / "pristine.git", root)
+
+    def test_extraction_refusal_keeps_the_retained_transcript(self):
+        session = {"scope": "c" * 64, "turn": 1, "role": "develop:codex:m"}
+        with patch.object(turns, "extract", side_effect=turns.TurnError("mode changes are not supported")):
+            result, _ = self.execute({"stage": "develop", "session": session})
+        self.assertEqual(result["outcome"], "ok")
+        self.assertIn("mode changes", result["workspace"]["error"])
+        self.assertTrue(result["retained"])
 
     def test_retained_archives_are_bounded_and_safe(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,9 +311,9 @@ class AgentsTests(unittest.TestCase):
         issue = {**response, "design_issue": {"kind": "plan", "explanation": "e", "evidence": []}}
         result, _, _ = self.ask({"outcome": "ok", "response": issue, "workspace": workspace}, stage="develop", candidate={})
         self.assertEqual(result["edits"], [], "a design issue keeps no edits")
-        with self.assertRaisesRegex(Blocked, "deleted tracked files"):
-            self.ask({"outcome": "ok", "response": response, "workspace": {**workspace, "removed": ["b.md"]}},
-                     stage="develop", candidate={})
+        result, _, _ = self.ask({"outcome": "ok", "response": response,
+                                 "workspace": {**workspace, "removed": ["b.md"]}}, stage="develop", candidate={})
+        self.assertEqual(result["edits"], [*workspace["edits"], {"path": "b.md", "content": None}])
 
     def test_failures_map_to_the_engines_recovery(self):
         for outcome, expected in (("failed", Blocked), ("uncertain", UncertainOutcome), ("lost", UncertainOutcome)):
@@ -357,25 +381,12 @@ class FakeOperator:
         self.calls.append(("cancel", turn))
 
 
-TURN = {"request": {"model": "claude-test", "stage": "plan"}, "spec": {}, "retained": None, "timeout": 600}
+TASK = {"repository": "up/project", "issue": 7, "generation": 1, "config_sha": "b" * 40,
+        "upstream": "up/project", "fork": "owner/project"}
+TURN = {"request": {"model": "claude-test", "provider": "claude", "stage": "plan", "context": {"base": "a" * 40}}, "spec": {}, "retained": None, "timeout": 600}
 
 
 class ExecutorTests(unittest.TestCase):
-
-    def test_a_host_turn_mints_a_key_and_always_deletes_it(self):
-        operator = FakeOperator()
-        executor = HostExecutor(operator, GATEWAY, IMAGE, object(), tempfile.mkdtemp(), 1000)
-        with patch.object(turns, "execute", return_value={"outcome": "ok"}) as execute:
-            self.assertEqual(executor.run(TURN, "label"), {"outcome": "ok"})
-        self.assertEqual(execute.call_args.args[2], "sk-agw-host")
-        self.assertEqual(operator.calls, [("mint", (["claude-test"], 1000, 1200, "label")), ("end", "s-1")])
-        with patch.object(turns, "execute", side_effect=turns.TurnError("bad workspace")), \
-                self.assertRaisesRegex(Blocked, "bad workspace"):
-            executor.run(TURN, "label")
-        self.assertEqual(operator.calls[-1], ("end", "s-1"))
-        operator.mint = lambda *args: (_ for _ in ()).throw(ExchangeError(0, "unreachable"))
-        with self.assertRaises(GatewayUnavailable):
-            executor.run(TURN, "label")
 
     def runner(self, replies, dispatch=None, clock=None):
         operator = FakeOperator(replies)
@@ -384,7 +395,7 @@ class ExecutorTests(unittest.TestCase):
         identity.start()
         self.addCleanup(identity.stop)
         executor = RunnerExecutor(operator, GATEWAY, {"repository_id": "1"}, ["claude-*"], 5000,
-                                  dispatch or started.append, clock=clock or (lambda: 0), sleep=lambda _: None)
+                                  dispatch or started.append, clock=clock or (lambda: 0), sleep=lambda _: None, task=TASK)
         return executor, operator, started
 
     def test_a_runner_turn_dispatches_a_session_when_needed_and_returns_the_result(self):
@@ -393,7 +404,8 @@ class ExecutorTests(unittest.TestCase):
                                                    {"status": "running"}, {"status": "done", "result": result}])
         self.assertEqual(executor.run(TURN, "label"), result)
         self.assertEqual(started, ["s-2"])
-        self.assertEqual(operator.calls[0], ("submit", ("t", {"repository_id": "1"}, ["claude-*"], 5000, 21600, TURN, None)))
+        self.assertEqual(operator.calls[0], ("submit", ("t", {"repository_id": "1"}, ["claude-test"], 5000, 21600, TURN, None,
+                                           {**TASK, "base": "a" * 40, "role": "plan:claude", "phase": "single"})))
 
     def test_a_lost_submission_reply_is_recovered_under_the_same_turn(self):
         result = {"outcome": "ok", "response": {}}
@@ -421,7 +433,7 @@ class ExecutorTests(unittest.TestCase):
         executor, operator, _ = self.runner([ExchangeError(400, "invalid")])
         with self.assertRaises(GatewayUnavailable):
             executor.run(TURN, "label")
-        self.assertEqual([call[0] for call in operator.calls], ["submit"])
+        self.assertEqual([call[0] for call in operator.calls], ["submit", "cancel"])
 
     def test_a_lost_turn_is_uncertain_and_a_refusal_blocks(self):
         executor, _, _ = self.runner([{"turn": "t", "dispatch": None}, {"status": "lost"}])
@@ -453,6 +465,8 @@ class FakeRunner:
         self.batches, self.completed = list(batches), []
 
     def next(self, capacity, wait):
+        if capacity == 0:
+            return []
         if not self.batches:
             raise ExchangeError(410, "session has ended")
         batch = self.batches.pop(0)
@@ -467,24 +481,24 @@ class RunnerLoopTests(unittest.TestCase):
     def test_turns_run_and_report_until_the_session_ends(self):
         turn = {"id": "t1", "payload": {"request": {"stage": "plan", "provider": "claude"}}}
         client = FakeRunner([[turn], []])
-        loop = runner.Loop(client, "sk-agw-run", IMAGE, object(), tempfile.mkdtemp(), 2, 3600, turns.Limits())
+        loop = runner.Loop(client, "sk-agw-run", object(), tempfile.mkdtemp(), 3600)
         with patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute, \
                 patch.object(runner, "HEARTBEAT", 0):
             loop.serve()
-        self.assertEqual(execute.call_args.args[:3], (turn["payload"], IMAGE, "sk-agw-run"))
+        self.assertEqual(execute.call_args.args[:2], (turn["payload"], "sk-agw-run"))
         self.assertEqual(client.completed, [("t1", {"outcome": "ok", "response": {}})])
 
     def test_a_turn_that_cannot_run_reports_a_failure(self):
         turn = {"id": "t2", "payload": {"request": {"stage": "plan", "provider": "codex"}}}
         client = FakeRunner([[turn]])
-        loop = runner.Loop(client, "k", IMAGE, object(), tempfile.mkdtemp(), 1, 3600, turns.Limits())
+        loop = runner.Loop(client, "k", object(), tempfile.mkdtemp(), 3600)
         with patch.object(turns, "execute", side_effect=OSError("disk full")), patch.object(runner, "HEARTBEAT", 0):
             loop.serve()
         self.assertEqual(client.completed[0][1]["outcome"], "failed")
 
     def test_an_idle_session_ends(self):
         client = FakeRunner([[], [], []])
-        loop = runner.Loop(client, "k", IMAGE, object(), tempfile.mkdtemp(), 1, -1, turns.Limits())
+        loop = runner.Loop(client, "k", object(), tempfile.mkdtemp(), -1)
         with patch.object(runner, "HEARTBEAT", 0):
             loop.serve()
         self.assertEqual(len(client.batches), 2, "it stopped at the first idle poll")
@@ -540,7 +554,7 @@ class RelayEndToEndTests(Workspace):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.expected = dict(test_exchange.EXPECTED)
+        self.expected = {**test_exchange.EXPECTED, "actor_id": "3003"}
 
     def test_a_develop_turn_round_trips_through_a_runner_session(self):
         import threading
@@ -550,8 +564,8 @@ class RelayEndToEndTests(Workspace):
         def dispatch(session):
             def serve():
                 client = Runner(self.url, session)
-                grant = client.key(self.signer.token())
-                loop = runner.Loop(client, grant["key"], IMAGE, self.mirror, self.tmp / "runner", 1, 0, turns.Limits())
+                grant = client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session))
+                loop = runner.Loop(client, grant["key"], self.mirror, self.tmp / "runner", 0)
                 loop.serve()
                 client.end()
             thread = threading.Thread(target=serve)
@@ -559,16 +573,16 @@ class RelayEndToEndTests(Workspace):
             loops.append(thread)
 
         # The runner's agent: the stand-in container script, with the key the exchange minted.
-        def fake(name, image, directory, mirror, kept, limits):
+        def fake(directory):
             return [sys.executable, "-c", AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]'),
                     str(directory)]
 
-        executor = RunnerExecutor(Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch)
+        executor = RunnerExecutor(Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch, task=TASK)
         agents = Agents({**CONFIG, "models": MODELS, "base": "main"}, executor, retained=self.tmp / "sessions")
         context = {"bundle_id": agents.bundle.identity, "repository_commit": self.base,
                    "repository": {"refs": {"main": self.base}, "head": "main"},
                    "controller_candidate": {"src/lib.rs": "fn main() {}\n"}}
-        with patch.object(turns, "command", side_effect=fake), patch.object(turns.cleanup, "remove"), \
+        with patch.object(turns, "command", side_effect=fake), \
                 patch.object(runner, "HEARTBEAT", 1):
             result = agents.ask("codex", "develop", context)
             for thread in loops:
@@ -577,3 +591,67 @@ class RelayEndToEndTests(Workspace):
                                            {"path": "docs/new.md", "content": "New\n"}])
         self.assertEqual(len(loops), 1, "one session served the target")
         self.assertEqual(self.exchange.gateway.list(), [], "the session's key is gone once its runner ended it")
+
+
+class SetupLifecycleTests(unittest.TestCase):
+    """Cold setup stays live without taking a turn; setup consumes only the signed grant's binding."""
+
+    def test_setup_heartbeat_never_takes_a_turn_and_stops_on_revocation(self):
+        import threading
+        stopped = threading.Event()
+        calls = []
+        class Client:
+            def next(self, capacity, wait):
+                calls.append((capacity, wait))
+                if len(calls) == 4:
+                    raise ExchangeError(410, "ended")
+                return []
+        runner.heartbeat(Client(), stopped, interval=0)
+        self.assertEqual(calls, [(0, 0)] * 4)
+        self.assertTrue(stopped.is_set())
+
+    def test_setup_uses_recorded_config_and_upstream_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, base = root / "config", root / "base"
+            output = root / "output"
+            with patch.object(runner, "checkout") as checkout, patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                runner.prepare({"binding": {**TASK, "base": "a" * 40}}, config, base)
+            self.assertEqual(checkout.call_args_list[0].args, (TASK["fork"], TASK["config_sha"], config))
+            self.assertEqual(checkout.call_args_list[1].args, (TASK["upstream"], "a" * 40, base))
+            self.assertIn("setup=false", output.read_text())
+            (config / ".concurro/setup").mkdir(parents=True)
+            (config / ".concurro/setup/action.yml").write_text("runs: {using: composite, steps: []}")
+            with patch.object(runner, "checkout"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                runner.prepare({"binding": {**TASK, "base": "a" * 40}}, config, base)
+            self.assertIn("setup=true", output.read_text())
+
+    def test_claim_persists_secrets_privately_and_starts_a_detached_helper(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "session"
+            args = ["runner.py", "claim", "--session", "s", "--gateway", "https://gateway.invalid", "--root", str(root)]
+            grant = {"key": "session-key", "token": "runner-token", "binding": TASK}
+            with patch.object(sys, "argv", args), patch.object(runner, "oidc_token", return_value="jwt"), \
+                    patch.object(runner.Runner, "key", return_value=grant), patch.object(runner.subprocess, "Popen") as start:
+                start.return_value.pid = 42
+                runner.main()
+            self.assertEqual(json.loads((root / "grant.json").read_text()), grant)
+            self.assertEqual((root / "grant.json").stat().st_mode & 0o777, 0o600)
+            self.assertTrue(start.call_args.kwargs["start_new_session"])
+            self.assertIn("heartbeat", start.call_args.args[0])
+            self.assertNotIn("session-key", repr(start.call_args))
+
+    def test_lost_ownership_cancels_dispatched_session_and_discards_result(self):
+        from service.errors import OwnershipLost
+        operator = FakeOperator([{"turn": "t", "dispatch": "s"}, {"status": "done", "result": {"outcome": "ok"}}])
+        checks = []
+        def owner():
+            checks.append(1)
+            if len(checks) == 3:
+                raise OwnershipLost("new owner")
+        executor = RunnerExecutor(operator, GATEWAY, {}, ["claude-*"], 1000, lambda _: None,
+                                  task=TASK, check_owner=owner)
+        with self.assertRaises(OwnershipLost):
+            executor.run(TURN, "test")
+        self.assertIn(("end", "s"), operator.calls)
+        self.assertTrue(any(call[0] == "cancel" for call in operator.calls))

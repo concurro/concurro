@@ -171,6 +171,9 @@ def parts_v2(state, kind, source, details):
     """`(title, parts, meta)` of one sourced event: outcome first, the rest in `Hidden` sections."""
     value = source_value(state, source)
     plan = ("plan " + code(details["plan"][:12])) if details.get("plan") not in (None, "intake") else ""
+    if kind == "implementation":
+        return "Implementation report", [block(value["summary"]),
+                "Agent-reported validation: " + block(value["validation"])], (f"round {details['round']}",)
     if kind == "plan_summary":
         publication = value["publication"]
         # The plan itself is linked, so its summary's headline is enough here.
@@ -282,6 +285,9 @@ def archive(event, state):
 def index_entry(state, kind, source, details):
     """The status comment's record of one archived report: step, round, provider and outcome."""
     value = source_value(state, source)
+    if kind == "implementation":
+        return {"step": "Implement", "provider": details["provider"], "round": str(details["round"]),
+                "outcome": "candidate published"}
     if kind == "qc":
         intake = details["phase"] == "intake"
         return {"step": "Intake" if intake else "Design review", "provider": details["provider"],

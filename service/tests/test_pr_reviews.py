@@ -8,7 +8,8 @@ from test_pipeline import FakeAgents
 from service.gateway import Disallowed
 import reviews
 
-BRANCH = "concurro/issue-7-" + "a" * 12
+from policy import task_branch
+BRANCH = task_branch(*KEY)
 
 
 class PullRequestWrites(ServiceFixture, unittest.TestCase):
@@ -16,7 +17,8 @@ class PullRequestWrites(ServiceFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        self.fake.pr = {"number": 9, "state": "open", "head": {"sha": "c" * 40, "ref": BRANCH,
+        self.registry.bind(KEY, KEY[0], KEY[0], "a" * 40)
+        self.fake.pr = {"user": {"login": self.config["bot_login"]}, "number": 9, "state": "open", "head": {"sha": "c" * 40, "ref": BRANCH,
                         "repo": {"full_name": KEY[0]}}, "base": {"ref": "main", "sha": self.fake.base}}
         self.generation = self.gateway.acquire(KEY, "worker")
 
