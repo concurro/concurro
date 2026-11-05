@@ -15,7 +15,8 @@ from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtu
 import agent_entry
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from credentials import Credential
-from gitfixture import Upstream, mirror_of
+from gitfixture import IDENTITY, Upstream, mirror_of
+from mirror import git_environment
 from policy import Blocked, SessionFailure, UncertainOutcome
 from relay import ExchangeError
 import repository
@@ -101,14 +102,15 @@ class ExtractionTests(Workspace):
     def test_a_submodule_is_never_entered(self):
         root = self.prepare()
         work, pristine, marker = root / "work", root / "pristine.git", self.tmp / "ran"
-        git = {**os.environ, "GIT_DIR": str(pristine), "GIT_INDEX_FILE": str(root / "link.index")}
+        git = {**git_environment(), **IDENTITY, "GIT_DIR": str(pristine), "GIT_INDEX_FILE": str(root / "link.index")}
 
         def run(*args, env=git):
             return subprocess.run(args, check=True, capture_output=True, env=env, text=True).stdout.strip()
 
         run("git", "read-tree", "HEAD")
         run("git", "update-index", "--add", "--cacheinfo", f"160000,{self.base},vendor/sub")
-        commit = run("git", "commit-tree", run("git", "write-tree"), "-p", "HEAD", "-m", "submodule")
+        commit = run("git", "-c", "user.useConfigOnly=true", "commit-tree", run("git", "write-tree"),
+                     "-p", "HEAD", "-m", "submodule")
         run("git", "update-ref", "HEAD", commit)
         sub = work / "vendor/sub"
         sub.mkdir(parents=True)
