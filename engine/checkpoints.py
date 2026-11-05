@@ -228,7 +228,7 @@ class Checkpoints:
                 raise CheckpointError("legacy_history")
             state = self.decode(self.audit)
             self.plan = self.discover(items, "plan")
-            self.dirty = pointer != self.reference() or (self.plan or state.get("plan")) and (
+            self.dirty = pointer != self.reference() or (self.plan or state.get("plan") or state.get("plan_draft")) and (
                 not self.plan or self.plan["name"] != PLAN_NAME or self.plan["body"] != self.plan_body(state)
                 or self.plan_binding != self.plan_identity(self.plan))
             return state
@@ -243,7 +243,16 @@ class Checkpoints:
         lines = [PLAN_MARKER, "# Concurro implementation plan", "",
                  "Generated view; edits are overwritten. Request changes in issue comments.", "",
                  "Approval is recorded in the audit state; editing this document does not approve work.", ""]
-        if state.get("plan"):
+        if state.get("plan_draft"):
+            draft = state["plan_draft"]
+            fence = min((char * max(3, 1 + max((len(v) for v in re.findall(char + r"+", draft["output"])), default=0))
+                         for char in ("`", "~")), key=len)
+            lines += ["## Rejected draft — not approved", "", draft["reason"], "",
+                      "The planner is asked to correct this output; it does not authorize implementation.", "",
+                      fence + "json", draft["output"], fence, ""]
+            if draft.get("truncated"):
+                lines += ["Output excerpted to fit the checkpoint; the rejection reason is complete.", ""]
+        elif state.get("plan"):
             lines += ["Plan: `" + state["plan_id"] + "`", "Base: `" + state["base"] + "`", "", state["plan"]["summary"], ""]
             for key in ("questions", "files", "steps", "tests"):
                 lines += ["## " + key.capitalize(), ""] + ["- " + item for item in state["plan"][key]] + [""]
@@ -292,7 +301,7 @@ class Checkpoints:
             if self.audit is None and self.legacy is not None:
                 self.audit = self.write(None, "generic", self.audit_body(self.legacy, bind_plan=False))
             self.audit = self.write(self.audit, "generic", self.audit_body(state))
-            if self.plan or state.get("plan"):
+            if self.plan or state.get("plan") or state.get("plan_draft"):
                 body = self.plan_body(state)
                 # A derived view is verified on load; unchanged views need no further reads this invocation.
                 if not self.plan or self.plan["body"] != body or self.plan["name"] != PLAN_NAME:

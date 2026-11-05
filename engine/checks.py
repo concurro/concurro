@@ -28,17 +28,26 @@ def glob_matches(path, pattern):
 
 def _strings(value, minimum, maximum, length=200):
     """Return whether a value is a bounded list of distinct non-empty strings."""
-    return (isinstance(value, list) and minimum <= len(value) <= maximum and len(set(value)) == len(value)
-            and all(isinstance(v, str) and v.strip() and len(v) <= length for v in value))
+    return (isinstance(value, list) and minimum <= len(value) <= maximum
+            and all(isinstance(v, str) and v.strip() and len(v) <= length for v in value)
+            and len(set(value)) == len(value))
 
 def _relative(value):
     """Accept relative repository paths and globs without traversal or absolute roots."""
     return (isinstance(value, str) and bool(value) and not value.startswith("/") and "\\" not in value
             and all(p not in ("", ".", "..") for p in value.split("/")))
 
+def scope_pattern(value):
+    """Treat a trailing slash as a recursive directory scope, without relaxing path validation."""
+    return value + "**" if isinstance(value, str) and value.endswith("/") else value
+
+
 def scope_of(plan):
     """A plan's envelope and budget; a plan without one may change exactly its files, as before envelopes."""
-    return plan.get("scope") or {"paths": list(plan["files"]), "max_files": len(plan["files"]), "max_changed_lines": None}
+    scope = plan.get("scope")
+    if scope is not None:
+        return {**scope, "paths": [scope_pattern(path) for path in scope["paths"]]}
+    return {"paths": list(plan["files"]), "max_files": len(plan["files"]), "max_changed_lines": None}
 
 def in_scope(path, plan):
     """Whether a path lies inside the plan's envelope."""
@@ -49,11 +58,16 @@ def scope_errors(plan):
     scope = plan.get("scope")
     if scope is None:
         return None
-    if (not isinstance(scope, dict) or set(scope) != SCOPE_KEYS
-            or not _strings(scope["paths"], 1, MAX_SCOPE_PATHS) or not all(_relative(v) for v in scope["paths"])
-            or type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES
-            or type(scope["max_changed_lines"]) is not int or not 1 <= scope["max_changed_lines"] <= MAX_SCOPE_LINES):
-        return "plan scope needs 1–8 path globs, a file budget covering its files (at most 32) and 1–3000 changed lines"
+    if not isinstance(scope, dict) or set(scope) != SCOPE_KEYS:
+        return "plan scope needs paths, max_files and max_changed_lines"
+    if not _strings(scope["paths"], 1, MAX_SCOPE_PATHS):
+        return "plan scope paths must contain 1–8 distinct non-empty strings (at most 200 characters each)"
+    if not all(_relative(scope_pattern(v)) for v in scope["paths"]):
+        return "plan scope paths must be relative paths, directories or globs without empty, . or .. components"
+    if type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES:
+        return "plan scope max_files must cover its primary files and be at most 32"
+    if type(scope["max_changed_lines"]) is not int or not 1 <= scope["max_changed_lines"] <= MAX_SCOPE_LINES:
+        return "plan scope max_changed_lines must be an integer from 1 to 3000"
     if not all(in_scope(path, plan) for path in plan["files"]):
         return "plan files must lie inside the plan scope"
     return None

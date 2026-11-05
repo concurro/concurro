@@ -40,6 +40,8 @@ from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, appr
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
 PR_TITLE_LIMIT = 72
+# Correct malformed planner output without spending a semantic design-revision round.
+PLAN_OUTPUT_REPAIRS = 2
 # Context bytes `ask()` adds at dispatch (the repository commit and refs, and the operation contract).
 DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
@@ -346,7 +348,7 @@ class Controller:
             return 3
         if state.get("design_votes") or stage == "clarify" and not state.get("plan", {}).get("questions") and state.get("plan"):
             return 2
-        return 1 if state.get("plan") else 0
+        return 1 if state.get("plan") or state.get("plan_draft") else 0
 
     def step_row(self, index, name, current):
         """`(name, status, detail)` of one step; details are engine values and at most one headline."""
@@ -1131,7 +1133,8 @@ class Controller:
                 self.retry_reviewed(comment, comments)
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
-                output_repair = self.state.get('review_repair') and self.state['retry_stage'] == 'plan_qc'
+                output_repair = (self.state.get('review_repair') and self.state['retry_stage'] == 'plan_qc'
+                                 or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan')
                 if self.state["stage"] in ("rejected", "escalated") and not output_repair:
                     if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment."):
                         continue
@@ -1143,6 +1146,8 @@ class Controller:
                 else:
                     self.state.update(stage=self.state.pop("retry_stage"), command_id=comment["id"])
                 self.state.pop("reason", None)
+                if self.state.get("plan_draft") and self.state["stage"] == "plan":
+                    self.state["plan_draft"]["attempt"] = 0
                 # A writer's retry authorizes a fresh attempt allowance for an uncertain call.
                 self.state.pop("operation", None)
                 self.save()
@@ -1150,10 +1155,31 @@ class Controller:
                 self.state["command_id"] = comment["id"]
                 self.suspend("stopped")
 
+    def repair_plan(self, plan, reason):
+        """Publish rejected output and request at most two corrections across restarts."""
+        attempt = self.state.get("plan_draft", {}).get("attempt", 0) + 1
+        output = json.dumps(plan, indent=2, ensure_ascii=True)
+        saved = deepcopy(self.state)
+        saved.pop("plan_draft", None)
+        saved.get("operation", {}).pop("response", None)
+        # JSON string escaping can double the excerpt; leave room for the failure and dashboard state.
+        room = max(0, (CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(saved).encode()) - 4000) // 2)
+        limit = min(20000, room)
+        self.state["plan_draft"] = {"output": output[:limit], "truncated": len(output) > limit,
+                                    "reason": reason, "attempt": attempt}
+        self.state.pop("approval", None)
+        self.state.update(stage="plan", reason="Planner output needs correction: " + reason)
+        if attempt > PLAN_OUTPUT_REPAIRS:
+            self.state.update(stage="escalated", retry_stage="plan",
+                              reason="Planner output still needs correction after two retries: " + reason)
+        self.save()
+
     def plan(self):
         """Triage and attach a structured plan without making code changes."""
         context = self.context()
         context["design_feedback"] = self.state.get("design_feedback")
+        if self.state.get("plan_draft"):
+            context["plan_validation_feedback"] = self.state["plan_draft"]
         context["open_objections"] = [v for v in self.state.get("objections", []) if not v["resolved"]]
         context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if self.state.get("head"):
@@ -1162,14 +1188,22 @@ class Controller:
                                                      self.files(self.state["head"], paths, inspection=True),
                                                      self.config["paths"])
         plan = self.ask(self.config["planner"], "plan", context)
-        validate_plan(plan, self.config, self.state["execution"])
-        expected = {v["id"] for v in context["open_objections"]}
-        if {v["id"] for v in plan["responses"]} != expected or len(plan["responses"]) != len(expected):
-            raise Blocked("planner must respond to every open objection exactly once")
-        if self.state.get("head") and not plan["questions"]:
-            if not all(checks.in_scope(path, plan) for path in self.state.get("changed_files", [])):
-                raise Blocked("revised scope does not reconcile the accumulated PR diff")
+        try:
+            validate_plan(plan, self.config, self.state["execution"])
+            expected = {v["id"] for v in context["open_objections"]}
+            if {v["id"] for v in plan["responses"]} != expected or len(plan["responses"]) != len(expected):
+                raise Blocked("planner must respond to every open objection exactly once")
+            if self.state.get("head") and not plan["questions"]:
+                if not all(checks.in_scope(path, plan) for path in self.state.get("changed_files", [])):
+                    raise Blocked("revised scope does not reconcile the accumulated PR diff")
+        except Blocked as error:
+            self.repair_plan(plan, str(error))
+            return
+        except (KeyError, TypeError, ValueError):
+            self.repair_plan(plan, "invalid plan field types; return the structured plan schema")
+            return
         self.state["plan"] = plan
+        self.state.pop("reason", None)
         self.state.pop('design_feedback', None)
         self.state.pop('review_repair', None)
         for key in ('plan_draft', 'validation_feedback', 'validation_failure', 'validation_stalls'):

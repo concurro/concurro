@@ -124,7 +124,7 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(self.gh.refs)
 
     def test_planner_cannot_omit_objection_responses(self):
-        """Progress stops if a revised plan silently drops an unresolved finding."""
+        """A missing objection response is corrected before design review can continue."""
         self.agents.qc_reports = [decision("proceed"), decision("approve"),
                                  decision("revise", concerns=["Specify the boundary."])]
         for _ in range(4):
@@ -137,5 +137,12 @@ class ConversationTests(unittest.TestCase):
             response["responses"] = []
             return response
 
-        with patch.object(self.agents, "ask", side_effect=omit), self.assertRaises(Blocked):
-            self.tick()
+        with patch.object(self.agents, "ask", side_effect=omit):
+            state = self.tick().state
+        self.assertEqual(state["stage"], "plan")
+        self.assertIn("every open objection", state["plan_draft"]["reason"])
+        self.assertNotIn("approval", state)
+        repaired = self.tick().state
+        self.assertEqual(repaired["stage"], "plan_qc")
+        self.assertEqual({v["id"] for v in repaired["plan"]["responses"]},
+                         {v["id"] for v in repaired["objections"] if not v["resolved"]})

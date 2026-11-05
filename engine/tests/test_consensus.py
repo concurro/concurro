@@ -387,8 +387,10 @@ class ConsensusTests(unittest.TestCase):
             return {**PLAN, "files": ["docs/other.md"]} if stage == "plan" else value
 
         with patch.object(self.agents, "ask", side_effect=narrower):
-            with self.assertRaisesRegex(Blocked, "accumulated PR diff"):
-                self.tick()
+            rejected = self.tick()
+        self.assertEqual(rejected["stage"], "plan")
+        self.assertIn("accumulated PR diff", rejected["plan_draft"]["reason"])
+        self.assertNotIn("approval", rejected)
         self.gh.pr["head"]["sha"] = "f" * 40
         with self.assertRaisesRegex(Blocked, "head changed"):
             self.tick()
