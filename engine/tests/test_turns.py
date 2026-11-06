@@ -559,6 +559,14 @@ class RelayEndToEndTests(Workspace):
         self.expected = {**test_exchange.EXPECTED, "actor_id": "3003"}
 
     def test_a_develop_turn_round_trips_through_a_runner_session(self):
+        self.round_trip()
+
+    def test_large_workspace_contents_cross_the_exchange_outside_model_output(self):
+        """The structured answer stays small while extracted source exceeds the old 2 MB cap."""
+        self.round_trip(large=True)
+
+    def round_trip(self, large=False):
+        """Run the real relay and extraction, optionally returning a multi-megabyte edit."""
         import threading
         from relay import Operator, Runner
         loops = []
@@ -576,8 +584,10 @@ class RelayEndToEndTests(Workspace):
 
         # The runner's agent: the stand-in container script, with the key the exchange minted.
         def fake(directory):
-            return [sys.executable, "-c", AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]'),
-                    str(directory)]
+            script = AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]')
+            if large:
+                script = script.replace('"Guide\\nEdited\\n"', '"Source\\n" * 500000')
+            return [sys.executable, "-c", script, str(directory)]
 
         executor = RunnerExecutor(Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch, task=TASK)
         agents = Agents({**CONFIG, "models": MODELS, "base": "main"}, executor, retained=self.tmp / "sessions")
@@ -589,7 +599,7 @@ class RelayEndToEndTests(Workspace):
             result = agents.ask("codex", "develop", context)
             for thread in loops:
                 thread.join(30)
-        self.assertEqual(result["edits"], [{"path": "docs/guide.md", "content": "Guide\nEdited\n"},
+        self.assertEqual(result["edits"], [{"path": "docs/guide.md", "content": "Source\n" * 500000 if large else "Guide\nEdited\n"},
                                            {"path": "docs/new.md", "content": "New\n"}])
         self.assertEqual(len(loops), 1, "one session served the target")
         self.assertEqual(self.exchange.gateway.list(), [], "the session's key is gone once its runner ended it")

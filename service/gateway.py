@@ -1,6 +1,7 @@
 """The only GitHub writer: fenced by ownership generation, one critical section per task."""
 
 from contextlib import contextmanager
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -36,6 +37,7 @@ WRITES = (
     ("PATCH", rf"issues/(?P<issue>{NUMBER})/artifacts/{NUMBER}"),
     ("POST", r"git/refs"),
     ("POST", r"git/trees"),
+    ("POST", r"git/blobs"),
     ("POST", r"git/commits"),
     ("PATCH", r"git/refs/heads/[A-Za-z0-9._/-]{1,100}"),
     ("POST", r"pulls"),
@@ -65,9 +67,21 @@ class Disallowed(RuntimeError):
 class Rejected(RuntimeError):
     """GitHub rejected a write; it did not take effect."""
 
+    def __init__(self, message, status=None):
+        """Keep the HTTP status separate from operator-facing diagnostic text."""
+        super().__init__(message)
+        self.status = status
+
 
 class TreeUnavailable(Rejected):
     """Commit creation was rejected because its tree is not yet visible to GitHub."""
+
+
+def text_blob(body):
+    """Only a UTF-8 text blob may be created for controller publication."""
+    return (isinstance(body, dict) and set(body) == {"content", "encoding"}
+            and body["encoding"] == "utf-8" and isinstance(body["content"], str)
+            and "\x00" not in body["content"])
 
 
 def allowed(key, method, path, body):
@@ -87,6 +101,8 @@ def allowed(key, method, path, body):
         if match:
             if "issue" in match.groupdict() and int(match["issue"]) != key[1]:
                 return False
+            if relative == "git/blobs":
+                return text_blob(body)
             if relative == "git/refs":
                 return (isinstance(body, dict) and set(body) == {"ref", "sha"}
                         and body["ref"] == "refs/heads/" + task_branch(*key)
@@ -123,6 +139,8 @@ def allowed_target(key, binding, method, path, body):
     if relative.startswith("git/"):
         if repository != binding.fork:
             return False
+        if method == "POST" and relative == "git/blobs":
+            return text_blob(body)
         if method == "POST" and relative in ("git/trees", "git/commits"):
             return isinstance(body, dict)
         if method == "POST" and relative == "git/refs":
@@ -240,7 +258,7 @@ def settle(path, response, now, body=None):
                 and isinstance(body, dict) and isinstance(body.get("tree"), str) and OID.fullmatch(body["tree"])):
             if missing_tree(response):
                 error_type = TreeUnavailable
-        return "failed", None, error_type(f"GitHub rejected the write (HTTP {status}): {detail}")
+        return "failed", None, error_type(f"GitHub rejected the write (HTTP {status}): {detail}", status=status)
     return "unknown", None, None
 
 
@@ -545,11 +563,24 @@ class GatewayGitHub(GitHub):
         """Read directly; route every other request, GraphQL mutations included, to the gateway."""
         if method == "GET" or path == "graphql" and isinstance(data, dict) and QUERY.match(data.get("query") or ""):
             return self.reader.request(method, path, data)
+        return self.write(path, method, data)
+
+    def create_tree(self, base_tree, entries, uploaded_blobs=()):
+        """Retry definite 422s only for trees referencing blobs uploaded by this publication."""
+        body = {"base_tree": base_tree, "tree": deepcopy(entries)}
+        uploaded = {sha for sha in uploaded_blobs if isinstance(sha, str) and OID.fullmatch(sha)}
+        recent = any(isinstance(entry, dict) and entry.get("type") == "blob"
+                     and isinstance(entry.get("sha"), str) and entry["sha"] in uploaded for entry in body["tree"])
+        return self.write(self.root + "/git/trees", "POST", body, retry_tree=recent)
+
+    def write(self, path, method, data, retry_tree=False):
+        """Pace and fence each attempt; only definite, eligible rejections get a short retry."""
         for attempt in range(len(TREE_RETRY_DELAYS) + 1):
             try:
                 return self.gateway.mutate(self.key, self.generation, method, path, data)
-            except TreeUnavailable:
-                if attempt == len(TREE_RETRY_DELAYS):
+            except Rejected as error:
+                retry = isinstance(error, TreeUnavailable) or retry_tree and error.status == 422
+                if not retry or attempt == len(TREE_RETRY_DELAYS):
                     raise
                 # Each definite rejection is settled; the next occurrence rechecks ownership.
                 self.gateway.write_sleep(TREE_RETRY_DELAYS[attempt])

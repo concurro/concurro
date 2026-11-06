@@ -47,19 +47,16 @@ class LineBudgetRemovalTests(unittest.TestCase):
         stats = changes(before, after)
         self.assertEqual(sum(v['added'] + v['removed'] for v in stats), 6000)
 
-    def test_path_file_and_byte_limits_still_apply(self):
-        """Dropping the line quota does not broaden authorization or response capacity."""
+    def test_path_and_file_count_limits_still_apply(self):
+        """Dropping size quotas does not broaden path or file-count authorization."""
         for path in ('outside.md', '.github/workflows/ci.yml', 'docs/../escape.md'):
             with self.subTest(path=path), self.assertRaises(OutsideScope):
                 candidates.validate({}, {path: 'x'}, self.plan, CONFIG, EXECUTION)
         with self.assertRaisesRegex(Blocked, '4 files'):
             candidates.validate({}, {f'docs/{i}.md': 'x' for i in range(4)}, self.plan, CONFIG, EXECUTION)
         with self.assertRaisesRegex(Blocked, 'invalid text replacement'):
-            validate_edits({'summary': 'big', 'edits': [{'path': 'docs/a.md', 'content': 'x' * 128001}]},
+            validate_edits({'summary': 'binary', 'edits': [{'path': 'docs/a.md', 'content': 'x\x00'}]},
                            self.plan, {}, CONFIG, EXECUTION)
-        with self.assertRaisesRegex(Blocked, 'implementation too large'):
-            validate_edits({'summary': 'big', 'edits': [{'path': f'docs/{i}.md', 'content': 'x' * 90000}
-                                                        for i in range(3)]}, self.plan, {}, CONFIG, EXECUTION)
         with self.assertRaisesRegex(Blocked, 'changes nothing'):
             candidates.validate({'docs/a.md': 'x'}, {'docs/a.md': 'x'}, self.plan, CONFIG, EXECUTION)
 

@@ -50,6 +50,25 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
         self.assertTrue(records[0].path.startswith(f"repos/{FORK}/"))
         self.assertEqual(self.registry.mutations((FORK, KEY[1]), "done"), [])
 
+    def test_large_text_blobs_use_only_the_fork_publication_token(self):
+        """The new object write retains destination, body-shape and ownership fences."""
+        body = {"content": "source\n" * 50000, "encoding": "utf-8"}
+        self.assertEqual(self.code.repo("git/blobs", "POST", body), {"sha": SHA})
+        self.assertEqual(self.sent, [(FORK, "POST", f"repos/{FORK}/git/blobs", body)])
+        for repository in (UPSTREAM, "foreign/repo"):
+            with self.subTest(repository=repository), self.assertRaises(Disallowed):
+                self.gateway.mutate(KEY, self.generation, "POST", f"repos/{repository}/git/blobs", body)
+        for bad in ({"content": "x"}, {**body, "encoding": "base64"}, {**body, "content": None},
+                    {**body, "content": "x\x00"}, {**body, "path": "main"}):
+            with self.subTest(body_fields=list(bad)), self.assertRaises(Disallowed):
+                self.code.repo("git/blobs", "POST", bad)
+        self.assertEqual(len(self.sent), 1)
+        self.gateway.release(KEY, self.generation, None)
+        self.gateway.acquire(KEY, "new-owner")
+        with self.assertRaises(OwnershipLost):
+            self.code.repo("git/blobs", "POST", body)
+        self.assertEqual(len(self.sent), 1)
+
     def test_wrong_destination_branch_and_merge_are_refused(self):
         """Access to both tokens never grants upstream branches, a foreign issue, or merge authority."""
         branch = task_branch(*KEY)

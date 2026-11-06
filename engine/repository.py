@@ -16,7 +16,6 @@ import time
 ROOT = Path("/repository")
 MIRROR = Path("/mirror")
 SOCKET = Path("/run/concurro-tools/repository.sock")
-MAX_FILE = 2_000_000
 MAX_OUTPUT = 32000
 TOOL_NAMES = ("list_files", "read_file", "search", "git")
 # Read-only subcommands; arguments are free, since the tool container holds nothing to protect.
@@ -105,7 +104,7 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
     if candidate is not None:
         files = candidate.get("files") if isinstance(candidate, dict) else None
         if (set(candidate) != {"files"} or not isinstance(files, dict) or not 1 <= len(files) <= MAX_OVERLAY_FILES
-                or not all(path_safe(path) and (text is None or isinstance(text, str) and len(text.encode()) <= MAX_FILE)
+                or not all(path_safe(path) and (text is None or isinstance(text, str) and "\x00" not in text)
                            for path, text in files.items())):
             raise ValueError("invalid snapshot candidate")
     environment = git_environment(root)
@@ -221,14 +220,14 @@ class Repository:
         self.paths.sort()
 
     def read(self, name):
-        """Read UTF-8 text only, rejecting large, binary and special files."""
+        """Read regular UTF-8 text; size bounds apply to tool output, not source files."""
         path = source_path(self.root, name)
-        if not path.is_file() or path.stat().st_size > MAX_FILE:
-            raise ValueError("file is missing, non-regular or exceeds text limit")
+        if not path.is_file():
+            raise ValueError("file is missing or non-regular")
         with path.open("rb") as handle:
-            data = handle.read(MAX_FILE + 1)
-        if len(data) > MAX_FILE or b"\x00" in data:
-            raise ValueError("file is binary or exceeds text limit")
+            data = handle.read()
+        if b"\x00" in data:
+            raise ValueError("file is binary")
         return data.decode("utf-8")
 
     def call(self, name, arguments):
@@ -276,20 +275,27 @@ class Repository:
 
     def read_file(self, path, offset=0, limit=100):
         """Return a numbered page of text with explicit line clipping and continuation."""
-        integer(offset, 0, MAX_FILE)
+        integer(offset, 0, sys.maxsize)
         integer(limit, 1, 100)
-        lines = source_lines(self.read(path))
-        result, used = [], 0
-        for index in range(offset, min(offset + limit, len(lines))):
-            line = lines[index]
-            clipped = line[:1000]
-            size = len(json.dumps(clipped).encode()) + 100
-            if used + size > MAX_OUTPUT - 2000:
-                break
-            result.append({"line": index + 1, "text": clipped, "clipped": len(line) > len(clipped)})
-            used += size
-        end = offset + len(result)
-        return {"path": path, "lines": result, "next_offset": end if end < len(lines) else None}
+        source = source_path(self.root, path)
+        if not source.is_file():
+            raise ValueError("file is missing or non-regular")
+        result, used, more = [], 0, False
+        with source.open(encoding="utf-8", newline="\n") as handle:
+            for index, line in enumerate(handle):
+                if "\x00" in line:
+                    raise ValueError("file is binary")
+                if index < offset:
+                    continue
+                line = line.removesuffix("\n").removesuffix("\r")
+                clipped = line[:1000]
+                size = len(json.dumps(clipped).encode()) + 100
+                if len(result) == limit or used + size > MAX_OUTPUT - 2000:
+                    more = True
+                    break
+                result.append({"line": index + 1, "text": clipped, "clipped": len(line) > len(clipped)})
+                used += size
+        return {"path": path, "lines": result, "next_offset": offset + len(result) if more else None}
 
     def search(self, query, prefix="", limit=50):
         """Search literal text with bounded scanning and no regex or subprocess execution."""

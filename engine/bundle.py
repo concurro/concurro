@@ -1,5 +1,6 @@
 """Load an operator-owned, bounded instruction bundle without candidate resources."""
 
+import classification
 import hashlib
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ SKILLS = dict(zip(STAGES, ("concurro-assess-scope", "concurro-design", "concurro
                           "concurro-implement", "concurro-review-pr")))
 MANIFEST = "bundle/manifest.json"
 CHARTER = ".concurro/charter.json"
-ENGINE_RESOURCES = {"bundle/instructions.md", "bundle/roles.json"} | {
+ENGINE_RESOURCES = {"bundle/instructions.md", "bundle/roles.json", "bundle/schemas/classification.json"} | {
     f"bundle/schemas/{stage}.json" for stage in STAGES} | {
     f"bundle/skills/{name}/SKILL.md" for name in SKILLS.values()}
 INSTRUCTION_ROLES = {"intake": None, "plan": "planner", "plan_qc": "design-reviewer",
@@ -92,7 +93,11 @@ class Bundle:
 
     def schema(self, stage):
         """Return the external response contract for one role."""
-        return json.loads(self.resources[self.roles[stage]["schema"]])
+        schema = json.loads(self.resources[self.roles[stage]["schema"]])
+        if stage in classification.STAGES:
+            schema["properties"]["classification"] = json.loads(self.resources["bundle/schemas/classification.json"])["schema"]
+            schema["required"].append("classification")
+        return schema
 
     def instructions(self, stage):
         """Load shared governance once and only the selected stage's skill."""

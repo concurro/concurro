@@ -68,6 +68,10 @@ class GitHub:
         """Address a repository endpoint."""
         return self.api(self.root + "/" + path, method, data)
 
+    def create_tree(self, base_tree, entries, uploaded_blobs=()):
+        """Create a tree; service clients may retry visibility lag for this publication's new blobs."""
+        return self.repo("git/trees", "POST", {"base_tree": base_tree, "tree": entries})
+
     def dispatch(self, session):
         """Start a runner session on the target: a `repository_dispatch` that carries only its ID."""
         self.repo("dispatches", "POST", {"event_type": DISPATCH_EVENT, "client_payload": {"session": session}})

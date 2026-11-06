@@ -59,7 +59,8 @@ class AutonomousTests(unittest.TestCase):
         self.assertEqual(len(self.agents.calls), 7)
         self.assertTrue(all(not c["body"].startswith("/concurro ") for c in self.gh.comments))
         qc = next(context for _, stage, context in self.agents.calls if stage == "plan_qc")
-        self.assertEqual(qc["files"]["docs/guide.md"], "Original guide\n")
+        self.assertEqual(qc["files"]["docs/guide.md"]["size"], len("Original guide\n"))
+        self.assertNotIn("Original guide\n", str(qc))
 
     def test_unlabelled_or_untrusted_enrollment_never_calls_model(self):
         """A public issue or triager-applied label cannot authorize autonomous spending."""

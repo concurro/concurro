@@ -304,7 +304,7 @@ class ReviewContextTests(unittest.TestCase):
         [huge] = changes({"big.rs": before}, {"big.rs": after.replace("line", "LINE")})
         self.assertTrue(huge["truncated"])
         self.assertLess(len(huge["diff"].encode()), MAX_DIFF + 200)
-        self.assertTrue(huge["diff"].endswith("read the rest in the repository]\n"))
+        self.assertTrue(huge["diff"].endswith("[diff truncated; inspect the pinned repository]\n"))
 
     def test_hunks_count_lines_as_git_and_the_reader_do(self):
         """Form feeds and Unicode separators stay inside their LF-delimited line."""

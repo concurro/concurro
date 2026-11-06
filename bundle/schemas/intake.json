@@ -28,7 +28,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "Unanswered human intent or decisions, not code research tasks. Must be empty with proceed."
     },
     "concerns": {
       "type": "array",
@@ -53,7 +54,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Actual incompatibilities between the requested outcome and the charter; identify the rule and why the request violates it. Hypothetical implementation hazards belong in concerns. Must be empty with proceed."
         }
       },
       "required": [

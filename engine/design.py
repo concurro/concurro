@@ -1,5 +1,6 @@
 """Evidence contracts for independent design review and stable objection updates."""
 
+import classification
 import re
 import json
 from functools import lru_cache
@@ -131,6 +132,7 @@ def citation_line(lines, number, quote):
 
 def validate_evidence(report, requirements, own_objections=(), files=None):
     """Reject incomplete coverage, invented citations and contradictory approval dispositions."""
+    report = classification.core(report)
     validate_bounds(report)
     expected = {r['id'] for r in criteria(requirements)}
     assessments, sources, updates = (report.get(k) for k in ('assessments', 'sources', 'objection_updates'))

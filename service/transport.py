@@ -16,8 +16,10 @@ ARCHIVE_TIMEOUT = 120
 MB = 1_000_000
 JSON_LIMIT = 4 * MB
 ARCHIVE_LIMIT = 100 * MB
-# Endpoint-specific bounds; see the service skeleton's transport section for their basis.
-LIMITS = ((re.compile(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?"), 16 * MB),
+# Endpoint-specific bounds; blobs cover GitHub's 100 MB endpoint plus base64/JSON overhead.
+# https://docs.github.com/en/rest/git/blobs#get-a-blob
+LIMITS = ((re.compile(r"git/blobs/[0-9a-f]{40}"), 144 * MB),
+          (re.compile(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?"), 16 * MB),
           (re.compile(r"git/trees/[^/?#]+\?recursive=1"), 16 * MB))
 # Headers kept for settlement and redirects; nothing else leaves the transport.
 KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location")

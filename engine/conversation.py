@@ -12,6 +12,7 @@ from identities import Identities
 import markup
 from markup import block, code, details as collapsed, link, table, text
 import actions
+import classification
 import reviews
 
 MARKER = "<!-- concurro:event:v1:"
@@ -341,6 +342,9 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     else:
         event.update(source=list(source), kind=kind, details=details, format=FORMAT,
                      index=index_entry(state, kind, source, details))
+        assessment = source_value(state, source).get("classification", {}).get("source", {}).get("report")
+        if assessment:
+            event["index"]["assessment"] = assessment
         rendered, limit = archive(event, state), ARCHIVE_LIMIT
         event["content_digest"] = digest(rendered)
     if len(rendered.encode()) > limit:
@@ -424,7 +428,10 @@ def publish(state, github, config):
                 if event.get("request") is not None:
                     actions.posted(state, event["request"], published["id"], body)
                 continue
-            receipt = {"content_digest": event["content_digest"], "source_digest": digest(source_value(state, event["source"]))}
+            source = source_value(state, event["source"])
+            receipt = {"content_digest": event["content_digest"], "source_digest": digest(source)}
+            if isinstance(source, dict) and "classification" in source:
+                receipt["core_digest"] = digest(classification.core(source))
             if event.get("format", 1) >= 3:
                 receipt["artifact"] = published["number"]
                 index = state.setdefault("reports", [])
@@ -443,6 +450,13 @@ def publish(state, github, config):
     return True
 
 
+def receipt_matches(report, receipts):
+    """Recognize published core text after advisory edits, retaining legacy full-digest matching."""
+    full, core = digest(report), digest(classification.core(report))
+    return any(full == receipt.get("source_digest") or core == receipt.get("core_digest")
+               for receipt in receipts)
+
+
 def compact(state):
     """Retain operative evidence and compact only published narrative text.
 
@@ -456,16 +470,16 @@ def compact(state):
         return
     reviews.compact(state)
     state.pop("review_event", None)
-    archived = {r.get("source_digest") for r in journal["receipts"].values() if "artifact" in r}
-    published = {r.get("source_digest") for r in journal["receipts"].values()}
+    published = list(journal["receipts"].values())
+    archived = [receipt for receipt in published if "artifact" in receipt]
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
     reports += [v["report"] for v in state.get("design_votes", {}).values()]
-    notes = {id(r): ARCHIVED if digest(r) in archived else None for r in reports}
-    reports = [r for r in reports if digest(r) in published]
+    notes = {id(r): ARCHIVED if receipt_matches(r, archived) else None for r in reports}
+    reports = [r for r in reports if receipt_matches(r, published)]
     for key in ("local_status", "local_evidence"):
-        if (s := state.get(key, {})).get("review") and digest(s) in published:
+        if (s := state.get(key, {})).get("review") and receipt_matches(s, published):
             reports.append(s["review"])
-            notes[id(s["review"])] = ARCHIVED if digest(s) in archived else None
+            notes[id(s["review"])] = ARCHIVED if receipt_matches(s, archived) else None
     for report in reports:
         for key in ("rationale", "summary"):
             text = report.get(key, "")

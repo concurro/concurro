@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from controller import Controller, MARKER, validate_config
 from credentials import Credential
-from github import NotFound
+from github import GitHub, NotFound
 from readiness import review_reasons
 from policy import Blocked, digest, path_allowed, path_safe, validate_edits, validate_review
 
@@ -95,6 +95,8 @@ RULES = [{"type": "required_status_checks", "ruleset_id": 1, "parameters": {
 class FakeGitHub:
     """Model GitHub's durable state, Git objects and compare-and-swap merge guard."""
 
+    create_tree = GitHub.create_tree
+
     def __init__(self, config):
         """Seed one opted-in issue and a writer's start command."""
         self.config = config
@@ -107,6 +109,7 @@ class FakeGitHub:
         self.publication_source = self
         self.linked_branches = set()
         self.artifacts = {}
+        self.blobs = {}
         self.artifact_counter = 0
         self.fail_after_link = False
         self.pr = None
@@ -297,6 +300,11 @@ class FakeGitHub:
             return {"encoding": "base64", "content": base64.b64encode(self.trees[sha][name].encode()).decode()}
         if path.startswith("git/commits/"):
             return deepcopy(self.commits[path.rsplit("/", 1)[1]])
+        if path == "git/blobs":
+            assert data["encoding"] == "utf-8"
+            sha = digest(data["content"])[:40]
+            self.blobs[sha] = data["content"]
+            return {"sha": sha}
         if path == "git/trees":
             self.counter += 1
             sha = f"{self.counter:040x}"
@@ -305,7 +313,7 @@ class FakeGitHub:
                 if "sha" in entry and entry["sha"] is None:
                     self.trees[sha].pop(entry["path"], None)
                 else:
-                    self.trees[sha][entry["path"]] = entry["content"]
+                    self.trees[sha][entry["path"]] = (entry["content"] if "content" in entry else self.blobs[entry["sha"]])
             return {"sha": sha}
         if path == "git/commits":
             assert data["tree"] in self.trees, "commit references a nonexistent tree"

@@ -20,3 +20,5 @@ Findings:
 The candidate may change files beyond the plan's primary files inside its approved scope; review every changed file, and use verdict reopen when the change has drifted from the approved design even inside the scope.
 
 In the pipeline, use the supplied external [response contract](../../schemas/review.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.
+
+Return the required `classification` using the shared rubric. Assess the entire base-to-head change, including accumulated repairs. High change risk alone does not prevent proceeding or approval; report real defects or unresolved human decisions through the existing verdict fields.

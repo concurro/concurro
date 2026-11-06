@@ -11,7 +11,7 @@ from support import setUpModule, tearDownModule  # unittest module fixtures
 import design
 from controller import Controller
 from policy import Blocked, approval_valid, validate_qc
-from repository import MAX_FILE, Repository, source_lines
+from repository import Repository, source_lines
 from test_autonomy import decision
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub, design_report
 
@@ -113,7 +113,7 @@ class ReviewerRepairTests(unittest.TestCase):
                 return controller
         self.fail('stage not reached')
 
-    def test_large_source_uses_same_inspection_lines_and_keeps_edit_limit(self):
+    def test_large_source_uses_same_inspection_lines_without_a_size_gate(self):
         """A source above 128 KB is valid citation evidence, including a fragment after indentation."""
         path = 'stackslib/source.rs'
         source = 'padding\n' * 20000 + '    let merge_enabled = false;\r\n'
@@ -136,10 +136,10 @@ class ReviewerRepairTests(unittest.TestCase):
             controller = self.tick()
         self.assertEqual(len(controller.state['design_votes']), 1)
         self.assertNotIn('review_repair', controller.state)
-        with self.assertRaises(Blocked): controller.files(self.gh.base, [path])
-        self.gh.trees[self.gh.base][path] = 'x' * (MAX_FILE + 1)
+        self.assertEqual(controller.files(self.gh.base, [path])[path], source)
+        self.gh.trees[self.gh.base][path] = 'x' * 2_000_001
         controller.trees.clear()
-        with self.assertRaises(Blocked): controller.files(self.gh.base, [path], inspection=True)
+        self.assertEqual(len(controller.files(self.gh.base, [path], inspection=True)[path]), 2_000_001)
 
     def test_cooperative_repair_retains_session_and_spent_calls_without_peer_input(self):
         """An inaccurate citation is corrected by its owner before any vote is accepted."""

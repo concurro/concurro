@@ -17,7 +17,7 @@ import sys
 import processes
 
 from policy import KILLED, UNCERTAIN_EXIT
-from repository import MAX_FILE, snapshot
+from repository import snapshot
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 MAX_RESPONSE = 300_000
@@ -116,8 +116,6 @@ def extract(work, pristine, root):
         if mode != tree.get(path, "100644"):
             raise TurnError("mode changes are not supported: " + path)
         data = file.read_bytes()
-        if len(data) > MAX_FILE:
-            raise TurnError("the workspace changes a file larger than the engine accepts: " + path)
         if "?" not in code and unchanged(path, data):
             raise TurnError("mode-only changes are not supported: " + path)
         if b"\0" in data:

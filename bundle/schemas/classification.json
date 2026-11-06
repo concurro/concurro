@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "complexity",
+      "change_risk",
+      "confidence",
+      "rationale",
+      "unknowns"
+    ],
+    "properties": {
+      "complexity": {
+        "type": "string",
+        "enum": [
+          "unknown",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "change_risk": {
+        "type": "string",
+        "enum": [
+          "unknown",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "confidence": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "rationale": {
+        "type": "string",
+        "maxLength": 600
+      },
+      "unknowns": {
+        "type": "array",
+        "maxItems": 5,
+        "items": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}

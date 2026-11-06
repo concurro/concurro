@@ -254,6 +254,26 @@ class IntakeRepairTests(unittest.TestCase):
         self.tick()
         self.assertEqual(len(self.advisory_comments()), 1)
 
+    def test_hypothetical_compatibility_hazard_is_advisory_but_actual_conflict_blocks(self):
+        """The same domain can carry a planning guardrail or an incompatible requested outcome."""
+        hazard = 'Changing padding normalization could alter consensus encoding; preserve the existing encoding.'
+        self.agents.qc_reports = [self.report(concerns=[hazard])]
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'plan')
+        self.assertEqual(controller.context()['intake_concerns'], [hazard])
+        self.assertNotIn('intake_draft', controller.state)
+
+        self.setUp()
+        scope = {'goal_ids': ['G-USABILITY'], 'fit': 'Requested encoding change.',
+                 'conflicts': ['The requested consensus encoding change violates the charter non-goal.']}
+        self.agents.qc_reports = [self.report(scope=scope), self.report(decision='reject', scope=scope)]
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'intake')
+        self.assertNotIn('plan', controller.state)
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'rejected')
+        self.assertFalse(self.advisory_comments())
+
     def test_questions_conflicts_and_high_risk_never_announce_proceed(self):
         """Advisory concerns cannot bypass any existing human or charter boundary."""
         for fields, expected in (({'questions': ['What behavior?']}, 'intake'),

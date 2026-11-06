@@ -1,11 +1,12 @@
 """Pure validation rules shared by the controller and offline tests."""
 
+import classification
 import hashlib
 import model_config
 import json
 import re
 from pathlib import PurePosixPath
-from checks import (MAX_PLAN_FILES, generated, glob_matches as instruction_matches,
+from checks import (MAX_PLAN_FILES, glob_matches as instruction_matches,
                     in_scope, scope_errors, scope_of)
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
@@ -80,6 +81,7 @@ def presentation(report, fields, optional):
 
 def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=0):
     """Reject incomplete or contradictory decisions before they can authorize work."""
+    report = classification.core(report)
     fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
     if stage == 'plan_qc':
         fields |= {'sources', 'assessments', 'objection_updates'}
@@ -282,18 +284,14 @@ def validate_edits(result, plan, originals, config, execution):
         path, content = edit["path"], edit["content"]
         if not path_allowed(path, config, execution) or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
-        # A generated file (a lockfile) has no per-file limit; the response's aggregate bound still applies.
         if content is None:
             if originals.get(path) is None:
                 raise Blocked("a deletion must name an existing regular text file")
-        elif (not isinstance(content, str) or "\x00" in content
-              or len(content.encode()) > 128000 and not generated(path, config["paths"])):
+        elif not isinstance(content, str) or "\x00" in content:
             raise Blocked("invalid text replacement")
         if originals.get(path) == content:
             raise Blocked("unchanged replacement")
         seen.add(path)
-    if len(json.dumps(result).encode()) > 256000:
-        raise Blocked("implementation too large")
     return edits
 
 
@@ -376,6 +374,7 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
 
     Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
     """
+    review = classification.core(review)
     if (not isinstance(review, dict)
             or set(review) != presentation(review, PR_REVIEW_FIELDS, {"headline"}) | manifest_fields(review, manifests)):
         raise Blocked("invalid review fields")

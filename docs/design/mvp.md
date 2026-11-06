@@ -196,6 +196,15 @@ without rewriting the plan or its approval digest. Transport and review-context 
 still apply. The schema/instruction update changes the bundle; existing bundle-reconciliation
 rules remain, so deploy after active pilots finish or reconcile them explicitly.
 
+Source file size is not a scope or edit policy. Design-review contexts carry planned-file
+paths, Git blob identities and sizes, not full contents. PR contexts retain every changed
+file's identity and statistics; diff previews shrink to fit, with explicit truncation markers.
+Agents inspect relevant ranges in the pinned checkout. Extraction and publication preserve
+complete UTF-8 contents, with large replacements uploaded as Git blobs before creating the
+tree. Path, text, scope, file-count and exact-head checks still apply. Model responses,
+aggregate exchange payloads, tool output and HTTP responses retain their resource bounds;
+these are transport limits, not a requirement to read an entire source file into a prompt.
+
 ## Deliberately deferred
 
 | Capability | When to reconsider |

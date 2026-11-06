@@ -3,6 +3,7 @@
   "resources": [
     "bundle/instructions.md",
     "bundle/roles.json",
+    "bundle/schemas/classification.json",
     "bundle/schemas/develop.json",
     "bundle/schemas/intake.json",
     "bundle/schemas/plan.json",

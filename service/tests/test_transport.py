@@ -191,6 +191,17 @@ class ReadTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "exceeds limit"):
             self.reader.request("GET", self.root + "issues/7")
 
+    def test_large_blob_json_is_not_subject_to_the_generic_json_limit(self):
+        """Base64 source data may exceed 4 MB without enlarging unrelated API responses."""
+        blob = {"encoding": "base64", "content": "eA==" * 1_100_000}
+        path = self.root + "git/blobs/" + "a" * 40
+        self.net.route("GET", path, reply(200, blob))
+        self.assertEqual(self.reader.request("GET", path), blob)
+        other = self.root + "issues/7"
+        self.net.route("GET", other, reply(200, blob))
+        with self.assertRaisesRegex(RuntimeError, "exceeds limit"):
+            self.reader.request("GET", other)
+
     def test_foreign_paths_are_refused_before_a_token_is_used(self):
         """Another repository, or an App endpoint, never sees this transport's token."""
         for path in (f"repos/{OTHER}/issues/7", "installation/repositories", f"repos/{KEY[0]}x/issues/7"):

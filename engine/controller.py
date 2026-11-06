@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import actions
+import classification
 from actions import BUNDLE_REASON
 from model_config import assigned, resolve, parse as parse_models
 import readiness
@@ -27,7 +28,6 @@ import checks
 import design
 import reviews as findings
 from copy import deepcopy
-from repository import MAX_FILE
 from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from checkpoint_health import sync_checkpoint_health
@@ -49,6 +49,9 @@ INTAKE_OUTPUT_REPAIRS = 2
 DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
 MAX_DIFF = 64000
+DIFF_TRUNCATED = "[diff truncated; inspect the pinned repository]\n"
+# Keep tree requests compact; larger contents are published as separate blob objects.
+INLINE_BLOB_LIMIT = 64000
 # The status comment's steps, and the stage each running stage belongs to.
 STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
 STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
@@ -73,6 +76,7 @@ def pr_review_cost(report):
     """Checkpoint bytes a PR review adds: the report, its finding text again in the ledger, and for a
     reopen the report's copy in the PR outbox and the copies of its design issue kept in its history,
     feedback and revision notice."""
+    report = classification.core(report)
     size = len(json.dumps(report).encode())
     cost = size + sum(len(json.dumps(f["detail"]).encode()) for f in report["findings"])
     if report["verdict"] == "reopen":
@@ -175,6 +179,12 @@ def transport_size(context):
     return len(json.dumps({k: v for k, v in context.items() if not k.startswith("controller_")}).encode())
 
 
+def diff_preview(value, limit):
+    """Shorten a diff with exactly one engine-written truncation marker."""
+    content = value.removesuffix(DIFF_TRUNCATED)
+    return content.encode()[:limit].decode(errors="ignore").rstrip("\n") + "\n" + DIFF_TRUNCATED
+
+
 def changes(before, after, execution=None, dependencies=None):
     """Every changed file carries a bounded diff; the exact head remains available through repository tools."""
     result = []
@@ -191,9 +201,10 @@ def changes(before, after, execution=None, dependencies=None):
         if expensive:
             diff = "[diff comparison limit reached; inspect the complete file in the repository]\n"
         elif truncated:
-            diff = diff.encode()[:MAX_DIFF].decode(errors="ignore") + "\n[diff truncated; read the rest in the repository]\n"
+            diff = diff_preview(diff, MAX_DIFF)
         result.append({"path": path, "status": "added" if old is None else "deleted" if new is None else "modified",
                        "base_sha256": sha256(old), "head_sha256": sha256(new),
+                       "base_bytes": len((old or "").encode()), "head_bytes": len((new or "").encode()),
                        "added": len(right) if expensive else sum(line.startswith("+") for line in body),
                        "removed": len(left) if expensive else sum(line.startswith("-") for line in body), "diff": diff, "truncated": truncated})
     return result
@@ -256,10 +267,17 @@ class Controller:
             # The stage holds the result; this save (of whichever state copy it keeps) persists its use.
             operation["status"] = "consumed"
             operation.pop("response", None)
+        if operation and "response" in operation:
+            self.classification_room(self.state, CHECKPOINT_LIMIT - RESULT_MARGIN)
         if (operation and "response" in operation
                 and len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN):
-            # Too large to retain: recovery then treats the completion as lost, within the allowance.
-            del operation["response"]
+            response = operation["response"]
+            if operation.get("stage") in classification.STAGES and isinstance(response, dict):
+                response.pop("classification", None)
+            if len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN:
+                # Too large to retain: recovery treats the completion as lost, within the allowance.
+                del operation["response"]
+        self.classification_room(self.state, CHECKPOINT_LIMIT - 1000)
         self.checkpoints.save(self.state)
 
     def save(self, publish_events=True, outboxes=True):
@@ -269,6 +287,7 @@ class Controller:
         edits for a later tick: a failure's own notice must not replay what just failed.
         """
         state = self.state
+        self.refresh_classification()
         self.record_outcome()
         if publish_events:
             self.transition(state)
@@ -277,6 +296,7 @@ class Controller:
         self.checkpoint()
         self.sync_stage()
         if publish_events and conversation.publish(state, self.gh, self.config):
+            self.refresh_classification()
             self.checkpoint()
         if publish_events and outboxes:
             actions.publish(state, self.gh, self.checkpoint)
@@ -333,6 +353,9 @@ class Controller:
                               for index, (name, status, _) in enumerate(rows))
         lines = [MARKER, "## Concurro", "", progress, "",
                  markup.table(["Step", "Status", "Detail"], [[name, status, detail] for name, status, detail in rows]), ""]
+        classification_row = self.classification_row()
+        if classification_row:
+            lines += [classification_row, ""]
         for path, delta in sorted((state.get("candidate", {}).get("dependencies") or {}).items()):
             lines += ["📦 " + text(dependency_summary(path, delta)), ""]
         action = self.action_line()
@@ -341,6 +364,66 @@ class Controller:
         if not compact and state.get("reports"):
             lines += [markup.details("Rounds", self.rounds_table()), ""]
         return "\n".join(lines + self.checkpoints.links())
+
+    def classification_room(self, state, limit):
+        """Prefer valid core evidence over optional archived metadata at checkpoint boundaries."""
+        classification.make_room(state, limit, lambda value: len(self.checkpoints.audit_body(value).encode()))
+
+    def classify(self, report, provider, stage, limit, reviewer=None):
+        """Allocate advisory metadata only from space left after the core report and its copies."""
+        core = classification.core(report)
+        core_size = classification.size(core)
+        self.classification_room(self.state, CHECKPOINT_LIMIT - 12000 - 4 * core_size)
+        remaining = deepcopy(self.state)
+        remaining.get("operation", {}).pop("response", None)
+        room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 12000 - 4 * core_size
+        allowance = min(limit - core_size - 50, room // 6)
+        if provider == "copilot" and "agents" not in self.config:
+            agent = {"profile": provider, "harness": provider, "provider": None,
+                     "model": (reviewer or {}).get("model") or selected_model(self.config, provider, stage), "effort": None}
+        else:
+            agent = resolve(self.config, provider, stage, reviewer).record()
+        return classification.attach(report, self.state, agent, stage, allowance)
+
+    def refresh_classification(self):
+        """Keep one small complete estimate, preserving its binding across later incomplete rounds."""
+        value = classification.snapshot(self.state, self.config)
+        if value is None:
+            return
+        previous = self.state.get("classification_snapshot")
+        self.state["classification_snapshot"] = value
+        if len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN:
+            if previous is None:
+                self.state.pop("classification_snapshot", None)
+            else:
+                self.state["classification_snapshot"] = previous
+
+    def classification_row(self):
+        """Render labels and archive links, never model-written rationale, on the dashboard."""
+        result = classification.view(self.state, self.config)
+        if not result.estimate.sources:
+            return ""
+        estimate = result.estimate
+        scope = estimate.binding
+        label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope['stage']]
+        revision = ("head " + str(scope.get('head', ''))[:7] if scope['stage'] == 'review' else
+                    "plan " + str(scope.get('plan', ''))[:8] + " · " + str(scope.get('phase', ''))
+                    if scope['stage'] == 'plan_qc' else "current issue")
+        detail = f"{label} {revision} · {result.assessed}/{result.expected} assessed"
+        if result.provisional:
+            detail += " · provisional"
+        if result.previous_binding and result.previous_binding != scope:
+            prior = result.previous_binding
+            detail += " · retains earlier " + str(prior['stage']) + " " + str(prior.get('head') or prior.get('plan') or '')[:8]
+            if prior.get('phase'):
+                detail += " " + prior['phase']
+        if result.disagreement:
+            detail += " · reviewers disagree"
+        sources = classification.resolve_sources(estimate.sources, self.state)
+        links = [link("Report " + str(s['artifact']), self.artifact_url(s['artifact'])) for s in sources if s.get('artifact')]
+        return markup.table(["Estimate", "Assessment", "Evidence"], [[
+            f"Complexity: {estimate.complexity} · Change risk: {estimate.change_risk}",
+            text(f"Confidence: {estimate.confidence} · {detail}"), " · ".join(dict.fromkeys(links))]])
 
     def artifact_url(self, number):
         """An artifact of this issue on GitHub."""
@@ -495,8 +578,14 @@ class Controller:
         return self.trees[sha]
 
 
+    def file_manifest(self, sha, paths):
+        """Identify every planned file at a pinned commit; agents read its contents from Git."""
+        tree = self.tree(sha)
+        return {path: ({key: tree[path][key] for key in ('sha', 'size', 'mode', 'type') if key in tree[path]}
+                       if path in tree else None) for path in paths}
+
     def files(self, sha, paths, inspection=False):
-        """Read bounded text blobs; executable source is evidence-only, never editable."""
+        """Read regular UTF-8 blobs without imposing a source-file size policy."""
         tree = self.tree(sha)
         result = {}
         for path in paths:
@@ -509,15 +598,14 @@ class Controller:
                 result[path] = None
                 continue
             modes = ('100644', '100755') if inspection else ('100644',)
-            limit = MAX_FILE if inspection or checks.generated(path, self.config["paths"]) else 128000
-            if entry["mode"] not in modes or entry["type"] != "blob" or entry.get("size", 0) > limit:
-                raise Blocked("source must be a bounded regular text file")
+            if entry["mode"] not in modes or entry["type"] != "blob":
+                raise Blocked("source must be a regular text file")
             blob = self.source(sha).repo("git/blobs/" + entry["sha"])
             if blob["encoding"] != "base64":
                 raise Blocked("unsupported blob encoding")
             data = base64.b64decode(blob['content'])
-            if len(data) > limit or b'\x00' in data:
-                raise Blocked('source exceeds text bounds')
+            if b'\x00' in data:
+                raise Blocked('source is binary')
             result[path] = data.decode('utf-8')
         return result
 
@@ -575,11 +663,16 @@ class Controller:
         """
         self.require_current_bundle()
         caller = context
+        if stage in classification.STAGES and "prior_outcomes_untrusted" in context:
+            context = {**context, "prior_outcomes_untrusted": classification.without_hints(context["prior_outcomes_untrusted"])}
         context = {**context, "repository_commit": self.state.get("head", self.state["base"]),
                    "repository": self.repository_refs("controller_candidate" in context)}
         if "agents" in self.config:
             context["agent"] = resolve(self.config, provider, stage).record()
         size = transport_size(context)
+        if size > self.config["max_context_bytes"]:
+            context = classification.context_core(context)
+            size = transport_size(context)
         if size > self.config["max_context_bytes"]:
             raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
                           "narrow the change")
@@ -628,7 +721,7 @@ class Controller:
 
     def operation(self, provider, stage, context):
         """Bind a model call to its intended work, so incidental request changes keep its allowance."""
-        work = {k: v for k, v in context.items() if k not in VOLATILE_REQUEST}
+        work = {k: v for k, v in classification.context_core(context).items() if k not in VOLATILE_REQUEST}
         identifier = digest([self.state["issue"], provider, stage, digest(work)])
         current = self.state.get("operation")
         if not current or current["id"] != identifier or current["status"] == "consumed":
@@ -663,7 +756,11 @@ class Controller:
     def complete(self, operation, response):
         """Checkpoint the result itself, when it fits, until the stage durably consumes it."""
         operation["status"] = "completed"
-        operation["response"] = deepcopy(response)
+        retained = deepcopy(response)
+        if operation.get("stage") in classification.STAGES and isinstance(retained, dict):
+            value = classification.normalize(retained.pop("classification", None))
+            retained["classification"] = value
+        operation["response"] = retained
         self.checkpoint()
         self.consuming = (operation["id"], operation["attempt"])
 
@@ -794,10 +891,16 @@ class Controller:
             "files": state.get("plan", {}).get("files", []), "head": state.get("head"),
             "plan": state.get("plan_id"), "bundle": state.get("bundle_id"),
             "calls": state["calls"], "candidate_digest": digest(state.get("candidate")),
-            "reviews_digest": digest(state.get("reviews", {})),
+            "reviews_digest": digest({p: classification.core(r) for p, r in state.get("reviews", {}).items()}),
             "completion": state.get("completion")}
+        if state.get("classification_snapshot"):
+            snapshot = state["classification_snapshot"]
+            outcome["classification_snapshot"] = {**deepcopy(snapshot), "fresh":
+                snapshot["binding"] == classification.binding(state, classification.stage_of(state))}
         history = state.setdefault("outcomes", [])
-        if not history or history[-1] != outcome:
+        if history and classification.without_hints(history[-1]) == classification.without_hints(outcome):
+            history[-1] = outcome
+        elif not history or history[-1] != outcome:
             history.append(outcome)
             del history[:-6]
 
@@ -857,6 +960,7 @@ class Controller:
         remaining.pop('review_repair', None)
         # A retained result is temporary and dropped when its stage saves.
         remaining.get('operation', {}).pop('response', None)
+        self.classification_room(remaining, 0)
         room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 10000
         return {'max_json_bytes': max(1000, min(room // 3, design.report_limit(
                     len(context['review_criteria']), len(context.get('own_objections', []))))),
@@ -870,6 +974,7 @@ class Controller:
         """
         remaining = deepcopy(self.state)
         remaining.get('operation', {}).pop('response', None)
+        self.classification_room(remaining, 0)
         return CHECKPOINT_LIMIT - PR_REVIEW_RESERVE - len(self.checkpoints.audit_body(remaining).encode())
 
     def pr_review_output_budget(self):
@@ -895,6 +1000,7 @@ class Controller:
 
     def validate_design_report(self, report, context):
         """Validate reviewer output before recording any vote or resolving an objection."""
+        report = classification.core(report)
         if len(json.dumps(report).encode()) > context['review_output_budget']['max_json_bytes']:
             raise design.ReviewError('review_size')
         try:
@@ -961,14 +1067,14 @@ class Controller:
                 context["own_objections"] = [v for v in state.get("objections", []) if v["reviewer"] == member["id"]]
             else:
                 context["plan"] = {k: v for k, v in context["plan"].items() if k != "responses"}
-            context.update(files=self.files(state["base"], state["plan"]["files"]),
+            context.update(files=self.file_manifest(state["base"], state["plan"]["files"]),
                            design_binding=approval_binding(state, self.config), reviewer_identity=member,
                            accumulated_changed_files=state.get("changed_files", []),
                            published_parent=state.get("design_parent"))
         else:
             context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if member and state.get("head"):
-            context["published_files"] = self.files(state["head"], state["plan"]["files"])
+            context["published_files"] = self.file_manifest(state["head"], state["plan"]["files"])
         provider = member["provider"] if member else assigned(self.config, "triage")
         if member:
             context['review_output_budget'] = self.review_output_budget(context)
@@ -1004,6 +1110,11 @@ class Controller:
                 self.repair_intake(report, "invalid intake field types; return the structured intake schema", provider)
                 return
             state.pop("intake_draft", None)
+        limit = context['review_output_budget']['max_json_bytes'] if member else 6000
+        report = self.classify(report, provider, stage, limit, member)
+        response = state.get("operation", {}).get("response")
+        if isinstance(response, dict):
+            response.pop("classification", None)
         state.setdefault("qc", {})[stage] = report
         state.setdefault("qc_history", []).append({"stage": stage, "decision": report["decision"],
             "risk": report["risk"], "rationale": report["rationale"][:500], "report_digest": digest(report),
@@ -1037,17 +1148,20 @@ class Controller:
                 "first_pass": (phase == "cooperative" and session.get("turn") == 1
                                and session.get("restarts") == 0 and not context.get("own_objections")),
                 "objection_ids": [v['id'] for v in context.get('own_objections', [])]}
+            self.classification_room(state, CHECKPOINT_LIMIT - 6000)
             if len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 6000:
                 self.repair_review(report, design.ReviewError('review_checkpoint'), member)
                 return
         previous = self.state
         self.state = state
         try:
+            self.refresh_classification()
             self.finish_quality_control(stage, report)
             if stage == "intake" and state["stage"] == "plan" and report["concerns"]:
                 conversation.queue_intake_concerns(state, report["concerns"])
             self.record_outcome()
             self.transition(state)
+            self.classification_room(state, CHECKPOINT_LIMIT - 1000)
             if member and len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 1000:
                 raise design.ReviewError('review_checkpoint')
         except Blocked:
@@ -1452,6 +1566,18 @@ class Controller:
         context.update(changes=changes(before, after), head=head)
         context["own_findings"] = findings.context(self.state, provider)
         context["review_output_budget"] = self.pr_review_output_budget()
+        context["prior_outcomes_untrusted"] = classification.without_hints(context["prior_outcomes_untrusted"])
+        # Diff previews are optional; file identities, findings and review criteria are not.
+        limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
+        preview = MAX_DIFF
+        while transport_size(context) > limit and preview:
+            preview //= 2
+            if preview < 256:
+                preview = 0
+            for change in context["changes"]:
+                if len(change["diff"].encode()) > preview:
+                    change["diff"] = diff_preview(change["diff"], preview)
+                    change["truncated"] = True
         return context
 
     def reserve_development_branch(self):
@@ -1497,11 +1623,22 @@ class Controller:
         result, evidence = developed
         edits = validate_edits(result, state["plan"], self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
                                self.config, state["execution"])
-        # Git Trees API accepts content directly, avoiding filesystem extraction and hooks.
+        # Large contents go through blob objects so the tree request contains only small entries.
+        entries, uploaded_blobs = [], []
+        for edit in edits:
+            entry = {"path": edit["path"], "mode": self.tree(parent).get(edit["path"], {}).get("mode", "100644"),
+                     "type": "blob"}
+            content = edit["content"]
+            if content is None:
+                entry["sha"] = None
+            elif len(content.encode()) > INLINE_BLOB_LIMIT:
+                entry["sha"] = self.code.repo("git/blobs", "POST", {"content": content, "encoding": "utf-8"})["sha"]
+                uploaded_blobs.append(entry["sha"])
+            else:
+                entry["content"] = content
+            entries.append(entry)
         parent_commit = self.code.repo("git/commits/" + parent)
-        tree = self.code.repo("git/trees", "POST", {"base_tree": parent_commit["tree"]["sha"], "tree": [
-            {"path": e["path"], "mode": self.tree(parent).get(e["path"], {}).get("mode", "100644"), "type": "blob",
-             **({"sha": None} if e["content"] is None else {"content": e["content"]})} for e in edits]})
+        tree = self.code.create_tree(parent_commit["tree"]["sha"], entries, uploaded_blobs)
         commit = self.code.repo("git/commits", "POST", {
             "message": f"fix(concurro): address issue #{state['issue']} (round {state['round']})",
             "tree": tree["sha"], "parents": [parent]})
@@ -1620,12 +1757,14 @@ class Controller:
                                [f["id"] for f in owned if f["status"] == "withdrawn"])
             if pr_review_cost(report) > self.pr_review_room():
                 raise Blocked("PR review exceeds the checkpoint budget")
+            report = self.classify(report, provider, "review", PR_REVIEW_LIMIT)
             self.record_pr_review(state, provider, report)
             source = ("review_event",) if report["verdict"] == "reopen" else ("reviews", provider)
             conversation.queue(state, None, source=source, kind="review", details={
                 "head": state["head"], "round": state["round"] + 1, "pr": state["pr"], "provider": provider,
                 "model": selected_model(self.config, provider, "review") or "CLI default", "pr_url": self.pr_url(state["pr"]),
                 **({"agent": resolve(self.config, provider, "review").record()} if "agents" in self.config else {})})
+            self.refresh_classification()
             if report["verdict"] == "reopen":
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
                 return
