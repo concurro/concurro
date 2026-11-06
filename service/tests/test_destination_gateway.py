@@ -36,7 +36,7 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
                 outer.sent.append((self.repository, method, path, body))
                 return Response(True, 201, {}, json.dumps({"sha": SHA}).encode())
 
-        self.gateway = MutationGateway(self.registry, Transport, Transport, self.config["bot_login"])
+        self.gateway = MutationGateway(self.registry, Transport, Transport, self.config["bot_login"], **self.pacing)
         self.generation = self.gateway.acquire(KEY, "worker")
         self.code = GatewayGitHub(FORK, KEY[1], self.generation, self.gateway, Transport(FORK), task_key=KEY)
 

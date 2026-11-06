@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
@@ -20,6 +21,8 @@ from .transport import throttle
 log = logging.getLogger("concurro.service")
 
 LEASE_SECONDS = 15 * 60
+TREE_RETRY_DELAYS = (1, 2)
+WRITE_INTERVAL = 1.0
 NUMBER = r"[1-9][0-9]*"
 # Writes whose results the engine reconstructs from GitHub on its next tick; any other write is
 # refused before admission. A named `issue` group must equal the task's own issue.
@@ -61,6 +64,10 @@ class Disallowed(RuntimeError):
 
 class Rejected(RuntimeError):
     """GitHub rejected a write; it did not take effect."""
+
+
+class TreeUnavailable(Rejected):
+    """Commit creation was rejected because its tree is not yet visible to GitHub."""
 
 
 def allowed(key, method, path, body):
@@ -228,8 +235,31 @@ def settle(path, response, now, body=None):
         # GitHub's own validation message, for the operator; the engine publishes only fixed diagnostics.
         detail = rejection(response)
         log.warning("GitHub rejected a write to %s (HTTP %s): %s", path, status, detail)
-        return "failed", None, Rejected(f"GitHub rejected the write (HTTP {status}): {detail}")
+        error_type = Rejected
+        if (status == 422 and re.fullmatch(r"repos/[^/]+/[^/]+/git/commits", path)
+                and isinstance(body, dict) and isinstance(body.get("tree"), str) and OID.fullmatch(body["tree"])):
+            if missing_tree(response):
+                error_type = TreeUnavailable
+        return "failed", None, error_type(f"GitHub rejected the write (HTTP {status}): {detail}")
     return "unknown", None, None
+
+
+def missing_tree(response):
+    """Recognize a missing tree by structured validation fields, then normalized legacy text."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    errors = payload.get("errors")
+    if errors:
+        return isinstance(errors, list) and all(
+            isinstance(error, dict) and error.get("field") == "tree" and error.get("code") == "missing"
+            for error in errors)
+    message = payload.get("message")
+    return (isinstance(message, str)
+            and " ".join(message.split()).rstrip(".").casefold() == "tree sha does not exist")
 
 
 def rejection(response):
@@ -265,14 +295,17 @@ def rejection(response):
 class MutationGateway:
     """Admit, send and settle every write; grant and end ownership in the same per-task section."""
 
-    def __init__(self, registry, writer, reader, bot_login=None):
+    def __init__(self, registry, writer, reader, bot_login=None, *, clock=time.monotonic, sleep=time.sleep):
         """`writer(repository)` and `reader(repository)` return that repository's write and read transports.
 
         A writer's `send(method, path, body)` returns a `transport.Response`; raising means the
         outcome is unknown. The reader resolves each task's issue node ID and verifies PR and
         thread bindings; without `bot_login`, replies and thread resolutions are refused.
+        `clock` is monotonic; `sleep` serves write pacing and commit retry backoff.
         """
         self.registry, self.writer, self.reader, self.bot_login = registry, writer, reader, bot_login
+        self.write_clock, self.write_sleep = clock, sleep
+        self.write_lock, self.next_write = threading.Lock(), 0.0
         self.pulls = {}
         self.guard = threading.Lock()
         self.sections = {}
@@ -457,6 +490,18 @@ class MutationGateway:
                         and allowed(key, method, path, body)))
         if not admitted or not self.bound(key, path, body):
             raise Disallowed("write is not on the gateway allow-list")
+        # One pacer across tasks and repositories; waiting holds no task ownership lock.
+        with self.write_lock:
+            delay = self.next_write - self.write_clock()
+            if delay > 0:
+                self.write_sleep(delay)
+            try:
+                return self._send(key, generation, method, path, body, binding)
+            finally:
+                self.next_write = self.write_clock() + WRITE_INTERVAL
+
+    def _send(self, key, generation, method, path, body, binding):
+        """Recheck ownership, admit and settle one write while holding the shared write slot."""
         with self.section(key) as condition:
             condition.wait_for(lambda: key not in self.sending)
             if (key, generation) in self.stops:
@@ -500,7 +545,14 @@ class GatewayGitHub(GitHub):
         """Read directly; route every other request, GraphQL mutations included, to the gateway."""
         if method == "GET" or path == "graphql" and isinstance(data, dict) and QUERY.match(data.get("query") or ""):
             return self.reader.request(method, path, data)
-        return self.gateway.mutate(self.key, self.generation, method, path, data)
+        for attempt in range(len(TREE_RETRY_DELAYS) + 1):
+            try:
+                return self.gateway.mutate(self.key, self.generation, method, path, data)
+            except TreeUnavailable:
+                if attempt == len(TREE_RETRY_DELAYS):
+                    raise
+                # Each definite rejection is settled; the next occurrence rechecks ownership.
+                self.gateway.write_sleep(TREE_RETRY_DELAYS[attempt])
 
     def archive(self, sha):
         """Download a pinned source archive through the read transport."""

@@ -308,6 +308,7 @@ class FakeGitHub:
                     self.trees[sha][entry["path"]] = entry["content"]
             return {"sha": sha}
         if path == "git/commits":
+            assert data["tree"] in self.trees, "commit references a nonexistent tree"
             self.counter += 1
             sha = f"{self.counter:040x}"
             self.commits[sha] = {"tree": {"sha": data["tree"]}}

@@ -54,6 +54,10 @@ class Clock:
     def __call__(self):
         return self.now
 
+    def sleep(self, seconds):
+        """Advance this clock without a wall-clock wait."""
+        self.now += seconds
+
 
 class RestBackend:
     """Serve the facade's reads and the gateway's writes from a `FakeGitHub`, with injectable faults."""
@@ -322,13 +326,15 @@ class ServiceFixture:
         self.addCleanup(self.directory.cleanup)
         Path(self.directory.name).chmod(0o700)
         self.clock = Clock()
+        self.write_clock = Clock()
+        self.pacing = {"clock": self.write_clock, "sleep": self.write_clock.sleep}
         self.registry = self.open(initialize=True)
         self.config = deepcopy(CONFIG)
         self.config["autonomous"] = False
         self.fake = FakeGitHub(self.config)
         self.backend = RestBackend(self.fake)
         self.gateway = MutationGateway(self.registry, lambda repository: self.backend, lambda repository: self.backend,
-                                       self.config["bot_login"])
+                                       self.config["bot_login"], **self.pacing)
         self.reader = self.backend
         self.agents = FakeAgents()
 

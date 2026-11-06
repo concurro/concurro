@@ -38,7 +38,7 @@ class GatewayReadinessTests(ServiceFixture, unittest.TestCase):
                 sent.append((inner.repo, payload))
                 return Response(True, 200, {}, json.dumps({"data": {"markPullRequestReadyForReview": {
                     "pullRequest": {"id": "PR_9", "isDraft": False}}}}).encode())
-        gateway = MutationGateway(self.registry, Transport, Transport, "concurro[bot]")
+        gateway = MutationGateway(self.registry, Transport, Transport, "concurro[bot]", **self.pacing)
         generation = gateway.acquire(KEY, "worker")
         for payload in (body("PR_10"), {**body(), "query": MARK_READY + " mutation { other }"},
                         {**body(), "variables": {"input": {"pullRequestId": "PR_9", "extra": "x"}}}):

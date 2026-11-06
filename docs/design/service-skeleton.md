@@ -236,6 +236,22 @@ Throttling evidence is a `Retry-After` header, `X-RateLimit-Remaining: 0`, or a
 body `message` naming a rate limit. Ordinary quota headers on another 403 are not
 evidence; that 403 is a plain rejection.
 
+One service-wide write slot serializes GitHub mutations across tasks and repositories,
+with at least one second from completion to the next write. The pacer uses a
+monotonic clock and also spaces rejected or failed attempts. Reads and lease
+renewals bypass it; ownership is checked after waiting and before admission.
+The slot is process-local and resets on service restart. It does not guarantee
+FIFO order and is shared across installations. A slow write delays other writes
+until its transport completes or times out.
+
+A commit creation rejected with HTTP 422 gets at most two further attempts when
+its structured errors identify only a missing `tree` (`code: missing`). Without
+structured errors, `Tree SHA does not exist` is recognized ignoring case, whitespace
+and a trailing period. The attempts run through the facade after 1 and 2 seconds,
+using the same injected sleep as pacing. Each attempt keeps the same request, is separately admitted and settled, and rechecks
+ownership. Exhaustion is a normal rejection. No other validation error or unknown
+write outcome gets this retry. This accommodates visibility lag after tree creation.
+
 ### Write allow-list and result reconstruction
 
 The facade admits only write endpoints whose results the engine can reconstruct

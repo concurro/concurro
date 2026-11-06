@@ -320,7 +320,7 @@ class WriteTests(ServiceFixture, unittest.TestCase):
         self.net = Loopback().start(self)
         self.connection = self.net.connect
         writer = Transport(KEY[0], Credential("write-token"), self.clock, lambda host, timeout: self.connection(host, timeout))
-        self.gateway = MutationGateway(self.registry, lambda repository: writer, lambda repository: self.backend)
+        self.gateway = MutationGateway(self.registry, lambda repository: writer, lambda repository: self.backend, **self.pacing)
         self.generation = self.gateway.acquire(KEY, "worker")
         self.path = f"repos/{KEY[0]}/issues/7/comments"
 

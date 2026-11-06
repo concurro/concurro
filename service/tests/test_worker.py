@@ -338,7 +338,7 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
         targets = (Target(KEY[0], KEY[0], "both"), Target("owner/two", "owner/two", "both"))
         settings = type("Settings", (), {"controller_id": "service:primary", "engine": ENGINE, "targets": targets,
                                          "limits": Limits(2, 1), "state_dir": Path(self.directory.name)})
-        gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__)
+        gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__, **self.pacing)
         reconciler = Reconciler(self.registry, backends.__getitem__, list(fakes), {bot}, clock=self.clock)
         worker = Worker(settings, gateway, self.registry, reconciler, backends.__getitem__, bot, agents=agents,
                         executor=lambda repository, github: ("executor", repository))

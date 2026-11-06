@@ -29,7 +29,7 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
                 if method == "POST" and path.endswith("git/refs"):
                     outer.refs[body["ref"]] = body["sha"]
                 return Response(True, 204, {}, b"")
-        self.gateway = MutationGateway(self.registry, Transport, Transport)
+        self.gateway = MutationGateway(self.registry, Transport, Transport, **self.pacing)
         self.generation = self.gateway.acquire(KEY, "worker")
         self.session = str(uuid.uuid4())
 
