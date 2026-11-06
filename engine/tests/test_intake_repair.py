@@ -228,7 +228,7 @@ class IntakeRepairTests(unittest.TestCase):
 
     def advisory_comments(self):
         """Return only the new human-facing intake notices."""
-        return [c for c in self.gh.comments if '### Intake approved with advisory concerns' in c['body']]
+        return [c for c in self.gh.comments if '### Intake approved with concerns' in c['body']]
 
     def test_advisories_reach_planner_and_both_review_stages_without_extra_calls(self):
         """Proceed with concerns reaches ready using the same calls and independent review gates."""
@@ -321,7 +321,7 @@ class IntakeRepairTests(unittest.TestCase):
         def repo(path, method='GET', data=None):
             """Lose the first advisory comment response after GitHub applies it."""
             result = original(path, method, data)
-            if method == 'POST' and path.endswith('/comments') and 'Intake approved with advisory concerns' in (data or {}).get('body', '') and not lost:
+            if method == 'POST' and path.endswith('/comments') and 'Intake approved with concerns' in (data or {}).get('body', '') and not lost:
                 lost.append(True)
                 raise RuntimeError('lost response')
             return result
@@ -336,6 +336,31 @@ class IntakeRepairTests(unittest.TestCase):
         self.assertEqual(sum(stage == 'intake' for _, stage, _ in self.agents.calls), 1)
         self.assertEqual(len(self.advisory_comments()), 1)
         self.assertEqual(sum('Intake QC' in b for b in self.gh.archives()), 1)
+
+    def test_notice_preserves_markdown_and_contains_unclosed_code_blocks(self):
+        """Concern formatting survives without swallowing later bullets or the footer."""
+        concerns = ['Check `BitVec` and **compatibility**.\n\n```rust\nzeros(0);\n```',
+                    'An unfinished example:\n\n```rust\nones(0);',
+                    'Check `<T>`; <details>must stay text</details>.']
+        self.agents.qc_reports = [self.report(concerns=concerns)]
+        controller = self.tick()
+        body = self.advisory_comments()[0]['body']
+        self.assertIn('### Intake approved with concerns', body)
+        self.assertNotIn('advisory concerns', body)
+        self.assertIn('- Check `BitVec` and **compatibility**.\n  \n  ```rust\n  zeros(0);\n  ```', body)
+        self.assertIn('  ones(0);\n  ```\n- Check `<T>`;', body)
+        self.assertIn('&lt;details>must stay text&lt;/details>', body)
+        self.assertEqual(controller.context()['intake_concerns'], concerns)
+
+    def test_shortened_notice_closes_its_code_fence(self):
+        """Truncating an example keeps subsequent concerns outside its code block."""
+        concern = 'Example:\n\n```rust\n' + 'x' * 1100 + '\n```'
+        self.agents.qc_reports = [self.report(concerns=[concern, 'Next concern.'])]
+        controller = self.tick()
+        body = self.advisory_comments()[0]['body']
+        self.assertIn('…\n  ```\n- Next concern.', body)
+        self.assertIn('Some text is shortened.', body)
+        self.assertEqual(controller.context()['intake_concerns'][0], concern)
 
     def test_notice_escapes_and_bounds_model_text_without_losing_context(self):
         """Comments cannot exceed GitHub bounds; complete concerns stay in context and archives."""

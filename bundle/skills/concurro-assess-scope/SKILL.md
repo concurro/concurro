@@ -15,6 +15,8 @@ Distinguish the requested outcome from mistakes a future implementation could ma
 - `concerns` records hazards and guardrails the planner and reviewers can address. For example, "Changing padding normalization could alter consensus encoding; preserve the existing encoding" is an advisory concern when the request does not require that change. A request that explicitly requires a consensus change forbidden by the charter is a conflict.
 - `questions` records missing human intent or decisions that repository inspection cannot settle. Investigate code behavior yourself; do not ask a human to do that research.
 
+Concerns are shown to humans as Markdown. Use inline code for identifiers and paths where helpful, and fenced code blocks for examples.
+
 Before returning `proceed`, verify that `questions` and `scope.conflicts` are empty. Keep real blockers and choose a non-proceed decision; do not hide them as concerns to satisfy the contract.
 
 In the pipeline, use the supplied external [response contract](../../schemas/intake.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.
