@@ -34,7 +34,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "Advisory risks and planning or review considerations; may be nonempty with proceed. Use clarify for unanswered human questions and escalate for decisions requiring human authority."
     },
     "scope": {
       "type": "object",

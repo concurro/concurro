@@ -1,4 +1,4 @@
-"""Comments that ask a human to act, and Input needed requests; all other progress lives in the status comment."""
+"""Actionable comments and Input needed requests; advisory intake notices use the conversation outbox."""
 
 from model_config import assigned
 import conversation

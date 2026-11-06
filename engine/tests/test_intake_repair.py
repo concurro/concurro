@@ -35,7 +35,7 @@ class IntakeRepairTests(unittest.TestCase):
 
     def test_contradiction_is_archived_then_corrected_without_writer_retry(self):
         """Rejected proceed never starts planning; feedback produces a separately charged turn."""
-        self.agents.qc_reports = [self.report(concerns=['Handle partial reads.']), self.report()]
+        self.agents.qc_reports = [self.report(questions=['Which partial-read behavior is intended?']), self.report()]
         rejected = self.tick()
         self.assertEqual(rejected.state['stage'], 'intake')
         self.assertEqual(rejected.outcome(True).kind, 'continue')
@@ -46,7 +46,7 @@ class IntakeRepairTests(unittest.TestCase):
         archive = self.gh.archives()[0]
         self.assertIn('Intake output rejected', archive)
         self.assertIn('QC acceptance contradicts', archive)
-        self.assertIn('Handle partial reads.', archive)
+        self.assertIn('Which partial-read behavior is intended?', archive)
         self.assertIn('Output rejected', self.gh.summary()['body'])
         self.assertIn('/artifacts/', self.gh.summary()['body'])
         accepted = self.tick()
@@ -58,14 +58,14 @@ class IntakeRepairTests(unittest.TestCase):
         self.assertEqual(self.gh.archives()[0], archive)
         feedback = self.agents.calls[1][2]['intake_validation_feedback']
         self.assertIn('contradicts', feedback['reason'])
-        self.assertIn('Handle partial reads.', feedback['output'])
+        self.assertIn('Which partial-read behavior is intended?', feedback['output'])
         self.assertIn('do not remove real questions', feedback['instruction'])
         self.assertEqual(feedback['attempt'], 1)
 
     def test_corrected_intake_completes_the_autonomous_pipeline(self):
         """An output repair preserves the independent planning, review and CI gates."""
         self.config['autonomous'] = True
-        self.agents.qc_reports = [self.report(concerns=['Handle partial reads.']), self.report()]
+        self.agents.qc_reports = [self.report(questions=['Which partial-read behavior is intended?']), self.report()]
         for _ in range(15):
             controller = self.tick()
             if controller.state.get('handoff_ready'):
@@ -105,7 +105,7 @@ class IntakeRepairTests(unittest.TestCase):
 
     def test_exhaustion_survives_restart_and_retry_renews_only_corrections(self):
         """Every invalid report is archived; only a writer renews the spent correction allowance."""
-        bad = self.report(concerns=['Unresolved concern.'])
+        bad = self.report(questions=['Unanswered question?'])
         self.agents.qc_reports = [bad] * (INTAKE_OUTPUT_REPAIRS + 2)
         for _ in range(INTAKE_OUTPUT_REPAIRS + 1):
             controller = self.tick()
@@ -157,7 +157,7 @@ class IntakeRepairTests(unittest.TestCase):
                 raise Crash()
             return original(store, state)
 
-        with patch.object(self.agents, 'ask', return_value=self.report(concerns=['Concern.'])) as ask:
+        with patch.object(self.agents, 'ask', return_value=self.report(questions=['Question?'])) as ask:
             with patch.object(Checkpoints, 'save', save), self.assertRaises(Crash):
                 self.tick()
             recovered = self.tick()
@@ -179,7 +179,7 @@ class IntakeRepairTests(unittest.TestCase):
                 raise RuntimeError('lost response')
             return result
 
-        self.agents.qc_reports = [self.report(concerns=['Concern.']), self.report()]
+        self.agents.qc_reports = [self.report(questions=['Question?']), self.report()]
         with patch.object(self.gh, 'repo', side_effect=repo), self.assertRaises(PublicationError):
             self.tick()
         self.assertTrue(lost)
@@ -203,7 +203,7 @@ class IntakeRepairTests(unittest.TestCase):
                 raise RuntimeError('lost response')
             return result
 
-        self.agents.qc_reports = [self.report(concerns=['Concern.'])]
+        self.agents.qc_reports = [self.report(questions=['Question?'])]
         with patch.object(self.gh, 'repo', side_effect=repo), self.assertRaises(PublicationError):
             self.tick()
         with self.assertRaisesRegex(PublicationError, 'edited or duplicated'):
@@ -219,9 +219,115 @@ class IntakeRepairTests(unittest.TestCase):
         self.assertFalse(self.gh.archives())
         self.setUp()
         self.config['max_model_calls'] = 1
-        self.agents.qc_reports = [self.report(concerns=['Concern.'])]
+        self.agents.qc_reports = [self.report(questions=['Question?'])]
         controller = self.tick()
         self.assertEqual(controller.state['intake_draft']['attempt'], 1)
         with self.assertRaisesRegex(Blocked, 'model-call budget exhausted'):
             self.tick()
         self.assertEqual(len(self.gh.archives()), 1)
+
+    def advisory_comments(self):
+        """Return only the new human-facing intake notices."""
+        return [c for c in self.gh.comments if '### Intake approved with advisory concerns' in c['body']]
+
+    def test_advisories_reach_planner_and_both_review_stages_without_extra_calls(self):
+        """Proceed with concerns reaches ready using the same calls and independent review gates."""
+        self.config['autonomous'] = True
+        concerns = ['Check streaming callers.', 'Demo CI covers only stacks-common.']
+        self.agents.qc_reports = [self.report(concerns=concerns)]
+        for _ in range(15):
+            controller = self.tick()
+            if controller.state.get('handoff_ready'):
+                break
+        self.assertTrue(controller.state.get('handoff_ready'))
+        self.assertEqual(controller.state['calls'], 7)
+        self.assertNotIn('intake_draft', controller.state)
+        self.assertEqual(len(self.advisory_comments()), 1)
+        self.assertIn('not a request for human action', self.advisory_comments()[0]['body'])
+        for concern in concerns:
+            self.assertIn(concern, self.advisory_comments()[0]['body'])
+        downstream = [(stage, context) for _, stage, context in self.agents.calls if stage != 'intake']
+        self.assertEqual({stage for stage, _ in downstream}, {'plan', 'plan_qc', 'develop', 'review'})
+        for stage, context in downstream:
+            with self.subTest(stage=stage):
+                self.assertEqual(context['intake_concerns'], concerns)
+        self.tick()
+        self.assertEqual(len(self.advisory_comments()), 1)
+
+    def test_questions_conflicts_and_high_risk_never_announce_proceed(self):
+        """Advisory concerns cannot bypass any existing human or charter boundary."""
+        for fields, expected in (({'questions': ['What behavior?']}, 'intake'),
+                                 ({'scope': {'goal_ids': ['G-USABILITY'], 'fit': 'Change.',
+                                             'conflicts': ['A charter non-goal.']}}, 'intake'),
+                                 ({'risk': 'high'}, 'escalated'),
+                                 ({'decision': 'clarify', 'questions': ['What behavior?']}, 'clarify'),
+                                 ({'decision': 'reject'}, 'rejected')):
+            with self.subTest(fields=fields):
+                self.setUp()
+                self.agents.qc_reports = [self.report(concerns=['Consider compatibility.'], **fields)]
+                controller = self.tick()
+                self.assertEqual(controller.state['stage'], expected)
+                self.assertFalse(self.advisory_comments())
+                self.assertNotIn('plan', controller.state)
+
+    def test_design_approval_still_refuses_unresolved_concerns(self):
+        """Only intake changes semantics; review objections still require a revise verdict."""
+        from policy import validate_qc
+        report = self.report(decision='approve', concerns=['The design loses data.'])
+        report.update(sources=[], assessments=[], objection_updates=[])
+        with self.assertRaisesRegex(Blocked, 'contradicts'):
+            validate_qc(report, 'plan_qc')
+
+    def test_clean_intake_adds_no_notification(self):
+        """Ordinary approvals retain the quiet dashboard-only flow."""
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'plan')
+        self.assertFalse(self.advisory_comments())
+        self.assertNotIn('intake_concerns', controller.context())
+
+    def test_changed_requirements_do_not_reuse_old_advisories(self):
+        """Only concerns about the same requirements and base enter downstream contexts."""
+        self.agents.qc_reports = [self.report(concerns=['Check the old interface.'])]
+        controller = self.tick()
+        self.assertEqual(controller.context()['intake_concerns'], ['Check the old interface.'])
+        controller.state['requirements']['body'] = 'A different task.'
+        self.assertNotIn('intake_concerns', controller.context())
+
+    def test_notice_recovers_a_lost_response_without_duplicate_or_model_call(self):
+        """A successful comment POST with a lost response recovers before planning."""
+        original = self.gh.repo
+        lost = []
+
+        def repo(path, method='GET', data=None):
+            """Lose the first advisory comment response after GitHub applies it."""
+            result = original(path, method, data)
+            if method == 'POST' and path.endswith('/comments') and 'Intake approved with advisory concerns' in (data or {}).get('body', '') and not lost:
+                lost.append(True)
+                raise RuntimeError('lost response')
+            return result
+
+        self.agents.qc_reports = [self.report(concerns=['Check callers.'])]
+        with patch.object(self.gh, 'repo', side_effect=repo), self.assertRaises(PublicationError):
+            self.tick()
+        self.assertTrue(lost)
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'plan_qc')
+        self.assertEqual(controller.state['calls'], 2)
+        self.assertEqual(sum(stage == 'intake' for _, stage, _ in self.agents.calls), 1)
+        self.assertEqual(len(self.advisory_comments()), 1)
+        self.assertEqual(sum('Intake QC' in b for b in self.gh.archives()), 1)
+
+    def test_notice_escapes_and_bounds_model_text_without_losing_context(self):
+        """Comments cannot exceed GitHub bounds; complete concerns stay in context and archives."""
+        from conversation import EVENT_LIMIT
+        concerns = ['<details>\\`unsafe</details>'] + ['<' * 940] * 6
+        self.agents.qc_reports = [self.report(concerns=concerns)]
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'plan')
+        self.assertEqual(controller.context()['intake_concerns'], concerns)
+        body = self.advisory_comments()[0]['body']
+        self.assertNotIn('<details>', body)
+        self.assertIn('&lt;', body)
+        self.assertIn('Some text is shortened.', body)
+        self.assertLessEqual(len(body.encode()), EVENT_LIMIT)
+        self.assertIn('<' * 940, self.gh.archives()[0])

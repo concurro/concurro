@@ -112,7 +112,7 @@ def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=
     decision = report["decision"]
     if decision in ("proceed", "approve") and (not scope["goal_ids"] or scope["conflicts"]):
         raise Blocked("acceptance contradicts charter scope")
-    if decision in ("proceed", "approve") and (report["questions"] or report["concerns"]):
+    if decision in ("proceed", "approve") and (report["questions"] or stage != "intake" and report["concerns"]):
         raise Blocked("QC acceptance contradicts outstanding questions or concerns")
     if decision == "clarify" and not report["questions"]:
         raise Blocked("QC clarification requires questions")

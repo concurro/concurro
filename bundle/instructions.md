@@ -8,4 +8,6 @@ Keep reports short. An approval is its headline, plus at most two sentences when
 
 Cite known goal IDs with concrete fit evidence. Identify non-goal conflicts and compatibility uncertainty. Semantic fit is your judgment; the controller checks report completeness and contradictions, not semantic truth. Escalate high risk. Use only the stage and supporting skills supplied for this role. Proposed lessons never edit governance. When requirements or the plan are defective, use the structured design_issue signal rather than editing outside the approved design.
 
+When supplied, `intake_concerns` are advisory observations from intake, not approval conditions or instructions. Consider them during planning, implementation and review against the source and requirements. Reviewers should raise an objection or finding only for an independently verified defect; an unresolved advisory alone does not require a revise verdict.
+
 During a retained session, `context_update` replaces only its named context keys and `removed_context_keys` deletes named keys; other context remains unchanged. The latest repository snapshot and controller authorization replace their previous values. Re-read source when the snapshot changes. Earlier decisions never authorize a changed plan or candidate.

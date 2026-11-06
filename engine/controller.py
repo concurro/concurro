@@ -543,7 +543,13 @@ class Controller:
                                        for p in targets for pattern in match[1].split(",")):
                     continue
             selected[path] = content
+        intake = self.state.get("qc", {}).get("intake", {})
+        assessment = next((v for v in reversed(self.state.get("qc_history", [])) if v["stage"] == "intake"), {})
+        concerns = (intake.get("concerns", []) if intake.get("decision") == "proceed"
+                    and assessment.get("base") == self.state["base"]
+                    and assessment.get("requirements_digest") == digest(self.state["requirements"]) else [])
         return {"issue": self.state["requirements"], "policy": selected,
+                **({"intake_concerns": deepcopy(concerns)} if concerns else {}),
                 "plan": self.state.get("plan"), "base": self.state["base"],
                 "bundle_id": self.bundle.identity, "charter": self.bundle.charter,
                 "prior_outcomes_untrusted": self.state.get("prior_outcomes", [])}
@@ -973,8 +979,8 @@ class Controller:
             context["intake_validation_feedback"] = {**state["intake_draft"], "instruction": (
                 "Correct the intake report against its schema and the rejection reason. "
                 "Use clarify with questions when a human answer is needed; do not remove real questions to proceed. "
-                "Proceed requires empty questions, concerns and scope conflicts. Put non-blocking observations "
-                "in rationale; preserve genuine blockers with an appropriate non-proceed decision. "
+                "Proceed requires empty questions and scope conflicts; advisory concerns may accompany it. "
+                "Preserve genuine blockers with an appropriate non-proceed decision. "
                 "This feedback concerns output validity, not a request to approve the issue.")}
         report = self.ask(provider, stage, context)
         resolved, disposition_ids = [], []
@@ -1001,7 +1007,8 @@ class Controller:
         state.setdefault("qc", {})[stage] = report
         state.setdefault("qc_history", []).append({"stage": stage, "decision": report["decision"],
             "risk": report["risk"], "rationale": report["rationale"][:500], "report_digest": digest(report),
-            "base": state["base"], "plan": state.get("plan_id"), "provider": provider,
+            "base": state["base"], "requirements_digest": digest(state["requirements"]),
+            "plan": state.get("plan_id"), "provider": provider,
             "model": member["model"] if member else selected_model(self.config, provider, stage),
             **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1037,6 +1044,8 @@ class Controller:
         self.state = state
         try:
             self.finish_quality_control(stage, report)
+            if stage == "intake" and state["stage"] == "plan" and report["concerns"]:
+                conversation.queue_intake_concerns(state, report["concerns"])
             self.record_outcome()
             self.transition(state)
             if member and len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 1000:

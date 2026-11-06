@@ -132,6 +132,10 @@ profiles, package-scoping engine or generated CI workflows remain.
    gets two automatic correction attempts within the existing model-call budget; persistent
    errors escalate for `/concurro retry`. Oversized rejected output is explicitly excerpted.
    Correcting output does not spend a semantic design-revision round.
+   Intake may proceed with advisory concerns, carried explicitly to the planner and
+   reviewers and posted once as a concise issue comment. Unanswered questions and charter
+   conflicts still prevent proceed; design-review approval still requires no blocking
+   concerns. The comment is informational, not an additional approval gate.
    Invalid intake reports also receive two automatic corrections, with the rejection reason
    and bounded output in a write-once report archive linked from the dashboard. Genuine
    clarification, rejection and escalation decisions still stop for human input. A writer's

@@ -349,6 +349,26 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     journal["pending"].append(event)
 
 
+def queue_intake_concerns(state, concerns):
+    """Notify humans of advisory intake concerns through the recoverable comment outbox."""
+    lines = ["Intake approved moving forward to planning with these advisory concerns:", ""]
+    used = len("\n".join(lines).encode())
+    shortened = False
+    for concern in concerns:
+        rendered = text(concern, 1000)
+        line = "- " + rendered
+        if used + len(line.encode()) + 1 > EVENT_LIMIT - EVENT_RESERVE - 500:
+            shortened = True
+            break
+        shortened |= len(markup.one_line(concern)) > 1000
+        lines.append(line)
+        used += len(line.encode()) + 1
+    lines += ["", "These are planning and review considerations, not a request for human action.", "",
+              ("Some text is shortened. " if shortened else "")
+              + "The full concerns are in the intake report linked from the dashboard."]
+    queue(state, "Intake approved with advisory concerns", "\n".join(lines))
+
+
 def event_body(state, event):
     """Reject changed sources before acknowledging or posting a queued event."""
     if "body" in event:
