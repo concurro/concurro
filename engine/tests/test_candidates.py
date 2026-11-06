@@ -5,7 +5,7 @@ import unittest
 
 from support import CONFIG, EXECUTION, setUpModule, tearDownModule
 import candidates
-from controller import Controller
+from controller import Controller, changes
 from policy import Blocked, OutsideScope, validate_edits
 from test_pipeline import FakeAgents, FakeGitHub, PLAN
 
@@ -14,26 +14,19 @@ class CandidateTests(unittest.TestCase):
     """Controller byte checks replace workbench evidence without executing target code."""
 
     def setUp(self):
-        self.plan = {**deepcopy(PLAN), "scope": {"paths": ["docs/**"], "max_files": 3, "max_changed_lines": 6}}
+        self.plan = {**deepcopy(PLAN), "scope": {"paths": ["docs/**"], "max_files": 3}}
 
-    def test_rename_validates_both_paths_and_counts_removed_lines(self):
+    def test_rename_validates_both_paths(self):
         before = {"docs/old.md": "one\ntwo\n", "docs/new.md": None}
         after = {"docs/old.md": None, "docs/new.md": "one\ntwo\n"}
         self.assertEqual(candidates.validate(before, after, self.plan, CONFIG, EXECUTION), sorted(before))
-        too_small = {**self.plan, "scope": {**self.plan["scope"], "max_changed_lines": 3}}
-        with self.assertRaisesRegex(Blocked, "4 lines"):
-            candidates.validate(before, after, too_small, CONFIG, EXECUTION)
         proposal = {"summary": "rename", "edits": [{"path": p, "content": c} for p, c in after.items()]}
         self.assertEqual(len(validate_edits(proposal, self.plan, before, CONFIG, EXECUTION)), 2)
         proposal["edits"].append({"path": "AGENTS.md", "content": None})
         with self.assertRaises(OutsideScope):
             validate_edits(proposal, self.plan, before, CONFIG, EXECUTION)
 
-    def test_cumulative_repair_budget_and_generated_file_exception(self):
-        before = {"docs/a.md": None, "docs/b.md": None}
-        after = {"docs/a.md": "1\n2\n3\n4\n", "docs/b.md": "1\n2\n3\n"}
-        with self.assertRaisesRegex(Blocked, "7 lines"):
-            candidates.validate(before, after, self.plan, CONFIG, EXECUTION)
+    def test_follow_on_change_and_missing_deletion(self):
         # No mandatory primary-file edit: a valid follow-on change is still in scope.
         self.assertEqual(candidates.validate({}, {"docs/b.md": "x"}, self.plan, CONFIG, EXECUTION), ["docs/b.md"])
         with self.assertRaisesRegex(Blocked, "existing regular"):
@@ -41,8 +34,10 @@ class CandidateTests(unittest.TestCase):
                            self.plan, {}, CONFIG, EXECUTION)
 
     def test_newline_delimiters_are_source_lines(self):
-        self.assertEqual(candidates.changed_lines("a\u2028b\fc\n", "a\u2028d\fc\n"), 2)
-        self.assertEqual(candidates.changed_lines("x", "x\n"), 1)
+        [item] = changes({"x": "a\u2028b\fc\n"}, {"x": "a\u2028d\fc\n"})
+        self.assertEqual((item['added'], item['removed']), (1, 1))
+        [item] = changes({"x": "x"}, {"x": "x\n"})
+        self.assertEqual((item['added'], item['removed']), (1, 1))
 
 
 class NativePublicationTests(unittest.TestCase):
@@ -55,7 +50,7 @@ class NativePublicationTests(unittest.TestCase):
             def ask(self, provider, stage, context):
                 if stage == "plan":
                     report = super().ask(provider, stage, context)
-                    report["scope"] = {"paths": ["docs/**"], "max_files": 3, "max_changed_lines": 100}
+                    report["scope"] = {"paths": ["docs/**"], "max_files": 3}
                     return report
                 if stage == "develop":
                     self.calls.append((provider, stage, deepcopy(context)))

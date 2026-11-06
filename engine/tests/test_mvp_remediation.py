@@ -17,7 +17,7 @@ from policy import Blocked
 from readiness import ci_reasons
 from relay import ExchangeError
 from test_pipeline import FakeAgents, FakeGitHub
-import candidates
+import controller
 import runner
 import processes
 
@@ -95,8 +95,7 @@ class EvidenceTests(unittest.TestCase):
     def test_repetitive_diff_is_bounded_before_matcher_runs(self):
         before = 'start\n' + 'a\nb\n' * 20_000 + 'end\n'
         after = 'other\n' + 'b\na\n' * 20_000 + 'last\n'
-        with patch.object(candidates.difflib, 'SequenceMatcher', side_effect=AssertionError('unbounded matcher')):
-            self.assertGreater(candidates.changed_lines(before, after), 3000)
+        with patch.object(controller.difflib, 'SequenceMatcher', side_effect=AssertionError('unbounded matcher')):
             [item] = changes({'x.rs': before}, {'x.rs': after})
         self.assertTrue(item['truncated'])
         self.assertIn('repository', item['diff'])

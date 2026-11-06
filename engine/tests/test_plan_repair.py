@@ -19,7 +19,7 @@ class DirectoryScopeTests(unittest.TestCase):
     def test_directories_match_descendants_and_keep_legacy_files_exact(self):
         """The pilot's directory notation is accepted and does not match a sibling prefix."""
         plan = {**deepcopy(PLAN), "scope": {"paths": ["docs/guide.md", "changelog.d/"],
-                                          "max_files": 2, "max_changed_lines": 220}}
+                                          "max_files": 2}}
         validate_plan(plan, CONFIG, EXECUTION)
         self.assertEqual(checks.scope_of(plan)["paths"], ["docs/guide.md", "changelog.d/**"])
         self.assertTrue(checks.in_scope("changelog.d/nested/change.md", plan))
@@ -33,7 +33,7 @@ class DirectoryScopeTests(unittest.TestCase):
         """Slash normalization must not permit absolute, traversing or empty components."""
         for value in ("/", "/docs/", "../docs/", "docs/../", "docs//", "./docs/", {}):
             with self.subTest(value=value):
-                plan = {**deepcopy(PLAN), "scope": {"paths": [value], "max_files": 2, "max_changed_lines": 10}}
+                plan = {**deepcopy(PLAN), "scope": {"paths": [value], "max_files": 2}}
                 with self.assertRaises(Blocked):
                     validate_plan(plan, CONFIG, EXECUTION)
 
@@ -61,7 +61,7 @@ class PlanRepairTests(unittest.TestCase):
 
     def invalid(self):
         """Supply an otherwise valid plan with a correctable file budget."""
-        return {**deepcopy(PLAN), 'scope': {'paths': ['docs/'], 'max_files': 0, 'max_changed_lines': 50}}
+        return {**deepcopy(PLAN), 'scope': {'paths': ['docs/'], 'max_files': 0}}
 
     def test_rejected_plan_is_visible_then_corrected_without_human_retry(self):
         """The rejected artifact includes the reason; the next dispatch receives it and continues."""

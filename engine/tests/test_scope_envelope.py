@@ -15,7 +15,7 @@ from policy import Blocked, OutsideScope, validate_edits, validate_plan
 from snapshot import inspection
 from readiness import review_reasons
 
-SCOPE = {"paths": ["docs/**"], "max_files": 3, "max_changed_lines": 50}
+SCOPE = {"paths": ["docs/**"], "max_files": 3}
 
 
 class EnvelopeAgents(Reviewers):
@@ -59,8 +59,6 @@ class ContractTests(unittest.TestCase):
                             "outside the files": {**SCOPE, "paths": ["src/**"]},
                             "fewer files than planned": {**SCOPE, "max_files": 0},
                             "over the file cap": {**SCOPE, "max_files": 33},
-                            "over the line cap": {**SCOPE, "max_changed_lines": 3001},
-                            "no line budget": {**SCOPE, "max_changed_lines": None},
                             "extra key": {**SCOPE, "x": 1}}.items():
             with self.subTest(name=name), self.assertRaises(Blocked):
                 validate_plan({**deepcopy(PLAN), "scope": scope}, CONFIG, EXECUTION)

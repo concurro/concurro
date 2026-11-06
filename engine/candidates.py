@@ -1,6 +1,5 @@
 """Pure controller checks for text candidates; no build, test or repository code execution."""
 
-import difflib
 from collections import Counter
 
 DIFF_WORK_LIMIT = 200_000
@@ -9,32 +8,10 @@ import checks
 from policy import Blocked, OutsideScope, path_allowed
 
 
-def lines(text):
-    """LF-delimited source lines, without a phantom trailing line."""
-    parts = (text or "").split("\n")
-    return parts[:-1] if parts[-1] == "" else parts
-
-
 def diff_work(before, after):
     """Bound SequenceMatcher's equal-line pair search before running it."""
     left, right = Counter(before), Counter(after)
     return sum(count * right.get(line, 0) for line, count in left.items())
-
-
-def changed_lines(before, after):
-    """Count LF-line edits with bounded work; pathological inputs use a conservative upper bound."""
-    left, right = lines(before), lines(after)
-    first, last = 0, 0
-    while first < min(len(left), len(right)) and left[first] == right[first]:
-        first += 1
-    while last < min(len(left), len(right)) - first and left[len(left)-last-1] == right[len(right)-last-1]:
-        last += 1
-    left, right = left[first:len(left)-last], right[first:len(right)-last]
-    if diff_work(left, right) > DIFF_WORK_LIMIT:
-        return max(len(left) + len(right), int(before != after))
-    matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
-    total = sum(i2-i1 + j2-j1 for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal")
-    return max(total, int(before != after))
 
 
 def validate(before, after, plan, config, execution):
@@ -48,9 +25,6 @@ def validate(before, after, plan, config, execution):
     scope = checks.scope_of(plan)
     if len(paths) > scope["max_files"]:
         raise Blocked(f"candidate changes {len(paths)} files, over the approved budget of {scope['max_files']}")
-    total = sum(changed_lines(before.get(path), after.get(path)) for path in paths if not checks.generated(path, config["paths"]))
-    if scope["max_changed_lines"] is not None and total > scope["max_changed_lines"]:
-        raise Blocked(f"candidate changes {total} lines, over the approved budget of {scope['max_changed_lines']}")
     return paths
 
 

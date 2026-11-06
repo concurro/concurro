@@ -5,6 +5,8 @@ approves a design, the area it may touch and a size budget, and the implementer
 makes whatever edits that design needs inside them. A design reopens when the change
 outgrows the design, not when it needs one more file.
 
+Line-budget rules below are superseded by [the MVP design](mvp.md#what-remains-enforceable); changed-line counts are informational, not enforced limits.
+
 ## Problem
 
 An approved plan names 1–8 files, and the implementer may replace only those

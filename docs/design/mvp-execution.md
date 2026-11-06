@@ -124,14 +124,13 @@ existing modes; explicitly reject symlinks, binary files and mode-only changes i
 of dropping them. A general patch/binary protocol remains separate work.
 
 Deleted paths remain in review context and cumulative scope accounting. Renames count
-both paths; removed lines count toward the line budget, with existing generated-file
-exceptions. When using `base_tree`, publish deletions as explicit `sha: null` tree entries;
+both paths. Line counts are informational, not an authorization limit. When using `base_tree`, publish deletions as explicit `sha: null` tree entries;
 omitting an entry preserves the original file ([Git Trees API](https://docs.github.com/en/rest/git/trees#create-a-tree)).
 
 Before any push, the controller validates the returned bytes against its recorded parent:
 
 - safe unique paths, protected-path policy and the approved scope;
-- transport/file bounds, and cumulative scope/file/line budgets already in the plan;
+- transport/file bounds, and cumulative path scope and file-count limits already in the plan;
 - the complete proposed change across repair rounds, not just this turn's additions;
 - sufficient bounded context to review every changed file, with no silent omissions.
 

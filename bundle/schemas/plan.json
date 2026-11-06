@@ -30,15 +30,11 @@
         },
         "max_files": {
           "type": "integer"
-        },
-        "max_changed_lines": {
-          "type": "integer"
         }
       },
       "required": [
         "paths",
-        "max_files",
-        "max_changed_lines"
+        "max_files"
       ],
       "additionalProperties": false
     },

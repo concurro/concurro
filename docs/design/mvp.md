@@ -167,7 +167,7 @@ PR-comment repair protocol is required for this MVP.
 ## What remains enforceable
 
 Retain session authentication, centralized write authorization, bounded exports, protected
-paths, approved scope, exact-head review freshness, budget limits and duplicate-safe
+paths, approved scope and file limits, exact-head review freshness, time/spend limits and duplicate-safe
 publication. These protect what Concurro may do; they do not certify the candidate's
 behavior. Do not add exact-file completion requirements or new language-specific rules.
 
@@ -177,10 +177,18 @@ jobs prevent direct memory/filesystem sharing, not malicious influence through s
 Human review and the project's CI remain necessary. Fork PRs are not a universal secrets
 barrier: operators must avoid privileged workflows that execute candidate code with secrets.
 
+Plans have no changed-line budget. Reviewers judge whether the work is coherent and
+reviewable; a large diff alone does not require revision. Diff statistics remain visible.
+Older plans may retain `max_changed_lines` for historical integrity, but it is ignored
+without rewriting the plan or its approval digest. Transport and review-context bounds
+still apply. The schema/instruction update changes the bundle; existing bundle-reconciliation
+rules remain, so deploy after active pilots finish or reconcile them explicitly.
+
 ## Deliberately deferred
 
 | Capability | When to reconsider |
 | ---- | ---- |
+| Parent/sub-issue decomposition | A task contains meaningful, independently reviewable slices; not merely a large line count |
 | Preflight and protection-rule discovery | Targets need more than observing the PR's reported CI |
 | CI logs, reruns, automatic repair | Maintainers repeatedly spend time relaying failures |
 | Merge automation | Explicitly requested after the contribution loop is proven |
@@ -192,3 +200,12 @@ barrier: operators must avoid privileged workflows that execute candidate code w
 Optional existing default-branch cache producers work now; no warming service or workflow
 is required. The initial live proof uses public repositories and Linux GitHub-hosted
 runners. Different languages do not require a Concurro adapter.
+
+### Future: parent and sub-issue planning
+
+A parent issue would hold the overall objective, architecture, dependencies and integration
+criteria. Each sub-issue would carry its slice's detailed plan, implementation and review.
+The planner or reviewers could propose this when the work has separable outcomes; a large
+but cohesive change could remain one task. Size is a signal to consider decomposition,
+not an automatic rejection threshold. Creation, dependency scheduling and parent completion
+are future work, not required for removing the line budget.

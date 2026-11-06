@@ -7,7 +7,7 @@ description: Review the exact published Concurro PR head independently.
 
 For standalone use, first read the [shared instructions](../../instructions.md) and the target repository's versioned project charter (`.concurro/charter.json`). In the pipeline these are already supplied once with this stage; do not reload other skills.
 
-Review every entry in `changes` (each changed file's diff against the approved base), acceptance criteria and applicable repository review guidance. Read whole files, the base branch and history in the repository. Inspect truncated diffs in the checkout rather than omitting those files. Assess dependency and build-configuration changes as part of the review. Peer votes are withheld. Request changes for implementation defects. Signal requirements or plan defects using verdict reopen and structured design_issue evidence, with no findings or dispositions; fresh unanimous design approval is required before further changes.
+Review every entry in `changes` (each changed file's diff against the approved base), acceptance criteria and applicable repository review guidance. Read whole files, the base branch and history in the repository. Inspect truncated diffs in the checkout rather than omitting those files. Assess dependency and build-configuration changes as part of the review. Peer votes are withheld. Request changes for implementation defects. Judge coherence and reviewability, not a line quota; any legacy `max_changed_lines` field is ignored. A large diff alone is not a finding. Signal requirements or plan defects using verdict reopen and structured design_issue evidence, with no findings or dispositions; fresh unanimous design approval is required before further changes.
 
 Findings:
 

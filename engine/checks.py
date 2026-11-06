@@ -3,8 +3,8 @@
 from fnmatch import fnmatchcase
 from functools import lru_cache
 
-SCOPE_KEYS = {"paths", "max_files", "max_changed_lines"}
-MAX_SCOPE_PATHS, MAX_SCOPE_FILES, MAX_SCOPE_LINES = 8, 32, 3000
+SCOPE_KEYS = {"paths", "max_files"}
+MAX_SCOPE_PATHS, MAX_SCOPE_FILES = 8, 32
 MAX_PLAN_FILES = 8
 MAX_OVERLAY_FILES = MAX_SCOPE_FILES + MAX_PLAN_FILES
 
@@ -43,11 +43,11 @@ def scope_pattern(value):
 
 
 def scope_of(plan):
-    """A plan's envelope and budget; a plan without one may change exactly its files, as before envelopes."""
+    """Return path and file limits, ignoring legacy line budgets without mutating the plan."""
     scope = plan.get("scope")
     if scope is not None:
-        return {**scope, "paths": [scope_pattern(path) for path in scope["paths"]]}
-    return {"paths": list(plan["files"]), "max_files": len(plan["files"]), "max_changed_lines": None}
+        return {"paths": [scope_pattern(path) for path in scope["paths"]], "max_files": scope["max_files"]}
+    return {"paths": list(plan["files"]), "max_files": len(plan["files"])}
 
 def in_scope(path, plan):
     """Whether a path lies inside the plan's envelope."""
@@ -58,16 +58,15 @@ def scope_errors(plan):
     scope = plan.get("scope")
     if scope is None:
         return None
-    if not isinstance(scope, dict) or set(scope) != SCOPE_KEYS:
-        return "plan scope needs paths, max_files and max_changed_lines"
+    # Ignore the obsolete field even if a new response includes it; it grants no authority.
+    if not isinstance(scope, dict) or set(scope) - {"max_changed_lines"} != SCOPE_KEYS:
+        return "plan scope needs paths and max_files"
     if not _strings(scope["paths"], 1, MAX_SCOPE_PATHS):
         return "plan scope paths must contain 1–8 distinct non-empty strings (at most 200 characters each)"
     if not all(_relative(scope_pattern(v)) for v in scope["paths"]):
         return "plan scope paths must be relative paths, directories or globs without empty, . or .. components"
     if type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES:
         return "plan scope max_files must cover its primary files and be at most 32"
-    if type(scope["max_changed_lines"]) is not int or not 1 <= scope["max_changed_lines"] <= MAX_SCOPE_LINES:
-        return "plan scope max_changed_lines must be an integer from 1 to 3000"
     if not all(in_scope(path, plan) for path in plan["files"]):
         return "plan files must lie inside the plan scope"
     return None

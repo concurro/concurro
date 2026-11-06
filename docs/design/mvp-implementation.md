@@ -106,7 +106,7 @@ and re-review. Wrong-head approval, protected-path changes and oversized cumulat
 changes cannot publish/hand off. Persistent publication failure stays blocked without
 automatic retries past the limit. Handoff and branch links remain duplicate-safe.
 Exercise deletion and rename publication/recovery, including a rename whose protected
-source makes the whole proposal fail. Deleted paths and lines stay in scope accounting.
+source makes the whole proposal fail. Deleted paths stay in scope accounting; line counts are informational.
 
 ## 4. Remove dead code and update operator material
 

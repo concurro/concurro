@@ -5,6 +5,8 @@ and [the runner executor](runner-executor.md), and settles two questions they
 leave open: agents may change dependencies, and every model works with the
 target's real Git repository.
 
+Line-budget rules below are superseded by [the MVP design](mvp.md#what-remains-enforceable); changed-line counts are informational, not enforced limits.
+
 ## Problem
 
 - **Dependencies are frozen.** The rust profile protects `**/Cargo.toml`,
