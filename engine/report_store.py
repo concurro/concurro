@@ -15,7 +15,7 @@ MAX_PARTS = 128
 INLINE = 12000
 FIELDS = {'qc', 'qc_history', 'design_votes', 'design_history', 'design_feedback', 'objections',
           'reviews', 'review_history', 'review_event', 'findings', 'pr_outbox', 'reason', 'outcomes',
-          'prior_outcomes', 'reopen_history', 'invalidations', 'requests'}
+          'prior_outcomes', 'reopen_history', 'invalidations', 'requests', 'review_draft'}
 
 
 class ReportDataError(Blocked):
@@ -71,6 +71,10 @@ def packed(state):
 
     def visit(value, path):
         """Detach reports or large leaves, never a mutable history collection."""
+        if path == ['review_draft']:
+            detached.append({'path': path, 'digest': digest(value), 'value': value,
+                             'select': [], 'annotations': {}})
+            return None
         if is_report(value):
             core = {k: v for k, v in value.items() if k not in ANNOTATIONS}
             key = digest(core)

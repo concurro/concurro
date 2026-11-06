@@ -1,8 +1,8 @@
 # Issue dashboard
 
 Status: accepted (revision 3, reviewed); rollout steps 1–3 implemented. Replaces the issue's chronological conversation with
-one status comment kept current in place, and posts a new comment only when a human
-must act. Supersedes the issue event and status comment layouts of
+one status comment kept current in place. New comments introduce the team, surface
+intake concerns, or ask for human action. Supersedes the issue event and status comment layouts of
 [comment format](comment-format.md); its vocabulary, escaping, size and
 compatibility rules still apply, and PR reviews are unchanged.
 
@@ -21,9 +21,9 @@ narration also spent notifications, burying the few comments that asked for acti
 
 | Question | Decision |
 | ---- | ---- |
-| Where progress is shown | The status comment, edited in place: a progress line and one table, one row per step |
-| When a new comment is posted | Only when a human must act: input needed, escalated, blocked, plan ready for approval (manual mode), handed off for merge |
-| Where full reports live | One report archive artifact per report, written once and never edited, linked from the status comment's rounds table |
+| Where progress is shown | The status comment, edited in place: a progress line and one table, one row per step with report rounds directly below it |
+| When a new comment is posted | Once at enrollment to introduce the team; intake concerns when present; otherwise input needed, escalated, blocked, plan ready for approval (manual mode), handed off for merge |
+| Where full reports live | One report archive artifact per report, written once and never edited, linked from its stage in the status comment |
 | Clarification | One "Input needed" request at a time, mentioning the issue's author; it is marked answered only when a real answer is recorded |
 | Handed off for merge | When all of Concurro's own gates pass and only its merge policy, or GitHub's own requirements, stand between the PR and a merge. It claims Concurro is done, never that GitHub will allow the merge |
 | Report length | An approval is its headline, plus at most two sentences when what was verified is not evident; findings, objections and questions keep their detail |
@@ -35,42 +35,67 @@ narration also spent notifications, burying the few comments that asked for acti
 ```markdown
 ## Concurro
 
+**Now:** Ready for your review. A human decides whether to merge.
+
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Merge ✅**
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
-| Intake | ✅ Proceed | Actionable, low risk, fits G-USABILITY |
-| Plan | ✅ Version 1 | [Implementation plan](link) · focus: changelog category |
-| Design review | ✅ 4 of 4 approve | Round 1, cooperative and fresh · 0 open objections |
-| Implement | ✅ 3 of 3 checks | Local review ✅ Approve · commit `0c0f521` |
+| Intake | ✅ Proceed | Actionable and aligned with the charter |
+| ↳ Round 1 | | [sonnet-high: ✅ Proceed](link) |
+| Plan | ✅ Version 1 | [Implementation plan](link) |
+| Design review | ✅ 2 of 2 approve | Round 1 · fresh · 0 open objections |
+| ↳ Round 1 cooperative | | [opus-medium: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
+| ↳ Round 1 fresh | | [opus-medium: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
+| Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
 | Code review | ✅ 2 of 2 approve | [PR #20](link) · 0 open findings |
-| Merge | ✅ Handed off | [Handed off for merge](link): a human reviews and merges |
+| ↳ Round 1 | | [opus-high: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
+| Merge | ✅ Handed off | A human reviews and merges |
 
-<details><summary>Rounds</summary>
+<details><summary>Diagnostics</summary>
 
-| Step | Round | claude | codex | Reports |
+Output validation and correction history; these are not design objections.
+
+| Agent | Round | Outcome | Reason | Evidence |
 | ---- | ---- | ---- | ---- | ---- |
-| Intake | 1 | — | ✅ Proceed | [Reports](link) |
-| Design review | 1 cooperative | ✅ Approve | ✅ Approve | [Reports](link) |
-| Design review | 1 fresh | ✅ Approve | ✅ Approve | [Reports](link) |
-| Code review | 1 | ✅ Approve | ✅ Approve | [Reports](link) |
+| opus-medium | 1 cooperative | Recovered · 1/4 corrections | QC acceptance contradicts outstanding questions or concerns | [Rejected output](link) |
 
 </details>
 
 [Audit state](link) · checkpoint reference
 ```
 
+- **Now line:** name the active agent and work, including correction attempts, or
+  state clearly that work is paused, awaiting CI, or ready for human review. A queued
+  model turn is described as waiting for a result, not proof that a runner is active.
 - **Progress line:** every step, the current one in bold with its status emoji.
 - **Step rows:** status uses the comment format vocabulary, plus **▶️ In progress**
   for the current step and plain "Pending" for steps not reached. A step that loops
   shows its latest round: "🛠️ Revise · 2 open objections", "🧭 Reopened · round 2".
 - **Detail column:** engine-generated counts and links, and at most one model
   headline, serialized as a table cell. Never model prose.
-- **Rounds:** a collapsed table of every vote by round, each vote linking to its
-  report archive, so revision history stays visible without any report text here.
+- **Round rows:** each stage's report links appear immediately below its current
+  status, grouped by round and phase. No separate rounds table needs comparing.
+- **Diagnostics:** output corrections are collapsed below the progress table. Each
+  rejected design review links its immutable full output and records the validation
+  reason, reviewer, round, correction allowance and outcome. An accepted correction
+  marks the matching entries recovered. Existing checkpoints without that evidence
+  show the saved feedback and explicitly say the rejected output was not retained.
+- **Introduction:** enrollment queues one friendly acknowledgment and a team table
+  showing each role's pinned model and effort. Lost-response recovery uses the
+  existing comment outbox; already-enrolled tasks get no retrospective introduction.
 - **Action line:** when a human must act, one line under the table names it and links
   the actionable comment.
 - The stage-label fallback line keeps its position under the heading.
+
+## Future: optional status summarizer
+
+An optional `agents.summarizer` assignment can select any configured model profile
+for a short narrative update on meaningful transitions. It should run under a
+separate bounded budget, reuse a summary for unchanged evidence, and fail back to
+the factual display. It must not delay task progress or decide readiness. The
+controller-generated Now line, statuses and report links remain authoritative.
+This is separate follow-up work, not part of the dashboard implementation.
 
 ## Report archive
 

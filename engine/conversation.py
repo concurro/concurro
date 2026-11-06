@@ -175,6 +175,9 @@ def parts_v2(state, kind, source, details):
     plan = ("plan " + code(details["plan"][:12])) if details.get("plan") not in (None, "intake") else ""
     if kind == "intake_rejection":
         return "⚠️ Intake output rejected", [block(value["reason"])], (details["round"],)
+    if kind == "review_rejection":
+        return "Design review output rejected", [text(details['diagnostic']['detail'])], (
+            text(details['provider']), f"round {details['round']}", text(details['phase']))
     if kind == "implementation":
         return "Implementation report", [block(value["summary"]),
                 "Agent-reported validation: " + block(value["validation"])], (f"round {details['round']}",)
@@ -303,6 +306,10 @@ def index_entry(state, kind, source, details):
     value = source_value(state, source)
     if kind == "intake_rejection":
         return {"step": "Intake", "provider": details["provider"], "round": details["round"], "outcome": "invalid"}
+    if kind == "review_rejection":
+        return {"step": "Design review", "provider": details['provider'],
+                "round": f"{details['round']} {details['phase']}", "outcome": "invalid",
+                "diagnostic": details['diagnostic']}
     if kind == "implementation":
         return {"step": "Implement", "provider": details["provider"], "round": str(details["round"]),
                 "outcome": "candidate published"}
@@ -341,9 +348,10 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
         if request is not None:
             event["request"] = request
     else:
-        event.update(source=list(source), kind=kind, details=details, format=(4 if kind == "review" or kind == "qc" and details["phase"] != "intake" else FORMAT),
+        event.update(source=list(source), kind=kind, details=details, format=(4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT),
                      index=index_entry(state, kind, source, details))
-        assessment = source_value(state, source).get("classification", {}).get("source", {}).get("report")
+        value = source_value(state, source)
+        assessment = value.get("classification", {}).get("source", {}).get("report") if kind != 'review_rejection' else None
         if assessment:
             event["index"]["assessment"] = assessment
         if event['format'] == 4:
@@ -424,6 +432,10 @@ def publish(state, github, config, store=None):
                 links = '\n'.join(f"- [Full report{' part ' + str(i) if len(numbers) > 1 else ''}]({root}{n})"
                                   for i, n in enumerate(numbers, 1))
                 body = content_v2(event, title, links, meta)
+                if event['kind'] == 'review_rejection':
+                    diagnostic = event['details']['diagnostic']
+                    body = content_v2(event, title, text(diagnostic['detail']) + '\n\n'
+                                      + 'Rejected output; not an accepted review.\n\n' + links, meta)
             if event.get("format", 1) >= 3:
                 # Archives are artifacts, authored like the audit state.
                 if artifacts is None:
@@ -495,6 +507,8 @@ def compact(state):
     state.pop("review_event", None)
     published = list(journal["receipts"].values())
     archived = [receipt for receipt in published if "artifact" in receipt]
+    if 'review_draft' in state and receipt_matches(state['review_draft'], archived):
+        state.pop('review_draft')
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
     reports += [v["report"] for v in state.get("design_votes", {}).values()]
     notes = {id(r): ARCHIVED if receipt_matches(r, archived) else None for r in reports}

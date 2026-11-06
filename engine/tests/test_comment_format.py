@@ -294,13 +294,13 @@ class StatusSizeTests(Harness, unittest.TestCase):
         self.assertNotIn("<" * 400, body)
         self.assertIn("| Merge |", body)
 
-    def test_oversized_status_comment_drops_the_rounds_table(self):
+    def test_oversized_status_comment_drops_historical_rows(self):
         controller = self.run_to(Reviewers(set()), "gates")
         controller.state["reports"] = [{"step": "Code review", "round": "x" * 2000 + str(i), "provider": "claude",
                                         "outcome": "approve", "artifact": i} for i in range(40)]
         body = controller.summary_body()
         self.assertLessEqual(len(body.encode()), SUMMARY_LIMIT)
-        self.assertNotIn("<summary>Rounds</summary>", body)
+        self.assertNotIn("↳ Round", body)
         self.assertIn("| Merge |", body)
 
 

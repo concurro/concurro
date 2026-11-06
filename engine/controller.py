@@ -328,9 +328,9 @@ class Controller:
         return body
 
     def summary_lines(self, compact):
-        """The status comment: a progress line, one row per step, every vote by round, and any action needed.
+        """The status comment: live steps with their review rounds, then optional diagnostics.
 
-        `compact` drops the rounds table; reports themselves live in their archives.
+        `compact` drops historical rows; reports themselves live in their archives.
         """
         state = self.state
         current = self.current_step()
@@ -338,8 +338,8 @@ class Controller:
         progress = " → ".join(f"**{name} {status.split(' ')[0]}**" if index == current else
                               f"{name} {status.split(' ')[0]}" if not status.startswith("Pending") else name
                               for index, (name, status, _) in enumerate(rows))
-        lines = [MARKER, "## Concurro", "", progress, "",
-                 markup.table(["Step", "Status", "Detail"], [[name, status, detail] for name, status, detail in rows]), ""]
+        lines = [MARKER, "## Concurro", "", self.activity_line(), "", progress, "",
+                 markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact)), ""]
         classification_row = self.classification_row()
         if classification_row:
             lines += [classification_row, ""]
@@ -348,9 +348,58 @@ class Controller:
         action = self.action_line()
         if action:
             lines += [action, ""]
-        if not compact and state.get("reports"):
-            lines += [markup.details("Rounds", self.rounds_table()), ""]
+        diagnostics = self.diagnostics_table()
+        if diagnostics:
+            lines += [markup.details("Diagnostics", diagnostics if not compact else
+                      'Output corrections are recorded in the linked automation audit state.'), ""]
         return "\n".join(lines + self.checkpoints.links())
+
+    def activity_line(self):
+        """Name the current work and agent without implying a paused or queued turn is running."""
+        state, stage = self.state, self.state['stage']
+        paused = {'clarify': 'Waiting for your answers before continuing.',
+                  'blocked': 'Paused — a blocker needs attention.',
+                  'escalated': 'Paused — the task needs attention before it can continue.',
+                  'rejected': 'This issue was not accepted for implementation.',
+                  'stopped': 'Work on this issue has stopped.',
+                  'closed': 'The pull request is closed.',
+                  'merged': 'The pull request has been merged.',
+                  'observed_merged': 'The pull request has been merged.',
+                  'planned': 'The plan is ready; waiting for your approval.',
+                  'publish': 'Publishing the implementation and preparing its pull request.'}
+        if stage in paused:
+            message = paused[stage]
+        elif stage == 'gates':
+            message = ('Ready for your review. A human decides whether to merge.' if state.get('handoff_ready') else
+                       'PR readiness is waiting on: ' + text(state['reason'], 240) if state.get('reason') else
+                       'Checking reviews and CI before marking the pull request ready.')
+        elif stage == 'plan_qc':
+            member = next((m for m in design_roster(self.config) if m['id'] not in state.get('design_votes', {})), None)
+            if member:
+                phase = text(state.get('design_phase', 'cooperative'))
+                repair = state.get('review_repair', {})
+                correcting = bool(repair) and repair.get('binding') == digest([approval_binding(state, self.config), member])
+                task = 'correct its' if correcting else 'complete its'
+                message = f"Waiting for {markup.code(member['provider'])} to {task} {phase} design review"
+                message += (f" — correction {repair.get('attempts', 0)} of {self.config['max_review_repairs']}."
+                            if correcting else '.')
+            else:
+                message = 'Checking the design-review decisions before moving on.'
+        elif stage == 'review':
+            provider = next((p for p in assigned(self.config, 'pr_reviewers')
+                             if p not in state.get('reviews', {})), None)
+            message = (f"Waiting for {markup.code(provider)} to review the pull request."
+                       if provider else 'Checking review findings and deciding whether a repair is needed.')
+        elif stage in ('intake', 'plan', 'implement'):
+            role, task = {'intake': ('triage', 'assess the issue'),
+                          'plan': ('planner', 'prepare the implementation plan'),
+                          'implement': ('implementer', 'implement the approved plan')}[stage]
+            draft = state.get('intake_draft' if stage == 'intake' else 'plan_draft') if stage != 'implement' else None
+            message = f"Waiting for {markup.code(assigned(self.config, role))} to "
+            message += ('correct its output; details are in Diagnostics.' if draft else task + '.')
+        else:
+            message = 'Checking the task’s current state.'
+        return '**Now:** ' + message
 
     def classification_room(self, state, limit):
         """Prefer valid core evidence over optional archived metadata at checkpoint boundaries."""
@@ -510,26 +559,70 @@ class Controller:
             line = f"{paused[0]} **{paused[1]}:** {text(state['reason'], 300)}\n\n" + line
         return line
 
-    def rounds_table(self):
-        """Every archived vote by step and round, each linking its full report."""
-        reports = self.state.get("reports", [])
-        providers = list(dict.fromkeys(r["provider"] for r in reports))
-        rounds = list(dict.fromkeys((r["step"], r["round"]) for r in reports))
+    def progress_rows(self, steps, compact=False):
+        """Place each round immediately below its stage, keeping every archived vote linked."""
+        reports = [r for r in self.state.get("reports", []) if not r.get('diagnostic')]
         rows = []
-        for step, round_ in rounds:
-            cells = []
-            for provider in providers:
-                entry = next((r for r in reversed(reports)
-                              if (r["step"], r["round"], r["provider"]) == (step, round_, provider)), None)
-                vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
-                if entry:
-                    label = (("⚠️", "Output rejected") if entry["outcome"] == "invalid"
-                             else vocabulary.get(entry["outcome"], ("📝", "Agent report")))
-                    cells.append(link(markup.label(label), self.artifact_url(entry["artifact"])))
-                else:
-                    cells.append("—")
-            rows.append([text(step), text(round_)] + cells)
-        return markup.table(["Step", "Round"] + [text(p) for p in providers], rows)
+        for step, status, detail in steps:
+            rows.append([step, status, detail])
+            if compact:
+                continue
+            rounds = list(dict.fromkeys(r['round'] for r in reports if r['step'] == step))
+            current_round, expected = None, []
+            if step == 'Design review' and self.current_step() == 2:
+                current_round = f"{self.state.get('design_generation', 0) + 1} {self.state.get('design_phase', 'cooperative')}"
+                expected = [member['provider'] for member in design_roster(self.config)]
+            elif step == 'Code review' and self.current_step() == 4:
+                current_round = str(self.state.get('round', 0) + 1)
+                expected = assigned(self.config, 'pr_reviewers')
+            if current_round and current_round not in rounds:
+                rounds.append(current_round)
+            for round_ in rounds:
+                entries = {r['provider']: r for r in reports if (r['step'], r['round']) == (step, round_)}
+                cells = []
+                vocabulary = markup.DECISION if step in ('Intake', 'Design review') else markup.VERDICT
+                for provider, entry in entries.items():
+                    label = (('⚠️', 'Output rejected') if entry['outcome'] == 'invalid'
+                             else vocabulary.get(entry['outcome'], ('📝', 'Agent report')))
+                    cells.append(link(f"{provider}: {markup.label(label)}", self.artifact_url(entry['artifact'])))
+                if round_ == current_round:
+                    operation = self.state.get('operation', {})
+                    for provider in expected:
+                        if provider not in entries:
+                            active = (self.state['stage'] in ('plan_qc', 'review')
+                                      and operation.get('status') == 'started' and operation.get('provider') == provider)
+                            cells.append(text(provider + (': Reviewing' if active else ': Waiting')))
+                rows.append([text('↳ Round ' + round_), 'Current' if round_ == current_round else '', ' · '.join(cells)])
+        return rows
+
+    def diagnostics_table(self):
+        """Show output corrections below the live status, with links to immutable evidence."""
+        rows = []
+        for report in self.state.get('reports', []):
+            diagnostic = report.get('diagnostic')
+            if not diagnostic:
+                continue
+            rows.append([text(report['provider']), text(report['round']),
+                         text(f"{diagnostic['status']} · {diagnostic['attempt']}/{diagnostic['limit']} corrections"),
+                         text(diagnostic['detail'], 300),
+                         link('Rejected output', self.artifact_url(report['artifact']))])
+        repair = self.state.get('review_repair', {})
+        if repair and not any(r.get('diagnostic', {}).get('binding') == repair.get('binding')
+                              for r in self.state.get('reports', [])):
+            # Older checkpoints have no rejected-report archive or reviewer identity.
+            rows.append(['Design reviewer', text(self.state.get('design_phase', '')),
+                         text(f"{repair.get('attempts', 0)}/{self.config['max_review_repairs']} corrections"),
+                         text(repair.get('feedback', {}).get('detail', 'Output needs correction.'), 300),
+                         'Not retained by the earlier engine'])
+        for key, label in (('intake_draft', 'Intake'), ('plan_draft', 'Planner')):
+            draft = self.state.get(key)
+            if draft:
+                rows.append([label, '—', text(f"Rejected output {draft['attempt']}"),
+                             text(draft['reason'], 300), 'See the linked report or plan'])
+        if not rows:
+            return ''
+        return ('Output validation and correction history; these are not design objections.\n\n'
+                + markup.table(['Agent', 'Round', 'Outcome', 'Reason', 'Evidence'], rows))
 
     def sync_stage(self):
         """Mirror durable progress to labels without letting display failures authorize or block work."""
@@ -801,7 +894,26 @@ class Controller:
         if "agents" in self.config:
             self.state["model_configuration"] = {key: deepcopy(self.config[key]) for key in ("models", "agents")}
         self.state["prior_outcomes"] = self.retrieve_outcomes()
+        self.welcome()
         self.save()
+
+    def welcome(self):
+        """Introduce the pinned team once, using the same recoverable outbox as other notices."""
+        roles = [('Intake', assigned(self.config, 'triage'), 'intake', None),
+                 ('Planning', assigned(self.config, 'planner'), 'plan', None)]
+        roles += [('Design review', member['provider'], 'plan_qc', member) for member in design_roster(self.config)]
+        roles += [('Implementation', assigned(self.config, 'implementer'), 'develop', None)]
+        roles += [('PR review', name, 'review', None) for name in assigned(self.config, 'pr_reviewers')]
+        rows = []
+        for role, name, stage, member in roles:
+            if name == 'copilot' and 'agents' not in self.config:
+                model, effort = selected_model(self.config, name, stage) or 'CLI default', 'CLI default'
+            else:
+                profile = resolve(self.config, name, stage, member).profile
+                model, effort = profile.model or 'CLI default', profile.effort
+            rows.append([role, markup.code(model, cell=True), text(effort)])
+        conversation.queue(self.state, "I'm on it", "I've picked up your issue and will take a look!\n\n"
+                           + '### Meet the team\n\n' + markup.table(['Role', 'Model', 'Effort'], rows))
 
     def revise_plan(self, stage, reason, invalidate=True, save_exhausted=True):
         """Limit automatic plan revisions across QC feedback and changing inputs."""
@@ -971,7 +1083,9 @@ class Controller:
         try:
             validate_qc(report, 'plan_qc', self.bundle.charter, len(context['review_criteria']),
                         len(context.get('own_objections', [])))
-        except (Blocked, TypeError, KeyError, ValueError):
+        except Blocked as error:
+            raise design.ReviewError('review_shape', detail=str(error)) from None
+        except (TypeError, KeyError, ValueError):
             raise design.ReviewError('review_shape') from None
         own = context.get('own_objections', [])
         try:
@@ -998,7 +1112,8 @@ class Controller:
         repeated = previous.get('signature') == signature
         attempts = previous.get('attempts', 0)
         state['review_repair'] = {'binding': binding, 'signature': signature, 'attempts': attempts, 'feedback': {
-            'code': error.code, 'field': error.field, 'detail': design.REPAIR_DETAILS[error.code]}}
+            'code': error.code, 'field': error.field,
+            'detail': error.detail or design.REPAIR_DETAILS[error.code]}}
         state.pop('approval', None)
         if repeated or attempts >= self.config['max_review_repairs']:
             state.update(stage='escalated', retry_stage='plan_qc',
@@ -1007,6 +1122,13 @@ class Controller:
             state['review_repair']['attempts'] = attempts + 1
             state['review_repairs'] = state.get('review_repairs', 0) + 1
             state.update(stage='plan_qc', reason='Review output needs correction: ' + error.code)
+        state['review_draft'] = deepcopy(report)
+        diagnostic = {'binding': binding, **state['review_repair']['feedback'],
+                      'attempt': state['review_repair']['attempts'], 'limit': self.config['max_review_repairs'],
+                      'status': 'Escalated' if state['stage'] == 'escalated' else 'Correction requested'}
+        conversation.queue(state, None, source=('review_draft',), kind='review_rejection', details={
+            'provider': member['provider'], 'round': state['design_generation'] + 1,
+            'phase': state.get('design_phase', 'cooperative'), 'diagnostic': diagnostic})
         self.save()
 
     def quality_control(self, stage):
@@ -1063,6 +1185,10 @@ class Controller:
                 return
             # Validate fully before recording a vote or resolving an objection.
             state = deepcopy(self.state)
+            binding = digest([approval_binding(state, self.config), member])
+            for previous in state.get('reports', []):
+                if previous.get('diagnostic', {}).get('binding') == binding:
+                    previous['diagnostic']['status'] = 'Recovered'
             state.pop('review_repair', None)
             resolved, disposition_ids = design.update_objections(state, report, member, phase)
         else:

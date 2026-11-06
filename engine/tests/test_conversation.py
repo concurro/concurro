@@ -61,13 +61,14 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual([s["turn"] for s in sessions], [0, 1, 2])
             self.assertEqual(len({s["scope"] for s in sessions}), 1)
             self.assertNotEqual(sessions[0]["scope"], plans[0]["controller_session"]["scope"])
-        self.assertEqual(self.events(), [], "progress posts no issue comments")
+        self.assertEqual([c["body"].split("\n")[1] for c in self.events()], ["### I'm on it"],
+                         "progress posts no additional issue comments")
         archives = self.gh.archives()
         self.assertIn("Define the error behavior.", "\n".join(archives))
         self.assertEqual(sum(a.split("\n")[1].startswith("### ✅ Plan QC · ") for a in archives), 6)
         summary = self.gh.summary()["body"]
         self.assertIn("| Design review | ✅ 2 of 2 approve |", summary)
-        self.assertIn("| Design review | 3 fresh | [✅ Approve]", summary)
+        self.assertIn("| ↳ Round 3 fresh |  | [claude: ✅ Approve]", summary)
         self.assertFalse(state["conversation"]["pending"])
         before = deepcopy(self.events())
         controller.save()
@@ -84,7 +85,7 @@ class ConversationTests(unittest.TestCase):
             """Disconnect once after the server stores the first archive."""
             nonlocal failed
             result = original(path, method, data)
-            if not failed and method == "POST" and (data or {}).get("body", "").startswith(conversation.MARKER):
+            if not failed and method == "POST" and path.endswith("/artifacts") and (data or {}).get("body", "").startswith(conversation.MARKER):
                 failed = True
                 raise RuntimeError("lost response")
             return result

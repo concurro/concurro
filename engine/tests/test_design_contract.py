@@ -147,7 +147,8 @@ class DesignContractTests(unittest.TestCase):
         controller.state['plan_event_intent'] = {'plan': controller.state['plan_id'], 'round': 1, 'title': 'x · plan updated'}
         controller.save()
         self.assertNotIn('plan_event_intent', self.load().state)
-        self.assertFalse([c for c in self.gh.comments if c['body'].startswith(conversation.MARKER)])
+        self.assertEqual([c['body'].split('\n')[1] for c in self.gh.comments
+                          if c['body'].startswith(conversation.MARKER)], ["### I'm on it"])
         self.assertIn('| Plan | ✅ Version 1 | [Implementation plan](', self.gh.summary()['body'])
 
     def test_review_keeps_complete_design_without_peer_verdicts_or_publication_hints(self):

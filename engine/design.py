@@ -21,9 +21,9 @@ OBJECTION_INSTRUCTIONS = (
 class ReviewError(Blocked):
     """A correctable reviewer-output failure with fixed, non-sensitive feedback."""
 
-    def __init__(self, code, field=''):
+    def __init__(self, code, field='', detail=''):
         """Carry a catalog code and schema-derived field path, never model or transport text."""
-        self.code, self.field = code, field
+        self.code, self.field, self.detail = code, field, detail
         super().__init__(code)
 
 

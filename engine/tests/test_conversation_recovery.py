@@ -65,7 +65,7 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertTrue(all(not v["resolved"] for v in state.get("objections", [])))
         timeline = "\n".join(gh.archives())
         self.assertFalse([c for c in gh.comments if c["body"].startswith(conversation.MARKER)
-                          and not any(label in c["body"] for label in ("Ready for review", "Implementation started"))], "only actionable comments are posted")
+                          and not any(label in c["body"] for label in ("Ready for review", "Implementation started", "I'm on it"))], "only the welcome and actionable comments are posted")
         self.assertNotIn(plan_text, timeline)
         self.assertIn(plan_text, controller.checkpoints.plan['body'])
         for full_text in (rationale,):
