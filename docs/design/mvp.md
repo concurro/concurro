@@ -95,7 +95,7 @@ identity checks when deploying new engine code.
 Upstream advancing alone does not restart a task. An explicit base change goes through
 the existing replan path and invalidates affected approvals and reviews.
 
-The target supplies its existing charter, provider/model choices, path policies and
+The target supplies its charter, [named model profiles and agent assignments](../concurro.md#models-and-agents), path policies and
 resource limits, plus these optional files:
 
 | File | Purpose |

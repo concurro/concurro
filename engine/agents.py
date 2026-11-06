@@ -12,8 +12,9 @@ import uuid
 
 from bundle import Bundle
 from credentials import Credential
+from model_config import resolve
 from github import Transient
-from policy import Blocked, SessionFailure, UncertainOutcome, selected_model
+from policy import Blocked, SessionFailure, UncertainOutcome, digest
 from relay import ExchangeError, Operator
 from snapshot import inspection
 import turns
@@ -73,6 +74,10 @@ class Agents:
 
     def credential(self, provider, stage, task):
         """Every call uses the gateway; the identity names the provider route, never a secret."""
+        try:
+            provider = resolve(self.config, provider, stage).profile.harness
+        except ValueError:
+            raise Blocked(f"{provider} has no inference gateway route") from None
         if provider not in PROVIDERS:
             raise Blocked(f"{provider} has no inference gateway route")
         return Credential("gateway:" + provider, provider, "org", ADAPTER)
@@ -87,8 +92,8 @@ class Agents:
         if evaluation is not None and (stage != "plan_qc" or session is not None
                                        or not re.fullmatch(r"[a-f0-9]{32}", evaluation)):
             raise Blocked("evaluation requires a fresh design-review turn")
-        model = (context["reviewer_identity"]["model"] if stage == "plan_qc"
-                 else selected_model(self.config, provider, stage))
+        agent = resolve(self.config, provider, stage, context.get("reviewer_identity"))
+        model = agent.profile.model
         if not model.strip():
             raise Blocked("live inference requires an explicit model ID for every participating role")
         expected = self.credential(provider, stage, None)
@@ -98,7 +103,8 @@ class Agents:
             raise Blocked("agent transport bundle differs from the approved bundle")
         if session and not self.retained:
             raise Blocked("retained sessions need a transcript store")
-        request = {"provider": provider, "model": model, "stage": stage, "gateway": self.executor.gateway,
+        request = {"provider": agent.profile.harness, "model": model, "effort": agent.profile.effort,
+                   **({"agent": agent.record()} if "agents" in self.config else {}), "stage": stage, "gateway": self.executor.gateway,
                    "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text, "instruction_texts": self.bundle.instruction_texts,
                    "context": context, "session": session, "local_candidate": candidate is not None, "evaluation": evaluation}
         turn = {"request": request, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
@@ -156,6 +162,9 @@ class RunnerExecutor:
         role = str(request.get("stage")) + ":" + str(request.get("provider"))
         base = request.get("context", {}).get("base") or turn["spec"]["refs"][turn["spec"]["base_branch"]]
         phase = request.get("evaluation") or (request.get("session") or {}).get("scope") or request.get("context", {}).get("review_phase", "single")
+        if request.get("agent"):
+            # Staffing includes the resolved profile, even for fresh turns on the same CLI.
+            phase = digest([phase, request["agent"]])
         binding = {**self.task, "base": base, "role": role, "phase": phase}
         for attempt in range(SUBMIT_ATTEMPTS):
             if attempt:

@@ -1,6 +1,7 @@
 """Scope provider transcripts to one role and one cooperative loop."""
 
 from policy import Blocked, digest, selected_model
+from model_config import resolve
 
 
 def prepare(state, config, provider, stage, context):
@@ -12,7 +13,10 @@ def prepare(state, config, provider, stage, context):
                     state["base"], state["requirements"], state["bundle_id"],
                     state["config_digest"], state.get("design_reopens", 0),
                     state.get("plan_id") if stage == "develop" else None])
-    role = stage + ":" + provider + ":" + model
+    role = role_key(config, provider, stage, model)
+    if "agents" in config:
+        identity = resolve(config, provider, stage).record()
+        scope = digest([scope, identity])
     sessions = state.setdefault("sessions", {})
     current = sessions.get(role, {})
     if current.get("binding", current.get("scope")) != scope:
@@ -30,3 +34,11 @@ def restart(state, session):
     state["sessions"][session["role"]] = {
         "binding": binding, "scope": digest([binding, count]), "turn": 0, "restarts": count,
         "previous": {"scope": current["scope"], "turn": current["turn"]}}
+
+
+def role_key(config, provider, stage, model):
+    """The same transcript key for recording turns and inspecting their first-pass count."""
+    key = stage + ":" + provider + ":" + model
+    if "agents" in config:
+        key += ":" + digest(resolve(config, provider, stage).record())[:16]
+    return key

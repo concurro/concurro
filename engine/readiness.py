@@ -1,5 +1,6 @@
 """Current-head review and CI eligibility for marking a draft PR ready."""
 
+from model_config import assigned
 from policy import approval_valid, in_scope, path_allowed
 
 
@@ -18,7 +19,7 @@ def review_reasons(state, pr, files, threads, config):
         reasons.append("PR targets a different base branch")
     if not approval_valid(state, config):
         reasons.append("approved plan missing or stale")
-    for provider in config["reviewers"]:
+    for provider in assigned(config, "pr_reviewers"):
         report = state.get("reviews", {}).get(provider, {})
         if (report.get("head") != state.get("head") or report.get("verdict") != "approve"
                 or report.get("findings") or report.get("input_revision") != state.get("input_revision", 0)):

@@ -160,7 +160,7 @@ def parser():
     evaluation = commands.add_parser("evaluate", help="run four fresh design-review fixtures on GitHub runners (uses model budget)")
     evaluation.add_argument("repository")
     evaluation.add_argument("issue", type=int)
-    evaluation.add_argument("provider", choices=("claude", "codex"))
+    evaluation.add_argument("provider", help="model profile name (legacy configs: claude or codex)")
     resolve = commands.add_parser("resolve", help="record what happened to a write of unknown outcome")
     resolve.add_argument("intent")
     resolve.add_argument("disposition", choices=("applied", "not-applied"))

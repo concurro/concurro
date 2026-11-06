@@ -20,6 +20,7 @@ from controller import Controller, validate_config
 from conversation import PublicationError
 from github import NotFound, Transient
 from mirror import Mirror
+from model_config import parse as parse_models, resolve
 from policy import Blocked
 import private
 from relay import ExchangeError, Operator
@@ -29,8 +30,8 @@ from .errors import GatewayStop
 from .gateway import GatewayGitHub, LEASE_SECONDS
 from .settings import CHECKOUT
 from .targets import enrollment
+from .target_config import read_remote
 
-CONFIG = ".concurro/config.json"
 CONFIG_LIMIT = 64_000
 RENEW_SECONDS = LEASE_SECONDS // 3
 DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
@@ -102,7 +103,7 @@ def content(reader, repository, path, sha, limit):
 
 
 def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_sha=None):
-    """Read and validate `.concurro/` at the default-branch head, through the read token.
+    """Read JSON or YAML `.concurro/` configuration at the default-branch head, through the read token.
 
     The target must name the verified App. Its `engine` pin is
     optional: without one, it runs whatever engine the operator serves; with one, only that. Files are staged in a private temporary directory only while the
@@ -110,11 +111,12 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_
     """
     repository = target.fork
     sha = config_sha or head(reader, repository)
-    config = json.loads(content(reader, repository, CONFIG, sha, CONFIG_LIMIT))
+    config = read_remote(lambda path: content(reader, repository, path, sha, CONFIG_LIMIT))
     if not isinstance(config, dict):
         raise Blocked("target configuration must be an object")
     validate_config(config)
-    active = {config["planner"], config["implementer"], config["qc"], *config["reviewers"]}
+    active = ({a.profile.harness for a in parse_models(config).profiles} if "agents" in config else
+              {config["planner"], config["implementer"], config["qc"], *config["reviewers"]})
     if not active <= {"claude", "codex"}:
         raise Blocked("the MVP runner supports Claude and Codex roles only")
     if config["repository"].lower() != repository.lower():
@@ -201,7 +203,7 @@ class Worker:
 
     def evaluate(self, repository, issue, provider):
         """An owner-requested fixture evaluation using the target's normal runner authorization."""
-        if repository not in self.targets or provider not in ("claude", "codex"):
+        if repository not in self.targets:
             raise Blocked("evaluation needs a configured target and provider")
         key = (repository, issue)
         generation = self.gateway.acquire(key, "design-evaluation", consume=False)
@@ -212,6 +214,7 @@ class Worker:
                 target = self.load(repository, issue, pin=True)
                 facade = GatewayGitHub(repository, issue, generation, self.gateway, self.reader(repository))
                 executor = self.make_executor(repository, facade)
+                resolve(target.config, provider, "plan_qc")
                 agents = self.agents(target.config, executor, bundle=target.bundle)
                 base = head(self.reader(target.config["upstream"]), target.config["upstream"])
                 from design_eval import evaluate

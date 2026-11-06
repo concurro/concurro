@@ -14,7 +14,7 @@ it fetches source anonymously and does not give GitHub write credentials to runn
 
 In the fork's default branch, install:
 
-- `.concurro/config.json` and `.concurro/charter.json` from the example, adapted to the project.
+- `.concurro/config.yaml` (or `config.json`, never both) and `.concurro/charter.json`, adapted from the example.
 - `.github/workflows/concurro-executor.yml`, calling `agent.yml@deployed` with only its
   centrally issued session ID and explicitly forwarding the repository secret
   `CONCURRO_GATEWAY_URL`. Store the deployment URL in that secret, not in source or
@@ -35,11 +35,68 @@ source commit. Setup, instructions and caller workflow changes apply to new task
 changing an active task requires reconciliation. An optional target `engine` pin must
 match the served commit. Omit it when the same operator controls service and target.
 
+## Models and agents
+
+Use named model profiles and assign each pipeline role explicitly:
+
+```yaml
+models:
+  opus55-high:
+    provider: anthropic
+    model: claude-opus-5-5
+    effort: high
+  sol61-medium:
+    provider: openai
+    model: gpt-6.1-sol
+    effort: medium
+  sol61-high:
+    provider: openai
+    model: gpt-6.1-sol
+    effort: high
+agents:
+  triage: sol61-medium
+  planner: opus55-high
+  plan_reviewers: [opus55-high, sol61-high]
+  implementer: opus55-high
+  pr_reviewers: [opus55-high, sol61-high]
+```
+
+`anthropic` uses Claude Code; `openai` uses Codex. Each profile requires a model and
+an explicit effort. Choose an effort supported by that model and the pinned CLI;
+Concurro passes it through on fresh and resumed calls. Profile names are identifiers,
+not settings: the `effort` field determines the actual value. Unknown profile fields
+and role names are rejected so misspellings do not silently change execution.
+
+Each review list needs at least two profiles with distinct `(provider, model)` pairs.
+Aliases or different efforts for the same provider/model cannot appear together in
+one reviewer list. Profiles may share a vendor, including different OpenAI models.
+Only `plan_reviewers` review plans; triage, planner and implementer assignments add
+no implicit reviewers. Triage and planning may share a profile, including in autonomous
+mode. Votes, findings,
+reports, transcripts and runner staffing stay separate by profile; the audit records
+the resolved provider, model and effort. Changing assignments or settings invalidates
+the configuration binding rather than reusing old approvals or transcripts.
+
+JSON supports the same structure. YAML uses safe data loading, with duplicate keys
+and aliases rejected. The service image installs its pinned YAML dependency; local
+operators running Python directly install `service/requirements.txt` first. Neither
+runners nor the exchange need the YAML package.
+
+Existing JSON configurations with `qc`, `qc_model`, `planner`, `implementer`,
+`reviewers` and provider-keyed `models` remain supported, including their existing
+design roster and checkpoint identities. Their CLI efforts are made explicit at the
+previous pinned-client defaults: Claude `medium`, Codex `low`. To migrate, replace
+those assignments and the model map together with `models` and `agents` above; do
+not mix the two formats. Keep repository, policy and budget settings unchanged.
+A JSON-to-YAML-only conversion has the same configuration digest; changing profiles
+is a configuration change for new tasks or explicit reconciliation. Evaluation uses
+a configured profile name (legacy configurations still use `claude` or `codex`).
+
 ## Contribution loop
 
 The issue dashboard shows intake, planning, design approval,
 implementation, independent PR reviews and readiness. Reports are archived before
-compaction. Findings have stable IDs and native threads. Only their raising provider can
+compaction. Findings have stable IDs and native threads. Only their raising reviewer profile can
 retire them; ambiguous or reopened thread resolutions remain manual.
 
 Implementation may add, change, delete or rename bounded UTF-8 regular files inside the
@@ -82,7 +139,7 @@ registry entry or blindly replay a dispatch.
 execution fallback. Bundle/config changes invalidate old approvals. Preserve the old
 issue and archives; use a fresh pilot issue rather than bypassing that check.
 
-An explicitly requested `evaluate <issue-repository> <issue> <claude|codex>` runs four
+An explicitly requested `evaluate <issue-repository> <issue> <profile>` runs four
 fresh design fixtures on ordinary runner sessions. It uses model budget and temporarily
 owns that task, preserving its queue. Reports go under the service state's `evaluations/`;
 no fixture model work runs on the host. Use an idle configured task.

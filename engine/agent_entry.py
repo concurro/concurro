@@ -32,6 +32,7 @@ def command_for(request, schema_path, output_path):
     """Construct provider-specific invocations: native tools, the gateway as the only model endpoint."""
     model = ["--model", request["model"]] if request["model"] else []
     provider = request["provider"]
+    effort = request.get("effort", "medium" if provider == "claude" else "low")
     session = request.get("session")
     resume = request.get("resume_id")
     gateway = request["gateway"]
@@ -46,14 +47,15 @@ def command_for(request, schema_path, output_path):
                 "--output-last-message", output_path, "-c", 'sandbox_mode="danger-full-access"',
                 "-c", 'approval_policy="never"', "-c", 'model_provider="concurro"',
                 "-c", "model_providers.concurro=" + toml(endpoint), "-c", "analytics.enabled=false",
-                "-c", "check_for_update_on_startup=false", *model, *([resume] if resume else []), "-"]
+                "-c", "check_for_update_on_startup=false",
+                "-c", "model_reasoning_effort=" + toml(effort), *model, *([resume] if resume else []), "-"]
     if provider == "claude":
         settings = {"disableAllHooks": True, "skipWebFetchPreflight": True}
         return ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--settings", json.dumps(settings),
                 "--permission-mode", "bypassPermissions",
                 *(["--resume", resume] if resume else
                   ["--session-id", request["session_id"]] if session else ["--no-session-persistence"]),
-                "--output-format", "json", "--json-schema", json.dumps(request["schema"]), *model]
+                "--output-format", "json", "--json-schema", json.dumps(request["schema"]), "--effort", effort, *model]
     raise ValueError("unsupported provider")
 
 
@@ -62,7 +64,8 @@ def provider_environment(request):
     key = os.environ[KEY_VARIABLE]
     if request["provider"] == "claude":
         return {"ANTHROPIC_BASE_URL": request["gateway"]["url"], "ANTHROPIC_AUTH_TOKEN": key,
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "CLAUDE_CODE_EFFORT_LEVEL": request.get("effort", "medium")}
     return {}
 
 

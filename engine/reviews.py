@@ -248,7 +248,8 @@ def review_body_v2(state, config, item, report, findings, placed):
     if unthreaded:
         lines += ["", Droppable(markup.details("Findings without a file", "\n\n".join(
             f"**{text(f['id'])} · {markup.finding_title(f)}**\n\n{block(f['detail'])}" for f in unthreaded)))]
-    lines += ["", markup.sub(text(f"{item['provider']} / {report['model']}"), "head " + code(item["head"][:7]),
+    effort = (" / effort " + report["agent"]["effort"]) if report.get("agent") else ""
+    lines += ["", markup.sub(text(f"{item['provider']} / {report['model']}" + effort), "head " + code(item["head"][:7]),
                              f"review {item['sequence']}")]
     body = "\n".join(str(line) for line in lines)
     if len(body) > REVIEW_BODY_LIMIT:

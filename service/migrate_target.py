@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from controller import validate_config
+from .target_config import read_local
 
 REMOVED = {"execution_profiles", "execution_profile", "required_checks", "merge_enabled",
            "local_reviewer", "local_reviewer_model", "max_local_repairs", "max_local_seconds",
@@ -35,7 +36,7 @@ def main(argv=None):
     parser.add_argument("config", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
-    data = migrate(json.loads(args.config.read_text()))
+    data = migrate(read_local(args.config))
     with args.output.open("x") as handle:
         handle.write(json.dumps(data, indent=2) + "\n")
 

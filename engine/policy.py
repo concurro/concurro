@@ -1,6 +1,7 @@
 """Pure validation rules shared by the controller and offline tests."""
 
 import hashlib
+import model_config
 import json
 import re
 from pathlib import PurePosixPath
@@ -50,6 +51,8 @@ def task_branch(repository, issue):
 
 def selected_model(config, provider, stage):
     """Allow a separate QC model while retaining provider defaults for other roles."""
+    if "agents" in config:
+        return model_config.resolve(config, provider, stage).profile.model
     if stage in ("intake", "plan_qc") and config["qc_model"]:
         return config["qc_model"]
     return config["models"][provider]
@@ -118,7 +121,13 @@ def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=
 
 
 def design_roster(config):
-    """Deduplicate every participating provider/model identity, retaining role provenance."""
+    """The explicit plan reviewers, or the original deduplicated roster for legacy tasks."""
+    if "agents" in config:
+        parsed = model_config.parse(config)
+        return [{"id": digest(parsed.resolve(name).record()), "provider": name,
+                 "model": parsed.resolve(name).profile.model, "effort": parsed.resolve(name).profile.effort,
+                 "agent": parsed.resolve(name).record(), "roles": ["plan_qc"]}
+                for name in parsed.agents.plan_reviewers]
     members = [(config["planner"], "plan"), (config["implementer"], "develop"),
                (config["qc"], "intake")]
     members += [(provider, "review") for provider in config["reviewers"]]

@@ -270,6 +270,9 @@ def content_v2(event, title, body, meta):
 def archive(event, state):
     """Format 3: a report's archive, its heading and headline, then the report verbatim as JSON."""
     title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
+    if event["details"].get("agent"):
+        agent = event["details"]["agent"]
+        meta = (*meta, text(f"{agent['profile']} / {agent['provider']} / {agent['model']} / effort {agent['effort']}"))
     value = source_value(state, event["source"])
     report = value.get("review") if event["kind"] == "local" else value
     headline = markup.headline(report, "rationale" if event["kind"] == "qc" else "summary") if report else None

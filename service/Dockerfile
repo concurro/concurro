@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && rm -rf /var/lib/apt/lists/* \
     && git config --system safe.directory /opt/concurro \
     && useradd --system --uid 65533 --user-group --no-create-home --home-dir /nonexistent concurro
+COPY service/requirements.txt /tmp/concurro-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/concurro-requirements.txt
 COPY . /opt/concurro
 # Only the commit itself: anything untracked in the build context is dropped, and the service
 # refuses to start if a tracked file differs.

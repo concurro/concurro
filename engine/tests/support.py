@@ -8,7 +8,7 @@ import sys
 ENGINE = Path(__file__).resolve().parents[1]
 ROOT = ENGINE.parent
 TARGET = ROOT / "examples/stacks-core"
-CONFIG = json.loads((TARGET / ".concurro/config.json").read_text())
+CONFIG = json.loads((ENGINE / "tests/fixtures/legacy-config.json").read_text())
 PROFILES = []
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENGINE))

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import actions
+from model_config import assigned, resolve, parse as parse_models
 import readiness
 import candidates
 import conversation
@@ -88,22 +89,30 @@ def validate_config(config):
         raise Blocked("invalid repository or base branch")
     if not isinstance(config["bot_login"], str) or not config["bot_login"].endswith("[bot]"):
         raise Blocked("bot_login must name the GitHub App's [bot] account")
-    reviewers = config["reviewers"]
-    if not {"claude", "codex"}.issubset(reviewers) or len(set(reviewers)) != len(reviewers):
-        raise Blocked("independent Claude and Codex reviews are mandatory")
-    if not set(reviewers).issubset(PROVIDERS):
-        raise Blocked("unknown reviewer")
-    if config["planner"] not in PROVIDERS or config["implementer"] not in PROVIDERS:
-        raise Blocked("unknown planner or implementer")
-    if type(config["autonomous"]) is not bool or config["qc"] not in PROVIDERS or not isinstance(config["qc_model"], str):
-        raise Blocked("invalid autonomy or QC configuration")
-    if config["autonomous"] and config["qc"] == config["planner"]:
-        raise Blocked("QC must use a different provider from the planner")
+    if "agents" in config:
+        try:
+            parse_models(config)
+        except (ValueError, TypeError) as error:
+            raise Blocked("invalid model configuration: " + str(error)) from None
+        if type(config["autonomous"]) is not bool:
+            raise Blocked("invalid autonomy configuration")
+    else:
+        reviewers = config["reviewers"]
+        if not {"claude", "codex"}.issubset(reviewers) or len(set(reviewers)) != len(reviewers):
+            raise Blocked("independent Claude and Codex reviews are mandatory")
+        if not set(reviewers).issubset(PROVIDERS):
+            raise Blocked("unknown reviewer")
+        if config["planner"] not in PROVIDERS or config["implementer"] not in PROVIDERS:
+            raise Blocked("unknown planner or implementer")
+        if type(config["autonomous"]) is not bool or config["qc"] not in PROVIDERS or not isinstance(config["qc_model"], str):
+            raise Blocked("invalid autonomy or QC configuration")
+        if config["autonomous"] and config["qc"] == config["planner"]:
+            raise Blocked("QC must use a different provider from the planner")
     if type(config["max_plan_revisions"]) is not int or not 0 <= config["max_plan_revisions"] <= 3:
         raise Blocked("invalid plan revision budget")
     if type(config.get('max_review_repairs')) is not int or not 0 <= config['max_review_repairs'] <= 8:
         raise Blocked('invalid review repair budget')
-    if set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values()):
+    if "agents" not in config and (set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values())):
         raise Blocked("model map must name each provider")
     documents = config["policy_documents"]
     if not strings(documents, 10) or not all(
@@ -343,7 +352,7 @@ class Controller:
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
         if state.get("pr"):
-            return 4 if len(state.get("reviews", {})) < len(self.config["reviewers"]) else 5
+            return 4 if len(state.get("reviews", {})) < len(assigned(self.config, "pr_reviewers")) else 5
         if state.get("local_status") or state.get("approval"):
             return 3
         if state.get("design_votes") or stage == "clarify" and not state.get("plan", {}).get("questions") and state.get("plan"):
@@ -384,7 +393,7 @@ class Controller:
         elif name == "Code review":
             reviews = state.get("reviews", {})
             approve = sum(r["verdict"] == "approve" for r in reviews.values())
-            total = len(self.config["reviewers"])
+            total = len(assigned(self.config, "pr_reviewers"))
             status = f"✅ {approve} of {total} approve" if done else f"▶️ {len(reviews)} of {total} reviewed"
             open_findings = sum(f["status"] in ("open", "withdrawn") for f in state.get("findings", []))
             pr = link(f"PR #{state['pr']}", self.pr_url(state["pr"])) if state.get("pr") else ""
@@ -552,6 +561,8 @@ class Controller:
         caller = context
         context = {**context, "repository_commit": self.state.get("head", self.state["base"]),
                    "repository": self.repository_refs("controller_candidate" in context)}
+        if "agents" in self.config:
+            context["agent"] = resolve(self.config, provider, stage).record()
         size = transport_size(context)
         if size > self.config["max_context_bytes"]:
             raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
@@ -609,6 +620,8 @@ class Controller:
                 "id": identifier, "provider": provider, "stage": stage, "request": None, "attempts": 0,
                 "uncertain": 0, "attempt": None, "status": "new",
                 "contract": {k: context[k] for k in VOLATILE_REQUEST if k in context}}
+            if "agents" in self.config:
+                current["agent"] = resolve(self.config, provider, stage).record()
             self.consuming = None
         return current
 
@@ -685,6 +698,8 @@ class Controller:
                       "design_reopens": 0, "design_votes": {}, "design_history": [],
                       "design_phase": "cooperative"}
         self.state.update({key: self.config[key] for key in ("upstream", "fork", "config_sha") if key in self.config})
+        if "agents" in self.config:
+            self.state["model_configuration"] = {key: deepcopy(self.config[key]) for key in ("models", "agents")}
         self.state["prior_outcomes"] = self.retrieve_outcomes()
         self.save()
 
@@ -852,7 +867,9 @@ class Controller:
         A design reopen is kept as the pending review event, not as the head's report.
         """
         sequence, identifiers = findings.apply(state, provider, report, state["head"])
-        report.update(head=state["head"], model=self.config["models"][provider] or "CLI default",
+        if "agents" in self.config:
+            report["agent"] = resolve(self.config, provider, "review").record()
+        report.update(head=state["head"], model=selected_model(self.config, provider, "review") or "CLI default",
                       input_revision=state.get("input_revision", 0), sequence=sequence, finding_ids=identifiers)
         if report["verdict"] == "reopen":
             state["review_event"] = report
@@ -936,7 +953,7 @@ class Controller:
             context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config, self.state["execution"])]
         if member and state.get("head"):
             context["published_files"] = self.files(state["head"], state["plan"]["files"])
-        provider = member["provider"] if member else self.config["qc"]
+        provider = member["provider"] if member else assigned(self.config, "triage")
         if member:
             context['review_output_budget'] = self.review_output_budget(context)
             repair = state.get('review_repair', {})
@@ -961,6 +978,7 @@ class Controller:
             "risk": report["risk"], "rationale": report["rationale"][:500], "report_digest": digest(report),
             "base": state["base"], "plan": state.get("plan_id"), "provider": provider,
             "model": member["model"] if member else selected_model(self.config, provider, stage),
+            **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "round": state["design_generation"] + 1, "phase": phase if member else "intake"})
         identity = member or {"id": digest([provider, "intake"]), "provider": provider,
@@ -968,6 +986,7 @@ class Controller:
         try:
             conversation.queue(state, None, source=("qc", stage), kind="qc", details={
                                    "provider": provider, "model": identity["model"],
+                                   **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
                                    "plan": state.get("plan_id", "intake"), "round": state["design_generation"] + 1,
                                    "phase": phase if member else "intake", "reviewer": identity["id"],
                                    "resolved": resolved, "disposition_ids": disposition_ids})
@@ -980,7 +999,7 @@ class Controller:
         state["reason"] = report["rationale"]
         decision = report["decision"]
         if member:
-            session = state.get("sessions", {}).get(f"{stage}:{provider}:{member['model']}", {})
+            session = state.get("sessions", {}).get(sessions.role_key(self.config, provider, stage, member["model"]), {})
             state["design_votes"][member["id"]] = {"identity": member,
                 "binding": approval_binding(state, self.config), "report": report,
                 "first_pass": (phase == "cooperative" and session.get("turn") == 1
@@ -1198,7 +1217,7 @@ class Controller:
             context["accumulated_changes"] = changes(self.files(self.state["base"], paths, inspection=True),
                                                      self.files(self.state["head"], paths, inspection=True),
                                                      self.config["paths"])
-        plan = self.ask(self.config["planner"], "plan", context)
+        plan = self.ask(assigned(self.config, "planner"), "plan", context)
         try:
             validate_plan(plan, self.config, self.state["execution"])
             expected = {v["id"] for v in context["open_objections"]}
@@ -1259,7 +1278,7 @@ class Controller:
             context = self.context()
             context.update(prior_reviews=state["reviews"], review_findings=findings.open_findings(state),
                            implementation_feedback=feedback, design_authorization=self.design_authorization())
-            report = self.ask(self.config["implementer"], "develop", context)
+            report = self.ask(assigned(self.config, "implementer"), "develop", context)
             extraction_error = report.get("workspace_error")
             report = {key: value for key, value in report.items() if key != "workspace_error"}
             candidates.development(report)
@@ -1301,7 +1320,7 @@ class Controller:
         """
         contexts = [("local review", local_context)] if local_context is not None else []
         contexts += [(provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40, dependencies))
-                     for provider in self.config["reviewers"]]
+                     for provider in assigned(self.config, "pr_reviewers")]
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [f"{name} ({size} of {limit} bytes)" for name, context in contexts
                 if (size := transport_size(context)) > limit]
@@ -1375,7 +1394,9 @@ class Controller:
                               "base": state["base"], "plan": state["plan_id"]}
         state["stage"] = "publish"
         conversation.queue(state, None, source=("candidate",), kind="implementation",
-                           details={"provider": self.config["implementer"], "round": state["round"]})
+                           details={"provider": assigned(self.config, "implementer"), "round": state["round"],
+                                    **({"agent": resolve(self.config, assigned(self.config, "implementer"), "develop").record()}
+                                       if "agents" in self.config else {})})
         self.save()
 
     def publish(self):
@@ -1470,7 +1491,7 @@ class Controller:
     def review(self):
         """Run one fresh provider review of the same immutable change."""
         state = self.state
-        provider = next((p for p in self.config["reviewers"] if p not in state["reviews"]), None)
+        provider = next((p for p in assigned(self.config, "pr_reviewers") if p not in state["reviews"]), None)
         if provider:
             changed = state["changed_files"]
             context = self.pr_review_context(provider, self.files(state["base"], changed, inspection=True),
@@ -1486,12 +1507,13 @@ class Controller:
             source = ("review_event",) if report["verdict"] == "reopen" else ("reviews", provider)
             conversation.queue(state, None, source=source, kind="review", details={
                 "head": state["head"], "round": state["round"] + 1, "pr": state["pr"], "provider": provider,
-                "model": self.config["models"][provider] or "CLI default", "pr_url": self.pr_url(state["pr"])})
+                "model": selected_model(self.config, provider, "review") or "CLI default", "pr_url": self.pr_url(state["pr"]),
+                **({"agent": resolve(self.config, provider, "review").record()} if "agents" in self.config else {})})
             if report["verdict"] == "reopen":
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
                 return
             self.save()
-        if len(state["reviews"]) == len(self.config["reviewers"]):
+        if len(state["reviews"]) == len(assigned(self.config, "pr_reviewers")):
             if all(r["verdict"] == "approve" for r in state["reviews"].values()):
                 # A reason at the gates is always the gates' own; an earlier stage's is stale.
                 state.pop("reason", None)

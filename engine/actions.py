@@ -1,5 +1,6 @@
 """Comments that ask a human to act, and Input needed requests; all other progress lives in the status comment."""
 
+from model_config import assigned
 import conversation
 import markup
 from markup import block, code, link, text
@@ -85,9 +86,9 @@ def questions(state, config):
     found = []
     intake = state.get("qc", {}).get("intake")
     if intake and intake["decision"] == "clarify":
-        found += [(config["qc"], q) for q in intake["questions"]]
+        found += [(assigned(config, "triage"), q) for q in intake["questions"]]
     if state.get("plan"):
-        found += [(config["planner"], q) for q in state["plan"]["questions"]]
+        found += [(assigned(config, "planner"), q) for q in state["plan"]["questions"]]
     # A round records each vote before acting on it, so the clarifying vote is among these.
     for vote in state.get("design_votes", {}).values():
         found += [(vote["identity"]["provider"], q) for q in vote["report"]["questions"]]

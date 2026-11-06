@@ -9,6 +9,7 @@ import uuid
 from design import criteria, validate_evidence, report_limit
 from mirror import Mirror, git_environment
 from policy import digest, validate_qc
+from model_config import resolve
 
 SOURCE = {"docs/workflow.md": """# Contribution workflow
 Only repository writers enroll issues with the concurro label.
@@ -64,12 +65,14 @@ def fixture_mirror(root, repository):
 
 def request(case, provider, config, bundle, base):
     """A fresh design review; the runner substitutes the engine-owned fixture checkout."""
+    agent = resolve(config, provider, "review")
     return {"issue": REQUIREMENTS, "base": base, "repository_commit": base,
             "repository": {"refs": {config["base"]: base}, "head": config["base"]},
             "bundle_id": bundle.identity, "charter": bundle.charter, "review_phase": "fresh",
             "controller_evaluation": uuid.uuid4().hex,
-            "reviewer_identity": {"id": digest([provider, config["models"][provider]]), "provider": provider,
-                                  "model": config["models"][provider], "roles": ["review"]},
+            "reviewer_identity": {"id": digest(agent.record()) if "agents" in config else digest([provider, agent.profile.model]),
+                                  "provider": provider, "model": agent.profile.model, "roles": ["review"],
+                                  **({"agent": agent.record()} if "agents" in config else {})},
             "review_criteria": criteria(REQUIREMENTS),
             "review_output_budget": {"max_json_bytes": report_limit(len(criteria(REQUIREMENTS)))},
             "plan": {k: v for k, v in case["plan"].items() if k not in ("summary", "publication", "responses")}}
@@ -91,8 +94,10 @@ def evaluate(agents, config, provider, base, output):
     output = Path(output)
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     results = []
+    agent = resolve(config, provider, "review")
     for case in cases():
-        item = {"id": case["id"], "provider": provider, "model": config["models"][provider],
+        item = {"id": case["id"], "provider": provider, "model": agent.profile.model,
+                **({"agent": agent.record()} if "agents" in config else {}),
                 "bundle_id": agents.bundle.identity, "fixture_digest": digest([SOURCE, REQUIREMENTS, case["plan"]])}
         try:
             report = agents.ask(provider, "plan_qc", request(case, provider, config, agents.bundle, base))

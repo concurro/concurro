@@ -1,0 +1,64 @@
+# Target-owned configuration. Use config.yaml or config.json, not both.
+repository: cylewitruk/stacks-core-autobot
+base: main
+bot_login: concurro[bot]
+autonomous: true
+max_plan_revisions: 2
+models:
+  opus55-high:
+    provider: anthropic
+    model: claude-opus-5-5
+    effort: high
+  sol61-medium:
+    provider: openai
+    model: gpt-6.1-sol
+    effort: medium
+  sol61-high:
+    provider: openai
+    model: gpt-6.1-sol
+    effort: high
+policy_documents:
+- CONTRIBUTING.md
+- .github/copilot-instructions.md
+- .agents/skills/stacks-pr-review/SKILL.md
+paths:
+  editable_extensions:
+  - .rs
+  - .md
+  - .toml
+  - .lock
+  - .added
+  - .changed
+  - .fixed
+  - .removed
+  protected_names: []
+  protected_name_prefixes: []
+  protected_prefixes:
+  - tools/
+  - contrib/
+  - scripts/
+  protected_files:
+  - docs/concurro.md
+  protected:
+  - '**/rust-toolchain*'
+  - '**/rustfmt.toml'
+  generated:
+  - '**/Cargo.lock'
+max_fix_rounds: 2
+max_model_calls: 48
+max_context_bytes: 350000
+max_open_issues: 10
+max_design_reopens: 2
+max_outcome_issues: 10
+max_outcome_lessons: 3
+max_review_repairs: 4
+agents:
+  triage: sol61-medium
+  planner: opus55-high
+  plan_reviewers:
+  - opus55-high
+  - sol61-high
+  implementer: opus55-high
+  pr_reviewers:
+  - opus55-high
+  - sol61-high
