@@ -14,10 +14,11 @@ from markup import block, code, details as collapsed, link, table, text
 import actions
 import classification
 import reviews
+import report_store
 
 MARKER = "<!-- concurro:event:v1:"
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
-# Reports queued from now on are format 3: each is archived in its own write-once artifact.
+# Format 3 embeds a report; format 4 links its canonical immutable report data.
 FORMAT = 3
 ARCHIVE_LIMIT = 60000
 ARCHIVED = "… [Full text in its report archive.]"
@@ -340,13 +341,17 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
         if request is not None:
             event["request"] = request
     else:
-        event.update(source=list(source), kind=kind, details=details, format=FORMAT,
+        event.update(source=list(source), kind=kind, details=details, format=(4 if kind == "review" or kind == "qc" and details["phase"] != "intake" else FORMAT),
                      index=index_entry(state, kind, source, details))
         assessment = source_value(state, source).get("classification", {}).get("source", {}).get("report")
         if assessment:
             event["index"]["assessment"] = assessment
-        rendered, limit = archive(event, state), ARCHIVE_LIMIT
-        event["content_digest"] = digest(rendered)
+        if event['format'] == 4:
+            rendered, limit = '', ARCHIVE_LIMIT
+            event["content_digest"] = digest(source_value(state, source))
+        else:
+            rendered, limit = archive(event, state), ARCHIVE_LIMIT
+            event["content_digest"] = digest(rendered)
     if len(rendered.encode()) > limit:
         journal["sequence"] -= 1
         raise Blocked("conversation event exceeds publication bounds")
@@ -378,6 +383,10 @@ def event_body(state, event):
     if "body" in event:
         return event["body"]
     try:
+        if event.get("format") == 4:
+            if digest(source_value(state, event['source'])) == event['content_digest']:
+                return ''
+            raise PublicationError("conversation_conflict")
         if event.get("format", 1) == 1:
             body = content(event, render(state, event["kind"], event["source"], event["details"]))
         elif event["format"] == 2:
@@ -391,7 +400,7 @@ def event_body(state, event):
     raise PublicationError("conversation_conflict")
 
 
-def publish(state, github, config):
+def publish(state, github, config, store=None):
     """Reconcile lost POST responses by exact App-authored marker and content."""
     journal = state.get("conversation", {})
     pending = journal.get("pending", [])
@@ -401,13 +410,23 @@ def publish(state, github, config):
         comments = github.pages(f"issues/{state['issue']}/comments")
         identities = Identities(config)
         artifacts = None
+        store = store or report_store.Store(github, state['issue'], identities.author('state'), config['repository'])
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
+            if event.get('format') == 4:
+                source = source_value(state, event['source'])
+                key = store.put(source)
+                numbers = store.numbers[key]
+                title, _, meta = render_v2(state, event['kind'], event['source'], event['details'])
+                root = f"https://github.com/{config['repository']}/issues/{state['issue']}/artifacts/"
+                links = '\n'.join(f"- [Full report{' part ' + str(i) if len(numbers) > 1 else ''}]({root}{n})"
+                                  for i, n in enumerate(numbers, 1))
+                body = content_v2(event, title, links, meta)
             if event.get("format", 1) >= 3:
                 # Archives are artifacts, authored like the audit state.
                 if artifacts is None:
-                    artifacts = github.pages(f"issues/{state['issue']}/artifacts")
+                    artifacts = store.collection()
                 author = identities.author("state")
                 items = artifacts
                 create = lambda: github.repo(f"issues/{state['issue']}/artifacts", "POST", {
@@ -431,6 +450,8 @@ def publish(state, github, config):
                 continue
             source = source_value(state, event["source"])
             receipt = {"content_digest": event["content_digest"], "source_digest": digest(source)}
+            if event.get('format') == 4:
+                receipt['data'] = {'digest': key, 'artifacts': numbers}
             if isinstance(source, dict) and "classification" in source:
                 receipt["core_digest"] = digest(classification.core(source))
             if event.get("format", 1) >= 3:
@@ -476,7 +497,9 @@ def compact(state):
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
     reports += [v["report"] for v in state.get("design_votes", {}).values()]
     notes = {id(r): ARCHIVED if receipt_matches(r, archived) else None for r in reports}
-    reports = [r for r in reports if receipt_matches(r, published)]
+    # Canonical report references cost no checkpoint prose space; keep their complete evidence.
+    external = [receipt for receipt in published if 'data' in receipt]
+    reports = [r for r in reports if receipt_matches(r, published) and not receipt_matches(r, external)]
     for key in ("local_status", "local_evidence"):
         if (s := state.get(key, {})).get("review") and receipt_matches(s, published):
             reports.append(s["review"])

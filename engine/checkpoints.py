@@ -4,6 +4,8 @@ from copy import deepcopy
 import json
 import re
 
+import report_store
+
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest
@@ -16,6 +18,7 @@ REF_MARKER = "<!-- concurro:checkpoint:v1 "
 AUDIT_NAME = "Concurro audit state"
 PLAN_NAME = "Concurro implementation plan"
 LIMIT = 60000
+FORMAT = 3
 
 
 DIAGNOSTICS = {
@@ -37,6 +40,7 @@ DIAGNOSTICS = {
     'audit_history': 'Audit history conflicts with the saved reference.',
     'legacy_history': 'Legacy checkpoint is not preserved in artifact history.',
     'audit_absent': 'Plan artifact exists without audit state; reconcile manually.',
+    'report_data': 'Referenced report data is missing, changed or invalid; restore it before continuing.',
     'artifact_size': 'Artifact checkpoint exceeds size limit.',
     'concurrent_change': 'Artifact changed during this invocation; reconcile before retry.',
     'concurrent_create': 'Artifact appeared during this invocation; reload before retry.',
@@ -66,7 +70,7 @@ def legacy_state(body):
 class Checkpoints:
     """Persist one authoritative audit artifact and a derived human-readable plan."""
 
-    def __init__(self, github, config, issue):
+    def __init__(self, github, config, issue, report_cache=None):
         """Bind storage to one repository, issue and configured App identity."""
         self.gh, self.config, self.issue = github, config, issue
         self.author = Identities(config).author("state")
@@ -74,6 +78,7 @@ class Checkpoints:
         self.plan_binding = None
         self.dirty = False
         self.uncertain = False
+        self.reports = report_store.Store(github, issue, self.author, config["repository"], cache=report_cache)
 
     def request(self, path, method="GET", data=None):
         """Sanitize storage errors; never infer absence from an API failure."""
@@ -152,12 +157,22 @@ class Checkpoints:
         """Select the immutable identity of a plan already verified as App-owned."""
         return {key: artifact[key] for key in ("id", "number")}
 
-    def audit_body(self, state, bind_plan=True):
+    def audit_body(self, state, bind_plan=True, external=True):
         """Encode repository-bound state in a public Markdown artifact."""
-        payload = {"repository": self.config["repository"], "state": state}
+        compact, detached = report_store.packed(state) if external else (state, [])
+        # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
+        payload = {"repository": self.config["repository"],
+                   "state": {**compact, "version": FORMAT} if external else compact}
+        if detached:
+            payload["report_data"] = [
+                {**{k: item[k] for k in ("path", "digest", "select", "annotations")},
+                 "artifacts": self.reports.numbers.get(item["digest"], [])} for item in detached]
         if bind_plan and self.plan_binding:
             payload["plan_artifact"] = self.plan_binding
-        return AUDIT_MARKER + STATE_PREFIX + json.dumps(payload, sort_keys=True) + "\n```\n"
+        links = sorted({n for ref in payload.get('report_data', []) for n in ref['artifacts']})
+        footer = ''.join(f"\n[Report data {n}](https://github.com/{self.config['repository']}/issues/{self.issue}/artifacts/{n})"
+                         for n in links)
+        return AUDIT_MARKER + STATE_PREFIX + json.dumps(payload, sort_keys=True) + "\n```\n" + footer
 
     def decode(self, artifact):
         """Validate the checkpoint's repository, issue and schema identities."""
@@ -167,18 +182,52 @@ class Checkpoints:
             if payload["repository"] != self.config["repository"]:
                 raise ValueError()
             self.validate_state(state)
+            refs = payload.get("report_data", [])
+            if refs and state["version"] != FORMAT:
+                raise ValueError()
+            if not isinstance(refs, list):
+                raise ValueError()
+            seen = set()
+            for ref in refs:
+                if (not isinstance(ref, dict) or set(ref) != {"path", "digest", "artifacts", "select", "annotations"}
+                        or not report_store.allowed_path(ref["path"]) or not isinstance(ref["select"], list)
+                        or len(ref["select"]) > 32 or not isinstance(ref["annotations"], dict)
+                        or not set(ref["annotations"]) <= report_store.ANNOTATIONS):
+                    raise ValueError()
+                path = tuple(ref["path"])
+                if any(path[:len(previous)] == previous or previous[:len(path)] == path for previous in seen):
+                    raise ValueError()
+                seen.add(path)
+                parent = state
+                for component in path[:-1]:
+                    parent = parent[component]
+                if parent[path[-1]] is not None:
+                    raise ValueError()
+                value = self.reports.get(ref["digest"], ref["artifacts"])
+                for component in ref['select']:
+                    if not (isinstance(component, str) or type(component) is int and component >= 0):
+                        raise ValueError()
+                    value = value[component]
+                if ref['annotations']:
+                    if not isinstance(value, dict) or set(value) & set(ref['annotations']):
+                        raise ValueError()
+                    value = {**value, **ref['annotations']}
+                parent[path[-1]] = value
             binding = payload.get("plan_artifact")
             if binding is not None and (not isinstance(binding, dict) or set(binding) != {"id", "number"}
                     or any(type(value) is not int or value < 1 for value in binding.values())):
                 raise ValueError()
             self.plan_binding = binding
+            state["version"] = 2
             return state
+        except report_store.ReportDataError:
+            raise CheckpointError("report_data") from None
         except (KeyError, IndexError, TypeError, ValueError):
             raise CheckpointError("checkpoint_format") from None
 
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""
-        if state["version"] != 2 or state["issue"] != self.issue:
+        if state["version"] not in (2, FORMAT) or state["issue"] != self.issue:
             raise CheckpointError("state_identity")
 
     def reference(self):
@@ -212,8 +261,13 @@ class Checkpoints:
                     self.validate_state(self.legacy)
             except (ValueError, IndexError, KeyError, TypeError):
                 raise CheckpointError("comment_format") from None
-        items = self.collection()
-        self.audit = self.discover(items, "generic")
+        items = None
+        if pointer:
+            self.audit = self.read(pointer['number'], 'generic')
+        else:
+            items = self.collection()
+            self.reports.items = items
+            self.audit = self.discover(items, "generic")
         if pointer:
             if not self.audit or any(pointer[k] != self.audit[k] for k in ("id", "number")):
                 raise CheckpointError("audit_missing")
@@ -223,11 +277,20 @@ class Checkpoints:
                 raise CheckpointError("audit_history")
         if self.audit:
             if self.legacy is not None and not any(
-                    v.get("body") == self.audit_body(self.legacy, bind_plan=False)
+                    v.get("body") == self.audit_body(self.legacy, bind_plan=False, external=False)
                     and v.get("actor", {}).get("login") == self.author for v in self.audit["versions"]):
                 raise CheckpointError("legacy_history")
             state = self.decode(self.audit)
-            self.plan = self.discover(items, "plan")
+            if self.plan_binding:
+                try:
+                    self.plan = self.read(self.plan_binding['number'], 'plan')
+                except CheckpointError as error:
+                    if error.code != 'artifact_request':
+                        raise
+                    # A deleted generated view is recoverable, but only a successful listing proves absence.
+                    self.plan = self.discover(self.collection(), 'plan')
+            else:
+                self.plan = self.discover(items if items is not None else self.collection(), "plan")
             self.dirty = pointer != self.reference() or (self.plan or state.get("plan") or state.get("plan_draft")) and (
                 not self.plan or self.plan["name"] != PLAN_NAME or self.plan["body"] != self.plan_body(state)
                 or self.plan_binding != self.plan_identity(self.plan))
@@ -298,8 +361,11 @@ class Checkpoints:
         if self.uncertain:
             raise CheckpointError("write_uncertain")
         try:
+            _, detached = report_store.packed(state)
+            for item in detached:
+                self.reports.put(item["value"])
             if self.audit is None and self.legacy is not None:
-                self.audit = self.write(None, "generic", self.audit_body(self.legacy, bind_plan=False))
+                self.audit = self.write(None, "generic", self.audit_body(self.legacy, bind_plan=False, external=False))
             self.audit = self.write(self.audit, "generic", self.audit_body(state))
             if self.plan or state.get("plan") or state.get("plan_draft"):
                 body = self.plan_body(state)

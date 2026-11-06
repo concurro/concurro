@@ -70,7 +70,7 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertIn(plan_text, controller.checkpoints.plan['body'])
         for full_text in (rationale,):
             self.assertIn(full_text, timeline)
-        self.assertLess(len(state["reviews"]["claude"]["summary"]), 1000)
+        self.assertEqual(len(state["reviews"]["claude"]["summary"]), 15000)
         self.assertEqual(gh.merges, 0)
 
     def test_compaction_preserves_pending_and_unpublished_evidence(self):
@@ -103,7 +103,8 @@ class ConversationSizeTests(unittest.TestCase):
                                     "pr_url": "https://github.com/o/r/pull/9"})
         event = state["conversation"]["pending"][0]
         self.assertNotIn("body", event)
-        self.assertIn("original", conversation.event_body(state, event))
+        self.assertEqual(event["content_digest"], digest(state["reviews"]["claude"]))
+        conversation.event_body(state, event)
         state["reviews"]["claude"]["summary"] = "changed"
         with self.assertRaises(conversation.PublicationError):
             conversation.event_body(state, event)

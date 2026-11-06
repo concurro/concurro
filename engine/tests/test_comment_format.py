@@ -251,13 +251,18 @@ class SizeTests(unittest.TestCase):
         state, source, details = format_samples.review_state()
         state["reviews"]["claude"]["summary"] = "<" * 20000 + "\n````\n</details>"
         conversation.queue(state, None, source=source, kind="review", details=format_samples.v2_details(details))
-        event = state["conversation"]["pending"][0]
-        body = conversation.event_body(state, event)
-        self.assertLessEqual(len(body.encode()), conversation.ARCHIVE_LIMIT)
-        record = body.split("`````json\n", 1)[1].rsplit("\n`````", 1)[0]
-        self.assertEqual(json.loads(record), state["reviews"]["claude"])
-        self.assertEqual(conversation.archive_name(event), "Concurro report 1 - Code review - claude - round 2")
-        assert_structure(self, body)
+        from test_pipeline import FakeGitHub
+        from report_store import Store
+        gh = FakeGitHub(CONFIG)
+        conversation.publish(state, gh, CONFIG)
+        receipt = state['conversation']['receipts']['/'.join(source)]
+        data = receipt['data']
+        restored = Store(gh, 7, CONFIG['bot_login']).get(data['digest'], data['artifacts'])
+        self.assertEqual(restored, state['reviews']['claude'])
+        for item in gh.artifacts[7].values():
+            body = item['artifact']['body']
+            self.assertLessEqual(len(body.encode()), conversation.ARCHIVE_LIMIT)
+            assert_structure(self, body)
 
     def test_largest_review_fits_a_github_review(self):
         findings = [{**FINDING, "severity": "low", "title": "t" * 100, "detail": "*_[" * 360} for _ in range(20)]

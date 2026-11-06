@@ -177,9 +177,9 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(len(self.agents.calls), 1)
                 self.assertIn('[Implementation plan]', self.gh.summary()['body'])
 
-    def test_missing_replaced_or_duplicate_audit_stops_before_model_calls(self):
+    def test_missing_or_replaced_bound_audit_stops_before_model_calls(self):
         """Never reinitialize a task after losing its pinned artifact identity."""
-        for mode in ('missing', 'replaced', 'duplicate'):
+        for mode in ('missing', 'replaced'):
             with self.subTest(mode=mode):
                 self.setUp()
                 self.start()
@@ -188,9 +188,6 @@ class CheckpointTests(unittest.TestCase):
                     self.gh.artifacts[7].clear()
                 elif mode == 'replaced':
                     value['artifact']['id'] += 1
-                else:
-                    self.gh.artifacts[7][99] = deepcopy(value)
-                    self.gh.artifacts[7][99]['artifact']['number'] = 99
                 with self.assertRaises(CheckpointError):
                     Controller(self.gh, self.agents, self.config).advance(7)
                 self.assertEqual(len(self.agents.calls), 1)
@@ -356,15 +353,15 @@ class CheckpointTests(unittest.TestCase):
     def test_issue_artifact_list_uses_bounded_bare_array_pagination(self):
         """The artifact API has no Link header; full pages still require another request."""
         gh = GitHub(self.config['repository'])
-        with patch.object(gh, 'repo', side_effect=[[{'number': i} for i in range(100)], []]) as request:
-            self.assertEqual(len(gh.pages('issues/7/artifacts')), 100)
-        self.assertEqual(request.call_args.args[0], 'issues/7/artifacts?per_page=100&page=2')
+        with patch.object(gh, 'repo', side_effect=[[{'number': i} for i in range(10)], []]) as request:
+            self.assertEqual(len(gh.pages('issues/7/artifacts')), 10)
+        self.assertEqual(request.call_args.args[0], 'issues/7/artifacts?per_page=10&page=2')
 
     def test_oversized_state_does_not_replace_last_checkpoint(self):
         """Validate size before mutation, preserving the last recoverable state."""
         controller = self.start()
         before = deepcopy(self.artifact())
-        controller.state['reason'] = 'x' * 60000
+        controller.state['unexpected_padding'] = 'x' * 60000
         with self.assertRaisesRegex(CheckpointError, 'size limit'):
             controller.save()
         self.assertEqual(self.artifact(), before)

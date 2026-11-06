@@ -117,12 +117,13 @@ class GitHub:
     def pages(self, path, key=None):
         """Read all pages or fail if the bounded traversal cannot finish."""
         result = []
-        for page in range(1, 101):
+        page_size = 10 if path.endswith('/artifacts') else 100
+        for page in range(1, 10000 // page_size + 1):
             sep = "&" if "?" in path else "?"
-            batch = self.repo(f"{path}{sep}per_page=100&page={page}")
+            batch = self.repo(f"{path}{sep}per_page={page_size}&page={page}")
             batch = batch[key] if key else batch
             result.extend(batch)
-            if len(batch) < 100:
+            if len(batch) < page_size:
                 return result
         raise RuntimeError("pagination exceeded safety bound")
 

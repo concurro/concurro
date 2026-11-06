@@ -12,9 +12,9 @@ import design
 import reviews
 from bundle import Bundle, ENGINE_RESOURCES
 from checkpoints import Checkpoints, LIMIT
-from controller import Controller, pr_review_cost
+from controller import Controller
 from model_config import resolve
-from policy import Blocked, PR_REVIEW_LIMIT, approval_binding, consensus_valid, digest, validate_qc, validate_pr_review
+from policy import Blocked, MODEL_RESPONSE_LIMIT, approval_binding, consensus_valid, digest, validate_qc, validate_pr_review
 from test_pipeline import FakeAgents, FakeGitHub, APPROVE, design_report
 from test_model_profiles import named_config
 
@@ -76,13 +76,11 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(Blocked):
             validate_qc(report, 'intake')
         review = {**APPROVE, 'dispositions': []}
-        review['summary'] = 'x' * (PR_REVIEW_LIMIT - len(json.dumps(review)) + len(review['summary']))
+        review['summary'] = 'x' * (MODEL_RESPONSE_LIMIT - len(json.dumps(review)) + len(review['summary']))
         classified = {**review, 'classification': assessment(rationale='x' * 100000)}
         validate_pr_review(classified, [], [])
-        self.assertEqual(pr_review_cost(classified), pr_review_cost(review))
         review['summary'] += 'x'
-        with self.assertRaises(Blocked):
-            validate_pr_review(review, [], [])
+        validate_pr_review(review, [], [])
 
     def test_normalization_clips_evidence_and_never_trusts_provenance(self):
         value = assessment(rationale='🌍' * 1000, unknowns=['é' * 300] * 9)
@@ -317,8 +315,7 @@ class LifecycleTests(unittest.TestCase):
         report['classification'] = assessment(rationale='x' * 100000)
         controller.validate_design_report(report, context)
         report['rationale'] += 'a'
-        with self.assertRaises(design.ReviewError):
-            controller.validate_design_report(report, context)
+        controller.validate_design_report(report, context)
 
     def test_no_metadata_is_attached_when_core_uses_its_report_allowance(self):
         controller = self.tick()
@@ -346,32 +343,43 @@ class LifecycleTests(unittest.TestCase):
     def test_checkpoint_pressure_sheds_only_archived_metadata(self):
         controller, _ = self.ready()
         state = controller.state
-        core_budget = controller.pr_review_room()
+        core_budget = controller.pr_review_output_budget()['max_json_bytes']
         self.assertGreater(core_budget, 0)
         before = deepcopy(state)
         archive_bodies = self.gh.archives()
         ratings.make_room(state, 0, ratings.size)
         self.assertNotIn('classification_snapshot', state)
-        self.assertTrue(all('classification' not in r for r in state['reviews'].values()))
+        active = list(before['reviews'].values()) + list(before.get('qc', {}).values())
+        active += [vote['report'] for vote in before['design_votes'].values()]
+        protected = {r.get('classification', {}).get('source', {}).get('report') for r in active}
+        self.assertEqual(state['reviews'], before['reviews'])
+        self.assertEqual(state['design_votes'], before['design_votes'])
         projected = ratings.without_hints(before)
         for entry in projected['reports']:
-            entry.pop('assessment', None)
+            if entry.get('assessment') not in protected:
+                entry.pop('assessment', None)
         self.assertEqual(projected, ratings.without_hints(state))
-        self.assertEqual(controller.pr_review_room(), core_budget)
+        self.assertEqual(controller.pr_review_output_budget()['max_json_bytes'], core_budget)
         self.assertEqual(archive_bodies, self.gh.archives())
         self.assertTrue(consensus_valid(state, self.config))
-        # A queued report and a PR outbox report remain byte-stable, including their metadata.
-        pending = deepcopy(before)
-        provider = next(iter(pending['reviews']))
-        report = deepcopy(pending['reviews'][provider])
-        pending['conversation']['pending'] = [{'source': ['reviews', provider]}]
-        ratings.make_room(pending, 0, ratings.size)
-        self.assertEqual(pending['reviews'][provider], report)
-        pending = deepcopy(before)
-        report = deepcopy(pending['reviews'][provider])
-        pending['pr_outbox'] = [{'kind': 'review', 'provider': provider, 'sequence': report['sequence']}]
-        ratings.make_room(pending, 0, ratings.size)
-        self.assertEqual(pending['reviews'][provider], report)
+        # Historical-but-unarchived and pending reports are protected independently of current slots.
+        for pending_kind in ('unarchived', 'conversation', 'pr_outbox'):
+            with self.subTest(pending_kind=pending_kind):
+                pending = deepcopy(before)
+                provider = next(iter(pending['reviews']))
+                report = pending['reviews'][provider]
+                expected = deepcopy(report)
+                pending['reviews'] = {}
+                pending['review_history'] = [{provider: report}]
+                if pending_kind == 'unarchived':
+                    source = report['classification']['source']['report']
+                    pending['reports'] = [r for r in pending['reports'] if r.get('assessment') != source]
+                elif pending_kind == 'conversation':
+                    pending['conversation']['pending'] = [{'source': ['review_history', 0, provider]}]
+                else:
+                    pending['pr_outbox'] = [{'kind': 'review', 'provider': provider, 'sequence': report['sequence']}]
+                ratings.make_room(pending, 0, ratings.size)
+                self.assertEqual(pending['review_history'][0][provider], expected)
 
     def test_high_operational_risk_still_invalidates_design_consensus(self):
         controller, _ = self.ready()
@@ -483,9 +491,13 @@ class CompactionReceiptTests(unittest.TestCase):
         report = state['qc']['intake']
         original, archive, receipt = deepcopy(report), gh.archives()[0], deepcopy(state['conversation']['receipts'])
         conversation.queue(state, 'Another event', 'An unrelated pending notification.')
+        # Historical ratings can be reduced; current slots must remain intact.
+        state['qc'] = {}
+        state['review_history'] = [{'intake': report}]
         trimmed = deepcopy(state)
-        trimmed['qc']['intake']['classification'].update(rationale='', unknowns=[])
+        trimmed['review_history'][0]['intake']['classification'].update(rationale='', unknowns=[])
         ratings.make_room(state, 0 if remove else ratings.size(trimmed), ratings.size)
+        state['qc'] = {'intake': state.pop('review_history')[0]['intake']}
         if remove:
             self.assertNotIn('classification', report)
         else:

@@ -88,6 +88,7 @@ class Agents:
         session = context.pop("controller_session", None)
         selected = context.pop("controller_credential", None)
         candidate = context.pop("controller_candidate", None)
+        feedback = context.pop("controller_feedback", {})
         evaluation = context.pop("controller_evaluation", None)
         if evaluation is not None and (stage != "plan_qc" or session is not None
                                        or not re.fullmatch(r"[a-f0-9]{32}", evaluation)):
@@ -107,7 +108,7 @@ class Agents:
                    **({"agent": agent.record()} if "agents" in self.config else {}), "stage": stage, "gateway": self.executor.gateway,
                    "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text, "instruction_texts": self.bundle.instruction_texts,
                    "context": context, "session": session, "local_candidate": candidate is not None, "evaluation": evaluation}
-        turn = {"request": request, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
+        turn = {"request": request, "feedback": feedback, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
                 "retained": self.retained.load(session) if session else None,
                 "timeout": TURN_SECONDS.get(stage, DEFAULT_TURN_SECONDS)}
         result = self.executor.run(turn, f"{self.config['repository']}:{stage}")

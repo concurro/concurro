@@ -171,3 +171,16 @@ def severity(finding):
     """`emoji Label` for a finding's severity; empty for findings recorded without one."""
     entry = SEVERITY.get(finding.get("severity"))
     return label(entry) if entry else ""
+
+
+def excerpt(value, max_bytes, note):
+    """Bound a Markdown display excerpt without changing its stored source text."""
+    if len(note.encode()) + 2 > max_bytes:
+        raise ValueError('excerpt note exceeds display capacity')
+    rendered = block(value)
+    if len(rendered.encode()) <= max_bytes:
+        return rendered
+    while len((rendered + "\n\n" + note).encode()) > max_bytes:
+        value = value[:len(value) // 2]
+        rendered = block(value)
+    return rendered + "\n\n" + note

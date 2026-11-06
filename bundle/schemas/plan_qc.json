@@ -15,8 +15,7 @@
       "type": "string"
     },
     "rationale": {
-      "type": "string",
-      "maxLength": 1200
+      "type": "string"
     },
     "risk": {
       "type": "string",
@@ -29,16 +28,14 @@
     "questions": {
       "type": "array",
       "items": {
-        "type": "string",
-        "maxLength": 600
+        "type": "string"
       },
       "maxItems": 8
     },
     "concerns": {
       "type": "array",
       "items": {
-        "type": "string",
-        "maxLength": 600
+        "type": "string"
       },
       "maxItems": 12
     },
@@ -54,14 +51,12 @@
           "maxItems": 12
         },
         "fit": {
-          "type": "string",
-          "maxLength": 800
+          "type": "string"
         },
         "conflicts": {
           "type": "array",
           "items": {
-            "type": "string",
-            "maxLength": 600
+            "type": "string"
           },
           "maxItems": 8
         }
@@ -90,8 +85,7 @@
             "type": "integer"
           },
           "quote": {
-            "type": "string",
-            "maxLength": 300
+            "type": "string"
           }
         },
         "required": [
@@ -130,12 +124,10 @@
             "maxItems": 12
           },
           "reason": {
-            "type": "string",
-            "maxLength": 400
+            "type": "string"
           },
           "counterexample": {
-            "type": "string",
-            "maxLength": 300
+            "type": "string"
           }
         },
         "required": [
@@ -166,20 +158,16 @@
             ]
           },
           "detail": {
-            "type": "string",
-            "maxLength": 600
+            "type": "string"
           },
           "counterexample": {
-            "type": "string",
-            "maxLength": 300
+            "type": "string"
           },
           "closure": {
-            "type": "string",
-            "maxLength": 400
+            "type": "string"
           },
           "evidence": {
-            "type": "string",
-            "maxLength": 500
+            "type": "string"
           }
         },
         "required": [

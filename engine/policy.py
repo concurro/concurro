@@ -95,12 +95,7 @@ def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=
     for key in ("questions", "concerns"):
         if not isinstance(report[key], list) or not all(isinstance(v, str) and v.strip() for v in report[key]):
             raise Blocked("invalid QC questions or concerns")
-    if stage == 'plan_qc':
-        from design import report_limit
-        limit = report_limit(criteria_count, objection_count)
-    else:
-        limit = 6000
-    if len(json.dumps(report).encode()) > limit:
+    if stage != 'plan_qc' and len(json.dumps(report).encode()) > 6000:
         raise Blocked("QC report too large")
     scope = report["scope"]
     if (not isinstance(scope, dict) or set(scope) != {"goal_ids", "fit", "conflicts"}
@@ -195,9 +190,8 @@ def validate_design_issue(issue):
             or issue["kind"] not in ("requirements", "plan")
             or not isinstance(issue["explanation"], str) or not issue["explanation"].strip()
             or not isinstance(issue["evidence"], list) or not issue["evidence"]
-            or not all(isinstance(v, str) and v.strip() for v in issue["evidence"])
-            or len(json.dumps(issue)) > 4000):
-        raise Blocked("design reopening requires bounded structured evidence")
+            or not all(isinstance(v, str) and v.strip() for v in issue["evidence"])):
+        raise Blocked("design reopening requires structured evidence")
 
 
 def path_safe(path):
@@ -342,8 +336,7 @@ PR_REVIEW_FIELDS = {"verdict", "summary", "findings", "dispositions", "design_is
 PR_FINDING_FIELDS = {"path", "start_line", "line", "detail"}
 SEVERITIES = ("critical", "high", "medium", "low")
 MAX_PR_FINDINGS = 20
-MAX_PR_TEXT = 4000
-PR_REVIEW_LIMIT = 24000
+MODEL_RESPONSE_LIMIT = 300000
 
 
 def line_number(value):
@@ -365,8 +358,8 @@ def validate_pr_finding(finding):
         raise Blocked("finding lines must be 1-based with start_line ≤ line")
     if path is None and line is not None:
         raise Blocked("a finding without a path cannot name lines")
-    if not isinstance(detail, str) or not detail.strip() or len(detail) > MAX_PR_TEXT:
-        raise Blocked("finding detail must be bounded non-empty text")
+    if not isinstance(detail, str) or not detail.strip():
+        raise Blocked("finding detail must be non-empty text")
 
 
 def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
@@ -383,7 +376,7 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
     if (not isinstance(review["summary"], str) or not isinstance(review["findings"], list)
             or not isinstance(review["dispositions"], list)):
         raise Blocked("invalid review content")
-    if len(json.dumps(review)) > PR_REVIEW_LIMIT or len(review["findings"]) > MAX_PR_FINDINGS:
+    if len(review["findings"]) > MAX_PR_FINDINGS:
         raise Blocked("review too large")
     if review["verdict"] == "reopen":
         validate_design_issue(review["design_issue"])
@@ -397,8 +390,7 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
     answered = []
     for disposition in review["dispositions"]:
         if (not isinstance(disposition, dict) or set(disposition) != {"id", "status", "evidence"}
-                or not isinstance(disposition["id"], str) or not isinstance(disposition["evidence"], str) or not disposition["evidence"].strip()
-                or len(disposition["evidence"]) > MAX_PR_TEXT):
+                or not isinstance(disposition["id"], str) or not isinstance(disposition["evidence"], str) or not disposition["evidence"].strip()):
             raise Blocked("invalid disposition")
         allowed = ("fixed", "open", "obsolete") if disposition["id"] in withdrawn_ids else ("fixed", "open")
         if disposition["status"] not in allowed:

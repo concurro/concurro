@@ -33,6 +33,12 @@ root = pathlib.Path(sys.argv[1])
 request = json.load(sys.stdin)
 assert os.environ["CONCURRO_GATEWAY_KEY"] == "sk-agw-test" and "GH_TOKEN" not in os.environ
 assert request["workspace"] == str(root / "work") and request["timeout"] == 1800
+if request.get("feedback_directory"):
+    feedback = pathlib.Path(request["feedback_directory"])
+    assert feedback.parent == root and feedback.name == "feedback"
+    assert not str(feedback).startswith(str(root / "work"))
+    (root / "scratch/feedback-read.json").write_text(json.dumps(
+        [json.loads(path.read_text()) for path in feedback.glob("*.json")]))
 work = root / "work"
 (work / "docs/guide.md").write_text("Guide\\nEdited\\n")
 (work / "docs/new.md").write_text("New\\n")
@@ -153,10 +159,11 @@ class ExtractionTests(Workspace):
 
 class ExecuteTests(Workspace):
 
-    def execute(self, request, retained=None):
+    def execute(self, request, retained=None, feedback_files=None):
         root = turns.directory(self.tmp / "turns")
         fake = lambda directory: [sys.executable, "-c", AGENT, str(directory)]
-        turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": 1800}
+        turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": 1800,
+                "feedback": feedback_files or {}}
         with patch.object(turns, "command", side_effect=fake), \
                 patch.dict(os.environ, {"GH_TOKEN": "owner-secret"}):
             result = turns.execute(turn, "sk-agw-test", self.mirror, root)
@@ -173,6 +180,17 @@ class ExecuteTests(Workspace):
         turns.unpack(result["retained"], restored)
         self.assertEqual(json.loads((restored / "turn.json").read_text()), {"turn": 1})
         self.assertEqual(self.mirror.git("for-each-ref", "refs/concurro/snapshots/").stdout, b"", "pins released")
+
+    def test_native_turn_reads_full_feedback_outside_checkout_and_retained_home(self):
+        """The actual agent subprocess receives files before it starts; extraction excludes them."""
+        from policy import digest
+        evidence = {'id': 'F1', 'detail': 'complete feedback ' * 20000}
+        result, root = self.execute({'stage': 'develop', 'session': None},
+                                    feedback_files={digest(evidence): evidence})
+        self.assertEqual(result['outcome'], 'ok')
+        self.assertEqual(json.loads((root / 'scratch/feedback-read.json').read_text()), [evidence])
+        self.assertFalse(any('feedback' in edit['path'] for edit in result['workspace']['edits']))
+        self.assertFalse(list((root / 'retained').rglob('*.json')))
 
     def test_a_review_turn_carries_no_workspace(self):
         result, _ = self.execute({"stage": "review", "session": None})
@@ -565,7 +583,11 @@ class RelayEndToEndTests(Workspace):
         """The structured answer stays small while extracted source exceeds the old 2 MB cap."""
         self.round_trip(large=True)
 
-    def round_trip(self, large=False):
+    def test_full_feedback_crosses_the_exchange_and_is_read_on_the_runner(self):
+        """The real exchange and runner carry full files separately from the prompt index."""
+        self.round_trip(with_feedback=True)
+
+    def round_trip(self, large=False, with_feedback=False):
         """Run the real relay and extraction, optionally returning a multi-megabyte edit."""
         import threading
         from relay import Operator, Runner
@@ -585,6 +607,11 @@ class RelayEndToEndTests(Workspace):
         # The runner's agent: the stand-in container script, with the key the exchange minted.
         def fake(directory):
             script = AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]')
+            if with_feedback:
+                script = script.replace('request = json.load(sys.stdin)',
+                    'request = json.load(sys.stdin)\nassert request.get("feedback_directory")\n'
+                    'assert json.loads(next(pathlib.Path(request["feedback_directory"]).glob("*.json")).read_text())'
+                    ' == [{"id": "F1", "detail": "full evidence " * 20000}]')
             if large:
                 script = script.replace('"Guide\\nEdited\\n"', '"Source\\n" * 500000')
             return [sys.executable, "-c", script, str(directory)]
@@ -594,6 +621,9 @@ class RelayEndToEndTests(Workspace):
         context = {"bundle_id": agents.bundle.identity, "repository_commit": self.base,
                    "repository": {"refs": {"main": self.base}, "head": "main"},
                    "controller_candidate": {"src/lib.rs": "fn main() {}\n"}}
+        if with_feedback:
+            import feedback
+            context = feedback.prepare({**context, 'review_findings': [{'id': 'F1', 'detail': 'full evidence ' * 20000}]})
         with patch.object(turns, "command", side_effect=fake), \
                 patch.object(runner, "HEARTBEAT", 1):
             result = agents.ask("codex", "develop", context)

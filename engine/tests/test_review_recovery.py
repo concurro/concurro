@@ -80,14 +80,16 @@ class ReviewEvidenceTests(unittest.TestCase):
         validate_qc(report, 'plan_qc', criteria_count=13)
         design.validate_evidence(report, request, files={'CONTRIBUTING.md': 'Use docs.'})
         oversized = deepcopy(report)
-        oversized['assessments'][0]['reason'] += 'x'
+        oversized['assessments'][0]['reason'] += 'x' * 10000
+        design.validate_evidence(oversized, request)
+        oversized['sources'][0]['id'] = 'x' * 81
         with self.assertRaises(design.ReviewError) as caught:
             design.validate_evidence(oversized, request)
-        self.assertEqual(caught.exception.field, 'assessments[0].reason')
+        self.assertEqual(caught.exception.field, 'sources[0].id')
         unicode_report = deepcopy(report)
         for assessment in unicode_report['assessments']:
             assessment['reason'] = '\U0001f600' * 400
-        with self.assertRaises(Blocked): validate_qc(unicode_report, 'plan_qc', criteria_count=13)
+        validate_qc(unicode_report, 'plan_qc', criteria_count=13)
 
 
 class ReviewerRepairTests(unittest.TestCase):
@@ -460,10 +462,6 @@ class ReviewerRepairTests(unittest.TestCase):
                     if stage == 'plan_qc':
                         report = sized_report(context)
                         seen.append(len(report['assessments']))
-                        while len(json.dumps(report).encode()) > context['review_output_budget']['max_json_bytes']:
-                            for assessment in report['assessments']:
-                                for key in ('reason', 'counterexample'):
-                                    assessment[key] = assessment[key][:max(1, len(assessment[key]) // 2)]
                     return report
                 def measure(path, method='GET', data=None):
                     """Measure actual transport payloads, including each pending conversation event."""
@@ -477,7 +475,7 @@ class ReviewerRepairTests(unittest.TestCase):
                 self.assertTrue(approval_valid(controller.state, self.config))
                 self.assertFalse(controller.state.get('review_repairs'))
 
-    def test_projected_checkpoint_overflow_is_repaired_without_saving_the_report(self):
+    def test_full_review_survives_checkpoint_pressure_without_a_correction(self):
         """A complete valid response cannot crowd out the checkpoint or correction notice."""
         self.gh.issue['body'] = '\n\n'.join(f'- Requirement {i}' for i in range(12))
         controller = self.reach('plan_qc')
@@ -490,9 +488,10 @@ class ReviewerRepairTests(unittest.TestCase):
             return sized_report(context)
         with patch.object(self.agents, 'ask', side_effect=wordy), patch.object(Controller, 'review_output_budget', return_value={'max_json_bytes':32000}):
             state = self.tick().state
-        self.assertEqual(state['review_repair']['feedback']['code'], 'review_checkpoint')
-        self.assertFalse(state['design_votes'])
-        self.assertNotIn('assessments', state.get('qc', {}).get('plan_qc', {}))
-        controller = self.tick()
-        self.assertEqual(len(controller.state['design_votes']), 1)
-        self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), 60000)
+        self.assertNotIn('review_repair', state)
+        self.assertEqual(len(state['design_votes']), 1)
+        recovered = Controller(self.gh, self.agents, self.config)
+        recovered.issue = self.gh.issue
+        recovered.load(self.gh.comments)
+        self.assertEqual(recovered.state['design_votes'], state['design_votes'])
+        self.assertLessEqual(len(recovered.checkpoints.audit_body(recovered.state).encode()), 60000)

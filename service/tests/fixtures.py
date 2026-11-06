@@ -4,6 +4,7 @@ import base64
 from copy import deepcopy
 import json
 import logging
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -35,7 +36,6 @@ SERVICE = "service:primary"
 REGISTRY_ID = "registry-test"
 ENGINE = "e" * 40
 KEY = (CONFIG["repository"], 7)
-PAGE = "per_page=100&page="
 ENROLLED = "issues?state=open&labels=concurro"
 
 
@@ -117,12 +117,12 @@ class RestBackend:
             if comment is None:
                 raise NotFound("GitHub request failed: GET " + relative)
             return {**deepcopy(comment), "pull_request_url": f"https://api.github.com/{self.root}pulls/9"}
-        if PAGE in relative:
-            base, page = relative.split(PAGE)
-            base = base[:-1]
+        if match := re.fullmatch(r'(.*)[?&]per_page=(\d+)&page=(\d+)', relative):
+            base, size, page = match[1], int(match[2]), int(match[3])
             key = next((key for part, key in (("/check-runs", "check_runs"), ("/check-suites", "check_suites"),
                                               ("actions/runs?", "workflow_runs")) if part in base), None)
-            items = self.page(base) if page == "1" else []
+            values = self.page(base)
+            items = values[(page - 1) * size:page * size] if isinstance(values, list) else values
             return {key: items} if key else items
         if relative.startswith("issues?"):
             return []  # no prior outcomes to learn from

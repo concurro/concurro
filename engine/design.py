@@ -8,7 +8,7 @@ from pathlib import Path
 
 from repository import source_lines
 
-from policy import Blocked
+from policy import Blocked, MODEL_RESPONSE_LIMIT
 
 OBJECTION_INSTRUCTIONS = (
     'For each new concern, add an objection_updates entry with id "" and status "open"; '
@@ -30,14 +30,12 @@ class ReviewError(Blocked):
 REPAIR_DETAILS = {
     'review_shape': 'Return a complete, internally consistent review using the response schema.',
     'review_bounds': 'Shorten the indicated field to its schema limit; retain all criteria and objections.',
-    'review_size': 'Shorten wording to the supplied serialized JSON byte budget; retain every required assessment.',
     'review_evidence': 'Cover every supplied criterion and own objection exactly once with consistent dispositions.',
     'review_objection_id': 'For a new objection use id "" and status "open". Only reuse an ID from own_objections, once per ID.',
     'review_objection_coverage': 'Include exactly one disposition for every supplied own_objections ID.',
     'review_concerns': 'Keep the concerns and add an open objection_updates entry for each, with identical detail text in the same order. New objections use id "".',
     'review_citation': 'Use a literal fragment within the stated source line, or a contiguous multiline quote starting there. Re-read the pinned source.',
     'review_source': 'Choose a bounded regular UTF-8 source visible through repository inspection, without symlinks or Git metadata.',
-    'review_checkpoint': 'Shorten the review to fit the supplied durable-state budget; preserve every criterion and objection.',
 }
 
 
@@ -75,8 +73,8 @@ def criteria(requirements):
 
 
 def report_limit(count, objections=0):
-    """Scale response capacity with required evidence while retaining a hard transport bound."""
-    return min(32000, 6000 + 700 * count + 500 * objections)
+    """Expose the fixed response transport capacity; stored history does not reduce it."""
+    return MODEL_RESPONSE_LIMIT
 
 
 @lru_cache(maxsize=1)

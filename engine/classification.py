@@ -249,11 +249,15 @@ def snapshot(state, config):
 
 
 def make_room(state, limit, measure):
-    """Release archived advisory metadata under pressure without changing pending publications."""
+    """Release historical advisory metadata without changing current or pending assessments."""
     if measure(state) <= limit:
         return
     archived = {r['assessment'] for r in state.get('reports', []) if r.get('assessment') and r.get('artifact')}
-    frozen = set()
+    current = list(state.get('qc', {}).values()) + list(state.get('reviews', {}).values())
+    current += [vote['report'] for vote in state.get('design_votes', {}).values()]
+    if state.get('review_event'):
+        current.append(state['review_event'])
+    frozen = {report.get('classification', {}).get('source', {}).get('report') for report in current}
     for event in state.get('conversation', {}).get('pending', []):
         value = state
         for key in event.get('source', []):

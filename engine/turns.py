@@ -16,11 +16,12 @@ import sys
 
 import processes
 
-from policy import KILLED, UNCERTAIN_EXIT
+from policy import KILLED, UNCERTAIN_EXIT, MODEL_RESPONSE_LIMIT
 from repository import snapshot
+import feedback
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
-MAX_RESPONSE = 300_000
+MAX_RESPONSE = MODEL_RESPONSE_LIMIT
 MAX_RETAINED = 24 * 1024 * 1024
 # Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),
 # relative to the retained root; resuming needs only its transcript and thread state.
@@ -221,6 +222,8 @@ def execute(turn, key, mirror, root, stopped=None):
             unpack(turn.get("retained"), root / "retained")
         payload = {**request, "workspace": str(root / "work"), "scratch": str(root / "scratch"),
                    "retained_root": str(root / "retained"), "timeout": timeout}
+        if turn.get("feedback"):
+            payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / "feedback")
         baseline = processes.begin()
         with subprocess.Popen(command(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               text=True, env=agent_environment(root, key, bool(session)), start_new_session=True) as process:

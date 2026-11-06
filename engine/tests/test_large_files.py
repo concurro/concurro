@@ -77,7 +77,11 @@ class LifecycleTests(Harness, unittest.TestCase):
         controller.state.setdefault('findings', []).append({'id': 'F99', 'provider': 'claude', 'path': None,
             'line': None, 'start_line': None, 'detail': 'Evidence ' * 3000, 'status': 'open',
             'head': 'e' * 40, 'review': 1, 'text_digest': 'x'})
-        self.assertIn('claude PR review', controller.oversized(None, before, after))
+        self.assertIsNone(controller.oversized(None, before, after))
+        from feedback import restore
+        context = controller.pr_review_context('claude', before, after, 'e' * 40)
+        self.assertEqual(restore(context)['own_findings'][-1]['detail'], 'Evidence ' * 3000)
+        self.assertIn('controller_feedback', context)
 
     def test_truncation_marker_is_not_duplicated_when_an_existing_preview_shrinks(self):
         """Both per-file and aggregate shortening use one replaceable marker."""

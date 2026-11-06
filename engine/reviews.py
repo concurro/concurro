@@ -29,7 +29,7 @@ def context(state, provider):
     return [{k: f[k] for k in ("id", "status", "path", "start_line", "line", "detail")} for f in owned(state, provider)]
 
 
-def apply(state, provider, report, head):
+def apply(state, provider, report, head, issue_url=None):
     """Record a validated report's dispositions and new findings; return the review sequence and new IDs.
 
     Deterministic for one report, so a retained model result applied again after a crash
@@ -48,6 +48,8 @@ def apply(state, provider, report, head):
         identifier = f"F{number}"
         finding = {"id": identifier, "provider": provider, **item, "text_digest": digest(item["detail"]),
                    "head": head, "review": sequence, "status": "open", "format": FORMAT}
+        if issue_url:
+            finding['report_url'] = issue_url
         finding["opening_digest"] = digest(finding_body(finding))
         ledger(state).append(finding)
         identifiers.append(identifier)
@@ -107,7 +109,7 @@ def report_lines(report):
 # its marker and author before anything is sent again.
 
 # Findings and outbox items created from now on publish in this format; one without `format` is format 1 forever.
-FORMAT = 2
+FORMAT = 3
 REVIEW_MARKER = "<!-- concurro:review:v1:"
 FINDING_MARKER = "<!-- concurro:finding:v1:"
 DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
@@ -168,8 +170,16 @@ def finding_body(finding):
         return finding_prefix(finding) + finding["detail"]
     severity = markup.SEVERITY.get(finding.get("severity"))
     heading = " · ".join(["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)])
-    return (f"{FINDING_MARKER}{finding['id']} -->\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
-            f"{block(finding['detail'])}\n\n" + markup.sub("Concurro review · " + text(finding["provider"])))
+    prefix = f"{FINDING_MARKER}{finding['id']} -->\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
+    suffix = "\n\n" + markup.sub("Concurro review · " + text(finding["provider"]))
+    detail = block(finding['detail'])
+    if finding.get('format', 1) >= 3:
+        note = "Full finding in the report archive linked from the issue dashboard."
+        if finding.get('report_url'):
+            note = link(note, finding['report_url'])
+        detail = markup.excerpt(finding['detail'], REVIEW_BODY_LIMIT - len((prefix + suffix).encode()), note)
+    body = prefix + detail + suffix
+    return body
 
 
 def opening_matches(finding, comment):
@@ -240,8 +250,11 @@ def review_body_v2(state, config, item, report, findings, placed):
         lines += ["", markup.BLOCKING_NOTE]
     if report["design_issue"]:
         issue = report["design_issue"]
-        lines += ["", f"**Design issue** · {text(issue['kind'])}", "", block(issue["explanation"]), "",
-                  "\n".join("- " + text(evidence, 1000) for evidence in issue["evidence"])]
+        explanation = block(issue['explanation'])
+        evidence = "\n".join("- " + text(value, 1000) for value in issue['evidence'])
+        if item.get('format', 1) >= 3:
+            explanation, evidence = Droppable(explanation), Droppable(evidence)
+        lines += ["", f"**Design issue** · {text(issue['kind'])}", "", explanation, "", evidence]
     if collapse:
         lines += ["", Droppable(markup.details("Full review", summary))]
     unthreaded = [f for f in ordered if placed[f["id"]] == "body"]
@@ -284,7 +297,14 @@ def disposition_body(state, item, disposition):
         emoji, status = markup.STATUS[disposition["status"]]
         where = {"fixed": "in " + code(item["head"][:7]), "open": "on " + code(item["head"][:7]),
                  "obsolete": "under plan " + code(state["plan_id"][:12])}[disposition["status"]]
-        return f"{marker}\n{emoji} **{status}** {where}\n\n{block(disposition['evidence'])}"
+        evidence = block(disposition['evidence'])
+        if item.get('format', 1) >= 3:
+            note = 'Full evidence in the report archive linked from the issue dashboard.'
+            finding = find(state, disposition['id']) or {}
+            if finding.get('report_url'):
+                note = link(note, finding['report_url'])
+            evidence = markup.excerpt(disposition['evidence'], REVIEW_BODY_LIMIT - 1000, note)
+        return f"{marker}\n{emoji} **{status}** {where}\n\n{evidence}"
     answer = {"fixed": f"Fixed in `{item['head']}`", "open": f"Still open on `{item['head']}`",
               "obsolete": f"Obsolete under plan `{state['plan_id']}`"}[disposition["status"]]
     return f"{marker}\n{answer}: {disposition['evidence']}"

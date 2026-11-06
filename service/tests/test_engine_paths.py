@@ -9,6 +9,7 @@ from fixtures import KEY, ServiceFixture, Wire
 from support import setUpModule, tearDownModule  # unittest module fixtures
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
+from report_store import MARKER as REPORT_DATA_MARKER
 from controller import MARKER, Outcome
 from policy import Blocked, UncertainOutcome
 import conversation
@@ -140,9 +141,29 @@ class ReconstructionTests(Recovery, unittest.TestCase):
         """The audit artifact is found by creator and name, not created twice."""
         self.lose("POST", "issues/7/artifacts")
         items = [item["artifact"] for item in self.fake.artifacts[7].values()]
-        archives = [i["name"] for i in items if i["name"].startswith("Concurro report ")]
+        archives = [i["name"] for i in items if i["name"].startswith(("Concurro report ", "Concurro review data "))]
         self.assertEqual(sorted(i["type"] for i in items if i["name"] not in archives), ["generic", "plan"])
         self.assertEqual(len(archives), len(set(archives)), "no report archive is created twice")
+
+    def check_report_data_recovery(self, truncated):
+        """Reconstruct canonical report parts before any dependent approval is saved."""
+        if truncated:
+            self.truncate('POST', 'issues/7/artifacts', body=REPORT_DATA_MARKER)
+        else:
+            self.lose('POST', 'issues/7/artifacts', body=REPORT_DATA_MARKER)
+        parts = [item['artifact']['body'].split('\n', 1)[0]
+                 for item in self.fake.artifacts[7].values()
+                 if item['artifact']['body'].startswith(REPORT_DATA_MARKER)]
+        self.assertTrue(parts)
+        self.assertEqual(len(parts), len(set(parts)))
+
+    def test_report_data_recovers_a_lost_write_response(self):
+        """A successful part write with a lost response is discovered, never duplicated."""
+        self.check_report_data_recovery(False)
+
+    def test_report_data_recovers_a_truncated_write_response(self):
+        """A truncated successful response is reconstructed through the real service gateway."""
+        self.check_report_data_recovery(True)
 
     def test_summary_comment(self):
         """The summary comment is found by its marker and author."""

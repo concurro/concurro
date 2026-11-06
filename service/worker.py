@@ -24,6 +24,7 @@ from model_config import parse as parse_models, resolve
 from policy import Blocked
 import private
 from relay import ExchangeError, Operator
+from report_store import Cache
 
 from . import failures
 from .errors import GatewayStop
@@ -179,6 +180,7 @@ class Worker:
         self.guard = threading.Lock()
         self.failures = {}
         self.claims = {}
+        self.report_cache = Cache()
 
     def executor(self, repository, github):
         """The task's role jobs, dispatched in its fork at the recorded configuration commit."""
@@ -314,6 +316,7 @@ class Worker:
                                      retained=self.settings.state_dir / "sessions" / key[0].replace("/", "__"))
                 controller = Controller(facade, agents, target.config, bundle=target.bundle,
                                         controller_id=self.settings.controller_id, code=code, pulls=pulls,
+                                        report_cache=self.report_cache,
                                         enroll=lambda: self.registry.bind(key, target.config["upstream"],
                                                                           target.config["fork"], target.config_sha))
                 outcome = controller.advance(key[1])

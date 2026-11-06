@@ -121,6 +121,8 @@ def explain(reason, continuation):
         body = text(first) + "\n\n" + markup.details("Full reason", block(reason))
     else:
         body = block(reason)
+    if len(body.encode()) > 16000:
+        body = markup.excerpt(reason, 16000, 'Full reason in the report archive linked from the dashboard.')
     return (body + "\n\n" if body else "") + continuation
 
 
@@ -184,7 +186,9 @@ def request(state, config, author):
     lines = [f"{mention}Concurro needs answers before it can continue.", ""]
     for index, item in enumerate(asked, 1):
         tag = f" ({text(item['provider'])})" if item["provider"] else ""
-        lines += [f"**Q{index}.**{tag} {block(item['question'])}", ""]
+        question = markup.excerpt(item['question'], max(1000, 16000 // len(asked)),
+                                  'Full question in the report archive linked from the dashboard.')
+        lines += [f"**Q{index}.**{tag} {question}", ""]
     how = "Reply in a comment or edit the issue description; the author or any writer may answer."
     if state.get("mode") == "manual":
         how += f" Then a writer comments {code('/concurro start')}."

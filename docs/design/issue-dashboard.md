@@ -78,25 +78,52 @@ The audit artifact cannot be the archive: the API returns only an artifact's new
 30 versions ([measurement](../artifact-measurements.md)), so a report compacted out of
 the checkpoint could become unreachable.
 
-- **One archive artifact per report:** an intake or design vote, a local validation
-  attempt with its local review, or a code review. It is named
-  `Concurro report <n> · <step> · <provider> · round <round>`, and its body is the
-  event marker, the report's heading and headline, then the report itself verbatim as
-  JSON in a fence longer than any backtick run in it. It is created once and never
-  edited, so its only version is permanent.
-- **Bounded:** reports are already bounded for the checkpoint (32,000 bytes at most),
-  so an archive stays within the 60,000-byte artifact limit without splitting; one
-  that would not is refused like an oversized event. The event size fallback never
-  applies to an archive.
-- **Recovery:** archives are queued and published through the existing event outbox,
-  with its content digest. Before creating one, the publisher looks for an App-authored
-  archive with the event's marker. One with the expected body is the archive; one with
-  any other body is a conflict that blocks the task.
-- **Discovery:** checkpoint discovery matches only the audit and plan artifacts'
-  names and markers, so archives never become candidates for task state.
-- **Compaction:** a report's text is excerpted only once its archive's receipt is
-  recorded, and still only while no event or PR review that renders it is pending. The
-  excerpt note says the full text is in its report archive.
+- **Canonical report data:** new design and PR reviews store their full JSON in
+  immutable, content-addressed issue artifacts. The retained response, accepted
+  vote, review history and rounds archive share the same report data. Controller
+  annotations and advisory ratings reference its core instead of duplicating it.
+  Existing format-3 archives are reused when their complete report matches.
+- **Audit references:** mutable history, statuses and annotations stay in the audit;
+  bulky reports are referenced by digest and artifact numbers. Derived finding text
+  uses a path into its source report rather than a second stored copy. References
+  are hydrated before policy checks. Known audit, plan and report identities are
+  read directly; marker discovery is for initial creation or lost-write recovery.
+  Current, unarchived and pending-publication ratings remain intact; only archived
+  historical ratings may be shortened or dropped from the checkpoint. The full
+  archived report remains unchanged. Capacity is tested through 48 classified reports.
+  An unrelated duplicate cannot replace an already bound artifact. Ambiguous
+  discovery, missing data and invalid provenance or digests stop recovery.
+- **Cache:** the service shares an LRU holding up to 32 MiB of encoded, verified report content across ticks,
+  scoped by repository, issue, author, digest and artifact numbers. Returned values
+  are copies. A warm cache uses the originally verified immutable bytes, even if
+  someone later edits or deletes the remote artifact; it cannot accept new bytes.
+  Eviction or restart re-verifies remotely and detects such changes. Mutable audit
+  and plan artifacts are never trusted through this cache. The archive digest
+  index is built once when a new write needs discovery.
+- **Publication:** format-4 rounds entries link to the canonical data, split into
+  parts when necessary. Each artifact stays below GitHub's 60,000-byte limit. Lost
+  responses are recovered by marker and exact body; artifacts are never edited.
+  The response transport capacity remains 300,000 UTF-8 bytes, independent of
+  checkpoint size. Valid reviews are not sent back for shortening to fit an audit.
+- **Runner feedback:** lengthy selected feedback is delivered as digest-checked
+  JSON files outside the candidate checkout and retained provider home. Prompts
+  carry an index of every finding/objection, its identity and status, and the file
+  location. Agents must read full evidence; previews are not substitutes. Only
+  feedback already selected for that role is exported: fresh design reviewers
+  receive no previous votes, and PR reviewers receive only their own findings.
+  Files are temporary transport, not another durable evidence store. Call identity
+  still uses the original feedback, so file projection cannot duplicate a paid call.
+- **Checkpoint format:** new audit writes use version 3; version 2 remains readable
+  and migrates on the next save without changing approvals or budgets. Unknown
+  versions fail closed. Older engines reject version 3 instead of treating reference
+  placeholders as state. After any v3 save, rollback requires a v3-capable engine;
+  never restore an old audit snapshot to roll back, since that loses consumed calls
+  and publication progress. Deploy the matching engine and runner workflow together.
+- **Archive compatibility:** queued formats 1–3 retain their exact rendering and
+  receipt-gated compaction. Referenced format-4 reports keep full evidence after
+  publication. Oversized PR thread text is excerpted with a dashboard link; repair
+  files retain the complete finding. Artifact discovery uses ten entries per page
+  to stay within the existing read bound, but idle ticks do not scan the collection.
 
 ## Actionable comments
 
@@ -261,4 +288,4 @@ natively.
 - An archive keeps its report verbatim, even with text that would close a fence or a
   collapsed section.
 - Queued pre-change events still publish byte for byte.
-- Approval reports in the pilot fixtures stay within the new length guidance.
+- Large complete reviews survive archive publication and restart without correction calls.

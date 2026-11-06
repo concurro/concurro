@@ -8,7 +8,7 @@ from unittest.mock import patch
 from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
 from test_pipeline import APPROVE, FINDING, FakeAgents, FakeGitHub
 from checkpoints import LIMIT, Checkpoints
-from controller import PR_REVIEW_RESERVE, Controller
+from controller import Controller
 import conversation
 from policy import Blocked, digest, validate_pr_review, validate_review
 import reviews
@@ -40,7 +40,7 @@ class ContractTests(unittest.TestCase):
     def test_invalid_findings(self):
         for change in ({"path": "/etc/passwd"}, {"path": "docs/../x"}, {"path": ""}, {"line": 0},
                        {"start_line": 4, "line": 3}, {"start_line": 3, "line": None}, {"path": None, "line": 2},
-                       {"detail": ""}, {"detail": "x" * 4001}, {"extra": 1}):
+                       {"detail": ""}, {"extra": 1}):
             with self.subTest(change=change), self.assertRaises(Blocked):
                 validate_pr_review(report("changes_requested", [{**FINDING, **change}]), [], [])
         with self.assertRaises(Blocked):
@@ -164,6 +164,8 @@ class Reviewers(FakeAgents):
         self.reopen_once = reopen_once
 
     def ask(self, provider, stage, context):
+        from feedback import restore
+        context = restore(context)
         if stage == "develop" and self.reopen_once and context["review_findings"]:
             self.reopen_once = False
             self.calls.append((provider, stage, deepcopy(context)))
@@ -285,57 +287,38 @@ class LifecycleTests(Harness, unittest.TestCase):
         self.assertEqual([f["id"] for f in controller.state["findings"]], ["F1"])
         self.assertEqual(controller.state["finding_sequence"], 1)
 
-    def test_output_budget_keeps_the_checkpoint_within_its_limit(self):
-        """With existing findings and both providers' reports, an oversized review is refused, not saved."""
+    def test_large_reviews_keep_all_findings_and_reach_the_gates(self):
+        """Full reviews and their ledger copies use references rather than shrinking reviewer capacity."""
         large = [{**FINDING, "detail": "x" * 3800}] * 6
         agents = Reviewers({"claude", "codex"}, findings={"claude": [{**FINDING, "detail": "y" * 1500}] * 2,
                                                            "codex": large})
-        controller = None
-        with self.assertRaisesRegex(Blocked, "exceeds the checkpoint budget"):
-            controller = self.run_to(agents, "gates")
-        controller = Controller(self.gh, agents, self.config)
-        controller.issue = self.gh.repo("issues/7")
-        controller.load(self.gh.pages("issues/7/comments"))
-        state = controller.state
-        self.assertEqual([f["provider"] for f in state["findings"]], ["claude"] * 2)
-        self.assertLessEqual(len(controller.checkpoints.audit_body(state).encode()), LIMIT)
-        budget = controller.pr_review_output_budget()["max_json_bytes"]
-        self.assertLess(budget, len(json.dumps(report("changes_requested", large)).encode()))
+        controller = self.run_to(agents, "gates")
+        self.assertEqual(len(controller.state['findings']), 8)
+        self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
 
     def test_review_steps_never_overflow_the_checkpoint(self):
-        """Across the refusal boundary, reviews either reach the gates within the limit or are refused cleanly."""
-        results = set()
-        for total in range(LIMIT - 12000, LIMIT - 500, 500):
+        """Bulky prior outcomes do not reduce either reviewer's evidence allowance."""
+        for total in (48000, 59000, 90000):
             with self.subTest(total=total):
                 self.setUp()
                 self.run_to(Reviewers(set()), "review")
                 self.pad(total, reason="r" * 1000)
-                try:
-                    self.run_to(Reviewers(set()), "gates", ticks=4)
-                    results.add("gates")
-                except Blocked as error:
-                    self.assertIn("checkpoint budget", str(error))
-                    results.add("refused")
-        self.assertEqual(results, {"gates", "refused"})
+                controller = self.run_to(Reviewers(set()), "gates", ticks=4)
+                self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
 
-    def test_oversized_reopen_is_refused_without_changing_the_task(self):
-        """A reopen that would not fit changes no finding, design state or approval, and the task blocks."""
+    def test_large_reopen_is_persisted_with_its_full_design_issue(self):
+        """A valid design defect remains actionable even when old outcomes are large."""
         self.run_to(Reviewers(set()), "review")
-        _, state = self.load()
-        self.pad(LIMIT - PR_REVIEW_RESERVE - 3000)
-        _, before = self.load()
+        self.pad(51000)
         agents = FakeAgents()
         agents.ask = lambda provider, stage, context: report(
             "reopen", design_issue={**DESIGN_ISSUE, "explanation": "e" * 500}) | {"summary": "s" * 2500}
         controller = Controller(self.gh, agents, self.config)
-        with self.assertRaisesRegex(Blocked, "checkpoint budget"):
-            controller.advance(7)
-        controller.suspend("blocked", "PR review exceeds the checkpoint budget", publish_events=False)
+        controller.advance(7)
         _, after = self.load()
-        self.assertEqual(after["stage"], "blocked")
-        for field in ("findings", "design_generation", "approval", "design_reopens", "reviews"):
-            self.assertEqual(after.get(field), before.get(field), field)
-        self.assertNotIn("review_event", after)
+        self.assertEqual(after["stage"], "plan")
+        self.assertEqual(after['design_reopens'], 1)
+        self.assertIn('e' * 500, '\n'.join(self.gh.archives()))
 
     def test_design_reopen_withdraws_and_a_new_review_retires(self):
         """Open findings are withdrawn with the design; their provider answers them under the new plan."""
@@ -523,8 +506,8 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertIn("🗃️ **Obsolete** under plan", reply["body"])
         self.assertEqual((state["findings"][0]["status"], state["findings"][0]["resolution"]), ("obsolete", "done"))
 
-    def test_review_is_published_in_full_before_compaction(self):
-        """Published issue text is compacted only once the PR outbox is empty, so the PR review keeps its full summary."""
+    def test_review_remains_full_after_publication(self):
+        """Referenced reports retain their complete summary before and after PR publication."""
         agents = Reviewers(set())
         ask, summary = agents.ask, "The note is accurate. " * 80
 
@@ -535,8 +518,8 @@ class PublicationTests(Harness, unittest.TestCase):
         agents.ask = long_summary
         state = self.run_to(agents, "gates").state
         self.assertEqual([summary in r["body"] for r in self.gh.app_reviews], [True, True])
-        self.assertTrue(all(r["summary"].endswith(conversation.ARCHIVED) for r in state["reviews"].values()),
-                        "compacted once archived")
+        self.assertTrue(all(r["summary"] == summary for r in state["reviews"].values()),
+                        "canonical report references retain the full summary")
 
     def test_hidden_opening_comment_is_retried_not_unthreaded(self):
         """An opening comment missing from one read keeps the review pending; it is never recorded as body-only."""

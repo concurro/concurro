@@ -12,3 +12,5 @@ Review the exact plan, base, requirements, charter and bundle identity against r
 In the pipeline, use the supplied external [response contract](../../schemas/plan_qc.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.
 
 Return the required `classification` using the shared rubric. Assess the exact proposed plan independently of peer ratings. High change risk alone does not prevent proceeding or approval; report real defects or unresolved human decisions through the existing verdict fields.
+
+Keep evidence clear and proportionate. Reviews are archived in full; audit history does not reduce your response allowance. Cover every criterion and objection without negotiating a prose budget.

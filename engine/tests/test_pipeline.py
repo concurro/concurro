@@ -60,6 +60,8 @@ class FakeAgents:
     def ask(self, provider, stage, context):
         """Supply a plan, a distinct edit per attempt, or independent reviews."""
         self.calls.append((provider, stage, deepcopy(context)))
+        from feedback import restore
+        context = restore(context)
         if stage in ("intake", "plan_qc"):
             if self.qc_reports:
                 report = deepcopy(self.qc_reports.pop(0))
@@ -141,7 +143,23 @@ class FakeGitHub:
     def archives(self):
         """The bodies of the report archive artifacts, oldest first."""
         items = self.artifacts.get(7, {}).values()
-        return [i["artifact"]["body"] for i in items if i["artifact"]["name"].startswith("Concurro report ")]
+        import re
+        from report_store import Store, MARKER as DATA_MARKER
+        store = Store(self, 7, self.config['bot_login'])
+        bodies = []
+        for i in items:
+            if not i['artifact']['name'].startswith('Concurro report '):
+                continue
+            body = i['artifact']['body']
+            # Follow format-4 links as an archive reader would; legacy archives remain verbatim.
+            numbers = [int(n) for n in re.findall(r'\[Full report(?: part \d+)?\]\([^)]*/artifacts/(\d+)\)', body)]
+            if numbers:
+                first = self.artifacts[7][numbers[0]]['artifact']['body']
+                key = first[len(DATA_MARKER):].split(':', 1)[0]
+                value = store.get(key, numbers)
+                body += '\n\n```json\n' + json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + '\n```'
+            bodies.append(body)
+        return bodies
 
     def summary(self):
         """Find the current-state comment independently of conversation chronology."""

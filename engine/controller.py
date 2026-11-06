@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 import actions
 import classification
+import feedback
 from actions import BUNDLE_REASON
 from model_config import assigned, resolve, parse as parse_models
 import readiness
@@ -33,7 +34,7 @@ from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMI
 from checkpoint_health import sync_checkpoint_health
 from github import GitHub, NotFound, Transient
 from identities import Identities
-from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid,
+from policy import (MODEL_RESPONSE_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid,
                     digest, task_branch,
                     consensus_valid, design_roster, path_allowed, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
@@ -70,18 +71,6 @@ def strings(value, limit=32):
     """Return whether a value is a bounded list of distinct non-empty strings."""
     return (isinstance(value, list) and len(value) <= limit and len(set(value)) == len(value)
             and all(isinstance(v, str) and v.strip() and len(v) <= 240 for v in value))
-
-
-def pr_review_cost(report):
-    """Checkpoint bytes a PR review adds: the report, its finding text again in the ledger, and for a
-    reopen the report's copy in the PR outbox and the copies of its design issue kept in its history,
-    feedback and revision notice."""
-    report = classification.core(report)
-    size = len(json.dumps(report).encode())
-    cost = size + sum(len(json.dumps(f["detail"]).encode()) for f in report["findings"])
-    if report["verdict"] == "reopen":
-        cost += size + 3 * len(json.dumps(report["design_issue"]).encode())
-    return cost
 
 
 def validate_config(config):
@@ -156,9 +145,6 @@ WAIT_SECONDS = 300
 VOLATILE_REQUEST = ("review_output_budget",)
 # Audit room kept free when retaining a completed model result for recovery.
 RESULT_MARGIN = 4000
-# Checkpoint room a PR review step keeps for its queued events, the stage transition's reason
-# (up to 4,000 characters at the gates) and outcome bookkeeping.
-PR_REVIEW_RESERVE = 6000
 
 
 @dataclass(frozen=True)
@@ -235,7 +221,7 @@ class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
 
     def __init__(self, github, agents, config, bundle_root=None, target_root=None,
-                 controller_id=ACTIONS, bundle=None, code=None, pulls=None, enroll=None):
+                 controller_id=ACTIONS, bundle=None, code=None, pulls=None, enroll=None, report_cache=None):
         """Inject transports so complete lifecycles can be tested without credentials.
 
         `bundle`, when given, is the instance the agents also use; otherwise it is built here.
@@ -244,6 +230,7 @@ class Controller:
         self.code, self.pulls = code or github, pulls or github
         self.controller_id = controller_id
         self.enroll = enroll or (lambda: None)
+        self.report_cache = report_cache
         self.comment_id = None
         self.checkpoints = None
         self.state = None
@@ -295,7 +282,7 @@ class Controller:
         state.pop('plan_event_intent', None)
         self.checkpoint()
         self.sync_stage()
-        if publish_events and conversation.publish(state, self.gh, self.config):
+        if publish_events and conversation.publish(state, self.gh, self.config, self.checkpoints.reports):
             self.refresh_classification()
             self.checkpoint()
         if publish_events and outboxes:
@@ -557,7 +544,7 @@ class Controller:
 
     def load(self, comments):
         """Load verified artifacts or an unmigrated legacy checkpoint from the configured App."""
-        self.checkpoints = Checkpoints(self.gh, self.config, self.issue["number"])
+        self.checkpoints = Checkpoints(self.gh, self.config, self.issue["number"], self.report_cache)
         self.state = self.checkpoints.load(comments)
         comment = self.checkpoints.comment
         self.comment_id = comment["id"] if comment else None
@@ -669,10 +656,10 @@ class Controller:
                    "repository": self.repository_refs("controller_candidate" in context)}
         if "agents" in self.config:
             context["agent"] = resolve(self.config, provider, stage).record()
-        size = transport_size(context)
-        if size > self.config["max_context_bytes"]:
+        if transport_size(context) > self.config["max_context_bytes"]:
             context = classification.context_core(context)
-            size = transport_size(context)
+        context = feedback.prepare(context)
+        size = transport_size(context)
         if size > self.config["max_context_bytes"]:
             raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
                           "narrow the change")
@@ -721,7 +708,7 @@ class Controller:
 
     def operation(self, provider, stage, context):
         """Bind a model call to its intended work, so incidental request changes keep its allowance."""
-        work = {k: v for k, v in classification.context_core(context).items() if k not in VOLATILE_REQUEST}
+        work = {k: v for k, v in classification.context_core(feedback.restore(context)).items() if k not in VOLATILE_REQUEST}
         identifier = digest([self.state["issue"], provider, stage, digest(work)])
         current = self.state.get("operation")
         if not current or current["id"] != identifier or current["status"] == "consumed":
@@ -914,7 +901,7 @@ class Controller:
             if issue == state["issue"]:
                 continue
             try:
-                prior = Checkpoints(self.gh, self.config, issue).load(comments[:10])
+                prior = Checkpoints(self.gh, self.config, issue, self.report_cache).load(comments[:10])
                 if prior is None:
                     continue
                 outcome = prior.get("outcomes", [])[-1]
@@ -953,41 +940,21 @@ class Controller:
         self.save()
         return True
 
-    def review_output_budget(self, context):
-        """Budget both the review response and its duplicate copies in the audit checkpoint."""
-        remaining = deepcopy(self.state)
-        remaining.get('qc', {}).pop('plan_qc', None)
-        remaining.pop('review_repair', None)
-        # A retained result is temporary and dropped when its stage saves.
-        remaining.get('operation', {}).pop('response', None)
-        self.classification_room(remaining, 0)
-        room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 10000
-        return {'max_json_bytes': max(1000, min(room // 3, design.report_limit(
-                    len(context['review_criteria']), len(context.get('own_objections', []))))),
-                'encoding': 'JSON with non-ASCII characters escaped'}
-
-    def pr_review_room(self):
-        """Checkpoint bytes a PR review may add, keeping the step's reserve.
-
-        A retained model result is not counted: `checkpoint` drops it when it would not fit,
-        and recovery then treats the result as lost, within its allowance.
-        """
-        remaining = deepcopy(self.state)
-        remaining.get('operation', {}).pop('response', None)
-        self.classification_room(remaining, 0)
-        return CHECKPOINT_LIMIT - PR_REVIEW_RESERVE - len(self.checkpoints.audit_body(remaining).encode())
+    def review_output_budget(self, context=None):
+        """Expose the response transport capacity, independent of audit history size."""
+        return {'max_json_bytes': MODEL_RESPONSE_LIMIT, 'encoding': 'UTF-8 JSON'}
 
     def pr_review_output_budget(self):
-        """The reviewer's budget: half the room, since a review's finding text is kept twice."""
-        return {'max_json_bytes': max(1000, min(self.pr_review_room() // 2, PR_REVIEW_LIMIT)),
-                'encoding': 'JSON with non-ASCII characters escaped'}
+        """Use the same response capacity for both review stages."""
+        return self.review_output_budget()
 
     def record_pr_review(self, state, provider, report):
         """Apply a validated PR review to the ledger and queue its publication on the PR.
 
         A design reopen is kept as the pending review event, not as the head's report.
         """
-        sequence, identifiers = findings.apply(state, provider, report, state["head"])
+        sequence, identifiers = findings.apply(state, provider, report, state["head"],
+                                               f"https://github.com/{self.config['repository']}/issues/{state['issue']}")
         if "agents" in self.config:
             report["agent"] = resolve(self.config, provider, "review").record()
         report.update(head=state["head"], model=selected_model(self.config, provider, "review") or "CLI default",
@@ -1001,8 +968,6 @@ class Controller:
     def validate_design_report(self, report, context):
         """Validate reviewer output before recording any vote or resolving an objection."""
         report = classification.core(report)
-        if len(json.dumps(report).encode()) > context['review_output_budget']['max_json_bytes']:
-            raise design.ReviewError('review_size')
         try:
             validate_qc(report, 'plan_qc', self.bundle.charter, len(context['review_criteria']),
                         len(context.get('own_objections', [])))
@@ -1096,7 +1061,7 @@ class Controller:
             except design.ReviewError as error:
                 self.repair_review(report, error, member)
                 return
-            # Speculate locally; invalid or oversized output must never enter durable votes.
+            # Validate fully before recording a vote or resolving an objection.
             state = deepcopy(self.state)
             state.pop('review_repair', None)
             resolved, disposition_ids = design.update_objections(state, report, member, phase)
@@ -1126,18 +1091,12 @@ class Controller:
             "round": state["design_generation"] + 1, "phase": phase if member else "intake"})
         identity = member or {"id": digest([provider, "intake"]), "provider": provider,
                               "model": selected_model(self.config, provider, stage)}
-        try:
-            conversation.queue(state, None, source=("qc", stage), kind="qc", details={
-                                   "provider": provider, "model": identity["model"],
-                                   **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
-                                   "plan": state.get("plan_id", "intake"), "round": state["design_generation"] + 1,
-                                   "phase": phase if member else "intake", "reviewer": identity["id"],
-                                   "resolved": resolved, "disposition_ids": disposition_ids})
-        except Blocked:
-            if not member:
-                raise
-            self.repair_review(report, design.ReviewError('review_checkpoint'), member)
-            return
+        conversation.queue(state, None, source=("qc", stage), kind="qc", details={
+                               "provider": provider, "model": identity["model"],
+                               **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
+                               "plan": state.get("plan_id", "intake"), "round": state["design_generation"] + 1,
+                               "phase": phase if member else "intake", "reviewer": identity["id"],
+                               "resolved": resolved, "disposition_ids": disposition_ids})
 
         state["reason"] = report["rationale"]
         decision = report["decision"]
@@ -1149,27 +1108,14 @@ class Controller:
                                and session.get("restarts") == 0 and not context.get("own_objections")),
                 "objection_ids": [v['id'] for v in context.get('own_objections', [])]}
             self.classification_room(state, CHECKPOINT_LIMIT - 6000)
-            if len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 6000:
-                self.repair_review(report, design.ReviewError('review_checkpoint'), member)
-                return
-        previous = self.state
         self.state = state
-        try:
-            self.refresh_classification()
-            self.finish_quality_control(stage, report)
-            if stage == "intake" and state["stage"] == "plan" and report["concerns"]:
-                conversation.queue_intake_concerns(state, report["concerns"])
-            self.record_outcome()
-            self.transition(state)
-            self.classification_room(state, CHECKPOINT_LIMIT - 1000)
-            if member and len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 1000:
-                raise design.ReviewError('review_checkpoint')
-        except Blocked:
-            self.state = previous
-            if not member:
-                raise
-            self.repair_review(report, design.ReviewError('review_checkpoint'), member)
-            return
+        self.refresh_classification()
+        self.finish_quality_control(stage, report)
+        if stage == "intake" and state["stage"] == "plan" and report["concerns"]:
+            conversation.queue_intake_concerns(state, report["concerns"])
+        self.record_outcome()
+        self.transition(state)
+        self.classification_room(state, CHECKPOINT_LIMIT - 1000)
         self.save()
 
     def finish_quality_control(self, stage, report):
@@ -1567,6 +1513,7 @@ class Controller:
         context["own_findings"] = findings.context(self.state, provider)
         context["review_output_budget"] = self.pr_review_output_budget()
         context["prior_outcomes_untrusted"] = classification.without_hints(context["prior_outcomes_untrusted"])
+        context = feedback.prepare(context)
         # Diff previews are optional; file identities, findings and review criteria are not.
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         preview = MAX_DIFF
@@ -1755,9 +1702,7 @@ class Controller:
             owned = findings.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],
                                [f["id"] for f in owned if f["status"] == "withdrawn"])
-            if pr_review_cost(report) > self.pr_review_room():
-                raise Blocked("PR review exceeds the checkpoint budget")
-            report = self.classify(report, provider, "review", PR_REVIEW_LIMIT)
+            report = self.classify(report, provider, "review", MODEL_RESPONSE_LIMIT)
             self.record_pr_review(state, provider, report)
             source = ("review_event",) if report["verdict"] == "reopen" else ("reviews", provider)
             conversation.queue(state, None, source=source, kind="review", details={
