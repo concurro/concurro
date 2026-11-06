@@ -47,7 +47,7 @@ class DesignContractTests(unittest.TestCase):
 
     def test_review_rejects_missing_criterion_forged_source_and_unresolved_approval(self):
         """An unsupported approve response never records an approving vote."""
-        for failure in ('missing', 'quote', 'line', 'uncertain', 'duplicate'):
+        for failure in ('missing', 'quote', 'ambiguous', 'uncertain', 'duplicate'):
             with self.subTest(failure=failure):
                 self.setUp()
                 self.reach('plan_qc')
@@ -58,7 +58,10 @@ class DesignContractTests(unittest.TestCase):
                     report = original(provider, stage, context)
                     if failure == 'missing': report['assessments'].pop()
                     elif failure == 'quote': report['sources'][0]['quote'] = 'Invented source'
-                    elif failure == 'line': report['sources'][0]['line'] = 999
+                    elif failure == 'ambiguous':
+                        path = report['sources'][0]['path']
+                        self.gh.trees[self.gh.base][path] = 'Use docs.\nUse docs.\n'
+                        report['sources'][0]['line'] = 999
                     elif failure == 'uncertain': report['assessments'][0]['status'] = 'uncertain'
                     else: report['assessments'].append(deepcopy(report['assessments'][0]))
                     return report

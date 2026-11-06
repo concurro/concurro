@@ -884,19 +884,23 @@ class Controller:
         design.validate_evidence(report, self.state['requirements'], own, source_files)
 
     def repair_review(self, report, error, member):
-        """Ask only the failed reviewer to correct output, under durable task-wide budgets."""
+        """Bound corrections per reviewer and design binding; retain task-wide usage history."""
         state = self.state
         binding = digest([approval_binding(state, self.config), member])
         signature = digest([error.code, report])
         previous = state.get('review_repair', {})
-        repeated = previous.get('binding') == binding and previous.get('signature') == signature
-        state['review_repair'] = {'binding': binding, 'signature': signature, 'feedback': {
+        if previous.get('binding') != binding:
+            previous = {}
+        repeated = previous.get('signature') == signature
+        attempts = previous.get('attempts', 0)
+        state['review_repair'] = {'binding': binding, 'signature': signature, 'attempts': attempts, 'feedback': {
             'code': error.code, 'field': error.field, 'detail': design.REPAIR_DETAILS[error.code]}}
         state.pop('approval', None)
-        if repeated or state.get('review_repairs', 0) >= self.config['max_review_repairs']:
+        if repeated or attempts >= self.config['max_review_repairs']:
             state.update(stage='escalated', retry_stage='plan_qc',
                          reason='Review output repair made no progress or exhausted its budget.')
         else:
+            state['review_repair']['attempts'] = attempts + 1
             state['review_repairs'] = state.get('review_repairs', 0) + 1
             state.update(stage='plan_qc', reason='Review output needs correction: ' + error.code)
         self.save()
@@ -1152,6 +1156,9 @@ class Controller:
                 self.state.pop("reason", None)
                 if self.state.get("plan_draft") and self.state["stage"] == "plan":
                     self.state["plan_draft"]["attempt"] = 0
+                if self.state.get("review_repair"):
+                    self.state["review_repair"].pop("attempts", None)
+                    self.state["review_repair"].pop("signature", None)
                 # A writer's retry authorizes a fresh attempt allowance for an uncertain call.
                 self.state.pop("operation", None)
                 self.save()

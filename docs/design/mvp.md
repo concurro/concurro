@@ -132,7 +132,11 @@ profiles, package-scoping engine or generated CI workflows remain.
    Reviewers receive the complete substantive plan, including its summary; publication
    hints and peer verdicts are omitted. New objections use an empty ID until the controller
    assigns one. Output-correction feedback identifies objection ID and concern/disposition
-   mismatches by field, without discarding the reviewer's concern.
+   mismatches by field, without discarding the reviewer's concern. Incorrect citation lines
+   are corrected only when the exact quote uniquely matches in the same pinned file.
+   Each reviewer and design binding has a bounded correction allowance, renewed by an
+   explicit writer retry. Repeated identical failures still escalate; retries preserve
+   the task's total model-call budget and correction history.
 2. **Implement.** A role job edits the approved code with native tools. It may build,
    install dependencies and test hypotheses. It returns changes plus an explanation and
    clearly labeled, agent-reported validation. Meaningful scope growth can reopen design.

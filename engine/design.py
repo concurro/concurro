@@ -113,6 +113,22 @@ def citation_matches(lines, number, quote):
             and window[1:-1] == quoted[1:-1] and window[-1].startswith(quoted[-1]))
 
 
+def citation_line(lines, number, quote):
+    """Keep a valid anchor, or relocate an exact quote only when its match is unique."""
+    if citation_matches(lines, number, quote):
+        return number
+    quoted = source_lines(quote)
+    if not quoted or not quoted[0]:
+        return None
+    match = None
+    for candidate, line in enumerate(lines, 1):
+        if quoted[0] in line and citation_matches(lines, candidate, quote):
+            if match is not None or len(quoted) == 1 and line.count(quoted[0]) > 1:
+                return None
+            match = candidate
+    return match
+
+
 def validate_evidence(report, requirements, own_objections=(), files=None):
     """Reject incomplete coverage, invented citations and contradictory approval dispositions."""
     validate_bounds(report)
@@ -132,8 +148,10 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
         source_ids.add(source['id'])
         if files is not None:
             content = files.get(source['path'])
-            if content is None or not citation_matches(source_lines(content), source['line'], source['quote']):
+            line = citation_line(source_lines(content), source['line'], source['quote']) if content is not None else None
+            if line is None:
                 raise ReviewError('review_citation', f'sources[{source_index}]')
+            source['line'] = line
     if not 1 <= len(sources) <= 12:
         raise Blocked('design review needs bounded repository evidence')
     seen = set()
