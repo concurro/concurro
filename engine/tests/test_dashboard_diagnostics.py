@@ -98,6 +98,42 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(sum(body.count('FULL-REJECTED-REPORT') for body in artifacts), 1)
         self.assertTrue(self.load().state['reports'][-1]['diagnostic'])
 
+    def test_evidence_validation_reason_survives_archival_reload_and_correction(self):
+        """The reviewer and humans see the actual evidence failure rather than generic coverage advice."""
+        for failure, reason in (
+            ('empty_quote', 'invalid design evidence source'),
+            ('missing_criterion', 'design review must assess every supplied criterion exactly once'),
+            ('uncertain', 'approval contradicts incomplete criterion evidence'),
+        ):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.reach_review()
+                original = self.agents.ask
+
+                def invalid(provider, stage, context):
+                    """Break a single evidence requirement without changing the report shape."""
+                    report = original(provider, stage, context)
+                    if failure == 'empty_quote':
+                        report['sources'][0]['quote'] = ''
+                    elif failure == 'missing_criterion':
+                        report['assessments'].pop()
+                    else:
+                        report['assessments'][0]['status'] = 'uncertain'
+                    return report
+
+                with patch.object(self.agents, 'ask', side_effect=invalid):
+                    self.tick()
+                controller = self.load()
+                self.assertEqual(controller.state['review_repair']['feedback']['detail'], reason)
+                self.assertFalse(controller.state['design_votes'])
+                self.assertIn(reason, self.gh.summary()['body'])
+                diagnostic = next(r for r in controller.state['reports'] if r.get('diagnostic'))
+                self.assertIn(reason, self.gh.artifacts[7][diagnostic['artifact']]['artifact']['body'])
+                self.tick()
+                context = next(c for _, stage, c in reversed(self.agents.calls) if stage == 'plan_qc')
+                self.assertEqual(context['review_validation_feedback']['detail'], reason)
+                self.assertTrue(self.load().state['design_votes'])
+
     def test_lost_rejection_archive_response_recovers_without_duplicate_or_extra_review(self):
         """Pending evidence is recovered before a replacement model result can overwrite it."""
         self.reach_review()
@@ -131,6 +167,8 @@ class DiagnosticsTests(unittest.TestCase):
         controller, _ = self.reject_review()
         self.assertEqual(controller.state['stage'], 'escalated')
         self.assertIn('Escalated · 0/0 corrections', controller.diagnostics_table())
+        self.assertIn(': Paused', self.gh.summary()['body'])
+        self.assertNotIn(': Waiting', self.gh.summary()['body'])
         controller.state['reports'] = [r for r in controller.state['reports'] if not r.get('diagnostic')]
         self.assertIn('Not retained by the earlier engine', controller.diagnostics_table())
 
@@ -168,9 +206,21 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn(roster[1]['provider'] + ': Waiting', summary)
         controller.state.update(stage='escalated', retry_stage='plan_qc')
         self.assertNotIn(': Reviewing', controller.summary_body())
+        self.assertNotIn(': Waiting', controller.summary_body())
+        for member in roster:
+            self.assertIn(member['provider'] + ': Paused', controller.summary_body())
+        controller.state['reports'] = [
+            {'step': 'Design review', 'round': '1 cooperative', 'provider': roster[0]['provider'],
+             'outcome': 'approve', 'artifact': 21}]
+        self.assertIn(roster[0]['provider'] + ': ✅ Approve', controller.summary_body())
+        self.assertIn(roster[1]['provider'] + ': Paused', controller.summary_body())
         controller.state.update(stage='review', round=0, pr=9, reviews={})
         controller.state.pop('operation')
         self.assertIn('| ↳ Round 1 | Current |', controller.summary_body())
+        self.assertIn(': Waiting', controller.summary_body())
+        controller.state.update(stage='blocked', retry_stage='review')
+        self.assertIn(': Paused', controller.summary_body())
+        self.assertNotIn(': Waiting', controller.summary_body())
 
     def test_now_line_distinguishes_paused_ci_and_human_review(self):
         """Old in-flight operation records cannot make a paused task look active."""

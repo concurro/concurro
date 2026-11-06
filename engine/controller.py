@@ -473,6 +473,8 @@ class Controller:
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
+        if stage in ('blocked', 'escalated') and state.get('retry_stage') in STAGE_STEP:
+            return STAGE_STEP[state['retry_stage']]
         if state.get("pr"):
             return 4 if len(state.get("reviews", {})) < len(assigned(self.config, "pr_reviewers")) else 5
         if state.get("local_status") or state.get("approval"):
@@ -591,7 +593,9 @@ class Controller:
                         if provider not in entries:
                             active = (self.state['stage'] in ('plan_qc', 'review')
                                       and operation.get('status') == 'started' and operation.get('provider') == provider)
-                            cells.append(text(provider + (': Reviewing' if active else ': Waiting')))
+                            reviewer_status = ('Paused' if self.state['stage'] not in ('plan_qc', 'review')
+                                               else 'Reviewing' if active else 'Waiting')
+                            cells.append(text(provider + ': ' + reviewer_status))
                 rows.append([text('↳ Round ' + round_), 'Current' if round_ == current_round else '', ' · '.join(cells)])
         return rows
 
@@ -1092,7 +1096,9 @@ class Controller:
             design.validate_evidence(report, self.state['requirements'], own)
         except design.ReviewError:
             raise
-        except (Blocked, TypeError, KeyError, ValueError):
+        except Blocked as error:
+            raise design.ReviewError('review_evidence', detail=str(error)) from None
+        except (TypeError, KeyError, ValueError):
             raise design.ReviewError('review_evidence') from None
         try:
             source_files = self.files(self.state.get('head') or self.state['base'],

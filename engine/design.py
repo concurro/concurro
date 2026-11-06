@@ -143,7 +143,7 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
                 or not isinstance(source['path'], str) or source['path'].startswith('/')
                 or any(p in ('', '.', '..', '.git') for p in source['path'].split('/'))
                 or '\\' in source['path'] or type(source['line']) is not int or source['line'] < 1
-                or not isinstance(source['quote'], str) or not 1 <= len(source['quote']) <= 300):
+                or not isinstance(source['quote'], str) or not source['quote']):
             raise Blocked('invalid design evidence source')
         source_ids.add(source['id'])
         if files is not None:

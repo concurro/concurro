@@ -83,6 +83,35 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(items[1]['text'], '- First rule\n  with continuation')
         self.assertEqual(items[-1]['text'], 'Also third rule')
 
+    def test_long_source_quotes_are_verified_without_a_separate_length_limit(self):
+        """A real multiline citation over 300 characters can become an approving vote."""
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                self.setUp()
+                self.reach('plan_qc')
+                quote = '\n'.join(f'Line {i}: ' + 'source evidence ' * 8 for i in range(4))
+                self.assertGreater(len(quote), 300)
+                self.gh.trees[self.gh.base]['CONTRIBUTING.md'] = quote
+                original = self.agents.ask
+
+                def quoted(provider, stage, context):
+                    """Return a long literal citation, optionally corrupting its last line."""
+                    report = original(provider, stage, context)
+                    report['sources'][0]['quote'] = quote if valid else quote + 'invented'
+                    return report
+
+                with patch.object(self.agents, 'ask', side_effect=quoted):
+                    self.tick()
+                state = self.load().state
+                self.assertEqual(bool(state['design_votes']), valid)
+                if valid:
+                    self.assertNotIn('review_repair', state)
+                    vote = next(iter(state['design_votes'].values()))
+                    self.assertEqual(vote['report']['sources'][0]['quote'], quote)
+                else:
+                    self.assertEqual(state['review_repair']['feedback']['code'], 'review_citation')
+                    self.assertFalse(approval_valid(state, self.config))
+
     def test_executable_source_can_support_citations_but_is_not_editable(self):
         """Reading source evidence grants no permission to edit or follow symlinks."""
         controller = self.reach('plan_qc')
