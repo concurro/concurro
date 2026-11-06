@@ -132,6 +132,11 @@ profiles, package-scoping engine or generated CI workflows remain.
    gets two automatic correction attempts within the existing model-call budget; persistent
    errors escalate for `/concurro retry`. Oversized rejected output is explicitly excerpted.
    Correcting output does not spend a semantic design-revision round.
+   Invalid intake reports also receive two automatic corrections, with the rejection reason
+   and bounded output in a write-once report archive linked from the dashboard. Genuine
+   clarification, rejection and escalation decisions still stop for human input. A writer's
+   retry renews the correction allowance without resetting spent model calls. Transport
+   failures retain their own recovery path. Rejected output never authorizes planning.
    Reviewers receive the complete substantive plan, including its summary; publication
    hints and peer verdicts are omitted. New objections use an empty ID until the controller
    assigns one. Output-correction feedback identifies objection ID and concern/disposition

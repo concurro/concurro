@@ -1,0 +1,227 @@
+"""Invalid intake output is visible, recoverable and corrected without authorizing work."""
+
+from copy import deepcopy
+import unittest
+from unittest.mock import patch
+
+from support import CONFIG, setUpModule, tearDownModule
+from checkpoints import Checkpoints, LIMIT
+from controller import Controller, INTAKE_OUTPUT_REPAIRS
+from conversation import PublicationError, ARCHIVE_LIMIT
+from policy import Blocked
+from test_pipeline import FakeAgents, FakeGitHub
+
+
+class IntakeRepairTests(unittest.TestCase):
+    """Exercise correction and archive recovery through real controller ticks."""
+
+    def setUp(self):
+        """Start with a fresh enrolled task and deterministic provider."""
+        self.config = deepcopy(CONFIG)
+        self.config['autonomous'] = False
+        self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
+
+    def tick(self):
+        """Restart the controller against its durable checkpoint each tick."""
+        controller = Controller(self.gh, self.agents, self.config)
+        controller.advance(7)
+        return controller
+
+    def report(self, **changes):
+        """Build valid intake output with optional malformed fields."""
+        return {'decision': 'proceed', 'rationale': 'The requested behavior is clear.',
+                'risk': 'low', 'questions': [], 'concerns': [],
+                'scope': {'goal_ids': ['G-USABILITY'], 'fit': 'Improve usability.', 'conflicts': []}, **changes}
+
+    def test_contradiction_is_archived_then_corrected_without_writer_retry(self):
+        """Rejected proceed never starts planning; feedback produces a separately charged turn."""
+        self.agents.qc_reports = [self.report(concerns=['Handle partial reads.']), self.report()]
+        rejected = self.tick()
+        self.assertEqual(rejected.state['stage'], 'intake')
+        self.assertEqual(rejected.outcome(True).kind, 'continue')
+        self.assertNotIn('intake', rejected.state.get('qc', {}))
+        self.assertNotIn('approval', rejected.state)
+        self.assertNotIn('plan', rejected.state)
+        self.assertEqual(len(self.gh.archives()), 1)
+        archive = self.gh.archives()[0]
+        self.assertIn('Intake output rejected', archive)
+        self.assertIn('QC acceptance contradicts', archive)
+        self.assertIn('Handle partial reads.', archive)
+        self.assertIn('Output rejected', self.gh.summary()['body'])
+        self.assertIn('/artifacts/', self.gh.summary()['body'])
+        accepted = self.tick()
+        self.assertEqual(accepted.state['stage'], 'plan')
+        self.assertNotIn('intake_draft', accepted.state)
+        self.assertEqual(accepted.state['calls'], 2)
+        self.assertEqual(accepted.state['plan_revisions'], 0)
+        self.assertEqual(len(self.gh.archives()), 2)
+        self.assertEqual(self.gh.archives()[0], archive)
+        feedback = self.agents.calls[1][2]['intake_validation_feedback']
+        self.assertIn('contradicts', feedback['reason'])
+        self.assertIn('Handle partial reads.', feedback['output'])
+        self.assertIn('do not remove real questions', feedback['instruction'])
+        self.assertEqual(feedback['attempt'], 1)
+
+    def test_corrected_intake_completes_the_autonomous_pipeline(self):
+        """An output repair preserves the independent planning, review and CI gates."""
+        self.config['autonomous'] = True
+        self.agents.qc_reports = [self.report(concerns=['Handle partial reads.']), self.report()]
+        for _ in range(15):
+            controller = self.tick()
+            if controller.state.get('handoff_ready'):
+                break
+        self.assertTrue(controller.state.get('handoff_ready'))
+        self.assertFalse(self.gh.pr['draft'])
+        self.assertEqual(self.gh.merges, 0)
+        self.assertEqual(len(controller.state['reviews']), 2)
+        self.assertEqual(sum(stage == 'intake' for _, stage, _ in self.agents.calls), 2)
+        self.assertEqual(sum('Intake output rejected' in body for body in self.gh.archives()), 1)
+
+    def test_corrected_genuine_questions_enter_clarification(self):
+        """Correction cannot turn a real unanswered question into silent approval."""
+        self.agents.qc_reports = [self.report(questions=['Which behavior is intended?']),
+                                 self.report(decision='clarify', questions=['Which behavior is intended?'])]
+        self.tick()
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'clarify')
+        self.assertEqual(controller.outcome(True).kind, 'await-human')
+        self.assertNotIn('plan', controller.state)
+        self.assertTrue(any('Input needed' in c['body'] and 'Which behavior is intended?' in c['body']
+                            for c in self.gh.comments))
+
+    def test_valid_human_decisions_are_never_output_repairs(self):
+        """Valid clarify, rejection and high-risk escalation retain their existing transitions."""
+        for fields, expected in (({'decision': 'clarify', 'questions': ['What is intended?']}, 'clarify'),
+                                 ({'decision': 'reject', 'concerns': ['Outside scope.']}, 'rejected'),
+                                 ({'decision': 'escalate', 'concerns': ['Needs human judgment.']}, 'escalated'),
+                                 ({'risk': 'high'}, 'escalated')):
+            with self.subTest(fields=fields):
+                self.setUp()
+                self.agents.qc_reports = [self.report(**fields)]
+                controller = self.tick()
+                self.assertEqual(controller.state['stage'], expected)
+                self.assertNotIn('intake_draft', controller.state)
+                self.assertEqual(controller.state['calls'], 1)
+
+    def test_exhaustion_survives_restart_and_retry_renews_only_corrections(self):
+        """Every invalid report is archived; only a writer renews the spent correction allowance."""
+        bad = self.report(concerns=['Unresolved concern.'])
+        self.agents.qc_reports = [bad] * (INTAKE_OUTPUT_REPAIRS + 2)
+        for _ in range(INTAKE_OUTPUT_REPAIRS + 1):
+            controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'escalated')
+        self.assertEqual(controller.state['retry_stage'], 'intake')
+        self.assertEqual(controller.state['calls'], 3)
+        self.assertEqual(len(self.gh.archives()), 3)
+        self.assertEqual(self.tick().state['calls'], 3)
+        self.gh.comment('/concurro retry', login='stranger')
+        self.assertEqual(self.tick().state['stage'], 'escalated')
+        self.gh.comment('/concurro retry')
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'intake')
+        self.assertEqual(controller.state['intake_draft']['attempt'], 1)
+        self.assertEqual(controller.state['calls'], 4)
+        self.assertEqual(controller.state['plan_revisions'], 0)
+        self.assertEqual(len(self.gh.archives()), 4)
+        self.assertEqual(len({r['round'] for r in controller.state['reports']}), 4)
+        self.assertEqual(self.tick().state['stage'], 'plan')
+
+    def test_malformed_and_oversized_reports_publish_bounded_excerpts(self):
+        """Malformed shapes and hostile fences cannot break the archive or checkpoint."""
+        for report in ([], self.report(decision=[]), self.report(scope={'goal_ids': []}),
+                       self.report(rationale='`' * 30000), self.report(rationale='~`<details>\n' * 30000)):
+            with self.subTest(kind=type(report)):
+                self.setUp()
+                with patch.object(self.agents, 'ask', return_value=report):
+                    controller = self.tick()
+                self.assertEqual(controller.state['stage'], 'intake')
+                archive = self.gh.archives()[0]
+                self.assertIn('Intake output rejected', archive)
+                self.assertLessEqual(len(archive.encode()), ARCHIVE_LIMIT)
+                self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
+                if controller.state['intake_draft']['truncated']:
+                    self.assertIn('Output excerpted', archive)
+
+    def test_completed_response_is_consumed_once_after_crash(self):
+        """A crash before recording the rejection replays the retained response without a model call."""
+        original = Checkpoints.save
+        interrupted = []
+
+        class Crash(BaseException):
+            """Simulate process death before the rejection is committed."""
+
+        def save(store, state):
+            """Leave the completed response durable while losing the first rejection save."""
+            if state.get('intake_draft') and not interrupted:
+                interrupted.append(True)
+                raise Crash()
+            return original(store, state)
+
+        with patch.object(self.agents, 'ask', return_value=self.report(concerns=['Concern.'])) as ask:
+            with patch.object(Checkpoints, 'save', save), self.assertRaises(Crash):
+                self.tick()
+            recovered = self.tick()
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(recovered.state['intake_draft']['attempt'], 1)
+        self.assertEqual(recovered.state['operation']['status'], 'consumed')
+        self.assertEqual(len(self.gh.archives()), 1)
+
+    def test_lost_archive_response_recovers_before_next_correction(self):
+        """A stored archive with a lost POST reply is found by marker, never duplicated."""
+        original = self.gh.repo
+        lost = []
+
+        def repo(path, method='GET', data=None):
+            """Lose the first rejected-report creation response after the write succeeds."""
+            result = original(path, method, data)
+            if method == 'POST' and 'Intake output rejected' in (data or {}).get('body', '') and not lost:
+                lost.append(True)
+                raise RuntimeError('lost response')
+            return result
+
+        self.agents.qc_reports = [self.report(concerns=['Concern.']), self.report()]
+        with patch.object(self.gh, 'repo', side_effect=repo), self.assertRaises(PublicationError):
+            self.tick()
+        self.assertTrue(lost)
+        controller = self.tick()
+        self.assertEqual(controller.state['stage'], 'plan')
+        self.assertEqual(controller.state['calls'], 2)
+        self.assertEqual(len(self.gh.archives()), 2)
+        self.assertEqual(sum('Intake output rejected' in b for b in self.gh.archives()), 1)
+
+    def test_changed_archive_is_a_conflict_not_permission_to_correct(self):
+        """Recovery never overwrites altered public evidence or calls the model past it."""
+        original = self.gh.repo
+        lost = []
+
+        def repo(path, method='GET', data=None):
+            """Persist an archive, alter it, then lose its creation response."""
+            result = original(path, method, data)
+            if method == 'POST' and 'Intake output rejected' in (data or {}).get('body', '') and not lost:
+                lost.append(True)
+                self.gh.artifacts[7][result['number']]['artifact']['body'] += '\nEdited'
+                raise RuntimeError('lost response')
+            return result
+
+        self.agents.qc_reports = [self.report(concerns=['Concern.'])]
+        with patch.object(self.gh, 'repo', side_effect=repo), self.assertRaises(PublicationError):
+            self.tick()
+        with self.assertRaisesRegex(PublicationError, 'edited or duplicated'):
+            self.tick()
+        self.assertEqual(len(self.agents.calls), 1)
+        self.assertEqual(len(self.gh.archives()), 1)
+
+    def test_transport_errors_and_call_budget_do_not_become_output_corrections(self):
+        """Failures outside validation retain their original retry or blocking policy."""
+        with patch.object(self.agents, 'ask', side_effect=RuntimeError('transport failed')):
+            with self.assertRaisesRegex(RuntimeError, 'transport failed'):
+                self.tick()
+        self.assertFalse(self.gh.archives())
+        self.setUp()
+        self.config['max_model_calls'] = 1
+        self.agents.qc_reports = [self.report(concerns=['Concern.'])]
+        controller = self.tick()
+        self.assertEqual(controller.state['intake_draft']['attempt'], 1)
+        with self.assertRaisesRegex(Blocked, 'model-call budget exhausted'):
+            self.tick()
+        self.assertEqual(len(self.gh.archives()), 1)

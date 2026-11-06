@@ -171,6 +171,8 @@ def parts_v2(state, kind, source, details):
     """`(title, parts, meta)` of one sourced event: outcome first, the rest in `Hidden` sections."""
     value = source_value(state, source)
     plan = ("plan " + code(details["plan"][:12])) if details.get("plan") not in (None, "intake") else ""
+    if kind == "intake_rejection":
+        return "⚠️ Intake output rejected", [block(value["reason"])], (details["round"],)
     if kind == "implementation":
         return "Implementation report", [block(value["summary"]),
                 "Agent-reported validation: " + block(value["validation"])], (f"round {details['round']}",)
@@ -274,11 +276,20 @@ def archive(event, state):
         agent = event["details"]["agent"]
         meta = (*meta, text(f"{agent['profile']} / {agent['provider']} / {agent['model']} / effort {agent['effort']}"))
     value = source_value(state, event["source"])
-    report = value.get("review") if event["kind"] == "local" else value
+    report = None if event["kind"] == "intake_rejection" else (
+        value.get("review") if event["kind"] == "local" else value)
     headline = markup.headline(report, "rationale" if event["kind"] == "qc" else "summary") if report else None
-    record = json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
+    record = (value["output"] if event["kind"] == "intake_rejection"
+              else json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
     fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", record)), default=0) + 1)
+    if event["kind"] == "intake_rejection":
+        fence = min((char * max(3, max((len(run) for run in re.findall(char + r"+", record)), default=0) + 1)
+                     for char in ("`", "~")), key=len)
     lines = [f"{MARKER}{event['id']} -->", f"### {title}", ""]
+    if event["kind"] == "intake_rejection":
+        lines += [block(value["reason"]), "", "Rejected output — not an accepted intake decision.", ""]
+        if value["truncated"]:
+            lines += ["Output excerpted to fit publication limits.", ""]
     if headline:
         lines += [headline, ""]
     lines += [markup.sub(f"Report {event['sequence']}", *meta), "", fence + "json", record, fence]
@@ -288,6 +299,8 @@ def archive(event, state):
 def index_entry(state, kind, source, details):
     """The status comment's record of one archived report: step, round, provider and outcome."""
     value = source_value(state, source)
+    if kind == "intake_rejection":
+        return {"step": "Intake", "provider": details["provider"], "round": details["round"], "outcome": "invalid"}
     if kind == "implementation":
         return {"step": "Implement", "provider": details["provider"], "round": str(details["round"]),
                 "outcome": "candidate published"}

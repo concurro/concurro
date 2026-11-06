@@ -42,8 +42,9 @@ from policy import (PR_REVIEW_LIMIT, Blocked, OutsideScope, SessionFailure, appr
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
 PR_TITLE_LIMIT = 72
-# Correct malformed planner output without spending a semantic design-revision round.
+# Correct malformed intake and planner output without spending a semantic design-revision round.
 PLAN_OUTPUT_REPAIRS = 2
+INTAKE_OUTPUT_REPAIRS = 2
 # Context bytes `ask()` adds at dispatch (the repository commit and refs, and the operation contract).
 DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
@@ -451,8 +452,12 @@ class Controller:
                 entry = next((r for r in reversed(reports)
                               if (r["step"], r["round"], r["provider"]) == (step, round_, provider)), None)
                 vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
-                cells.append(link(markup.label(vocabulary.get(entry["outcome"], ("📝", "Agent report"))), self.artifact_url(entry["artifact"]))
-                             if entry else "—")
+                if entry:
+                    label = (("⚠️", "Output rejected") if entry["outcome"] == "invalid"
+                             else vocabulary.get(entry["outcome"], ("📝", "Agent report")))
+                    cells.append(link(markup.label(label), self.artifact_url(entry["artifact"])))
+                else:
+                    cells.append("—")
             rows.append([text(step), text(round_)] + cells)
         return markup.table(["Step", "Round"] + [text(p) for p in providers], rows)
 
@@ -742,7 +747,7 @@ class Controller:
         state["design_votes"] = {}
         state.pop("approval", None)
         state.pop("local_evidence", None)
-        for key in ('plan_draft', 'validation_feedback', 'validation_failure', 'validation_stalls', 'review_repair'):
+        for key in ('plan_draft', 'intake_draft', 'validation_feedback', 'validation_failure', 'validation_stalls', 'review_repair'):
             state.pop(key, None)
 
     def reopen_design(self, issue, source):
@@ -964,6 +969,13 @@ class Controller:
             repair = state.get('review_repair', {})
             if repair.get('binding') == digest([approval_binding(state, self.config), member]):
                 context['review_validation_feedback'] = repair['feedback']
+        if not member and state.get("intake_draft"):
+            context["intake_validation_feedback"] = {**state["intake_draft"], "instruction": (
+                "Correct the intake report against its schema and the rejection reason. "
+                "Use clarify with questions when a human answer is needed; do not remove real questions to proceed. "
+                "Proceed requires empty questions, concerns and scope conflicts. Put non-blocking observations "
+                "in rationale; preserve genuine blockers with an appropriate non-proceed decision. "
+                "This feedback concerns output validity, not a request to approve the issue.")}
         report = self.ask(provider, stage, context)
         resolved, disposition_ids = [], []
         if member:
@@ -977,7 +989,15 @@ class Controller:
             state.pop('review_repair', None)
             resolved, disposition_ids = design.update_objections(state, report, member, phase)
         else:
-            validate_qc(report, stage, self.bundle.charter)
+            try:
+                validate_qc(report, stage, self.bundle.charter)
+            except Blocked as error:
+                self.repair_intake(report, str(error), provider)
+                return
+            except (KeyError, TypeError, ValueError):
+                self.repair_intake(report, "invalid intake field types; return the structured intake schema", provider)
+                return
+            state.pop("intake_draft", None)
         state.setdefault("qc", {})[stage] = report
         state.setdefault("qc_history", []).append({"stage": stage, "decision": report["decision"],
             "risk": report["risk"], "rationale": report["rationale"][:500], "report_digest": digest(report),
@@ -1225,7 +1245,8 @@ class Controller:
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
                 output_repair = (self.state.get('review_repair') and self.state['retry_stage'] == 'plan_qc'
-                                 or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan')
+                                 or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan'
+                                 or self.state.get('intake_draft') and self.state['retry_stage'] == 'intake')
                 if self.state["stage"] in ("rejected", "escalated") and not output_repair:
                     if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment."):
                         continue
@@ -1239,6 +1260,8 @@ class Controller:
                 self.state.pop("reason", None)
                 if self.state.get("plan_draft") and self.state["stage"] == "plan":
                     self.state["plan_draft"]["attempt"] = 0
+                if self.state.get("intake_draft") and self.state["stage"] == "intake":
+                    self.state["intake_draft"]["attempt"] = 0
                 if self.state.get("review_repair"):
                     self.state["review_repair"].pop("attempts", None)
                     self.state["review_repair"].pop("signature", None)
@@ -1249,18 +1272,39 @@ class Controller:
                 self.state["command_id"] = comment["id"]
                 self.suspend("stopped")
 
-    def repair_plan(self, plan, reason):
-        """Publish rejected output and request at most two corrections across restarts."""
-        attempt = self.state.get("plan_draft", {}).get("attempt", 0) + 1
-        output = json.dumps(plan, indent=2, ensure_ascii=True)
+    def rejected_output(self, value, reason, key):
+        """Bound a rejected JSON excerpt against the remaining durable checkpoint capacity."""
+        attempt = self.state.get(key, {}).get("attempt", 0) + 1
+        output = json.dumps(value, indent=2, ensure_ascii=True)
         saved = deepcopy(self.state)
-        saved.pop("plan_draft", None)
+        saved.pop(key, None)
         saved.get("operation", {}).pop("response", None)
-        # JSON string escaping can double the excerpt; leave room for the failure and dashboard state.
+        # JSON string escaping can double the excerpt; reserve publication and dashboard metadata.
         room = max(0, (CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(saved).encode()) - 4000) // 2)
         limit = min(20000, room)
-        self.state["plan_draft"] = {"output": output[:limit], "truncated": len(output) > limit,
-                                    "reason": reason, "attempt": attempt}
+        return {"output": output[:limit], "truncated": len(output) > limit,
+                "reason": reason, "attempt": attempt}
+
+    def repair_intake(self, report, reason, provider):
+        """Archive invalid intake output before scheduling at most two paid corrections."""
+        state = self.state
+        state["intake_draft"] = self.rejected_output(report, reason, "intake_draft")
+        state.pop("approval", None)
+        state.get("qc", {}).pop("intake", None)
+        state.update(stage="intake", reason="Intake output needs correction: " + reason)
+        if state["intake_draft"]["attempt"] > INTAKE_OUTPUT_REPAIRS:
+            state.update(stage="escalated", retry_stage="intake",
+                         reason="Intake output still needs correction after two retries: " + reason)
+        sequence = state.get("conversation", {}).get("sequence", 0) + 1
+        conversation.queue(state, None, source=("intake_draft",), kind="intake_rejection", details={
+            "provider": provider, "round": f"rejected output {sequence}",
+            "agent": resolve(self.config, provider, "intake").record()})
+        self.save()
+
+    def repair_plan(self, plan, reason):
+        """Publish rejected output and request at most two corrections across restarts."""
+        self.state["plan_draft"] = self.rejected_output(plan, reason, "plan_draft")
+        attempt = self.state["plan_draft"]["attempt"]
         self.state.pop("approval", None)
         self.state.update(stage="plan", reason="Planner output needs correction: " + reason)
         if attempt > PLAN_OUTPUT_REPAIRS:
