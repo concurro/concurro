@@ -911,14 +911,15 @@ class Controller:
             roster = design_roster(self.config)
             member = next((m for m in roster if m["id"] not in state["design_votes"]), None)
             if member is None:
-                if not consensus_valid(state, self.config, require_fresh=False):
+                if not consensus_valid(state, self.config, require_final=False):
                     raise Blocked("design votes are missing, stale or contradictory")
                 self.finish_consensus()
                 self.save()
                 return
             context["review_phase"] = phase
             context['review_criteria'] = design.criteria(state['requirements'])
-            context['plan'] = {k: v for k, v in context['plan'].items() if k not in ('summary', 'publication')}
+            context['objection_instructions'] = design.OBJECTION_INSTRUCTIONS
+            context['plan'] = {k: v for k, v in context['plan'].items() if k != 'publication'}
             if phase == "cooperative":
                 context["own_objections"] = [v for v in state.get("objections", []) if v["reviewer"] == member["id"]]
             else:
@@ -975,8 +976,11 @@ class Controller:
         state["reason"] = report["rationale"]
         decision = report["decision"]
         if member:
+            session = state.get("sessions", {}).get(f"{stage}:{provider}:{member['model']}", {})
             state["design_votes"][member["id"]] = {"identity": member,
                 "binding": approval_binding(state, self.config), "report": report,
+                "first_pass": (phase == "cooperative" and session.get("turn") == 1
+                               and session.get("restarts") == 0 and not context.get("own_objections")),
                 "objection_ids": [v['id'] for v in context.get('own_objections', [])]}
             if len(self.checkpoints.audit_body(state).encode()) > CHECKPOINT_LIMIT - 6000:
                 self.repair_review(report, design.ReviewError('review_checkpoint'), member)
@@ -1021,9 +1025,9 @@ class Controller:
     def finish_consensus(self):
         """Authorize implementation only after a complete current unanimous round."""
         state = self.state
-        if not consensus_valid(state, self.config, require_fresh=False):
+        if not consensus_valid(state, self.config, require_final=False):
             raise Blocked("unanimous design consensus missing or stale")
-        if state.get("design_phase") != "fresh":
+        if not consensus_valid(state, self.config):
             state.update(design_phase="fresh", design_votes={})
             return
         if state.get("mode") == "manual":

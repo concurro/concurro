@@ -141,14 +141,16 @@ def approval_binding(state, config):
                    "parent": state.get("design_parent"), "changed_files": state.get("approved_accumulated_files", [])})
 
 
-def consensus_valid(state, config, require_fresh=True):
-    """Require complete, fresh unanimous judgments; code cannot prove semantic alignment."""
-    if require_fresh and state.get("design_phase") != "fresh":
-        return False
+def consensus_valid(state, config, require_final=True):
+    """Require bound unanimity, with first-pass or separate fresh approval for implementation."""
     roster = design_roster(config)
     votes = state.get("design_votes", {})
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
+    if require_final and state.get("design_phase") != "fresh":
+        if (state.get("design_phase") != "cooperative"
+                or not all(v.get("first_pass") is True for v in votes.values())):
+            return False
     binding = approval_binding(state, config)
     for member in roster:
         vote = votes[member["id"]]

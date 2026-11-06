@@ -17,7 +17,8 @@ designs; reuse existing operation journals, outboxes and gateway settlement rule
 
 Staff sessions by task, role and compatible ownership/configuration. Never reuse one
 across issues or providers. One session is one GitHub job; serve its turns sequentially.
-Fresh design approval uses a new session/home, without cooperative transcripts, even
+First-turn unanimous design approvals need no duplicate round. After resumed reviews,
+fresh design approval uses a new session/home, without cooperative transcripts, even
 when stage and provider match. Retained conversations remain scoped by the existing
 session journal; a runner-session ID is not a provider conversation ID.
 

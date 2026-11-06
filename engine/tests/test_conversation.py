@@ -114,9 +114,12 @@ class ConversationTests(unittest.TestCase):
 
     def test_fresh_dissent_reopens_instead_of_using_cooperative_approvals(self):
         """Final independent objections invalidate the exact plan and require revision."""
-        self.agents.qc_reports = [decision("proceed"), decision("approve"), decision("approve"),
+        self.config["max_plan_revisions"] = 2
+        self.agents.qc_reports = [decision("proceed"), decision("approve"),
+                                 decision("revise", concerns=["Specify the boundary."]),
+                                 decision("approve"), decision("approve"),
                                  decision("approve"), decision("revise", concerns=["Missed edge case."])]
-        for _ in range(6):
+        for _ in range(9):
             controller = self.tick()
         self.assertEqual(controller.state["stage"], "plan")
         self.assertNotIn("approval", controller.state)

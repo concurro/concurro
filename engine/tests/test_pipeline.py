@@ -397,7 +397,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(self.tick()["handoff_ready"])
         self.tick()
         self.assertEqual(self.gh.merges, 0)
-        self.assertEqual(len(self.agents.calls), 9)
+        self.assertEqual(len(self.agents.calls), 7)
 
     def test_independent_reviews_and_fix_round(self):
         """Both reviewers assess each head; one failure triggers a bounded new revision."""
@@ -437,7 +437,7 @@ class PipelineTests(unittest.TestCase):
         self.gh.comment("/concurro approve " + state["plan_id"], "outsider")
         self.gh.comment("/concurro approve " + "0" * 64)
         self.assertEqual(self.tick()["stage"], "planned")
-        self.assertEqual(len(self.agents.calls), 6)
+        self.assertEqual(len(self.agents.calls), 4)
 
     def test_stop_and_retry_preserve_progress(self):
         """A writer can pause and resume an approved pipeline without resetting its budget."""
@@ -465,7 +465,7 @@ class PipelineTests(unittest.TestCase):
             self.tick()
         self.assertEqual(self.tick()["stage"], "review")
         self.assertEqual(len(self.gh.refs), 1)
-        self.assertEqual(len(self.agents.calls), 7)
+        self.assertEqual(len(self.agents.calls), 5)
 
     def test_external_merge_reconciles_closed_issue(self):
         """A human merge ends observation without claiming that Concurro merged it."""

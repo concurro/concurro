@@ -151,7 +151,7 @@ class ConsensusTests(unittest.TestCase):
             self.assertEqual(active.tree(other), {})
             self.assertEqual(repo.call_count, 2)
 
-    def test_every_participating_identity_and_planner_votes_fresh(self):
+    def test_first_pass_unanimity_skips_duplicate_fresh_round(self):
         """Each unique role model votes; no reviewer sees a peer's report in its round."""
         self.config.update(qc="copilot", qc_model="qc-model")
         self.config["models"] = {"claude": "planner-model", "codex": "implement-model", "copilot": "pr-model"}
@@ -160,15 +160,22 @@ class ConsensusTests(unittest.TestCase):
         self.assertEqual(len(roster), 4)
         self.assertEqual(self.tick()["stage"], "plan")
         self.assertEqual(self.tick()["stage"], "plan_qc")
-        for index in range(2 * len(roster)):
+        for index in range(len(roster)):
             state = self.tick()
-            self.assertEqual(state["stage"], "implement" if index == 2 * len(roster) - 1 else "plan_qc")
+            self.assertEqual(state["stage"], "implement" if index == len(roster) - 1 else "plan_qc")
         self.assertTrue(approval_valid(state, self.config))
+        self.assertEqual(state["design_phase"], "cooperative")
+        self.assertTrue(all(v["first_pass"] for v in state["design_votes"].values()))
         votes = [(p, c) for p, stage, c in self.agents.calls if stage == "plan_qc"]
+        self.assertEqual(len(votes), len(roster))
         self.assertEqual({c["reviewer_identity"]["id"] for _, c in votes}, {m["id"] for m in roster})
-        self.assertEqual(len({c["design_binding"] for _, c in votes}), 2)
+        self.assertEqual(len({c["design_binding"] for _, c in votes}), 1)
         for _, context in votes:
             self.assertFalse({"design_votes", "qc", "qc_feedback", "design_feedback", "design_authorization"} & context.keys())
+            self.assertEqual(context["controller_session"]["turn"], 0)
+            self.assertFalse(context["own_objections"])
+        planning_session = next(c["controller_session"]["scope"] for _, stage, c in self.agents.calls if stage == "plan")
+        self.assertNotIn(planning_session, [c["controller_session"]["scope"] for _, c in votes])
         planner = next(m for m in roster if "plan" in m["roles"])
         self.assertIn(planner["id"], state["design_votes"])
         self.assertEqual(len(design_roster(CONFIG)), 2)
@@ -191,6 +198,49 @@ class ConsensusTests(unittest.TestCase):
         state = self.reach("implement")
         self.assertNotEqual(next(iter(state["design_votes"].values()))["binding"], old_binding)
         self.assertEqual(state["calls"], 9)
+        self.assertEqual(state["design_phase"], "fresh")
+        phases = [c["review_phase"] for _, stage, c in self.agents.calls if stage == "plan_qc"]
+        self.assertEqual(phases, ["cooperative"] * 4 + ["fresh"] * 2)
+
+    def test_legacy_or_resumed_votes_still_require_fresh_approval(self):
+        """Missing or negative first-pass receipts cannot authorize implementation."""
+        approved = self.reach("implement")
+        for receipt in (None, False):
+            with self.subTest(receipt=receipt):
+                state = deepcopy(approved)
+                vote = next(iter(state["design_votes"].values()))
+                if receipt is None:
+                    vote.pop("first_pass")
+                else:
+                    vote["first_pass"] = receipt
+                state.pop("approval")
+                state["stage"] = "plan_qc"
+                self.assertTrue(consensus_valid(state, self.config, require_final=False))
+                self.assertFalse(consensus_valid(state, self.config))
+                self.persist(state)
+                result = self.tick()
+                self.assertEqual(result["stage"], "plan_qc")
+                self.assertEqual(result["design_phase"], "fresh")
+                self.assertFalse(result["design_votes"])
+                self.assertNotIn("approval", result)
+
+    def test_corrected_review_is_not_a_first_pass_approval(self):
+        """A resumed review still receives an independent fresh pass after correction."""
+        self.reach("plan_qc")
+        original = self.agents.ask
+
+        def invalid(provider, stage, context):
+            """Return a correctable report missing its criterion assessment."""
+            report = original(provider, stage, context)
+            report["assessments"] = []
+            return report
+
+        with patch.object(self.agents, "ask", side_effect=invalid):
+            self.assertEqual(self.tick()["review_repairs"], 1)
+        state = self.reach("implement")
+        self.assertEqual(state["design_phase"], "fresh")
+        phases = [c["review_phase"] for _, stage, c in self.agents.calls if stage == "plan_qc"]
+        self.assertEqual(phases, ["cooperative"] * 3 + ["fresh"] * 2)
 
     def test_missing_stale_wrong_identity_and_extra_votes_block(self):
         """Completion requires exactly the bound roster, not a count or approval-shaped data."""
@@ -247,6 +297,9 @@ class ConsensusTests(unittest.TestCase):
         state = self.tick()
         self.assertEqual(state["stage"], "plan_qc")
         state = self.reach("planned")
+        self.assertEqual(state["design_phase"], "cooperative")
+        self.assertEqual(sum(stage == "plan_qc" for _, stage, _ in self.agents.calls), 2)
+        self.assertNotIn("approval", state)
         self.gh.comment("/concurro approve " + state["plan_id"])
         self.assertEqual(self.tick()["stage"], "publish")
         self.assertEqual(self.agents.calls[0][1], "intake")

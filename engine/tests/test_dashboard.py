@@ -32,9 +32,9 @@ class HappyPathTests(Harness, unittest.TestCase):
         self.assertIn("| Merge | ✅ Handed off | A human reviews and merges |", summary)
         self.assertIn("**Action needed:** a human review and merge", summary)
         steps = [a.split("\n")[1] for a in self.gh.archives()]
-        self.assertEqual(len(steps), 8, "intake, four design votes, local review and two code reviews")
+        self.assertEqual(len(steps), 6, "intake, two design votes, local review and two code reviews")
         rounds = summary.split("<summary>Rounds</summary>", 1)[1]
-        self.assertIn("| Design review | 1 fresh | [✅ Approve](", rounds)
+        self.assertIn("| Design review | 1 cooperative | [✅ Approve](", rounds)
         self.assertIn("| Code review | 1 | [✅ Approve](", rounds)
 
     def test_status_follows_the_gates_after_a_hand_off(self):

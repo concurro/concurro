@@ -157,6 +157,8 @@ class ReviewerRepairTests(unittest.TestCase):
 
     def test_fresh_correction_is_independent_and_cannot_approve_incomplete_evidence(self):
         """Fresh corrections get only their own fixed diagnostic, never cooperative history."""
+        self.agents.qc_reports = [decision('proceed'), decision('approve'),
+                                 decision('revise', concerns=['Add an error-path regression.'])]
         self.reach('plan_qc', 'fresh')
         original = self.agents.ask
         def missing(provider, stage, context):
@@ -174,6 +176,46 @@ class ReviewerRepairTests(unittest.TestCase):
             self.assertNotIn(key, context)
         self.assertNotIn('responses', context['plan'])
         self.assertIn('review_validation_feedback', context)
+
+    def test_new_objection_errors_get_actionable_feedback_then_record_the_dissent(self):
+        """Pilot #6's invented ID and missing dispositions can be corrected without losing the concern."""
+        for failure, code, field in (
+                ('invented_id', 'review_objection_id', 'objection_updates[0].id'),
+                ('missing_updates', 'review_concerns', 'objection_updates')):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.reach('plan_qc')
+                original = self.agents.ask
+                concern = 'Specify stable slot reuse and partial-flush recovery.'
+
+                def review(provider, stage, context):
+                    """Correct the malformed objection only after receiving its specific diagnostic."""
+                    original(provider, stage, context)
+                    report = design_report(decision('revise', concerns=[concern]), context)
+                    if 'review_validation_feedback' not in context:
+                        if failure == 'invented_id':
+                            report['objection_updates'][0]['id'] = 'D1'
+                        else:
+                            report['objection_updates'] = []
+                    else:
+                        feedback = context['review_validation_feedback']
+                        self.assertEqual((feedback['code'], feedback['field']), (code, field))
+                        self.assertIn('id ""', feedback['detail'])
+                    return report
+
+                with patch.object(self.agents, 'ask', side_effect=review):
+                    rejected = self.tick().state
+                    self.assertFalse(rejected['design_votes'])
+                    accepted = self.tick().state
+                vote = next(iter(accepted['design_votes'].values()))
+                self.assertEqual(vote['report']['decision'], 'revise')
+                self.assertEqual(accepted['review_repairs'], 1)
+                self.assertNotIn('review_repair', accepted)
+                self.assertEqual(accepted['objections'][0]['text'], concern)
+                self.assertTrue(accepted['objections'][0]['id'].startswith('O1-'))
+                self.assertFalse(accepted['objections'][0]['resolved'])
+                self.assertFalse(approval_valid(accepted, self.config))
+                self.assertEqual(self.tick().state['stage'], 'plan')
 
     def test_repeat_or_global_repair_budget_stops_and_retry_does_not_refill(self):
         """Both identical failures and varying invalid output have finite durable retries."""
@@ -287,7 +329,7 @@ class ReviewerRepairTests(unittest.TestCase):
                     return repo(path, method, data)
                 with patch.object(self.agents, 'ask', side_effect=wordy), patch.object(self.gh, 'repo', side_effect=measure):
                     controller = self.reach('implement')
-                self.assertEqual(seen, [count] * 4)
+                self.assertEqual(seen, [count] * 2)
                 self.assertLessEqual(max(sizes), 60000)
                 self.assertTrue(approval_valid(controller.state, self.config))
                 self.assertFalse(controller.state.get('review_repairs'))

@@ -37,7 +37,7 @@ match the served commit. Omit it when the same operator controls service and tar
 
 ## Contribution loop
 
-The issue dashboard shows intake, planning, cooperative/fresh design approval,
+The issue dashboard shows intake, planning, design approval,
 implementation, independent PR reviews and readiness. Reports are archived before
 compaction. Findings have stable IDs and native threads. Only their raising provider can
 retire them; ambiguous or reopened thread resolutions remain manual.

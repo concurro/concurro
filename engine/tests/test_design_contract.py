@@ -147,12 +147,34 @@ class DesignContractTests(unittest.TestCase):
         self.assertFalse([c for c in self.gh.comments if c['body'].startswith(conversation.MARKER)])
         self.assertIn('| Plan | ✅ Version 1 | [Implementation plan](', self.gh.summary()['body'])
 
-    def test_fresh_review_omits_summary_verdicts_and_publication_hints(self):
-        """A final reviewer cannot inherit a planner's announcement of prior approval."""
-        state = self.reach('implement').state
+    def test_review_keeps_complete_design_without_peer_verdicts_or_publication_hints(self):
+        """Both phases see the substantive plan summary; fresh reviewers see no prior discussion."""
+        self.agents.qc_reports = [decision('proceed'), decision('approve'),
+                                 decision('revise', concerns=['Add an error-path regression.'])]
+        original = self.agents.ask
+        summary = 'Keep entries in stable slots and flush in slot order, separate from recency links.'
+
+        def planning(provider, stage, context):
+            """Place substantive architecture in the summary, as the LRU pilot did."""
+            report = original(provider, stage, context)
+            if stage == 'plan':
+                report['summary'] = summary
+            return report
+
+        with patch.object(self.agents, 'ask', side_effect=planning):
+            state = self.reach('implement').state
         fresh = [c for _, stage, c in self.agents.calls if stage == 'plan_qc' and c['review_phase'] == 'fresh']
+        self.assertEqual(len(fresh), 2)
+        for _, stage, context in self.agents.calls:
+            if stage != 'plan_qc':
+                continue
+            self.assertEqual(context['plan']['summary'], summary)
+            self.assertIn('id ""', context['objection_instructions'])
+            for key in ('qc', 'design_votes', 'design_feedback'):
+                self.assertNotIn(key, context)
+            self.assertNotIn('publication', context['plan'])
         for context in fresh:
-            for key in ('summary', 'publication', 'responses'):
+            for key in ('publication', 'responses'):
                 self.assertNotIn(key, context['plan'])
             self.assertNotIn('controller_session', context)
         self.assertTrue(approval_valid(state, self.config))

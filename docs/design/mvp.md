@@ -120,13 +120,19 @@ profiles, package-scoping engine or generated CI workflows remain.
 ## Contribution flow
 
 1. **Enroll and plan.** Keep existing writer enrollment, charter assessment, clarification,
-   plan artifact, cooperative design review and fresh approval. This migration does not
-   redesign the planning consensus protocol. Directory scopes such as `changelog.d/`
+   plan artifact and independent design review. Unanimous approvals on each reviewer's
+   first session turn authorize the plan directly: those contexts are already fresh.
+   Reviews that resume after revisions or output corrections still need a separate fresh
+   approval round. Manual mode also requires writer approval. Directory scopes such as `changelog.d/`
    include their descendants. Rejected planner output is linked from the dashboard's
    plan artifact with its rejection reason, separate from the approved plan. The planner
    gets two automatic correction attempts within the existing model-call budget; persistent
    errors escalate for `/concurro retry`. Oversized rejected output is explicitly excerpted.
    Correcting output does not spend a semantic design-revision round.
+   Reviewers receive the complete substantive plan, including its summary; publication
+   hints and peer verdicts are omitted. New objections use an empty ID until the controller
+   assigns one. Output-correction feedback identifies objection ID and concern/disposition
+   mismatches by field, without discarding the reviewer's concern.
 2. **Implement.** A role job edits the approved code with native tools. It may build,
    install dependencies and test hypotheses. It returns changes plus an explanation and
    clearly labeled, agent-reported validation. Meaningful scope growth can reopen design.

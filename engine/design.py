@@ -9,6 +9,13 @@ from repository import source_lines
 
 from policy import Blocked
 
+OBJECTION_INSTRUCTIONS = (
+    'For each new concern, add an objection_updates entry with id "" and status "open"; '
+    'the controller assigns its ID. Reuse an ID only from own_objections, exactly once per '
+    'supplied objection. concerns must equal the detail strings of all open entries in order. '
+    'A revise verdict needs at least one open entry, even when own_objections is empty.'
+)
+
 
 class ReviewError(Blocked):
     """A correctable reviewer-output failure with fixed, non-sensitive feedback."""
@@ -24,6 +31,9 @@ REPAIR_DETAILS = {
     'review_bounds': 'Shorten the indicated field to its schema limit; retain all criteria and objections.',
     'review_size': 'Shorten wording to the supplied serialized JSON byte budget; retain every required assessment.',
     'review_evidence': 'Cover every supplied criterion and own objection exactly once with consistent dispositions.',
+    'review_objection_id': 'For a new objection use id "" and status "open". Only reuse an ID from own_objections, once per ID.',
+    'review_objection_coverage': 'Include exactly one disposition for every supplied own_objections ID.',
+    'review_concerns': 'Keep the concerns and add an open objection_updates entry for each, with identical detail text in the same order. New objections use id "".',
     'review_citation': 'Use a literal fragment within the stated source line, or a contiguous multiline quote starting there. Re-read the pinned source.',
     'review_source': 'Choose a bounded regular UTF-8 source visible through repository inspection, without symlinks or Git metadata.',
     'review_checkpoint': 'Shorten the review to fit the supplied durable-state budget; preserve every criterion and objection.',
@@ -141,7 +151,7 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
         raise Blocked('design review must assess every supplied criterion exactly once')
     own = {v['id']: v for v in own_objections}
     updated, open_details = set(), []
-    for update in updates:
+    for index, update in enumerate(updates):
         if (not isinstance(update, dict) or set(update) != {'id', 'status', 'detail', 'counterexample', 'closure', 'evidence'}
                 or not isinstance(update['id'], str) or update['status'] not in ('open', 'resolved')
                 or not all(isinstance(update[k], str) and update[k].strip()
@@ -150,16 +160,16 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
         identifier = update['id']
         if identifier:
             if identifier not in own or identifier in updated:
-                raise Blocked('reviewer cannot resolve foreign, missing or duplicate objections')
+                raise ReviewError('review_objection_id', f'objection_updates[{index}].id')
             updated.add(identifier)
         elif update['status'] != 'open':
-            raise Blocked('a new objection must be open')
+            raise ReviewError('review_objection_id', f'objection_updates[{index}].status')
         if update['status'] == 'open':
             open_details.append(update['detail'])
     if updated != set(own):
-        raise Blocked('reviewer must reassess every own open objection')
+        raise ReviewError('review_objection_coverage', 'objection_updates')
     if open_details != report['concerns']:
-        raise Blocked('review concerns must match open objection dispositions')
+        raise ReviewError('review_concerns', 'objection_updates')
     if report['decision'] == 'approve' and (open_details or any(a['status'] != 'satisfied' for a in assessments)):
         raise Blocked('approval contradicts incomplete criterion evidence')
     if any(a['status'] == 'defect' for a in assessments) and not open_details:

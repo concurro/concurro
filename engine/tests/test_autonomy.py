@@ -56,7 +56,7 @@ class AutonomousTests(unittest.TestCase):
             self.assertEqual(self.tick()["stage"], expected)
         self.assertEqual(self.gh.merges, 0)
         self.assertEqual(self.gh.ready_calls, 1)
-        self.assertEqual(len(self.agents.calls), 9)
+        self.assertEqual(len(self.agents.calls), 7)
         self.assertTrue(all(not c["body"].startswith("/concurro ") for c in self.gh.comments))
         qc = next(context for _, stage, context in self.agents.calls if stage == "plan_qc")
         self.assertEqual(qc["files"]["docs/guide.md"], "Original guide\n")
@@ -173,7 +173,7 @@ class AutonomousTests(unittest.TestCase):
                 state = self.tick()
                 self.assertEqual(state["stage"], "plan")
                 self.assertNotIn("approval", state)
-                self.assertEqual(state["calls"], 7)
+                self.assertEqual(state["calls"], 5)
                 self.assertIsNone(self.gh.pr)
 
     def test_input_change_after_proposal_blocks_publication(self):
