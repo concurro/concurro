@@ -127,7 +127,15 @@ respected. Closed or merged PRs stop the watcher. Only humans merge.
 Issue commands require the existing writer permissions. `/concurro start` starts or
 resumes manual planning; `/concurro approve <plan-id>` authorizes the recorded plan;
 `/concurro retry` retries blocked work with current requirements/feedback;
-`/concurro stop` suspends it. Input-needed comments describe the applicable continuation.
+`/concurro stop` suspends it. `/concurro invalidate` is a separate writer-authorized
+operation: it accepts the current bundle/charter and restarts intake and planning,
+retaining the PR, published head, base and spent budgets. Old approvals, votes and
+sessions cannot authorize the new assessment. The audit records the actor, command
+and old/new bundle and charter identities. For an existing PR, an issue comment
+announces reassessment and asks maintainers not to merge yet. The PR's draft/ready
+status is unchanged; automatic conversion back to draft is deferred. Refused
+invalidation commands are consumed; retrying invalidation requires a new command.
+Input-needed comments describe the applicable continuation.
 
 The service's owner-only control socket provides `status`, `reconcile-once`, and
 `resolve <intent> applied|not-applied <evidence> --operator <name>`. Check `--help` for
@@ -136,8 +144,14 @@ An unknown write prevents takeover and further writes for that task. Do not clea
 registry entry or blindly replay a dispatch.
 
 `adopt`/`release` remain migration tools for old Actions-owned checkpoints, not a supported
-execution fallback. Bundle/config changes invalidate old approvals. Preserve the old
-issue and archives; use a fresh pilot issue rather than bypassing that check.
+execution fallback. Bundle changes block new model work, including reuse of retained
+model results. They do not prevent observing PR/issue closure, CI or readiness under
+the task's recorded approvals. `/concurro retry` keeps that bundle binding;
+`/concurro invalidate` explicitly starts assessment under the current bundle.
+A prepared publication finishes under its recorded approval before invalidation:
+retry it first, then invalidate. Configuration changes still require a new task.
+Existing watchers blocked by the old bundle guard resume observation on their next
+tick (a writer retry can wake them); they do not need invalidation.
 
 An explicitly requested `evaluate <issue-repository> <issue> <profile>` runs four
 fresh design fixtures on ordinary runner sessions. It uses model budget and temporarily

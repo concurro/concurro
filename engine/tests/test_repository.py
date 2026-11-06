@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from checks import MAX_OVERLAY_FILES
 from controller import MAX_DIFF, changes, transport_size
 from gitfixture import Upstream, build, mirror_of
-from policy import Blocked, path_allowed
+from policy import Blocked, digest, path_allowed
 import repository
 from repository import Repository, TOOL_NAMES, ToolTimeout, relay, run_git, serve
 from snapshot import inspection
@@ -261,7 +261,8 @@ class TransportTests(unittest.TestCase):
         agents = FakeAgents()
         controller = Controller(FakeGitHub(CONFIG), agents, CONFIG)
         controller.state = {"base": "a" * 40, "calls": 0, "issue": 7, "requirements": {}, "branch": "concurro/issue-7",
-                            "bundle_id": "bundle", "agent_image": "image", "config_digest": "config"}
+                            "bundle_id": controller.bundle.identity, "charter_id": digest(controller.bundle.charter),
+                            "agent_image": "image", "config_digest": "config"}
         with patch.object(controller, "save"), patch.object(controller, "checkpoint"):
             controller.ask("claude", "plan", {"repository_commit": "f" * 40, "repository": {"refs": {}, "head": "x"}})
             self.assertEqual(agents.calls[-1][2]["repository"], {"refs": {"main": "a" * 40}, "head": "main"})

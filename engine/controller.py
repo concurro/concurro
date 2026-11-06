@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import actions
+from actions import BUNDLE_REASON
 from model_config import assigned, resolve, parse as parse_models
 import readiness
 import candidates
@@ -52,6 +53,7 @@ STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
 STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
               "gates": 5, "merging": 5}
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
+LEGACY_BUNDLE_REASON = "trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required"
 PROVIDERS = {"claude", "codex", "copilot"}
 PATH_POLICY = {"editable_extensions", "protected_names", "protected_name_prefixes", "protected_prefixes",
                "protected_files", "protected", "generated"}
@@ -424,6 +426,8 @@ class Controller:
             return f"**Action needed:** {link('answer the questions', url)}."
         needs = {"blocked": "a fix and a retry", "escalated": "a decision", "rejected": "an edit and a retry",
                  "planned": "plan approval" if state.get("mode") == "manual" else None}.get(state["stage"])
+        if state["stage"] == "blocked" and state.get("reason") == BUNDLE_REASON:
+            needs = "a writer to accept reassessment with " + code("/concurro invalidate")
         if not needs and state["stage"] == "gates" and state.get("handoff_ready"):
             needs = "a human review and merge"
         if not needs:
@@ -558,6 +562,7 @@ class Controller:
         A retried or recovered call keeps its original response contract: recorded volatile
         fields replace recomputed ones in the caller's context, which validates the response.
         """
+        self.require_current_bundle()
         caller = context
         context = {**context, "repository_commit": self.state.get("head", self.state["base"]),
                    "repository": self.repository_refs("controller_candidate" in context)}
@@ -1113,13 +1118,69 @@ class Controller:
         state["command_id"] = comment["id"]
         self.save()
 
+    def require_current_bundle(self):
+        """Only current instructions may produce or consume a model result."""
+        if (self.state.get("bundle_id") != self.bundle.identity
+                or self.state.get("charter_id") != digest(self.bundle.charter)):
+            raise Blocked(BUNDLE_REASON)
+
+    def invalidate_task(self, comment, comments):
+        """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
+        state = self.state
+        try:
+            if state.get("pending"):
+                raise Blocked("Publication is pending. Use /concurro retry to finish the recorded publication, "
+                              "then /concurro invalidate to reassess it.")
+            if state["config_digest"] != config_digest(self.config):
+                raise Blocked("Controller configuration changed; start a new task with the new configuration.")
+            if state.get("pr"):
+                pr = self.pulls.repo(f"pulls/{state['pr']}")
+                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
+                    raise Blocked("PR changed outside the controller; cannot invalidate its recorded design")
+                changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
+                if not changed or not all(path_allowed(p, self.config, state["execution"]) for p in changed):
+                    raise Blocked("cannot reconcile accumulated PR changes")
+                state["changed_files"] = changed
+        except Blocked:
+            state["command_id"] = comment["id"]
+            raise
+        record = {"actor": comment["user"]["login"], "comment": comment["id"],
+                  "old_bundle": state["bundle_id"], "new_bundle": self.bundle.identity,
+                  "old_charter": state["charter_id"], "new_charter": digest(self.bundle.charter),
+                  "head": state.get("head"), "plan": state.get("plan_id")}
+        if state.get("operation"):
+            record["operation_digest"] = digest(state["operation"])
+        state.setdefault("invalidations", []).append(record)
+        for request in state.get("requests", []):
+            if request["state"] == "open":
+                request["state"] = "superseded"
+                actions.edit(request, "↪️ **Superseded**: a writer requested a new assessment.")
+        self.invalidate_design("Writer explicitly invalidated the design and requested reassessment.")
+        if state.get("reviews"):
+            state.setdefault("review_history", []).append(state["reviews"])
+        state.update(bundle_id=self.bundle.identity, charter_id=digest(self.bundle.charter),
+                     charter=deepcopy(self.bundle.charter), stage="intake", command_id=comment["id"],
+                     requirements=self.requirements(comments),
+                     issue_digest=digest([self.issue["title"], self.issue["body"]]),
+                     sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
+                     session_epoch=state.get("session_epoch", 0) + 1)
+        for key in ("plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
+                    "local_status", "approved_accumulated_files", "design_parent"):
+            state.pop(key, None)
+        if state.get("pr"):
+            conversation.queue(state, "Reassessment started",
+                link(f"PR #{state['pr']}", self.pr_url(state['pr'])) +
+                " is being reassessed at a writer's request. Earlier Concurro approvals no longer apply. "
+                "Please do not merge until reassessment is complete. The PR's draft/ready status is unchanged.")
+        self.save()
+
     def commands(self, comments):
-        """Apply exact writer commands; plan approval is bound to its full digest."""
+        """Apply exact writer commands; return True when explicit invalidation starts a new assessment."""
         for comment in comments:
             if comment["id"] <= (self.state or {}).get("command_id", 0):
                 continue
             text = comment["body"].strip()
-            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry)", text):
+            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry|invalidate)", text):
                 continue
             if not self.permitted(comment["user"]["login"]):
                 continue
@@ -1156,6 +1217,9 @@ class Controller:
                                                 "plan": self.state["plan_id"],
                                                 "actor": comment["user"]["login"], "comment": comment["id"]})
                     self.save()
+            elif self.state and text == "/concurro invalidate":
+                self.invalidate_task(comment, comments)
+                return True
             elif self.state and text == "/concurro retry" and self.state["stage"] == "gates":
                 self.retry_reviewed(comment, comments)
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
@@ -1593,7 +1657,7 @@ class Controller:
             "observed_stage": state["stage"], "merged_by": (pr.get("merged_by") or {}).get("login")}
         state.update(stage="observed_merged", merge_sha=pr["merge_commit_sha"],
                      reason="Observed an external merge of the published head.")
-        self.save()
+        self.save(outboxes=False)
 
     def advance(self, number):
         """Advance one stage and classify what the task waits for next."""
@@ -1630,16 +1694,6 @@ class Controller:
             self.state = None
             self.foreign = True
             return False
-        if self.state and (self.state.get("bundle_id") != self.bundle.identity
-                           or self.state.get("charter_id") != digest(self.bundle.charter)
-                           or digest(self.state.get("charter")) != self.state.get("charter_id")
-                           or self.state.get("execution") != self.config["paths"]):
-            raise Blocked("trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required")
-        self.sync_stage()
-        if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
-                or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent')
-                                   or self.state.get("pr_outbox"))):
-            self.save()
         if self.state and self.state.get("pr") and self.state["stage"] not in ("merged", "observed_merged"):
             pr = self.pulls.repo(f"pulls/{self.state['pr']}")
             if pr.get("merged"):
@@ -1648,14 +1702,31 @@ class Controller:
             if pr["state"] == "closed":
                 if self.state["stage"] != "closed":
                     self.state.update(stage="closed", reason="PR closed without merging.")
-                    self.save()
+                    self.save(outboxes=False)
                 return False
         if self.issue["state"] != "open":
             if self.state and self.state["stage"] not in ("merged", "observed_merged", "stopped"):
                 self.state.update(stage="stopped", reason="Issue closed without a confirmed exact-head merge.")
-                self.save()
+                self.save(outboxes=False)
                 return True
             return False
+        if self.state and self.state["stage"] in ("merged", "observed_merged", "closed"):
+            return False
+        if self.state and (digest(self.state.get("charter")) != self.state.get("charter_id")
+                           or self.state.get("execution") != self.config["paths"]):
+            raise Blocked("Recorded charter or path policy is inconsistent; start a new task rather than adopting unverified state.")
+        if (self.state and self.state["stage"] == "blocked" and self.state.get("pr")
+                and self.state.get("retry_stage") in ("gates", "merging")
+                and self.state.get("reason") in (LEGACY_BUNDLE_REASON, BUNDLE_REASON)):
+            # Old releases blocked observers before they could read the PR's completion state.
+            self.state["stage"] = "gates"
+            self.state.pop("retry_stage", None)
+            self.state.pop("reason", None)
+        self.sync_stage()
+        if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
+                or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent')
+                                   or self.state.get("pr_outbox"))):
+            self.save()
         if not self.state and self.config["autonomous"]:
             enrollment = self.enrollment()
             if enrollment:
@@ -1663,7 +1734,8 @@ class Controller:
         if self.state and actions.answers(self.state, self.config, comments,
                                           digest([self.issue["title"], self.issue["body"]]), self.answerer):
             self.save()
-        self.commands(comments)
+        if self.commands(comments):
+            return True
         if not self.state or self.state["stage"] in ("planned", "blocked", "stopped", "merged", "observed_merged", "rejected", "escalated"):
             return False
         state = self.state
@@ -1678,6 +1750,8 @@ class Controller:
             return False
         if state["issue_digest"] != digest([self.issue["title"], self.issue["body"]]):
             raise Blocked("issue requirements changed; re-plan required")
+        if state["stage"] in ("intake", "plan", "plan_qc", "implement", "review"):
+            self.require_current_bundle()
         if state.get("mode") == "manual" and state.get("approval"):
             self.check_human_approval(comments)
         if state["stage"] in ("implement", "publish", "review", "gates") and not approval_valid(state, self.config):

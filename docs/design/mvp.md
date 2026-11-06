@@ -90,7 +90,10 @@ The fork's configuration files do not enter the candidate tree or upstream PR. R
 configuration and setup from `config_sha` for the task's lifetime. New default-branch
 configuration applies to new tasks; changing an existing task's configuration requires
 an explicit replan/reconciliation, not a silent mid-turn switch. Preserve engine/bundle
-identity checks when deploying new engine code.
+identity checks when deploying new engine code. Bundle drift blocks model work, not
+closure or CI/readiness observation. A writer uses `/concurro invalidate` to adopt
+the current bundle and restart assessment; `/concurro retry` retains the existing
+bundle binding. Invalidation preserves the PR and spent budgets and records the change.
 
 Upstream advancing alone does not restart a task. An explicit base change goes through
 the existing replan path and invalidates affected approvals and reviews.

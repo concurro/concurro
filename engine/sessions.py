@@ -13,6 +13,8 @@ def prepare(state, config, provider, stage, context):
                     state["base"], state["requirements"], state["bundle_id"],
                     state["config_digest"], state.get("design_reopens", 0),
                     state.get("plan_id") if stage == "develop" else None])
+    if state.get("session_epoch"):
+        scope = digest([scope, state["session_epoch"]])
     role = role_key(config, provider, stage, model)
     if "agents" in config:
         identity = resolve(config, provider, stage).record()

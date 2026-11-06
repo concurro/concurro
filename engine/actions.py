@@ -12,7 +12,10 @@ from policy import Blocked, digest
 POLICY_REASONS = {"autonomous merge is disabled", "autonomous merge is limited to configured low-risk paths"}
 GITHUB_REASON = "GitHub mergeability is not clean"
 COMMENT_URL = "https://github.com/{repository}/issues/{issue}#issuecomment-{comment}"
-# Blocks that the checkpoint health notice already reports; they get no Blocked comment of their own.
+BUNDLE_REASON = ("Trusted charter, role, skill or schema bundle changed. "
+                 "A writer must use /concurro invalidate to reassess under the current bundle; "
+                 "/concurro retry does not change the task's bundle.")
+# Blocks already reported by the checkpoint health notice.
 PUBLICATION_REASONS = {DIAGNOSTICS["conversation_publish"], DIAGNOSTICS["conversation_conflict"]}
 
 
@@ -33,9 +36,11 @@ def transition(state, config, author, plan_url=None):
     elif stage == "rejected":
         conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry))
     elif stage == "blocked" and reason not in PUBLICATION_REASONS:
-        conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(
-            reason, f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
-                    "a reason that asks for reconciliation needs an operator first."))
+        continuation = (f"A writer accepts a new assessment with {code('/concurro invalidate')}. "
+                        "Otherwise restore the previous bundle before retrying." if reason == BUNDLE_REASON else
+                        f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
+                        "a reason that asks for reconciliation needs an operator first.")
+        conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation))
     elif stage == "planned" and state.get("mode") == "manual":
         plan = link("Implementation plan", plan_url) if plan_url else "The implementation plan"
         conversation.queue(state, "Plan ready for approval", (
