@@ -177,12 +177,16 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         notices = lambda: [c["body"] for c in self.fake.comments if "### 🛑 Blocked" in c["body"]]
         self.assertEqual(len(notices()), 1, "posted when the task blocks, not on its next tick")
         self.assertIn("plan refused by policy", notices()[0])
+        notice_id = next(c["id"] for c in self.fake.comments if c["body"] == notices()[0])
         self.assertEqual(self.reconciler.poll(), [])
         self.fake.comment("/concurro retry")
         self.assertEqual(self.reconciler.poll(), [KEY])
         self.drain()
         self.assertEqual(self.stage(), "planned")
-        self.assertEqual(len(notices()), 1, "the retry posts no stale notice")
+        self.assertEqual(notices(), [], "the retry leaves no stale Blocked heading")
+        resolved = [c for c in self.fake.comments if "This blocker has been resolved." in c["body"]]
+        self.assertEqual([c["id"] for c in resolved], [notice_id], "edit the original; post no duplicate notice")
+        self.assertIn("plan refused by policy", resolved[0]["body"])
 
     def test_pr_rejection_details_stay_in_operator_logs(self):
         """The cause reaches logs while the public issue gets a fixed diagnostic and retains its candidate."""

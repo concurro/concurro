@@ -283,7 +283,7 @@ class Controller:
     def save(self, publish_events=True, outboxes=True):
         """Persist audit and plan artifacts before publishing their concise comment summary.
 
-        `outboxes=False` publishes the issue conversation only, leaving PR reviews and request
+        `outboxes=False` publishes the issue conversation only, leaving PR reviews and comment
         edits for a later tick: a failure's own notice must not replay what just failed.
         """
         state = self.state
@@ -1904,6 +1904,8 @@ class Controller:
             return False
         if self.state and self.state["stage"] in ("merged", "observed_merged", "closed"):
             return False
+        if self.state:
+            actions.discover_blocked(self.state, comments, self.identities.author("conversation"))
         if self.state and (digest(self.state.get("charter")) != self.state.get("charter_id")
                            or self.state.get("execution") != self.config["paths"]):
             raise Blocked("Recorded charter or path policy is inconsistent; start a new task rather than adopting unverified state.")
@@ -1917,7 +1919,8 @@ class Controller:
         self.sync_stage()
         if (self.stage_sync_warned or self.stage_fallback or self.checkpoints.dirty
                 or self.state and (self.state.get("conversation", {}).get("pending") or self.state.get('plan_event_intent')
-                                   or self.state.get("pr_outbox"))):
+                                   or self.state.get("pr_outbox")
+                                   or self.state.get("blocked_notices") and self.state["stage"] in actions.RESUMED_STAGES)):
             self.save()
         if not self.state and self.config["autonomous"]:
             enrollment = self.enrollment()

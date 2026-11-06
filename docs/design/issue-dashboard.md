@@ -113,8 +113,17 @@ the checkpoint could become unreachable.
   occurrence number that advances each time the task leaves that stage. The hand-off
   is keyed by PR head, so handed off, then checks pending, then handed off again on
   the same head posts once.
-- **Recovery:** each is an immutable comment published through the existing outbox,
-  with its marker first and the same exact-body recovery.
+- **Recovery:** initial comments use the existing outbox with marker and exact-body
+  recovery. When a blocked task resumes, its Blocked notices are edited in place:
+  only the heading and original reason are quoted and struck through, without the
+  emoji, continuation instructions or event footer, followed by **This blocker has
+  been resolved.** Only the comment ID and original/resolved body digests are checkpointed;
+  the edit is rebuilt from the fetched comment. Lost PATCH responses are recognised
+  by the resolved-body digest. Edited or deleted
+  Blocked notices are dropped without blocking work or being rediscovered; Input-needed
+  edits retain strict conflict checks. Discovery skips terminal tasks and recognises
+  older App-authored notices only while their original Blocked heading remains.
+  Stopping or closing a task does not claim that it resumed.
 
 No other events are posted: controller narration, QC and plan events, local
 validation, design reopens, PR publication and the issue's copies of PR reviews all

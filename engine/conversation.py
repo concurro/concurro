@@ -425,6 +425,7 @@ def publish(state, github, config):
             published = matches[0] if matches else create()
             if "source" not in event:
                 journal["latest"] = published["id"]
+                actions.blocked_posted(state, published["id"], body)
                 if event.get("request") is not None:
                     actions.posted(state, event["request"], published["id"], body)
                 continue

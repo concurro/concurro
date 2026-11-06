@@ -1,10 +1,13 @@
 """Actionable comments and Input needed requests; advisory intake notices use the conversation outbox."""
 
+import re
+
 from model_config import assigned
 import conversation
 import markup
 from markup import block, code, link, text
 from checkpoints import DIAGNOSTICS
+from github import NotFound
 from policy import Blocked, digest
 
 # Gate reasons only a human merge resolves: Concurro's own merge policy, and GitHub's requirements
@@ -17,6 +20,12 @@ BUNDLE_REASON = ("Trusted charter, role, skill or schema bundle changed. "
                  "/concurro retry does not change the task's bundle.")
 # Blocks already reported by the checkpoint health notice.
 PUBLICATION_REASONS = {DIAGNOSTICS["conversation_publish"], DIAGNOSTICS["conversation_conflict"]}
+RESUMED_STAGES = {"intake", "plan", "plan_qc", "planned", "clarify", "implement", "publish", "review", "gates", "merging"}
+BLOCKED_HEADER = re.compile(r"<!-- concurro:event:v1:[a-f0-9]{64} -->\n### (?:🛑 )?Blocked\n")
+BLOCKED_RETRY = (f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
+                 "a reason that asks for reconciliation needs an operator first.")
+BLOCKED_INVALIDATE = (f"A writer accepts a new assessment with {code('/concurro invalidate')}. "
+                      "Otherwise restore the previous bundle before retrying.")
 
 
 def transition(state, config, author, plan_url=None):
@@ -36,16 +45,71 @@ def transition(state, config, author, plan_url=None):
     elif stage == "rejected":
         conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry))
     elif stage == "blocked" and reason not in PUBLICATION_REASONS:
-        continuation = (f"A writer accepts a new assessment with {code('/concurro invalidate')}. "
-                        "Otherwise restore the previous bundle before retrying." if reason == BUNDLE_REASON else
-                        f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
-                        "a reason that asks for reconciliation needs an operator first.")
+        continuation = BLOCKED_INVALIDATE if reason == BUNDLE_REASON else BLOCKED_RETRY
         conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation))
     elif stage == "planned" and state.get("mode") == "manual":
         plan = link("Implementation plan", plan_url) if plan_url else "The implementation plan"
         conversation.queue(state, "Plan ready for approval", (
             f"{plan} passed design review. A writer approves it by commenting:\n\n"
             f"{code('/concurro approve ' + state['plan_id'])}"))
+
+
+def blocked_posted(state, comment, body):
+    """Remember a notice ID and original/resolved digests, never its full text."""
+    if not BLOCKED_HEADER.match(body):
+        return False
+    records = state.setdefault("blocked_notices", [])
+    state["blocked_notice_cursor"] = max(state.get("blocked_notice_cursor", 0), comment)
+    if any(record["comment"] == comment for record in records):
+        return False
+    records.append({"comment": comment, "digest": digest(body), "resolved_digest": digest(blocked_resolution(body))})
+    return True
+
+
+def discover_blocked(state, comments, author):
+    """Discover older App notices once; skipped edits must never be adopted again."""
+    if state.get("stage") in ("merged", "observed_merged", "closed"):
+        return
+    cursor = state.get("blocked_notice_cursor", 0)
+    for comment in comments:
+        if comment["id"] > cursor and comment.get("user", {}).get("login") == author:
+            blocked_posted(state, comment["id"], comment.get("body", ""))
+
+
+def blocked_resolution(body):
+    """Keep the struck-through heading and reason; remove engine continuations and event footer."""
+    marker, _, original = body.split("\n", 2)
+    reason = re.sub(r"\n\n<sub>Event [0-9]+</sub>$", "", original).strip("\n")
+    for continuation in (BLOCKED_RETRY, BLOCKED_INVALIDATE):
+        if reason == continuation:
+            reason = ""
+            break
+        if reason.endswith("\n\n" + continuation):
+            reason = reason.removesuffix("\n\n" + continuation)
+            break
+    history = "<del>\n\n### Blocked" + ("\n\n" + reason if reason else "") + "\n\n</del>"
+    quoted = "\n".join("> " + line if line else ">" for line in history.split("\n"))
+    return marker + "\n" + quoted + "\n\n**This blocker has been resolved.**"
+
+
+def publish_blocked(state, github, checkpoint):
+    """Resolve notices best-effort on resumption; edited or deleted history never blocks work."""
+    records = state.get("blocked_notices", [])
+    if not records or state.get("stage") not in RESUMED_STAGES:
+        return
+    # The stage, IDs, original/resolved digests and discovery cursor must survive a lost PATCH response.
+    checkpoint()
+    for record in list(records):
+        path = f"issues/comments/{record['comment']}"
+        try:
+            current = github.repo(path)["body"]
+            current_digest = digest(current)
+            if current_digest != record["resolved_digest"] and current_digest == record["digest"]:
+                github.repo(path, "PATCH", {"body": blocked_resolution(current)})
+        except NotFound:
+            pass
+        records.remove(record)
+        checkpoint()
 
 
 def explain(reason, continuation):
@@ -171,7 +235,7 @@ def answers(state, config, comments, issue_digest, answerer):
 
 
 def publish(state, github, checkpoint):
-    """Apply intended request edits; a lost response completes by the edited body on the next tick."""
+    """Apply durable comment edits; recover lost responses from the exact intended body."""
     for record in state.get("requests", []):
         intended = record.get("edit")
         if not intended or intended["state"] != "intended":
@@ -183,3 +247,4 @@ def publish(state, github, checkpoint):
             github.repo(f"issues/comments/{record['comment']}", "PATCH", {"body": intended["body"]})
         intended["state"] = "done"
         checkpoint()
+    publish_blocked(state, github, checkpoint)
