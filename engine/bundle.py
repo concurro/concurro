@@ -64,6 +64,9 @@ class Bundle:
                 or not self.charter.get("goals") or not self.charter.get("non_goals")
                 or not self.charter.get("constraints") or not self.charter.get("acceptance")):
             raise Blocked("incomplete project charter")
+        if (not isinstance(self.charter['goals'], dict)
+                or not all(isinstance(key, str) and key.strip() for key in self.charter['goals'])):
+            raise Blocked("charter goals must be keyed by nonempty IDs")
         roles = json.loads(self.resources["bundle/roles.json"])
         if (roles.get("version") != 1 or roles.get("shared") != "bundle/instructions.md"
                 or set(roles.get("roles", {})) != set(STAGES)):
@@ -94,6 +97,8 @@ class Bundle:
     def schema(self, stage):
         """Return the external response contract for one role."""
         schema = json.loads(self.resources[self.roles[stage]["schema"]])
+        if stage in ('intake', 'plan_qc'):
+            schema['properties']['scope']['properties']['goal_ids']['items']['enum'] = sorted(self.charter['goals'])
         if stage in classification.STAGES:
             schema["properties"]["classification"] = json.loads(self.resources["bundle/schemas/classification.json"])["schema"]
             schema["required"].append("classification")

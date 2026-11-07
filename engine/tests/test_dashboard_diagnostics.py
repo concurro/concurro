@@ -1,6 +1,7 @@
 """Review corrections remain inspectable without obscuring live task progress."""
 
 from copy import deepcopy
+import json
 import unittest
 from unittest.mock import patch
 
@@ -97,6 +98,32 @@ class DiagnosticsTests(unittest.TestCase):
         artifacts = [a['artifact']['body'] for a in self.gh.artifacts[7].values()]
         self.assertEqual(sum(body.count('FULL-REJECTED-REPORT') for body in artifacts), 1)
         self.assertTrue(self.load().state['reports'][-1]['diagnostic'])
+
+    def test_decorated_goal_id_feedback_lists_exact_ids_and_recovers(self):
+        """Schema bypasses receive the pinned choices in both diagnostics and the next review request."""
+        controller = self.reach_review()
+        original = self.agents.ask
+
+        def decorated(provider, stage, context):
+            """Reproduce the pilot's ID plus explanation rather than an exact key."""
+            report = original(provider, stage, context)
+            report['scope']['goal_ids'][0] += ': improves validation'
+            return report
+
+        with patch.object(self.agents, 'ask', side_effect=decorated):
+            self.tick()
+        state = self.load().state
+        detail = state['review_repair']['feedback']['detail']
+        self.assertIn(json.dumps(sorted(controller.bundle.charter['goals'])), detail)
+        self.assertIn('scope.fit', detail)
+        self.assertNotIn('improves validation', detail)
+        self.assertFalse(state['design_votes'])
+        self.assertIn('copy exact IDs', self.gh.summary()['body'])
+        self.tick()
+        context = next(c for _, stage, c in reversed(self.agents.calls) if stage == 'plan_qc')
+        self.assertEqual(context['review_validation_feedback']['detail'], detail)
+        self.assertTrue(self.load().state['design_votes'])
+        self.assertIn('Recovered', self.gh.summary()['body'])
 
     def test_evidence_validation_reason_survives_archival_reload_and_correction(self):
         """The reviewer and humans see the actual evidence failure rather than generic coverage advice."""

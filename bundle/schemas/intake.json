@@ -43,12 +43,14 @@
       "properties": {
         "goal_ids": {
           "type": "array",
+          "description": "Exact keys from the supplied charter's goals, without explanations or suffixes. Put the explanation in scope.fit.",
           "items": {
             "type": "string"
           }
         },
         "fit": {
-          "type": "string"
+          "type": "string",
+          "description": "Explain how the request fits the cited charter goals."
         },
         "conflicts": {
           "type": "array",

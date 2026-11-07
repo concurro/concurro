@@ -48,7 +48,8 @@ def permissions(targets):
         upstream["read"].update(pull_requests="read", checks="read", statuses="read", actions="read")
         # Keep contents:write for the tested owned-thread resolution permission combination.
         upstream["write"].update(pull_requests="write", contents="write")
-        result[target.fork]["write"].update(contents="write", actions="write")
+        # Referencing an upstream commit can introduce workflows into the fork unchanged.
+        result[target.fork]["write"].update(contents="write", actions="write", workflows="write")
         for repository in target.issue_repositories:
             result[repository]["read"]["issues"] = "read"
             result[repository]["write"]["issues"] = "write"

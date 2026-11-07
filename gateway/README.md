@@ -65,11 +65,62 @@ the public endpoint, and does not redact old logs or Git history.
 
 Install the controller App on the selected repositories. Grant Contents read/write,
 Pull requests read/write, Checks read, Commit statuses read, Actions read on the upstream, Issues read/write where
-issues enroll, and Actions write on the fork. Token requests narrow these permissions
+issues enroll, and Actions write plus Workflows write on the fork. Token requests narrow these permissions
 per repository; the write gateway narrows permitted endpoints further. Retain Contents
 write upstream for the tested review-thread resolution permission combination. No
 Administration permission is needed for readiness. Historical `adopt` additionally needs
 Actions, Variables and Environments read to verify the retired Actions controller is off.
+
+### Upstream workflow changes and fork publication
+
+Creating a fork branch at an approved upstream commit can introduce new or changed
+`.github/workflows/` files, even though the agent changed no workflows.
+GitHub may require both Contents write and Workflows write for that ref creation or update
+([Git references API](https://docs.github.com/en/rest/git/refs#create-a-reference)). Actions
+write permits dispatch; it does not replace Workflows write. Concurro requests Workflows
+write only on fork publication tokens; read tokens and upstream-only write tokens omit it.
+Candidate edits to `.github/` remain prohibited, and publication remains restricted to
+the task's branch. No installation token is passed to runners.
+
+Before deploying this permission change, grant Workflows read/write in the GitHub App
+settings and accept the update on every configured fork installation, including legacy
+targets still configured on the service. Check the installation's granted permissions
+and `service.targets.permissions()`; an App grant alone does not widen an explicitly
+narrowed token. The token request will fail if the installation has not accepted it.
+
+For a `403 Resource not accessible by integration` on `POST git/refs`, inspect the service
+log, the recorded base SHA, fork rulesets and workflow differences between the fork default
+branch and that base. Runner dispatch success is not proof that publication works: session
+refs use the fork's own setup commit. In pilot #19, the approved base changed Demo Rust CI
+to enable `rusqlite`; every fork branch still held the older workflow revision.
+Do not bypass the controller's branch reservation by manually creating its task branch,
+or overwrite the fork's caller/configuration while synchronizing upstream.
+
+Controlled probe on 2026-11-07: the same installation token (Contents write, Actions write,
+no Workflows permission), endpoint and temporary branch name produced:
+
+| Commit | Only difference | Create-ref result |
+| ---- | ---- | ---- |
+| `a0ce7aa91d3a97a6ec4fd7af04626db74fa9940a` | Before the SQLite CI change | 201 Created |
+| `4f295075846a96c03b5754b47188b2d89aa7cab2` | Adds `--features rusqlite` to that workflow | 403 Resource not accessible by integration |
+
+GitHub request IDs were `E304:2AEA27:1DD9EEE:2DAB130:6AEED7D8` and
+`EC74:32F722:1CC6B75:2C47D66:6AEED7DD`, respectively. The temporary branch was deleted,
+the token revoked, and zero workflow runs were created. This isolates the workflow change
+as the trigger.
+
+After the operator granted Workflows write and accepted it for the demo fork, a second
+probe used the same commit `4f295075846a96c03b5754b47188b2d89aa7cab2` and temporary
+branch name for both attempts, changing only the requested token permissions:
+
+| Token permissions | Create-ref result | GitHub request ID |
+| ---- | ---- | ---- |
+| Contents + Actions write | 403 Resource not accessible by integration | `E5FA:1A35CD:1FD18BC:30A6318:6AEED9C2` |
+| Contents + Actions + Workflows write | 201 Created | `941E:340FBF:1E6207F:2E670F0:6AEED9C5` |
+
+Both responses included `x-accepted-github-permissions: contents=write; contents=write,workflows=write`.
+The permission remedy is verified live. The probe branches were deleted and verified
+absent, all diagnostic tokens were revoked, and no deployment or pilot retry occurred.
 
 Subscribe to issues, issue comments, pull requests, pull request reviews, pull request
 review comments, pull request review threads, check runs, check suites and commit statuses.

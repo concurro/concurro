@@ -105,7 +105,8 @@ def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=
             or len(scope["goal_ids"]) != len(set(scope["goal_ids"]))):
         raise Blocked("incomplete charter scope judgment")
     if charter is not None and not set(scope["goal_ids"]).issubset(charter["goals"]):
-        raise Blocked("scope cites an unknown charter goal")
+        raise Blocked("scope cites an unknown charter goal; copy exact IDs from "
+                      + json.dumps(sorted(charter["goals"])) + "; put explanations in scope.fit")
     decision = report["decision"]
     if decision in ("proceed", "approve") and (not scope["goal_ids"] or scope["conflicts"]):
         raise Blocked("acceptance contradicts charter scope")

@@ -11,7 +11,7 @@ from support import CONFIG, EXECUTION, PROFILES, ROOT, TARGET, setUpModule, tear
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config
-from policy import Blocked, path_allowed, path_safe
+from policy import Blocked, path_allowed, path_safe, validate_qc
 
 
 class TargetConfigTests(unittest.TestCase):
@@ -46,8 +46,9 @@ class PathPolicyTests(unittest.TestCase):
         """Traversal, hidden directories and agent governance files stay protected."""
         permissive = {**CONFIG, "policy_documents": [],
                       "paths": {**CONFIG["paths"], "protected_names": [], "protected_name_prefixes": [],
-                                "protected_prefixes": [], "editable_extensions": [".md", ".rs"]}}
-        for path in ("../x.md", ".github/x.md", "docs/.git/x.md", "AGENTS.md", "docs/CLAUDE.md", "SECURITY.md"):
+                                "protected_prefixes": [], "editable_extensions": [".md", ".rs", ".yml"]}}
+        for path in ("../x.md", ".github/x.md", ".github/workflows/ci.yml", "docs/.git/x.md",
+                     "AGENTS.md", "docs/CLAUDE.md", "SECURITY.md"):
             with self.subTest(path=path):
                 self.assertFalse(path_safe(path))
                 self.assertFalse(path_allowed(path, permissive, EXECUTION))
@@ -67,6 +68,52 @@ class PathPolicyTests(unittest.TestCase):
 
 class BundleSplitTests(unittest.TestCase):
     """Engine resources and the target charter bind into one identity."""
+
+    def test_goal_ids_are_exact_pinned_charter_keys_in_both_agent_schemas(self):
+        """Each target and runner receive their own ID enum, never descriptions or mutable shared data."""
+        charter = deepcopy(Bundle(target=TARGET).charter)
+        charter['goals'] = {'STABILITY': 'Keep behavior stable.', 'USABILITY': 'Explain errors.'}
+        bundle = Bundle(ROOT, charter_text=json.dumps(charter))
+        runner = Bundle(ROOT, charter_text=bundle.charter_text)
+        for stage in ('intake', 'plan_qc'):
+            with self.subTest(stage=stage):
+                schema = bundle.schema(stage)
+                goal_ids = schema['properties']['scope']['properties']['goal_ids']
+                self.assertEqual(goal_ids['items']['enum'], ['STABILITY', 'USABILITY'])
+                self.assertIn('scope.fit', goal_ids['description'])
+                self.assertIn('Copy each ID verbatim', bundle.instructions(stage)['shared'])
+                self.assertEqual(runner.schema(stage), schema)
+                goal_ids['items']['enum'].append('UNTRUSTED')
+                self.assertNotIn('UNTRUSTED', bundle.schema(stage)['properties']['scope']['properties']['goal_ids']['items']['enum'])
+        self.assertNotEqual(bundle.identity, Bundle(target=TARGET).identity)
+        self.assertNotIn('STABILITY', Bundle(target=TARGET).schema('intake')['properties']['scope']['properties']['goal_ids']['items']['enum'])
+
+    def test_goal_ids_remain_validated_with_actionable_feedback(self):
+        """Schema bypasses are rejected without silently reinterpreting the submitted ID."""
+        from test_autonomy import decision
+        from test_pipeline import design_report
+        charter = Bundle(target=TARGET).charter
+        goal = next(iter(charter['goals']))
+        for stage, verdict in (('intake', 'proceed'), ('plan_qc', 'approve')):
+            report = decision(verdict, scope={'goal_ids': [goal], 'fit': 'Fits the goal.', 'conflicts': []})
+            if stage == 'plan_qc':
+                report = design_report(report, {'review_criteria': [], 'own_objections': []})
+            validate_qc(report, stage, charter)
+            for bad_id in (goal + ': improves validation', 'INVENTED'):
+                with self.subTest(stage=stage, bad_id=bad_id):
+                    report['scope']['goal_ids'] = [bad_id]
+                    with self.assertRaises(Blocked) as caught:
+                        validate_qc(report, stage, charter)
+                    self.assertIn(json.dumps(sorted(charter['goals'])), str(caught.exception))
+                    self.assertIn('scope.fit', str(caught.exception))
+                    self.assertEqual(report['scope']['goal_ids'], [bad_id])
+
+    def test_goal_enum_requires_a_charter_goal_mapping(self):
+        """Malformed charters fail before an unusable response schema reaches a provider."""
+        charter = deepcopy(Bundle(target=TARGET).charter)
+        for goals in (['G-CORRECTNESS'], {'': 'Missing ID'}, {' ': 'Blank ID'}):
+            with self.subTest(goals=goals), self.assertRaisesRegex(Blocked, 'nonempty IDs'):
+                Bundle(ROOT, charter_text=json.dumps({**charter, 'goals': goals}))
 
     def test_container_charter_text_reproduces_controller_identity(self):
         """An agent image without the charter derives the same identity from supplied text."""
