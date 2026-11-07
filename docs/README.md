@@ -20,6 +20,10 @@ authoritative for exact limits and behavior.
 
 ## Pending work
 
+[Design-review corrections](design/design-review-corrections.md) is an agreed, unimplemented
+plan for preserving independent-review eligibility through output corrections and measuring
+review costs. Parallel reviewer dispatch remains a separate follow-up.
+
 [MCP tools](design/mcp-tools.md) is a proposal, not supported target configuration.
 Optional status summarization, model routing and sub-issue decomposition remain future
 work in their respective designs. The current MVP does not implement automatic CI repair,
