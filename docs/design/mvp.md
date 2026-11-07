@@ -127,7 +127,7 @@ profiles, package-scoping engine or generated CI workflows remain.
    inputs; their results are validated and applied serially. PR reviews remain serial.
    Advisory intake concerns proceed to planning;
    unanswered questions and charter conflicts do not. Rejected output is archived and gets
-   bounded corrections within the model-call budget. Unanimous independent cooperative
+   bounded corrections within the model-call budget. Unanimous independent iterative
    approval can skip duplicate fresh review, including after validation-only corrections.
    Negotiated revisions and session restarts still require fresh review; see the
    [eligibility contract](design-review-corrections.md). Manual mode also requires writer approval. [Recovery commands](../concurro.md#commands-and-recovery)

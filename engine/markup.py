@@ -184,3 +184,8 @@ def excerpt(value, max_bytes, note):
         value = value[:len(value) // 2]
         rendered = block(value)
     return rendered + "\n\n" + note
+
+
+def review_phase(value):
+    """Name retained-context reviews without changing persisted protocol identifiers."""
+    return "iterative" if value == "cooperative" else str(value)

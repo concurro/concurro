@@ -1,5 +1,7 @@
 """Presentation boundaries for explicit invalidations, independent of approval counters."""
 
+import markup
+
 INVALIDATED = 'Writer explicitly invalidated the design and requested reassessment.'
 EMPTY = {'artifact': 0, 'generation': 0, 'review_round': 0, 'plan_revisions': 0}
 
@@ -79,3 +81,10 @@ def assessment_state(state):
     if sources and all(s.get('report') in current or s.get('artifact', 0) > cutoff for s in sources):
         return state
     return {k: v for k, v in state.items() if k != 'classification_snapshot'}
+
+
+def display_round(step, value, boundary):
+    """Translate a dashboard label while preserving audit grouping and stored rounds."""
+    label = round_label(step, value, boundary)
+    number, separator, phase = label.partition(' ')
+    return number + separator + markup.review_phase(phase) if step == 'Design review' and separator else label

@@ -98,6 +98,15 @@ a configured profile name (legacy configurations still use `claude` or `codex`).
 
 ## Contribution loop
 
+Design and PR reviewers assess independently of their peers. Feedback goes to the
+planner or implementer, who revises the work; reviewers do not collaborate on a verdict.
+Iterative design reviews retain each reviewer's own session and objections across
+revisions. Fresh design reviews use no earlier review discussion. PR reviews use fresh
+calls each round, with only that reviewer's own finding history supplied explicitly.
+The stored phase identifier `cooperative` is retained for compatibility; the dashboard
+and newly queued report labels call it `iterative`. Existing archived reports and queued
+publications keep their original wording.
+
 The issue dashboard shows intake, planning, design approval,
 implementation, independent PR reviews and readiness. Independent unanimous design
 approvals can skip a duplicate fresh round even after output corrections. Negotiated

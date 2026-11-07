@@ -23,7 +23,7 @@ charges the whole missing roster before dispatch and applies saved results one a
 Corrections and failures affect only their member. Uncertain reservations stay charged;
 a crash can strand one call per reviewer. PR review dispatch remains serial.
 First-turn unanimous design approvals need no duplicate round. After resumed reviews,
-fresh design approval uses a new session/home, without cooperative transcripts, even
+fresh design approval uses a new session/home, without iterative transcripts, even
 when stage and provider match. Retained conversations remain scoped by the existing
 session journal; a runner-session ID is not a provider conversation ID.
 

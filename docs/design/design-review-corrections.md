@@ -4,7 +4,7 @@ Status: implemented locally, pending review, 2026-11-07. Not deployed.
 
 ## Purpose and scope
 
-Allow unanimous independent cooperative approvals to skip a duplicate fresh round even
+Allow unanimous independent iterative approvals to skip a duplicate fresh round even
 when a reviewer needed controller-directed output corrections. Preserve fresh review
 following substantive negotiation, plan revisions or uncertain session continuity.
 

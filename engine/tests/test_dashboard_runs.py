@@ -78,8 +78,8 @@ class DashboardRunTests(unittest.TestCase):
         self.invalidate()
         controller = self.reach('implement')
         main = controller.summary_body().split('<details><summary>Diagnostics</summary>')[0]
-        self.assertIn('Round 1 · cooperative', main)
-        self.assertIn('↳ Round 1 cooperative', main)
+        self.assertIn('Round 1 · iterative', main)
+        self.assertIn('↳ Round 1 iterative', main)
         self.assertNotIn('↳ Round 2', main)
         self.assertNotIn('Not assessed yet', main)
         self.assertNotIn('retains earlier intake', main)
@@ -89,9 +89,9 @@ class DashboardRunTests(unittest.TestCase):
         controller.invalidate_design('A genuine design revision.')
         controller.state['stage'] = 'plan_qc'
         summary = controller.summary_body().split('<details><summary>Diagnostics</summary>')[0]
-        self.assertIn('Round 2 · cooperative', summary)
-        self.assertIn('↳ Round 1 cooperative', summary)
-        self.assertIn('↳ Round 2 cooperative', summary)
+        self.assertIn('Round 2 · iterative', summary)
+        self.assertIn('↳ Round 1 iterative', summary)
+        self.assertIn('↳ Round 2 iterative', summary)
         self.assertEqual(len(controller.state['invalidations']), 1)
 
     def test_legacy_invalidation_recovers_boundaries_and_excludes_stale_snapshot(self):
@@ -111,7 +111,7 @@ class DashboardRunTests(unittest.TestCase):
         loaded.state['reports'] = expected[-1:]
         self.assertEqual(dashboard_runs.current_reports(loaded.state), expected[-1:])
         main = loaded.summary_body().split('<details><summary>Diagnostics</summary>')[0]
-        self.assertIn('Round 1 · cooperative', main)
+        self.assertIn('Round 1 · iterative', main)
         self.assertNotIn('retains earlier', main)
 
     def test_multiple_invalidations_keep_separate_runs_and_correction_links(self):

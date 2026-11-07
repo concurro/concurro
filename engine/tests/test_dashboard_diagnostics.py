@@ -78,7 +78,7 @@ class DiagnosticsTests(unittest.TestCase):
         summary = self.gh.summary()['body']
         self.assertLess(summary.index('| Design review |'), summary.index('<summary>Diagnostics</summary>'))
         self.assertIn('Correction requested', summary)
-        self.assertIn('to correct its cooperative design review — correction 1 of', summary)
+        self.assertIn('to correct its iterative design review — correction 1 of', summary)
         self.assertIn(reason, summary)
         self.assertNotIn(report['concerns'][0], summary)
         controller = self.tick()
@@ -216,7 +216,7 @@ class DiagnosticsTests(unittest.TestCase):
             {'step': 'Code review', 'round': '1', 'provider': 'claude', 'outcome': 'approve', 'artifact': 23}]
         summary = controller.summary_body()
         self.assertNotIn('<summary>Rounds', summary)
-        self.assertLess(summary.index('| Design review |'), summary.index('↳ Round 1 cooperative'))
+        self.assertLess(summary.index('| Design review |'), summary.index('↳ Round 1 iterative'))
         self.assertLess(summary.index('↳ Round 1 fresh'), summary.index('| Implement |'))
         self.assertIn('codex: 🛠️ Revise', summary)
         self.assertLess(summary.index('| Code review |'), summary.index('/artifacts/23'))
@@ -336,9 +336,9 @@ class DiagnosticsTests(unittest.TestCase):
                 line = controller.activity_line()
                 for member in roster:
                     self.assertEqual(line.count('`' + member['provider'] + '`'), 1)
-                self.assertIn('`' + correcting['provider'] + '` to correct its cooperative design review', line)
+                self.assertIn('`' + correcting['provider'] + '` to correct its iterative design review', line)
                 self.assertIn('correction 1 of', line)
-                self.assertIn('to complete its cooperative design review', line)
+                self.assertIn('to complete its iterative design review', line)
                 self.assertEqual(line.count("We're waiting for"), 1)
 
     def test_review_models_have_separate_lines_inside_one_table_cell(self):
@@ -379,7 +379,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
         self.tick()
-        body = next(c['body'] for c in self.gh.comments if "I've picked up your issue and will take a look!" in c['body'])
+        body = next(c['body'] for c in self.gh.comments if "I've picked up this issue and will start digging in!" in c['body'])
         self.assertNotIn("### I'm on it", body)
         rows = [line for line in body.splitlines() if line.startswith('| ')]
         self.assertEqual(len(rows), 7, 'header, separator and five roles')
@@ -396,7 +396,7 @@ class DiagnosticsTests(unittest.TestCase):
 
         def repo(path, method='GET', data=None):
             result = original(path, method, data)
-            if method == 'POST' and path.endswith('/comments') and "I've picked up your issue and will take a look!" in (data or {}).get('body', '') and not lost:
+            if method == 'POST' and path.endswith('/comments') and "I've picked up this issue and will start digging in!" in (data or {}).get('body', '') and not lost:
                 lost.append(True)
                 raise RuntimeError('lost response')
             return result
@@ -406,9 +406,29 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse(self.agents.calls)
         self.tick()
         self.tick()
-        notices = [c['body'] for c in self.gh.comments if "I've picked up your issue and will take a look!" in c['body']]
+        notices = [c['body'] for c in self.gh.comments if "I've picked up this issue and will start digging in!" in c['body']]
         self.assertEqual(len(notices), 1)
-        self.assertIn("I've picked up your issue", notices[0])
-        self.assertIn('**Meet the team**', notices[0])
+        self.assertIn("I've picked up this issue", notices[0])
+        self.assertIn("Here's the team which has currently been assigned:", notices[0])
         self.assertIn('| Role | Model (effort) |', notices[0])
         self.assertIn('| PR review |', notices[0])
+
+    def test_welcome_mentions_the_label_actor_not_the_issue_author(self):
+        """Address the enrolling writer from verified enrollment, never inferred issue text."""
+        self.gh.issue['user'] = {'login': 'reporter'}
+        self.tick()
+        notice = next(c['body'] for c in self.gh.comments if "I've picked up this issue" in c['body'])
+        self.assertIn("@writer I've picked up this issue and will start digging in!", notice)
+        self.assertNotIn('@reporter', notice)
+
+    def test_welcome_without_a_valid_label_actor_uses_no_mention(self):
+        """Manual or missing enrollment does not guess a recipient or render arbitrary mentions."""
+        controller = self.tick()
+        for enrollment in (None, {}, {'actor': '@someone'}, {'actor': 'writer\n@someone'}):
+            with self.subTest(enrollment=enrollment):
+                controller.state['enrollment'] = enrollment
+                controller.state['conversation']['pending'] = []
+                controller.welcome()
+                body = controller.state['conversation']['pending'][0]['body']
+                self.assertIn("\nI've picked up this issue and will start digging in!", body)
+                self.assertNotIn('@', body)

@@ -178,7 +178,7 @@ def parts_v2(state, kind, source, details):
         return "⚠️ Intake output rejected", [block(value["reason"])], (details["round"],)
     if kind == "review_rejection":
         return "Design review output rejected", [text(details['diagnostic']['detail'])], (
-            text(details['provider']), f"round {details['round']}", text(details['phase']))
+            text(details['provider']), f"round {details['round']}", text(details.get('display_phase', details['phase'])))
     if kind == "implementation":
         return "Implementation report", [block(value["summary"]),
                 "Agent-reported validation: " + block(value["validation"])], (f"round {details['round']}",)
@@ -216,7 +216,7 @@ def parts_v2(state, kind, source, details):
         if hidden:
             parts.append(Hidden("Rationale and objections", "\n\n".join(hidden)))
         title = f"{emoji} {stage} · {text(details['provider'])} · {outcome}"
-        phase = "" if details["phase"] == "intake" else details["phase"]
+        phase = "" if details["phase"] == "intake" else details.get("display_phase", details["phase"])
         return title, parts, (text(details["model"]), plan, f"round {details['round']}", phase)
     if kind == "local":
         rows = [[code(c["name"], cell=True), markup.label(markup.PASS if c["exit_code"] == 0 else markup.FAIL),
@@ -333,6 +333,8 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     A sourced event is a report, archived in its own artifact; `title` and `body` are for
     an issue comment.
     """
+    if source is not None and kind in ("qc", "review_rejection") and details.get("phase") != "intake":
+        details = {**details, "display_phase": markup.review_phase(details["phase"])}
     journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
     if len(journal["pending"]) >= 8:
         raise Blocked("conversation event exceeds publication bounds")

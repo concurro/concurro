@@ -387,7 +387,7 @@ class Controller:
         elif stage == 'plan_qc':
             members = [m for m in design_roster(self.config) if m['id'] not in state.get('design_votes', {})]
             if members:
-                phase = text(state.get('design_phase', 'cooperative'))
+                phase = text(markup.review_phase(state.get('design_phase', 'cooperative')))
                 names = ' and '.join(markup.code(m['provider']) for m in members)
                 task = 'its' if len(members) == 1 else 'their'
                 message = f"We're waiting for {names} to complete {task} {phase} design review."
@@ -475,7 +475,7 @@ class Controller:
         scope = estimate.binding
         label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope['stage']]
         revision = ("head " + str(scope.get('head', ''))[:7] if scope['stage'] == 'review' else
-                    "plan " + str(scope.get('plan', ''))[:8] + " · " + str(scope.get('phase', ''))
+                    "plan " + str(scope.get('plan', ''))[:8] + " · " + markup.review_phase(scope.get('phase', ''))
                     if scope['stage'] == 'plan_qc' else "current issue")
         detail = f"{label} {revision} · {result.assessed}/{result.expected} assessed"
         if result.provisional:
@@ -484,7 +484,7 @@ class Controller:
             prior = result.previous_binding
             detail += " · retains earlier " + str(prior['stage']) + " " + str(prior.get('head') or prior.get('plan') or '')[:8]
             if prior.get('phase'):
-                detail += " " + prior['phase']
+                detail += " " + markup.review_phase(prior['phase'])
         if result.disagreement:
             detail += " · reviewers disagree"
         sources = classification.resolve_sources(estimate.sources, self.state)
@@ -538,7 +538,7 @@ class Controller:
             roster = len(design_roster(self.config))
             approve = sum(v["report"]["decision"] == "approve" for v in state.get("design_votes", {}).values())
             objections = sum(not v["resolved"] for v in state.get("objections", []))
-            round_ = f"Round {state.get('design_generation', 0) + 1 - dashboard_runs.boundaries(state)[-1]['generation']} · {state.get('design_phase', 'cooperative')}"
+            round_ = f"Round {state.get('design_generation', 0) + 1 - dashboard_runs.boundaries(state)[-1]['generation']} · {markup.review_phase(state.get('design_phase', 'cooperative'))}"
             status = f"✅ {approve} of {roster} approve" if done else (
                 "Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
             detail = f"{round_} · {objections} open objection{'s' if objections != 1 else ''}"
@@ -634,7 +634,7 @@ class Controller:
                                     {'queued': 'Queued', 'running': 'Reviewing', 'retrying': 'Retrying', 'done': 'Result received',
                                      'complete': 'Result received'}.get(member.get('status'), 'Waiting'))
                             cells.append(text(provider + ': ' + reviewer_status))
-                rows.append([text('↳ Round ' + dashboard_runs.round_label(step, round_, dashboard_runs.boundaries(self.state)[-1])), 'Current' if round_ == current_round else '', '<br>'.join(cells)])
+                rows.append([text('↳ Round ' + dashboard_runs.display_round(step, round_, dashboard_runs.boundaries(self.state)[-1])), 'Current' if round_ == current_round else '', '<br>'.join(cells)])
         return rows
 
     def diagnostics_table(self):
@@ -644,7 +644,7 @@ class Controller:
             diagnostic = report.get('diagnostic')
             if not diagnostic:
                 continue
-            rows.append([text(report['provider']), text(dashboard_runs.round_label(report['step'], report['round'], dashboard_runs.boundaries(self.state)[-1])),
+            rows.append([text(report['provider']), text(dashboard_runs.display_round(report['step'], report['round'], dashboard_runs.boundaries(self.state)[-1])),
                          text(f"{diagnostic['status']} · {diagnostic['attempt']}/{diagnostic['limit']} corrections"),
                          text(diagnostic['detail'], 300),
                          link('Rejected output', self.artifact_url(report['artifact']))])
@@ -652,7 +652,7 @@ class Controller:
         if repair and not any(r.get('diagnostic', {}).get('binding') == repair.get('binding')
                               for r in self.state.get('reports', [])):
             # Older checkpoints have no rejected-report archive or reviewer identity.
-            rows.append(['Design reviewer', text(self.state.get('design_phase', '')),
+            rows.append(['Design reviewer', text(markup.review_phase(self.state.get('design_phase', ''))),
                          text(f"{repair.get('attempts', 0)}/{self.config['max_review_repairs']} corrections"),
                          text(repair.get('feedback', {}).get('detail', 'Output needs correction.'), 300),
                          'Not retained by the earlier engine'])
@@ -673,7 +673,7 @@ class Controller:
                 labels = ['Unknown' if measured[key] is None else f"{measured[key]:.1f} s"
                           for key in ('admission_to_claim_seconds', 'execution_seconds')]
                 timings.append([text(report['provider']),
-                                text(dashboard_runs.round_label(report['step'], report['round'],
+                                text(dashboard_runs.display_round(report['step'], report['round'],
                                                                dashboard_runs.boundaries(self.state)[-1])), *labels,
                                 link('Report', self.artifact_url(report['artifact']))])
         if timings:
@@ -699,7 +699,7 @@ class Controller:
                 diagnostic = report.get('diagnostic')
                 outcome = ('Output rejected: ' + diagnostic['detail'] if diagnostic else report['outcome'])
                 rows.append([text(report['step']),
-                             text(dashboard_runs.round_label(report['step'], report['round'], boundaries[i])),
+                             text(dashboard_runs.display_round(report['step'], report['round'], boundaries[i])),
                              text(report['provider']), text(outcome, 300),
                              link('Report ' + str(report['artifact']), self.artifact_url(report['artifact']))])
             if rows:
@@ -1027,8 +1027,11 @@ class Controller:
                 model, effort = profile.model or 'CLI default', profile.effort
             team.setdefault(role, []).append(markup.code(model, cell=True) + ' (' + text(effort) + ')')
         rows = [[role, ' · '.join(members)] for role, members in team.items()]
-        conversation.queue(self.state, '', "I've picked up your issue and will take a look!\n\n"
-                           + '**Meet the team**\n\n' + markup.table(['Role', 'Model (effort)'], rows))
+        actor = (self.state.get('enrollment') or {}).get('actor', '')
+        mention = '@' + actor + ' ' if isinstance(actor, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}', actor) else ''
+        conversation.queue(self.state, '', mention + "I've picked up this issue and will start digging in!\n\n"
+                           + "Here's the team which has currently been assigned:\n\n"
+                           + markup.table(['Role', 'Model (effort)'], rows))
 
     def revise_plan(self, stage, reason, invalidate=True, save_exhausted=True):
         """Limit automatic plan revisions across QC feedback and changing inputs."""

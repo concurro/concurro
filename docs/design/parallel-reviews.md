@@ -14,7 +14,7 @@ Deliver three separately reviewable parts:
 
 1. **Timing:** retain minimal observed timing. A new serial pilot or baseline is not
    a prerequisite for parallel dispatch; compare only observations actually available.
-2. **Parallel dispatch at current recovery guarantees:** enable cooperative and fresh design
+2. **Parallel dispatch at current recovery guarantees:** enable iterative and fresh design
    reviews first, then PR reviews in a separate integration using the same coordinator.
 3. **Stronger recovery, deferred:** consider exact resubmission across process loss and
    recovery of old-generation exchange results only if pilot evidence justifies it.
@@ -217,7 +217,7 @@ without cancelling healthy siblings. Its replacement costs a new call; a second 
 outcome exhausts the allowance. Ownership loss, gateway refusal, changed bindings and
 unclassified failures are not converted into member retries.
 
-A controller crash alone does not rotate a cooperative session or revoke its eligibility.
+A controller crash alone does not rotate a iterative session or revoke its eligibility.
 Reuse the persisted transcript journal, as the serial path does: it can return an exact
 cached response and rejects incomplete or mismatched turns. Only an actual `SessionFailure`
 rotates the session; missing legacy eligibility provenance still fails safe. This does not
@@ -234,7 +234,7 @@ shared coordinator with a PR-shaped adapter from the start; production PR dispat
 serial until a separate reviewed integration:
 
 - Freeze the exact base/head and each reviewer's own findings before submission.
-- Use fresh PR-review calls, without cooperative transcripts or `first_pass` semantics.
+- Use fresh PR-review calls, without iterative transcripts or `first_pass` semantics.
 - Apply findings, dispositions and native COMMENT-review outboxes serially with existing
   freshness and duplicate-publication checks.
 - Gather ordinary changes-requested reviews before implementation repair begins.
