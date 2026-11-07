@@ -22,8 +22,11 @@ authoritative for exact limits and behavior.
 
 ## Pending work
 
-[Design-review follow-ups](design/design-review-corrections.md#deferred-follow-ups) include
-parallel dispatch, a defect/suggestion distinction and revision/convergence aids.
+[Parallel review dispatch](design/parallel-reviews.md) starts with optional turn timing,
+implemented locally for review. Shared parallel dispatch for design and PR reviews remains
+a proposal at current recovery guarantees. Stronger crash recovery is deferred separately.
+[Other design-review follow-ups](design/design-review-corrections.md#deferred-follow-ups)
+include a defect/suggestion distinction and revision/convergence aids.
 
 [MCP tools](design/mcp-tools.md) is a proposal, not supported target configuration.
 Optional status summarization, model routing and sub-issue decomposition remain future

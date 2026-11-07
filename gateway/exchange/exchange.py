@@ -442,6 +442,12 @@ class Exchange:
             return now - record["created"] < START_SECONDS
         return now - (record["seen"] or record["created"]) < HEARTBEAT_SECONDS
 
+    def observation(self, turn):
+        """Operator-only timing from the stored turn; caller holds the exchange lock."""
+        status, created, started, finished = self.db.execute(
+            "SELECT status, created, started, finished FROM turns WHERE id = ?", (turn,)).fetchone()
+        return {"turn": turn, "status": status, "created": created, "started": started, "finished": finished}
+
     def submit(self, turn, expected, models, budget, lease, payload, pin=None, now=None, binding=None):
         """Queue a turn under the caller's ID; returns it and a new session ID to dispatch, if one is needed.
 
@@ -474,13 +480,13 @@ class Exchange:
             found = self.db.execute("SELECT digest, status, staff, result FROM turns WHERE id = ?", (turn,)).fetchone()
             if found and found[0] is None:
                 # Withdrawn before its admission arrived.
-                return {"turn": turn, "dispatch": None, "status": found[1]}
+                return {**self.observation(turn), "dispatch": None}
             if found and found[0] != digest:
                 raise Refused(409, "the turn ID is in use")
             if found:
                 staff = found[2] and self.row(found[2])
                 pending = staff and staff["run_id"] is None and self.live(staff, now)
-                admitted = {"turn": turn, "dispatch": found[2] if pending else None, "status": found[1]}
+                admitted = {**self.observation(turn), "dispatch": found[2] if pending else None}
                 return {**admitted, "result": json.loads(found[3])} if found[1] == "done" else admitted
             if pin is not None:
                 record = self.row(pin)
@@ -491,7 +497,7 @@ class Exchange:
                             json.dumps(models), budget, lease, json.dumps(payload), now, digest, pin, bound, group))
             staff = self.staffed(turn, now)
             self.db.execute("UPDATE turns SET staff = ? WHERE id = ?", (staff, turn))
-            return {"turn": turn, "dispatch": staff, "status": "queued"}
+            return {**self.observation(turn), "dispatch": staff}
 
     def staffed(self, turn, now):
         """For a queued turn whose target has no live runner session, issue one and return it to dispatch. The lock is held."""
@@ -531,7 +537,7 @@ class Exchange:
                     self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE id = ?", (current, turn))
                     status = "lost"
                 if status == "done":
-                    return {"status": status, "result": json.loads(result)}
+                    return {**self.observation(turn), "result": json.loads(result)}
                 if status == "running":
                     record = self.row(session)
                     if not self.live(record, current):
@@ -541,14 +547,14 @@ class Exchange:
                             pass
                         status = "lost"
                 if status not in ("queued", "running"):
-                    return {"status": status}
+                    return self.observation(turn)
                 if time.monotonic() >= stop:
                     if status == "running":
-                        return {"status": status}
+                        return self.observation(turn)
                     refusal = self.db.execute(
                         "SELECT refusal FROM sessions WHERE kind = 'runner' AND staffing = ? AND created >= ? "
                         "AND refusal IS NOT NULL ORDER BY created DESC LIMIT 1", (group, created)).fetchone()
-                    return {"status": status, "dispatch": self.staffed(turn, current),
+                    return {**self.observation(turn), "dispatch": self.staffed(turn, current),
                             "refusal": refusal[0] if refusal else None}
             time.sleep(POLL_SECONDS)
 

@@ -294,7 +294,9 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(self.exchange.next(self.session, self.runner, 8, 0, now=NOW), {"turns": []})
         self.exchange.complete(self.session, self.runner, first["turn"], {"ok": True}, now=NOW)
         self.exchange.complete(self.session, self.runner, first["turn"], {"ok": True}, now=NOW)
-        self.assertEqual(self.exchange.poll(first["turn"], 0, now=NOW), {"status": "done", "result": {"ok": True}})
+        self.assertEqual(self.exchange.poll(first["turn"], 0, now=NOW),
+                         {"turn": first["turn"], "status": "done", "result": {"ok": True},
+                          "created": NOW, "started": NOW, "finished": NOW})
         [turn] = self.exchange.next(self.session, self.runner, 8, 0, now=NOW)["turns"]
         self.assertEqual(turn["id"], second["turn"])
         with self.assertRaises(Refused):
@@ -309,10 +311,39 @@ class RelayTests(unittest.TestCase):
         self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
         self.exchange.complete(self.session, self.runner, identifier, {"ok": True}, now=NOW)
         self.assertEqual(self.submit(turn=identifier), {"turn": identifier, "dispatch": None,
-                                                       "status": "done", "result": {"ok": True}})
+                                                       "status": "done", "result": {"ok": True},
+                                                       "created": NOW, "started": NOW, "finished": NOW})
         late = str(uuid.uuid4())
         self.exchange.cancel(late, now=NOW)
         self.assertEqual(self.submit(turn=late)["status"], "cancelled")
+
+    def test_operator_timing_is_stable_across_statuses_and_replays(self):
+        """Timing comes from persisted exchange observations, not response or replay time."""
+        first = self.submit()
+        self.assertEqual((first['created'], first['started'], first['finished']), (NOW, None, None))
+        self.assertEqual(self.exchange.poll(first['turn'], 0, now=NOW)['started'], None)
+        self.exchange.next(self.session, self.runner, 1, 0, now=NOW + 5)
+        running = self.exchange.poll(first['turn'], 0, now=NOW + 8)
+        self.assertEqual((running['status'], running['started'], running['finished']), ('running', NOW + 5, None))
+        self.exchange.complete(self.session, self.runner, first['turn'], {'ok': True}, now=NOW + 15)
+        self.exchange.complete(self.session, self.runner, first['turn'], {'ok': True}, now=NOW + 20)
+        done = self.exchange.poll(first['turn'], 0, now=NOW + 25)
+        replay = self.submit(turn=first['turn'])
+        for field in ('turn', 'status', 'created', 'started', 'finished'):
+            self.assertEqual(replay[field], done[field])
+        self.assertEqual((done['created'], done['started'], done['finished']), (NOW, NOW + 5, NOW + 15))
+        queued = self.submit()
+        self.exchange.cancel(queued['turn'], now=NOW + 30)
+        cancelled = self.exchange.poll(queued['turn'], 0, now=NOW + 35)
+        self.assertEqual((cancelled['status'], cancelled['started'], cancelled['finished']), ('cancelled', None, NOW + 30))
+        self.exchange.cancel(queued['turn'], now=NOW + 40)
+        self.assertEqual(self.exchange.poll(queued['turn'], 0, now=NOW + 45), cancelled)
+        lost = self.submit()
+        self.exchange.next(self.session, self.runner, 1, 0, now=NOW + 50)
+        observed = self.exchange.poll(lost['turn'], 0, now=NOW + exchange.HEARTBEAT_SECONDS + 60)
+        self.assertEqual(observed['status'], 'lost')
+        self.assertEqual(observed['started'], NOW + 50)
+        self.assertIsNotNone(observed['finished'])
 
     def test_dead_job_loses_running_turn_and_replaces_only_queued_turn(self):
         running, waiting = self.submit(), self.submit()
@@ -399,7 +430,8 @@ class HttpTests(unittest.TestCase):
         status, _ = self.post(f"/exchange/sessions/{self.session}/turns/{queued['turn']}", runner, {"result": {"exit": 0}})
         self.assertEqual(status, 200)
         status, polled = self.post(f"/exchange/operator/turns/{queued['turn']}?wait=0", "operator-secret", method="GET")
-        self.assertEqual((status, polled), (200, {"status": "done", "result": {"exit": 0}}))
+        self.assertEqual((status, polled), (200, {"turn": queued["turn"], "status": "done", "result": {"exit": 0},
+                                                "created": NOW, "started": NOW, "finished": NOW}))
         self.assertEqual(self.post("/exchange/operator/keys", "operator-secret", {})[0], 404)
         self.assertEqual(self.post(f"/exchange/sessions/{self.session}/end", runner)[0], 200)
         self.assertEqual(self.gateway.list(), [])

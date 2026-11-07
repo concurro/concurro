@@ -161,6 +161,11 @@ class DeferredExecutor:
         """The inference endpoint for a model request."""
         return self.executor.gateway
 
+    @property
+    def timing(self):
+        """The last observation, without initializing an executor just for telemetry."""
+        return getattr(self.__dict__.get("executor"), "timing", None)
+
     def run(self, *args, **kwargs):
         """Dispatch only after initialization has pinned the task's configuration."""
         return self.executor.run(*args, **kwargs)

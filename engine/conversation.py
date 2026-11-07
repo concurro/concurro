@@ -15,6 +15,7 @@ import actions
 import classification
 import reviews
 import report_store
+import review_timing
 
 MARKER = "<!-- concurro:event:v1:"
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
@@ -351,6 +352,9 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     else:
         event.update(source=list(source), kind=kind, details=details, format=(4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT),
                      index=index_entry(state, kind, source, details))
+        timing = review_timing.index_receipt(state, kind, details)
+        if timing:
+            event["index"]["timing"] = timing
         value = source_value(state, source)
         assessment = value.get("classification", {}).get("source", {}).get("report") if kind != 'review_rejection' else None
         if assessment:

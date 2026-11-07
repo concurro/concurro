@@ -171,10 +171,10 @@ See [baseline and reproduction instructions](../reports/design-review-baseline.m
 
 ## Deferred follow-ups
 
-- **Parallel review dispatch:** submit durably recorded per-reviewer turns and apply
-  results serially. The current single operation and correction slots are not safe for
-  concurrent `ask()` calls. A separate change must handle per-reviewer recovery, atomic
-  budget admission, stale results and task ownership. It saves elapsed time, not calls.
+- **[Parallel review dispatch](parallel-reviews.md):** timing evidence first, then shared
+  turn coordination for design and PR reviews, adopting design reviews first. Apply results
+  serially with per-reviewer state, atomic budget admission and current recovery guarantees;
+  stronger crash recovery is deferred. It saves elapsed time, not calls.
 - **Defects versus suggestions:** one consistent distinction across review phases.
   Current design `concerns` block approval; optional suggestions must not be put there
   without a deliberate schema and policy change.

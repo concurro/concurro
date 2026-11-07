@@ -74,3 +74,20 @@ version; compare the source manifest before treating it as the same baseline. Mi
 edited or unverifiable reports are marked unavailable, never treated as clean approvals.
 Snapshot collection time and source commitments are retained in the derived JSON; raw API
 responses remain in the local snapshot, outside the repository.
+
+## Timing in new captures
+
+The timing-only change adds optional exchange observations to the current operation and
+existing report-index entries; the index still retains at most 40 reports. It adds no
+independent timing history. Failed attempts without reports, legacy responses and receipts
+dropped under checkpoint pressure may have no measurements. Their durations remain unknown.
+
+`design_audit.py` output version 2 includes each indexed report's observed timing and
+admission-to-claim/execution durations, plus coverage counts per round and the target config
+identity when available. Admission-to-claim includes staffing and setup; execution includes
+tools and transcript handling. These are not pure queue or model-inference measurements.
+The old frozen JSON remains historical evidence and is not rewritten to invent timing.
+
+Capture a new serial baseline after an authorized deployment, using the commands above.
+Keep the pilot/artifact population and model configuration explicit in comparisons. No
+serial timing baseline or live speedup has been measured by this implementation change.

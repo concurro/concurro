@@ -10,6 +10,7 @@ import re
 import subprocess
 
 import dashboard_runs
+import review_timing
 from policy import digest
 from report_store import Store
 
@@ -113,6 +114,13 @@ def measure(snapshot, author='concurro[bot]'):
         count['rejected' if entry['outcome'] == 'invalid' else 'accepted'] += 1
         record = {k: entry[k] for k in ('artifact', 'provider', 'round', 'outcome')}
         record.update(run=run, run_round=phase)
+        observed = review_timing.normalize(entry.get('timing'))
+        record['timing'] = observed
+        record['durations'] = review_timing.durations(observed)
+        count['timing_observed' if observed else 'timing_unavailable'] += 1
+        if observed:
+            record['attempt'] = entry['timing'].get('attempt')
+            record['operation'] = entry['timing'].get('operation')
         record['url'] = f'https://github.com/{snapshot.repository}/issues/{snapshot.issue}/artifacts/{number}'
         if entry.get('diagnostic'):
             record['validation_code'] = entry['diagnostic']['code']
@@ -130,8 +138,9 @@ def measure(snapshot, author='concurro[bot]'):
         except (ValueError, KeyError, TypeError, RuntimeError) as error:
             record['verification'] = 'unavailable: ' + type(error).__name__
         records.append(record)
-    return {'version': 1, 'source': snapshot.meta, 'audit_version': latest['version'],
-        'bundle': state.get('bundle_id'), 'engine_commit': None,
+    return {'version': 2, 'source': snapshot.meta, 'audit_version': latest['version'],
+        'bundle': state.get('bundle_id'), 'config_digest': state.get('config_digest'),
+        'config_sha': state.get('config_sha'), 'engine_commit': None,
         'stage': state['stage'], 'total_task_model_calls': state.get('calls'),
         'plan_revisions': state.get('plan_revisions'), 'design_generation': state.get('design_generation'),
         'invalidations': state.get('invalidations', []), 'run_boundaries': boundaries,
@@ -142,7 +151,9 @@ def measure(snapshot, author='concurro[bot]'):
             'Archived outputs are not exact model-call counts: failed provider attempts may have no report.',
             'Rejected outputs are not automatically correction calls; retry cause is not fully recorded here.',
             'Objection dispositions are observations, not counts of unique defects. New-versus-repeated fresh findings require semantic inspection.',
-            'Engine SHA, tokens, model durations, queue/setup time and reviewer/planner discussion attribution are unavailable from this dataset.',
+            'Engine SHA, tokens, pure model durations, pure queue time and reviewer/planner discussion attribution are unavailable.',
+            'Timing covers observed indexed reports only; failed attempts without reports and pruned receipts may be missing. Missing observations are unknown, not zero.',
+            'Admission-to-claim includes staffing/setup; execution includes tools and transcript handling. No complete-round span or savings is inferred from partial receipts.',
             'No predicted call or wall-clock savings are treated as measured results.']}
 
 

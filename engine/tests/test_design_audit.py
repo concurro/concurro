@@ -65,6 +65,32 @@ class AuditTests(unittest.TestCase):
                 self.assertTrue(report['verification'].startswith('unavailable:'))
                 self.assertNotIn('objection_dispositions', report)
 
+    def test_timing_baseline_distinguishes_observations_from_missing_reports(self):
+        """Reports carry optional receipts; repeatable measurements never fill legacy gaps."""
+        self.reach('plan_qc')
+        original = self.agents.ask
+        counter = 0
+        def ask(provider, stage, context):
+            nonlocal counter
+            counter += 1
+            self.agents.timing = ({'turn': '12345678-1234-1234-1234-123456789abc', 'status': 'done',
+                                  'created': 100, 'started': 110, 'finished': 140} if counter == 1 else None)
+            return original(provider, stage, context)
+        with patch.object(self.agents, 'ask', side_effect=ask):
+            self.reach('implement')
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = self.snapshot(directory)
+            result = measure(snapshot, self.config['bot_login'])
+            self.assertEqual(result, measure(snapshot, self.config['bot_login']))
+        first, second = result['reports']
+        self.assertEqual(first['durations'], {'admission_to_claim_seconds': 10, 'execution_seconds': 30})
+        self.assertIsNotNone(first['attempt'])
+        self.assertIsNone(second['timing'])
+        self.assertEqual(second['durations'], {'admission_to_claim_seconds': None, 'execution_seconds': None})
+        counts = result['by_round']['run 1 / 1 cooperative']
+        self.assertEqual((counts['timing_observed'], counts['timing_unavailable']), (1, 1))
+        self.assertNotIn('round_duration', result)
+
     def test_transport_refuses_mutations_and_other_paths_before_invocation(self):
         """No caller can turn the audit reader into a general GitHub client."""
         self.reach('implement')

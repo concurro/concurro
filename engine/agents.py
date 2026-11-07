@@ -18,6 +18,7 @@ from policy import Blocked, SessionFailure, UncertainOutcome, digest
 from relay import ExchangeError, Operator
 from snapshot import inspection
 import turns
+import review_timing
 
 # Providers whose CLIs the gateway serves natively.
 PROVIDERS = ("claude", "codex")
@@ -68,6 +69,7 @@ class Agents:
 
         `bundle` is the controller's own instance; by default it is built from the working directory.
         """
+        self.timing = None
         self.config, self.executor = config, executor
         self.bundle = bundle or Bundle()
         self.retained = Retained(retained) if retained else None
@@ -84,6 +86,7 @@ class Agents:
 
     def ask(self, provider, stage, context):
         """Return one JSON response; for `develop`, its edits are the files changed in the workspace."""
+        self.timing = None
         context = dict(context)
         session = context.pop("controller_session", None)
         selected = context.pop("controller_credential", None)
@@ -111,7 +114,10 @@ class Agents:
         turn = {"request": request, "feedback": feedback, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
                 "retained": self.retained.load(session) if session else None,
                 "timeout": TURN_SECONDS.get(stage, DEFAULT_TURN_SECONDS)}
-        result = self.executor.run(turn, f"{self.config['repository']}:{stage}")
+        try:
+            result = self.executor.run(turn, f"{self.config['repository']}:{stage}")
+        finally:
+            self.timing = review_timing.normalize(getattr(self.executor, "timing", None))
         if session and result.get("retained") is not None:
             self.retained.save(session, result["retained"])
         if result["outcome"] != "ok":
@@ -149,6 +155,7 @@ class RunnerExecutor:
         self.clock, self.sleep, self.task = clock, sleep, task
         self.check_owner = check_owner or (lambda: None)
         self.sessions = set()
+        self.timing = None
 
     def admit(self, identifier, turn, pin=None):
         """Queue the turn under its own ID; the reply, or None when its admission stays unknown.
@@ -179,6 +186,7 @@ class RunnerExecutor:
 
     def run(self, turn, label, pin=None):
         """Queue the turn (for the runner session `pin` alone, when given) and wait for its result."""
+        self.timing = None
         identifier = str(uuid.uuid4())
         try:
             return self.wait(identifier, turn, pin)
@@ -202,6 +210,9 @@ class RunnerExecutor:
         reply, failures, started = submitted, 0, set()
         while True:
             self.check_owner()
+            observed = review_timing.normalize(reply)
+            if observed and observed["turn"] == identifier:
+                self.timing = observed
             if reply.get("dispatch") and reply["dispatch"] not in started:
                 started.add(reply["dispatch"])
                 self.start(reply["dispatch"], identifier)

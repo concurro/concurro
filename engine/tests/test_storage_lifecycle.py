@@ -47,7 +47,7 @@ class StorageLifecycleTests(unittest.TestCase):
         return controller
 
     def test_full_call_budget_keeps_checkpoints_bounded_and_active_ratings_intact(self):
-        """Persist 48 maximally classified reports through pending, archived and reloaded states."""
+        """Persist 48 maximally classified and timed reports through publication and reload."""
         controller = self.seed(0)
         state = controller.state
         budget = controller.config['max_model_calls']
@@ -89,7 +89,11 @@ class StorageLifecycleTests(unittest.TestCase):
                 details = {'head': 'f' * 40, 'round': i // 2 + 1, 'pr': 9,
                            'pr_url': f"https://github.com/{CONFIG['repository']}/pull/9"}
             state.update(calls=i + 1, round=i // 2,
-                         operation={'id': digest(i), 'attempt': f'{i:032x}', 'status': 'consumed'})
+                         operation={'id': digest(i), 'attempt': f'{i:032x}', 'status': 'consumed',
+                                    'stage': stage, 'provider': provider,
+                                    'timing': {'turn': f'{i:08x}-1234-1234-1234-123456789abc', 'status': 'done',
+                                               'created': 1794040000.123456, 'started': 1794040010.123456,
+                                               'finished': 1794040610.123456}})
             if stage == 'review':
                 state['head'] = 'f' * 40
             agent = {'profile': provider + '-high', 'provider': 'anthropic' if provider == 'claude' else 'openai',
@@ -113,6 +117,8 @@ class StorageLifecycleTests(unittest.TestCase):
                                details={**details, 'provider': provider, 'model': agent['model']})
             save_and_check(active)
             conversation.publish(state, self.gh, controller.config, controller.checkpoints.reports)
+            self.assertEqual(state['reports'][-1]['timing']['attempt'], f'{i:032x}')
+            self.assertEqual(state['reports'][-1]['timing']['turn'], state['operation']['timing']['turn'])
             receipt = state['conversation']['receipts']['/'.join(path)]
             archives[source] = deepcopy(receipt['data'])
             if stage == 'review':
@@ -125,6 +131,12 @@ class StorageLifecycleTests(unittest.TestCase):
 
         self.assertEqual(state['calls'], budget)
         self.assertEqual(len(archives), budget)
+        self.assertEqual(len(state['reports']), conversation.REPORT_INDEX)
+        self.assertTrue(any('timing' in report for report in state['reports']))
+        self.assertTrue(any('timing' not in report for report in state['reports']),
+                        'pressure must drop optional old receipts before it blocks a checkpoint')
+        self.assertEqual(state['reports'][-1]['timing']['attempt'], f'{budget - 1:032x}')
+        self.assertNotIn('timings', state, 'no independently growing timing history')
         historical = [v['report'] for entry in state['design_history'] for v in entry['votes']]
         historical += [report for group in state['review_history'] for report in group.values()]
         self.assertTrue(any('classification' not in report or not report['classification']['rationale']

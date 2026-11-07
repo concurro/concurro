@@ -23,6 +23,7 @@ from model_config import assigned, resolve, parse as parse_models
 import readiness
 import candidates
 import conversation
+import review_timing
 import markup
 from markup import block, code, link, text
 import sessions
@@ -258,6 +259,8 @@ class Controller:
             operation.pop("response", None)
         if operation and "response" in operation:
             self.classification_room(self.state, CHECKPOINT_LIMIT - RESULT_MARGIN)
+            review_timing.make_room(self.state, CHECKPOINT_LIMIT - RESULT_MARGIN,
+                                    lambda value: len(self.checkpoints.audit_body(value).encode()))
         if (operation and "response" in operation
                 and len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN):
             response = operation["response"]
@@ -267,6 +270,8 @@ class Controller:
                 # Too large to retain: recovery treats the completion as lost, within the allowance.
                 del operation["response"]
         self.classification_room(self.state, CHECKPOINT_LIMIT - 1000)
+        review_timing.make_room(self.state, CHECKPOINT_LIMIT - 1000,
+                                lambda value: len(self.checkpoints.audit_body(value).encode()))
         self.checkpoints.save(self.state)
 
     def save(self, publish_events=True, outboxes=True):
@@ -640,6 +645,20 @@ class Controller:
         if rows:
             sections.append('Output validation and correction history; these are not design objections.\n\n'
                             + markup.table(['Agent', 'Round', 'Outcome', 'Reason', 'Evidence'], rows))
+        timings = []
+        for report in dashboard_runs.current_reports(self.state):
+            observed = review_timing.normalize(report.get('timing'))
+            if observed:
+                measured = review_timing.durations(observed)
+                labels = ['Unknown' if measured[key] is None else f"{measured[key]:.1f} s"
+                          for key in ('admission_to_claim_seconds', 'execution_seconds')]
+                timings.append([text(report['provider']),
+                                text(dashboard_runs.round_label(report['step'], report['round'],
+                                                               dashboard_runs.boundaries(self.state)[-1])), *labels,
+                                link('Report', self.artifact_url(report['artifact']))])
+        if timings:
+            sections.append('Observed turn timing (includes setup/tools; missing durations are unknown).\n\n'
+                            + markup.table(['Agent', 'Round', 'Admission to claim', 'Execution', 'Evidence'], timings))
         previous = self.previous_runs()
         if previous:
             sections.append(markup.details('Previous runs', previous))
@@ -832,7 +851,12 @@ class Controller:
             used["calls"] += 1
             self.save()
             try:
-                response = self.agents.ask(provider, stage, request)
+                try:
+                    response = self.agents.ask(provider, stage, request)
+                finally:
+                    observed = review_timing.normalize(getattr(self.agents, "timing", None))
+                    if observed:
+                        operation["timing"] = observed
             except Exception as error:
                 # Timeouts and killed containers may have completed upstream; reported errors did not.
                 operation["status"] = "uncertain" if getattr(error, "uncertain", False) else "failed"
@@ -883,6 +907,7 @@ class Controller:
             operation["uncertain"] += 1
         if operation["uncertain"] >= 2:
             raise Blocked("model call outcome was uncertain twice; operator reconciliation required")
+        operation.pop("timing", None)
         operation.update(attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started",
                          request=digest(context))
 
