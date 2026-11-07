@@ -22,6 +22,8 @@ from actions import BUNDLE_REASON
 from model_config import assigned, resolve, parse as parse_models
 import readiness
 import candidates
+import review_state
+import design_batch
 import conversation
 import review_timing
 import markup
@@ -251,7 +253,7 @@ class Controller:
     def checkpoint(self):
         """Persist authoritative progress independently of conversation delivery."""
         conversation.compact(self.state)
-        operation = self.state.get("operation")
+        operation = review_state.operation(self.state)
         if (operation and operation["status"] == "completed" and self.consuming is not None
                 and (operation["id"], operation["attempt"]) == self.consuming):
             # The stage holds the result; this save (of whichever state copy it keeps) persists its use.
@@ -399,6 +401,17 @@ class Controller:
                                 f"complete its {phase} design review")
                         tasks.append(f"{markup.code(member['provider'])} to {task}")
                     message = "We're waiting for " + '; and '.join(tasks) + '.'
+                batch = state.get('review_batch', {}).get('members', {})
+                if batch:
+                    tasks = []
+                    for member in members:
+                        record = batch.get(member['id'], {})
+                        repair = record.get('review_repair')
+                        activity = ('correcting its output' if repair else
+                                    {'queued': 'queued', 'running': 'reviewing', 'retrying': 'retrying', 'complete': 'result received',
+                                     'done': 'result received'}.get(record.get('status'), 'waiting'))
+                        tasks.append(f"{markup.code(member['provider'])}: {activity}")
+                    message = f"{phase.capitalize()} design review — " + '; '.join(tasks) + '.'
             else:
                 message = 'Checking the design-review decisions before moving on.'
         elif stage == 'review':
@@ -429,7 +442,7 @@ class Controller:
         core_size = classification.size(core)
         self.classification_room(self.state, CHECKPOINT_LIMIT - 12000 - 4 * core_size)
         remaining = deepcopy(self.state)
-        remaining.get("operation", {}).pop("response", None)
+        review_state.operation(remaining).pop("response", None)
         room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 12000 - 4 * core_size
         allowance = min(limit - core_size - 50, room // 6)
         if provider == "copilot" and "agents" not in self.config:
@@ -606,13 +619,19 @@ class Controller:
                              else vocabulary.get(entry['outcome'], ('📝', 'Agent report')))
                     cells.append(link(f"{provider}: {markup.label(label)}", self.artifact_url(entry['artifact'])))
                 if round_ == current_round:
-                    operation = self.state.get('operation', {})
+                    operation = review_state.operation(self.state)
                     for provider in expected:
                         if provider not in entries:
                             active = (self.state['stage'] in ('plan_qc', 'review')
                                       and operation.get('status') == 'started' and operation.get('provider') == provider)
                             reviewer_status = ('Paused' if self.state['stage'] not in ('plan_qc', 'review')
                                                else 'Reviewing' if active else 'Waiting')
+                            member = next((m for m in self.state.get('review_batch', {}).get('members', {}).values()
+                                           if m['identity']['provider'] == provider), None)
+                            if member and self.state['stage'] == 'plan_qc':
+                                reviewer_status = ('Correcting output' if member.get('review_repair') else
+                                    {'queued': 'Queued', 'running': 'Reviewing', 'retrying': 'Retrying', 'done': 'Result received',
+                                     'complete': 'Result received'}.get(member.get('status'), 'Waiting'))
                             cells.append(text(provider + ': ' + reviewer_status))
                 rows.append([text('↳ Round ' + dashboard_runs.round_label(step, round_, dashboard_runs.boundaries(self.state)[-1])), 'Current' if round_ == current_round else '', '<br>'.join(cells)])
         return rows
@@ -705,6 +724,7 @@ class Controller:
         self.state = self.checkpoints.load(comments)
         if self.state:
             dashboard_runs.retain_boundaries(self.state)
+            self.state.get('review_batch', {}).pop('active', None)
         comment = self.checkpoints.comment
         self.comment_id = comment["id"] if comment else None
         self.stage_fallback = bool(comment and comment["body"].startswith(MARKER + "\n## Concurro\n\nStage: **"))
@@ -801,14 +821,9 @@ class Controller:
                 refs["concurro/published"] = head
         return {"refs": refs, "head": branch if head or candidate else self.config["base"]}
 
-    def ask(self, provider, stage, context):
-        """Debit the persistent attempt budget before contacting a model.
-
-        A retried or recovered call keeps its original response contract: recorded volatile
-        fields replace recomputed ones in the caller's context, which validates the response.
-        """
+    def prepare_context(self, provider, stage, context):
+        """Freeze and bound request inputs without spending or dispatching a call."""
         self.require_current_bundle()
-        caller = context
         if stage in classification.STAGES and "prior_outcomes_untrusted" in context:
             context = {**context, "prior_outcomes_untrusted": classification.without_hints(context["prior_outcomes_untrusted"])}
         context = {**context, "repository_commit": self.state.get("head", self.state["base"]),
@@ -822,6 +837,16 @@ class Controller:
         if size > self.config["max_context_bytes"]:
             raise Blocked(f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
                           "narrow the change")
+        return context
+
+    def ask(self, provider, stage, context):
+        """Debit the persistent attempt budget before contacting a model.
+
+        A retried or recovered call keeps its original response contract: recorded volatile
+        fields replace recomputed ones in the caller's context, which validates the response.
+        """
+        caller = context
+        context = self.prepare_context(provider, stage, context)
         operation = self.operation(provider, stage, context)
         caller.update(operation["contract"])
         context.update(operation["contract"])
@@ -880,9 +905,9 @@ class Controller:
         """Bind a model call to its intended work, so incidental request changes keep its allowance."""
         work = {k: v for k, v in classification.context_core(feedback.restore(context)).items() if k not in VOLATILE_REQUEST}
         identifier = digest([self.state["issue"], provider, stage, digest(work)])
-        current = self.state.get("operation")
+        current = review_state.operation(self.state)
         if not current or current["id"] != identifier or current["status"] == "consumed":
-            current = self.state["operation"] = {
+            current = review_state.slot(self.state)["operation"] = {
                 "id": identifier, "provider": provider, "stage": stage, "request": None, "attempts": 0,
                 "uncertain": 0, "attempt": None, "status": "new",
                 "contract": {k: context[k] for k in VOLATILE_REQUEST if k in context}}
@@ -1018,6 +1043,8 @@ class Controller:
                 "votes": [{"identity": v["identity"], "binding": v["binding"],
                     "decision": v["report"]["decision"], "report_digest": digest(v["report"]),
                     "concerns": v["report"]["concerns"]} for v in state.get("design_votes", {}).values()]})
+        if not state.get('review_batch', {}).get('active'):
+            state.pop('review_batch', None)
         state["design_generation"] += 1
         state["input_revision"] = state.get("input_revision", 0) + 1
         withdrawn = findings.withdraw(state)
@@ -1187,12 +1214,12 @@ class Controller:
         state = self.state
         binding = digest([approval_binding(state, self.config), member])
         signature = digest([error.code, report])
-        previous = state.get('review_repair', {})
+        previous = review_state.slot(state).get('review_repair', {})
         if previous.get('binding') != binding:
             previous = {}
         repeated = previous.get('signature') == signature
         attempts = previous.get('attempts', 0)
-        state['review_repair'] = {'binding': binding, 'signature': signature, 'attempts': attempts, 'feedback': {
+        review_state.slot(state)['review_repair'] = {'binding': binding, 'signature': signature, 'attempts': attempts, 'feedback': {
             'code': error.code, 'field': error.field,
             'detail': error.detail or design.REPAIR_DETAILS[error.code]}}
         state.pop('approval', None)
@@ -1200,33 +1227,24 @@ class Controller:
             state.update(stage='escalated', retry_stage='plan_qc',
                          reason='Review output repair made no progress or exhausted its budget.')
         else:
-            state['review_repair']['attempts'] = attempts + 1
+            review_state.slot(state)['review_repair']['attempts'] = attempts + 1
             state['review_repairs'] = state.get('review_repairs', 0) + 1
             state.update(stage='plan_qc', reason='Review output needs correction: ' + error.code)
-        state['review_draft'] = deepcopy(report)
-        diagnostic = {'binding': binding, **state['review_repair']['feedback'],
-                      'attempt': state['review_repair']['attempts'], 'limit': self.config['max_review_repairs'],
+        review_state.slot(state)['review_draft'] = deepcopy(report)
+        diagnostic = {'binding': binding, **review_state.slot(state)['review_repair']['feedback'],
+                      'attempt': review_state.slot(state)['review_repair']['attempts'], 'limit': self.config['max_review_repairs'],
                       'status': 'Escalated' if state['stage'] == 'escalated' else 'Correction requested'}
-        conversation.queue(state, None, source=('review_draft',), kind='review_rejection', details={
+        conversation.queue(state, None, source=review_state.path(state, 'review_draft'), kind='review_rejection', details={
             'provider': member['provider'], 'round': state['design_generation'] + 1,
             'phase': state.get('design_phase', 'cooperative'), 'diagnostic': diagnostic})
         self.save()
 
-    def quality_control(self, stage):
-        """Gather independent votes without exposing any peer judgments within a round."""
+    def quality_context(self, stage, member=None):
+        """Build only this reviewer's context; never include peer judgments."""
         state = self.state
         context = self.context()
-        member = None
         phase = state.get("design_phase", "cooperative")
         if stage == "plan_qc":
-            roster = design_roster(self.config)
-            member = next((m for m in roster if m["id"] not in state["design_votes"]), None)
-            if member is None:
-                if not consensus_valid(state, self.config, require_final=False):
-                    raise Blocked("design votes are missing, stale or contradictory")
-                self.finish_consensus()
-                self.save()
-                return
             context["review_phase"] = phase
             context['review_criteria'] = design.criteria(state['requirements'])
             context['objection_instructions'] = design.OBJECTION_INSTRUCTIONS
@@ -1246,7 +1264,7 @@ class Controller:
         provider = member["provider"] if member else assigned(self.config, "triage")
         if member:
             context['review_output_budget'] = self.review_output_budget(context)
-            repair = state.get('review_repair', {})
+            repair = review_state.slot(state).get('review_repair', {})
             if repair.get('binding') == digest([approval_binding(state, self.config), member]):
                 context['review_validation_feedback'] = {**repair['feedback'],
                     'instruction': design_eligibility.CORRECTION_INSTRUCTION}
@@ -1257,7 +1275,31 @@ class Controller:
                 "Proceed requires empty questions and scope conflicts; advisory concerns may accompany it. "
                 "Preserve genuine blockers with an appropriate non-proceed decision. "
                 "This feedback concerns output validity, not a request to approve the issue.")}
+        return provider, context
+
+    def quality_control(self, stage):
+        """Use parallel transport when supported, keeping the legacy serial adapter."""
+        if stage == 'plan_qc' and getattr(self.agents, 'parallel', False):
+            legacy = self.state.get('operation', {})
+            if not (legacy.get('stage') == 'plan_qc' and legacy.get('status') != 'consumed'
+                    or self.state.get('review_repair')):
+                design_batch.run(self)
+                return
+        member = None
+        if stage == 'plan_qc':
+            member = next((m for m in design_roster(self.config) if m['id'] not in self.state['design_votes']), None)
+            if member is None:
+                self.finish_consensus()
+                self.save()
+                return
+        provider, context = self.quality_context(stage, member)
         report = self.ask(provider, stage, context)
+        self.apply_quality_report(stage, provider, member, context, report)
+
+    def apply_quality_report(self, stage, provider, member, context, report):
+        """Validate and apply one result serially using the existing review policy."""
+        state = self.state
+        phase = context.get('review_phase', 'cooperative')
         resolved, disposition_ids = [], []
         if member:
             try:
@@ -1271,7 +1313,7 @@ class Controller:
             for previous in state.get('reports', []):
                 if previous.get('diagnostic', {}).get('binding') == binding:
                     previous['diagnostic']['status'] = 'Recovered'
-            state.pop('review_repair', None)
+            review_state.slot(state).pop('review_repair', None)
             resolved, disposition_ids = design.update_objections(state, report, member, phase)
         else:
             try:
@@ -1285,7 +1327,7 @@ class Controller:
             state.pop("intake_draft", None)
         limit = context['review_output_budget']['max_json_bytes'] if member else 6000
         report = self.classify(report, provider, stage, limit, member)
-        response = state.get("operation", {}).get("response")
+        response = review_state.operation(state).get("response")
         if isinstance(response, dict):
             response.pop("classification", None)
         state.setdefault("qc", {})[stage] = report
@@ -1462,7 +1504,7 @@ class Controller:
                      issue_digest=digest([self.issue["title"], self.issue["body"]]),
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
-        for key in ("plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
+        for key in ("review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
                     "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot", "design_eligibility"):
             state.pop(key, None)
         if state.get("pr"):
@@ -1522,7 +1564,9 @@ class Controller:
                 self.retry_reviewed(comment, comments)
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
-                output_repair = (self.state.get('review_repair') and self.state['retry_stage'] == 'plan_qc'
+                output_repair = ((self.state.get('review_repair') or any(
+                    m.get('review_repair') for m in self.state.get('review_batch', {}).get('members', {}).values()))
+                    and self.state['retry_stage'] == 'plan_qc'
                                  or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan'
                                  or self.state.get('intake_draft') and self.state['retry_stage'] == 'intake')
                 if self.state["stage"] in ("rejected", "escalated") and not output_repair:
@@ -1543,7 +1587,14 @@ class Controller:
                 if self.state.get("review_repair"):
                     self.state["review_repair"].pop("attempts", None)
                     self.state["review_repair"].pop("signature", None)
-                # A writer's retry authorizes a fresh attempt allowance for an uncertain call.
+                # A writer renews allowances, never spent budgets or eligibility.
+                for member in self.state.get('review_batch', {}).get('members', {}).values():
+                    repair = member.get('review_repair', {})
+                    repair.pop('attempts', None)
+                    repair.pop('signature', None)
+                    member['failures'] = 0
+                    if member.get('operation', {}).get('status') not in ('completed', 'consumed'):
+                        member.pop('operation', None)
                 self.state.pop("operation", None)
                 self.save()
             elif self.state and text == "/concurro stop":

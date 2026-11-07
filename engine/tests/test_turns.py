@@ -1,5 +1,6 @@
 """Turns: workspaces from snapshots, extraction, the agent container contract, executors and the runner loop."""
 
+from copy import deepcopy
 import base64
 import json
 import os
@@ -575,6 +576,38 @@ class RelayEndToEndTests(Workspace):
         self.addCleanup(self.server.shutdown)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.expected = {**test_exchange.EXPECTED, "actor_id": "3003"}
+
+    def test_same_cli_review_profiles_run_in_distinct_groups_and_cancel_independently(self):
+        """Real HTTP exchange staffing separates profiles, while each runner stays serial."""
+        from relay import Operator, Runner
+        dispatched = []
+        executor = RunnerExecutor(Operator(self.url, 'operator-secret'), GATEWAY, self.expected,
+                                  ['gpt-*'], 1000, dispatched.append, task=TASK)
+        def turn(profile):
+            """Different model profiles deliberately share the codex harness and phase."""
+            return {**deepcopy(TURN), 'request': {'provider': 'codex', 'stage': 'plan_qc',
+                'model': 'gpt-' + profile, 'context': {'base': 'a' * 40, 'review_phase': 'cooperative'},
+                'agent': {'profile': profile, 'provider': 'openai', 'harness': 'codex',
+                          'model': 'gpt-' + profile, 'effort': 'high'}}}
+        first, second = executor.submit(turn('one')), executor.submit(turn('two'))
+        queued = executor.submit(turn('one'))
+        self.assertEqual(len(dispatched), 2)
+        self.assertNotEqual(first.group, second.group)
+        runners = []
+        for session in dispatched:
+            client = Runner(self.url, session)
+            client.key(self.signer.token(actor_id='3003', ref='refs/heads/concurro/runs/' + session))
+            runners.append(client)
+        a, b = runners
+        self.assertEqual([t['id'] for t in a.next(8, 0)], [first.identifier])
+        self.assertEqual([t['id'] for t in b.next(8, 0)], [second.identifier])
+        self.assertEqual(a.next(8, 0), [])
+        self.assertEqual(b.next(8, 0), [])
+        executor.cancel(second)
+        a.complete(first.identifier, {'outcome': 'ok', 'response': {}})
+        self.assertEqual(executor.observe(first)['outcome'], 'ok')
+        self.assertEqual([t['id'] for t in a.next(8, 0)], [queued.identifier])
+        executor.cancel(queued)
 
     def test_a_develop_turn_round_trips_through_a_runner_session(self):
         self.round_trip()

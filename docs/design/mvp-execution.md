@@ -16,7 +16,11 @@ Status: implemented; audited 2026-11-07. Defines the boundary in
 
 Staff sessions by task, role and compatible ownership/configuration. Never reuse one
 across issues or incompatible model profiles, efforts, phases or ownership generations.
-One session is one GitHub job; turns run sequentially.
+One session is one GitHub job; turns run sequentially. Independent design reviewers run
+concurrently within one renewing worker lease; [the coordinator](parallel-reviews.md)
+charges the whole missing roster before dispatch and applies saved results one at a time.
+Corrections and failures affect only their member. Uncertain reservations stay charged;
+a crash can strand one call per reviewer. PR review dispatch remains serial.
 First-turn unanimous design approvals need no duplicate round. After resumed reviews,
 fresh design approval uses a new session/home, without cooperative transcripts, even
 when stage and provider match. Retained conversations remain scoped by the existing

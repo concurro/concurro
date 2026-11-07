@@ -22,9 +22,9 @@ authoritative for exact limits and behavior.
 
 ## Pending work
 
-[Parallel review dispatch](design/parallel-reviews.md) starts with optional turn timing,
-implemented locally for review. Shared parallel dispatch for design and PR reviews remains
-a proposal at current recovery guarantees. Stronger crash recovery is deferred separately.
+[Parallel review dispatch](design/parallel-reviews.md) provides optional turn timing and
+parallel design reviews at current recovery guarantees. PR reviews remain serial; their
+integration on the same coordinator and stronger crash recovery are separate follow-ups.
 [Other design-review follow-ups](design/design-review-corrections.md#deferred-follow-ups)
 include a defect/suggestion distinction and revision/convergence aids.
 

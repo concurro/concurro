@@ -19,6 +19,7 @@ AUDIT_NAME = "Concurro audit state"
 PLAN_NAME = "Concurro implementation plan"
 LIMIT = 60000
 FORMAT = 3
+BATCH_FORMAT = 4
 
 
 DIAGNOSTICS = {
@@ -162,7 +163,7 @@ class Checkpoints:
         compact, detached = report_store.packed(state) if external else (state, [])
         # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
         payload = {"repository": self.config["repository"],
-                   "state": {**compact, "version": FORMAT} if external else compact}
+                   "state": {**compact, "version": BATCH_FORMAT if state.get("review_batch_version") else FORMAT} if external else compact}
         if detached:
             payload["report_data"] = [
                 {**{k: item[k] for k in ("path", "digest", "select", "annotations")},
@@ -183,7 +184,7 @@ class Checkpoints:
                 raise ValueError()
             self.validate_state(state)
             refs = payload.get("report_data", [])
-            if refs and state["version"] != FORMAT:
+            if refs and state["version"] not in (FORMAT, BATCH_FORMAT):
                 raise ValueError()
             if not isinstance(refs, list):
                 raise ValueError()
@@ -227,7 +228,9 @@ class Checkpoints:
 
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""
-        if state["version"] not in (2, FORMAT) or state["issue"] != self.issue:
+        if (state["version"] not in (2, FORMAT, BATCH_FORMAT) or state["issue"] != self.issue
+                or (state.get("review_batch_version") or state.get("review_batch")) and state["version"] != BATCH_FORMAT
+                or state.get("review_batch_version", 1) != 1):
             raise CheckpointError("state_identity")
 
     def reference(self):

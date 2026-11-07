@@ -120,10 +120,11 @@ cannot guarantee that a compacted report remains retrievable.
   receive no previous votes, and PR reviewers receive only their own findings.
   Files are temporary transport, not another durable evidence store. Call identity
   still uses the original feedback, so file projection cannot duplicate a paid call.
-- **Checkpoint format:** new audit writes use version 3; version 2 remains readable
+- **Checkpoint format:** serial audit writes use version 3; tasks that start parallel reviews
+  use version 4 thereafter. Versions 2 and 3 remain readable
   and migrates on the next save without changing approvals or budgets. Unknown
   versions fail closed. Older engines reject version 3 instead of treating reference
-  placeholders as state. After any v3 save, rollback requires a v3-capable engine;
+  placeholders as state. After a v3 or v4 save, rollback requires an engine supporting that format;
   never restore an old audit snapshot to roll back, since that loses consumed calls
   and publication progress. Deploy the matching engine and runner workflow together.
 - **Archive compatibility:** queued formats 1–3 retain their exact rendering and

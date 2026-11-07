@@ -3,6 +3,8 @@
 import math
 import re
 
+import review_state
+
 STATUSES = {"queued", "running", "done", "lost", "cancelled"}
 
 
@@ -37,7 +39,7 @@ def index_receipt(state, kind, details):
              "implementation": "develop"}.get(kind)
     if kind == "qc":
         stage = "intake" if details.get("phase") == "intake" else "plan_qc"
-    operation = state.get("operation", {})
+    operation = review_state.operation(state)
     value = normalize(operation.get("timing"))
     if (not value or not stage or operation.get("stage") != stage
             or operation.get("provider") != details.get("provider")
@@ -50,7 +52,7 @@ def make_room(state, limit, size):
     """Drop optional observations before they could make a checkpoint fail to save."""
     holders = list(state.get("reports", []))
     holders += [e.get("index", {}) for e in state.get("conversation", {}).get("pending", [])]
-    holders.append(state.get("operation", {}))
+    holders.extend(review_state.operations(state))
     for holder in holders:
         if "timing" in holder:
             if size(state) <= limit:

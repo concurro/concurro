@@ -1,6 +1,7 @@
 """Model calls as turns: a gateway session key and native tools on a real workspace, here or on a runner."""
 
 import base64
+from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 import json
 import os
@@ -29,6 +30,7 @@ DEFAULT_TURN_SECONDS = 1200
 # A runner turn may also wait for a runner to be dispatched, to start and to build its image.
 QUEUE_SECONDS = 1800
 SUBMIT_ATTEMPTS = 4
+REVIEW_POLL_SECONDS = 5
 SCOPE = re.compile(r"[a-f0-9]{64}")
 
 
@@ -84,8 +86,18 @@ class Agents:
             raise Blocked(f"{provider} has no inference gateway route")
         return Credential("gateway:" + provider, provider, "org", ADAPTER)
 
-    def ask(self, provider, stage, context):
-        """Return one JSON response; for `develop`, its edits are the files changed in the workspace."""
+    @property
+    def parallel(self):
+        """Whether the executor supports independent nonblocking turns."""
+        return hasattr(self.executor, 'submit') and hasattr(self.executor, 'observe')
+
+    @property
+    def generation(self):
+        """The current service ownership generation, retained only as attempt provenance."""
+        return self.executor.task.get('generation') if self.executor.task else None
+
+    def prepare(self, provider, stage, context):
+        """Prepare a validated turn payload without dispatching or changing controller state."""
         self.timing = None
         context = dict(context)
         session = context.pop("controller_session", None)
@@ -114,10 +126,16 @@ class Agents:
         turn = {"request": request, "feedback": feedback, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
                 "retained": self.retained.load(session) if session else None,
                 "timeout": TURN_SECONDS.get(stage, DEFAULT_TURN_SECONDS)}
-        try:
-            result = self.executor.run(turn, f"{self.config['repository']}:{stage}")
-        finally:
-            self.timing = review_timing.normalize(getattr(self.executor, "timing", None))
+        return turn
+
+    def decode(self, turn, result):
+        """Persist the transcript and decode one result, independently of other turns."""
+        request = turn['request']
+        session, provider, stage = request['session'], request['provider'], request['stage']
+        return self.decode_result(session, provider, stage, result)
+
+    def decode_result(self, session, provider, stage, result):
+        """Share result validation between serial and batch execution."""
         if session and result.get("retained") is not None:
             self.retained.save(session, result["retained"])
         if result["outcome"] != "ok":
@@ -132,6 +150,35 @@ class Agents:
             return workspace_response(response, result.get("workspace"))
         return response
 
+    def submit(self, turn):
+        """Admit one prepared turn without waiting for completion."""
+        return self.executor.submit(turn)
+
+    def observe(self, handle):
+        """Poll one live turn without a long poll."""
+        return self.executor.observe(handle)
+
+    def cancel(self, handle):
+        """Cancel only this turn and its runner session."""
+        return self.executor.cancel(handle)
+
+    def check_owner(self):
+        """Fence result application as well as transport operations."""
+        return self.executor.check_owner()
+
+    def idle(self):
+        """Bound polling frequency without holding controller or transport locks."""
+        self.executor.sleep(REVIEW_POLL_SECONDS)
+
+    def ask(self, provider, stage, context):
+        """Synchronous wrapper for single-agent stages and legacy integrations."""
+        turn = self.prepare(provider, stage, context)
+        try:
+            result = self.executor.run(turn, f"{self.config['repository']}:{stage}")
+        finally:
+            self.timing = review_timing.normalize(getattr(self.executor, "timing", None))
+        return self.decode(turn, result)
+
 
 def workspace_response(response, workspace):
     """The implementer's report with the edits it made in its workspace; a design issue keeps none."""
@@ -142,6 +189,22 @@ def workspace_response(response, workspace):
     edits = [] if response.get("design_issue") is not None else [
         *workspace["edits"], *({"path": path, "content": None} for path in workspace["removed"])]
     return {**{k: v for k, v in response.items() if k != "edits"}, "edits": edits}
+
+
+@dataclass
+class TurnHandle:
+    """One in-process turn; exact request bytes are deliberately not crash-recoverable."""
+
+    identifier: str
+    turn: dict
+    deadline: float
+    group: str
+    sessions: set = field(default_factory=set)
+    result: dict | None = None
+    timing: dict | None = None
+    failures: int = 0
+    next_poll: float = 0
+    status: str = 'queued'
 
 
 class RunnerExecutor:
@@ -155,14 +218,11 @@ class RunnerExecutor:
         self.clock, self.sleep, self.task = clock, sleep, task
         self.check_owner = check_owner or (lambda: None)
         self.sessions = set()
+        self.groups = {}
         self.timing = None
 
-    def admit(self, identifier, turn, pin=None):
-        """Queue the turn under its own ID; the reply, or None when its admission stays unknown.
-
-        A refusal admitted nothing. A lost reply may have admitted it, so the same turn is
-        submitted again, which returns the original admission rather than a second turn.
-        """
+    def binding(self, turn):
+        """The same task/role/profile binding selects staffing and scoped cleanup."""
         request = turn.get("request", {})
         model = request.get("model", "")
         if self.task is None or not model or not any(fnmatchcase(model, allowed) for allowed in self.models):
@@ -174,6 +234,15 @@ class RunnerExecutor:
             # Staffing includes the resolved profile, even for fresh turns on the same CLI.
             phase = digest([phase, request["agent"]])
         binding = {**self.task, "base": base, "role": role, "phase": phase}
+        return binding, model
+
+    def admit(self, identifier, turn, pin=None):
+        """Queue the turn under its own ID; the reply, or None when its admission stays unknown.
+
+        A refusal admitted nothing. A lost reply may have admitted it, so the same turn is
+        submitted again, which returns the original admission rather than a second turn.
+        """
+        binding, model = self.binding(turn)
         for attempt in range(SUBMIT_ATTEMPTS):
             if attempt:
                 self.sleep(15)
@@ -184,64 +253,122 @@ class RunnerExecutor:
                     raise GatewayUnavailable("unavailable") from None
         return None
 
-    def run(self, turn, label, pin=None):
-        """Queue the turn (for the runner session `pin` alone, when given) and wait for its result."""
-        self.timing = None
-        identifier = str(uuid.uuid4())
+    def submit(self, turn, pin=None, identifier=None):
+        """Admit and dispatch once; return a handle without waiting for the model."""
+        self.check_owner()
+        binding, model = self.binding(turn)
+        group = digest([binding, model])
+        handle = TurnHandle(identifier or str(uuid.uuid4()), turn,
+                            self.clock() + turn['timeout'] + QUEUE_SECONDS, group,
+                            set(self.groups.get(group, ())))
         try:
-            return self.wait(identifier, turn, pin)
+            reply = self.admit(handle.identifier, turn, pin)
+            if reply is None:
+                self.withdraw(handle.identifier)
+                handle.result = self.lost('uncertain')
+            else:
+                self.receive(handle, reply)
+            return handle
         except BaseException:
-            self.withdraw(identifier)
-            for session in self.sessions:
-                try:
-                    self.operator.end(session)
-                except ExchangeError:
-                    pass
+            self.cancel_quietly(handle)
             raise
 
-    def wait(self, identifier, turn, pin):
-        """Wait only while this generation owns the task; completed stale results are discarded."""
+    @staticmethod
+    def lost(outcome):
+        """An absent result cannot authorize work."""
+        return {'outcome': outcome, 'response': None, 'retained': None, 'workspace': None}
+
+    def receive(self, handle, reply):
+        """Update one observation; dispatch and retain no sibling's session."""
         self.check_owner()
-        submitted = self.admit(identifier, turn, pin)
-        if submitted is None:
-            self.withdraw(identifier)
-            return {"outcome": "uncertain", "response": None, "retained": None, "workspace": None}
-        deadline = self.clock() + turn["timeout"] + QUEUE_SECONDS
-        reply, failures, started = submitted, 0, set()
-        while True:
-            self.check_owner()
-            observed = review_timing.normalize(reply)
-            if observed and observed["turn"] == identifier:
-                self.timing = observed
-            if reply.get("dispatch") and reply["dispatch"] not in started:
-                started.add(reply["dispatch"])
-                self.start(reply["dispatch"], identifier)
-            if reply.get("refusal"):
-                self.withdraw(identifier)
-                raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
-            if reply.get("status") == "done" and "result" in reply:
-                return reply["result"]
-            if reply.get("status") in ("lost", "cancelled"):
-                return {"outcome": "lost", "response": None, "retained": None, "workspace": None}
-            if self.clock() > deadline:
-                self.withdraw(identifier)
-                return {"outcome": "uncertain", "response": None, "retained": None, "workspace": None}
+        observed = review_timing.normalize(reply)
+        if observed and observed['turn'] == handle.identifier:
+            handle.timing = observed
+        handle.status = reply.get('status', handle.status)
+        session = reply.get('dispatch')
+        if session and session not in handle.sessions:
+            handle.sessions.add(session)
+            self.groups.setdefault(handle.group, set()).add(session)
+            self.start(session, handle.identifier)
+        if reply.get('refusal'):
+            raise Blocked('a runner of the target was refused by the gateway: ' + reply['refusal'])
+        if reply.get('status') == 'done' and 'result' in reply:
+            handle.result = reply['result']
+        elif reply.get('status') in ('lost', 'cancelled'):
+            handle.result = self.lost('lost')
+
+    def observe(self, handle, wait=0):
+        """One bounded observation; default zero-wait permits round-robin polling."""
+        self.check_owner()
+        if handle.result is not None:
+            return handle.result
+        if self.clock() > handle.deadline:
+            self.withdraw(handle.identifier)
+            handle.result = self.lost('uncertain')
+            return handle.result
+        if self.clock() < handle.next_poll:
+            return None
+        try:
+            reply = self.operator.poll(handle.identifier, wait=wait)
+            handle.failures = 0
+        except ExchangeError:
+            handle.failures += 1
+            handle.next_poll = self.clock() + 15
+            if handle.failures > 20:
+                handle.result = self.lost('uncertain')
+            return handle.result
+        self.receive(handle, reply)
+        return handle.result
+
+    def cancel(self, handle):
+        """Withdraw this attempt and retire only its authorized staffing group."""
+        error = None
+        try:
+            self.operator.cancel(handle.identifier)
+        except ExchangeError as failed:
+            error = failed
+        for session in handle.sessions:
             try:
-                reply = self.operator.poll(identifier)
-                failures = 0
-            except ExchangeError:
-                failures += 1
-                reply = {}
-                if failures > 20:
-                    return {"outcome": "uncertain", "response": None, "retained": None, "workspace": None}
-                self.sleep(15)
+                self.operator.end(session)
+                self.groups.get(handle.group, set()).discard(session)
+            except ExchangeError as failed:
+                error = failed
+        if error:
+            raise GatewayUnavailable('unavailable') from None
+
+    def cancel_quietly(self, handle):
+        """Best-effort cleanup must not mask an existing transport or ownership failure."""
+        try:
+            self.cancel(handle)
+        except (ExchangeError, GatewayUnavailable):
+            pass
+
+    def run(self, turn, label, pin=None):
+        """Synchronous wrapper, retaining legacy transport retry behavior."""
+        self.timing = None
+        handle = self.submit(turn, pin)
+        try:
+            while True:
+                result = self.observe(handle, wait=45)
+                self.timing = handle.timing
+                if result is not None:
+                    return result
+                if handle.next_poll > self.clock():
+                    self.sleep(15)
+                    handle.next_poll = 0
+        except BaseException:
+            self.cancel_quietly(handle)
+            raise
+        finally:
+            self.timing = handle.timing
 
     def start(self, session, identifier):
-        """Dispatch a runner for a new session; a failed dispatch ends the session and withdraws the turn."""
+        """Dispatch the runner issued for this turn."""
         self.sessions.add(session)
         self.dispatch(session)
 
     def withdraw(self, identifier):
+        """Best-effort withdrawal for an uncertain serial admission."""
         try:
             self.operator.cancel(identifier)
         except ExchangeError:

@@ -1,7 +1,8 @@
 # Parallel review dispatch
 
-Status: revision 3, 2026-11-07. Part 1 timing is implemented locally, uncommitted for review.
-Parts 2 and 3 remain proposals; no parallel dispatch or deployment.
+Status: revision 5, 2026-11-07. Part 1 timing is committed. Part 2 design-review dispatch
+is implemented locally for review, uncommitted and not deployed. PR integration and
+Part 3 recovery remain deferred.
 
 ## Objective and delivery scope
 
@@ -11,8 +12,8 @@ independence. Build one coordinator for design and PR reviews, with separate sta
 
 Deliver three separately reviewable parts:
 
-1. **Timing first:** add minimal timing evidence while reviews remain serial, establishing
-   a baseline before parallelism is enabled.
+1. **Timing:** retain minimal observed timing. A new serial pilot or baseline is not
+   a prerequisite for parallel dispatch; compare only observations actually available.
 2. **Parallel dispatch at current recovery guarantees:** enable cooperative and fresh design
    reviews first, then PR reviews in a separate integration using the same coordinator.
 3. **Stronger recovery, deferred:** consider exact resubmission across process loss and
@@ -25,10 +26,10 @@ elapsed time, not model calls; failure recovery can consume additional calls.
 
 ## Current behavior and prerequisites
 
-Both paths are serial: `Controller.quality_control()` selects one missing design vote and
-`Controller.review()` one missing PR review. Each blocks in `ask()` until its turn finishes.
-The controller has singleton operation, consumption, correction and rejected-draft records,
-and mutates budgets, sessions, outboxes and checkpoints. Concurrent calls to `ask()` are unsafe.
+`Controller.quality_control()` uses `design_batch.Design` with the shared `review_batch`
+coordinator. Each member has its own operation, correction and rejected-draft records.
+`Controller.review()` still selects one missing PR review and blocks in `ask()`. One owner
+mutates budgets, sessions, outboxes and checkpoints; concurrent calls to `ask()` remain unsafe.
 
 `RunnerExecutor.run()` creates an in-memory exchange turn UUID. Submission retries already
 reuse that UUID and exact body while the process lives. After process loss, unresolved
@@ -46,10 +47,13 @@ Two execution constraints must be explicit:
 - **Ownership:** staffing includes the worker's ownership generation. Each new worker tick
   gets a new generation; cleanup retires sessions whose generation is no longer live.
   Keep the batch within one renewing worker lease, as today's blocking call does. Do not
-  yield a tick with healthy reviews still running or weaken generation checks.
+  yield a tick with healthy reviews still running or weaken generation checks. Writer
+  commands are processed at tick boundaries; an event arriving during a batch waits for
+  that invocation. The next tick rechecks requirements before implementation. Ownership
+  loss is checked during the batch and stops it immediately.
 
-Executor error cleanup currently ends every session in its local set. Replace that behavior
-with cleanup scoped to the failing member before enabling concurrency.
+Executor cleanup is scoped to the failing turn and its staffing group. It does not end
+a sibling reviewer’s runner.
 
 Only the owning controller publishes. App/provider credentials remain central, OIDC binds
 runners to their issued sessions, cache access stays read-only, and reviews authorize only
@@ -94,9 +98,9 @@ publish gateway addresses, grants, tokens or raw prompts. Telemetry omission mus
 review validation or approval.
 
 Extend the read-only audit tool to record covered pilots, artifact ranges, engine/config
-identities when available and timing coverage. Ship this change while reviews are serial;
-record a serial baseline from an authorized pilot before enabling parallel dispatch.
-Compare equivalent phases and model rosters, noting differences in tasks, setup and repairs.
+identities when available and timing coverage. Existing pilot evidence is sufficient to
+proceed; no additional serial run is required. Compare equivalent phases and model rosters
+when measurements exist, noting differences in tasks, setup and repairs.
 PR repair rounds repeat the reviewer roster and may benefit substantially, but their
 relative savings are unmeasured.
 
@@ -145,7 +149,7 @@ exact exchange resubmission after process loss. There is no new private payload 
 
 Submit the initial roster before waiting for results. GitHub dispatch writes remain paced
 serially; models execute concurrently. Poll members round-robin using existing zero-wait
-polls and a modest delay between sweeps, not sequential 45-second long polls. Keep lease
+polls and a five-second delay between sweeps, not sequential 45-second long polls. Keep lease
 renewal independent of polling and writes, and check ownership between operations.
 
 Apply ready results serially; use roster order when several are ready in the same sweep.
@@ -153,8 +157,9 @@ A fast later reviewer need not wait for a slow earlier one. Durable consumption 
 identities must survive replay independently of completion order.
 
 Gather ordinary approve/revise results before revising the plan. A valid clarify, reject
-or escalate stops further admission, preserves already completed results and cancels/drains
-remaining work before the terminal transition. Late approvals cannot override that decision.
+or escalate persists its decision, stops further admission and preserves already completed
+results. Remaining work is cancelled/drained before the controller invocation returns;
+cleanup failures are surfaced. Late approvals cannot override the terminal decision.
 
 A correctable output failure affects only its member. Archive each rejected report before
 replacing its draft or admitting its correction. One provider failure must not terminate a
@@ -195,7 +200,7 @@ parallelism increases instantaneous load but never increases the task's model-ca
 | Lost workflow-dispatch reply | Use existing mutation reconciliation; do not blindly dispatch another job |
 | Crash after saving a result, before application | Replay the saved result once without another model call |
 | Crash after application, before report publication | Resume the existing deterministic outbox |
-| One member fails | Apply that member's bounded failure policy; do not erase completed siblings |
+| One member fails | Retry explicit session failures and sessionless uncertain outcomes within that member's bounds; preserve healthy siblings and completed results |
 | Stop, invalidation or changed design/head | Stop admission, invalidate old results' authority and cancel/drain remaining work |
 | Ownership changes | Stop old-owner writes; retire abandoned sessions through existing cleanup; retain saved results only if their bindings still match |
 
@@ -206,7 +211,18 @@ sessions; unresolved cleanup or mutation outcomes remain reconciliation work, no
 for weakening ownership checks. Do not rebind an old attempt to a new generation.
 
 Keep uncertain-call and provider-failure allowances per member with the existing bounds,
-not one shared batch counter. A restart of a retained reviewer session must call the
+not one shared batch counter. An explicit `UncertainOutcome` from a sessionless fresh
+reviewer is retained as uncertain and retried within that member's existing allowance,
+without cancelling healthy siblings. Its replacement costs a new call; a second uncertain
+outcome exhausts the allowance. Ownership loss, gateway refusal, changed bindings and
+unclassified failures are not converted into member retries.
+
+A controller crash alone does not rotate a cooperative session or revoke its eligibility.
+Reuse the persisted transcript journal, as the serial path does: it can return an exact
+cached response and rejects incomplete or mismatched turns. Only an actual `SessionFailure`
+rotates the session; missing legacy eligibility provenance still fails safe. This does not
+recover exchange-only results or refund charged reservations. A restart of a retained
+reviewer session must call the
 eligibility restart path: it loses first-pass eligibility even at turn zero. Retry may
 renew correction allowance but cannot restore lost eligibility under the same binding.
 Completed accepted votes remain usable when their original bindings remain valid.
@@ -230,7 +246,7 @@ serial until a separate reviewed integration:
 ## Implementation sequence
 
 1. **Timing-only change:** expose timestamps, retain minimal observed receipts, extend the
-   audit reader and test the serial path. Review and ship separately; capture a serial baseline.
+   audit reader and test the serial path. Committed; no serial-baseline deployment gate.
 2. **Lifecycle extraction:** split prepare/decode and submit/observe/cancel while keeping
    serial wrappers. Scope cleanup per member. Prove exchange staffing separation.
 3. **Batch state and admission:** per-member operations, corrections/drafts, saved results,
@@ -262,6 +278,10 @@ serial until a separate reviewed integration:
   and replacement attempts require new charges. Saved-result replay is free.
 - Every recovery-table row, including partial completion, unknown mutation outcomes and
   ownership loss. An exchange-only old-generation result is not recovered or used to vote.
+- Controller crashes reuse session scope and preserve existing eligibility; missing legacy
+  provenance stays ineligible. Actual session failure during recovery rotates only the failed
+  reviewer and loses first-pass eligibility. Fresh uncertain retries preserve siblings, charge
+  replacements, and stop at the uncertain allowance or remaining task budget.
 - A retained-session restart through parallel recovery loses first-pass eligibility.
   Validation-only correction preserves eligible receipts; legacy in-flight work gains none.
 - Opposite completion orders preserve verdict and objection meaning, with no duplicate
@@ -283,16 +303,16 @@ Finish or reconcile legacy singleton operations before batching remaining review
 completed votes, allowances, eligibility receipts and spent budgets; do not repeat reviews
 just to obtain parallelism. Missing legacy exchange IDs remain unavailable.
 
-Batch-bearing checkpoints need a new format guard so old engines cannot ignore active
-members and dispatch duplicate serial calls. Keep readers for supported older formats;
-unsupported readers must fail closed. Rollback after a batch-format save requires a
-compatible reader, not an assumed downgrade. The timing-only change should remain additive
+A task saves checkpoint format 4 once it starts a batch, and keeps that format after the
+batch ends. Versions 2 and 3 remain readable. Older engines reject format 4 rather than
+ignoring active members and dispatching duplicate serial calls. Rollback after a batch-format
+save requires a compatible reader, not an assumed downgrade. The timing-only change should remain additive
 and must not require the batch format or a recovery upgrade.
 
 No bundle instruction/schema change is intended. Coordinate engine, service, exchange and
 workflow releases as applicable, reconcile unresolved writes and use an idle window for the
-execution change. Each part requires its own review and deployment authorization. Part 1
-was authorized for local implementation only; no deployment, retries or interruption of a
+execution change. Each part requires its own review and deployment authorization. Parts 1 and 2
+have local implementation authorization only; no deployment, retries or interruption of a
 live pilot are authorized.
 
 ## Part 3: deferred recovery proposal

@@ -429,6 +429,34 @@ class FairnessTests(unittest.TestCase):
 class LeaseTests(ServiceFixture, unittest.TestCase):
     """The worker renews its lease while a tick runs."""
 
+    def test_renewal_while_parallel_reviews_wait_preserves_one_owner(self):
+        """The real worker lease renews while two independently submitted reviews wait."""
+        from test_parallel_reviews import BatchAgents
+        self.agents = BatchAgents()
+        self.service()
+        self.worker.renew_seconds = 0.01
+        renewed = threading.Event()
+        original = self.gateway.renew
+        def renew(key, generation, *args):
+            """Record renewal only after both review submissions, not during setup."""
+            result = original(key, generation, *args)
+            if len(self.agents.handles) == 2:
+                renewed.set()
+            return result
+        self.gateway.renew = renew
+        observe = self.agents.observe
+        def waiting(handle):
+            """Wait for independent renewal without releasing the controller invocation."""
+            self.assertEqual(len(self.agents.handles), 2)
+            self.assertTrue(renewed.wait(5))
+            return observe(handle)
+        self.agents.observe = waiting
+        self.registry.enqueue(KEY, 'test', self.clock())
+        self.drain()
+        self.assertTrue(renewed.is_set())
+        self.assertEqual(self.registry.outcome(KEY).kind, 'await-human')
+        self.assertEqual(len(self.agents.handles), 2)
+
     def test_renewal_during_a_tick(self):
         self.service()
         self.worker.renew_seconds = 0.01

@@ -15,7 +15,7 @@ MAX_PARTS = 128
 INLINE = 12000
 FIELDS = {'qc', 'qc_history', 'design_votes', 'design_history', 'design_feedback', 'objections',
           'reviews', 'review_history', 'review_event', 'findings', 'pr_outbox', 'reason', 'outcomes',
-          'prior_outcomes', 'reopen_history', 'invalidations', 'requests', 'review_draft'}
+          'prior_outcomes', 'reopen_history', 'invalidations', 'requests', 'review_draft', 'review_batch'}
 
 
 class ReportDataError(Blocked):
@@ -71,7 +71,8 @@ def packed(state):
 
     def visit(value, path):
         """Detach reports or large leaves, never a mutable history collection."""
-        if path == ['review_draft']:
+        if (path == ['review_draft'] or path[0] == 'review_batch' and (path[-1] == 'review_draft'
+                or path[-2:] == ['operation', 'response'] and not is_report(value))):
             detached.append({'path': path, 'digest': digest(value), 'value': value,
                              'select': [], 'annotations': {}})
             return None
@@ -106,7 +107,9 @@ def allowed_path(path):
     """Only report subtrees may be restored; traversal never creates missing containers."""
     return (isinstance(path, list) and 0 < len(path) <= 32
             and all(isinstance(p, str) or type(p) is int and p >= 0 for p in path)
-            and (path[0] in FIELDS or path[:2] == ['operation', 'response']))
+            and (path[0] in FIELDS - {'review_batch'} or path[:2] == ['operation', 'response']
+                 or path[:2] == ['review_batch', 'members'] and len(path) >= 4
+                 and (path[3] == 'review_draft' or path[3:5] == ['operation', 'response'])))
 
 
 class Cache:

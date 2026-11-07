@@ -3,6 +3,8 @@
 from dataclasses import asdict, dataclass
 import json
 
+import review_state
+
 LEVELS = ('unknown', 'low', 'medium', 'high')
 CONFIDENCE = ('low', 'medium', 'high')
 STAGES = ('intake', 'plan_qc', 'review')
@@ -125,7 +127,7 @@ def attach(report, state, agent, stage, allowance):
     if not isinstance(result, dict):
         return result
     value = normalize(report.get('classification'))
-    operation = state.get('operation', {})
+    operation = review_state.operation(state)
     value['source'] = {'binding': binding(state, stage), 'agent': agent,
                        'report': str(operation.get('id', '')) + ':' + str(operation.get('attempt', ''))}
     value = fit(value, min(MAX_BYTES, max(0, allowance)))

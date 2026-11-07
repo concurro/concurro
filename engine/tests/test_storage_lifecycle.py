@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule, tearDownModule
-from checkpoints import Checkpoints, CheckpointError, FORMAT, AUDIT_MARKER, STATE_PREFIX, legacy_state, LIMIT
+from checkpoints import Checkpoints, CheckpointError, FORMAT, BATCH_FORMAT, AUDIT_MARKER, STATE_PREFIX, legacy_state, LIMIT
 from controller import Controller
 from policy import digest, design_roster
 from report_store import Cache, Store, MARKER, ReportDataError
@@ -48,12 +48,32 @@ class StorageLifecycleTests(unittest.TestCase):
 
     def test_full_call_budget_keeps_checkpoints_bounded_and_active_ratings_intact(self):
         """Persist 48 maximally classified and timed reports through publication and reload."""
+        self.run_capacity(parallel=False)
+
+    def test_full_call_budget_with_large_pending_parallel_results(self):
+        """Protect both sibling results and ratings even when their optional timing is dropped."""
+        self.run_capacity(parallel=True)
+
+    def run_capacity(self, parallel):
+        """Exercise full history with optional concurrently retained model-sized reports."""
         controller = self.seed(0)
         state = controller.state
         budget = controller.config['max_model_calls']
         self.assertEqual(budget, 48)
         roster = design_roster(controller.config)
         originals, archives, sizes = {}, {}, []
+        if parallel:
+            state['review_batch_version'] = 1
+            state['review_batch'] = {'binding': 'f' * 64, 'stage': 'plan_qc', 'members': {
+                m['id']: {'identity': m, 'status': 'complete', 'operation': {
+                    'id': digest(m), 'attempt': 'e' * 32, 'status': 'completed', 'stage': 'plan_qc',
+                    'provider': m['provider'], 'response': {'decision': 'approve',
+                        'rationale': m['id'] + 'R' * 290000,
+                        'classification': assessment(rationale='R' * 600, unknowns=['U' * 200] * 5)},
+                    'timing': {'turn': 'aaaaaaaa-1234-1234-1234-123456789abc', 'status': 'done',
+                               'created': 100, 'started': 101, 'finished': 110}}} for m in roster}}
+            pending = deepcopy(state['review_batch']['members'])
+
 
         def save_and_check(protected):
             """Exercise real pressure handling and storage, including actual artifact references."""
@@ -65,6 +85,8 @@ class StorageLifecycleTests(unittest.TestCase):
                 source = report['classification']['source']['report']
                 self.assertEqual(report['classification'], originals[source])
             self.assertEqual(controller.checkpoints.decode({'body': body}), state)
+            for key, member in state.get('review_batch', {}).get('members', {}).items():
+                self.assertEqual(member['operation']['response'], pending[key]['operation']['response'])
 
         for i in range(budget):
             stage = 'plan_qc' if i < budget // 2 else 'review'
@@ -117,8 +139,12 @@ class StorageLifecycleTests(unittest.TestCase):
                                details={**details, 'provider': provider, 'model': agent['model']})
             save_and_check(active)
             conversation.publish(state, self.gh, controller.config, controller.checkpoints.reports)
-            self.assertEqual(state['reports'][-1]['timing']['attempt'], f'{i:032x}')
-            self.assertEqual(state['reports'][-1]['timing']['turn'], state['operation']['timing']['turn'])
+            observed = state['reports'][-1].get('timing')
+            if not parallel:
+                self.assertIsNotNone(observed)
+            if observed:
+                self.assertEqual(observed['attempt'], f'{i:032x}')
+                self.assertEqual(observed['turn'], f'{i:08x}-1234-1234-1234-123456789abc')
             receipt = state['conversation']['receipts']['/'.join(path)]
             archives[source] = deepcopy(receipt['data'])
             if stage == 'review':
@@ -132,10 +158,12 @@ class StorageLifecycleTests(unittest.TestCase):
         self.assertEqual(state['calls'], budget)
         self.assertEqual(len(archives), budget)
         self.assertEqual(len(state['reports']), conversation.REPORT_INDEX)
-        self.assertTrue(any('timing' in report for report in state['reports']))
+        if not parallel:
+            self.assertTrue(any('timing' in report for report in state['reports']))
         self.assertTrue(any('timing' not in report for report in state['reports']),
                         'pressure must drop optional old receipts before it blocks a checkpoint')
-        self.assertEqual(state['reports'][-1]['timing']['attempt'], f'{budget - 1:032x}')
+        if not parallel:
+            self.assertEqual(state['reports'][-1]['timing']['attempt'], f'{budget - 1:032x}')
         self.assertNotIn('timings', state, 'no independently growing timing history')
         historical = [v['report'] for entry in state['design_history'] for v in entry['votes']]
         historical += [report for group in state['review_history'] for report in group.values()]
@@ -233,7 +261,7 @@ class StorageLifecycleTests(unittest.TestCase):
         # This is the deployed v2 reader's admission predicate.
         self.assertNotEqual(raw['state']['version'], 2)
         self.assertEqual(self.controller().state, state)
-        raw['state']['version'] = FORMAT + 1
+        raw['state']['version'] = BATCH_FORMAT + 1
         body = AUDIT_MARKER + STATE_PREFIX + json.dumps(raw) + '\n```\n'
         with self.assertRaises(CheckpointError):
             checkpoints.decode({'body': body})

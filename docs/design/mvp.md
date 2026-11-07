@@ -121,7 +121,9 @@ profiles, package-scoping engine or generated CI workflows remain.
 ## Contribution flow
 
 1. **Enroll and plan.** Writer enrollment starts intake against the target charter, then
-   planning and independent design review. Advisory intake concerns proceed to planning;
+   planning and independent design review. Design reviewers run concurrently against frozen
+   inputs; their results are validated and applied serially. PR reviews remain serial.
+   Advisory intake concerns proceed to planning;
    unanswered questions and charter conflicts do not. Rejected output is archived and gets
    bounded corrections within the model-call budget. Unanimous independent cooperative
    approval can skip duplicate fresh review, including after validation-only corrections.

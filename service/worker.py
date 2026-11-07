@@ -166,6 +166,31 @@ class DeferredExecutor:
         """The last observation, without initializing an executor just for telemetry."""
         return getattr(self.__dict__.get("executor"), "timing", None)
 
+    @property
+    def task(self):
+        """The current task binding used by every admitted turn."""
+        return self.executor.task
+
+    def submit(self, *args, **kwargs):
+        """Admit one independently observed review turn."""
+        return self.executor.submit(*args, **kwargs)
+
+    def observe(self, handle):
+        """Observe without holding up another reviewer."""
+        return self.executor.observe(handle)
+
+    def cancel(self, handle):
+        """Retire only the supplied attempt's runner."""
+        return self.executor.cancel(handle)
+
+    def check_owner(self):
+        """Fence result application under the same service generation."""
+        return self.executor.check_owner()
+
+    def sleep(self, seconds):
+        """Yield between observation sweeps while lease renewal remains independent."""
+        return self.executor.sleep(seconds)
+
     def run(self, *args, **kwargs):
         """Dispatch only after initialization has pinned the task's configuration."""
         return self.executor.run(*args, **kwargs)
