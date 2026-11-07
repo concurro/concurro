@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 import actions
 import classification
+import dashboard_runs
 import feedback
 from actions import BUNDLE_REASON
 from model_config import assigned, resolve, parse as parse_models
@@ -349,10 +350,11 @@ class Controller:
         if action:
             lines += [action, ""]
         diagnostics = self.diagnostics_table()
-        if diagnostics:
-            lines += [markup.details("Diagnostics", diagnostics if not compact else
-                      'Output corrections are recorded in the linked automation audit state.'), ""]
-        return "\n".join(lines + self.checkpoints.links())
+        if diagnostics and compact:
+            diagnostics = 'Output corrections and previous runs are recorded in the linked automation audit state.'
+        audit, reference = self.checkpoints.links()
+        diagnostics = '\n\n'.join(part for part in (diagnostics, audit) if part)
+        return "\n".join(lines + [markup.details("Diagnostics", diagnostics), "", reference, ""])
 
     def activity_line(self):
         """Name the current work and agent without implying a paused or queued turn is running."""
@@ -374,22 +376,30 @@ class Controller:
                        'PR readiness is waiting on: ' + text(state['reason'], 240) if state.get('reason') else
                        'Checking reviews and CI before marking the pull request ready.')
         elif stage == 'plan_qc':
-            member = next((m for m in design_roster(self.config) if m['id'] not in state.get('design_votes', {})), None)
-            if member:
+            members = [m for m in design_roster(self.config) if m['id'] not in state.get('design_votes', {})]
+            if members:
                 phase = text(state.get('design_phase', 'cooperative'))
+                names = ' and '.join(markup.code(m['provider']) for m in members)
+                task = 'its' if len(members) == 1 else 'their'
+                message = f"We're waiting for {names} to complete {task} {phase} design review."
                 repair = state.get('review_repair', {})
-                correcting = bool(repair) and repair.get('binding') == digest([approval_binding(state, self.config), member])
-                task = 'correct its' if correcting else 'complete its'
-                message = f"Waiting for {markup.code(member['provider'])} to {task} {phase} design review"
-                message += (f" — correction {repair.get('attempts', 0)} of {self.config['max_review_repairs']}."
-                            if correcting else '.')
+                correcting = next((m for m in members if repair and repair.get('binding') ==
+                                   digest([approval_binding(state, self.config), m])), None)
+                if correcting:
+                    tasks = []
+                    for member in members:
+                        task = (f"correct its {phase} design review — correction {repair.get('attempts', 0)} "
+                                f"of {self.config['max_review_repairs']}" if member == correcting else
+                                f"complete its {phase} design review")
+                        tasks.append(f"{markup.code(member['provider'])} to {task}")
+                    message = "We're waiting for " + '; and '.join(tasks) + '.'
             else:
                 message = 'Checking the design-review decisions before moving on.'
         elif stage == 'review':
-            provider = next((p for p in assigned(self.config, 'pr_reviewers')
-                             if p not in state.get('reviews', {})), None)
-            message = (f"Waiting for {markup.code(provider)} to review the pull request."
-                       if provider else 'Checking review findings and deciding whether a repair is needed.')
+            providers = [p for p in assigned(self.config, 'pr_reviewers') if p not in state.get('reviews', {})]
+            names = ' and '.join(markup.code(p) for p in providers)
+            message = (f"We're waiting for {names} to review the pull request."
+                       if providers else 'Checking review findings and deciding whether a repair is needed.')
         elif stage in ('intake', 'plan', 'implement'):
             role, task = {'intake': ('triage', 'assess the issue'),
                           'plan': ('planner', 'prepare the implementation plan'),
@@ -399,7 +409,9 @@ class Controller:
             message += ('correct its output; details are in Diagnostics.' if draft else task + '.')
         else:
             message = 'Checking the task’s current state.'
-        return '**Now:** ' + message
+        alert = ('IMPORTANT' if stage in ('planned', 'clarify') else
+                 'WARNING' if stage in ('blocked', 'escalated', 'rejected') else 'TIP')
+        return f'> [!{alert}]\n> ' + message.replace('\n', '\n> ')
 
     def classification_room(self, state, limit):
         """Prefer valid core evidence over optional archived metadata at checkpoint boundaries."""
@@ -436,9 +448,9 @@ class Controller:
 
     def classification_row(self):
         """Render labels and archive links, never model-written rationale, on the dashboard."""
-        result = classification.view(self.state, self.config)
+        result = classification.view(dashboard_runs.assessment_state(self.state), self.config)
         if not result.estimate.sources:
-            return ""
+            return "**Estimate:** Not assessed yet."
         estimate = result.estimate
         scope = estimate.binding
         label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope['stage']]
@@ -498,15 +510,15 @@ class Controller:
             status = markup.label(markup.DECISION[intake["decision"]]) if intake else "▶️ In progress"
             detail = markup.headline(intake, "rationale") or "" if intake else ""
         elif name == "Plan":
-            version = f"Version {state.get('plan_revisions', 0) + 1}"
+            version = f"Version {state.get('plan_revisions', 0) - dashboard_runs.boundaries(state)[-1]['plan_revisions'] + 1}"
             status = f"✅ {version}" if done else "▶️ In progress"
             plan = self.checkpoints.plan
-            detail = link("Implementation plan", self.artifact_url(plan["number"])) if plan else ""
+            detail = link("Implementation plan", self.artifact_url(plan["number"])) if plan and (state.get('plan') or state.get('plan_draft')) else ""
         elif name == "Design review":
             roster = len(design_roster(self.config))
             approve = sum(v["report"]["decision"] == "approve" for v in state.get("design_votes", {}).values())
             objections = sum(not v["resolved"] for v in state.get("objections", []))
-            round_ = f"Round {state.get('design_generation', 0) + 1} · {state.get('design_phase', 'cooperative')}"
+            round_ = f"Round {state.get('design_generation', 0) + 1 - dashboard_runs.boundaries(state)[-1]['generation']} · {state.get('design_phase', 'cooperative')}"
             status = f"✅ {approve} of {roster} approve" if done else (
                 "Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
             detail = f"{round_} · {objections} open objection{'s' if objections != 1 else ''}"
@@ -563,7 +575,7 @@ class Controller:
 
     def progress_rows(self, steps, compact=False):
         """Place each round immediately below its stage, keeping every archived vote linked."""
-        reports = [r for r in self.state.get("reports", []) if not r.get('diagnostic')]
+        reports = [r for r in dashboard_runs.current_reports(self.state) if not r.get('diagnostic')]
         rows = []
         for step, status, detail in steps:
             rows.append([step, status, detail])
@@ -596,17 +608,17 @@ class Controller:
                             reviewer_status = ('Paused' if self.state['stage'] not in ('plan_qc', 'review')
                                                else 'Reviewing' if active else 'Waiting')
                             cells.append(text(provider + ': ' + reviewer_status))
-                rows.append([text('↳ Round ' + round_), 'Current' if round_ == current_round else '', ' · '.join(cells)])
+                rows.append([text('↳ Round ' + dashboard_runs.round_label(step, round_, dashboard_runs.boundaries(self.state)[-1])), 'Current' if round_ == current_round else '', '<br>'.join(cells)])
         return rows
 
     def diagnostics_table(self):
         """Show output corrections below the live status, with links to immutable evidence."""
         rows = []
-        for report in self.state.get('reports', []):
+        for report in dashboard_runs.current_reports(self.state):
             diagnostic = report.get('diagnostic')
             if not diagnostic:
                 continue
-            rows.append([text(report['provider']), text(report['round']),
+            rows.append([text(report['provider']), text(dashboard_runs.round_label(report['step'], report['round'], dashboard_runs.boundaries(self.state)[-1])),
                          text(f"{diagnostic['status']} · {diagnostic['attempt']}/{diagnostic['limit']} corrections"),
                          text(diagnostic['detail'], 300),
                          link('Rejected output', self.artifact_url(report['artifact']))])
@@ -623,10 +635,38 @@ class Controller:
             if draft:
                 rows.append([label, '—', text(f"Rejected output {draft['attempt']}"),
                              text(draft['reason'], 300), 'See the linked report or plan'])
-        if not rows:
-            return ''
-        return ('Output validation and correction history; these are not design objections.\n\n'
-                + markup.table(['Agent', 'Round', 'Outcome', 'Reason', 'Evidence'], rows))
+        sections = []
+        if rows:
+            sections.append('Output validation and correction history; these are not design objections.\n\n'
+                            + markup.table(['Agent', 'Round', 'Outcome', 'Reason', 'Evidence'], rows))
+        previous = self.previous_runs()
+        if previous:
+            sections.append(markup.details('Previous runs', previous))
+        return '\n\n'.join(sections)
+
+    def previous_runs(self):
+        """Link invalidated run evidence separately from current progress, without copying reports."""
+        boundaries = dashboard_runs.boundaries(self.state)
+        sections = []
+        for i, record in enumerate(self.state.get('invalidations', [])):
+            reports = [r for r in self.state.get('reports', [])
+                       if boundaries[i]['artifact'] < r['artifact'] <= boundaries[i + 1]['artifact']]
+            command = f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}#issuecomment-{record['comment']}"
+            sections.append(f"**Run {i + 1} — invalidated**\n\n"
+                            + link('Writer requested reassessment', command) + '. Earlier approvals no longer apply.')
+            rows = []
+            for report in reports:
+                diagnostic = report.get('diagnostic')
+                outcome = ('Output rejected: ' + diagnostic['detail'] if diagnostic else report['outcome'])
+                rows.append([text(report['step']),
+                             text(dashboard_runs.round_label(report['step'], report['round'], boundaries[i])),
+                             text(report['provider']), text(outcome, 300),
+                             link('Report ' + str(report['artifact']), self.artifact_url(report['artifact']))])
+            if rows:
+                sections.append(markup.table(['Step', 'Round', 'Agent', 'Outcome', 'Evidence'], rows))
+            else:
+                sections.append('Earlier report links are available in the audit artifact history.')
+        return '\n\n'.join(sections)
 
     def sync_stage(self):
         """Mirror durable progress to labels without letting display failures authorize or block work."""
@@ -643,6 +683,8 @@ class Controller:
         """Load verified artifacts or an unmigrated legacy checkpoint from the configured App."""
         self.checkpoints = Checkpoints(self.gh, self.config, self.issue["number"], self.report_cache)
         self.state = self.checkpoints.load(comments)
+        if self.state:
+            dashboard_runs.retain_boundaries(self.state)
         comment = self.checkpoints.comment
         self.comment_id = comment["id"] if comment else None
         self.stage_fallback = bool(comment and comment["body"].startswith(MARKER + "\n## Concurro\n\nStage: **"))
@@ -908,16 +950,17 @@ class Controller:
         roles += [('Design review', member['provider'], 'plan_qc', member) for member in design_roster(self.config)]
         roles += [('Implementation', assigned(self.config, 'implementer'), 'develop', None)]
         roles += [('PR review', name, 'review', None) for name in assigned(self.config, 'pr_reviewers')]
-        rows = []
+        team = {}
         for role, name, stage, member in roles:
             if name == 'copilot' and 'agents' not in self.config:
                 model, effort = selected_model(self.config, name, stage) or 'CLI default', 'CLI default'
             else:
                 profile = resolve(self.config, name, stage, member).profile
                 model, effort = profile.model or 'CLI default', profile.effort
-            rows.append([role, markup.code(model, cell=True), text(effort)])
-        conversation.queue(self.state, "I'm on it", "I've picked up your issue and will take a look!\n\n"
-                           + '### Meet the team\n\n' + markup.table(['Role', 'Model', 'Effort'], rows))
+            team.setdefault(role, []).append(markup.code(model, cell=True) + ' (' + text(effort) + ')')
+        rows = [[role, ' · '.join(members)] for role, members in team.items()]
+        conversation.queue(self.state, '', "I've picked up your issue and will take a look!\n\n"
+                           + '**Meet the team**\n\n' + markup.table(['Role', 'Model (effort)'], rows))
 
     def revise_plan(self, stage, reason, invalidate=True, save_exhausted=True):
         """Limit automatic plan revisions across QC feedback and changing inputs."""
@@ -1368,7 +1411,8 @@ class Controller:
         record = {"actor": comment["user"]["login"], "comment": comment["id"],
                   "old_bundle": state["bundle_id"], "new_bundle": self.bundle.identity,
                   "old_charter": state["charter_id"], "new_charter": digest(self.bundle.charter),
-                  "head": state.get("head"), "plan": state.get("plan_id")}
+                  "head": state.get("head"), "plan": state.get("plan_id"),
+                  "display_start": dashboard_runs.start(state)}
         if state.get("operation"):
             record["operation_digest"] = digest(state["operation"])
         state.setdefault("invalidations", []).append(record)
@@ -1376,7 +1420,7 @@ class Controller:
             if request["state"] == "open":
                 request["state"] = "superseded"
                 actions.edit(request, "↪️ **Superseded**: a writer requested a new assessment.")
-        self.invalidate_design("Writer explicitly invalidated the design and requested reassessment.")
+        self.invalidate_design(dashboard_runs.INVALIDATED)
         if state.get("reviews"):
             state.setdefault("review_history", []).append(state["reviews"])
         state.update(bundle_id=self.bundle.identity, charter_id=digest(self.bundle.charter),
@@ -1386,7 +1430,7 @@ class Controller:
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
         for key in ("plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
-                    "local_status", "approved_accumulated_files", "design_parent"):
+                    "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot"):
             state.pop(key, None)
         if state.get("pr"):
             conversation.queue(state, "Reassessment started",

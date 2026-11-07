@@ -222,6 +222,36 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertLess(summary.index('| Code review |'), summary.index('/artifacts/23'))
         self.assertNotIn('↳ Round', controller.summary_lines(compact=True))
 
+    def test_audit_is_collapsed_and_plan_is_linked_only_in_its_stage(self):
+        """Both summary sizes retain recovery metadata without repeating visible footer links."""
+        from checkpoints import REF_MARKER
+        controller = self.reach_review()
+        for compact in (False, True):
+            with self.subTest(compact=compact):
+                summary = controller.summary_lines(compact)
+                main, diagnostics = summary.split('<details><summary>Diagnostics</summary>', 1)
+                content, footer = diagnostics.rsplit('</details>', 1)
+                self.assertNotIn('[Automation audit state]', main)
+                self.assertIn('[Automation audit state]', content)
+                self.assertNotIn('[Automation audit state]', footer)
+                self.assertEqual(summary.count('[Implementation plan]'), 1)
+                self.assertIn('[Implementation plan]', main)
+                self.assertNotIn(REF_MARKER, content)
+                self.assertIn(REF_MARKER, footer)
+        self.assertEqual(self.load().state['plan_id'], controller.state['plan_id'])
+
+    def test_diagnostics_keeps_audit_link_before_a_plan_or_report_exists(self):
+        """A new task still has a discoverable audit link without other diagnostic history."""
+        self.tick()
+        controller = self.load()
+        controller.state.pop('plan', None)
+        controller.state.pop('plan_draft', None)
+        controller.state['reports'] = []
+        summary = controller.summary_body()
+        self.assertIn('<details><summary>Diagnostics</summary>', summary)
+        self.assertIn('[Automation audit state]', summary)
+        self.assertNotIn('[Implementation plan]', summary)
+
     def test_current_round_identifies_reviewing_and_waiting_agents(self):
         """A round with no submitted votes still shows its assigned reviewers."""
         controller = self.reach_review()
@@ -253,7 +283,7 @@ class DiagnosticsTests(unittest.TestCase):
         """Old in-flight operation records cannot make a paused task look active."""
         controller = self.reach_review()
         controller.state.update(stage='escalated', retry_stage='plan_qc')
-        self.assertIn('**Now:** Paused', controller.activity_line())
+        self.assertIn('> [!WARNING]\n> Paused', controller.activity_line())
         controller.state.update(stage='gates', reason='CI pending', handoff_ready=False)
         self.assertIn('waiting on: CI pending', controller.activity_line())
         controller.state['handoff_ready'] = True
@@ -261,6 +291,70 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotIn('CI pending', controller.activity_line())
         controller.state['stage'] = 'observed_merged'
         self.assertIn('has been merged', controller.activity_line())
+
+    def test_status_alert_names_all_outstanding_reviewers(self):
+        """Both review stages list pending models and remove each one once its vote arrives."""
+        from policy import design_roster
+        controller = self.reach_review()
+        roster = design_roster(self.config)
+        self.assertTrue(controller.activity_line().startswith('> [!TIP]\n> '))
+        for member in roster:
+            self.assertIn('`' + member['provider'] + '`', controller.activity_line())
+        controller.state['design_votes'][roster[0]['id']] = {'report': {'decision': 'approve'}}
+        self.assertNotIn('`' + roster[0]['provider'] + '`', controller.activity_line())
+        self.assertIn('`' + roster[1]['provider'] + '`', controller.activity_line())
+        controller.state.update(stage='review', reviews={})
+        for provider in self.config['reviewers']:
+            self.assertIn('`' + provider + '`', controller.activity_line())
+        controller.state['reviews'][self.config['reviewers'][0]] = {'verdict': 'approve'}
+        self.assertNotIn('`' + self.config['reviewers'][0] + '`', controller.activity_line())
+        self.assertIn('`' + self.config['reviewers'][1] + '`', controller.activity_line())
+        controller.state['reviews'][self.config['reviewers'][1]] = {'verdict': 'approve'}
+        self.assertIn('Checking review findings', controller.activity_line())
+
+    def test_alert_severity_distinguishes_decisions_from_failures(self):
+        """Human decisions are important; blocked or refused work is a warning."""
+        controller = self.reach_review()
+        for alert, stages in (('IMPORTANT', ('planned', 'clarify')),
+                              ('WARNING', ('blocked', 'escalated', 'rejected')),
+                              ('TIP', ('intake', 'plan', 'implement', 'gates'))):
+            for stage in stages:
+                with self.subTest(stage=stage):
+                    controller.state['stage'] = stage
+                    self.assertTrue(controller.activity_line().startswith(f'> [!{alert}]\n> '))
+
+    def test_correcting_reviewer_is_named_once_alongside_pending_peer(self):
+        """Correction progress remains specific without repeating the same reviewer."""
+        from policy import approval_binding, design_roster
+        controller = self.reach_review()
+        roster = design_roster(self.config)
+        for correcting in roster:
+            with self.subTest(correcting=correcting['provider']):
+                controller.state['review_repair'] = {
+                    'binding': digest([approval_binding(controller.state, self.config), correcting]),
+                    'attempts': 1}
+                line = controller.activity_line()
+                for member in roster:
+                    self.assertEqual(line.count('`' + member['provider'] + '`'), 1)
+                self.assertIn('`' + correcting['provider'] + '` to correct its cooperative design review', line)
+                self.assertIn('correction 1 of', line)
+                self.assertIn('to complete its cooperative design review', line)
+                self.assertEqual(line.count("We're waiting for"), 1)
+
+    def test_review_models_have_separate_lines_inside_one_table_cell(self):
+        """Pending and archived reviewers keep their statuses and links on distinct lines."""
+        from policy import design_roster
+        controller = self.reach_review()
+        roster = design_roster(self.config)
+        summary = controller.summary_body()
+        self.assertIn(roster[0]['provider'] + ': Waiting<br>' + roster[1]['provider'] + ': Waiting', summary)
+        controller.state['reports'] = [
+            {'step': 'Design review', 'round': '1 cooperative', 'provider': member['provider'],
+             'outcome': 'approve', 'artifact': 21 + i} for i, member in enumerate(roster)]
+        summary = controller.summary_body()
+        self.assertIn('/artifacts/21)<br>[', summary)
+        self.assertIn('/artifacts/22)', summary)
+        self.assertNotIn('/artifacts/21) · [', summary)
 
     def test_rejection_history_stays_bounded_through_the_call_budget(self):
         """Repeated invalid reviews retain links rather than copying raw output into the audit."""
@@ -285,12 +379,15 @@ class DiagnosticsTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
         self.tick()
-        body = next(c['body'] for c in self.gh.comments if "### I'm on it" in c['body'])
-        for row in ('| Intake | `gpt-6.1-sol` | medium |',
-                    '| Planning | `claude-opus-5-5` | high |',
-                    '| Design review | `gpt-6.1-sol` | medium |',
-                    '| PR review | `gpt-6.1-sol` | high |',
-                    '| PR review | `gpt-6-astra` | high |'):
+        body = next(c['body'] for c in self.gh.comments if "I've picked up your issue and will take a look!" in c['body'])
+        self.assertNotIn("### I'm on it", body)
+        rows = [line for line in body.splitlines() if line.startswith('| ')]
+        self.assertEqual(len(rows), 7, 'header, separator and five roles')
+        for row in ('| Intake | `gpt-6.1-sol` (medium) |',
+                    '| Planning | `claude-opus-5-5` (high) |',
+                    '| Design review | `claude-opus-5-5` (high) · `gpt-6.1-sol` (medium) |',
+                    '| Implementation | `claude-opus-5-5` (high) |',
+                    '| PR review | `gpt-6.1-sol` (high) · `gpt-6-astra` (high) |'):
             self.assertIn(row, body)
 
     def test_welcome_is_sent_once_and_recovers_lost_response(self):
@@ -299,7 +396,7 @@ class DiagnosticsTests(unittest.TestCase):
 
         def repo(path, method='GET', data=None):
             result = original(path, method, data)
-            if method == 'POST' and path.endswith('/comments') and "### I'm on it" in (data or {}).get('body', '') and not lost:
+            if method == 'POST' and path.endswith('/comments') and "I've picked up your issue and will take a look!" in (data or {}).get('body', '') and not lost:
                 lost.append(True)
                 raise RuntimeError('lost response')
             return result
@@ -309,9 +406,9 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse(self.agents.calls)
         self.tick()
         self.tick()
-        notices = [c['body'] for c in self.gh.comments if "### I'm on it" in c['body']]
+        notices = [c['body'] for c in self.gh.comments if "I've picked up your issue and will take a look!" in c['body']]
         self.assertEqual(len(notices), 1)
         self.assertIn("I've picked up your issue", notices[0])
-        self.assertIn('### Meet the team', notices[0])
-        self.assertIn('| Role | Model | Effort |', notices[0])
+        self.assertIn('**Meet the team**', notices[0])
+        self.assertIn('| Role | Model (effort) |', notices[0])
         self.assertIn('| PR review |', notices[0])

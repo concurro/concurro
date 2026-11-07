@@ -381,10 +381,7 @@ class Checkpoints:
             raise
 
     def links(self):
-        """Generate issue-local URLs and a hidden recovery reference without trusting server URLs."""
+        """Return the public audit link and hidden recovery reference, using issue-local URLs."""
         root = f"https://github.com/{self.config['repository']}/issues/{self.issue}/artifacts/"
-        lines = [f"[Automation audit state]({root}{self.audit['number']}) (public).", ""]
-        if self.plan:
-            lines += [f"[Implementation plan]({root}{self.plan['number']})", ""]
-        lines += [REF_MARKER + json.dumps(self.reference(), sort_keys=True, separators=(",", ":")) + " -->", ""]
-        return lines
+        return [f"[Automation audit state]({root}{self.audit['number']}) (public).",
+                REF_MARKER + json.dumps(self.reference(), sort_keys=True, separators=(",", ":")) + " -->"]

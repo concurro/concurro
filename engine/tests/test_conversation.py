@@ -61,7 +61,7 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual([s["turn"] for s in sessions], [0, 1, 2])
             self.assertEqual(len({s["scope"] for s in sessions}), 1)
             self.assertNotEqual(sessions[0]["scope"], plans[0]["controller_session"]["scope"])
-        self.assertEqual([c["body"].split("\n")[1] for c in self.events()], ["### I'm on it"],
+        self.assertEqual([c["body"].split("\n")[1] for c in self.events()], ["I've picked up your issue and will take a look!"],
                          "progress posts no additional issue comments")
         archives = self.gh.archives()
         self.assertIn("Define the error behavior.", "\n".join(archives))

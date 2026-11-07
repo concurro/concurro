@@ -270,8 +270,9 @@ def content(event, body):
 
 
 def content_v2(event, title, body, meta):
-    """Format 2: heading, outcome-first body, then one metadata line."""
-    return f"{MARKER}{event['id']} -->\n### {title}\n\n{body}\n\n" + markup.sub(f"Event {event['sequence']}", *meta)
+    """Format 2: optional heading, outcome-first body, then one metadata line."""
+    heading = f"### {title}\n\n" if title else ''
+    return f"{MARKER}{event['id']} -->\n{heading}{body}\n\n" + markup.sub(f"Event {event['sequence']}", *meta)
 
 
 def archive(event, state):
