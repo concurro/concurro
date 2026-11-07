@@ -58,6 +58,10 @@ class StorageLifecycleTests(unittest.TestCase):
         """Exercise full history with optional concurrently retained model-sized reports."""
         controller = self.seed(0)
         state = controller.state
+        bundle_receipt = {'approved_bundle': state['bundle_id'], 'old_bundle': 'b' * 64,
+                          'new_bundle': 'c' * 64, 'old_skill': 'd' * 64, 'new_skill': 'e' * 64,
+                          'actor': 'writer', 'comment': 9999999999, 'plan': state['plan_id']}
+        state['implementation_bundle'] = deepcopy(bundle_receipt)
         budget = controller.config['max_model_calls']
         self.assertEqual(budget, 48)
         roster = design_roster(controller.config)
@@ -81,6 +85,7 @@ class StorageLifecycleTests(unittest.TestCase):
             body = controller.checkpoints.audit['body']
             sizes.append(len(body.encode()))
             self.assertLessEqual(sizes[-1], LIMIT)
+            self.assertEqual(state['implementation_bundle'], bundle_receipt)
             for report in protected:
                 source = report['classification']['source']['report']
                 self.assertEqual(report['classification'], originals[source])

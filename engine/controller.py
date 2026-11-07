@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 import actions
 import classification
+import implementation_bundle
 import dashboard_runs
 import feedback
 from actions import BUNDLE_REASON
@@ -997,6 +998,7 @@ class Controller:
                       "command_id": command_id, "requirements": self.requirements(comments),
                       "issue_digest": digest([self.issue["title"], self.issue["body"]]),
                       "config_digest": config_digest(self.config), "bundle_id": self.bundle.identity,
+                      "implementation_skill": self.bundle.hashes[implementation_bundle.SKILL],
                       "charter_id": digest(self.bundle.charter),
                       "charter": self.bundle.charter, "execution": self.config["paths"],
                       "design_generation": 0,
@@ -1468,9 +1470,53 @@ class Controller:
 
     def require_current_bundle(self):
         """Only current instructions may produce or consume a model result."""
-        if (self.state.get("bundle_id") != self.bundle.identity
+        if (not implementation_bundle.current(self.state, self.bundle)
                 or self.state.get("charter_id") != digest(self.bundle.charter)):
+            if (self.state.get("stage") == "implement"
+                    and self.state.get("charter_id") == digest(self.bundle.charter)
+                    and implementation_bundle.original_skill(self.state, self.bundle) is not None):
+                raise Blocked(implementation_bundle.RETRY_REASON)
             raise Blocked(BUNDLE_REASON)
+
+    def retry_implementation_bundle(self, comment, comments):
+        """Adopt only proven implementer-skill changes on an authorized implementation retry."""
+        state = self.state
+        if implementation_bundle.current(state, self.bundle):
+            return
+        try:
+            if state.get("pending"):
+                raise Blocked("Publication is pending; finish the recorded publication before adopting instructions.")
+            if (state["config_digest"] != config_digest(self.config)
+                    or state["requirements"] != self.requirements(comments)
+                    or not approval_valid(state, self.config)):
+                raise Blocked("Configuration, requirements or approval changed; cannot preserve the approved plan.")
+            if state.get("pr"):
+                pr = self.pulls.repo(f"pulls/{state['pr']}")
+                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
+                    raise Blocked("PR changed outside the controller; cannot retry its implementation.")
+            original = implementation_bundle.original_skill(state, self.bundle)
+            if original is None or state.get("charter_id") != digest(self.bundle.charter):
+                raise Blocked(BUNDLE_REASON)
+        except Blocked:
+            state["command_id"] = comment["id"]
+            self.save()
+            raise
+        previous = state.get("implementation_bundle", {}).get("new_bundle", state["bundle_id"])
+        state["implementation_skill"] = original
+        state["implementation_bundle"] = {
+            "approved_bundle": state["bundle_id"], "old_bundle": previous,
+            "new_bundle": self.bundle.identity, "actor": comment["user"]["login"],
+            "comment": comment["id"], "plan": state["plan_id"],
+            "old_skill": (state.get("implementation_bundle") or {}).get("new_skill", original),
+            "new_skill": self.bundle.hashes[implementation_bundle.SKILL]}
+        for role, session in list(state.get("sessions", {}).items()):
+            if role.startswith("develop:"):
+                sessions.restart(state, {**session, "role": role})
+        conversation.queue(state, "Implementation instructions updated",
+            "A writer requested an implementation retry. The approved plan and design reviews are unchanged. "
+            "Only the implementer skill changed; implementation starts in a new session. Spent budgets are retained.\n\n"
+            + "Bundle: " + code(previous) + " → " + code(self.bundle.identity) + ".")
+        # The caller saves the receipt, session rotation and consumed command together.
 
     def invalidate_task(self, comment, comments):
         """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
@@ -1507,13 +1553,14 @@ class Controller:
         self.invalidate_design(dashboard_runs.INVALIDATED)
         if state.get("reviews"):
             state.setdefault("review_history", []).append(state["reviews"])
-        state.update(bundle_id=self.bundle.identity, charter_id=digest(self.bundle.charter),
+        state.update(bundle_id=self.bundle.identity, implementation_skill=self.bundle.hashes[implementation_bundle.SKILL],
+                     charter_id=digest(self.bundle.charter),
                      charter=deepcopy(self.bundle.charter), stage="intake", command_id=comment["id"],
                      requirements=self.requirements(comments),
                      issue_digest=digest([self.issue["title"], self.issue["body"]]),
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
-        for key in ("review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
+        for key in ("implementation_bundle", "review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
                     "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot", "design_eligibility"):
             state.pop(key, None)
         if state.get("pr"):
@@ -1573,6 +1620,8 @@ class Controller:
                 self.retry_reviewed(comment, comments)
             elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
+                if self.state["stage"] in ("blocked", "stopped") and self.state["retry_stage"] == "implement":
+                    self.retry_implementation_bundle(comment, comments)
                 output_repair = ((self.state.get('review_repair') or any(
                     m.get('review_repair') for m in self.state.get('review_batch', {}).get('members', {}).values()))
                     and self.state['retry_stage'] == 'plan_qc'
@@ -1706,6 +1755,8 @@ class Controller:
                 "binding": approval_binding(state, self.config), "plan_id": state["plan_id"],
                 "plan_digest": digest(state["plan"]), "base": state["base"],
                 "bundle_id": state["bundle_id"], "charter_id": state["charter_id"],
+                **({"implementation_bundle": deepcopy(state["implementation_bundle"])}
+                   if state.get("implementation_bundle") else {}),
                 "requirements_digest": digest(state["requirements"]),
                 "generation": state["design_generation"], "required_identities": roster,
                 "successful_votes": [{"identity": member, "binding": state["design_votes"][member["id"]]["binding"],

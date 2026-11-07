@@ -50,7 +50,9 @@ Each task pins the fork configuration commit independently from its upstream sou
 The worker supplies the same bundle to the controller and runner transport. Setup and
 instructions come from that configuration commit; new default-branch configuration
 applies to new tasks. Bundle drift blocks model work, not closure or readiness observation.
-Explicit `/concurro invalidate` adopts the current bundle and restarts assessment without
+A writer retry may adopt a proven engine-implementer-skill-only update for a blocked
+implementation, preserving its plan and approvals. Other instruction changes require
+explicit `/concurro invalidate`, which adopts the current bundle and restarts assessment without
 resetting spent budgets or silently changing the pinned target configuration.
 
 Installation tokens are narrowed to one repository and checked against the exact requested

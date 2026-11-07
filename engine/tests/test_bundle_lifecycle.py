@@ -1,9 +1,10 @@
-"""Bundle upgrades leave observers alone; only explicit invalidation adopts new instructions."""
+"""Bundle upgrades preserve observers and permit only proven implementation-only retries."""
 
 from copy import deepcopy
 from pathlib import Path
 import tempfile
 import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from policy import Blocked, approval_valid
 from github import Transient
 from conversation import PublicationError
 import sessions
+import implementation_bundle
 
 
 class BundleLifecycleTests(unittest.TestCase):
@@ -417,3 +419,227 @@ class BundleLifecycleTests(unittest.TestCase):
         self.assertIn('/pull/9', notices[0]['body'])
         self.assertFalse(self.gh.pr['draft'])
         self.assertEqual(len(self.loaded().state['invalidations']), 1)
+
+    def implementation_upgrade(self):
+        """Install an implementer-only skill revision."""
+        path = self.root / implementation_bundle.SKILL
+        path.write_text(path.read_text() + '\nKeep validation focused on the approved plan.\n')
+
+    def blocked_implementation(self):
+        """Save an interrupted implementation with a retained role session."""
+        controller = self.reach('implement')
+        session = sessions.prepare(controller.state, self.config, self.config['implementer'], 'develop', {})
+        controller.state['sessions'][session['role']]['turn'] = 2
+        controller.state['calls'] += 1
+        controller.state['operation'] = {'status': 'failed', 'runner_termination': 'old termination'}
+        controller.suspend('blocked', 'Implementation runner stopped.', outboxes=False)
+        return deepcopy(controller.state), session['role']
+
+    def retry_commands(self):
+        """Apply the writer command without starting a model, for exact state assertions."""
+        controller = self.loaded()
+        controller.commands(self.gh.comments)
+        return controller
+
+    def test_implementation_only_retry_preserves_approval_and_completes(self):
+        prior, role = self.blocked_implementation()
+        self.implementation_upgrade()
+        self.assertEqual(self.tick().state['stage'], 'blocked')
+        self.gh.comment('/concurro retry', login='outsider')
+        self.assertEqual(self.tick().state['stage'], 'blocked')
+        self.gh.comment('/concurro retry')
+        controller = self.retry_commands()
+        state = controller.state
+        for key in ('bundle_id', 'charter_id', 'plan', 'plan_id', 'approval', 'design_votes',
+                    'calls', 'round', 'plan_revisions', 'requirements', 'config_digest'):
+            self.assertEqual(state[key], prior[key], key)
+        self.assertTrue(approval_valid(state, self.config))
+        self.assertEqual(state['stage'], 'implement')
+        self.assertNotIn('operation', state)
+        self.assertNotEqual(state['sessions'][role]['scope'], prior['sessions'][role]['scope'])
+        self.assertEqual(state['sessions'][role]['turn'], 0)
+        for key, session in prior['sessions'].items():
+            if key != role:
+                self.assertEqual(state['sessions'][key], session)
+        receipt = state['implementation_bundle']
+        self.assertEqual(receipt['actor'], 'writer')
+        self.assertEqual(receipt['comment'], state['command_id'])
+        self.assertEqual(receipt['new_bundle'], controller.bundle.identity)
+        self.assertEqual(controller.design_authorization()['implementation_bundle'], receipt)
+        start = len(self.agents.calls)
+        self.reach('gates')
+        self.assertTrue(self.tick().state['handoff_ready'])
+        turns = self.agents.calls[start:]
+        self.assertEqual([stage for _, stage, _ in turns], ['develop', 'review', 'review'])
+        self.assertTrue(all(ctx['bundle_id'] == receipt['new_bundle'] for _, _, ctx in turns))
+
+    def test_adoption_requires_exact_implementation_only_difference(self):
+        for resource in ('bundle/instructions.md', 'bundle/roles.json', 'bundle/schemas/develop.json',
+                         'bundle/skills/concurro-design/SKILL.md', 'bundle/skills/concurro-review-pr/SKILL.md',
+                         '.concurro/charter.json', '.concurro/instructions/implementer.md'):
+            with self.subTest(resource=resource):
+                self.setUp()
+                prior, _ = self.blocked_implementation()
+                self.implementation_upgrade()
+                path = self.root / resource
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text((path.read_text() if path.exists() else '') + '\n ')
+                self.gh.comment('/concurro retry')
+                with self.assertRaisesRegex(Blocked, '/concurro invalidate'):
+                    self.retry_commands()
+                state = self.loaded().state
+                self.assertNotIn('implementation_bundle', state)
+                self.assertEqual(state['approval'], prior['approval'])
+                self.assertEqual(state['sessions'], prior['sessions'])
+                self.assertEqual(state['command_id'], self.gh.comments[-1]['id'])
+
+    def test_adoption_refusals_consume_command_without_mutating_authority(self):
+        for cause in ('pending', 'config', 'requirements', 'approval', 'hash', 'missing_history'):
+            with self.subTest(cause=cause):
+                self.setUp()
+                self.blocked_implementation()
+                controller = self.loaded()
+                if cause == 'pending':
+                    controller.state['pending'] = {'head': 'a' * 40}
+                elif cause == 'config':
+                    self.config['max_model_calls'] += 1
+                elif cause == 'requirements':
+                    self.gh.issue['body'] += '\nA changed requirement.'
+                elif cause == 'approval':
+                    controller.state.pop('approval')
+                elif cause == 'hash':
+                    controller.state['implementation_skill'] = '0' * 64
+                else:
+                    controller.state.pop('implementation_skill')
+                controller.save()
+                prior = deepcopy(controller.state)
+                self.implementation_upgrade()
+                self.gh.comment('/concurro retry')
+                with self.assertRaises(Blocked):
+                    self.retry_commands()
+                state = self.loaded().state
+                self.assertNotIn('implementation_bundle', state)
+                self.assertEqual(state['sessions'], prior['sessions'])
+                self.assertEqual(state['calls'], prior['calls'])
+                self.assertEqual(state['command_id'], self.gh.comments[-1]['id'])
+
+    def test_retry_in_other_stages_cannot_adopt_implementation_change(self):
+        for stage in ('plan', 'plan_qc', 'review'):
+            with self.subTest(stage=stage):
+                self.setUp()
+                controller = self.reach(stage)
+                controller.suspend('blocked', 'Stopped.', outboxes=False)
+                self.implementation_upgrade()
+                self.gh.comment('/concurro retry')
+                with self.assertRaisesRegex(Blocked, '/concurro invalidate'):
+                    self.tick()
+                self.assertNotIn('implementation_bundle', self.loaded().state)
+
+    def test_existing_pr_head_must_match_before_adoption(self):
+        controller = self.reach('review')
+        controller.state['stage'] = 'implement'
+        controller.suspend('blocked', 'Stopped.', outboxes=False)
+        self.implementation_upgrade()
+        self.gh.pr['head']['sha'] = 'b' * 40
+        self.gh.comment('/concurro retry')
+        with self.assertRaisesRegex(Blocked, 'outside the controller'):
+            self.retry_commands()
+        self.assertNotIn('implementation_bundle', self.loaded().state)
+
+    def test_adoption_checkpoint_lost_response_does_not_rotate_or_charge_twice(self):
+        self.blocked_implementation()
+        self.implementation_upgrade()
+        self.gh.comment('/concurro retry')
+        controller = self.loaded()
+        save = controller.save
+
+        def lost_response(*args, **kwargs):
+            """Persist the atomic retry transition, then lose its response."""
+            save(*args, **kwargs)
+            raise RuntimeError('lost checkpoint response')
+
+        with patch.object(controller, 'save', side_effect=lost_response):
+            with self.assertRaisesRegex(RuntimeError, 'lost checkpoint response'):
+                controller.commands(self.gh.comments)
+        prior = deepcopy(self.loaded().state)
+        state = self.retry_commands().state
+        for key in ('implementation_bundle', 'sessions', 'command_id', 'calls'):
+            self.assertEqual(state[key], prior[key])
+        self.assertEqual(sum('### Implementation instructions updated' in c['body'] for c in self.gh.comments), 1)
+
+    def test_later_upgrade_requires_another_writer_retry_and_invalidation_resets_adoption(self):
+        self.blocked_implementation()
+        self.implementation_upgrade()
+        self.gh.comment('/concurro retry')
+        controller = self.retry_commands()
+        first = deepcopy(controller.state['implementation_bundle'])
+        self.implementation_upgrade()
+        with self.assertRaisesRegex(Blocked, '/concurro retry'):
+            self.loaded().require_current_bundle()
+        controller.suspend('blocked', BUNDLE_REASON, outboxes=False)
+        self.gh.comment('/concurro retry')
+        controller = self.retry_commands()
+        self.assertEqual(controller.state['implementation_bundle']['old_bundle'], first['new_bundle'])
+        self.assertEqual(controller.state['implementation_bundle']['old_skill'], first['new_skill'])
+        self.upgrade()
+        with self.assertRaisesRegex(Blocked, '/concurro invalidate'):
+            self.loaded().require_current_bundle()
+        self.gh.comment('/concurro invalidate')
+        state = self.retry_commands().state
+        self.assertNotIn('implementation_bundle', state)
+        self.assertEqual(state['bundle_id'], self.controller().bundle.identity)
+        self.assertEqual(state['implementation_skill'], self.controller().bundle.hashes[implementation_bundle.SKILL])
+        self.assertNotIn('approval', state)
+
+    def test_legacy_digest_is_proven_from_local_history(self):
+        def git(*args):
+            """Build a local fixture history without credentials or a remote."""
+            return subprocess.run(['git', '-C', str(self.root), *args], check=True, capture_output=True)
+
+        git('init')
+        git('add', 'bundle')
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            '-c', 'commit.gpgsign=false', 'commit', '-m', 'approved bundle')
+        self.blocked_implementation()
+        controller = self.loaded()
+        controller.state.pop('implementation_skill')
+        controller.save()
+        prior = deepcopy(controller.state)
+        self.implementation_upgrade()
+        self.assertIsNotNone(implementation_bundle.original_skill(prior, self.controller().bundle))
+        self.upgrade()
+        self.assertIsNone(implementation_bundle.original_skill(prior, self.controller().bundle))
+        path = self.root / 'bundle/instructions.md'
+        path.write_text(path.read_text().replace('\nUpdated operator guidance.\n', ''))
+        self.gh.comment('/concurro retry')
+        state = self.retry_commands().state
+        self.assertTrue(approval_valid(state, self.config))
+        self.assertEqual(state['bundle_id'], prior['bundle_id'])
+        self.assertIn('implementation_skill', state)
+
+    def test_execution_rollback_also_requires_writer_retry(self):
+        prior, role = self.blocked_implementation()
+        path = self.root / implementation_bundle.SKILL
+        original = path.read_text()
+        self.implementation_upgrade()
+        self.gh.comment('/concurro retry')
+        controller = self.retry_commands()
+        restarts = controller.state['sessions'][role]['restarts']
+        path.write_text(original)
+        with self.assertRaisesRegex(Blocked, '/concurro retry'):
+            self.loaded().require_current_bundle()
+        controller.suspend('blocked', implementation_bundle.RETRY_REASON, outboxes=False)
+        self.gh.comment('/concurro retry')
+        state = self.retry_commands().state
+        self.loaded().require_current_bundle()
+        self.assertEqual(state['implementation_bundle']['new_bundle'], prior['bundle_id'])
+        self.assertEqual(state['sessions'][role]['restarts'], restarts + 1)
+        self.assertEqual(state['approval'], prior['approval'])
+
+    def test_changed_skill_blocks_active_implementation_with_retry_guidance(self):
+        self.reach('implement')
+        self.implementation_upgrade()
+        calls = len(self.agents.calls)
+        with self.assertRaisesRegex(Blocked, '/concurro retry'):
+            self.tick()
+        self.assertEqual(len(self.agents.calls), calls)

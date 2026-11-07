@@ -32,8 +32,10 @@ changes need no documentation unless they make existing guidance inaccurate.
 - State any App permission approvals or configuration migration required **before**
   deployment. Do not claim the live publication path is verified from unit tests alone.
 - Check bundle changes against active tasks. A bundle change requires an idle deployment
-  window or an explicitly authorized `/concurro invalidate`; `/concurro retry` preserves
-  existing approvals and does not adopt a new bundle.
+  window or explicit writer recovery. A blocked implementation may use `/concurro retry`
+  for a proven change only to the engine implementer skill, preserving design approvals.
+  Other bundle changes require `/concurro invalidate`. Legacy tasks need local Git history
+  to prove the narrow exception; never assume compatibility or rewrite approval bindings.
 - Verify CI for the exact release and provide the full-SHA deployment command. For this
   installation, use `bash /Users/cylwit/Documents/Codex/concurro-deploy/deploy.sh FULL_SHA`
   with an outer `||` failure message; never put `set -e` in the user's interactive shell.

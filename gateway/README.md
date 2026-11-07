@@ -201,7 +201,11 @@ force push. The new registry migrates schema 2 to 3 transactionally. Exchange co
 added without clearing history; old unbound pending turns are lost rather than staffed
 under new authority. In-flight checkpoints retain their old bundle identity and block
 for reconciliation. A fresh issue is the straightforward pilot path; never replace a
-checkpoint's bundle hash to make old approvals look current.
+checkpoint's bundle hash to make old approvals look current. A blocked implementation
+can instead use a writer-authorized retry when only the engine implementer skill changed
+and the controller proves compatibility. Keep local engine Git history for this check on
+legacy tasks; see [recovery](../docs/concurro.md#commands-and-recovery). Other bundle
+changes still require explicit invalidation.
 
 For rollback, stop the new service and jobs first. Restore the matching backed-up stores,
 settings and old committed server release together, then align its workflow ref. Do not

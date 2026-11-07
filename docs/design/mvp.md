@@ -89,8 +89,10 @@ configuration applies to new tasks; changing an existing task's configuration re
 a new task, not a silent mid-turn switch; `/concurro invalidate` does not replace its pinned configuration. Preserve engine/bundle
 identity checks when deploying new engine code. Bundle drift blocks model work, not
 closure or CI/readiness observation. A writer uses `/concurro invalidate` to adopt
-the current bundle and restart assessment; `/concurro retry` retains the existing
-bundle binding. Invalidation preserves the PR and spent budgets and records the change.
+the current bundle and restart assessment. For a blocked implementation, retry may adopt
+a proven engine-implementer-skill-only update while preserving the original design binding
+and approvals; see [recovery](../concurro.md#commands-and-recovery). Invalidation preserves
+the PR and spent budgets and records the change.
 
 Upstream advancing alone does not restart a task. The approved base stays pinned.
 Automatic rebasing is not implemented; a contribution needing a different base requires

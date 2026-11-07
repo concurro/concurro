@@ -158,8 +158,27 @@ registry entry or blindly replay a dispatch.
 `adopt`/`release` remain migration tools for old Actions-owned checkpoints, not a supported
 execution fallback. Bundle changes block new model work, including reuse of retained
 model results. They do not prevent observing PR/issue closure, CI or readiness under
-the task's recorded approvals. `/concurro retry` keeps that bundle binding;
-`/concurro invalidate` explicitly starts assessment under the current bundle.
+the task's recorded approvals. `/concurro invalidate` explicitly starts assessment under
+the current bundle.
+
+For blocked or stopped implementation work, a writer's `/concurro retry` can adopt changes
+**only** to `bundle/skills/concurro-implement/SKILL.md`. The controller proves that every
+other resource still matches the approved bundle; schemas, shared instructions, other
+roles, charter and target instructions cannot use this exception. Configuration,
+requirements, approval and any existing PR head must still match, with no pending
+publication. It restarts only implementation sessions, discards the failed operation and
+preserves the plan, votes, approval binding, published work and spent budgets. Unpublished
+workspace progress is not recovered. A separate execution-bundle receipt records the
+writer, command and old/new identities; original approval digests are never rewritten.
+Further bundle changes need another explicit recovery command.
+
+New tasks retain the original implementer-skill hash. For older tasks the controller
+tries up to 128 revisions of that file in the local engine Git history, without fetching
+or executing historical code. It substitutes only that hash and requires an exact match
+to the task's original aggregate bundle digest. Missing history or no match leaves the
+task blocked; restore the matching release or explicitly invalidate. Refused adoption
+commands are consumed, so another attempt requires a new writer command.
+
 A prepared publication finishes under its recorded approval before invalidation:
 retry it first, then invalidate. Configuration changes still require a new task.
 
