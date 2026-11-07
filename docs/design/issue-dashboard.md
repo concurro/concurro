@@ -1,107 +1,89 @@
 # Issue dashboard
 
-Status: accepted (revision 3, reviewed); rollout steps 1–3 implemented. Replaces the issue's chronological conversation with
-one status comment kept current in place. New comments introduce the team, surface
-intake concerns, or ask for human action. Supersedes the issue event and status comment layouts of
-[comment format](comment-format.md); its vocabulary, escaping, size and
-compatibility rules still apply, and PR reviews are unchanged.
+Status: implemented. The dashboard is the current task view; full reports and prior runs
+remain reachable without crowding current progress. [Comment formatting](comment-format.md)
+governs rendering, and [operations](../concurro.md) describes commands.
 
-## Problem
+## Current run
 
-Pilot issue #19 changed four lines of `README.md` and added a one-line changelog
-fragment. The issue received 18 comments and about 17,000 characters: controller
-narration, four near-identical plan approvals, two local validation events, both PR
-reviews copied from the PR, and a status comment that repeated most of it again in
-a collapsed section. About six comments told a human anything they needed.
-
-Every new comment notifies the issue's watchers; an edited one does not. So the
-narration also spent notifications, burying the few comments that asked for action.
-
-## Decisions
-
-| Question | Decision |
-| ---- | ---- |
-| Where progress is shown | The status comment, edited in place: a progress line and one table, one row per step with report rounds directly below it |
-| When a new comment is posted | Once at enrollment to introduce the team; intake concerns when present; otherwise input needed, escalated, blocked, plan ready for approval (manual mode), handed off for merge |
-| Where full reports live | One report archive artifact per report, written once and never edited, linked from its stage in the status comment |
-| Clarification | One "Input needed" request at a time, mentioning the issue's author; it is marked answered only when a real answer is recorded |
-| Handed off for merge | When all of Concurro's own gates pass and only its merge policy, or GitHub's own requirements, stand between the PR and a merge. It claims Concurro is done, never that GitHub will allow the merge |
-| Report length | An approval is its headline, plus at most two sentences when what was verified is not evident; findings, objections and questions keep their detail |
-| Diagrams | None. A Mermaid diagram does not render in notification emails, grows tall, and has no room for detail |
-| Out of scope | Skipping the fresh design round after a unanimous first round: a change to design consensus, decided separately |
-
-## Status comment
+The dashboard opens with an activity alert, then a progress line and one table. Report
+rounds sit directly below their stage, with one reviewer per line in a cell. It lists
+all reviewers still outstanding, distinguishing the current call from a waiting reviewer.
+Waiting for a result does not prove that a runner is already executing.
 
 ```markdown
-## Concurro
-
-**Now:** Ready for your review. A human decides whether to merge.
-
-Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Merge ✅**
+> [!TIP]
+> We're waiting for `opus55-high` and `sol61-high` to review the pull request.
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
-| Intake | ✅ Proceed | Actionable and aligned with the charter |
-| ↳ Round 1 | | [sonnet-high: ✅ Proceed](link) |
-| Plan | ✅ Version 1 | [Implementation plan](link) |
-| Design review | ✅ 2 of 2 approve | Round 1 · fresh · 0 open objections |
-| ↳ Round 1 cooperative | | [opus-medium: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
-| ↳ Round 1 fresh | | [opus-medium: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
-| Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
-| Code review | ✅ 2 of 2 approve | [PR #20](link) · 0 open findings |
-| ↳ Round 1 | | [opus-high: ✅ Approve](link) · [sol-high: ✅ Approve](link) |
-| Merge | ✅ Handed off | A human reviews and merges |
-
-<details><summary>Diagnostics</summary>
-
-Output validation and correction history; these are not design objections.
-
-| Agent | Round | Outcome | Reason | Evidence |
-| ---- | ---- | ---- | ---- | ---- |
-| opus-medium | 1 cooperative | Recovered · 1/4 corrections | QC acceptance contradicts outstanding questions or concerns | [Rejected output](link) |
-
-</details>
-
-[Audit state](link) · checkpoint reference
+| Plan | ✅ Version 1 | [Implementation plan](plan-url) |
+| Code review | ▶️ 0 of 2 approve | [PR](pr-url) |
+| ↳ Round 1 | Current | opus55-high: Reviewing<br>sol61-high: Waiting |
 ```
 
-- **Now line:** name the active agent and work, including correction attempts, or
-  state clearly that work is paused, awaiting CI, or ready for human review. A queued
-  model turn is described as waiting for a result, not proof that a runner is active.
-- **Progress line:** every step, the current one in bold with its status emoji.
-- **Step rows:** status uses the comment format vocabulary, plus **▶️ In progress**
-  for the current step and plain "Pending" for steps not reached. A step that loops
-  shows its latest round: "🛠️ Revise · 2 open objections", "🧭 Reopened · round 2".
-- **Detail column:** engine-generated counts and links, and at most one model
-  headline, serialized as a table cell. Never model prose.
-- **Round rows:** each stage's report links appear immediately below its current
-  status, grouped by round and phase. No separate rounds table needs comparing.
-- **Diagnostics:** output corrections are collapsed below the progress table. Each
-  rejected design review links its immutable full output and records the validation
-  reason, reviewer, round, correction allowance and outcome. An accepted correction
-  marks the matching entries recovered. Existing checkpoints without that evidence
-  show the saved feedback and explicitly say the rejected output was not retained.
-- **Introduction:** enrollment queues one friendly acknowledgment and a team table
-  showing each role's pinned model and effort. Lost-response recovery uses the
-  existing comment outbox; already-enrolled tasks get no retrospective introduction.
-- **Action line:** when a human must act, one line under the table names it and links
-  the actionable comment.
-- The stage-label fallback line keeps its position under the heading.
+Normal progress uses `TIP`; clarification and manual plan approval use `IMPORTANT`;
+blocked, rejected and escalated states use `WARNING`. A paused stage never says merely
+“Waiting” as though work were proceeding. Output correction is named in the activity
+message without repeating the reviewer twice.
 
-## Future: optional status summarizer
+`/concurro invalidate` starts a new display run. The main table shows only its intake,
+plan, reviews and assessments. Display numbering restarts without resetting actual model,
+repair or revision budgets. Previous report links and the invalidation reason move under
+Diagnostics. The previous classification snapshot is dropped, so it cannot seed the new
+run's provisional estimate. Older invalidation records are reconstructed conservatively;
+malformed display history must not prevent task loading.
 
-An optional `agents.summarizer` assignment can select any configured model profile
-for a short narrative update on meaningful transitions. It should run under a
-separate bounded budget, reuse a summary for unchanged evidence, and fail back to
-the factual display. It must not delay task progress or decide readiness. The
-controller-generated Now line, statuses and report links remain authoritative.
-This is separate follow-up work, not part of the dashboard implementation.
+A separate compact assessment table shows complexity, change risk, confidence, coverage,
+freshness and report links. It follows the [classification contract](complexity-risk.md).
+
+## Diagnostics and updates
+
+The collapsed Diagnostics section contains output-validation reasons and correction
+history, prior invalidated runs and the public audit link. A rejected design review links
+its immutable output; older records without retained evidence say so. These are formatting
+or validation failures, not semantic review objections. The plan artifact is linked once
+in the main table, not repeated in the footer.
+
+The machine-readable checkpoint reference stays outside the collapsed section so recovery
+can find it. The dashboard is regenerated on a save, not merely because a new release
+was deployed. An unchanged task already watching a ready PR may need no new save.
+
+## New comments
+
+| Comment | When |
+| ---- | ---- |
+| Welcome and compact team roster | Once at enrollment; pinned models and efforts, no redundant heading |
+| Intake approved with concerns | When accepted intake has concerns; Markdown preserved, not a request for human action |
+| Input needed | Clarification requiring an answer |
+| Escalated / Blocked / Rejected | Task needs a decision, correction or operator attention |
+| Plan ready for approval | Manual-mode plan is ready for the exact approval command |
+| Handed off for merge | Current approvals, complete publication and passing CI allow human review |
+| Reassessment notice | Explicit invalidation with an existing PR |
+
+Ordinary stage narration and copies of PR reviews are not posted as issue comments.
+Archive links and the dashboard carry them. Action comments are keyed by occurrence;
+handoff is posted once per head. Handoff means Concurro's work is complete, not that
+GitHub's branch protection permits merging. Concurro never merges.
+
+An Input-needed request records its questions and the actual answer: an eligible reply
+or an issue-content change. Merely leaving clarification does not mark it answered.
+Identical questions do not create another request; changed questions supersede the prior
+one. Answered/superseded edits use exact-body recovery; an unexpected manual edit blocks
+rather than overwriting it.
+
+Blocked notices are less strict because they are display history. On resumption, the
+engine keeps only the quoted, struck-through heading and original reason, followed by
+**This blocker has been resolved.** It removes the emoji, instructions and event footer.
+Only IDs and body digests are stored. Edited/deleted notices are left alone and forgotten,
+not allowed to block the task. Stopping or closing does not claim the blocker was resolved.
+Discovery skips terminal stages. Lost edits recover by the intended resolved-body digest.
 
 ## Report archive
 
-The audit artifact cannot be the archive: the API returns only an artifact's newest
-30 versions ([measurement](../artifact-measurements.md)), so a report compacted out of
-the checkpoint could become unreachable.
+The mutable audit is not a report archive: artifact reads have returned only the newest
+30 versions. Reports therefore need independent immutable storage; checkpoint history
+cannot guarantee that a compacted report remains retrievable.
 
 - **Canonical report data:** new design and PR reviews store their full JSON in
   immutable, content-addressed issue artifacts. The retained response, accepted
@@ -115,7 +97,7 @@ the checkpoint could become unreachable.
   read directly; marker discovery is for initial creation or lost-write recovery.
   Current, unarchived and pending-publication ratings remain intact; only archived
   historical ratings may be shortened or dropped from the checkpoint. The full
-  archived report remains unchanged. Capacity is tested through 48 classified reports.
+  archived report remains unchanged. Historical trimming is covered through the 48-call budget in regression tests.
   An unrelated duplicate cannot replace an already bound artifact. Ambiguous
   discovery, missing data and invalid provenance or digests stop recovery.
 - **Cache:** the service shares an LRU holding up to 32 MiB of encoded, verified report content across ticks,
@@ -150,167 +132,13 @@ the checkpoint could become unreachable.
   files retain the complete finding. Artifact discovery uses ten entries per page
   to stay within the existing read bound, but idle ticks do not scan the collection.
 
-## Actionable comments
 
-| Comment | Posted when | Continuation it offers |
-| ---- | ---- | ---- |
-| ❓ Input needed | The task enters `clarify` | Autonomous: a reply or an issue edit. Manual: a reply, then `/concurro start` |
-| 📣 Escalated | The task enters `escalated` | Edit the issue if needed, then `/concurro retry`, in either mode |
-| 🛑 Blocked | The task enters `blocked` | `/concurro retry` when the reason allows it; otherwise operator reconciliation, which the reason names |
-| 🛑 Rejected | The task enters `rejected` | Edit the issue if needed, then `/concurro retry` |
-| Plan ready for approval | Manual mode reaches `planned` | The exact `/concurro approve <plan>` command |
-| ✅ Handed off for merge | The hand-off holds (below) for the PR's head | A human review and merge, under GitHub's own requirements |
+## Compatibility and future work
 
-- **Once per occurrence:** escalated, blocked and plan ready are keyed by stage and an
-  occurrence number that advances each time the task leaves that stage. The hand-off
-  is keyed by PR head, so handed off, then checks pending, then handed off again on
-  the same head posts once.
-- **Recovery:** initial comments use the existing outbox with marker and exact-body
-  recovery. When a blocked task resumes, its Blocked notices are edited in place:
-  only the heading and original reason are quoted and struck through, without the
-  emoji, continuation instructions or event footer, followed by **This blocker has
-  been resolved.** Only the comment ID and original/resolved body digests are checkpointed;
-  the edit is rebuilt from the fetched comment. Lost PATCH responses are recognised
-  by the resolved-body digest. Edited or deleted
-  Blocked notices are dropped without blocking work or being rediscovered; Input-needed
-  edits retain strict conflict checks. Discovery skips terminal tasks and recognises
-  older App-authored notices only while their original Blocked heading remains.
-  Stopping or closing a task does not claim that it resumed.
+Queued comments keep their recorded format/body; a new renderer must not change recovery
+identity. Existing welcome comments are not backfilled. Display code must not alter task
+authorization, consume budget or trigger model calls.
 
-No other events are posted: controller narration, QC and plan events, local
-validation, design reopens, PR publication and the issue's copies of PR reviews all
-become status comment rows. The PR is already linked from the issue by its
-`Closes #N`.
-
-### Handed off for merge
-
-The hand-off says Concurro's work on the PR is done. It does not claim GitHub will
-allow the merge: proving that would mean evaluating every protection rule, such as
-required deployments, which the engine does not. The comment says so, and points to
-the PR for GitHub's own requirements.
-
-It holds when every remaining gate reason is one of:
-
-- "autonomous merge is disabled" or "autonomous merge is limited to configured
-  low-risk paths", Concurro's own merge policy; or
-- "GitHub mergeability is not clean", while GitHub reports the PR mergeable without
-  conflicts. A conflict is not handed off: the PR shows it, and the Merge row says so.
-
-Any other reason is one of Concurro's own gates, such as an open finding, a failing
-configured check or a stale approval. The Merge row then shows 🚧 with the reasons,
-and no comment is posted.
-
-## Input needed
-
-```markdown
-### ❓ Input needed
-
-@author, Concurro needs answers before it can continue.
-
-**Q1.** Should the note go before or after the RUSTFLAGS note? …
-**Q2.** …
-
-Reply in a comment or edit the issue description; the author or any writer may answer.
-
-<sub>Plan QC · codex · round 1</sub>
-```
-
-- **Sources:** the questions of the step that sent the task to `clarify`: the intake
-  QC, the planner, or the plan QC votes collected so far in that round (the round
-  stops at its first clarify vote). Identical questions are merged; each is tagged
-  with its provider. The skills ask that each question say why it matters and offer
-  the options seen.
-- **Mention:** only the issue's author, and not when the author is a bot.
-- **Continuation:** as in the table above. In manual mode with an existing PR (a
-  design reopened into clarification), `/concurro start` resumes planning against the
-  existing head when only the discussion changed, as autonomous refresh already does;
-  today it refuses that state.
-- **Request record:** the checkpoint keeps each request's number, comment, questions,
-  state (`open`, `answered` or `superseded`) and, once answered, the answer: the first
-  new comment from the author or a writer after the request, or the issue digest that
-  changed.
-- **Answered:** only a recorded answer marks a request answered. Leaving `clarify` for
-  another reason, such as a base change, does not; the request stays open. Marking it
-  edits the comment in place: the marker first, then "✅ Answered" with a link to the
-  answering comment or "the issue description was edited", then the questions.
-- **Escalation after an issue edit:** `/concurro retry` from a terminal judgment
-  reassesses from intake, as it already did, and now re-reads the issue's requirements
-  first, in both modes. Previously manual mode blocked on the changed issue.
-- **Superseded:** a new clarify with different questions while a request is open
-  marks it "Superseded by" the new request, which is then posted. Identical questions
-  post nothing new.
-- **Edit recovery:** before the `PATCH`, the record stores the intended edited body
-  and its state as `intended`. A comment found with exactly that body completes it;
-  one with the original body is edited again, which is idempotent; any other body is
-  a conflict that blocks.
-- **Gateway binding (new):** the gateway admitted issue-comment `PATCH`es without
-  checking author or marker. Each is now read before the write, as for PR replies,
-  and admitted only on an App-authored comment on the task's issue that starts with
-  the status comment's, its health notice's or an event's marker.
-
-## Report length
-
-The shared instructions and the review skills say:
-
-- An approval is its headline, plus at most two sentences when what was verified is
-  not evident from the change.
-- Cite evidence where it supports a finding, objection or non-obvious claim; do not
-  repeat evidence another report already cites, or restate what the controller
-  enforces.
-- Omit boilerplate, such as noting that no execution results are claimed.
-
-Structured evidence (QC sources and assessments, finding anchors) is unchanged.
-
-## PR title and description
-
-The PR is titled with the plan's headline, cut to 72 characters, with the issue
-number: `Use locked builds in the README build instructions (#19)`. The plan schema
-gains the same `headline` field as the reports; a plan without one falls back to its
-summary's first sentence. The description is the plan's summary, a link to the plan
-artifact, and `Closes #N`. It does not claim CI or review status, which the PR shows
-natively.
-
-## Compatibility
-
-- **Queued events:** events queued before the change still publish and recover as
-  today; the change only stops queueing new ones.
-- **Compaction:** reports published as issue events before the change keep their
-  existing excerpt notes; new reports are gated on their archive.
-- **Existing issues:** earlier events stay. The status comment is rewritten on the
-  next save, as always.
-
-## Rollout
-
-1. Report archives and receipt-gated compaction; the status comment dashboard; stop
-   queueing non-actionable events. Engine only, no bundle change.
-2. The actionable comments, request records and the answered and superseded edits;
-   the gateway's comment `PATCH` binding; the hand-off rule; manual `/concurro start`
-   resuming clarification with a PR, and `/concurro retry` re-reading requirements.
-3. Report length in the instructions and skills, the plan `headline`, and the PR
-   title and description. A bundle change: the images are rebuilt, and in-flight
-   tasks block for reconciliation.
-
-## Testing
-
-- The happy path posts no issue comments besides the status comment and the hand-off,
-  writes one archive per report, and the status comment shows every step's
-  outcome, the rounds table and the links.
-- A revision, a design reopen and an open finding change only the status comment.
-- An archive with a lost response is found by marker, not created twice; one with a
-  different body blocks; compaction never excerpts a report before its archive is
-  confirmed or while an event or PR review rendering it is pending.
-- Clarify from intake, the planner and a plan QC round posts one request; a reply or
-  an issue edit records the answer and marks it answered; a base change does not; new
-  questions supersede an open request; manual mode resumes with `/concurro start`,
-  including with an existing PR.
-- A lost answered edit completes on the next tick by its exact body.
-- Escalated, blocked and plan ready each post once per occurrence; the hand-off posts
-  once per head, never with a conflict or with any of Concurro's own gates open.
-- Manual `/concurro retry` after an escalation and an issue edit reassesses the
-  edited issue instead of blocking.
-- The gateway refuses a comment `PATCH` on a human comment or one without a Concurro
-  marker.
-- An archive keeps its report verbatim, even with text that would close a fence or a
-  collapsed section.
-- Queued pre-change events still publish byte for byte.
-- Large complete reviews survive archive publication and restart without correction calls.
+An optional configurable summarizer remains future work: `agents.summarizer` is not a
+supported role today. If added, it should summarize meaningful changes under a separate
+bounded budget, fall back to the factual display and never delay progress or decide readiness.

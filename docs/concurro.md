@@ -1,14 +1,16 @@
 # Operating Concurro
 
 The [MVP architecture](design/mvp.md) and [execution contract](design/mvp-execution.md)
-govern this version. Earlier workbench, profile and self-hosted-runner designs are historical.
+govern this version. The [documentation index](README.md) distinguishes current contracts from pending proposals.
 See [deployment and migration](../gateway/README.md) before updating an existing service.
 
 ## Target setup
 
 Configure an existing upstream/fork pair in service settings, with `issues` equal to
 `upstream`, `fork` or `both`. The App needs access to both repositories; writers in the
-selected issue repository enroll work with the `concurro` label. Concurro never creates
+selected issue repository enroll work with the `concurro` label. Verify the
+[App permissions and webhook subscriptions](../gateway/README.md#target-and-app-prerequisites)
+before enrolling; granting permissions alone does not subscribe the App to events. Concurro never creates
 forks or upstream branches. The current transport supports public repositories only;
 it fetches source anonymously and does not give GitHub write credentials to runners.
 
@@ -29,10 +31,12 @@ The [stacks-core example](../examples/stacks-core/) installs the base's Rust too
 and suggests validation commands. Other projects can install Node, .NET or combinations.
 There is no execution profile or mandatory command catalog. Configure protected and
 generated globs under `paths`; existing extension and path restrictions still apply.
+See the [scope envelope](design/scope-envelope.md) for cumulative file limits and large-file handling.
 
 A task records the fork configuration commit separately from the approved upstream
 source commit. Setup, instructions and caller workflow changes apply to new tasks;
-changing an active task requires reconciliation. An optional target `engine` pin must
+configuration changes require a new task. `/concurro invalidate` adopts the current
+bundle/charter but preserves the task’s configuration pin. An optional target `engine` pin must
 match the served commit. Omit it when the same operator controls service and target.
 
 ## Models and agents
@@ -72,8 +76,7 @@ Aliases or different efforts for the same provider/model cannot appear together 
 one reviewer list. Profiles may share a vendor, including different OpenAI models.
 Only `plan_reviewers` review plans; triage, planner and implementer assignments add
 no implicit reviewers. Triage and planning may share a profile, including in autonomous
-mode. Votes, findings,
-reports, transcripts and runner staffing stay separate by profile; the audit records
+mode. Votes, findings, reports, transcripts and runner staffing stay separate by profile; the audit records
 the resolved provider, model and effort. Changing assignments or settings invalidates
 the configuration binding rather than reusing old approvals or transcripts.
 
@@ -84,12 +87,13 @@ runners nor the exchange need the YAML package.
 
 Existing JSON configurations with `qc`, `qc_model`, `planner`, `implementer`,
 `reviewers` and provider-keyed `models` remain supported, including their existing
-design roster and checkpoint identities. Their CLI efforts are made explicit at the
-previous pinned-client defaults: Claude `medium`, Codex `low`. To migrate, replace
+design roster and checkpoint identities. Their compatibility mapping explicitly sends
+Claude `medium` and Codex `low`; these are Concurro defaults, not a promise about defaults
+in other CLI versions. To migrate, replace
 those assignments and the model map together with `models` and `agents` above; do
 not mix the two formats. Keep repository, policy and budget settings unchanged.
 A JSON-to-YAML-only conversion has the same configuration digest; changing profiles
-is a configuration change for new tasks or explicit reconciliation. Evaluation uses
+is a configuration change for new tasks. Evaluation uses
 a configured profile name (legacy configurations still use `claude` or `codex`).
 
 ## Contribution loop
@@ -97,9 +101,11 @@ a configured profile name (legacy configurations still use `claude` or `codex`).
 The issue dashboard shows intake, planning, design approval,
 implementation, independent PR reviews and readiness. Reports are archived before
 compaction. Findings have stable IDs and native threads. Only their raising reviewer profile can
-retire them; ambiguous or reopened thread resolutions remain manual.
+retire them; ambiguous or reopened thread resolutions remain manual. PR-thread replies
+do not automatically start repair work; use writer feedback on the issue followed by
+`/concurro retry` as described below.
 
-Implementation may add, change, delete or rename bounded UTF-8 regular files inside the
+Implementation may add, change, delete or rename UTF-8 regular files inside the
 approved envelope. Renames count as deletion plus addition. Binary files, symlinks and
 mode-only edits are refused. The controller checks complete cumulative changes and
 builds Git objects itself. Agent validation is reported, never represented as trusted CI.
@@ -150,13 +156,12 @@ the task's recorded approvals. `/concurro retry` keeps that bundle binding;
 `/concurro invalidate` explicitly starts assessment under the current bundle.
 A prepared publication finishes under its recorded approval before invalidation:
 retry it first, then invalidate. Configuration changes still require a new task.
-Existing watchers blocked by the old bundle guard resume observation on their next
-tick (a writer retry can wake them); they do not need invalidation.
 
 An explicitly requested `evaluate <issue-repository> <issue> <profile>` runs four
 fresh design fixtures on ordinary runner sessions. It uses model budget and temporarily
 owns that task, preserving its queue. Reports go under the service state's `evaluations/`;
-no fixture model work runs on the host. Use an idle configured task.
+no fixture model work runs on the host. Use an idle configured task; see
+[design evaluation](design-evaluation.md) for fixtures and the command.
 
 ## Trust boundaries
 
@@ -174,5 +179,6 @@ budgets can overshoot under concurrent calls; key revocation waits during an exc
 ## Offline verification
 
 Run the commands in the [README](../README.md#development). No live provider calls,
-GitHub mutations or Docker execution are part of those tests. The next release still
-needs a supervised native-runner pilot, including a draft-to-ready transition.
+GitHub mutations or Docker execution are part of those tests. Check CI for the exact
+release before deployment; offline tests do not verify live App permissions or target
+configuration. A live pilot requires explicit enrollment and deployment authorization.

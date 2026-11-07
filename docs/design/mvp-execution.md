@@ -1,8 +1,7 @@
 # MVP execution and publication contracts
 
-Status: proposed, 2026-11-04. Implements the boundary in [MVP architecture](mvp.md).
-These contracts replace execution-specific parts of the earlier runner/workbench
-designs; reuse existing operation journals, outboxes and gateway settlement rules.
+Status: implemented; audited 2026-11-07. Defines the boundary in
+[MVP architecture](mvp.md), including operation journals, outboxes and gateway settlement.
 
 ## Identities and ownership
 
@@ -10,21 +9,22 @@ designs; reuse existing operation journals, outboxes and gateway settlement rule
 | ---- | ---- |
 | Task | Issue repository and issue number; one recorded upstream/fork pair |
 | Approval | Task, base, plan, configuration/bundle identity and existing approval phase |
-| Role | Stage and provider, such as `develop:codex` or `review:claude` |
+| Role | Stage and CLI harness (`develop:codex`), plus resolved profile/model/effort in the staffing binding |
 | Runner session | Task, role, ownership generation, configuration commit and unique session ID |
 | Turn | Existing logical operation, attempt, request digest and deadline |
 | Candidate | Approved base, expected parent and controller-published head SHA |
 
 Staff sessions by task, role and compatible ownership/configuration. Never reuse one
-across issues or providers. One session is one GitHub job; serve its turns sequentially.
+across issues or incompatible model profiles, efforts, phases or ownership generations.
+One session is one GitHub job; turns run sequentially.
 First-turn unanimous design approvals need no duplicate round. After resumed reviews,
 fresh design approval uses a new session/home, without cooperative transcripts, even
 when stage and provider match. Retained conversations remain scoped by the existing
 session journal; a runner-session ID is not a provider conversation ID.
 
-Ownership loss cancels the old task's sessions; stale results never update its checkpoint.
-Keep the existing generation checks and bounded uncertain-call recovery. Do not add a
-second lease or operation framework.
+Ownership loss invalidates the old task’s authority; stale results never update its
+checkpoint. Session cleanup and bounded uncertain-call recovery use the same ownership
+and operation records.
 
 ## Dispatch and OIDC
 
@@ -75,14 +75,12 @@ may select another supported GitHub-hosted Linux label. No execution images are 
 6. On exit, end the session and stop its heartbeat. An `if: always()` cleanup step handles
    setup failures; exchange expiry handles a lost runner or cleanup that never executes.
 
-The setup heartbeat must survive step boundaries. `serve` sends its first heartbeat
-before stopping the detached helper. The default 180-second exchange window and current
-idle timeout can remain; no stage-transition shutdown manager is necessary. A develop
-job may end after its result and retained archive are acknowledged, so it does not wait
-for reviews. Other compatible turns may reuse their role job until idle expiry.
+The setup heartbeat survives step boundaries. `serve` renews successfully before stopping
+the detached helper. A bound session silent for 180 seconds is retired by reconciliation;
+a job normally exits after ten idle minutes. Compatible turns can reuse the role job
+while it remains live. No runner job is required to wait for CI.
 
-Keep transcript archiving/restoration and Codex cache pruning already proven in the
-runner pilot. Replacement jobs restore conversation state, not build directories.
+Transcript archiving/restoration includes Codex cache pruning. Replacement jobs restore conversation state, not build directories.
 Provider failure uses the existing fresh-session/full-context fallback and consumes
 the existing attempt allowance.
 
@@ -111,13 +109,13 @@ not justify putting provider credentials back on runners.
 
 ## Candidate return and publication
 
-Keep native workspace editing. A successful develop turn returns an explanation,
-optional design-reopen request, agent-reported validation and the extracted changes.
-Remove requested check names and local-check receipts from its response schema. The
-runner's extractor is a convenience, not trusted evidence against a hostile job.
+A successful develop turn returns an explanation, optional design-reopen request,
+agent-reported validation and changes extracted from its native workspace. It returns
+no mandatory-check receipts. The runner’s extractor is a convenience, not trusted
+evidence against a hostile job.
 
-Support bounded UTF-8 additions, replacements and deletions with the current
-file/aggregate transport limits. Normalize extracted removals to `{path, content: null}`;
+Support UTF-8 additions, replacements and deletions within aggregate transport limits.
+There is no per-source-file size cap. Normalize extracted removals to `{path, content: null}`;
 a deletion must name a supported regular file in the recorded parent. Represent a rename
 as a deletion and an addition, validating both paths before publishing either. Preserve
 existing modes; explicitly reject symlinks, binary files and mode-only changes instead
@@ -130,13 +128,14 @@ omitting an entry preserves the original file ([Git Trees API](https://docs.gith
 Before any push, the controller validates the returned bytes against its recorded parent:
 
 - safe unique paths, protected-path policy and the approved scope;
-- transport/file bounds, and cumulative path scope and file-count limits already in the plan;
+- aggregate transport bounds, and cumulative path scope and file-count limits already in the plan;
 - the complete proposed change across repair rounds, not just this turn's additions;
 - sufficient bounded context to review every changed file, with no silent omissions.
 
-Move these pure checks out of the workbench as needed. Remove build-specific assertions,
-profile triggers and mandatory primary-file completion; do not execute repository code
-on the controller to validate the diff. Generated files keep existing bounded handling.
+These are pure checks in `policy.py` and `candidates.py`; the controller does not execute
+repository code. There are no build-specific assertions, profile triggers or mandatory
+primary-file completion checks. Generated files still count toward the file limit;
+[scope rules](scope-envelope.md) apply to all candidate paths.
 
 The controller constructs Git objects from validated bytes and updates only the recorded
 fork task branch, fast-forward from its recorded parent. Do not push the agent's Git
@@ -163,17 +162,21 @@ gateway receives the task ownership key separately from the destination reposito
 | Upstream | Draft PR creation/readiness, native COMMENT reviews, finding comments/replies and owned-thread resolution |
 
 Allow only those object identities, not arbitrary writes to all configured repositories.
-PR recovery checks both head repository and branch. Artifact/comment recovery still
+PR recovery checks its recorded number, App author, head repository and branch.
+Creation uses `maintainer_can_modify: false`; outside pushes require reconciliation. Artifact/comment recovery still
 checks markers, author and expected content. Preserve read-only access needed for these
 checks, and preserve at-most-once/manual recovery for ambiguous thread resolution.
 
 Reuse per-repository installation tokens and verify granted permissions. Fork dispatch
-needs Actions write; the controller never passes that token to a job. Upstream needs
+needs Actions write. Fork publication also requests Contents and Workflows write: creating
+a branch at an upstream commit can introduce workflow blobs absent from the fork, even
+when the candidate never edits a workflow. All configured fork installations must accept
+that grant before deploying. The controller never passes that token to a job. Upstream needs
 PR writes and, for enrolled upstream issues, issue/artifact writes. Preserve the tested
 permission combination for owned-thread resolution until its narrower scope is proven;
 token permission and gateway endpoint authorization are separate boundaries. There is
 no need to request upstream Actions write for CI reruns or administration access for
-required-check inspection. Read permissions must cover the PR's check runs and commit
+required-check inspection. Read permissions include Actions read for approval waits, checks and commit
 statuses; readiness uses the existing PR-write authority. Union permissions when one
 repository serves multiple roles.
 
@@ -183,12 +186,12 @@ existing recovery model with either blind retries or a new generic workflow engi
 
 ## Reviews, handoff and readiness
 
-Keep current provider-owned finding IDs, dispositions, input revisions, native COMMENT
+Keep current reviewer-profile-owned finding IDs, dispositions, input revisions, native COMMENT
 reviews, outboxes and report archives. Code reviews read the recorded upstream PR head;
 reviewers can inspect history and run their own experiments. A new head invalidates
 previous approvals. A failed or conflicting publication remains visible and bounded.
 
-Replace the merge gate with a small review-complete predicate: current plan authorization,
+The review-complete predicate requires current plan authorization,
 expected published head, all configured reviewers approving that head/input revision,
 no outstanding findings requiring action, and no pending publication. Preserve existing
 manual exits for unresolved/reopened engine threads; never resolve a human thread.
@@ -204,8 +207,8 @@ Mark an open draft PR ready when that predicate holds and its current CI has pas
   otherwise passing set; an empty or entirely skipped/neutral set does not prove a pass.
   Missing/unreadable results leave the PR draft. Do not discover branch-protection rules
   or accept a configurable list of Concurro checks.
-- Reuse `check_run`/`check_suite` webhooks and add commit-status events as wake-ups for
-  mapped PRs. Fetch authoritative state after an event. Use the existing reconciler's
+- `check_run`/`check_suite` and commit-status webhooks act as wake-ups for
+  mapped PRs. The controller fetches authoritative state after an event, using the reconciler’s
   periodic poll as fallback; no agent job, paid model call or separate polling service
   stays alive waiting for CI.
 - Re-read the head and review eligibility before the write. Admit only the exact

@@ -1,7 +1,6 @@
 # Concurro MVP: a reviewed draft PR
 
-Status: proposed implementation design, 2026-11-04. Records the simplified MVP agreed
-with the operator; no implementation or deployment is implied.
+Status: implemented. Current architecture; audited against the implementation on 2026-11-07.
 
 Concurro takes an issue, plans a contribution, implements it, obtains independent
 agent reviews, and hands a PR to maintainers. It opens the PR as a draft and marks it
@@ -9,10 +8,8 @@ ready for review when CI passes and all configured agent reviewers approve the c
 head. It observes CI; it does not run it or decide whether GitHub will allow a merge.
 
 Read this document first, then the [execution contracts](mvp-execution.md) and
-[implementation plan](mvp-implementation.md). These three documents govern the new
-MVP where earlier designs disagree. The previous [runner proposal](runner-roles.md)
-is historical. Existing service recovery, report archives, comment formatting and PR
-finding behavior remain useful foundations, not invitations to rebuild them.
+[service contracts](service.md). The [documentation index](../README.md) separates
+implemented behavior from pending proposals.
 
 ## What v1 delivers
 
@@ -89,14 +86,15 @@ Record two independent commits when enrolling a task:
 The fork's configuration files do not enter the candidate tree or upstream PR. Read
 configuration and setup from `config_sha` for the task's lifetime. New default-branch
 configuration applies to new tasks; changing an existing task's configuration requires
-an explicit replan/reconciliation, not a silent mid-turn switch. Preserve engine/bundle
+a new task, not a silent mid-turn switch; `/concurro invalidate` does not replace its pinned configuration. Preserve engine/bundle
 identity checks when deploying new engine code. Bundle drift blocks model work, not
 closure or CI/readiness observation. A writer uses `/concurro invalidate` to adopt
 the current bundle and restart assessment; `/concurro retry` retains the existing
 bundle binding. Invalidation preserves the PR and spent budgets and records the change.
 
-Upstream advancing alone does not restart a task. An explicit base change goes through
-the existing replan path and invalidates affected approvals and reviews.
+Upstream advancing alone does not restart a task. The approved base stays pinned.
+Automatic rebasing is not implemented; a contribution needing a different base requires
+explicit operator handling or a new task.
 
 The target supplies its charter, [named model profiles and agent assignments](../concurro.md#models-and-agents), path policies and
 resource limits, plus these optional files:
@@ -122,33 +120,13 @@ profiles, package-scoping engine or generated CI workflows remain.
 
 ## Contribution flow
 
-1. **Enroll and plan.** Keep existing writer enrollment, charter assessment, clarification,
-   plan artifact and independent design review. Unanimous approvals on each reviewer's
-   first session turn authorize the plan directly: those contexts are already fresh.
-   Reviews that resume after revisions or output corrections still need a separate fresh
-   approval round. Manual mode also requires writer approval. Directory scopes such as `changelog.d/`
-   include their descendants. Rejected planner output is linked from the dashboard's
-   plan artifact with its rejection reason, separate from the approved plan. The planner
-   gets two automatic correction attempts within the existing model-call budget; persistent
-   errors escalate for `/concurro retry`. Oversized rejected output is explicitly excerpted.
-   Correcting output does not spend a semantic design-revision round.
-   Intake may proceed with advisory concerns, carried explicitly to the planner and
-   reviewers and posted once as a concise issue comment. Unanswered questions and charter
-   conflicts still prevent proceed; design-review approval still requires no blocking
-   concerns. The comment is informational, not an additional approval gate.
-   Invalid intake reports also receive two automatic corrections, with the rejection reason
-   and bounded output in a write-once report archive linked from the dashboard. Genuine
-   clarification, rejection and escalation decisions still stop for human input. A writer's
-   retry renews the correction allowance without resetting spent model calls. Transport
-   failures retain their own recovery path. Rejected output never authorizes planning.
-   Reviewers receive the complete substantive plan, including its summary; publication
-   hints and peer verdicts are omitted. New objections use an empty ID until the controller
-   assigns one. Output-correction feedback identifies objection ID and concern/disposition
-   mismatches by field, without discarding the reviewer's concern. Incorrect citation lines
-   are corrected only when the exact quote uniquely matches in the same pinned file.
-   Each reviewer and design binding has a bounded correction allowance, renewed by an
-   explicit writer retry. Repeated identical failures still escalate; retries preserve
-   the task's total model-call budget and correction history.
+1. **Enroll and plan.** Writer enrollment starts intake against the target charter, then
+   planning and independent design review. Advisory intake concerns proceed to planning;
+   unanswered questions and charter conflicts do not. Rejected output is archived and gets
+   bounded corrections within the model-call budget. First-turn unanimous cooperative
+   approval can skip duplicate fresh review; revised or corrected sessions need a fresh
+   round. Manual mode also requires writer approval. [Recovery commands](../concurro.md#commands-and-recovery)
+   distinguish retry from explicit invalidation.
 2. **Implement.** A role job edits the approved code with native tools. It may build,
    install dependencies and test hypotheses. It returns changes plus an explanation and
    clearly labeled, agent-reported validation. Meaningful scope growth can reopen design.
@@ -193,8 +171,7 @@ Plans have no changed-line budget. Reviewers judge whether the work is coherent 
 reviewable; a large diff alone does not require revision. Diff statistics remain visible.
 Older plans may retain `max_changed_lines` for historical integrity, but it is ignored
 without rewriting the plan or its approval digest. Transport and review-context bounds
-still apply. The schema/instruction update changes the bundle; existing bundle-reconciliation
-rules remain, so deploy after active pilots finish or reconcile them explicitly.
+still apply. Bundle changes still require the normal release and invalidation procedure.
 
 Source file size is not a scope or edit policy. Design-review contexts carry planned-file
 paths, Git blob identities and sizes, not full contents. PR contexts retain every changed
@@ -213,14 +190,14 @@ these are transport limits, not a requirement to read an entire source file into
 | Preflight and protection-rule discovery | Targets need more than observing the PR's reported CI |
 | CI logs, reruns, automatic repair | Maintainers repeatedly spend time relaying failures |
 | Merge automation | Explicitly requested after the contribution loop is proven |
-| Mandatory warming, shared build caches | Measurements show cold setup is a material bottleneck |
+| Engine-managed cache warming | Target-owned default-branch warmers are insufficient |
 | Separate trackers/project boards | A target needs more than upstream/fork issues |
 | Fork creation/sync and linked branches | Operators request those administration features |
 | More runner platforms/private-source delivery | A target needs capabilities beyond the first public Linux pilot |
 
-Optional existing default-branch cache producers work now; no warming service or workflow
-is required. The initial live proof uses public repositories and Linux GitHub-hosted
-runners. Different languages do not require a Concurro adapter.
+Optional target-owned default-branch cache producers work now, including build-artifact
+caches when compatible with the target’s CI. They are not a Concurro service or mandatory
+workflow. Current pilots use public repositories and Linux GitHub-hosted runners. Different languages do not require a Concurro adapter.
 
 ### Future: parent and sub-issue planning
 

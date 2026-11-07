@@ -23,16 +23,16 @@ both. Task branches and runner session refs remain in the fork.
 | `engine/` | Planning, native runner turns, publication and recoverable reviews |
 | `bundle/` | Five role contracts, schemas and shared instructions |
 | `examples/stacks-core/` | Target config, charter, setup, instructions and caller workflow |
-| `docs/design/mvp*.md` | Agreed architecture and execution contracts |
+| `docs/` | [Current contracts and pending proposals](docs/README.md) |
 
 See the [operations guide](docs/concurro.md), [deployment and migration](gateway/README.md)
-and [MVP design](docs/design/mvp.md). The refactor is validated offline; a supervised
-runner pilot is still required before treating this version as deployment-proven.
+and [MVP design](docs/design/mvp.md). Verify each release and target configuration
+before enrolling live work.
 
 ## Development
 
 ```bash
-python3 -m pip install markdown-it-py==3.0.0
+python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0
 python3 -m unittest discover -s engine/tests -v
 python3 -m unittest discover -s service/tests -v
 python3 -m unittest discover -s gateway/tests -v

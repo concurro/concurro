@@ -3,6 +3,14 @@
 Keep requested changes uncommitted for review. Do not deploy, change App permissions,
 or retry live tasks unless the user authorizes those actions.
 
+## Documentation
+
+For changes affecting documented behavior, configuration, interfaces, architecture or
+operation, add, update or remove relevant documentation in the same changeset. Describe
+the current implementation; remove obsolete guidance and fix affected links. Keep
+rationale only where it explains a non-obvious choice. Internal refactors and trivial
+changes need no documentation unless they make existing guidance inaccurate.
+
 ## Before proposing deployment
 
 - Read the [deployment guide](gateway/README.md), including upstream workflow changes.
