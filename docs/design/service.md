@@ -60,7 +60,7 @@ permissions (excluding implicit metadata). A mismatch revokes the token and fail
 | Role | Read token | Write token |
 | ---- | ---- | ---- |
 | Upstream | Contents, Pull requests, Checks, Commit statuses, Actions: read | Pull requests, Contents: write |
-| Fork | Contents: read | Contents, Actions, Workflows: write |
+| Fork | Contents, Actions: read | Contents, Actions, Workflows: write |
 | Issue source | Adds Issues: read | Adds Issues: write |
 
 Contents write upstream retains the tested owned-thread resolution combination. Workflows

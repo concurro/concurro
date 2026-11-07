@@ -70,6 +70,8 @@ class Loop:
                 for turn in taken:
                     if not self.stopped.is_set():
                         self.run(turn)
+                        if turn["payload"]["request"]["stage"] == "develop":
+                            return  # Implementation has its own job; do not idle or reuse its clock.
                     last = time.monotonic()
                 if not taken and time.monotonic() - last > self.idle:
                     return

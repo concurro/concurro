@@ -33,7 +33,7 @@ import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 request = json.load(sys.stdin)
 assert os.environ["CONCURRO_GATEWAY_KEY"] == "sk-agw-test" and "GH_TOKEN" not in os.environ
-assert request["workspace"] == str(root / "work") and request["timeout"] == 1800
+assert request["workspace"] == str(root / "work") and request["timeout"] == (None if request["stage"] == "develop" else 1800)
 if request.get("feedback_directory"):
     feedback = pathlib.Path(request["feedback_directory"])
     assert feedback.parent == root and feedback.name == "feedback"
@@ -163,7 +163,7 @@ class ExecuteTests(Workspace):
     def execute(self, request, retained=None, feedback_files=None):
         root = turns.directory(self.tmp / "turns")
         fake = lambda directory: [sys.executable, "-c", AGENT, str(directory)]
-        turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": 1800,
+        turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": None if request["stage"] == "develop" else 1800,
                 "feedback": feedback_files or {}}
         with patch.object(turns, "command", side_effect=fake), \
                 patch.dict(os.environ, {"GH_TOKEN": "owner-secret"}):
@@ -321,7 +321,7 @@ class AgentsTests(unittest.TestCase):
         self.assertEqual(request["charter"], agents.bundle.charter_text)
         self.assertNotIn("controller_candidate", request["context"])
         self.assertEqual(turn["spec"]["candidate"], {"files": {"docs/guide.md": "x"}})
-        self.assertEqual((turn["timeout"], label), (1800, CONFIG["repository"] + ":develop"))
+        self.assertEqual((turn["timeout"], label), (None, CONFIG["repository"] + ":develop"))
 
     def test_develop_returns_the_workspace_edits(self):
         response = {"summary": "s", "checks": ["lint"], "design_issue": None}

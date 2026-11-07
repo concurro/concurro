@@ -196,7 +196,8 @@ def command(root):
 def execute(turn, key, mirror, root, stopped=None):
     """Run one native agent process group and return JSON, extracted files and its retained journal."""
     request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
-    if type(timeout) is not int or not 60 <= timeout <= 7200:
+    if not (timeout is None and request.get("stage") == "develop") and (
+            type(timeout) is not int or not 60 <= timeout <= 7200):
         raise TurnError("invalid turn timeout")
     root = Path(root).resolve()
     name = root.name
@@ -241,7 +242,7 @@ def execute(turn, key, mirror, root, stopped=None):
                 timer = threading.Thread(target=cancel, daemon=True)
                 timer.start()
             try:
-                stdout, _ = process.communicate(json.dumps(payload), timeout=timeout + 60)
+                stdout, _ = process.communicate(json.dumps(payload), timeout=None if timeout is None else timeout + 60)
                 code = process.returncode
             except subprocess.TimeoutExpired:
                 code, stdout = KILLED[0], ""
@@ -261,6 +262,8 @@ def execute(turn, key, mirror, root, stopped=None):
                         stopped.set()
                     raise
         result, response = outcome(code, stdout)
+        if request["stage"] == "develop" and (code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())):
+            result, response = "terminated", None
         reply = {"outcome": result, "response": response, "workspace": None,
                  "retained": pack(root / "retained") if session else None}
         if result == "ok" and request["stage"] == "develop":

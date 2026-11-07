@@ -39,7 +39,7 @@ from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMI
 from checkpoint_health import sync_checkpoint_health
 from github import GitHub, NotFound, Transient
 from identities import Identities
-from policy import (MODEL_RESPONSE_LIMIT, Blocked, OutsideScope, SessionFailure, approval_binding, approval_valid,
+from policy import (MODEL_RESPONSE_LIMIT, Blocked, OutsideScope, RunnerTerminated, SessionFailure, approval_binding, approval_valid,
                     digest, task_branch,
                     consensus_valid, design_roster, path_allowed, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
@@ -884,7 +884,14 @@ class Controller:
                         operation["timing"] = observed
             except Exception as error:
                 # Timeouts and killed containers may have completed upstream; reported errors did not.
-                operation["status"] = "uncertain" if getattr(error, "uncertain", False) else "failed"
+                operation["status"] = "uncertain" if (getattr(error, "uncertain", False)
+                    or getattr(error, "result_uncertain", False)) else "failed"
+                if isinstance(error, RunnerTerminated):
+                    operation["runner_termination"] = str(error)
+                    if session:
+                        sessions.restart(self.state, session)
+                    self.save()
+                    raise
                 if not isinstance(error, SessionFailure) or not session:
                     raise
                 design_eligibility.restart(self.state, session)
@@ -918,6 +925,8 @@ class Controller:
 
     def recover(self, operation):
         """Return a durably retained result not yet consumed; a completion without one was lost."""
+        if operation.get("runner_termination"):
+            raise RunnerTerminated(operation["runner_termination"])
         if operation["status"] != "completed":
             return None
         if "response" in operation:

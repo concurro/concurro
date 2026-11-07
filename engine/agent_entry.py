@@ -48,7 +48,8 @@ def command_for(request, schema_path, output_path):
                 "-c", 'approval_policy="never"', "-c", 'model_provider="concurro"',
                 "-c", "model_providers.concurro=" + toml(endpoint), "-c", "analytics.enabled=false",
                 "-c", "check_for_update_on_startup=false",
-                "-c", "model_reasoning_effort=" + toml(effort), *model, *([resume] if resume else []), "-"]
+                "-c", "model_reasoning_effort=" + toml(effort),
+                *(["-c", "features.goals=true"] if request.get("stage") == "develop" else []), *model, *([resume] if resume else []), "-"]
     if provider == "claude":
         settings = {"disableAllHooks": True, "skipWebFetchPreflight": True}
         return ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--settings", json.dumps(settings),
@@ -65,7 +66,9 @@ def provider_environment(request):
     if request["provider"] == "claude":
         return {"ANTHROPIC_BASE_URL": request["gateway"]["url"], "ANTHROPIC_AUTH_TOKEN": key,
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                "CLAUDE_CODE_EFFORT_LEVEL": request.get("effort", "medium")}
+                "CLAUDE_CODE_EFFORT_LEVEL": request.get("effort", "medium"),
+                **({"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1", "CLAUDE_CODE_ENABLE_TASKS": "1"}
+                   if request.get("stage") == "develop" else {})}
     return {}
 
 

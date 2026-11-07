@@ -35,6 +35,7 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(found[target.upstream]["write"], {"pull_requests": "write", "contents": "write"})
         self.assertEqual(found[target.fork]["write"],
                          {"actions": "write", "contents": "write", "workflows": "write", "issues": "write"})
+        self.assertEqual(found[target.fork]["read"], {"contents": "read", "actions": "read", "issues": "read"})
         for repository in target.repositories:
             self.assertNotIn('workflows', found[repository]['read'])
         self.assertEqual(found[target.upstream]["read"]["statuses"], "read")

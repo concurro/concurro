@@ -264,6 +264,18 @@ class RelayTests(unittest.TestCase):
         return self.exchange.submit(turn or str(uuid.uuid4()), self.expected, ["claude-*"], 1000, 3600,
             payload or {"request": {"provider": provider, "stage": stage}}, pin=pin, now=NOW, binding=bound)
 
+    def test_operator_observation_keeps_bound_run_after_heartbeat_loss(self):
+        """A lost implementation can be diagnosed without trusting runner-reported conclusions."""
+        queued = self.submit()
+        self.assertNotIn("runner", queued)
+        self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
+        running = self.exchange.poll(queued["turn"], 0, now=NOW)
+        self.assertNotIn("runner", running)
+        lost = self.exchange.poll(queued["turn"], 0, now=NOW + 181)
+        self.assertEqual(lost["status"], "lost")
+        self.assertEqual(lost["runner"], {"session": self.session, "run_id": "77/1"})
+        self.assertNotIn("key", json.dumps(lost))
+
     def test_task_role_generation_config_and_phase_cannot_share_jobs(self):
         own = self.submit()
         self.assertIsNone(own["dispatch"])

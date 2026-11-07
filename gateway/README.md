@@ -65,7 +65,9 @@ the public endpoint, and does not redact old logs or Git history.
 
 Install the controller App on the selected repositories. Grant Contents read/write,
 Pull requests read/write, Checks read, Commit statuses read, Actions read on the upstream, Issues read/write where
-issues enroll, and Actions write plus Workflows write on the fork. Token requests narrow these permissions
+issues enroll, and Actions write plus Workflows write on the fork. Fork read tokens explicitly request
+Actions read for runner-termination diagnosis; this uses the already required fork
+Actions-write installation grant. Token requests narrow these permissions
 per repository; the write gateway narrows permitted endpoints further. Retain Contents
 write upstream for the tested review-thread resolution permission combination. No
 Administration permission is needed for readiness. Historical `adopt` additionally needs

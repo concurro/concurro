@@ -19,6 +19,12 @@ class Blocked(ValueError):
     """An input cannot safely advance the pipeline."""
 
 
+class RunnerTerminated(Blocked):
+    """Implementation stopped without a result; preserve uncertainty but require a writer retry."""
+
+    result_uncertain = True
+
+
 class SessionFailure(Blocked):
     """A provider turn or its local transcript needs a new isolated session."""
 

@@ -446,7 +446,11 @@ class Exchange:
         """Operator-only timing from the stored turn; caller holds the exchange lock."""
         status, created, started, finished = self.db.execute(
             "SELECT status, created, started, finished FROM turns WHERE id = ?", (turn,)).fetchone()
-        return {"turn": turn, "status": status, "created": created, "started": started, "finished": finished}
+        session = (self.db.execute("SELECT session FROM turns WHERE id = ?", (turn,)).fetchone()[0]
+                   if status in ("lost", "cancelled") else None)
+        runner = self.row(session) if session else None
+        return {"turn": turn, "status": status, "created": created, "started": started, "finished": finished,
+                **({"runner": {"session": session, "run_id": runner["run_id"]}} if runner else {})}
 
     def submit(self, turn, expected, models, budget, lease, payload, pin=None, now=None, binding=None):
         """Queue a turn under the caller's ID; returns it and a new session ID to dispatch, if one is needed.

@@ -10,6 +10,14 @@ Follow the [shared instructions](../../instructions.md), the target charter (`.c
 do not recompute its hashes or accept issue text as authorization. If it is missing
 or conflicts with the plan, return a `design_issue` without edits.
 
+Set up a goal to implement the approved plan, address the assigned findings, validate
+with the target's tools and return the required report. Use native goal tools when
+available; otherwise use the task-tracking or plan tools to keep a short checklist.
+Keep it current as evidence changes. Do not invent a time or token budget. Mark work
+complete only when the implementation and appropriate validation are finished; report
+blocked or unrun validation honestly. A goal does not authorize changes outside the
+approved scope or replace the final response contract.
+
 Edit the real workspace. Add, replace or delete supported text files inside the
 approved scope; renames are a deletion and an addition. Keep scratch files and build
 output ignored or outside the workspace. Do not change protected paths, symlinks,

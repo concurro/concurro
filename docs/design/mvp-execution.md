@@ -16,7 +16,8 @@ Status: implemented; audited 2026-11-07. Defines the boundary in
 
 Staff sessions by task, role and compatible ownership/configuration. Never reuse one
 across issues or incompatible model profiles, efforts, phases or ownership generations.
-One session is one GitHub job; turns run sequentially. Independent design reviewers run
+One session is one GitHub job; turns run sequentially. Each implementation attempt
+gets a new job so it cannot inherit time spent on earlier turns. Independent design reviewers run
 concurrently within one renewing worker lease; [the coordinator](parallel-reviews.md)
 charges the whole missing roster before dispatch and applies saved results one at a time.
 Corrections and failures affect only their member. Uncertain reservations stay charged;
@@ -86,7 +87,55 @@ while it remains live. No runner job is required to wait for CI.
 
 Transcript archiving/restoration includes Codex cache pruning. Replacement jobs restore conversation state, not build directories.
 Provider failure uses the existing fresh-session/full-context fallback and consumes
-the existing attempt allowance.
+the existing attempt allowance. Implementation runner loss is different: it stops for
+writer review rather than automatically repeating the work. Spent calls stay charged;
+a writer retry starts a new provider session and job. Unfinished workspace edits are
+not recovered. Termination is saved before posting its notice, so a controller restart
+cannot silently repeat the attempt. Successful implementation jobs exit after acknowledging their one turn.
+
+Implementation has no Concurro execution timer. The reusable Actions job's
+`timeout-minutes: 360` covers setup, builds, benchmarks, validation and result upload.
+The controller retains the 30-minute dispatch/setup queue limit and heartbeat-loss
+checks. Its implementation credential lease includes that queue allowance and five
+minutes beyond the job limit; revocation and heartbeat expiry still apply. Other
+agent stages retain their 20-minute execution limit. Do not increase the workflow's
+job limit without updating the credential lease accordingly.
+
+Implementation status polling retries connection errors, HTTP 408/429 and 5xx responses
+with 15/30/60-second backoff, capped at 60 seconds, while ownership remains valid.
+It does not cancel work merely because controller polling failed. Other refusals
+(including authentication errors and missing turn records) stop for writer review;
+raw exchange response text is not published. Backoff checks ownership at least every
+15 seconds. The runner's own safeguards remain: loss of its exchange connection for
+roughly 150 seconds stops execution, and the exchange retires silent sessions after
+180 seconds. This is controller-outage tolerance, not a guarantee that a job survives
+an outage affecting its heartbeat or model endpoint.
+
+Unknown admission and queue expiry have separate diagnostics. Queue expiry means no
+start was observed, not proof that nothing executed: withdrawal can race with a claim.
+Both require writer-controlled retry after inspection, keeping their charged attempts.
+When the exchange recovers after a polling outage, a running turn or saved result wins
+over the expired queue deadline; only a turn still observed queued is withdrawn.
+
+`gateway.budget` is a per-session **token** budget, not a duration or dollar budget.
+Check and size it for the model and expected long implementation before deployment;
+exhausting it can stop model calls before the six-hour job limit. Removing the timer
+does not raise this budget, and no configured value is changed automatically.
+
+After runner loss, the service reads the exact OIDC-bound Actions attempt and its
+jobs using a fork read token requesting Actions read. It reports confirmed timeout,
+cancellation or failure with job duration when available. Missing or unfinished API
+evidence stays an unconfirmed runner loss, never a guessed provider outage. A
+completed exchange result takes precedence over runner termination. Cleanup does
+not depend on GitHub allowing the job's final step to run.
+
+The implementer is instructed to maintain a goal or short task checklist, without
+a self-imposed deadline. Codex's goal feature is enabled; Claude's task tools are
+explicitly enabled for implementation. Native tool availability may vary, so the
+instruction has a checklist fallback and still requires the normal final structured
+report. This does not promise headless automatic continuation or workspace recovery.
+See [Codex goals](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex)
+and [Claude task-tool availability](https://code.claude.com/docs/en/tools-reference#task-tool-availability).
 
 ## Caches and credentials
 
