@@ -264,6 +264,11 @@ class ReviewerRepairTests(unittest.TestCase):
     def test_each_reviewer_and_phase_has_its_own_allowance(self):
         """Cooperative and fresh reviewers can each correct one error across restarts."""
         self.config['max_review_repairs'] = 1
+        # A substantive revision (not output correction) requires the fresh phase.
+        self.agents.qc_reports = [decision('proceed'), decision('approve'),
+                                 decision('revise', concerns=['Add an error-path regression.'])]
+        self.reach('plan_qc')
+        self.reach('plan')
         self.reach('plan_qc')
         original = self.agents.ask
         seen = set()

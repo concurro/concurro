@@ -12,6 +12,8 @@ authoritative for exact limits and behavior.
 | [Service](design/service.md) | Scheduling, ownership, GitHub writes and recovery |
 | [Inference gateway](design/inference-gateway.md) | Central credentials, session authorization and limits |
 | [Scope envelope](design/scope-envelope.md) | Approved paths, cumulative file limits and large files |
+| [Design-review eligibility](design/design-review-corrections.md) | Independent approvals through corrections, recovery and follow-ups |
+| [Review-cost baseline](reports/design-review-baseline.md) | Reproducible pilot measurements and coverage limits |
 | [PR reviews](design/pr-reviews.md) | Findings, native threads and publication recovery |
 | [Issue dashboard](design/issue-dashboard.md) | Current-run display, diagnostics and durable report storage |
 | [Comment format](design/comment-format.md) | Rendering and compatibility rules |
@@ -20,9 +22,8 @@ authoritative for exact limits and behavior.
 
 ## Pending work
 
-[Design-review corrections](design/design-review-corrections.md) is an agreed, unimplemented
-plan for preserving independent-review eligibility through output corrections and measuring
-review costs. Parallel reviewer dispatch remains a separate follow-up.
+[Design-review follow-ups](design/design-review-corrections.md#deferred-follow-ups) include
+parallel dispatch, a defect/suggestion distinction and revision/convergence aids.
 
 [MCP tools](design/mcp-tools.md) is a proposal, not supported target configuration.
 Optional status summarization, model routing and sub-issue decomposition remain future

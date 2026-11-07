@@ -28,6 +28,7 @@ from markup import block, code, link, text
 import sessions
 import checks
 import design
+import design_eligibility
 import reviews as findings
 from copy import deepcopy
 from bundle import Bundle
@@ -805,6 +806,9 @@ class Controller:
         operation = self.operation(provider, stage, context)
         caller.update(operation["contract"])
         context.update(operation["contract"])
+        if stage == "plan_qc":
+            session = sessions.prepare(self.state, self.config, provider, stage, context)
+            design_eligibility.prepare(self.state, context, session, operation)
         retained = self.recover(operation)
         if retained is not None:
             return retained
@@ -816,6 +820,8 @@ class Controller:
             if self.state["calls"] >= self.config["max_model_calls"]:
                 raise Blocked("model-call budget exhausted")
             session = sessions.prepare(self.state, self.config, provider, stage, context)
+            if stage == "plan_qc":
+                design_eligibility.prepare(self.state, context, session, operation)
             request = {**context, "controller_credential": credential.record()}
             if session:
                 request["controller_session"] = session
@@ -832,6 +838,7 @@ class Controller:
                 operation["status"] = "uncertain" if getattr(error, "uncertain", False) else "failed"
                 if not isinstance(error, SessionFailure) or not session:
                     raise
+                design_eligibility.restart(self.state, session)
                 sessions.restart(self.state, session)
                 self.save()
                 if attempt:
@@ -1216,7 +1223,8 @@ class Controller:
             context['review_output_budget'] = self.review_output_budget(context)
             repair = state.get('review_repair', {})
             if repair.get('binding') == digest([approval_binding(state, self.config), member]):
-                context['review_validation_feedback'] = repair['feedback']
+                context['review_validation_feedback'] = {**repair['feedback'],
+                    'instruction': design_eligibility.CORRECTION_INSTRUCTION}
         if not member and state.get("intake_draft"):
             context["intake_validation_feedback"] = {**state["intake_draft"], "instruction": (
                 "Correct the intake report against its schema and the rejection reason. "
@@ -1276,11 +1284,11 @@ class Controller:
         state["reason"] = report["rationale"]
         decision = report["decision"]
         if member:
-            session = state.get("sessions", {}).get(sessions.role_key(self.config, provider, stage, member["model"]), {})
+            role = sessions.role_key(self.config, provider, stage, member["model"])
+            session = {**state.get("sessions", {}).get(role, {}), "role": role}
             state["design_votes"][member["id"]] = {"identity": member,
                 "binding": approval_binding(state, self.config), "report": report,
-                "first_pass": (phase == "cooperative" and session.get("turn") == 1
-                               and session.get("restarts") == 0 and not context.get("own_objections")),
+                "first_pass": design_eligibility.eligible(state, context, session),
                 "objection_ids": [v['id'] for v in context.get('own_objections', [])]}
             self.classification_room(state, CHECKPOINT_LIMIT - 6000)
         self.state = state
@@ -1430,7 +1438,7 @@ class Controller:
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
         for key in ("plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
-                    "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot"):
+                    "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot", "design_eligibility"):
             state.pop(key, None)
         if state.get("pr"):
             conversation.queue(state, "Reassessment started",

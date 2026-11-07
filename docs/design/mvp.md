@@ -123,9 +123,10 @@ profiles, package-scoping engine or generated CI workflows remain.
 1. **Enroll and plan.** Writer enrollment starts intake against the target charter, then
    planning and independent design review. Advisory intake concerns proceed to planning;
    unanswered questions and charter conflicts do not. Rejected output is archived and gets
-   bounded corrections within the model-call budget. First-turn unanimous cooperative
-   approval can skip duplicate fresh review; revised or corrected sessions need a fresh
-   round. Manual mode also requires writer approval. [Recovery commands](../concurro.md#commands-and-recovery)
+   bounded corrections within the model-call budget. Unanimous independent cooperative
+   approval can skip duplicate fresh review, including after validation-only corrections.
+   Negotiated revisions and session restarts still require fresh review; see the
+   [eligibility contract](design-review-corrections.md). Manual mode also requires writer approval. [Recovery commands](../concurro.md#commands-and-recovery)
    distinguish retry from explicit invalidation.
 2. **Implement.** A role job edits the approved code with native tools. It may build,
    install dependencies and test hypotheses. It returns changes plus an explanation and

@@ -99,7 +99,13 @@ a configured profile name (legacy configurations still use `claude` or `codex`).
 ## Contribution loop
 
 The issue dashboard shows intake, planning, design approval,
-implementation, independent PR reviews and readiness. Reports are archived before
+implementation, independent PR reviews and readiness. Independent unanimous design
+approvals can skip a duplicate fresh round even after output corrections. Negotiated
+revisions and restarted reviewer sessions still require fresh review. Retry renews the
+correction allowance, not review independence or the total model-call budget. See the
+[eligibility contract](design/design-review-corrections.md).
+
+Reports are archived before
 compaction. Findings have stable IDs and native threads. Only their raising reviewer profile can
 retire them; ambiguous or reopened thread resolutions remain manual. PR-thread replies
 do not automatically start repair work; use writer feedback on the issue followed by

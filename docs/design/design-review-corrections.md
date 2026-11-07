@@ -1,6 +1,6 @@
 # Independent design review through output corrections
 
-Status: agreed design and implementation plan, 2026-11-07. Not implemented.
+Status: implemented locally, pending review, 2026-11-07. Not deployed.
 
 ## Purpose and scope
 
@@ -12,22 +12,26 @@ This change includes eligibility tracking, neutral correction instructions, regr
 tests, documentation and a read-only audit baseline. It does not include parallel
 execution, approval carry-forward, deadlock detection or new verdict fields.
 
-## Current behavior
+## Implementation
 
-`Controller.quality_control()` records `first_pass` only when the cooperative session
-has completed exactly one turn, has no restarts and has no own objections. Every output
-correction increments the turn count. `policy.consensus_valid()` consequently requires
-a fresh round after even a citation or schema correction.
+`engine/design_eligibility.py` records the assessment's exact binding, reviewer, session
+and input digest before dispatch. `Controller.quality_control()` copies the validated
+eligibility decision into the existing `first_pass` vote field. `consensus_valid()` keeps
+reading that field, so existing completed approvals remain valid. It now means independent
+assessment, not literally one model turn.
+
+Receipts live in `state["design_eligibility"]`, outside `operation`, and retain a fixed
+reason when disqualified. Only the current receipt per reviewer is stored. Correction
+feedback is engine-written; the bundle and provider schemas are unchanged.
 
 Correction failures are not all cosmetic. They include missing evidence and contradictory
 verdicts. A correction must produce a fully valid assessment, not train the reviewer to
 change everything to satisfied. All current validation and unanimous approval requirements
 remain in force.
 
-Claude's analysis of pilot #19 reported 15 design-review calls, nine rejected outputs,
-no objections and one fresh round triggered by corrections. Treat those numbers as inputs
-to verify in the baseline, not general performance guarantees. That pilot does not establish
-that fresh review after substantive negotiation is redundant.
+The [pilot #19 baseline](../reports/design-review-baseline.md) records the measured
+starting point and its limitations. It does not establish that fresh review after
+substantive negotiation is redundant.
 
 ## Eligibility contract
 
@@ -115,33 +119,6 @@ Keep this wording in the controller's existing feedback payload. No bundle/schem
 is planned. If implementation discovers a contradictory skill instruction, handle that
 explicitly rather than silently broadening this change.
 
-## Implementation steps
-
-1. **Define and persist the receipt.** Inspect `engine/sessions.py`, controller operation
-   recovery and approval binding. Add the smallest per-reviewer record needed for binding,
-   session identity, eligibility and a fixed disqualification reason, outside `operation`.
-   Save it with operation admission, but preserve it when retry removes the operation.
-   Store references and digests, not copies of plans, feedback or reports. Keep eligibility
-   independent of correction-allowance resets and report-history compaction.
-2. **Wire lifecycle transitions.** Update `Controller.quality_control()`, the model-call
-   preparation/recovery path, plan revision, requirements changes, design reopen, session
-   restart and explicit invalidation. Preserve eligibility through validation-only corrections. Do not merely replace
-   `turn == 1` with a subtraction of repair counts. Review every path that rotates a
-   session or changes the design binding.
-3. **Record and consume votes.** Update the current `first_pass` receipt or replace it
-   with clearly named eligibility metadata. Keep existing valid completed approvals
-   readable and unchanged. Old in-progress reviews without the new provenance fall back
-   to fresh review. Test `policy.consensus_valid()` and `approval_valid()` explicitly.
-4. **Add neutral feedback.** Include the instruction on every design-review correction,
-   including contradictory approval and missing-evidence failures. Preserve specific
-   diagnostic details and the archive/replay ordering.
-5. **Add the regressions below.** Update the test that currently requires a fresh round
-   for every corrected report. Retain full rejection, stale-binding and objection tests.
-6. **Update current documentation.** Amend `docs/design/mvp.md` and any affected operating
-   guidance to distinguish validation correction from substantive negotiation. Mark this
-   plan implemented only after acceptance; retain the enduring contract and remove
-   completed implementation narrative when it no longer helps maintainers.
-
 ## Regression matrix
 
 | Scenario | Required result |
@@ -174,27 +151,23 @@ links and whitespace. Tests use fixtures, not live provider calls or pilot mutat
 
 ## Read-only audit baseline
 
-Produce a reproducible report from existing issue audits and immutable report artifacts,
-without model calls, comments, task enrollment, retries or other remote writes. It can be
-prepared alongside the eligibility change; it need not wait for parallel dispatch.
+`engine/design_audit.py` reads only issue-artifact GET endpoints, freezes responses in a
+local snapshot and emits derived metrics plus source commitments. Without `--fetch` it
+reproduces the report offline. It verifies immutable archives using the production
+report store, including nested report digests. It never publishes or invokes models.
 
-Record repository and issue, collection time, engine/bundle identity when available,
-run/invalidation boundaries, and the artifact numbers/ranges and digests actually read.
-Link to the source artifacts instead of copying report bodies. State missing artifacts
-and incomplete coverage explicitly so later measurements can use the same population.
+The report separates runs and review phases, accepted and rejected outputs, validation
+codes and authoritative objection dispositions. Its coverage is the audit's bounded
+report index, not a claim of exhaustive task history. Missing or edited reports are
+explicitly unavailable. It records exact artifact identities, response digests and body
+hashes; raw report text stays in its original artifacts and the local capture.
 
-Report, separately per run and phase:
+Archived outputs are not exact model-call counts, and rejected outputs are not necessarily
+correction calls. Unknown tokens, timing, engine identity and disagreement attribution
+stay unknown. New objection IDs do not prove new defects. Compare the same pilot and
+artifact population when evaluating a later change; predicted savings are not measurements.
 
-- Accepted assessments, rejected outputs and validation codes.
-- Correction calls versus substantive plan revisions; do not count replay as a new call.
-- Objections raised, resolved or still open and their linked planner/reviewer responses.
-- Fresh-round outcomes, identifying genuinely new findings where evidence permits.
-- Model calls and recorded timing/usage, with unavailable token data marked unavailable.
-
-Do not infer a new defect solely from a new objection ID, or a deadlock solely from
-unchanged wording. Classify ambiguous cases as unknown. Separate runner setup/queue time
-from model time only when timestamps support it. Estimated savings are counterfactuals,
-not measurements; do not claim that skipping a review guarantees the same final result.
+See [baseline and reproduction instructions](../reports/design-review-baseline.md).
 
 ## Deferred follow-ups
 

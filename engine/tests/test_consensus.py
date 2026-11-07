@@ -224,8 +224,8 @@ class ConsensusTests(unittest.TestCase):
                 self.assertFalse(result["design_votes"])
                 self.assertNotIn("approval", result)
 
-    def test_corrected_review_is_not_a_first_pass_approval(self):
-        """A resumed review still receives an independent fresh pass after correction."""
+    def test_corrected_independent_review_skips_duplicate_fresh_round(self):
+        """Validation feedback alone preserves an independent assessment."""
         self.reach("plan_qc")
         original = self.agents.ask
 
@@ -238,9 +238,10 @@ class ConsensusTests(unittest.TestCase):
         with patch.object(self.agents, "ask", side_effect=invalid):
             self.assertEqual(self.tick()["review_repairs"], 1)
         state = self.reach("implement")
-        self.assertEqual(state["design_phase"], "fresh")
+        self.assertEqual(state["design_phase"], "cooperative")
+        self.assertTrue(approval_valid(state, self.config))
         phases = [c["review_phase"] for _, stage, c in self.agents.calls if stage == "plan_qc"]
-        self.assertEqual(phases, ["cooperative"] * 3 + ["fresh"] * 2)
+        self.assertEqual(phases, ["cooperative"] * 3)
 
     def test_missing_stale_wrong_identity_and_extra_votes_block(self):
         """Completion requires exactly the bound roster, not a count or approval-shaped data."""

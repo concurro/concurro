@@ -1,0 +1,534 @@
+{
+  "audit_version": 113,
+  "bundle": "b45b5fadb6da3150b07f0aa42d2a634823423b51d120c01dc707fe35b211a9dd",
+  "by_round": {
+    "run 1 / 1 cooperative": {
+      "accepted": 2,
+      "archived_outputs": 10,
+      "open_objection_dispositions": 0,
+      "rejected": 8,
+      "resolved_objection_dispositions": 0,
+      "validation:review_evidence": 7,
+      "validation:review_shape": 1
+    },
+    "run 1 / 1 fresh": {
+      "accepted": 2,
+      "archived_outputs": 3,
+      "open_objection_dispositions": 0,
+      "rejected": 1,
+      "resolved_objection_dispositions": 0,
+      "validation:review_shape": 1
+    },
+    "run 2 / 1 cooperative": {
+      "accepted": 2,
+      "archived_outputs": 2,
+      "open_objection_dispositions": 0,
+      "resolved_objection_dispositions": 0
+    }
+  },
+  "design_generation": 1,
+  "engine_commit": null,
+  "invalidations": [
+    {
+      "actor": "cylewitruk",
+      "comment": 6704261949,
+      "head": null,
+      "new_bundle": "b45b5fadb6da3150b07f0aa42d2a634823423b51d120c01dc707fe35b211a9dd",
+      "new_charter": "8b92e05e1a0f12765e45571895a85f92b9b521e55761c92a7a9b7ca515e2d893",
+      "old_bundle": "d03b46713eee5d689ac4b63b7e54ba420338c252c221b551d3699f41f4dd2917",
+      "old_charter": "8b92e05e1a0f12765e45571895a85f92b9b521e55761c92a7a9b7ca515e2d893",
+      "operation_digest": "6b6c447b9b04bdda55f0d9f7a25f0339a4f1e47bed851765e26463bd3df60893",
+      "plan": "33bbafe3b1383f230bb2884c8684fbfd7f2c6740e7bd7d4df9bbb5586e3fe1f4"
+    }
+  ],
+  "limitations": [
+    "Coverage is the frozen audit report index, not all historical artifacts; the index is capped at 40 entries.",
+    "Archived outputs are not exact model-call counts: failed provider attempts may have no report.",
+    "Rejected outputs are not automatically correction calls; retry cause is not fully recorded here.",
+    "Objection dispositions are observations, not counts of unique defects. New-versus-repeated fresh findings require semantic inspection.",
+    "Engine SHA, tokens, model durations, queue/setup time and reviewer/planner discussion attribution are unavailable from this dataset.",
+    "No predicted call or wall-clock savings are treated as measured results."
+  ],
+  "plan_revisions": 0,
+  "reports": [
+    {
+      "artifact": 7,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "opus55-medium",
+      "report_digest": "6b65dac63eca59b7219f3d0cbb401bbaac935e94307dc095e6e547fce6fb4a93",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/7",
+      "validation_code": "review_shape",
+      "verification": "verified"
+    },
+    {
+      "artifact": 10,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "opus55-medium",
+      "report_digest": "a5eaef8a79337d1562d5727135faeb214525dfe5603a5a1d20cc883bc8d2ad13",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/10",
+      "verification": "verified"
+    },
+    {
+      "artifact": 13,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "55aa5d5ccb9bf7cc326ca81a763707b697e0ef289c858f45396e3f0e06f4f2b5",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/13",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 16,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "022fe595e0cb34568658fcde7dc835fa4fcbc4798b8334a431f33a3effe63881",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/16",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 19,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "e7779e78a1f957fed43a69f02b813fcfe0c82f728b3404dd342e9131e6fc5cf3",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/19",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 22,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "48db4fb426114fa8e1ce027dac86f3d535a0f25b904b2fdbb2ae200026c8f5c8",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/22",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 25,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "93a6da6824f01a41296f742681913e84a2cf5f26a958e4532fd6490a9e110067",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/25",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 28,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "365d451d22f2ccbc2026d55ce329adbbbbec53bb9805d4aacac3a17cbb549d4c",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/28",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 29,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "sol61-high",
+      "report_digest": "365d451d22f2ccbc2026d55ce329adbbbbec53bb9805d4aacac3a17cbb549d4c",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/29",
+      "validation_code": "review_evidence",
+      "verification": "verified"
+    },
+    {
+      "artifact": 30,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "sol61-high",
+      "report_digest": "349dc97422a33c8abef080564ee4a459b122fc7744d7404a32e2d59dfd84d702",
+      "round": "1 cooperative",
+      "run": 1,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/30",
+      "verification": "verified"
+    },
+    {
+      "artifact": 33,
+      "objection_dispositions": [],
+      "outcome": "invalid",
+      "provider": "opus55-medium",
+      "report_digest": "90a22d1541a7bc4b8b955b070cbdaf9a4eea6b2cec4b01c5f8d4047f78c1296c",
+      "round": "1 fresh",
+      "run": 1,
+      "run_round": "1 fresh",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/33",
+      "validation_code": "review_shape",
+      "verification": "verified"
+    },
+    {
+      "artifact": 35,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "opus55-medium",
+      "report_digest": "4dbd2c8b82de3445ca443efa2f2fa3d17cc94256afbb51113d3dc63cbd6787fc",
+      "round": "1 fresh",
+      "run": 1,
+      "run_round": "1 fresh",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/35",
+      "verification": "verified"
+    },
+    {
+      "artifact": 37,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "sol61-high",
+      "report_digest": "a1873633d98c7b4eb99c76ec0e6fdfd734f79b4cc7d414b5f02272e8feee4df1",
+      "round": "1 fresh",
+      "run": 1,
+      "run_round": "1 fresh",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/37",
+      "verification": "verified"
+    },
+    {
+      "artifact": 42,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "opus55-medium",
+      "report_digest": "f3ae34e1ed6181b204e21d377253c63e0154e786b820952e711e91a191e5c8d7",
+      "round": "2 cooperative",
+      "run": 2,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/42",
+      "verification": "verified"
+    },
+    {
+      "artifact": 44,
+      "objection_dispositions": [],
+      "outcome": "approve",
+      "provider": "sol61-high",
+      "report_digest": "45bb25e2faa3a610229b9a4c07d3177dd010a7e392b86b58b9258748aa056928",
+      "round": "2 cooperative",
+      "run": 2,
+      "run_round": "1 cooperative",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/44",
+      "verification": "verified"
+    }
+  ],
+  "run_boundaries": [
+    {
+      "artifact": 0,
+      "generation": 0,
+      "plan_revisions": 0,
+      "review_round": 0
+    },
+    {
+      "artifact": 38,
+      "generation": 1,
+      "plan_revisions": 0,
+      "review_round": 0
+    }
+  ],
+  "source": {
+    "collection_started_at": "2026-11-07T11:17:17.331190+00:00",
+    "issue": 19,
+    "repository": "concurro-demo-upstream/stacks-core"
+  },
+  "sources": [
+    {
+      "body_sha256": "18a9372c57fca06b706969265a7db3b7216c91b46caf2b021cd445af6dfc6b17",
+      "id": 35682,
+      "number": 1,
+      "response_digest": "88eba301e17a0e8b564ba7c93e6a83e279335a1b28871c66319e8e9a8c9e7074",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/1"
+    },
+    {
+      "body_sha256": "05785e05d9c0b5d8584f447a63f2b85182937ed494ccdc3885897913dc8e544e",
+      "id": 35698,
+      "number": 5,
+      "response_digest": "c7b5564b206bd21955e671573f4584a9f2f14f297536c96963793ed3533739b1",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/5"
+    },
+    {
+      "body_sha256": "a407df0a855107684d2862f8a93b9eda4e5dbb2f38df608a75364db09607212a",
+      "id": 35699,
+      "number": 6,
+      "response_digest": "e46aa75dfa8db5884f155a05754460c0c2676cc20d0a09e8f0372e8b93552aea",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/6"
+    },
+    {
+      "body_sha256": "06770ebadad4f380d85faaffd505efdb58182f9dff55bc2a1d3c2c84c0c12f08",
+      "id": 35700,
+      "number": 7,
+      "response_digest": "69afdbff32918fb08c57e63ff60238d2c6e3e114b794428e650d15779b6476e8",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/7"
+    },
+    {
+      "body_sha256": "203605fd796f7c4673382ef927778b52a2851c4c69a0ce0331aedb373ac9dc97",
+      "id": 35706,
+      "number": 8,
+      "response_digest": "2ac44a9d7fdf894495de028f16b48e9d3ce0f670f63aadf17a6253ef86a892e8",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/8"
+    },
+    {
+      "body_sha256": "e20a6fcbc366713f8b925ac78aecd016b6a9a42b3a68ef24f08b9ea95cd3ca6e",
+      "id": 35708,
+      "number": 9,
+      "response_digest": "bcabfc15459fa7f868944573ba7ff6c0735ca096cb5572ffdbaa2ff7b6e1e288",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/9"
+    },
+    {
+      "body_sha256": "7ea83c661c69b99d8c25da63deac21ed9bad15254e915ddc45571014b952d85f",
+      "id": 35709,
+      "number": 10,
+      "response_digest": "a238818b5e53c0196c61a58ec90d13b1a02ed4eb5400ad988d1d2b6e937cc3ee",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/10"
+    },
+    {
+      "body_sha256": "3df52cbf16a87a225c1e2ef22725097be08ed412f8edc3f5315b8ed2bc2dbbeb",
+      "id": 35713,
+      "number": 11,
+      "response_digest": "d24e74d149e036af42a4406a6044fd95eb44e76703ba776253dfffd936329e6e",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/11"
+    },
+    {
+      "body_sha256": "fb7a4371244fd746849c58525c17de77a37d1d6eec5b9742b20e85bb68ca3233",
+      "id": 35714,
+      "number": 12,
+      "response_digest": "f7215d13c5be35dc614eb28513a86b2ec04d71e8335e238530a218d41b07d117",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/12"
+    },
+    {
+      "body_sha256": "e6a093037e9d89a7358fb67ddf1894c5f4d727450d0a03f913b172141078d891",
+      "id": 35715,
+      "number": 13,
+      "response_digest": "38b936a7dbf8ea91eefa453ed22a5314573ec2e9336da32787ced6ca38d5b346",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/13"
+    },
+    {
+      "body_sha256": "749a2577ac0d8fc1f9db2abb3e945616a7960cd56c379200b0bae5a6820ff57b",
+      "id": 35718,
+      "number": 14,
+      "response_digest": "09061e8c64d3b58fcf46e2285c40e2079c9d6c0224b4727b6e4f80a92a19921c",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/14"
+    },
+    {
+      "body_sha256": "39fbca3d86e8110240182deea31f82420dac941dbbe6982fe66f01a5745bdf90",
+      "id": 35719,
+      "number": 15,
+      "response_digest": "9e8f5fde0b195aa26ac935885e85240f377e3aff48558be7d6654dc7b931f4ec",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/15"
+    },
+    {
+      "body_sha256": "b70989609871b71ded910c6b433e60c79552608c490175229fce2c2631c20bd5",
+      "id": 35720,
+      "number": 16,
+      "response_digest": "16628ec461e9cbd83e4b0feda880290618d25446dafafb70082b6e7f7137c9fa",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/16"
+    },
+    {
+      "body_sha256": "df91d3e132620e045a81165ff5b0b1730c67735a57624570a51e970fe0859f4c",
+      "id": 35722,
+      "number": 17,
+      "response_digest": "ee3d0e42cc14151d001750bebab3207f921b58568a27ecc76ada2f8be6de82b0",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/17"
+    },
+    {
+      "body_sha256": "6402705c38228e38e7078ad28cbd9f53299042b7a4455a783ece69ef6f932831",
+      "id": 35723,
+      "number": 18,
+      "response_digest": "2d7b7ec634f0fa02d602b123f056aa72dce96f65faf64c742d244bf0ba1dcafa",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/18"
+    },
+    {
+      "body_sha256": "a606dc741572ea3443a815ad594f12f801cff74b28397abcc05be04a252f589e",
+      "id": 35724,
+      "number": 19,
+      "response_digest": "3508fe564bc6738cfc1f1e4b8496013878e54207349bba5cbf0e9123b42efa44",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/19"
+    },
+    {
+      "body_sha256": "a0820f04ad6ef123b3bc120e526bafa5bb2cfb45b982e2d8c7c4af1a6f385de3",
+      "id": 35727,
+      "number": 20,
+      "response_digest": "bcd1a0649ad49e8decc48f13fb2db1cc1717d474fdfcf450f6610e8550654d54",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/20"
+    },
+    {
+      "body_sha256": "3bda9a677ad25ce9fdd34156d19b76dc3df94496c2b8d8ddd29de41398a39a02",
+      "id": 35729,
+      "number": 21,
+      "response_digest": "2b92a6789eb563c68096ec98693ad5a7bda0fef8034387989362ad633840e407",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/21"
+    },
+    {
+      "body_sha256": "c2b5cd44f3dc0c1170050539ffc6fbf772a0241ba7da0d714c6c930afc41b1f3",
+      "id": 35730,
+      "number": 22,
+      "response_digest": "a08fd3123ded9b7e4218aa2af77e47f21cbdea43d019c43954c1710aeafba571",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/22"
+    },
+    {
+      "body_sha256": "55afcaf68d7e97128225193a9e1a613bc173ab64e1a260834ca5f972377442aa",
+      "id": 35733,
+      "number": 23,
+      "response_digest": "976029a0b6d734c23aae54e72e0a9a0bbb348d378c3b12ef2d6a67371c2cec79",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/23"
+    },
+    {
+      "body_sha256": "63a46bdd6946ced429e533f4bfd349d1ffa5504a07eb95c7be0f25b4ac7600e6",
+      "id": 35734,
+      "number": 24,
+      "response_digest": "bf5069e050f08e11d9164244af21abdac20cae91af97f7ff3469ca14edc0bdd9",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/24"
+    },
+    {
+      "body_sha256": "601510169dd4007ac01a31d7fc8a269ede3c3eeb58a6def3677cdfa6ce30efa0",
+      "id": 35735,
+      "number": 25,
+      "response_digest": "f8c99b030f1ac224047c005b8e84aa986c308843b470193805b594f62340c18b",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/25"
+    },
+    {
+      "body_sha256": "6edbf9c3265c16a16456a60f2a1d819ccc43514320c3f35e4f710e4b26ab7869",
+      "id": 35768,
+      "number": 26,
+      "response_digest": "1e9ddaefba7a65ae3fd1adfcd1c5e661b24caf628ec1720d93d28e8d8c045df9",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/26"
+    },
+    {
+      "body_sha256": "a19bf273cf1393e0bd6bc7b626179e3ce9e34c2698c8318d4c2deafe861337b4",
+      "id": 35769,
+      "number": 27,
+      "response_digest": "15b7e24ec8b67feea841518c6549de19743c6c9c8ef32e22c5c8ad1318c59af2",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/27"
+    },
+    {
+      "body_sha256": "ad3fb45a7e8f4f85531366093fe772e5b2e9f948d463e62e28e6e5b68e42f4d4",
+      "id": 35771,
+      "number": 28,
+      "response_digest": "97a6b595d981e5571de7a5742878a07bbfc6ea07fd3386313e85c64a4059c1cb",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/28"
+    },
+    {
+      "body_sha256": "5bfdcbccf3e2d3cb25d8e0fe1678c9c58b63aff7e18cc9cfb15d515cb6f42dd3",
+      "id": 35784,
+      "number": 29,
+      "response_digest": "9aead63ad5517a8bdb7331264344347759608cc805cfb85fabd997e4c274aab8",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/29"
+    },
+    {
+      "body_sha256": "01c740437bf70b4a77873f152c10c75008be22106a99d0d892d31675894314c9",
+      "id": 35807,
+      "number": 30,
+      "response_digest": "86cf9e8162acf502b2a0a318f53d93bb3fa3bcdc4d89abeca081d990103c5823",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/30"
+    },
+    {
+      "body_sha256": "e555afd0c8a3b8a35c8fb180d0c9c1133d1148b1f2cf630626d6ad04b5356873",
+      "id": 35808,
+      "number": 31,
+      "response_digest": "19e27829d46f5543a833ea612b943d5546c10d9a946031601475413d85883dcd",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/31"
+    },
+    {
+      "body_sha256": "93f157bcf38ec371d336a5e7ab8a154b1a648952ed485937c1ed634132e53abd",
+      "id": 35809,
+      "number": 32,
+      "response_digest": "1ab5046bb8bbec69634b6c9f8d912a75931f103d1af48e631999bd61df680791",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/32"
+    },
+    {
+      "body_sha256": "d8103a5bccc15221d172649d97830aeab616356f08ec2bd70a3210ce0c5bcffa",
+      "id": 35810,
+      "number": 33,
+      "response_digest": "dc396ad89293cda85232c8777f3ff6788132925b40594606fb70e6ebf153fbff",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/33"
+    },
+    {
+      "body_sha256": "f994bd2acfda4859fe747a253983364166c1dc9269868d5238deee52a0224635",
+      "id": 35819,
+      "number": 34,
+      "response_digest": "06075f97c83b78b45ad08f5816c2361959c50486fba0e0eb4e2ccc064bbae5b5",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/34"
+    },
+    {
+      "body_sha256": "3df0dbd10dc2fd429bc4703cff83a12e996d65c19593a1b69daf8eff1226db1e",
+      "id": 35820,
+      "number": 35,
+      "response_digest": "ce14c197e2fea00ca2ca680681e5cd5ac0e35e199a2842d0375bcf51060d7a08",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/35"
+    },
+    {
+      "body_sha256": "0748899e296f5b71ca769d9439d987ba180d634b0dd045d77faaeb4c8828b3b3",
+      "id": 35825,
+      "number": 36,
+      "response_digest": "c873ff7f1ef46e3e6001c36f21bfbd2c185844e2980096a83a89ba8265fc28a1",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/36"
+    },
+    {
+      "body_sha256": "8f0fbf78270e91965b44239c8126f700b2549077e7d0ea9373ae23aea9071669",
+      "id": 35826,
+      "number": 37,
+      "response_digest": "3eeba5d91dcb01b51b01691e03f95bc65928b97d3ac208755b2a339026da2247",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/37"
+    },
+    {
+      "body_sha256": "1d9194981cd53a48171ddf58b8ee9affb2c13c9c4595ac3c7f4f3007ed94eba8",
+      "id": 36308,
+      "number": 41,
+      "response_digest": "8f60a3b65a899821fb290f872246eecb45d965d1550f635098a2b7c1be192643",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/41"
+    },
+    {
+      "body_sha256": "b0bdf7ddaab884449a777e4f7317eca4c92ad659a340719324389b64f4636dce",
+      "id": 36309,
+      "number": 42,
+      "response_digest": "8549e5ac0d07cbe01b7d3baf25ab69988b58af74542ceae5ec85dd0379edfb18",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/42"
+    },
+    {
+      "body_sha256": "cf3cfaee403fa116b3ebfb7f1136bca44c0ec033361f59355c347977c27216c1",
+      "id": 36310,
+      "number": 43,
+      "response_digest": "4095c994c5fea6fe26f19745de225afb2f02bf227e10453feb3f14b6885a8fa7",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/43"
+    },
+    {
+      "body_sha256": "31153ed5033d760a6e84dc673f8338c57a6eba60f16d145f021896e5e04040ed",
+      "id": 36311,
+      "number": 44,
+      "response_digest": "ade07f1e064beaeb821c633c0a399d2a5f846667985adb905daba72e83a1a338",
+      "url": "https://github.com/concurro-demo-upstream/stacks-core/issues/19/artifacts/44"
+    }
+  ],
+  "stage": "gates",
+  "total_task_model_calls": 24,
+  "version": 1
+}
