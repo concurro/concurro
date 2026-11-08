@@ -1,11 +1,18 @@
 """Prove an implementation-instruction upgrade without rebinding design approvals."""
 
+from __future__ import annotations
+
 import hashlib
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
 import protocol
 from policy import digest
+
+if TYPE_CHECKING:
+    from records import BundleView, TaskState
+
 
 SKILL = "bundle/skills/concurro-implement/SKILL.md"
 HISTORY_LIMIT = 128
@@ -15,7 +22,7 @@ RETRY_REASON = (
 )
 
 
-def matches(bundle, approved_bundle, approved_skill):
+def matches(bundle: BundleView, approved_bundle: str | None, approved_skill: object) -> bool:
     """Prove every resource except the implementer skill matches the approved bundle."""
     return (
         isinstance(approved_skill, str)
@@ -24,7 +31,7 @@ def matches(bundle, approved_bundle, approved_skill):
     )
 
 
-def accepted(state, bundle):
+def accepted(state: TaskState, bundle: BundleView) -> bool:
     """Accept only the exact execution bundle a writer previously adopted."""
     receipt = state.get("implementation_bundle", {})
     return (
@@ -34,14 +41,14 @@ def accepted(state, bundle):
     )
 
 
-def current(state, bundle):
+def current(state: TaskState, bundle: BundleView) -> bool:
     """Require the adopted execution identity, including after a rollback."""
     if state.get("implementation_bundle"):
         return accepted(state, bundle)
     return state.get("bundle_id") == bundle.identity
 
 
-def original_skill(state, bundle):
+def original_skill(state: TaskState, bundle: BundleView) -> str | None:
     """Find a proven original skill hash, using bounded local history for legacy tasks."""
     if "implementation_skill" in state:
         value = state["implementation_skill"]

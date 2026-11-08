@@ -39,10 +39,10 @@ class TurnOutcome(StrEnum):
 
 
 # Confirmed merge completion, including merges observed outside the controller.
-MERGED_STAGES = frozenset((Stage.MERGED, Stage.OBSERVED_MERGED))
+MERGED_STAGES: frozenset[Stage] = frozenset((Stage.MERGED, Stage.OBSERVED_MERGED))
 # PR lifecycle ended; closing without merging must not imply successful completion.
-TERMINAL_STAGES = MERGED_STAGES | {Stage.CLOSED}
+TERMINAL_STAGES: frozenset[Stage] = MERGED_STAGES | {Stage.CLOSED}
 # Pauses that preserve the stage to resume, rather than requiring reassessment.
-SUSPENDED_STAGES = frozenset((Stage.BLOCKED, Stage.STOPPED))
+SUSPENDED_STAGES: frozenset[Stage] = frozenset((Stage.BLOCKED, Stage.STOPPED))
 # Assessment decisions that require reassessment unless correcting rejected output.
-JUDGED_STAGES = frozenset((Stage.REJECTED, Stage.ESCALATED))
+JUDGED_STAGES: frozenset[Stage] = frozenset((Stage.REJECTED, Stage.ESCALATED))

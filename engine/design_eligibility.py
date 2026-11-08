@@ -1,8 +1,16 @@
 """Durable independence receipts for cooperative design assessments."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
+
 import classification
 import feedback
 from policy import digest
+
+if TYPE_CHECKING:
+    from records import Document, EligibilityIdentity, EligibilityReceipt, Operation, Session, TaskState
+
 
 CORRECTION_INSTRUCTION = (
     "Correct the report against its schema and the validation feedback. Reconsider the "
@@ -24,19 +32,19 @@ DISCUSSION = {
 }
 
 
-def baseline(context):
+def baseline(context: Document) -> str:
     """Commit to full review inputs, including feedback materialized as runner files."""
     restored = classification.context_core(feedback.restore(context))
     return digest({k: v for k, v in restored.items() if k not in INCIDENTAL})
 
 
-def discussion(context):
+def discussion(context: Document) -> bool:
     """Detect negotiation in addition to requirements present at initial assessment."""
     context = feedback.restore(context)
     return bool(context.get("plan", {}).get("responses") or any(context.get(k) for k in DISCUSSION))
 
 
-def identity(context, session):
+def identity(context: Document, session: Session) -> EligibilityIdentity:
     """Bind a receipt to the reviewer, exact design and retained transcript scope."""
     return {
         "binding": context["design_binding"],
@@ -45,7 +53,7 @@ def identity(context, session):
     }
 
 
-def prepare(state, context, session, operation):
+def prepare(state: TaskState, context: Document, session: Session | None, operation: Operation) -> None:
     """Record eligibility before dispatch; retry may erase the operation, never this receipt."""
     if context.get("review_phase") != "cooperative" or not session:
         return
@@ -55,7 +63,8 @@ def prepare(state, context, session, operation):
     same = previous is not None and previous.get("binding") == bound["binding"]
     inputs = baseline(context)
     if same:
-        receipt = previous
+        # `same` proves this receipt exists; the checker does not track that boolean alias.
+        receipt = cast("EligibilityReceipt", previous)
         reason = (
             "session_changed"
             if receipt.get("session") != bound["session"]
@@ -85,7 +94,7 @@ def prepare(state, context, session, operation):
         receipt.update(eligible=False, reason=reason)
 
 
-def eligible(state, context, session):
+def eligible(state: TaskState, context: Document, session: Session | None) -> bool:
     """Verify an admitted assessment again when recording its vote, without creating authority."""
     if context.get("review_phase") != "cooperative" or not session:
         return False
@@ -100,7 +109,7 @@ def eligible(state, context, session):
     )
 
 
-def restart(state, session):
+def restart(state: TaskState, session: Session) -> None:
     """Make uncertainty sticky immediately, including when a failed turn is checkpointed."""
     key = digest([session["role"], session["scope"]])
     for receipt in state.get("design_eligibility", {}).values():

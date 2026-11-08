@@ -1,9 +1,12 @@
 """Parse writer commands and apply their lifecycle transitions."""
 
+from __future__ import annotations
+
 import re
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
+from typing import TYPE_CHECKING
 
 import actions
 import conversation
@@ -15,6 +18,12 @@ from actions import BUNDLE_REASON
 from markup import code, link
 from policy import Blocked, approval_binding, approval_valid, consensus_valid, digest
 from vocab import JUDGED_STAGES, SUSPENDED_STAGES
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
+
+    from records import Comment, Config, TaskState
 
 
 class CommandKind(StrEnum):
@@ -44,7 +53,7 @@ class LoopAction(Enum):
     FALL_THROUGH = auto()
 
 
-def parse(body):
+def parse(body: str) -> Command | None:
     """Parse only the existing exact command grammar, ignoring surrounding whitespace."""
     body = body.strip()
     if not re.fullmatch(
@@ -60,7 +69,7 @@ def parse(body):
     return Command(CommandKind(parts[1]), parts[2] if len(parts) == 3 else None)
 
 
-def output_repair_pending(state):
+def output_repair_pending(state: TaskState) -> object:
     """Identify a correction retry that must retain its existing assessment stage."""
     return (
         (
@@ -78,12 +87,12 @@ def output_repair_pending(state):
 class CommandHandler:
     """Apply commands through controller operations without owning persistence or state."""
 
-    def __init__(self, controller, config_digest):
+    def __init__(self, controller: Any, config_digest: Callable[[Config], str]) -> None:
         """Keep controller hooks and its configuration-binding function available to handlers."""
         self.controller = controller
         self.config_digest = config_digest
 
-    def dispatch(self, command, comment, comments):
+    def dispatch(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Dispatch one already-authorized command and return its loop action."""
         handlers = {
             CommandKind.START: self.start,
@@ -95,7 +104,7 @@ class CommandHandler:
         }
         return handlers[command.kind](command, comment, comments)
 
-    def start(self, command, comment, comments):
+    def start(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Start a manual assessment or consume a refusal without changing the pause."""
         controller = self.controller
         if controller.state and controller.waiting_revision():
@@ -150,7 +159,7 @@ class CommandHandler:
             controller.initialize([c for c in comments if c["id"] <= comment["id"]], "manual", comment["id"])
         return LoopAction.FALL_THROUGH
 
-    def approve(self, command, comment, comments):
+    def approve(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Bind an unchanged manual plan to a writer approval."""
         controller = self.controller
         if (
@@ -175,7 +184,7 @@ class CommandHandler:
                 controller.save()
         return LoopAction.FALL_THROUGH
 
-    def invalidate(self, command, comment, comments):
+    def invalidate(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Restart assessment explicitly while retaining spent budgets."""
         controller = self.controller
         if controller.state:
@@ -183,7 +192,7 @@ class CommandHandler:
             return LoopAction.RETURN_TRUE
         return LoopAction.FALL_THROUGH
 
-    def retry(self, command, comment, comments):
+    def retry(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Resume the applicable paused stage or request a bounded reviewed repair."""
         controller = self.controller
         if controller.state and controller.state["stage"] == "gates":
@@ -235,7 +244,7 @@ class CommandHandler:
             controller.save()
         return LoopAction.FALL_THROUGH
 
-    def extend(self, command, comment, comments):
+    def extend(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Grant revision capacity before processing any later command."""
         controller = self.controller
         if controller.state:
@@ -244,7 +253,7 @@ class CommandHandler:
             return LoopAction.CONTINUE
         return LoopAction.FALL_THROUGH
 
-    def stop(self, command, comment, comments):
+    def stop(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Consume a stop command before suspending work."""
         controller = self.controller
         if controller.state:
@@ -252,10 +261,10 @@ class CommandHandler:
             controller.suspend("stopped")
         return LoopAction.FALL_THROUGH
 
-    def refuse_revision_command(self, comment, exhausted=False):
+    def refuse_revision_command(self, comment: Comment, exhausted: bool = False) -> None:
         """Consume an inapplicable writer command with one durable notice, without suspending work."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         body = "No exhausted plan revision is waiting; no capacity was granted."
         if exhausted:
             state.setdefault("revision_wait", {"stage": controller.waiting_revision()})
@@ -269,10 +278,10 @@ class CommandHandler:
         conversation.queue(state, "Plan revision command not applied", body)
         controller.save()
 
-    def extend_plan_revisions(self, comment, amount, comments):
+    def extend_plan_revisions(self, comment: Comment, amount: int, comments: list[Comment]) -> bool:
         """Atomically grant bounded revision capacity and resume the recorded revision, never waive findings."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         stage = controller.waiting_revision()
         if (
             state["stage"] not in ("blocked", "stopped", "escalated")
@@ -323,10 +332,10 @@ class CommandHandler:
         controller.save()
         return True
 
-    def retry_reviewed(self, comment, comments):
+    def retry_reviewed(self, comment: Comment, comments: list[Comment]) -> None:
         """A writer may request a bounded repair with fresh feedback; CI events alone never do."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         if state["issue_digest"] != controller.issue_digest():
             state["command_id"] = comment["id"]
             controller.resume_with_head(controller.requirements(comments))
@@ -361,10 +370,10 @@ class CommandHandler:
         state["command_id"] = comment["id"]
         controller.save()
 
-    def retry_implementation_bundle(self, comment, comments):
+    def retry_implementation_bundle(self, comment: Comment, comments: list[Comment]) -> None:
         """Adopt only proven implementer-skill changes on an authorized implementation retry."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         if implementation_bundle.current(state, controller.bundle):
             return
         with controller.consume_on_refusal(comment):
@@ -408,10 +417,10 @@ class CommandHandler:
             + ".",
         )
 
-    def invalidate_task(self, comment, comments):
+    def invalidate_task(self, comment: Comment, comments: list[Comment]) -> None:
         """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         with controller.consume_on_refusal(comment, save=False):
             if state.get("pending"):
                 raise Blocked(
@@ -490,10 +499,10 @@ class CommandHandler:
             )
         controller.save()
 
-    def check_human_approval(self, comments):
+    def check_human_approval(self, comments: list[Comment]) -> None:
         """Retain revocable writer approval for explicitly configured manual mode."""
         controller = self.controller
-        state = controller.state
+        state: TaskState = controller.state
         if not controller.permitted(state["approval"]["actor"]):
             raise Blocked("plan approver no longer has write access")
         if not any(

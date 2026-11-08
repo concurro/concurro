@@ -123,7 +123,7 @@ force it through.
 Install the CI test dependencies once, if needed:
 
 ```bash
-python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
+python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
 ```
 
 Then run all of the following:
@@ -138,7 +138,8 @@ git diff --check
 ```
 
 From iteration 03 onward, also run `ruff check engine service gateway`. From iteration 17
-onward, also run `ruff format --check engine service gateway`.
+onward, also run `ruff format --check engine service gateway`. From iteration 18 onward,
+run `pyright --project pyrightconfig.json` for the explicitly scoped engine modules.
 
 ## Intentional differences: do not merge
 
@@ -181,8 +182,8 @@ Status values:
 | 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Done |
 | 17 | [One-time format](17-format.md) | Style | Low (noisy) | Done |
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Done |
-| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Approved |
-| 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Next after 13 |
+| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Done |
+| 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Approved |
 | 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate (10b, then 10a) |
 | 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate (09b after 05) |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |

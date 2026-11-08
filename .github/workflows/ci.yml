@@ -24,11 +24,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
+      - run: python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
       - name: Lint Python
         run: ruff check engine service gateway
       - name: Check Python formatting
         run: ruff format --check engine service gateway
+      - name: Check extracted engine types
+        run: pyright --project pyrightconfig.json
       - run: python3 -m unittest discover -s engine/tests -v
       - run: python3 -m unittest discover -s service/tests -v
       - run: python3 -m unittest discover -s gateway/tests -v

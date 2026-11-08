@@ -99,9 +99,10 @@ Create a virtual environment, install the test dependencies and run the offline 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
+python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
 ruff check engine service gateway
 ruff format --check engine service gateway
+pyright --project pyrightconfig.json
 python3 -m unittest discover -s engine/tests -v
 python3 -m unittest discover -s service/tests -v
 python3 -m unittest discover -s gateway/tests -v

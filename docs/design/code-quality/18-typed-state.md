@@ -8,7 +8,8 @@ Add types **incrementally and checked**, starting with the records that the extr
 components exchange. A large unchecked catalogue of the whole checkpoint state would drift
 like any other description, so this iteration avoids one.
 
-There are no annotations today. The checkpoint state is an untyped dict with about 60 keys.
+Most runtime code is unannotated; a few dataclasses already have field annotations.
+Checkpoint records remain ordinary dictionaries at runtime.
 
 ## Scope
 
@@ -72,3 +73,27 @@ scoped modules.
 ```text
 refactor(engine): add checked types to the extracted components
 ```
+
+## Checked scope and boundaries
+
+`pyrightconfig.json` checks nine files: `records`, `vocab`, `dashboard`, `commands`,
+`revisions`, `publication`, `review_timing`, `implementation_bundle` and
+`design_eligibility`. The development/CI pin is `pyright==1.1.408`; the target Python
+version is 3.12. No `core.py` exists. No diagnostics or annotation requirements are imposed
+on other modules, though Pyright can use their inferred signatures.
+
+`records.py` describes the records consumed by this slice, not the full checkpoint or
+model schemas. Optional keys represent stage-dependent and legacy data. The checker does
+not require a presence guard on every optional-key read: the existing stage and validation
+contracts still govern those reads. Missing function parameter annotations are errors.
+
+Publication has a narrow typed transport protocol; the dashboard has a read-only checkpoint
+protocol. Unvalidated GitHub responses and model documents stay explicitly dynamic. The
+command handler's controller hook remains an `Any` boundary; its local state, command
+inputs, revision grants and bundle receipts are checked. Extending checks to the controller
+hook contract, `review_state` and `dashboard_runs` is the next slice, not part of this one.
+
+Record imports are inside `TYPE_CHECKING`; existing runtime imports keep their relative
+order. The sole identity cast in eligibility documents the already-proven `same` boolean
+condition and neither validates nor converts the receipt. Existing `dict.update` calls,
+serialization, persistence and write order remain unchanged.

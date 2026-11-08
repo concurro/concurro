@@ -1,0 +1,22 @@
+{
+  "include": [
+    "engine/records.py",
+    "engine/vocab.py",
+    "engine/dashboard.py",
+    "engine/commands.py",
+    "engine/revisions.py",
+    "engine/publication.py",
+    "engine/review_timing.py",
+    "engine/implementation_bundle.py",
+    "engine/design_eligibility.py"
+  ],
+  "pythonVersion": "3.12",
+  "extraPaths": [
+    "engine"
+  ],
+  "typeCheckingMode": "basic",
+  "reportTypedDictNotRequiredAccess": "none",
+  "reportMissingParameterType": "error",
+  "reportUnknownParameterType": "error",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}

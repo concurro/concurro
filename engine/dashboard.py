@@ -1,6 +1,9 @@
 """Read-only issue dashboard rendering, separate from controller transitions and writes."""
 
+from __future__ import annotations
+
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 import classification
 import dashboard_runs
@@ -14,6 +17,12 @@ from markup import code, link, text
 from model_config import assigned
 from policy import approval_binding, design_roster, digest
 from vocab import MERGED_STAGES
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from records import Boundary, CheckpointView, Config, DependencyDelta, ReportIndex, TaskState
+
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
@@ -31,7 +40,7 @@ STAGE_STEP = {
 }
 
 
-BATCH_STATUS = {
+BATCH_STATUS: dict[str | None, str] = {
     "queued": "queued",
     "running": "reviewing",
     "retrying": "retrying",
@@ -40,7 +49,7 @@ BATCH_STATUS = {
 }
 
 
-def dependency_summary(path, delta):
+def dependency_summary(path: str, delta: DependencyDelta) -> str:
     """One line: a lockfile's changed packages (the first few by name) and its added and removed counts."""
     counts = delta["counts"]
     named = [f"{c['name']} {c['change']}" for c in delta["changed"][:3]]
@@ -53,7 +62,14 @@ def dependency_summary(path, delta):
 class Dashboard:
     """One rendering view of state, config and checkpoints; recreate after task changes."""
 
-    def __init__(self, state, config, checkpoints, pr_url, waiting_revision):
+    def __init__(
+        self,
+        state: TaskState,
+        config: Config,
+        checkpoints: CheckpointView,
+        pr_url: Callable[[int], str],
+        waiting_revision: Callable[[], str | None],
+    ) -> None:
         """Accept display data and two narrow controller queries, never its write interface."""
         self.state = state
         self.config = config
@@ -62,21 +78,21 @@ class Dashboard:
         self.waiting_revision = waiting_revision
 
     @cached_property
-    def run_boundaries(self):
+    def run_boundaries(self) -> list[Boundary]:
         """Resolve invalidation offsets once for this rendering view."""
         return dashboard_runs.boundaries(self.state)
 
     @property
-    def boundary(self):
+    def boundary(self) -> Boundary:
         """The current run's display offsets."""
         return self.run_boundaries[-1]
 
     @cached_property
-    def current_reports(self):
+    def current_reports(self) -> list[ReportIndex]:
         """Keep only report links from the current run."""
         return [r for r in self.state.get("reports", []) if r["artifact"] > self.boundary["artifact"]]
 
-    def summary_body(self):
+    def summary_body(self) -> str:
         """The status comment: stage, plan, PR and votes first; reports and evidence collapsed.
 
         One that would exceed its limit drops the collapsed reports and shortens the reason; the
@@ -87,7 +103,7 @@ class Dashboard:
             body = self.summary_lines(compact=True)
         return body
 
-    def summary_lines(self, compact):
+    def summary_lines(self, compact: bool) -> str:
         """The status comment: live steps with their review rounds, then optional diagnostics.
 
         `compact` drops historical rows; reports themselves live in their archives.
@@ -129,7 +145,7 @@ class Dashboard:
         diagnostics = "\n\n".join(part for part in (diagnostics, audit) if part)
         return "\n".join(lines + [markup.details("Diagnostics", diagnostics), "", reference, ""])
 
-    def activity_line(self):
+    def activity_line(self) -> str:
         """Name current work without implying a paused or queued turn is running."""
         stage = self.state["stage"]
         paused = {
@@ -160,7 +176,7 @@ class Dashboard:
         )
         return f"> [!{alert}]\n> " + message.replace("\n", "\n> ")
 
-    def _gate_activity(self):
+    def _gate_activity(self) -> str:
         """Describe readiness checks or the completed human hand-off."""
         state = self.state
         return (
@@ -171,7 +187,7 @@ class Dashboard:
             else "Checking reviews and CI before marking the pull request ready."
         )
 
-    def _design_activity(self):
+    def _design_activity(self) -> str:
         """Describe pending design reviewers, preferring batch progress over serial repair state."""
         state = self.state
         members = [m for m in design_roster(self.config) if m["id"] not in state.get("design_votes", {})]
@@ -214,7 +230,7 @@ class Dashboard:
         task = "its" if len(members) == 1 else "their"
         return f"We're waiting for {names} to complete {task} {phase} design review."
 
-    def _review_activity(self):
+    def _review_activity(self) -> str:
         """List all PR reviewers whose current-head results are still outstanding."""
         providers = [p for p in assigned(self.config, "pr_reviewers") if p not in self.state.get("reviews", {})]
         names = " and ".join(markup.code(p) for p in providers)
@@ -224,7 +240,7 @@ class Dashboard:
             else "Checking review findings and deciding whether a repair is needed."
         )
 
-    def _agent_activity(self):
+    def _agent_activity(self) -> str:
         """Describe intake, planning or implementation, including rejected-output correction."""
         state, stage = self.state, self.state["stage"]
         role, task = {
@@ -237,11 +253,11 @@ class Dashboard:
             "correct its output; details are in Diagnostics." if draft else task + "."
         )
 
-    def _default_activity(self):
+    def _default_activity(self) -> str:
         """Keep the fallback for stages with no specialized activity message."""
         return "Checking the task’s current state."
 
-    def classification_row(self):
+    def classification_row(self) -> str:
         """Render labels and archive links, never model-written rationale, on the dashboard."""
         result = classification.view(dashboard_runs.assessment_state(self.state), self.config)
         if not result.estimate.sources:
@@ -286,11 +302,11 @@ class Dashboard:
             ],
         )
 
-    def artifact_url(self, number):
+    def artifact_url(self, number: int) -> str:
         """An artifact of this issue on GitHub."""
         return protocol.artifact_url(self.config["repository"], self.state["issue"], number)
 
-    def current_step(self):
+    def current_step(self) -> int:
         """The step the task is on, or the furthest it reached when paused; len(STEPS) only once merged."""
         state = self.state
         stage = state["stage"]
@@ -313,7 +329,7 @@ class Dashboard:
             return 2
         return 1 if state.get("plan") or state.get("plan_draft") else 0
 
-    def step_row(self, index, name, current):
+    def step_row(self, index: int, name: str, current: int) -> tuple[str, str, str]:
         """`(name, status, detail)` of one step; details are engine values and at most one headline."""
         state = self.state
         stage = state["stage"]
@@ -378,7 +394,7 @@ class Dashboard:
             status = markup.label(paused[stage])
         return name, status, detail
 
-    def action_line(self):
+    def action_line(self) -> str:
         """One line naming what a human must do, linking the comment that asks."""
         state = self.state
         journal = state.get("conversation", {})
@@ -414,7 +430,9 @@ class Dashboard:
             line = f"{paused[0]} **{paused[1]}:** {text(state['reason'], 300)}\n\n" + line
         return line
 
-    def progress_rows(self, steps, compact=False, current=None):
+    def progress_rows(
+        self, steps: list[tuple[str, str, str]], compact: bool = False, current: int | None = None
+    ) -> list[list[str]]:
         """Place each round below its stage, keeping archived votes linked in their original order."""
         reports = [r for r in self.current_reports if not r.get("diagnostic")]
         current = self.current_step() if current is None else current
@@ -447,7 +465,7 @@ class Dashboard:
                 )
         return rows
 
-    def _round_cells(self, step, entries, expected):
+    def _round_cells(self, step: str, entries: dict[str, ReportIndex], expected: list[str]) -> list[str]:
         """Render recorded votes first, then outstanding reviewers in roster order."""
         cells = []
         vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
@@ -463,7 +481,7 @@ class Dashboard:
                 cells.append(text(provider + ": " + self._pending_reviewer_status(provider)))
         return cells
 
-    def _pending_reviewer_status(self, provider):
+    def _pending_reviewer_status(self, provider: str) -> str:
         """Distinguish paused, serial and batch work without changing correction wording."""
         state = self.state
         operation = review_state.operation(state)
@@ -488,7 +506,7 @@ class Dashboard:
             )
         return "Paused" if state["stage"] not in ("plan_qc", "review") else "Reviewing" if active else "Waiting"
 
-    def diagnostics_table(self):
+    def diagnostics_table(self) -> str:
         """Show output corrections below the live status, with links to immutable evidence."""
         rows = []
         for report in self.current_reports:
@@ -563,7 +581,7 @@ class Dashboard:
             sections.append(markup.details("Previous runs", previous))
         return "\n\n".join(sections)
 
-    def previous_runs(self):
+    def previous_runs(self) -> str:
         """Link invalidated run evidence separately from current progress, without copying reports."""
         boundaries = self.run_boundaries
         sections = []

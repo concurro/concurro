@@ -1,5 +1,8 @@
 """Recoverable fork publication and upstream PR rendering."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 import candidates
@@ -11,6 +14,12 @@ from github import Transient
 from markup import block, link, text
 from policy import Blocked, approval_valid
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from records import Config, Document, Edit, GitHubClient, PendingPublication, PlanArtifact, TaskState, TreeEntry
+
+
 PR_TITLE_LIMIT = 72
 # Keep tree requests compact; larger contents are published as separate blob objects.
 INLINE_BLOB_LIMIT = 64000
@@ -19,18 +28,25 @@ INLINE_BLOB_LIMIT = 64000
 class Publication:
     """Publish an approved candidate using explicit fork and upstream clients."""
 
-    def __init__(self, code, pulls, config, state, plan_artifact=None):
+    def __init__(
+        self,
+        code: GitHubClient,
+        pulls: GitHubClient,
+        config: Config,
+        state: TaskState,
+        plan_artifact: PlanArtifact | None = None,
+    ) -> None:
         """Bind publication to its task state and optional plan artifact."""
         self.code, self.pulls, self.config, self.state = code, pulls, config, state
         self.plan_artifact = plan_artifact
 
-    def _branch_refs(self, branch):
+    def _branch_refs(self, branch: str) -> list[Document]:
         """Select only the exact branch from GitHub's prefix-matching endpoint."""
         return [
             ref for ref in self.code.repo("git/matching-refs/heads/" + branch) if ref["ref"] == "refs/heads/" + branch
         ]
 
-    def reserve_development_branch(self, save):
+    def reserve_development_branch(self, save: Callable[[], None]) -> None:
         """Reserve a fork branch and publish its issue link with recoverable intent."""
         state = self.state
         if state.get("head"):
@@ -63,13 +79,21 @@ class Publication:
             )
             save()
 
-    def build_commit(self, parent, edits, tree_reader, inline_blob_limit=INLINE_BLOB_LIMIT):
+    def build_commit(
+        self,
+        parent: str,
+        edits: list[Edit],
+        tree_reader: Callable[[str], dict[str, TreeEntry]],
+        inline_blob_limit: int = INLINE_BLOB_LIMIT,
+    ) -> Document:
         """Create blobs, a tree and a commit in order, without advancing the task checkpoint."""
         state = self.state
         # Large contents go through blob objects so the tree request contains only small entries.
+        entries: list[TreeEntry]
+        uploaded_blobs: list[str]
         entries, uploaded_blobs = [], []
         for edit in edits:
-            entry = {
+            entry: TreeEntry = {
                 "path": edit["path"],
                 "mode": tree_reader(parent).get(edit["path"], {}).get("mode", "100644"),
                 "type": "blob",
@@ -96,7 +120,7 @@ class Publication:
         )
         return commit
 
-    def publish(self, save):
+    def publish(self, save: Callable[[], None]) -> None:
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
         state, pending = self.state, self.state["pending"]
         candidate = state.get("candidate", {})
@@ -132,7 +156,7 @@ class Publication:
         del state["pending"]
         save()
 
-    def _advance_branch(self, pending):
+    def _advance_branch(self, pending: PendingPublication) -> None:
         """Advance only the reserved branch or recognize its already-published head."""
         state = self.state
         refs = self._branch_refs(state["branch"])
@@ -148,7 +172,7 @@ class Publication:
         else:
             raise Blocked("implementation branch disappeared")
 
-    def _find_or_open_pr(self, pending):
+    def _find_or_open_pr(self, pending: PendingPublication) -> Document:
         """Recover an existing matching PR before attempting a new draft PR write."""
         state = self.state
         fork = self.config.get("fork", self.config["repository"])
@@ -190,7 +214,7 @@ class Publication:
             raise Blocked("PR is not authored by the controller App")
         return pr
 
-    def pr_title(self):
+    def pr_title(self) -> str:
         """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
         plan, suffix = self.state["plan"], f" (#{self.state['issue']})"
         title = (
@@ -208,7 +232,7 @@ class Publication:
             title = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-") + "…"
         return title + suffix
 
-    def pr_body(self):
+    def pr_body(self) -> str:
         """The plan's summary, its artifact, any dependency change, and the issue it closes."""
         plan = self.plan_artifact
         lines = [block(self.state["plan"]["summary"]), ""]
@@ -230,6 +254,6 @@ class Publication:
         )
         return "\n".join(lines + [closing])
 
-    def pr_url(self, number):
+    def pr_url(self, number: int) -> str:
         """The task's pull request on GitHub."""
         return f"https://github.com/{self.config.get('upstream', self.config['repository'])}/pull/{number}"
