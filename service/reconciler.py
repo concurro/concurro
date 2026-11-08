@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 
+from github import paginate
 from policy import digest
 from readiness import ci_refs
 
@@ -18,15 +19,7 @@ log = logging.getLogger("concurro.service")
 
 def pages(reader, path, key=None):
     """Read every page of a collection, or fail if the bounded traversal cannot finish."""
-    result = []
-    for page in range(1, PAGE_LIMIT + 1):
-        separator = "&" if "?" in path else "?"
-        batch = reader.request("GET", f"{path}{separator}per_page=100&page={page}")
-        batch = batch[key] if key else batch
-        result.extend(batch)
-        if len(batch) < 100:
-            return result
-    raise RuntimeError("pagination exceeded safety bound")
+    return paginate(lambda url: reader.request("GET", url), path, key=key, page_size=100, max_pages=PAGE_LIMIT)
 
 
 class Reconciler:

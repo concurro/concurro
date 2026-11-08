@@ -10,6 +10,7 @@ from github import NotFound
 from . import transport
 from .gateway import GatewayGitHub
 from .reconciler import ENROLLMENT, pages
+from .transport import StaticCredential as Token
 from .worker import content, head
 
 # The engine commit that made the Actions controller honour ownership markers.
@@ -25,26 +26,9 @@ class CutoverError(RuntimeError):
     """A cutover precondition failed; nothing was written."""
 
 
-class Token:
-    """A fixed token in the transport's credential shape."""
-
-    def __init__(self, token):
-        self.token = token
-
-    def get(self):
-        return self.token
-
-    def drop(self, token):
-        pass
-
-
 def compare(repository, base, head, connection=transport.connect):
     """`status` of GitHub's unauthenticated compare of two engine commits (`identical`, `ahead`, …)."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": transport.API_VERSION,
-        "User-Agent": transport.USER_AGENT,
-    }
+    headers = transport.headers()
     try:
         response = transport.exchange(
             connection,

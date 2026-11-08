@@ -75,12 +75,7 @@ class Identity:
 
     def api(self, method, path, token, data=None):
         """One App API call with in-memory credentials and sanitized errors."""
-        headers = {
-            "Authorization": "Bearer " + token,
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": transport.API_VERSION,
-            "User-Agent": transport.USER_AGENT,
-        }
+        headers = {"Authorization": "Bearer " + token, **transport.headers()}
         body = None
         if data is not None:
             body = json.dumps(data).encode()

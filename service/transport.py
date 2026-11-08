@@ -33,6 +33,31 @@ USER_AGENT = "concurro-service"
 PROFILE = re.compile(r"users/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:%5Bbot%5D)?")
 
 
+def headers():
+    """Fresh common API headers; callers keep their authorization order and failure boundaries."""
+    return {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": API_VERSION,
+        "User-Agent": USER_AGENT,
+    }
+
+
+class StaticCredential:
+    """A fixed credential that cannot refresh itself after a refusal."""
+
+    def __init__(self, token):
+        """Retain the caller's command-scoped token."""
+        self.token = token
+
+    def get(self):
+        """Return the fixed token."""
+        return self.token
+
+    def drop(self, token):
+        """Leave the fixed token unchanged; there is no refresh source."""
+        pass
+
+
 @dataclass(frozen=True)
 class Response:
     """What came back for one request; `body` is None when it could not be read completely."""
@@ -155,24 +180,22 @@ class Transport:
 
     def call(self, method, path, data, host=API, limit=None, timeout=TIMEOUT, authorize=True):
         """Authorize and send one request; a missing token is a request not sent."""
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": API_VERSION,
-            "User-Agent": USER_AGENT,
-        }
+        request_headers = headers()
         token = None
         if authorize:
             try:
                 token = self.credential.get()
             except Exception:
                 return Response(sent=False)
-            headers["Authorization"] = "Bearer " + token
+            request_headers["Authorization"] = "Bearer " + token
         body = None
         if data is not None:
             body = json.dumps(data).encode()
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
         target = path if path.startswith("/") else "/" + path
-        response = exchange(self.connection, host, method, target, headers, body, limit or self.limit(path), timeout)
+        response = exchange(
+            self.connection, host, method, target, request_headers, body, limit or self.limit(path), timeout
+        )
         if token and response.status == 401:
             self.credential.drop(token)
         return response

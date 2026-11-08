@@ -46,6 +46,19 @@ class Transient(RuntimeError):
         super().__init__(self.TEXT[self.code])
 
 
+def paginate(fetch, path, *, key=None, page_size, max_pages):
+    """Collect a bounded REST listing, preserving the endpoint's query and response shape."""
+    result = []
+    for page in range(1, max_pages + 1):
+        sep = "&" if "?" in path else "?"
+        batch = fetch(f"{path}{sep}per_page={page_size}&page={page}")
+        batch = batch[key] if key else batch
+        result.extend(batch)
+        if len(batch) < page_size:
+            return result
+    raise RuntimeError("pagination exceeded safety bound")
+
+
 class GitHub:
     """Use gh's authenticated transport, with bounded pagination and explicit methods."""
 
@@ -97,10 +110,18 @@ class GitHub:
             self.ensure_label(
                 wanted, "8250df", "Concurro progress display; does not grant execution or merge approval."
             )
-            self.repo(f"issues/{number}/labels", "POST", {"labels": [wanted]})
+            self._add_label(number, wanted)
         for old in sorted(current - {wanted}):
             if old.startswith(STAGE_LABEL_PREFIX):
-                self.repo(f"issues/{number}/labels/" + quote(old, safe=""), "DELETE")
+                self._remove_label(number, old)
+
+    def _add_label(self, number, name):
+        """Attach one existing label to the issue."""
+        self.repo(f"issues/{number}/labels", "POST", {"labels": [name]})
+
+    def _remove_label(self, number, name):
+        """Detach one label using its encoded name."""
+        self.repo(f"issues/{number}/labels/" + quote(name, safe=""), "DELETE")
 
     def ensure_label(self, name, color, description):
         """Create a display label only when it is absent from the repository."""
@@ -115,22 +136,14 @@ class GitHub:
         current = {label["name"] for label in self.pages(f"issues/{number}/labels")}
         if failed and ATTENTION_LABEL not in current:
             self.ensure_label(ATTENTION_LABEL, "d4c5f9", "Concurro checkpoint needs attention; display only.")
-            self.repo(f"issues/{number}/labels", "POST", {"labels": [ATTENTION_LABEL]})
+            self._add_label(number, ATTENTION_LABEL)
         elif not failed and ATTENTION_LABEL in current:
-            self.repo(f"issues/{number}/labels/" + quote(ATTENTION_LABEL, safe=""), "DELETE")
+            self._remove_label(number, ATTENTION_LABEL)
 
     def pages(self, path, key=None):
         """Read all pages or fail if the bounded traversal cannot finish."""
-        result = []
         page_size = 10 if path.endswith("/artifacts") else 100
-        for page in range(1, 10000 // page_size + 1):
-            sep = "&" if "?" in path else "?"
-            batch = self.repo(f"{path}{sep}per_page={page_size}&page={page}")
-            batch = batch[key] if key else batch
-            result.extend(batch)
-            if len(batch) < page_size:
-                return result
-        raise RuntimeError("pagination exceeded safety bound")
+        return paginate(self.repo, path, key=key, page_size=page_size, max_pages=10000 // page_size)
 
     def outcome_candidates(self, limit):
         """Retrieve at most ten recent opted-in issues and ten recent comments per issue."""
@@ -151,38 +164,17 @@ class GitHub:
 
     def review_threads(self, number):
         """Every review thread as `{id, isResolved, comment}`, where `comment` is its first comment's REST ID."""
-        owner, name = self.repository.split("/")
-        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
-          repository(owner:$owner,name:$name) { pullRequest(number:$number) {
-            reviewThreads(first:100,after:$cursor) {
-              nodes { id isResolved comments(first:1) { nodes { databaseId } } }
-              pageInfo { hasNextPage endCursor }
-            }
-          } }
-        }"""
-        cursor, result = None, []
-        for _ in range(100):
-            response = self.api(
-                "graphql",
-                "POST",
-                {"query": query, "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor}},
+        result = []
+        for node in self._review_thread_nodes(number, "id isResolved comments(first:1) { nodes { databaseId } }"):
+            first = node["comments"]["nodes"]
+            result.append(
+                {
+                    "id": node["id"],
+                    "isResolved": node["isResolved"],
+                    "comment": first[0]["databaseId"] if first else None,
+                }
             )
-            if response.get("errors"):
-                raise RuntimeError("cannot establish review-thread state")
-            page = response["data"]["repository"]["pullRequest"]["reviewThreads"]
-            for node in page["nodes"]:
-                first = node["comments"]["nodes"]
-                result.append(
-                    {
-                        "id": node["id"],
-                        "isResolved": node["isResolved"],
-                        "comment": first[0]["databaseId"] if first else None,
-                    }
-                )
-            if not page["pageInfo"]["hasNextPage"]:
-                return result
-            cursor = page["pageInfo"]["endCursor"]
-        raise RuntimeError("review-thread pagination exceeded safety bound")
+        return result
 
     def mark_ready(self, node_id):
         """Mark the bound draft PR ready; callers verify the current head before and after."""
@@ -202,16 +194,20 @@ class GitHub:
 
     def threads(self, number):
         """Read every review thread; an outdated unresolved thread still blocks."""
+        return list(self._review_thread_nodes(number, "id isResolved isOutdated"))
+
+    def _review_thread_nodes(self, number, fields):
+        """Yield nodes before fetching the next page so caller validation keeps its request order."""
         owner, name = self.repository.split("/")
         query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
           repository(owner:$owner,name:$name) { pullRequest(number:$number) {
             reviewThreads(first:100,after:$cursor) {
-              nodes { id isResolved isOutdated }
+              nodes { FIELDS }
               pageInfo { hasNextPage endCursor }
             }
           } }
-        }"""
-        cursor, result = None, []
+        }""".replace("FIELDS", fields)
+        cursor = None
         for _ in range(100):
             response = self.api(
                 "graphql",
@@ -221,8 +217,8 @@ class GitHub:
             if response.get("errors"):
                 raise RuntimeError("cannot establish review-thread state")
             page = response["data"]["repository"]["pullRequest"]["reviewThreads"]
-            result.extend(page["nodes"])
+            yield from page["nodes"]
             if not page["pageInfo"]["hasNextPage"]:
-                return result
+                return
             cursor = page["pageInfo"]["endCursor"]
         raise RuntimeError("review-thread pagination exceeded safety bound")
