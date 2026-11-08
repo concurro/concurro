@@ -1,6 +1,17 @@
-# 09: Review, conversation and policy modules
+# 09: Review, conversation and policy modules (09a, 09b)
 
 Part of the [code-quality programme](README.md).
+
+This brief covers **two separate commits**, each reassessed and approved on its own:
+
+- **09a, policy and imports:** change 1 (leaf module for the circular imports), change 4
+  (review validators), and from change 8, the `nonblank` helpers and
+  `policy.reviewer_identity`.
+- **09b, conversation and review helpers:** changes 2, 3, 5, 6 and 7, plus the
+  `readiness.ci_reasons` and `conversation.publish` items from change 8.
+
+The shared protocol constants from iteration 05 are a prerequisite for 09b's marker
+changes. Don't create a second marker definition here.
 
 ## Goal
 

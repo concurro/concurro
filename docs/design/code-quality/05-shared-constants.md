@@ -1,115 +1,89 @@
-# 05: Shared constants and URL helpers
+# 05: URL helpers and protocol markers
 
 Part of the [code-quality programme](README.md).
 
 ## Goal
 
-Replace copied regexes, markers, magic numbers and hand-built GitHub URLs with single
-definitions. Every value must be identical to the literal it replaces.
+Give hand-built GitHub URLs and repeated protocol markers and patterns one definition
+each. This is a small, separate commit from iteration 04: URLs and markers are not stage
+vocabulary.
 
 ## Scope
 
-- Engine and service modules
-- **Not** `gateway/exchange/exchange.py`. It keeps its own copies because it ships as one
-  file. Add a comment there naming the engine constant it mirrors.
+- New stdlib-only leaf module `engine/protocol.py` (or a similar name). It imports nothing
+  from the engine, so any module can use it without creating an import cycle.
+- The engine modules that build these URLs or use these markers.
+- **Out of scope:**
+  - `gateway/exchange/exchange.py`. It keeps its own copies because it ships as one file.
+    Add a comment there naming the engine constant it mirrors.
+  - Magic numbers.
 
 ## Changes
 
-### 1. URL helpers in `engine/github.py`
+### 1. URL helpers in the leaf module
 
-These build exactly today's strings, as plain functions:
+Each helper must produce exactly today's string:
 
-- `artifact_url(repository, issue, number=None)`: with `number=None` it returns the root
+- `artifact_url(repository, issue, number=None)`: with no number it returns the root,
   ending in `/artifacts/`.
-- `comment_url(repository, issue, comment_id)`. `actions.COMMENT_URL` already exists;
-  reuse or replace it.
+- `comment_url(repository, issue, comment_id)`. `actions.COMMENT_URL` already exists; keep
+  it importable, as an alias or re-export.
 - `issue_url(repository, issue)`.
-- `clone_url(repository)`.
+- `clone_url(repository)`, if more than one call site builds it.
 
-Replace the hand-built copies, about 20 sites:
+Replace the hand-built copies. Find them with
+`grep -nE 'https://github.com/\{' engine/*.py`. Sites include:
 
-- `controller.py`: 320, 498, 574, 578, 696, 1120, 1267, 2100;
-- `conversation.py:438`;
-- `design_audit.py`: 59, 78, 124;
-- `report_store.py:249`;
-- `checkpoints.py`: 174, 388;
-- `mirror.py`: 42, 45;
-- `runner.py:142`;
-- `actions.py:151`.
+- `dashboard.artifact_url`;
+- `conversation.py` (archive links);
+- `design_audit.py`;
+- `report_store.py`;
+- `checkpoints.py`;
+- `controller.py`: comment, issue and artifact links.
 
-`repository.py` must keep its import constraints (see the README). If `github.py`
-pulls in dependencies they can't use, put the helpers in a stdlib-only module
-(`engine/urls.py`) instead.
+### 2. Protocol markers and patterns in the same leaf module
 
-### 2. Regex and marker constants
+- **`EVENT_MARKER = "<!-- concurro:event:v1:"`.**
+  - `conversation.MARKER` and `report_store.py`'s two inline literals use it.
+  - `conversation.MARKER` stays importable, so existing imports (`design_audit`, tests)
+    keep working.
+  - **Don't** make `report_store` import from `conversation`: `conversation` already
+    imports `report_store`, so that would create a cycle.
+  - `actions.BLOCKED_HEADER` embeds the marker in a regex; build that regex from
+    `re.escape(EVENT_MARKER)` only if the compiled pattern is identical.
+- **`DIGEST_PATTERN`** (64 lowercase hex) and **`SHA_PATTERN`** (40 hex): replace the
+  copies (`agents.py`, `checkpoints.py`, `feedback.py`, `report_store.py`; `mirror.py`,
+  `repository.py`, `snapshot.py`). Share only the pattern text, and keep each call site's
+  anchoring (`fullmatch` vs `match`) and flags.
 
-Put these in a stdlib-only leaf module. `vocab.py` from iteration 04 is fine, or a new
-`engine/patterns.py`:
+### 3. Existing exports
 
-- `DIGEST`: the 64-hex pattern (`agents.py:33`, `checkpoints.py:260`, `feedback.py:64`,
-  `report_store.py:293`).
-- `SHA`: the 40-hex pattern (`mirror.py:15`, `repository.py:29`, `snapshot.py:13`).
-- `SESSION_ID`: the run-session UUID (`gateway.py:49`, `worker.py:154`,
-  `review_timing.py:16`).
-- `REPOSITORY_NAME`: `mirror.py:38, 43`.
-- `EVENT_MARKER`: `'<!-- concurro:event:v1:'`, used in `report_store.py` three times and
-  in `actions.BLOCKED_HEADER`. `conversation.MARKER` already holds it; make that the single
-  definition and import it.
-
-Keep anchoring (`fullmatch` vs `match`) and flags exactly as each call site has them.
-Share only the pattern text.
-
-### 3. Run-branch and workflow constants
-
-- `RUN_BRANCH_PREFIX = "concurro/runs/"`: 9 sites across `service/gateway.py` (171–180,
-  435), `service/worker.py` (163, 324–325) and the engine. Exchange keeps its own copy.
-- `EXECUTOR_WORKFLOW = "concurro-executor.yml"`: `gateway.py:176, 443`.
-- `ENROLLMENT_LABEL = "concurro"`: `service/ingress.py:10`, `service/reconciler.py:10`,
-  and the literals at `controller.py:970, 974`.
-- `PROVIDERS`: `{"claude", "codex"}` in `agents.PROVIDERS`, `service/settings.py:29` and
-  `service/worker.py:123`.
-  - `agents.PROVIDERS` is a tuple. Keep its order where it is iterated.
-  - Service code may import from the engine (`service/__init__.py` puts `engine/` on the
-    path). The engine must never import from the service.
-
-### 4. Name repeated limits that mean the same thing
-
-Name a number only when it is a real limit or protocol value, and the same concept recurs.
-A name reused for two values that only happen to be equal couples unrelated code.
-Pagination bounds are handled in iteration 11, where each caller keeps its own. Candidates:
-
-- `64_000` (`worker.py:38`, `cutover.py:18`), if both are the same limit;
-- `86400` (`worker.py:182`);
-- `14_400` (`control.py:111`);
-- `classification.py:78-105`: the repeated `600`/`5`/`200` and three repeated diagnostic
-  strings;
-- `conversation.py:533-537` (`1000`/`900`/`800`), `385/388`, and `339` (`8`);
-- `policy.py:115/263/346` (`6000`/`20000`/`16000`).
-
-Don't name a number used only once with an obvious meaning.
+Every name currently imported from another module, by code or tests, stays importable from
+where it is today.
 
 ## Must not change
 
-- Any produced URL, regex match result, or marker text.
-- Import-time behaviour of `repository.py`, both in-process and as a script.
+- Any produced URL, marker text, or regex match result.
+- Import-time behaviour of `repository.py`, in-process and as a script.
+- The import graph, apart from the new leaf module.
 
 ## Tests first
 
-- **URL helpers:** unit tests that pin each helper's output for a sample repository,
-  issue and number, against the literal format used today.
-- **Patterns:** a test that each shared pattern constant matches and rejects the same
-  examples as before. Include a digest of the wrong length and uppercase hex, if the old
-  patterns rejected those.
+- **URL helpers:** each helper's output pinned against a literal string, for a sample
+  repository, issue and number.
+- **Patterns:** each shared pattern matches and rejects the same examples as before,
+  including wrong-length and uppercase hex, if the old patterns rejected them.
+- **Existing exports:** `conversation.MARKER`, `actions.COMMENT_URL` and any other existing
+  export keep their values.
 
 ## Done when
 
-- No hand-built `https://github.com/{...}/issues/` artifact or comment URL remains outside
-  the helpers. Exchange is exempt.
-- Each listed regex, marker and constant has one definition.
+- No hand-built artifact, comment or issue URL remains in the engine outside the helpers.
+- The event marker, digest pattern and SHA pattern each have one definition.
 - All suites and validation commands are green.
 
 ## Commit message
 
 ```text
-refactor: share URL helpers, patterns and named constants
+refactor(engine): share GitHub URL helpers and protocol markers
 ```

@@ -106,7 +106,21 @@ For each cell, record:
 - whether `Blocked` was raised (and its message), and any new notices;
 - the return value.
 
-Generate this matrix against the old code and commit it as a pinned fixture. It must pass
+**Sequences.** Single commands are not enough. Also pin these multi-step cases:
+
+- **Several queued commands in one tick:** for example `retry` then `stop`, `invalidate`
+  then `retry`, or two `retry --plan-revisions` grants. Record which commands are
+  processed, which are consumed, and where processing stops (`return True`).
+- **A refused command, then a later valid one:** for example `retry --plan-revisions 4`
+  then `retry --plan-revisions 1`, or a refused `invalidate` then `retry`. The refusal
+  must not block the later command, and nothing is applied twice.
+- **Replay after a failure:** the controller crashes after `save()` but before the reply,
+  and the same comments are processed again. Use the existing lost-save-reply test
+  pattern. No command is applied twice, and no notice is posted twice.
+
+Generate the matrix against the old code, review the generated fixture as if it were code
+(it can preserve existing bugs), and commit it as a pinned fixture. It is a
+**prerequisite**: land it in its own commit before the refactor if it is large. It must pass
 unchanged after the refactor.
 
 ## Done when

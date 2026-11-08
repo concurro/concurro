@@ -3,9 +3,15 @@
 Part of the [code-quality programme](README.md).
 
 This brief covers **four separate commits**. Each sub-iteration is reviewed and committed
-on its own, in this order: 10a, 10b, 10c, 10d. Any of them can be dropped at reassessment
-without affecting the others, except that 10b's tests reuse 10a's process helpers if
-they exist.
+on its own. Any of them can be dropped at reassessment without affecting the others,
+except that 10b's tests reuse 10a's process helpers if they exist.
+
+Recommended order: 10b, 10a, 10c, 10d. 10b gives the turn lifecycle and its failure
+handling one clear structure; that is its value. Neither the repeated `runner_bound()`
+calls (a cheap membership test) nor `execute()`'s length is a reason on its own. Split
+or extract only where it makes the lifecycle easier to follow. 10b can also adopt
+`ExchangeStatus` and `TerminationReason` vocabulary in `vocab.py`, next to iteration 04's
+`TurnOutcome`.
 
 ## Shared constraints
 

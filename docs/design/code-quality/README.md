@@ -9,10 +9,9 @@ a read-only audit against idiomatic Python, DRY, SOLID and KISS. The work is spl
 iterations. Each iteration is **one deliverable and one commit**, reviewed before the next
 one starts.
 
-Only the approved iteration in the table is authorised. Reassess the candidates after
-iteration 07 lands.
-Everything else is a **candidate**, to be reassessed after the first extractions land.
-Reassessment may reshape, split or drop a candidate.
+Only the approved iteration in the table is authorised. The candidates were reassessed
+after iteration 07 (2026-11-08); the table shows the result. Reassessment continues after
+each "Reassess" point. It may reshape, split or drop a candidate.
 
 Every iteration has its own brief, listed below. A brief covers the goal, scope, specific
 changes, what must not change, the tests to write first, and when the iteration is done.
@@ -37,6 +36,13 @@ changes, what must not change, the tests to write first, and when the iteration 
     matters.
 - **Each brief lists what it may do, not what it must do.** If an item doesn't make the
   code clearer once you're in it, skip it and say why.
+- **Judge candidates by maintainability value and risk, not by churn.** Refactoring is
+  itself high-churn work.
+  - How often a file changes can support a priority call, but low churn is never a
+    reason to skip a change that materially reduces the maintenance burden.
+  - Risk is managed by writing the guard tests first, not by avoiding the code.
+  - Tests make a worthwhile refactor safe; they don't make a refactor worthwhile. Each
+    change still needs a concrete maintenance benefit.
 
 ## Workflow
 
@@ -156,7 +162,10 @@ Status values:
 
 - **Approved:** authorised to implement.
 - **Next:** expected to be approved after the previous one lands.
+- **Reassess:** decide after the preceding iteration lands, using what it showed.
 - **Candidate:** backlog; reassess before approving.
+- **Dropped from this programme:** not planned here. That doesn't mean the area should
+  never be revisited.
 - **Done:** committed.
 
 | # | Brief | Kind | Risk | Status |
@@ -166,31 +175,42 @@ Status values:
 | 03 | [Lint gate](03-lint-gate.md) | Tooling | Low | Done |
 | 06 | [Test fixtures](06-test-fixtures.md) | Tests | Low | Done |
 | 07 | [Dashboard extraction](07-dashboard-extraction.md) | Refactor | Low | Done |
-| 04 | [Shared vocabulary](04-shared-vocabulary.md) | Refactor | Low | Candidate |
-| 05 | [Shared constants and URL helpers](05-shared-constants.md) | Refactor | Low | Candidate |
-| 08 | [Controller guards and call bookkeeping](08-guards-and-bookkeeping.md) | Refactor | Medium | Candidate |
-| 09 | [Review, conversation and policy modules](09-review-modules.md) | Refactor | Low–medium | Candidate |
-| 10 | [Execution path](10-execution-path.md) (four separate commits, 10a–10d) | Refactor | Medium | Candidate |
+| 04 | [Stage and turn-outcome vocabulary](04-shared-vocabulary.md) | Refactor | Low | Approved |
+| 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Next |
+| 08b | [Serial and batch call bookkeeping](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-reassess-after-08a) | Refactor | Medium | Reassess after 08a |
+| 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Next after 08 |
+| 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Candidate |
+| 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate |
+| 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate |
+| 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Candidate, after 12 |
+| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Candidate, after 08 and 12 |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate |
-| 12 | [Commands and revision budget](12-commands-and-revisions.md) | Refactor | Medium | Candidate |
-| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Candidate |
-| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium | Candidate |
+| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate |
 | 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate |
-| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | Medium | Candidate |
-| 17 | [One-time format](17-format.md) | Style | Low (noisy) | Candidate |
-| 18 | [Typed state and annotations](18-typed-state.md) | Types | Low | Candidate |
+| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate |
+| 17 | [One-time format](17-format.md) | Style | Low (noisy) | Candidate, at a quiet point |
 
 ### Ordering rationale
 
-- **01, 02, 03:** fix the confirmed bug, remove noise and add a lint gate, so later diffs
-  show only structure.
-- **06, 07:** shared fixtures, then the lowest-risk, highest-yield controller extraction.
-- **Reassess here.** Then choose among the candidates.
-- **Candidate dependencies:**
-  - 04 and 05 provide definitions that 07–13 can use, but nothing requires them first.
-  - 12 needs 06's fixtures and is easier after 08's guards.
-  - 17 and 18 stay last: formatting would hide structural diffs, and types should
-    describe the final shape.
+- **Done (01–03, 06, 07):** the confirmed bug fix, noise removal, a lint gate, shared
+  fixtures and the dashboard extraction.
+- **04 → 08a → reassess 08b → 12:** the agreed next sequence.
+  - 04 names the stage and outcome concepts that later controller work refers to.
+  - 08a gives the authorisation and recovery guards one contract each.
+  - 12's command characterisation matrix is a prerequisite, and may land in its own
+    commit.
+- **Then reassess the remaining candidates on maintainability value and risk.**
+  - 05, 10 and 09 are self-contained.
+  - 18 types the components that 07 and 12 extracted.
+  - 13 depends on how much 08 and 12 shrink the controller.
+  - 11, 14, 15 and 16 are worthwhile, but each needs strong guard tests first:
+    - pagination bounds (11);
+    - an admission decision table (14);
+    - schema and migration fixtures (15);
+    - lock maps and concurrency tests (16).
+
+    Higher risk means more preparation, not exclusion.
+- **17 runs only when no other branch is in flight,** because it touches every file.
 
 Numbers are stable identifiers, not the execution order.
 

@@ -1,99 +1,119 @@
-# 04: Shared vocabulary
+# 04: Stage and turn-outcome vocabulary
 
 Part of the [code-quality programme](README.md).
 
 ## Goal
 
-Give the engine's repeated bare strings one definition each, as `StrEnum` types and
-named sets. Covered: controller stages, agent stages, turn outcomes, termination reasons,
-exchange statuses, dashboard steps and finding statuses.
+Name the **meanings** behind the engine's repeated stage groupings and turn-result
+strings, so a reader can see which concept each check uses.
 
-Values must serialise and compare exactly as today. `StrEnum` members are `str` instances
-equal to their values, so JSON, digests and `in` checks against existing strings keep
-working.
+The closed-PR display bug showed why. `current_step()` grouped
+`("merged", "observed_merged", "closed")` where it meant "merged". A generic "terminal"
+set would have kept that bug just as well. The value of this iteration is in **separate,
+purpose-named sets**, not in removing string literals.
 
 ## Scope
 
-- New leaf module `engine/vocab.py`. It imports only the stdlib, so every module can import
-  it, including `repository.py` (see the README's import constraints).
-- Engine modules that define or compare these values.
-- **Not** `service/` mutation statuses or exchange statuses; those are iterations 14–16.
-- **Not** `gateway/exchange/exchange.py`, which ships as one file.
+- New stdlib-only leaf module `engine/vocab.py`. It must import nothing from the engine,
+  so every module can use it, including `repository.py` under its import constraints.
+- Engine modules that define or test these groupings.
+- **Out of scope:**
+  - service vocabularies and the exchange;
+  - finding statuses and dashboard step labels;
+  - exchange statuses and termination reasons. The turn lifecycle can adopt those in
+    iteration 10b.
+  - URL helpers and protocol markers (iteration 05).
 
 ## Changes
 
-### 1. Define the vocabulary in `engine/vocab.py`
+### 1. `Stage` (`StrEnum`)
 
-| Type | Members (values) | Current scattered definitions |
+Its members are every controller stage value: `intake`, `clarify`, `plan`, `plan_qc`,
+`planned`, `implement`, `publish`, `review`, `gates`, `merging`, `merged`,
+`observed_merged`, `closed`, `blocked`, `stopped`, `rejected`, `escalated`.
+
+Members compare equal to their strings and serialise identically, so existing persisted
+values and comparisons keep working.
+
+### 2. `TurnOutcome` (`StrEnum`)
+
+Its members are the turn result values: `ok`, `failed`, `uncertain`, `lost`, `timed_out`,
+`terminated`, `admission_unknown`, `queue_expired`.
+
+- **Name:** don't call it `Outcome`. `controller.Outcome` is the scheduler's tick result,
+  with unrelated values.
+- **No new validation:** introducing the enum must not add any failure mode. Code must not
+  convert incoming or persisted strings with `TurnOutcome(value)` where an unknown value is
+  currently tolerated or handled by a fallback branch. Compare against members; don't
+  coerce.
+
+### 3. Purpose-named stage sets
+
+Audit every inline stage grouping (`grep -nE '\("(merged|blocked|rejected|stopped|closed)"' engine/*.py`)
+and classify each by **what the check means**, then name only the concepts that recur.
+Expected concepts, to confirm or correct during the audit:
+
+| Concept | Members | Example use today |
 | ---- | ---- | ---- |
-| `Stage` | `intake`, `clarify`, `plan`, `plan_qc`, `planned`, `implement`, `publish`, `review`, `gates`, `merging`, `merged`, `observed_merged`, `closed`, `blocked`, `stopped`, `rejected`, `escalated` | `github.STAGES`, `actions.RESUMED_STAGES`, `dashboard.STAGE_STEP`, about 30 inline tuples |
-| `AgentStage` | `intake`, `plan`, `plan_qc`, `develop`, `review` | `bundle.STAGES`, `snapshot.py:15`, `policy.runner_bound`, `policy.turn_label` |
-| `Outcome` (turn result) | `ok`, `failed`, `uncertain`, `lost`, `timed_out`, `terminated`, `admission_unknown`, `queue_expired` | Literals in `turns.py`, `agents.py`, `runner.py` |
-| `TerminationReason` | `turn_timeout`, `runner_stopped`, `process_signal` | `turns.py:275`, `agents.py:149-150` |
-| `ExchangeStatus` | `queued`, `running`, `done`, `lost`, `cancelled` | `review_timing.STATUSES`, `agents.py` literals |
-| `FindingStatus`, plus a `CLOSED` frozenset | The values used in `reviews.py` / `readiness.py`; `CLOSED = {"fixed", "obsolete"}` | `reviews.py:24/85/433/455`, `readiness.py:29/31` |
-| `Step` (dashboard step labels) | The six labels in `dashboard.STEPS` | `dashboard.STEPS`, `conversation.index_entry`, `dashboard_runs`, `design_audit` |
+| `MERGED_STAGES` | `merged`, `observed_merged` | `dashboard.current_step()`; PR-sync guards (`controller.py` around 1920) |
+| `TERMINAL_STAGES` | `MERGED_STAGES` plus `closed` | End-of-life handling (`actions.py:75`, `controller.py` around 1936) |
+| `SUSPENDED_STAGES` | `blocked`, `stopped` | Retry and resume handling |
+| `JUDGED_STAGES` | `rejected`, `escalated` | Terminal judgement and retry handling |
 
-`Stage` and `AgentStage` both contain `review` and `intake`. They are deliberately
-separate: controller stage `implement` corresponds to agent stage `develop`. Keep two
-types; don't merge them.
+- **Name each set for its purpose, not its members.** Two checks with the same members
+  today but different purposes get different names, or one stays inline.
+- **Mixed groupings stay explicit.** For example, `("merged", "observed_merged", "stopped")`
+  around `controller.py:1931` and the six-stage tuple around 859 can be written as
+  `MERGED_STAGES | {Stage.STOPPED}`, or left inline with a comment naming the purpose.
+  Don't invent a name for a one-off grouping.
+- **Not every literal has to go.** Leave a grouping inline when naming it would not make
+  its meaning clearer.
+- **Keep order where it matters.** Where a tuple's order is used for iteration or
+  display, keep an ordered tuple.
 
-### 2. Named sets for repeated tuples
+### 4. Existing public sets
 
-- **Stage sets:**
-  - `TERMINAL_STAGES = {merged, observed_merged, closed}` (controller 504/2227/2266);
-  - `SUSPENDED = {blocked, stopped}` (11 copies);
-  - `JUDGED = {rejected, escalated}` (8 copies);
-  - `RETRYABLE = SUSPENDED | JUDGED` (1711, 2229);
-  - `RESUMED_STAGES` (moved from `actions`);
-  - `ALL_STAGES` (replaces `github.STAGES`).
-- **Runner-bound agent stages:** `RUNNER_BOUND = {develop, review}`. `policy.runner_bound()`
-  becomes a membership test; keep the function, since callers use it.
-- **Outcome sets:** name each outcome set that appears more than once, for example the set
-  that leads to `cancel_quietly` (`agents.py:405`).
+`github.STAGES`, `actions.RESUMED_STAGES` and `bundle.STAGES` stay importable under their
+current names, with identical contents. `bundle.STAGES` is agent stages, not controller
+stages, so leave it as it is. Make `github.STAGES` derive from `Stage` only if the set is
+provably identical.
 
-### 3. Replace literals and tuples with the named members and sets
+### 5. Paused-label tables
 
-- Do this only where the replacement is exactly equivalent.
-- Where the order of a tuple matters (iteration, `STATUSES[1:]`-style slicing, or anything
-  that feeds a digest or display), keep a tuple with the same order.
-- Re-export the old names (`github.STAGES`, `actions.RESUMED_STAGES`, `bundle.STAGES`,
-  `review_timing.STATUSES`) as aliases of the new definitions, if other code or tests
-  import them.
-
-### 4. One table for paused labels
-
-`controller.py` has three near-identical label tables for paused stages, at about 371, 524
-and 592. Make them one module-level table keyed by `Stage`. Where an entry differs, keep
-the difference explicitly and name it.
+The paused-label tables in `dashboard.py` (`activity_line` and `step_row`) and in the
+controller's action line overlap. Merge them only where the entries are identical for
+the same purpose. They currently hold different texts per stage, so keep separate tables
+where the wording differs.
 
 ## Must not change
 
-- Any persisted value, comparison result, iteration order used for output, or digest.
-- Membership semantics. Check each replaced tuple: a set that grows or shrinks by even one
-  member is a behaviour change.
-- `json.dumps` output: `StrEnum` members serialise as plain strings. Add a test that proves it.
+- Any comparison result, persisted value, iteration order used for output, or digest.
+- Membership semantics: for each replaced grouping, the summary states its old members, its
+  new expression and why the meaning is the same.
+- Acceptance of unknown or legacy stage and outcome strings.
 
 ## Tests first
 
 - **`test_vocab.py`:**
-  - every enum's values exactly equal the old literal sets (pin them as literal
-    tuples in the test);
+  - each enum's values equal a literal tuple written out in the test;
   - `json.dumps({"stage": Stage.PLAN}) == '{"stage": "plan"}'`;
-  - `Stage("plan") == "plan"`.
-- **Old sets unchanged:** a test that the old public sets (`github.STAGES`,
-  `actions.RESUMED_STAGES`, `bundle.STAGES`, `review_timing.STATUSES`) still equal their
-  `f1225e6` contents.
+  - `Stage("plan") == "plan"`;
+  - each named set equals its literal membership.
+- **Unknown-value tolerance:** for each place where outcome decoding has a fallback branch,
+  a test feeds an unrecognised outcome string. It must take the same path, raise the same
+  exception and produce the same message as before.
+- **Existing public sets:** `github.STAGES`, `actions.RESUMED_STAGES` and `bundle.STAGES`
+  still equal their current contents.
 
 ## Done when
 
-- Each listed vocabulary has one definition, and the old names are aliases of it.
-- No inline copy of the named stage sets remains in the engine. Find them with
-  `grep -nE '"blocked", "stopped"|"rejected", "escalated"|"merged", "observed_merged"' engine/*.py`.
-- All suites and validation commands are green, and the test count grows only by the new tests.
+- `Stage`, `TurnOutcome` and the purpose-named sets exist in `vocab.py`.
+- Each audited grouping is either replaced by a named concept or deliberately left inline.
+  The summary lists every grouping with its classification.
+- All suites and validation commands are green.
 
 ## Commit message
 
 ```text
-refactor(engine): define stages, outcomes and statuses once
+refactor(engine): name stage groupings and turn outcomes by meaning
 ```
