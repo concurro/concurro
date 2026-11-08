@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from fixtures import ENGINE, KEY, ServiceFixture
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from github import Transient
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import Rejected, TREE_RETRY_DELAYS, WRITE_INTERVAL, settle

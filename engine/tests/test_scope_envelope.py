@@ -2,17 +2,13 @@
 
 from copy import deepcopy
 import json
-import os
 import unittest
-from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from test_findings import Harness, Reviewers
-from test_pipeline import APPROVE, PLAN
-import checks
-from controller import DISPATCH_ALLOWANCE, Controller
+from test_pipeline import PLAN
+from controller import DISPATCH_ALLOWANCE
 from policy import Blocked, OutsideScope, validate_edits, validate_plan
-from snapshot import inspection
 from readiness import review_reasons
 
 SCOPE = {"paths": ["docs/**"], "max_files": 3}

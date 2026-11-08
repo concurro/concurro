@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from policy import Blocked
 import private
 

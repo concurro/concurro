@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, TARGET, setUpModule, tearDownModule
+from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
 from bundle import Bundle
 from design_eval import SOURCE, cases, evaluate, request, score
 import turns

@@ -6,9 +6,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from controller import Controller
-from policy import Blocked, SessionFailure, approval_valid, digest
+from policy import Blocked, SessionFailure, digest
 from session_entry import SessionTurn
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 

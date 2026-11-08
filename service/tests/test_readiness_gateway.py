@@ -6,7 +6,7 @@ import unittest
 from fixtures import KEY, ServiceFixture
 from github import MARK_READY
 from policy import task_branch
-from service.gateway import Disallowed, MutationGateway, ready_pull, settle
+from service.gateway import Disallowed, MutationGateway, settle
 from service.ingress import Ingress
 from service.transport import Response
 

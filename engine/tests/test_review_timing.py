@@ -5,9 +5,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from agents import Agents, RunnerExecutor
-from policy import RunnerTerminated, SessionFailure, UncertainOutcome, approval_binding, digest
+from policy import RunnerTerminated, SessionFailure, approval_binding, digest
 from controller import Controller
 from test_pipeline import CONFIG
 from test_turns import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN, MODELS

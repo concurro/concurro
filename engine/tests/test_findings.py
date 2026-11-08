@@ -1,11 +1,10 @@
 """PR review findings: the contract, the ledger and its lifecycle through repair rounds and design reopens."""
 
 from copy import deepcopy
-import json
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from test_pipeline import APPROVE, FINDING, FakeAgents, FakeGitHub
 from checkpoints import LIMIT, Checkpoints
 from controller import Controller

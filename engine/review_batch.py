@@ -54,7 +54,7 @@ def run(adapter):
                 raise RuntimeError('review batch has no pending work')
     finally:
         failure = None
-        for key, (_, handle) in live.items():
+        for _key, (_, handle) in live.items():
             try:
                 transport.cancel(handle)
             except Exception as error:

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import feedback
 from agent_entry import prompt_for
 from agents import Agents

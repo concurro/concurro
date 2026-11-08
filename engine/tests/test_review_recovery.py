@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import design
 from controller import Controller
 from policy import Blocked, approval_valid, validate_qc

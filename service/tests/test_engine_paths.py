@@ -1,12 +1,11 @@
 """The real engine under the gateway: stops pass every wrapper, and lost writes are reconstructed."""
 
-import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture, Wire
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from report_store import MARKER as REPORT_DATA_MARKER

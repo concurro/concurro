@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from support import ENGINE, setUpModule, tearDownModule  # unittest module fixtures
+from support import ENGINE, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from agents import Agents
 from checkpoints import Checkpoints
 import controller as controller_module

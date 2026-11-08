@@ -2,7 +2,7 @@
 
 import unittest
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from controller import OUTCOMES, WAIT_SECONDS, Controller
 import test_pipeline
 

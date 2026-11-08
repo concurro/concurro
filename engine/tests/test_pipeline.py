@@ -9,14 +9,14 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from controller import Controller, MARKER, validate_config
 from credentials import Credential
 from github import GitHub, NotFound
 from readiness import review_reasons
-from policy import Blocked, digest, path_allowed, path_safe, validate_edits, validate_review
+from policy import Blocked, digest, path_allowed, validate_edits, validate_review
 
 PLAN = {"summary": "Clarify the guide.", "questions": [], "files": ["docs/guide.md"],
         "steps": ["Add the missing explanation."], "tests": ["Check wording and links."], "responses": [],
@@ -617,7 +617,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_model_attempt_budget_stops_calls(self):
         """A spent budget never starts another inference request."""
-        state = self.tick()
+        self.tick()
         controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)

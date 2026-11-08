@@ -4,13 +4,12 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from test_autonomy import decision
 from test_findings import Harness, Reviewers
 from test_pipeline import Controller, FakeAgents, FakeGitHub
 import actions
 import conversation
-from github import Transient
 from policy import Blocked, digest
 
 

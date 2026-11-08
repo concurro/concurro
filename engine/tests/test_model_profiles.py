@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from agents import Agents, RunnerExecutor
 from agent_entry import command_for, provider_environment
 from controller import Controller, config_digest, validate_config

@@ -4,7 +4,7 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import test_consensus
 from test_model_profiles import named_config
 from test_pipeline import Controller

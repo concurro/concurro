@@ -10,7 +10,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import resume_proof
 
 

@@ -1,16 +1,12 @@
 """Publication outages and large reports preserve recoverable checkpoint authority."""
 
 from copy import deepcopy
-import io
 import json
-import os
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
-import controller as controller_module
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import conversation
-from checkpoint_health import MARKER as HEALTH_MARKER
 from controller import Controller
 from policy import approval_valid, digest
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub

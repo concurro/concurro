@@ -8,9 +8,9 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from controller import Controller, ESCALATION_REASON, STATE_PREFIX, MARKER
+from controller import Controller, ESCALATION_REASON, STATE_PREFIX
 from github import GitHub, NotFound
 from policy import Blocked
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub

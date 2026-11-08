@@ -1,7 +1,6 @@
 """Operator settings are private and strictly valid, or the service does not start."""
 
 from copy import deepcopy
-from dataclasses import replace
 import json
 import os
 from pathlib import Path

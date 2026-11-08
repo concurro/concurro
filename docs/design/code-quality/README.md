@@ -117,7 +117,7 @@ force it through.
 Install the CI test dependencies once, if needed:
 
 ```bash
-python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.1
+python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
 ```
 
 Then run all of the following:

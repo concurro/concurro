@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from gitfixture import Upstream, mirror_of
 from mirror import SNAPSHOT_REFS, Mirror
 from policy import Blocked

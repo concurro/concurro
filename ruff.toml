@@ -1,0 +1,17 @@
+# Deferred rules with existing hits:
+# B017: exception-type tightening would change intentional failure-path tests.
+# B023: audit closure lifetimes separately; many callbacks are consumed within their loop.
+# B904: preserve existing exception chaining and operator traceback behavior.
+# B905: preserve current zip truncation; explicit length policies need separate review.
+# SIM102: keep staged policy guards readable rather than merge their conditions.
+# SIM105: retain explicit best-effort exception handling and its current boundaries.
+# SIM117: defer nested context-manager reshaping to the structural/formatting iterations.
+# SIM300: keep mathematical subset notation (FIELDS <= value.keys()).
+# E501 and quote rules are not selected; formatting is deferred to iteration 17.
+
+required-version = ">=0.17.4,<0.18"
+target-version = "py312"
+
+[lint]
+select = ["F", "E9", "PLE", "B", "SIM"]
+ignore = ["B017", "B023", "B904", "B905", "SIM102", "SIM105", "SIM117", "SIM300"]

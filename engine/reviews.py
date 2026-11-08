@@ -126,15 +126,15 @@ HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 def shown_lines(patch):
     """The right-side line numbers each hunk of a unified `patch` actually shows, one set per hunk."""
     hunks, line = [], None
-    for text in patch.split("\n"):
-        header = HUNK.match(text)
+    for patch_line in patch.split("\n"):
+        header = HUNK.match(patch_line)
         if header:
             hunks.append(set())
             line = int(header[1])
-        elif hunks and text[:1] in (" ", "+"):
+        elif hunks and patch_line[:1] in (" ", "+"):
             hunks[-1].add(line)
             line += 1
-        elif hunks and text == "":
+        elif hunks and patch_line == "":
             # An empty context line whose leading space was stripped.
             hunks[-1].add(line)
             line += 1

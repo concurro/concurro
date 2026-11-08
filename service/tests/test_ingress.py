@@ -9,7 +9,7 @@ import threading
 import unittest
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from controller import Outcome
 from service import ingress
 from service.ingress import Ingress

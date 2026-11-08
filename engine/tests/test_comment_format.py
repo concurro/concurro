@@ -1,6 +1,5 @@
 """Comment format: format 1 renders byte for byte forever, format 2 is stable, and model text stays inert."""
 
-from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
@@ -8,10 +7,9 @@ import re
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import format_samples
 from test_findings import FINDING, Harness, Reviewers, report
-from test_pipeline import FakeAgents
 import conversation
 from controller import SUMMARY_LIMIT
 import markup
@@ -311,7 +309,7 @@ class UpgradeTests(Harness, unittest.TestCase):
         agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
         # Before the upgrade: the review is recorded and queued in format 1, but not yet published.
         with patch.object(reviews, "FORMAT", 1), patch.object(reviews, "publish", return_value=False):
-            controller = self.run_to(agents, "review", until=lambda state: state.get("pr_outbox"))
+            self.run_to(agents, "review", until=lambda state: state.get("pr_outbox"))
         # A checkpoint written before the upgrade has no format fields at all.
         checkpoints, legacy = self.load()
         for entry in legacy["pr_outbox"] + legacy["findings"]:

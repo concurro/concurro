@@ -12,10 +12,6 @@ CONFIG = json.loads((ENGINE / "tests/fixtures/legacy-config.json").read_text())
 PROFILES = []
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ENGINE))
-
-# Imported once the engine directory is on the module path.
-from bundle import Bundle
-
 EXECUTION = CONFIG["paths"]
 
 _previous = []

@@ -1,18 +1,15 @@
 """A controller acts only on tasks whose ownership marker names it, and otherwise writes nothing."""
 
-from copy import deepcopy
-import os
 import unittest
 from unittest.mock import DEFAULT, patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from checkpoints import Checkpoints
 import controller as controller_module
 from controller import ACTIONS, Controller
 import conversation
 from policy import Blocked
 import test_pipeline
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 
 SERVICE = "service:primary"
 MUTATORS = ("sync_stage", "sync_attention", "create_linked_branch")

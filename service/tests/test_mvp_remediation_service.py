@@ -89,7 +89,7 @@ class ReviewRegressions(ServiceFixture, unittest.TestCase):
                 def credential(inner, *args):
                     return agents.credential(*args)
                 def ask(inner, *args):
-                    executor.gateway
+                    _ = executor.gateway
                     return agents.ask(*args)
             return Deferred()
         self.worker.agents = factory

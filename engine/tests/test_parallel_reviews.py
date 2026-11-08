@@ -6,10 +6,10 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from controller import Controller
 from checkpoints import CheckpointError, legacy_state, BATCH_FORMAT, AUDIT_MARKER, STATE_PREFIX
-from policy import Blocked, SessionFailure, UncertainOutcome, approval_binding, design_roster
+from policy import Blocked, SessionFailure, UncertainOutcome, design_roster
 from agents import Agents
 from test_pipeline import FakeAgents
 import test_consensus

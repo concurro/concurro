@@ -9,7 +9,7 @@ import threading
 import unittest
 
 from fixtures import ENGINE, KEY, Inline, RestBackend, ServiceFixture, target_files
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from test_pipeline import FakeAgents, FakeGitHub
 from controller import Controller, Outcome, config_digest
 from github import Transient

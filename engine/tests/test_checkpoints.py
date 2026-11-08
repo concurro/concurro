@@ -1,20 +1,17 @@
 """Artifact checkpoint migration, provenance and interrupted-write recovery."""
 
 from copy import deepcopy
-import io
 import json
-import os
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import controller as controller_module
 from controller import Controller
-from checkpoints import (AUDIT_MARKER, AUDIT_NAME, PLAN_MARKER, PLAN_NAME, MARKER,
+from checkpoints import (AUDIT_MARKER, AUDIT_NAME, PLAN_NAME, MARKER,
                          STATE_PREFIX, CheckpointError, Checkpoints, legacy_state)
 from github import GitHub
 from policy import digest

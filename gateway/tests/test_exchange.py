@@ -4,7 +4,6 @@ import base64
 import http.client
 import json
 import os
-import sqlite3
 from pathlib import Path
 import subprocess
 import sys

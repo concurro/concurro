@@ -3,7 +3,7 @@
 from copy import deepcopy
 import unittest
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
 from controller import validate_config
 from policy import Blocked, approval_valid, selected_model, validate_qc

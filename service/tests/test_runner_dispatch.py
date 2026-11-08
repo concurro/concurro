@@ -1,6 +1,5 @@
 """Only a recorded task session can create a fork run ref and dispatch the caller."""
 
-import json
 import unittest
 import uuid
 

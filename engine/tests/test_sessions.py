@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from agent_entry import command_for
 from session_entry import SessionTurn
 from sessions import prepare

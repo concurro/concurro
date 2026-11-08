@@ -3,7 +3,7 @@
 from copy import deepcopy
 import unittest
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from controller import Controller
 from policy import approval_binding
 from test_pipeline import FakeGitHub

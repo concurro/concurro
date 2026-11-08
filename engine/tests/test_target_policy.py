@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import unittest
 
-from support import CONFIG, PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, ROOT, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "engine/tests")]
 
 # Imported once the repository root and the engine tests are on the module path.
-import service  # noqa: E402  (puts the engine on the module path)
+import service  # noqa: E402, F401 -- initializes the engine module path before imports below
 from service.gateway import GatewayGitHub, MutationGateway  # noqa: E402
 from service.transport import Response  # noqa: E402
 from github import NotFound  # noqa: E402

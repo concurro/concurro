@@ -4,8 +4,8 @@ from copy import deepcopy
 import json
 import unittest
 
-from support import CONFIG, setUpModule, tearDownModule
-from controller import Controller, DISPATCH_ALLOWANCE, transport_size, sha256, changes, diff_preview, DIFF_TRUNCATED, MAX_DIFF
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+from controller import DISPATCH_ALLOWANCE, transport_size, sha256, changes, diff_preview, DIFF_TRUNCATED, MAX_DIFF
 from policy import Blocked, validate_edits
 from repository import Repository
 from test_findings import Harness

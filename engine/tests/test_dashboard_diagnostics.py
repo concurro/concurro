@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from checkpoints import LIMIT
 from controller import Controller
 from conversation import PublicationError

@@ -3,7 +3,7 @@
 from copy import deepcopy
 import unittest
 
-from support import CONFIG, TARGET, setUpModule, tearDownModule
+from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
 from controller import Controller
 from test_pipeline import FakeAgents, FakeGitHub
 from unittest.mock import patch

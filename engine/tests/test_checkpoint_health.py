@@ -2,16 +2,14 @@
 
 from copy import deepcopy
 import io
-import os
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import controller as controller_module
 from checkpoint_health import FAILED, MARKER, RECOVERED, sync_checkpoint_health
 from checkpoints import CheckpointError, DIAGNOSTICS
 from controller import Controller

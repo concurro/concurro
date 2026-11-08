@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from checkpoints import Checkpoints, CheckpointError, FORMAT, BATCH_FORMAT, AUDIT_MARKER, STATE_PREFIX, legacy_state, LIMIT
 from controller import Controller
 from policy import digest, design_roster

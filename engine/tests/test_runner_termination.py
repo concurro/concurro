@@ -4,13 +4,12 @@ from copy import deepcopy
 import io
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import agent_entry
 from agents import Agents
 from bundle import Bundle

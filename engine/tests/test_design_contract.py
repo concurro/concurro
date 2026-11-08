@@ -5,14 +5,13 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import setUpModule, tearDownModule  # unittest module fixtures
-import checks
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import conversation
 import design
 from controller import Controller
-from policy import Blocked, approval_valid, consensus_valid, digest
+from policy import Blocked, approval_valid, consensus_valid
 from test_autonomy import decision
-from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub, design_report
+from test_pipeline import CONFIG, FakeAgents, FakeGitHub, design_report
 
 
 class DesignContractTests(unittest.TestCase):

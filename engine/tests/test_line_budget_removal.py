@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import unittest
 
-from support import CONFIG, ROOT, setUpModule, tearDownModule
+from support import CONFIG, ROOT, setUpModule as setUpModule, tearDownModule as tearDownModule
 import candidates
 import checks
 from controller import Controller, changes

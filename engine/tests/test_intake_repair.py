@@ -4,7 +4,7 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from checkpoints import Checkpoints, LIMIT
 from controller import Controller, INTAKE_OUTPUT_REPAIRS
 from conversation import PublicationError, ARCHIVE_LIMIT

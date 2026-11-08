@@ -4,7 +4,7 @@ from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from test_pipeline import FakeAgents, FakeGitHub
 from controller import Controller
 from readiness import ci_reasons
@@ -219,7 +219,7 @@ class ReadinessPipelineTests(unittest.TestCase):
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         self.gh.comment("Another bounded change please.")
-        command = self.gh.comment("/concurro retry")
+        self.gh.comment("/concurro retry")
         from policy import Blocked
         with self.assertRaisesRegex(Blocked, "allowance exhausted"):
             controller.commands(self.gh.comments)

@@ -4,8 +4,8 @@ import sqlite3
 from pathlib import Path
 import unittest
 
-from fixtures import KEY, REGISTRY_ID, ServiceFixture
-from support import setUpModule, tearDownModule  # unittest module fixtures
+from fixtures import KEY, ServiceFixture
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from controller import Outcome
 from service.errors import RegistryError, RegistryFailure
 from service.registry import DATABASE, PullRequest, Registry

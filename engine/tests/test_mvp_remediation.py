@@ -1,7 +1,6 @@
 """Regressions from the independent MVP acceptance review."""
 
 from copy import deepcopy
-import json
 import subprocess
 import os
 from pathlib import Path
@@ -10,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from controller import Controller, changes
 from github import Transient
 from policy import Blocked

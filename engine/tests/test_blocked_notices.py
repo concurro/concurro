@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from test_pipeline import Controller, FakeAgents, FakeGitHub
 from github import NotFound, Transient
 from policy import Blocked, digest

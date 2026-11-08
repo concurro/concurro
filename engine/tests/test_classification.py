@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, TARGET, setUpModule, tearDownModule
+from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
 import classification as ratings
 import conversation
 import design

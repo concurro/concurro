@@ -34,7 +34,7 @@ import design_eligibility
 import reviews as review_rules
 from copy import deepcopy
 from bundle import Bundle
-from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
+from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX as STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from github import Transient
 from identities import Identities
 from policy import (MODEL_RESPONSE_LIMIT, Blocked, RunnerTerminated, SessionFailure, approval_binding, approval_valid,

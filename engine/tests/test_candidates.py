@@ -3,7 +3,7 @@
 from copy import deepcopy
 import unittest
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 import candidates
 from controller import Controller, changes
 from policy import Blocked, OutsideScope, validate_edits

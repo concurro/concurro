@@ -1,9 +1,7 @@
 """Governance, independent design consensus, drift, reopen and learning lifecycles."""
 
 from copy import deepcopy
-import io
 import json
-import os
 from pathlib import Path
 import shutil
 import re
@@ -11,16 +9,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
-from test_pipeline import APPROVE, CONFIG, PLAN, Controller, FakeAgents, FakeGitHub
+from support import ROOT, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from test_pipeline import CONFIG, PLAN, Controller, FakeAgents, FakeGitHub
 from test_autonomy import decision
 from agents import Agents
 from agent_entry import prompt_for
 from bundle import Bundle
 from controller import MARKER, STATE_PREFIX
-import controller as controller_module
 from policy import (Blocked, approval_valid, consensus_valid, design_roster, digest, path_allowed,
-                    instruction_matches, validate_design_issue, validate_qc)
+                    instruction_matches, validate_qc)
 
 DESIGN_ISSUE = {"kind": "plan", "explanation": "Acceptance requires another documented example.",
                 "evidence": ["The plan only names the happy-path example; the requirement includes errors."]}
@@ -428,7 +425,7 @@ class ConsensusTests(unittest.TestCase):
 
     def test_reopen_reconciliation_and_foreign_heads_fail_closed(self):
         """Replanning cannot silently abandon accumulated files or overwrite another writer's tip."""
-        state = self.reach("review")
+        self.reach("review")
         controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)

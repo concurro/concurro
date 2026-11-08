@@ -8,7 +8,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule, tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 from test_consensus import copy_roots
 from test_pipeline import FakeAgents, FakeGitHub
 from controller import BUNDLE_REASON, LEGACY_BUNDLE_REASON, Controller
