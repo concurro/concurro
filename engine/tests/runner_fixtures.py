@@ -53,8 +53,11 @@ class Workspace:
         self.addCleanup(directory.cleanup)
         self.tmp = Path(directory.name).resolve()
         self.upstream = Upstream(self.tmp / "upstream.git")
-        self.base = self.upstream.commit({"docs/guide.md": "Guide\n", "src/lib.rs": "fn main() {}\n",
-                                          ".gitignore": "target/\n"}, branch="main", message="base")
+        self.base = self.upstream.commit(
+            {"docs/guide.md": "Guide\n", "src/lib.rs": "fn main() {}\n", ".gitignore": "target/\n"},
+            branch="main",
+            message="base",
+        )
         self.mirror = mirror_of(self.upstream, self.tmp / "mirrors")
         self.spec = {"refs": {"main": self.base}, "head": "main", "base_branch": "main", "candidate": None}
 
@@ -69,6 +72,7 @@ class Workspace:
 
 class FakeExecutor:
     """Record submitted turns and return a configured result."""
+
     gateway = GATEWAY
 
     def __init__(self, result=None):
@@ -110,11 +114,22 @@ class FakeOperator:
         self.calls.append(("cancel", turn))
 
 
-TASK = {"repository": "up/project", "issue": 7, "generation": 1, "config_sha": "b" * 40,
-        "upstream": "up/project", "fork": "owner/project"}
+TASK = {
+    "repository": "up/project",
+    "issue": 7,
+    "generation": 1,
+    "config_sha": "b" * 40,
+    "upstream": "up/project",
+    "fork": "owner/project",
+}
 
 
-TURN = {"request": {"model": "claude-test", "provider": "claude", "stage": "plan", "context": {"base": "a" * 40}}, "spec": {}, "retained": None, "timeout": 600}
+TURN = {
+    "request": {"model": "claude-test", "provider": "claude", "stage": "plan", "context": {"base": "a" * 40}},
+    "spec": {},
+    "retained": None,
+    "timeout": 600,
+}
 
 
 class FakeRunner:
@@ -144,6 +159,15 @@ class ExecutorFixture:
         identity = patch("agents.uuid.uuid4", return_value="t")
         identity.start()
         self.addCleanup(identity.stop)
-        executor = RunnerExecutor(operator, GATEWAY, {"repository_id": "1"}, ["claude-*"], 5000,
-                                  dispatch or started.append, clock=clock or (lambda: 0), sleep=lambda _: None, task=TASK)
+        executor = RunnerExecutor(
+            operator,
+            GATEWAY,
+            {"repository_id": "1"},
+            ["claude-*"],
+            5000,
+            dispatch or started.append,
+            clock=clock or (lambda: 0),
+            sleep=lambda _: None,
+            task=TASK,
+        )
         return executor, operator, started

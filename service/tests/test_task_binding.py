@@ -34,8 +34,14 @@ class BindingTests(ServiceFixture, unittest.TestCase):
         backend = RestBackend(fake)
         target = Target(KEY[0], fork, "both")
         settings = SimpleNamespace(targets=(target,), engine=ENGINE)
-        worker = Worker(settings, None, self.registry, None, lambda repository: backend if repository == fork else None,
-                        config["bot_login"])
+        worker = Worker(
+            settings,
+            None,
+            self.registry,
+            None,
+            lambda repository: backend if repository == fork else None,
+            config["bot_login"],
+        )
         first = worker.load(*KEY, pin=True)
         pinned = first.config_sha
         calls = []
@@ -54,8 +60,9 @@ class BindingTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(second.config["fork"], fork)
         self.assertEqual(second.config["upstream"], KEY[0])
         self.assertTrue(calls)
-        self.assertTrue(all(path.startswith(f"repos/{fork}/contents/") and path.endswith("?ref=" + pinned)
-                            for path in calls))
+        self.assertTrue(
+            all(path.startswith(f"repos/{fork}/contents/") and path.endswith("?ref=" + pinned) for path in calls)
+        )
         worker.targets[KEY[0]] = Target("different/upstream", fork, "fork")
         with self.assertRaisesRegex(Blocked, "target changed"):
             worker.load(*KEY)

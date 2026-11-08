@@ -24,17 +24,23 @@ def issue(labels=("concurro",), **fields):
 
 
 def payload(**fields):
-    return {"repository": {"full_name": KEY[0]}, "installation": {"id": INSTALLATION},
-            "sender": {"login": "writer"}, **fields}
+    return {
+        "repository": {"full_name": KEY[0]},
+        "installation": {"id": INSTALLATION},
+        "sender": {"login": "writer"},
+        **fields,
+    }
 
 
 def comment(body="A reply.", login="author", association="NONE", kind="User", **issue_fields):
-    return payload(action="created", issue=issue(**issue_fields),
-                   comment={"body": body, "user": {"login": login, "type": kind}, "author_association": association})
+    return payload(
+        action="created",
+        issue=issue(**issue_fields),
+        comment={"body": body, "user": {"login": login, "type": kind}, "author_association": association},
+    )
 
 
 class IngressTests(ServiceFixture, unittest.TestCase):
-
     def setUp(self):
         super().setUp()
         self.ingress = Ingress(SECRET, self.registry, {KEY[0]: INSTALLATION}, {BOT}, clock=self.clock)
@@ -44,8 +50,11 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         """Sign and deliver one event; return the status."""
         self.deliveries += 1
         body = json.dumps(data).encode()
-        headers = {"X-Hub-Signature-256": "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest(),
-                   "X-GitHub-Event": event, "X-GitHub-Delivery": delivery or f"delivery-{self.deliveries}"}
+        headers = {
+            "X-Hub-Signature-256": "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest(),
+            "X-GitHub-Event": event,
+            "X-GitHub-Delivery": delivery or f"delivery-{self.deliveries}",
+        }
         return self.ingress.handle(headers, body)[0]
 
     def queued(self):
@@ -54,9 +63,11 @@ class IngressTests(ServiceFixture, unittest.TestCase):
     def test_rejected_deliveries_change_nothing(self):
         """Bad signatures, other repositories and other installations leave no trace, not even the delivery ID."""
         event = payload(action="edited", issue=issue())
-        cases = [(event, "wrong-secret".encode(), 401),
-                 ({**event, "repository": {"full_name": "owner/elsewhere"}}, SECRET, 403),
-                 ({**event, "installation": {"id": 7}}, SECRET, 403)]
+        cases = [
+            (event, "wrong-secret".encode(), 401),
+            ({**event, "repository": {"full_name": "owner/elsewhere"}}, SECRET, 403),
+            ({**event, "installation": {"id": 7}}, SECRET, 403),
+        ]
         for data, secret, status in cases:
             self.assertEqual(self.deliver("issues", data, "same", secret), status)
         self.assertEqual(self.queued(), [])
@@ -95,17 +106,20 @@ class IngressTests(ServiceFixture, unittest.TestCase):
 
     def test_issue_event_filters(self):
         """Display labels, unenrolled issues, pull requests and Concurro senders are dropped."""
-        dropped = [payload(action="labeled", label={"name": "concurro:stage:plan"}, issue=issue()),
-                   payload(action="labeled", label={"name": "concurro:attention"}, issue=issue()),
-                   payload(action="edited", issue=issue(labels=())),
-                   payload(action="edited", issue=issue(pull_request={})),
-                   payload(action="assigned", issue=issue()),
-                   {**payload(action="edited", issue=issue()), "sender": {"login": BOT}}]
+        dropped = [
+            payload(action="labeled", label={"name": "concurro:stage:plan"}, issue=issue()),
+            payload(action="labeled", label={"name": "concurro:attention"}, issue=issue()),
+            payload(action="edited", issue=issue(labels=())),
+            payload(action="edited", issue=issue(pull_request={})),
+            payload(action="assigned", issue=issue()),
+            {**payload(action="edited", issue=issue()), "sender": {"login": BOT}},
+        ]
         for data in dropped:
             self.assertEqual(self.deliver("issues", data), 202)
         self.assertEqual(self.queued(), [])
-        self.assertEqual(self.deliver("issues", payload(action="labeled", label={"name": "concurro"},
-                                                        issue=issue(labels=()))), 202)
+        self.assertEqual(
+            self.deliver("issues", payload(action="labeled", label={"name": "concurro"}, issue=issue(labels=()))), 202
+        )
         self.assertEqual(self.queued(), [KEY])
 
     def test_unlabeled_active_task_is_still_observed(self):
@@ -117,20 +131,30 @@ class IngressTests(ServiceFixture, unittest.TestCase):
 
     def test_comment_filters(self):
         """Only the issue author or a writer counts; bots and Concurro never do; commands need no label."""
-        for data in (comment(login="stranger"), comment(login="helper", kind="Bot", association="MEMBER"),
-                     comment(login=BOT, association="MEMBER"), comment(pull_request={}),
-                     comment(body="Unrelated.", labels=())):
+        for data in (
+            comment(login="stranger"),
+            comment(login="helper", kind="Bot", association="MEMBER"),
+            comment(login=BOT, association="MEMBER"),
+            comment(pull_request={}),
+            comment(body="Unrelated.", labels=()),
+        ):
             self.deliver("issue_comment", data)
         self.assertEqual(self.queued(), [])
-        self.deliver("issue_comment", comment(body="/concurro start", login="writer", association="COLLABORATOR",
-                                              labels=()))
+        self.deliver(
+            "issue_comment", comment(body="/concurro start", login="writer", association="COLLABORATOR", labels=())
+        )
         self.assertEqual(self.queued(), [KEY])
 
     def test_publication_repository_does_not_implicitly_enroll_issues(self):
         """PR access to upstream does not enable upstream issue enrollment when only fork issues are selected."""
-        self.ingress = Ingress(SECRET, self.registry,
-                               {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock,
-                               issue_repositories={KEY[0]})
+        self.ingress = Ingress(
+            SECRET,
+            self.registry,
+            {KEY[0]: INSTALLATION, "upstream/project": 43},
+            {BOT},
+            clock=self.clock,
+            issue_repositories={KEY[0]},
+        )
         data = payload(action="labeled", label={"name": "concurro"}, issue=issue())
         data.update(repository={"full_name": "upstream/project"}, installation={"id": 43})
         self.assertEqual(self.deliver("issues", data), 202)
@@ -141,8 +165,9 @@ class IngressTests(ServiceFixture, unittest.TestCase):
 
     def test_upstream_pr_event_wakes_its_fork_issue_only(self):
         """An upstream PR belongs to the recorded fork issue, not the same-numbered upstream issue."""
-        self.ingress = Ingress(SECRET, self.registry,
-                               {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock)
+        self.ingress = Ingress(
+            SECRET, self.registry, {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock
+        )
         self.registry.link(KEY, 9, "upstream/project")
         self.registry.link(("upstream/project", KEY[1]), 10, "upstream/project")
         data = payload(action="synchronize", pull_request={"number": 9})
@@ -152,10 +177,12 @@ class IngressTests(ServiceFixture, unittest.TestCase):
 
     def test_pull_request_and_check_events_map_through_recorded_pulls(self):
         """PR, review and check events reach the task that owns the PR; unknown PRs are dropped."""
-        events = [("pull_request", payload(action="synchronize", pull_request={"number": 9})),
-                  ("pull_request_review", payload(action="submitted", pull_request={"number": 9})),
-                  ("check_run", payload(action="completed", check_run={"pull_requests": [{"number": 9}]})),
-                  ("check_suite", payload(action="completed", check_suite={"pull_requests": [{"number": 9}]}))]
+        events = [
+            ("pull_request", payload(action="synchronize", pull_request={"number": 9})),
+            ("pull_request_review", payload(action="submitted", pull_request={"number": 9})),
+            ("check_run", payload(action="completed", check_run={"pull_requests": [{"number": 9}]})),
+            ("check_suite", payload(action="completed", check_suite={"pull_requests": [{"number": 9}]})),
+        ]
         for event, data in events:
             self.assertEqual(self.deliver(event, data), 202)
         self.assertEqual(self.queued(), [])
@@ -182,9 +209,17 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         self.addCleanup(server.shutdown)
         body = json.dumps(comment()).encode()
         connection = http.client.HTTPConnection(*server.server_address, timeout=10)
-        connection.request("POST", "/", body, {
-            "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
-            "X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "http", "Content-Type": "application/json"})
+        connection.request(
+            "POST",
+            "/",
+            body,
+            {
+                "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
+                "X-GitHub-Event": "issue_comment",
+                "X-GitHub-Delivery": "http",
+                "Content-Type": "application/json",
+            },
+        )
         self.assertEqual(connection.getresponse().status, 202)
         connection.request("GET", "/health")
         self.assertEqual(connection.getresponse().read(), b"ok\n")

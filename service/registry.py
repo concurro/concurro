@@ -26,7 +26,12 @@ BINDINGS = """CREATE TABLE bindings (
 RUNNER_SESSIONS = """CREATE TABLE runner_sessions (
     id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,
     config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)"""
-SCHEMA = BINDINGS + ";" + RUNNER_SESSIONS + ";" + """
+SCHEMA = (
+    BINDINGS
+    + ";"
+    + RUNNER_SESSIONS
+    + ";"
+    + """
 CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL);
 CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,
@@ -49,6 +54,7 @@ CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,
                     pull_repository TEXT NOT NULL, pull INTEGER NOT NULL,
                     PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull));
 """
+)
 
 
 @dataclass(frozen=True)
@@ -108,8 +114,10 @@ def queue(db, key, cause, due_at):
     """Merge one cause into a task's work item within the caller's transaction."""
     row = db.execute("SELECT causes, due_at FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
     causes = sorted(set(json.loads(row[0]) if row else ()) | {cause})
-    db.execute("INSERT OR REPLACE INTO queue VALUES (?, ?, ?, ?)",
-               (*key, json.dumps(causes), min(row[1], due_at) if row else due_at))
+    db.execute(
+        "INSERT OR REPLACE INTO queue VALUES (?, ?, ?, ?)",
+        (*key, json.dumps(causes), min(row[1], due_at) if row else due_at),
+    )
 
 
 def human_input(snapshot):
@@ -118,8 +126,9 @@ def human_input(snapshot):
         return None
     result = {k: v for k, v in snapshot.items() if k != "_stage"}
     if result.get("pull"):
-        result["pull"] = {k: v for k, v in result["pull"].items()
-                          if k not in ("checks", "statuses", "suites", "runs", "merge_head")}
+        result["pull"] = {
+            k: v for k, v in result["pull"].items() if k not in ("checks", "statuses", "suites", "runs", "merge_head")
+        }
     return result
 
 
@@ -183,8 +192,9 @@ class Registry:
                 db.execute("BEGIN IMMEDIATE")
                 for statement in filter(str.strip, SCHEMA.split(";")):
                     db.execute(statement)
-                db.executemany("INSERT INTO meta VALUES (?, ?)",
-                               [("registry_id", registry_id), ("schema", str(SCHEMA_VERSION))])
+                db.executemany(
+                    "INSERT INTO meta VALUES (?, ?)", [("registry_id", registry_id), ("schema", str(SCHEMA_VERSION))]
+                )
                 db.execute("COMMIT")
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise RegistryError("registry integrity check failed")
@@ -195,9 +205,11 @@ class Registry:
                 # Old PRs lived beside their issues. Preserve that identity and all journals.
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("ALTER TABLE pulls RENAME TO pulls_v2")
-                db.execute("CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
-                           "pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, "
-                           "PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))")
+                db.execute(
+                    "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
+                    "pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, "
+                    "PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))"
+                )
                 db.execute("INSERT INTO pulls SELECT repository, issue, repository, pull FROM pulls_v2")
                 db.execute("DROP TABLE pulls_v2")
                 db.execute(BINDINGS)
@@ -278,8 +290,11 @@ class Registry:
     def due(self, now):
         """Work items due by `now`, oldest first."""
         with self.transaction() as db:
-            rows = db.execute("SELECT repository, issue, causes, due_at FROM queue WHERE due_at <= ? "
-                              "ORDER BY due_at, repository, issue", (now,)).fetchall()
+            rows = db.execute(
+                "SELECT repository, issue, causes, due_at FROM queue WHERE due_at <= ? "
+                "ORDER BY due_at, repository, issue",
+                (now,),
+            ).fetchall()
         return [WorkItem((r[0], r[1]), tuple(json.loads(r[2])), r[3]) for r in rows]
 
     # Ownership and mutations: called only inside the gateway's critical section
@@ -292,8 +307,10 @@ class Registry:
         with self.transaction() as db:
             row = db.execute("SELECT generation FROM ownership WHERE repository = ? AND issue = ?", key).fetchone()
             generation = (row[0] if row else 0) + 1
-            db.execute("INSERT OR REPLACE INTO ownership VALUES (?, ?, ?, ?, ?, 1)",
-                       (*key, generation, worker, self.clock() + lease_seconds))
+            db.execute(
+                "INSERT OR REPLACE INTO ownership VALUES (?, ?, ?, ?, ?, 1)",
+                (*key, generation, worker, self.clock() + lease_seconds),
+            )
             if consume:
                 db.execute("DELETE FROM queue WHERE repository = ? AND issue = ?", key)
         return generation
@@ -301,16 +318,22 @@ class Registry:
     def current(self, key):
         """The task's latest generation, live or ended."""
         with self.transaction() as db:
-            row = db.execute("SELECT generation, worker, lease_until, live FROM ownership "
-                             "WHERE repository = ? AND issue = ?", key).fetchone()
+            row = db.execute(
+                "SELECT generation, worker, lease_until, live FROM ownership WHERE repository = ? AND issue = ?", key
+            ).fetchone()
         return Ownership(row[0], row[1], row[2], bool(row[3])) if row else None
 
     def renew(self, key, generation, lease_seconds):
         """Extend a live generation's lease; return whether it is still live."""
         with self.transaction() as db:
-            return db.execute("UPDATE ownership SET lease_until = ? WHERE repository = ? AND issue = ? "
-                              "AND generation = ? AND live = 1",
-                              (self.clock() + lease_seconds, *key, generation)).rowcount == 1
+            return (
+                db.execute(
+                    "UPDATE ownership SET lease_until = ? WHERE repository = ? AND issue = ? "
+                    "AND generation = ? AND live = 1",
+                    (self.clock() + lease_seconds, *key, generation),
+                ).rowcount
+                == 1
+            )
 
     def end(self, key, generation, outcome):
         """End that generation only, recording its outcome; return whether it was live.
@@ -320,12 +343,19 @@ class Registry:
         """
         now = self.clock()
         with self.transaction() as db:
-            if db.execute("UPDATE ownership SET live = 0 WHERE repository = ? AND issue = ? "
-                          "AND generation = ? AND live = 1", (*key, generation)).rowcount != 1:
+            if (
+                db.execute(
+                    "UPDATE ownership SET live = 0 WHERE repository = ? AND issue = ? AND generation = ? AND live = 1",
+                    (*key, generation),
+                ).rowcount
+                != 1
+            ):
                 return False
             if outcome is not None:
-                db.execute("INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?)",
-                           (*key, outcome.kind, int(outcome.progressed), outcome.retry_after, now))
+                db.execute(
+                    "INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?, ?, ?)",
+                    (*key, outcome.kind, int(outcome.progressed), outcome.retry_after, now),
+                )
                 if outcome.kind == "continue":
                     queue(db, key, "continue", now)
                 elif outcome.kind == "wait-until":
@@ -335,11 +365,16 @@ class Registry:
     def admit(self, key, generation, method, path, request_digest):
         """Record a new occurrence as in flight before it is sent; return its intent ID."""
         with self.transaction() as db:
-            sequence = db.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM mutations WHERE repository = ? "
-                                  "AND issue = ? AND generation = ?", (*key, generation)).fetchone()[0]
+            sequence = db.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM mutations WHERE repository = ? "
+                "AND issue = ? AND generation = ?",
+                (*key, generation),
+            ).fetchone()[0]
             intent = f"{key[0]}#{key[1]}/{generation}/{sequence}"
-            db.execute("INSERT INTO mutations VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-flight', ?, NULL, NULL)",
-                       (intent, *key, generation, sequence, method, path, request_digest, self.clock()))
+            db.execute(
+                "INSERT INTO mutations VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-flight', ?, NULL, NULL)",
+                (intent, *key, generation, sequence, method, path, request_digest, self.clock()),
+            )
         return intent
 
     def settle(self, intent, status):
@@ -347,23 +382,34 @@ class Registry:
         if status not in STATUSES[1:]:
             raise ValueError("invalid mutation status")
         with self.transaction() as db:
-            if db.execute("UPDATE mutations SET status = ?, settled = ? WHERE intent = ? AND status = 'in-flight'",
-                          (status, self.clock(), intent)).rowcount != 1:
+            if (
+                db.execute(
+                    "UPDATE mutations SET status = ?, settled = ? WHERE intent = ? AND status = 'in-flight'",
+                    (status, self.clock(), intent),
+                ).rowcount
+                != 1
+            ):
                 raise ValueError("mutation is not in flight")
 
     def mutations(self, key, status):
         """The task's occurrences with one status, in admission order."""
         with self.transaction() as db:
-            rows = db.execute("SELECT * FROM mutations WHERE repository = ? AND issue = ? AND status = ? "
-                              "ORDER BY generation, sequence", (*key, status)).fetchall()
+            rows = db.execute(
+                "SELECT * FROM mutations WHERE repository = ? AND issue = ? AND status = ? "
+                "ORDER BY generation, sequence",
+                (*key, status),
+            ).fetchall()
         return [MutationRecord(r[0], (r[1], r[2]), *r[3:11], json.loads(r[11]) if r[11] else None) for r in rows]
 
     def mutation(self, intent):
         """One occurrence by its intent ID, or None."""
         with self.transaction() as db:
             row = db.execute("SELECT * FROM mutations WHERE intent = ?", (intent,)).fetchone()
-        return MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None) \
-            if row else None
+        return (
+            MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None)
+            if row
+            else None
+        )
 
     def in_flight(self, key):
         """Occurrences sent or about to be sent and not yet settled."""
@@ -384,12 +430,18 @@ class Registry:
         now = self.clock()
         resolution = {"disposition": disposition, "evidence": evidence, "operator": operator, "at": now}
         with self.transaction() as db:
-            if db.execute("UPDATE mutations SET status = ?, resolution = ? WHERE intent = ? AND status = 'unknown'",
-                          (DISPOSITIONS[disposition], json.dumps(resolution), intent)).rowcount != 1:
+            if (
+                db.execute(
+                    "UPDATE mutations SET status = ?, resolution = ? WHERE intent = ? AND status = 'unknown'",
+                    (DISPOSITIONS[disposition], json.dumps(resolution), intent),
+                ).rowcount
+                != 1
+            ):
                 raise ValueError("no unresolved mutation with that intent ID")
             key = db.execute("SELECT repository, issue FROM mutations WHERE intent = ?", (intent,)).fetchone()
-            if not db.execute("SELECT 1 FROM mutations WHERE repository = ? AND issue = ? AND status = 'unknown'",
-                              key).fetchone():
+            if not db.execute(
+                "SELECT 1 FROM mutations WHERE repository = ? AND issue = ? AND status = 'unknown'", key
+            ).fetchone():
                 queue(db, tuple(key), "resolved", now)
 
     # Observation and outcomes
@@ -402,8 +454,9 @@ class Registry:
     def acknowledge(self, key, snapshot):
         """Acknowledge exactly the snapshot taken before the tick; polls of that input are dropped."""
         with self.transaction() as db:
-            db.execute("INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?)",
-                       (*key, json.dumps(snapshot, sort_keys=True)))
+            db.execute(
+                "INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?)", (*key, json.dumps(snapshot, sort_keys=True))
+            )
             db.execute("DELETE FROM deferred WHERE repository = ? AND issue = ?", key)
             drop_polls(db, key, snapshot)
 
@@ -413,8 +466,7 @@ class Registry:
         Its retry is queued at its own delay, which polling must not hasten.
         """
         with self.transaction() as db:
-            db.execute("INSERT OR REPLACE INTO deferred VALUES (?, ?, ?)",
-                       (*key, json.dumps(snapshot, sort_keys=True)))
+            db.execute("INSERT OR REPLACE INTO deferred VALUES (?, ?, ?)", (*key, json.dumps(snapshot, sort_keys=True)))
             drop_polls(db, key, snapshot)
 
     def deferred(self, key):
@@ -434,14 +486,23 @@ class Registry:
             acknowledged = stored(db, "snapshots", key)
             outcome = db.execute("SELECT kind FROM outcomes WHERE repository = ? AND issue = ?", key).fetchone()
             if outcome and outcome[0] == "terminal":
-                new = (acknowledged is not None and acknowledged["issue"]["state"] == "closed"
-                       and snapshot["issue"]["state"] == "open")
+                new = (
+                    acknowledged is not None
+                    and acknowledged["issue"]["state"] == "closed"
+                    and snapshot["issue"]["state"] == "open"
+                )
             else:
                 deferred = stored(db, "deferred", key)
-                new = human_input(snapshot) != human_input(acknowledged) and human_input(snapshot) != human_input(deferred)
-                if (not new and deferred is None and (acknowledged or {}).get("_stage") == "gates"
-                        and {k: v for k, v in snapshot.items() if k != "_stage"}
-                            != {k: v for k, v in acknowledged.items() if k != "_stage"}):
+                new = human_input(snapshot) != human_input(acknowledged) and human_input(snapshot) != human_input(
+                    deferred
+                )
+                if (
+                    not new
+                    and deferred is None
+                    and (acknowledged or {}).get("_stage") == "gates"
+                    and {k: v for k, v in snapshot.items() if k != "_stage"}
+                    != {k: v for k, v in acknowledged.items() if k != "_stage"}
+                ):
                     queue(db, key, "ci", self.clock())
                     return True
             if new:
@@ -451,22 +512,25 @@ class Registry:
     def outcome(self, key):
         """The outcome the task's last completed generation recorded."""
         with self.transaction() as db:
-            row = db.execute("SELECT kind, progressed, retry_after FROM outcomes "
-                             "WHERE repository = ? AND issue = ?", key).fetchone()
+            row = db.execute(
+                "SELECT kind, progressed, retry_after FROM outcomes WHERE repository = ? AND issue = ?", key
+            ).fetchone()
         return Outcome(row[0], bool(row[1]), row[2]) if row else None
 
     def binding(self, key):
         """The task's pinned configuration and destinations, or None before enrollment."""
         with self.transaction() as db:
-            row = db.execute("SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?",
-                             key).fetchone()
+            row = db.execute(
+                "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?", key
+            ).fetchone()
         return TaskBinding(*row) if row else None
 
     def bind(self, key, upstream, fork, config_sha):
         """Pin the first configuration; refuse retargeting and reuse it on subsequent ticks."""
         with self.transaction() as db:
-            row = db.execute("SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?",
-                             key).fetchone()
+            row = db.execute(
+                "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?", key
+            ).fetchone()
             if row is not None:
                 if tuple(row[:2]) != (upstream, fork):
                     raise ValueError("task target changed; reconcile before continuing")
@@ -481,12 +545,14 @@ class Registry:
         """
         repository = repository or key[0]
         with self.transaction() as db:
-            owner = db.execute("SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?",
-                               (repository, pull)).fetchone()
+            owner = db.execute(
+                "SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?", (repository, pull)
+            ).fetchone()
             if owner is not None and tuple(owner) != key:
                 raise ValueError("pull request already belongs to another task")
-            current = db.execute("SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?",
-                                 key).fetchone()
+            current = db.execute(
+                "SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?", key
+            ).fetchone()
             if current is not None and tuple(current) != (repository, pull):
                 raise ValueError("task already has another pull request")
             db.execute("INSERT OR IGNORE INTO pulls VALUES (?, ?, ?, ?)", (*key, repository, pull))
@@ -494,60 +560,92 @@ class Registry:
     def pull(self, key):
         """The task's recorded PR identity, or None."""
         with self.transaction() as db:
-            row = db.execute("SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?",
-                             key).fetchone()
+            row = db.execute(
+                "SELECT pull_repository, pull FROM pulls WHERE repository = ? AND issue = ?", key
+            ).fetchone()
         return PullRequest(*row) if row else None
 
     def task(self, repository, pull):
         """The issue identity owning a PR in `repository`, or None."""
         with self.transaction() as db:
-            row = db.execute("SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?",
-                             (repository, pull)).fetchone()
+            row = db.execute(
+                "SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?", (repository, pull)
+            ).fetchone()
         return tuple(row) if row else None
 
     def status(self):
         """Every task the registry knows: queue, ownership, outcome and unknown writes."""
         with self.transaction() as db:
-            keys = sorted(set(db.execute("SELECT repository, issue FROM queue UNION SELECT repository, issue "
-                                         "FROM ownership UNION SELECT repository, issue FROM outcomes").fetchall()))
+            keys = sorted(
+                set(
+                    db.execute(
+                        "SELECT repository, issue FROM queue UNION SELECT repository, issue "
+                        "FROM ownership UNION SELECT repository, issue FROM outcomes"
+                    ).fetchall()
+                )
+            )
             tasks = []
             for key in keys:
-                queued = db.execute("SELECT causes, due_at FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
-                owner = db.execute("SELECT generation, live, lease_until FROM ownership "
-                                   "WHERE repository = ? AND issue = ?", key).fetchone()
-                outcome = db.execute("SELECT kind, retry_after, recorded FROM outcomes "
-                                     "WHERE repository = ? AND issue = ?", key).fetchone()
-                unknown = [row[0] for row in db.execute("SELECT intent FROM mutations WHERE repository = ? "
-                                                        "AND issue = ? AND status = 'unknown'", key)]
-                tasks.append({"repository": key[0], "issue": key[1],
-                              "queued": {"causes": json.loads(queued[0]), "due_at": queued[1]} if queued else None,
-                              "generation": owner[0] if owner else None, "live": bool(owner and owner[1]),
-                              "outcome": {"kind": outcome[0], "retry_after": outcome[1], "recorded": outcome[2]}
-                              if outcome else None, "unresolved": unknown})
+                queued = db.execute(
+                    "SELECT causes, due_at FROM queue WHERE repository = ? AND issue = ?", key
+                ).fetchone()
+                owner = db.execute(
+                    "SELECT generation, live, lease_until FROM ownership WHERE repository = ? AND issue = ?", key
+                ).fetchone()
+                outcome = db.execute(
+                    "SELECT kind, retry_after, recorded FROM outcomes WHERE repository = ? AND issue = ?", key
+                ).fetchone()
+                unknown = [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT intent FROM mutations WHERE repository = ? AND issue = ? AND status = 'unknown'", key
+                    )
+                ]
+                tasks.append(
+                    {
+                        "repository": key[0],
+                        "issue": key[1],
+                        "queued": {"causes": json.loads(queued[0]), "due_at": queued[1]} if queued else None,
+                        "generation": owner[0] if owner else None,
+                        "live": bool(owner and owner[1]),
+                        "outcome": {"kind": outcome[0], "retry_after": outcome[1], "recorded": outcome[2]}
+                        if outcome
+                        else None,
+                        "unresolved": unknown,
+                    }
+                )
         return tasks
 
     def runner_session(self, session):
         """The task and configuration authorized for a recorded run ref, or None."""
         with self.transaction() as db:
-            row = db.execute("SELECT repository, issue, generation, config_sha, removed FROM runner_sessions WHERE id = ?",
-                             (session,)).fetchone()
+            row = db.execute(
+                "SELECT repository, issue, generation, config_sha, removed FROM runner_sessions WHERE id = ?",
+                (session,),
+            ).fetchone()
         return dict(zip(("repository", "issue", "generation", "config_sha", "removed"), row)) if row else None
 
     def register_runner(self, key, generation, session, config_sha):
         """Record a session before creating its branch or dispatching its job."""
         with self.transaction() as db:
-            prior = db.execute("SELECT repository, issue, generation, config_sha FROM runner_sessions WHERE id = ?",
-                               (session,)).fetchone()
+            prior = db.execute(
+                "SELECT repository, issue, generation, config_sha FROM runner_sessions WHERE id = ?", (session,)
+            ).fetchone()
             expected = (*key, generation, config_sha)
             if prior and tuple(prior) != expected:
                 raise RegistryError("runner session is already bound to another task")
-            db.execute("INSERT OR IGNORE INTO runner_sessions (id, repository, issue, generation, config_sha) "
-                       "VALUES (?, ?, ?, ?, ?)", (session, *expected))
+            db.execute(
+                "INSERT OR IGNORE INTO runner_sessions (id, repository, issue, generation, config_sha) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session, *expected),
+            )
 
     def runner_sessions(self):
         """Run refs not yet confirmed removed, for reconciliation."""
         with self.transaction() as db:
-            rows = db.execute("SELECT id, repository, issue, generation FROM runner_sessions WHERE removed = 0").fetchall()
+            rows = db.execute(
+                "SELECT id, repository, issue, generation FROM runner_sessions WHERE removed = 0"
+            ).fetchall()
         return [tuple(row) for row in rows]
 
     def remove_runner(self, session):
@@ -558,16 +656,27 @@ class Registry:
     def commit_tasks(self, repository, sha):
         """Tasks whose last observed upstream PR uses this head or test-merge commit."""
         with self.transaction() as db:
-            rows = db.execute("SELECT p.repository, p.issue, s.snapshot FROM pulls p JOIN snapshots s "
-                              "ON p.repository = s.repository AND p.issue = s.issue "
-                              "WHERE p.pull_repository = ?", (repository,)).fetchall()
-            return [(row[0], row[1]) for row in rows
-                    if sha in ((json.loads(row[2]).get("pull") or {}).get("head"),
-                               (json.loads(row[2]).get("pull") or {}).get("merge_head"))]
+            rows = db.execute(
+                "SELECT p.repository, p.issue, s.snapshot FROM pulls p JOIN snapshots s "
+                "ON p.repository = s.repository AND p.issue = s.issue "
+                "WHERE p.pull_repository = ?",
+                (repository,),
+            ).fetchall()
+            return [
+                (row[0], row[1])
+                for row in rows
+                if sha
+                in (
+                    (json.loads(row[2]).get("pull") or {}).get("head"),
+                    (json.loads(row[2]).get("pull") or {}).get("merge_head"),
+                )
+            ]
 
     def active(self, repository):
         """Every task of the repository with a non-terminal outcome."""
         with self.transaction() as db:
-            rows = db.execute("SELECT repository, issue FROM outcomes WHERE repository = ? AND kind != 'terminal' "
-                              "ORDER BY issue", (repository,)).fetchall()
+            rows = db.execute(
+                "SELECT repository, issue FROM outcomes WHERE repository = ? AND kind != 'terminal' ORDER BY issue",
+                (repository,),
+            ).fetchall()
         return [tuple(row) for row in rows]

@@ -19,23 +19,36 @@ def glob_matches(path, pattern):
         if pattern_index == len(patterns):
             return index == len(parts)
         if patterns[pattern_index] == "**":
-            return (match(index, pattern_index + 1)
-                    or index < len(parts) and match(index + 1, pattern_index))
-        return (index < len(parts) and fnmatchcase(parts[index], patterns[pattern_index])
-                and match(index + 1, pattern_index + 1))
+            return match(index, pattern_index + 1) or index < len(parts) and match(index + 1, pattern_index)
+        return (
+            index < len(parts)
+            and fnmatchcase(parts[index], patterns[pattern_index])
+            and match(index + 1, pattern_index + 1)
+        )
 
     return match(0, 0)
 
+
 def _strings(value, minimum, maximum, length=200):
     """Return whether a value is a bounded list of distinct non-empty strings."""
-    return (isinstance(value, list) and minimum <= len(value) <= maximum
-            and all(isinstance(v, str) and v.strip() and len(v) <= length for v in value)
-            and len(set(value)) == len(value))
+    return (
+        isinstance(value, list)
+        and minimum <= len(value) <= maximum
+        and all(isinstance(v, str) and v.strip() and len(v) <= length for v in value)
+        and len(set(value)) == len(value)
+    )
+
 
 def _relative(value):
     """Accept relative repository paths and globs without traversal or absolute roots."""
-    return (isinstance(value, str) and bool(value) and not value.startswith("/") and "\\" not in value
-            and all(p not in ("", ".", "..") for p in value.split("/")))
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith("/")
+        and "\\" not in value
+        and all(p not in ("", ".", "..") for p in value.split("/"))
+    )
+
 
 def scope_pattern(value):
     """Treat a trailing slash as a recursive directory scope, without relaxing path validation."""
@@ -49,9 +62,11 @@ def scope_of(plan):
         return {"paths": [scope_pattern(path) for path in scope["paths"]], "max_files": scope["max_files"]}
     return {"paths": list(plan["files"]), "max_files": len(plan["files"])}
 
+
 def in_scope(path, plan):
     """Whether a path lies inside the plan's envelope."""
     return any(glob_matches(path, pattern) for pattern in scope_of(plan)["paths"])
+
 
 def scope_errors(plan):
     """Why a plan's `scope` is invalid, or None."""
@@ -70,6 +85,7 @@ def scope_errors(plan):
     if not all(in_scope(path, plan) for path in plan["files"]):
         return "plan files must lie inside the plan scope"
     return None
+
 
 def generated(path, policy):
     """Whether target configuration marks a path as generated (aggregate bounds still apply)."""

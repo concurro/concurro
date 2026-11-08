@@ -21,8 +21,9 @@ class Identities:
         self.controller = config["bot_login"]
         self.publishers = dict(publishers or {})
         if self.controller in self.publishers.values() or not all(
-                isinstance(k, str) and ROLE.fullmatch(k) and isinstance(v, str) and BOT_LOGIN.fullmatch(v)
-                for k, v in self.publishers.items()):
+            isinstance(k, str) and ROLE.fullmatch(k) and isinstance(v, str) and BOT_LOGIN.fullmatch(v)
+            for k, v in self.publishers.items()
+        ):
             raise Blocked("conversation publishers must be distinct [bot] identities")
 
     def author(self, event, role=None):

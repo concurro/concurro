@@ -37,6 +37,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def reply(status, payload=b"", headers=None, length=None):
     """A route answering with `payload`, optionally declaring a different `Content-Length`."""
+
     def route(handler, _):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         handler.send_response(status)
@@ -48,6 +49,7 @@ def reply(status, payload=b"", headers=None, length=None):
         handler.wfile.flush()
         if length is not None:
             handler.close_connection = True
+
     return route
 
 
@@ -116,11 +118,22 @@ class ReadTests(unittest.TestCase):
 
     def test_statuses(self):
         """404 is `NotFound`; 5xx, 408, throttling and dropped connections are `Transient`; others name the status."""
-        cases = [(reply(404, {}), NotFound), (reply(502, {}), Transient), (reply(408, {}), Transient),
-                 (reply(403, {"message": "API rate limit exceeded"}, {"X-RateLimit-Remaining": "0",
-                  "X-RateLimit-Reset": "1000030"}), Transient), (hang_up, Transient),
-                 (reply(403, {"message": "Resource not accessible"}, {"X-RateLimit-Remaining": "4999"}), RuntimeError),
-                 (reply(200, b"{\"partial\":", length=100), Transient)]
+        cases = [
+            (reply(404, {}), NotFound),
+            (reply(502, {}), Transient),
+            (reply(408, {}), Transient),
+            (
+                reply(
+                    403,
+                    {"message": "API rate limit exceeded"},
+                    {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1000030"},
+                ),
+                Transient,
+            ),
+            (hang_up, Transient),
+            (reply(403, {"message": "Resource not accessible"}, {"X-RateLimit-Remaining": "4999"}), RuntimeError),
+            (reply(200, b'{"partial":', length=100), Transient),
+        ]
         for index, (handler, error) in enumerate(cases):
             with self.subTest(case=index):
                 self.net.route("GET", self.root + f"case/{index}", handler)
@@ -134,8 +147,11 @@ class ReadTests(unittest.TestCase):
     def test_throttled_delay_is_not_shortened(self):
         """A server-requested delay longer than the local backoff cap is kept."""
         self.net.route("GET", self.root + "retry", reply(403, {}, {"Retry-After": "7200"}))
-        self.net.route("GET", self.root + "reset", reply(429, {}, {"X-RateLimit-Remaining": "0",
-                                                                   "X-RateLimit-Reset": str(1_000_000 + 7200)}))
+        self.net.route(
+            "GET",
+            self.root + "reset",
+            reply(429, {}, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(1_000_000 + 7200)}),
+        )
         for path in ("retry", "reset"):
             with self.subTest(path=path), self.assertRaises(Transient) as raised:
                 self.reader.request("GET", self.root + path)
@@ -144,9 +160,11 @@ class ReadTests(unittest.TestCase):
     def test_graphql_throttling_with_http_200(self):
         """A rate-limit error in a 200 GraphQL response is `Transient`; other GraphQL errors go to the engine."""
         limited = {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]}
-        cases = [(limited, {"Retry-After": "30"}, 30),
-                 (limited, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(1_000_000 + 7200)}, 7200),
-                 ({"errors": [{"message": "You have exceeded a secondary rate limit"}]}, {}, 60)]
+        cases = [
+            (limited, {"Retry-After": "30"}, 30),
+            (limited, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(1_000_000 + 7200)}, 7200),
+            ({"errors": [{"message": "You have exceeded a secondary rate limit"}]}, {}, 60),
+        ]
         query = {"query": "query { viewer { login } }"}
         for index, (payload, headers, wait) in enumerate(cases):
             with self.subTest(case=index):
@@ -169,22 +187,22 @@ class ReadTests(unittest.TestCase):
 
     def test_endpoint_limits(self):
         """The measured artifact response and the worst-case bound are read; one byte over is refused."""
-        body = "x\"" * 12000
+        body = 'x"' * 12000
         measured = {"artifact": {"body": body}, "versions": [{"body": body, "version": v} for v in range(30)]}
         data = json.dumps(measured).encode()
-        data = data[:-1] + b", \"pad\": \"" + b"p" * (1_493_376 - len(data) - 11) + b"\"}"
+        data = data[:-1] + b', "pad": "' + b"p" * (1_493_376 - len(data) - 11) + b'"}'
         self.assertEqual(len(data), 1_493_376)
         worst = json.dumps({"versions": [{"body": "\x01" * 60_000}] * 31}).encode()
         self.assertGreater(len(worst), 11_000_000)
         limit = 16 * transport.MB
-        exact = b"{\"p\": \"" + b"p" * (limit - 9) + b"\"}"
+        exact = b'{"p": "' + b"p" * (limit - 9) + b'"}'
         self.assertEqual(len(exact), limit)
         artifacts = self.root + "issues/7/artifacts/3"
         for index, payload in enumerate((data, worst, exact)):
             with self.subTest(case=index):
                 self.net.route("GET", artifacts, reply(200, payload))
                 self.assertIsInstance(self.reader.request("GET", artifacts), dict)
-        self.net.route("GET", artifacts, reply(200, exact[:-1] + b"p\"}"))
+        self.net.route("GET", artifacts, reply(200, exact[:-1] + b'p"}'))
         with self.assertRaisesRegex(RuntimeError, "exceeds limit"):
             self.reader.request("GET", artifacts)
         self.net.route("GET", self.root + "issues/7", reply(200, data * 3))
@@ -217,14 +235,35 @@ class ReadTests(unittest.TestCase):
 
     def test_runner_claims_are_read_through_the_repositorys_transport(self):
         """GraphQL for the repository and one public bot profile; no other account or repository is readable."""
-        self.net.route("POST", "graphql", reply(200, {"data": {"repository": {
-            "databaseId": 11, "owner": {"databaseId": 22}, "defaultBranchRef": {"name": "main"}}}}))
+        self.net.route(
+            "POST",
+            "graphql",
+            reply(
+                200,
+                {
+                    "data": {
+                        "repository": {
+                            "databaseId": 11,
+                            "owner": {"databaseId": 22},
+                            "defaultBranchRef": {"name": "main"},
+                        }
+                    }
+                },
+            ),
+        )
         self.net.route("GET", "users/concurro%5Bbot%5D", reply(200, {"id": 33, "login": "concurro[bot]"}))
-        claims = runner_claims(self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", SHA, "concurro[bot]")
-        self.assertEqual((claims["repository_id"], claims["repository_owner_id"], claims["actor_id"], claims["ref"]),
-                         ("11", "22", "33", ""))
-        for method, path in (("GET", "users/concurro%5Bbot%5D/repos"), ("GET", "users/a/../../orgs"),
-                             ("PATCH", "users/concurro%5Bbot%5D")):
+        claims = runner_claims(
+            self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", SHA, "concurro[bot]"
+        )
+        self.assertEqual(
+            (claims["repository_id"], claims["repository_owner_id"], claims["actor_id"], claims["ref"]),
+            ("11", "22", "33", ""),
+        )
+        for method, path in (
+            ("GET", "users/concurro%5Bbot%5D/repos"),
+            ("GET", "users/a/../../orgs"),
+            ("PATCH", "users/concurro%5Bbot%5D"),
+        ):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.reader.request(method, path)
         with self.assertRaises(ValueError):
@@ -238,8 +277,10 @@ class ReadTests(unittest.TestCase):
         self.reader.request("GET", self.root + "issues/7")
         other.request("GET", f"repos/{OTHER}/issues/7")
         tokens = [(path, headers["Authorization"]) for _, path, headers in self.net.seen()]
-        self.assertEqual(tokens, [("/" + self.root + "issues/7", "Bearer read-token"),
-                                  (f"/repos/{OTHER}/issues/7", "Bearer other-token")])
+        self.assertEqual(
+            tokens,
+            [("/" + self.root + "issues/7", "Bearer read-token"), (f"/repos/{OTHER}/issues/7", "Bearer other-token")],
+        )
 
 
 class Short:
@@ -295,23 +336,29 @@ class ArchiveTests(unittest.TestCase):
     def test_follows_one_redirect_without_authorization(self):
         """The codeload hop carries no `Authorization` header."""
         self.redirect(f"https://codeload.github.com/{KEY[0]}/legacy.tar.gz/{SHA}?token=temporary")
-        self.net.route("GET", f"{KEY[0]}/legacy.tar.gz/{SHA}?token=temporary", reply(200, b"tarball"),
-                       host=transport.CODELOAD)
+        self.net.route(
+            "GET", f"{KEY[0]}/legacy.tar.gz/{SHA}?token=temporary", reply(200, b"tarball"), host=transport.CODELOAD
+        )
         self.assertEqual(self.reader.archive(self.path), b"tarball")
         [(_, _, headers)] = self.net.seen(transport.CODELOAD)
         self.assertNotIn("Authorization", headers)
 
     def test_other_hosts_and_second_redirects_are_refused(self):
         """Neither another host nor a further redirect is followed."""
-        for location in ("https://evil.example/x", "http://codeload.github.com/x",
-                         "https://codeload.github.com:8443/x", "https://user@codeload.github.com/x"):
+        for location in (
+            "https://evil.example/x",
+            "http://codeload.github.com/x",
+            "https://codeload.github.com:8443/x",
+            "https://user@codeload.github.com/x",
+        ):
             with self.subTest(location=location):
                 self.redirect(location)
                 with self.assertRaisesRegex(RuntimeError, "archive"):
                     self.reader.archive(self.path)
         self.redirect("https://codeload.github.com/again")
-        self.net.route("GET", "again", reply(302, b"", {"Location": "https://codeload.github.com/x"}),
-                       host=transport.CODELOAD)
+        self.net.route(
+            "GET", "again", reply(302, b"", {"Location": "https://codeload.github.com/x"}), host=transport.CODELOAD
+        )
         with self.assertRaisesRegex(RuntimeError, "archive"):
             self.reader.archive(self.path)
         self.assertEqual(len(self.net.seen(transport.CODELOAD)), 1)
@@ -330,8 +377,12 @@ class WriteTests(ServiceFixture, unittest.TestCase):
         super().setUp()
         self.net = Loopback().start(self)
         self.connection = self.net.connect
-        writer = Transport(KEY[0], Credential("write-token"), self.clock, lambda host, timeout: self.connection(host, timeout))
-        self.gateway = MutationGateway(self.registry, lambda repository: writer, lambda repository: self.backend, **self.pacing)
+        writer = Transport(
+            KEY[0], Credential("write-token"), self.clock, lambda host, timeout: self.connection(host, timeout)
+        )
+        self.gateway = MutationGateway(
+            self.registry, lambda repository: writer, lambda repository: self.backend, **self.pacing
+        )
         self.generation = self.gateway.acquire(KEY, "worker")
         self.path = f"repos/{KEY[0]}/issues/7/comments"
 
@@ -360,7 +411,7 @@ class WriteTests(ServiceFixture, unittest.TestCase):
 
     def test_truncated_success_is_done(self):
         """A 2xx status line establishes the write applied; the lost body becomes `response_lost`."""
-        self.net.route("POST", self.path, reply(201, b"{\"id\": 1", length=100))
+        self.net.route("POST", self.path, reply(201, b'{"id": 1', length=100))
         with self.assertRaises(Transient) as raised:
             self.comment()
         self.assertEqual(raised.exception.code, "response_lost")

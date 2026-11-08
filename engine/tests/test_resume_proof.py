@@ -39,14 +39,23 @@ class FakeCodex:
 
 
 class ResumeProofTests(unittest.TestCase):
-
     def run_proof(self, codex):
         root = Path(tempfile.mkdtemp())
         (root / "key").write_text("session-key\n")
         output = io.StringIO()
         with patch.object(resume_proof.subprocess, "run", codex), redirect_stdout(output):
-            resume_proof.main(["--gateway", "https://gateway.invalid", "--key", str(root / "key"),
-                               "--model", "gpt-test", "--root", str(root / "proof")])
+            resume_proof.main(
+                [
+                    "--gateway",
+                    "https://gateway.invalid",
+                    "--key",
+                    str(root / "key"),
+                    "--model",
+                    "gpt-test",
+                    "--root",
+                    str(root / "proof"),
+                ]
+            )
         return output.getvalue()
 
     def test_a_restored_archive_resumes_with_its_context_and_without_caches(self):
@@ -56,7 +65,7 @@ class ResumeProofTests(unittest.TestCase):
         self.assertIn("proof: the restored archive resumed the same thread", output)
         first, resumed = codex.calls
         self.assertNotIn("session-key", " ".join(first), "the key travels in the environment, not the arguments")
-        self.assertEqual(resumed[resumed.index("resume"):][-2:], ["0190a1a7-6de4-7733-87b3-42daa52eb665", "-"])
+        self.assertEqual(resumed[resumed.index("resume") :][-2:], ["0190a1a7-6de4-7733-87b3-42daa52eb665", "-"])
 
     def test_a_resume_without_the_context_fails(self):
         with self.assertRaisesRegex(resume_proof.ProofFailed, "did not recall"):

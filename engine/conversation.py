@@ -36,7 +36,7 @@ EVENT_RESERVE = 1000
 KEPT_TEXT = 1000
 OMITTED = "Full text omitted: it exceeds the comment limit. It is kept in the automation audit state."
 
-REPORT_LINK = re.compile(r'\[Full report(?: part [0-9]+)?\]\((?P<root>[^)\n]*/artifacts/)(?P<number>[0-9]+)\)')
+REPORT_LINK = re.compile(r"\[Full report(?: part [0-9]+)?\]\((?P<root>[^)\n]*/artifacts/)(?P<number>[0-9]+)\)")
 
 
 def report_link(root, index, count, number):
@@ -53,36 +53,66 @@ def render(state, kind, source, details):
     value = state
     for key in source:
         value = value[key]
-    if kind == 'plan_summary':
-        publication = value['publication']
-        return '\n'.join([
-            f"[Implementation plan]({details['url']}) · artifact version {details['revision']}",
-            f"Plan `{details['plan']}` · round {details['round']}", '', 'Changes:', '',
-            *['- ' + entry for entry in publication['changes']], '', 'Review focus:', '',
-            *['- ' + entry for entry in publication['review_focus']]])
+    if kind == "plan_summary":
+        publication = value["publication"]
+        return "\n".join(
+            [
+                f"[Implementation plan]({details['url']}) · artifact version {details['revision']}",
+                f"Plan `{details['plan']}` · round {details['round']}",
+                "",
+                "Changes:",
+                "",
+                *["- " + entry for entry in publication["changes"]],
+                "",
+                "Review focus:",
+                "",
+                *["- " + entry for entry in publication["review_focus"]],
+            ]
+        )
     if kind == "plan":
-        lines = [f"Plan `{details['plan']}` · round {details['round']}", "", value["summary"], "",
-                 *["- " + step for step in value["steps"]], "", "Validation:", "",
-                 *["- " + test for test in value["tests"]]]
+        lines = [
+            f"Plan `{details['plan']}` · round {details['round']}",
+            "",
+            value["summary"],
+            "",
+            *["- " + step for step in value["steps"]],
+            "",
+            "Validation:",
+            "",
+            *["- " + test for test in value["tests"]],
+        ]
         if value["responses"]:
-            lines += ["", "Responses to review:", "",
-                      *[f"- **{v['id']}**: {v['response']}" for v in value["responses"]]]
+            lines += [
+                "",
+                "Responses to review:",
+                "",
+                *[f"- **{v['id']}**: {v['response']}" for v in value["responses"]],
+            ]
         if value["questions"]:
             lines += ["", "Questions:", "", *["- " + q for q in value["questions"]]]
         return "\n".join(lines)
     if kind == "qc":
-        minimal = {"plan_id": details["plan"], "design_generation": details["round"] - 1,
-                   "objections": [{"id": identifier, "reviewer": details["reviewer"], "resolved": False}
-                                  for identifier in details["resolved"]]}
-        disposition_ids = details.get('disposition_ids', [])
-        concern_ids = [identifier for identifier, update in zip(disposition_ids, value.get('objection_updates', []))
-                       if update['status'] == 'open']
+        minimal = {
+            "plan_id": details["plan"],
+            "design_generation": details["round"] - 1,
+            "objections": [
+                {"id": identifier, "reviewer": details["reviewer"], "resolved": False}
+                for identifier in details["resolved"]
+            ],
+        }
+        disposition_ids = details.get("disposition_ids", [])
+        concern_ids = [
+            identifier
+            for identifier, update in zip(disposition_ids, value.get("objection_updates", []))
+            if update["status"] == "open"
+        ]
         body = review_body(minimal, value, details["phase"], {"id": details["reviewer"]}, concern_ids)
-        if value.get('objection_updates'):
-            body += '\n\nObjection dispositions:\n' + ''.join(
+        if value.get("objection_updates"):
+            body += "\n\nObjection dispositions:\n" + "".join(
                 f"\n- **{disposition_ids[i] if disposition_ids else u['id'] or 'New finding'}**: {u['status']} — {u['evidence']}"
-                + (f" Counterexample: {u['counterexample']} Closure: {u['closure']}" if u['status'] == 'open' else '')
-                for i, u in enumerate(value['objection_updates']))
+                + (f" Counterexample: {u['counterexample']} Closure: {u['closure']}" if u["status"] == "open" else "")
+                for i, u in enumerate(value["objection_updates"])
+            )
         return body
     if kind == "local":
         checks = ", ".join(f"{c['name']}: exit {c['exit_code']}" for c in value["checks"])
@@ -138,12 +168,14 @@ def items(entries):
 
 class Hidden(NamedTuple):
     """A collapsed section of an event, dropped first when the event would exceed its limit."""
+
     caption: str
     body: str
 
 
 class Text(NamedTuple):
     """Model text shown expanded, dropped with the collapsed sections when long and the event would not fit."""
+
     body: str
 
 
@@ -156,8 +188,11 @@ def join(parts, compact):
     """An event body from its parts; `compact` replaces droppable parts with one note."""
     if compact:
         parts = [p for p in parts if not droppable(p)] + [OMITTED]
-    return "\n\n".join(collapsed(p.caption, p.body) if isinstance(p, Hidden) else p.body if isinstance(p, Text) else p
-                       for p in parts if p)
+    return "\n\n".join(
+        collapsed(p.caption, p.body) if isinstance(p, Hidden) else p.body if isinstance(p, Text) else p
+        for p in parts
+        if p
+    )
 
 
 def render_v2(state, kind, source, details):
@@ -184,30 +219,57 @@ def parts_v2(state, kind, source, details):
     if kind == "intake_rejection":
         return "⚠️ Intake output rejected", [block(value["reason"])], (details["round"],)
     if kind == "review_rejection":
-        return "Design review output rejected", [text(details['diagnostic']['detail'])], (
-            text(details['provider']), f"round {details['round']}", text(details.get('display_phase', details['phase'])))
+        return (
+            "Design review output rejected",
+            [text(details["diagnostic"]["detail"])],
+            (
+                text(details["provider"]),
+                f"round {details['round']}",
+                text(details.get("display_phase", details["phase"])),
+            ),
+        )
     if kind == "implementation":
-        return "Implementation report", [block(value["summary"]),
-                "Agent-reported validation: " + block(value["validation"])], (f"round {details['round']}",)
+        return (
+            "Implementation report",
+            [block(value["summary"]), "Agent-reported validation: " + block(value["validation"])],
+            (f"round {details['round']}",),
+        )
     if kind == "plan_summary":
         publication = value["publication"]
         # The plan itself is linked, so its summary's headline is enough here.
         first, _ = lead(value, "summary")
         lines = [first, link("Implementation plan", details["url"]) + f" · artifact version {details['revision']}"]
-        lines.append(Hidden("Changes and review focus", "**Changes**\n\n" + items(publication["changes"])
-                            + "\n\n**Review focus**\n\n" + items(publication["review_focus"])))
+        lines.append(
+            Hidden(
+                "Changes and review focus",
+                "**Changes**\n\n"
+                + items(publication["changes"])
+                + "\n\n**Review focus**\n\n"
+                + items(publication["review_focus"]),
+            )
+        )
         return f"Plan updated · {text(details['actor'])}", lines, (plan, f"round {details['round']}")
     if kind == "qc":
         emoji, outcome = markup.DECISION[value["decision"]]
         stage = "Intake QC" if details["phase"] == "intake" else "Plan QC"
         resolved, concerns, questions = objections(value, details)
         ids = details.get("disposition_ids", [])
-        updates = [(ids[i] if ids else u["id"] or "New finding", u) for i, u in enumerate(value.get("objection_updates", []))]
+        updates = [
+            (ids[i] if ids else u["id"] or "New finding", u) for i, u in enumerate(value.get("objection_updates", []))
+        ]
         updated = {i for i, _ in updates}
         rows = [[code(i, cell=True), "Objection", markup.label(markup.STATUS[u["status"]])] for i, u in updates]
-        rows += [[code(i, cell=True), "Concern", markup.label(markup.STATUS["open"])] for i, _ in concerns if i not in updated]
+        rows += [
+            [code(i, cell=True), "Concern", markup.label(markup.STATUS["open"])]
+            for i, _ in concerns
+            if i not in updated
+        ]
         rows += [[code(i, cell=True), "Question", markup.label(markup.STATUS["open"])] for i, _ in questions]
-        rows += [[code(i, cell=True), "Objection", markup.label(markup.STATUS["resolved"])] for i in resolved if i not in updated]
+        rows += [
+            [code(i, cell=True), "Objection", markup.label(markup.STATUS["resolved"])]
+            for i in resolved
+            if i not in updated
+        ]
         first, full = lead(value, "rationale")
         parts = [first]
         if rows:
@@ -226,21 +288,32 @@ def parts_v2(state, kind, source, details):
         phase = "" if details["phase"] == "intake" else details.get("display_phase", details["phase"])
         return title, parts, (text(details["model"]), plan, f"round {details['round']}", phase)
     if kind == "local":
-        rows = [[code(c["name"], cell=True), markup.label(markup.PASS if c["exit_code"] == 0 else markup.FAIL),
-                 str(c["exit_code"])] for c in value["checks"]]
+        rows = [
+            [
+                code(c["name"], cell=True),
+                markup.label(markup.PASS if c["exit_code"] == 0 else markup.FAIL),
+                str(c["exit_code"]),
+            ]
+            for c in value["checks"]
+        ]
         parts = [table(["Check", "Result", "Exit"], rows)] if rows else []
         report = value.get("review")
         if report:
             emoji, outcome = markup.VERDICT[report["verdict"]]
             parts.append(f"**{emoji} Local review · {text(details['reviewer'])} · {outcome}**")
             first, full = lead(report, "summary")
-            hidden = ([full] if full else []) + [f"**{code(f['path'])}**\n\n{block(f['detail'])}" for f in report["findings"]]
+            hidden = ([full] if full else []) + [
+                f"**{code(f['path'])}**\n\n{block(f['detail'])}" for f in report["findings"]
+            ]
             parts.append(first)
             if hidden:
                 parts.append(Hidden("Local review", "\n\n".join(hidden)))
         commit = value.get("local_commit")
-        return (f"Local validation · attempt {value['attempt'] + 1}", parts,
-                ("commit " + code(commit[:7]) if commit else "",))
+        return (
+            f"Local validation · attempt {value['attempt'] + 1}",
+            parts,
+            ("commit " + code(commit[:7]) if commit else "",),
+        )
     if kind == "review":
         emoji, outcome = markup.VERDICT[value["verdict"]]
         first, full = lead(value, "summary")
@@ -248,12 +321,22 @@ def parts_v2(state, kind, source, details):
         new = [reviews.find(state, i) or {"id": i, **f} for i, f in zip(value["finding_ids"], value["findings"])]
         severities = [f.get("severity") for f in new]
         summary = f"{len(new)} new finding{'s' if len(new) != 1 else ''}"
-        breakdown = ", ".join(f"{severities.count(key)} {markup.label(entry)}"
-                              for key, entry in markup.SEVERITY.items() if key in severities)
-        line = [link(f"Review on PR #{details['pr']}", details["pr_url"]), summary + (f" ({breakdown})" if breakdown else "")]
+        breakdown = ", ".join(
+            f"{severities.count(key)} {markup.label(entry)}"
+            for key, entry in markup.SEVERITY.items()
+            if key in severities
+        )
+        line = [
+            link(f"Review on PR #{details['pr']}", details["pr_url"]),
+            summary + (f" ({breakdown})" if breakdown else ""),
+        ]
         if value["dispositions"]:
-            line.append("earlier: " + ", ".join(f"{text(d['id'])} {markup.label(markup.STATUS[d['status']])}"
-                                                for d in value["dispositions"]))
+            line.append(
+                "earlier: "
+                + ", ".join(
+                    f"{text(d['id'])} {markup.label(markup.STATUS[d['status']])}" for d in value["dispositions"]
+                )
+            )
         parts.append(" · ".join(line))
         if value["design_issue"]:
             parts += ["**Design issue:**", Text(block(value["design_issue"]["explanation"]))]
@@ -273,13 +356,12 @@ def archive_name(event):
 
 def content(event, body):
     """Build the exact immutable text used for publication and reconciliation (format 1)."""
-    return (f"{MARKER}{event['id']} -->\n### {event['title']}\n\n"
-            f"Event {event['sequence']} · {event['at']}\n\n{body}")
+    return f"{MARKER}{event['id']} -->\n### {event['title']}\n\nEvent {event['sequence']} · {event['at']}\n\n{body}"
 
 
 def content_v2(event, title, body, meta):
     """Format 2: optional heading, outcome-first body, then one metadata line."""
-    heading = f"### {title}\n\n" if title else ''
+    heading = f"### {title}\n\n" if title else ""
     return f"{MARKER}{event['id']} -->\n{heading}{body}\n\n" + markup.sub(f"Event {event['sequence']}", *meta)
 
 
@@ -290,15 +372,24 @@ def archive(event, state):
         agent = event["details"]["agent"]
         meta = (*meta, text(f"{agent['profile']} / {agent['provider']} / {agent['model']} / effort {agent['effort']}"))
     value = source_value(state, event["source"])
-    report = None if event["kind"] == "intake_rejection" else (
-        value.get("review") if event["kind"] == "local" else value)
+    report = (
+        None if event["kind"] == "intake_rejection" else (value.get("review") if event["kind"] == "local" else value)
+    )
     headline = markup.headline(report, "rationale" if event["kind"] == "qc" else "summary") if report else None
-    record = (value["output"] if event["kind"] == "intake_rejection"
-              else json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+    record = (
+        value["output"]
+        if event["kind"] == "intake_rejection"
+        else json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
+    )
     fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", record)), default=0) + 1)
     if event["kind"] == "intake_rejection":
-        fence = min((char * max(3, max((len(run) for run in re.findall(char + r"+", record)), default=0) + 1)
-                     for char in ("`", "~")), key=len)
+        fence = min(
+            (
+                char * max(3, max((len(run) for run in re.findall(char + r"+", record)), default=0) + 1)
+                for char in ("`", "~")
+            ),
+            key=len,
+        )
     lines = [f"{MARKER}{event['id']} -->", f"### {title}", ""]
     if event["kind"] == "intake_rejection":
         lines += [block(value["reason"]), "", "Rejected output — not an accepted intake decision.", ""]
@@ -316,22 +407,41 @@ def index_entry(state, kind, source, details):
     if kind == "intake_rejection":
         return {"step": "Intake", "provider": details["provider"], "round": details["round"], "outcome": "invalid"}
     if kind == "review_rejection":
-        return {"step": "Design review", "provider": details['provider'],
-                "round": f"{details['round']} {details['phase']}", "outcome": "invalid",
-                "diagnostic": details['diagnostic']}
+        return {
+            "step": "Design review",
+            "provider": details["provider"],
+            "round": f"{details['round']} {details['phase']}",
+            "outcome": "invalid",
+            "diagnostic": details["diagnostic"],
+        }
     if kind == "implementation":
-        return {"step": "Implement", "provider": details["provider"], "round": str(details["round"]),
-                "outcome": "candidate published"}
+        return {
+            "step": "Implement",
+            "provider": details["provider"],
+            "round": str(details["round"]),
+            "outcome": "candidate published",
+        }
     if kind == "qc":
         intake = details["phase"] == "intake"
-        return {"step": "Intake" if intake else "Design review", "provider": details["provider"],
-                "round": str(details["round"]) + ("" if intake else " " + details["phase"]),
-                "outcome": value["decision"]}
+        return {
+            "step": "Intake" if intake else "Design review",
+            "provider": details["provider"],
+            "round": str(details["round"]) + ("" if intake else " " + details["phase"]),
+            "outcome": value["decision"],
+        }
     if kind == "local":
-        return {"step": "Implement", "provider": details["reviewer"], "round": f"attempt {value['attempt'] + 1}",
-                "outcome": value["review"]["verdict"]}
-    return {"step": "Code review", "provider": details["provider"], "round": str(details["round"]),
-            "outcome": value["verdict"]}
+        return {
+            "step": "Implement",
+            "provider": details["reviewer"],
+            "round": f"attempt {value['attempt'] + 1}",
+            "outcome": value["review"]["verdict"],
+        }
+    return {
+        "step": "Code review",
+        "provider": details["provider"],
+        "round": str(details["round"]),
+        "outcome": value["verdict"],
+    }
 
 
 def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=(), request=None):
@@ -359,17 +469,26 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
         if request is not None:
             event["request"] = request
     else:
-        event.update(source=list(source), kind=kind, details=details, format=(4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT),
-                     index=index_entry(state, kind, source, details))
+        event.update(
+            source=list(source),
+            kind=kind,
+            details=details,
+            format=(
+                4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT
+            ),
+            index=index_entry(state, kind, source, details),
+        )
         timing = review_timing.index_receipt(state, kind, details)
         if timing:
             event["index"]["timing"] = timing
         value = source_value(state, source)
-        assessment = value.get("classification", {}).get("source", {}).get("report") if kind != 'review_rejection' else None
+        assessment = (
+            value.get("classification", {}).get("source", {}).get("report") if kind != "review_rejection" else None
+        )
         if assessment:
             event["index"]["assessment"] = assessment
-        if event['format'] == 4:
-            rendered, limit = '', ARCHIVE_LIMIT
+        if event["format"] == 4:
+            rendered, limit = "", ARCHIVE_LIMIT
             event["content_digest"] = digest(source_value(state, source))
         else:
             rendered, limit = archive(event, state), ARCHIVE_LIMIT
@@ -395,9 +514,13 @@ def queue_intake_concerns(state, concerns):
         shortened |= len(concern) > 1000
         lines.append(line)
         used += len(line.encode()) + 1
-    lines += ["", "These are planning and review considerations, not a request for human action.", "",
-              ("Some text is shortened. " if shortened else "")
-              + "The full concerns are in the intake report linked from the dashboard."]
+    lines += [
+        "",
+        "These are planning and review considerations, not a request for human action.",
+        "",
+        ("Some text is shortened. " if shortened else "")
+        + "The full concerns are in the intake report linked from the dashboard.",
+    ]
     queue(state, "Intake approved with concerns", "\n".join(lines))
 
 
@@ -407,8 +530,8 @@ def event_body(state, event):
         return event["body"]
     try:
         if event.get("format") == 4:
-            if digest(source_value(state, event['source'])) == event['content_digest']:
-                return ''
+            if digest(source_value(state, event["source"])) == event["content_digest"]:
+                return ""
             raise PublicationError("conversation_conflict")
         if event.get("format", 1) == 1:
             body = content(event, render(state, event["kind"], event["source"], event["details"]))
@@ -433,31 +556,37 @@ def publish(state, github, config, store=None):
         comments = github.pages(f"issues/{state['issue']}/comments")
         identities = Identities(config)
         artifacts = None
-        store = store or report_store.Store(github, state['issue'], identities.author('state'), config['repository'])
+        store = store or report_store.Store(github, state["issue"], identities.author("state"), config["repository"])
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
-            if event.get('format') == 4:
-                source = source_value(state, event['source'])
+            if event.get("format") == 4:
+                source = source_value(state, event["source"])
                 key = store.put(source)
                 numbers = store.numbers[key]
-                title, _, meta = render_v2(state, event['kind'], event['source'], event['details'])
+                title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
                 root = f"https://github.com/{config['repository']}/issues/{state['issue']}/artifacts/"
-                links = '\n'.join('- ' + report_link(root, i, len(numbers), n)
-                                  for i, n in enumerate(numbers, 1))
+                links = "\n".join("- " + report_link(root, i, len(numbers), n) for i, n in enumerate(numbers, 1))
                 body = content_v2(event, title, links, meta)
-                if event['kind'] == 'review_rejection':
-                    diagnostic = event['details']['diagnostic']
-                    body = content_v2(event, title, text(diagnostic['detail']) + '\n\n'
-                                      + 'Rejected output; not an accepted review.\n\n' + links, meta)
+                if event["kind"] == "review_rejection":
+                    diagnostic = event["details"]["diagnostic"]
+                    body = content_v2(
+                        event,
+                        title,
+                        text(diagnostic["detail"]) + "\n\n" + "Rejected output; not an accepted review.\n\n" + links,
+                        meta,
+                    )
             if event.get("format", 1) >= 3:
                 # Archives are artifacts, authored like the audit state.
                 if artifacts is None:
                     artifacts = store.collection()
                 author = identities.author("state")
                 published_items = artifacts
-                create = lambda: github.repo(f"issues/{state['issue']}/artifacts", "POST", {
-                    "type": "generic", "name": archive_name(event), "body": body})
+                create = lambda: github.repo(
+                    f"issues/{state['issue']}/artifacts",
+                    "POST",
+                    {"type": "generic", "name": archive_name(event), "body": body},
+                )
                 login = lambda item: item.get("creator", {}).get("login")
             else:
                 # Recovery trusts only the one identity expected to author this event.
@@ -477,8 +606,8 @@ def publish(state, github, config, store=None):
                 continue
             source = source_value(state, event["source"])
             receipt = {"content_digest": event["content_digest"], "source_digest": digest(source)}
-            if event.get('format') == 4:
-                receipt['data'] = {'digest': key, 'artifacts': numbers}
+            if event.get("format") == 4:
+                receipt["data"] = {"digest": key, "artifacts": numbers}
             if isinstance(source, dict) and "classification" in source:
                 receipt["core_digest"] = digest(classification.core(source))
             if event.get("format", 1) >= 3:
@@ -502,8 +631,7 @@ def publish(state, github, config, store=None):
 def receipt_matches(report, receipts):
     """Recognize published core text after advisory edits, retaining legacy full-digest matching."""
     full, core = digest(report), digest(classification.core(report))
-    return any(full == receipt.get("source_digest") or core == receipt.get("core_digest")
-               for receipt in receipts)
+    return any(full == receipt.get("source_digest") or core == receipt.get("core_digest") for receipt in receipts)
 
 
 def compact(state):
@@ -521,13 +649,13 @@ def compact(state):
     state.pop("review_event", None)
     published = list(journal["receipts"].values())
     archived = [receipt for receipt in published if "artifact" in receipt]
-    if 'review_draft' in state and receipt_matches(state['review_draft'], archived):
-        state.pop('review_draft')
+    if "review_draft" in state and receipt_matches(state["review_draft"], archived):
+        state.pop("review_draft")
     reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
     reports += [v["report"] for v in state.get("design_votes", {}).values()]
     notes = {id(r): ARCHIVED if receipt_matches(r, archived) else None for r in reports}
     # Canonical report references cost no checkpoint prose space; keep their complete evidence.
-    external = [receipt for receipt in published if 'data' in receipt]
+    external = [receipt for receipt in published if "data" in receipt]
     reports = [r for r in reports if receipt_matches(r, published) and not receipt_matches(r, external)]
     for key in ("local_status", "local_evidence"):
         if (s := state.get(key, {})).get("review") and receipt_matches(s, published):
@@ -538,9 +666,9 @@ def compact(state):
             report_text = report.get(key, "")
             size = len(json.dumps(report_text).encode())
             if size > 1000:
-                excerpt = report_text[:max(1, len(report_text) * 800 // size)]
+                excerpt = report_text[: max(1, len(report_text) * 800 // size)]
                 while len(json.dumps(excerpt).encode()) > 900:
-                    excerpt = excerpt[:len(excerpt) // 2]
+                    excerpt = excerpt[: len(excerpt) // 2]
                 report[key] = excerpt + (notes.get(id(report)) or "… [Full text in the published issue conversation.]")
                 if state.get("reason") == report_text:
                     state["reason"] = report[key]
@@ -553,12 +681,11 @@ def review_body(state, report, phase, member, concern_ids=()):
     prefix = f"D{round_number}-{member['id'][:8]}-{phase}"
     lines = [f"Plan `{plan}` · round {round_number} · {phase}", "", report["rationale"]]
     if report["decision"] == "approve":
-        resolved = [v["id"] for v in state.get("objections", [])
-                    if v["reviewer"] == member["id"] and not v["resolved"]]
+        resolved = [v["id"] for v in state.get("objections", []) if v["reviewer"] == member["id"] and not v["resolved"]]
         if resolved:
             lines += ["", "This approval closes earlier objections: " + ", ".join(resolved) + "."]
     for key in ("concerns", "questions"):
         for index, concern_text in enumerate(report[key], 1):
-            identifier = concern_ids[index - 1] if key == 'concerns' and concern_ids else f"{prefix}-{key[0]}{index}"
+            identifier = concern_ids[index - 1] if key == "concerns" and concern_ids else f"{prefix}-{key[0]}{index}"
             lines += ["", f"- **{identifier}**: {concern_text}"]
     return "\n".join(lines)

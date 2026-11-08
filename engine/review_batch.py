@@ -12,7 +12,7 @@ def run(adapter):
         for key, turn in prepared.items():
             transport.check_owner()
             live[key] = (turn, transport.submit(turn))
-            adapter.status(key, 'queued')
+            adapter.status(key, "queued")
         while adapter.valid():
             transport.check_owner()
             # Retain every result ready in this sweep before applying a terminal judgment.
@@ -20,10 +20,10 @@ def run(adapter):
             for key, (turn, handle) in list(live.items()):
                 try:
                     result = transport.observe(handle)
-                    adapter.status(key, getattr(handle, 'status', 'running'))
+                    adapter.status(key, getattr(handle, "status", "running"))
                     if result is None:
                         continue
-                    adapter.complete(key, turn, result, getattr(handle, 'timing', None))
+                    adapter.complete(key, turn, result, getattr(handle, "timing", None))
                 except Exception as error:
                     failures.append((key, handle, error))
                 else:
@@ -47,11 +47,11 @@ def run(adapter):
                     if prepared:
                         turn = prepared[key]
                         live[key] = (turn, transport.submit(turn))
-                        adapter.status(key, 'queued')
+                        adapter.status(key, "queued")
             if live:
                 transport.idle()
             elif not adapter.finished():
-                raise RuntimeError('review batch has no pending work')
+                raise RuntimeError("review batch has no pending work")
     finally:
         failure = None
         for _key, (_, handle) in live.items():

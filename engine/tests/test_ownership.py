@@ -38,10 +38,11 @@ class OwnershipFixture:
                 writes.append((method, path))
             return original(path, method, data)
 
-        controller = Controller(self.gh, self.agents, self.config,
-                                controller_id=controller_id)
-        with patch.object(self.gh, "repo", side_effect=repo), \
-                patch.multiple(self.gh, **{name: DEFAULT for name in MUTATORS}) as recorded:
+        controller = Controller(self.gh, self.agents, self.config, controller_id=controller_id)
+        with (
+            patch.object(self.gh, "repo", side_effect=repo),
+            patch.multiple(self.gh, **{name: DEFAULT for name in MUTATORS}) as recorded,
+        ):
             advanced = run() if run else controller.advance(7)
         writes += [(name, call.args) for name, mock in recorded.items() for call in mock.call_args_list]
         return controller, advanced, writes
@@ -78,8 +79,10 @@ class OwnershipTests(OwnershipFixture, ManualPipelineFixture, unittest.TestCase)
 
     def test_engine_pin_is_not_part_of_the_configuration_digest(self):
         """A service target's `engine` pin can change without invalidating its tasks; it must name a commit."""
-        self.assertEqual(controller_module.config_digest({**self.config, "engine": "e" * 40}),
-                         controller_module.config_digest(self.config))
+        self.assertEqual(
+            controller_module.config_digest({**self.config, "engine": "e" * 40}),
+            controller_module.config_digest(self.config),
+        )
         controller_module.validate_config({**self.config, "engine": "e" * 40})
         for engine in ("e" * 39, "E" * 40, 7):
             with self.assertRaises(Blocked):

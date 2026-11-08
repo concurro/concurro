@@ -29,7 +29,10 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
 
             def request(self, method, path, data=None):
                 if path == f"repos/{UPSTREAM}/pulls/9":
-                    return {"user": {"login": "concurro[bot]"}, "head": {"repo": {"full_name": FORK}, "ref": task_branch(*KEY)}}
+                    return {
+                        "user": {"login": "concurro[bot]"},
+                        "head": {"repo": {"full_name": FORK}, "ref": task_branch(*KEY)},
+                    }
                 raise AssertionError((self.repository, method, path))
 
             def send(self, method, path, body):
@@ -58,8 +61,13 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
         for repository in (UPSTREAM, "foreign/repo"):
             with self.subTest(repository=repository), self.assertRaises(Disallowed):
                 self.gateway.mutate(KEY, self.generation, "POST", f"repos/{repository}/git/blobs", body)
-        for bad in ({"content": "x"}, {**body, "encoding": "base64"}, {**body, "content": None},
-                    {**body, "content": "x\x00"}, {**body, "path": "main"}):
+        for bad in (
+            {"content": "x"},
+            {**body, "encoding": "base64"},
+            {**body, "content": None},
+            {**body, "content": "x\x00"},
+            {**body, "path": "main"},
+        ):
             with self.subTest(body_fields=list(bad)), self.assertRaises(Disallowed):
                 self.code.repo("git/blobs", "POST", bad)
         self.assertEqual(len(self.sent), 1)
@@ -88,8 +96,15 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
 
     def test_only_draft_pr_from_the_task_fork_branch(self):
         """PR creation is bound before the registry has a PR number; reviews remain COMMENT-only."""
-        body = {"head": "owner:" + task_branch(*KEY), "head_repo": "project-fork", "base": "main",
-                "title": "Improve it", "body": "Issue link", "draft": True, "maintainer_can_modify": False}
+        body = {
+            "head": "owner:" + task_branch(*KEY),
+            "head_repo": "project-fork",
+            "base": "main",
+            "title": "Improve it",
+            "body": "Issue link",
+            "draft": True,
+            "maintainer_can_modify": False,
+        }
         path = f"repos/{UPSTREAM}/pulls"
         self.assertTrue(allowed_target(KEY, self.binding, "POST", path, body))
         for change in ({"head": "owner:other"}, {"head_repo": "other"}, {"draft": False}):
@@ -104,8 +119,14 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
 
     def test_pr_creation_cannot_grant_fork_collaboration(self):
         """Missing, true and merely false-like values are refused before a write is admitted."""
-        body = {"head": "owner:" + task_branch(*KEY), "head_repo": "project-fork", "base": "main",
-                "title": "Improve it", "body": "Issue link", "draft": True}
+        body = {
+            "head": "owner:" + task_branch(*KEY),
+            "head_repo": "project-fork",
+            "base": "main",
+            "title": "Improve it",
+            "body": "Issue link",
+            "draft": True,
+        }
         invalid = [body] + [{**body, "maintainer_can_modify": value} for value in (True, None, 0, "false")]
         for value in invalid:
             with self.subTest(body=value), self.assertRaises(Disallowed):
@@ -113,8 +134,9 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.sent, [])
         for status in ("in-flight", "done", "failed", "unknown"):
             self.assertEqual(self.registry.mutations(KEY, status), [])
-        self.gateway.mutate(KEY, self.generation, "POST", f"repos/{UPSTREAM}/pulls",
-                            {**body, "maintainer_can_modify": False})
+        self.gateway.mutate(
+            KEY, self.generation, "POST", f"repos/{UPSTREAM}/pulls", {**body, "maintainer_can_modify": False}
+        )
         self.assertEqual(len(self.sent), 1)
         self.assertIs(self.sent[0][3]["maintainer_can_modify"], False)
 
@@ -128,6 +150,7 @@ class DestinationTests(ServiceFixture, unittest.TestCase):
 
     def test_unknown_fork_write_stops_issue_writes_too(self):
         """An uncertain write blocks the whole task, not only its destination repository."""
+
         class Lost:
             def send(self, *args):
                 raise TimeoutError("lost response")

@@ -38,8 +38,10 @@ class ActionsApi:
     """Repository and environment variables and workflow runs, as the cutover token reads them."""
 
     def __init__(self):
-        self.variables = {"actions/variables": [{"name": "CONCURRO_ENABLED", "value": "false"}],
-                          "environments/concurro/variables": None}
+        self.variables = {
+            "actions/variables": [{"name": "CONCURRO_ENABLED", "value": "false"}],
+            "environments/concurro/variables": None,
+        }
         self.runs = []
 
     def request(self, method, path, data=None):
@@ -55,7 +57,6 @@ class ActionsApi:
 
 
 class CutoverFixture(ServiceFixture):
-
     def setUp(self):
         """A task the Actions controller created, and a disabled, idle, marker-aware Actions workflow."""
         super().setUp()
@@ -64,9 +65,17 @@ class CutoverFixture(ServiceFixture):
         self.assertEqual(self.state()["controller"], ACTIONS)
         self.backend.files[WORKFLOW] = f"jobs:\n  advance:\n    steps:\n      - uses: concurro/concurro@{PIN}\n"
         self.identity, self.actions, self.comparisons = FakeIdentity(), ActionsApi(), {PIN: "ahead"}
-        self.cutover = Cutover(self.settings, self.identity, self.gateway, self.registry, lambda r: self.backend,
-                               self.worker.load, clock=self.clock, compare=self.compare,
-                               transport_factory=lambda repository, token, clock: self.actions)
+        self.cutover = Cutover(
+            self.settings,
+            self.identity,
+            self.gateway,
+            self.registry,
+            lambda r: self.backend,
+            self.worker.load,
+            clock=self.clock,
+            compare=self.compare,
+            transport_factory=lambda repository, token, clock: self.actions,
+        )
         self.control = control.Control(self.registry, self.reconciler, self.cutover)
 
     def compare(self, repository, base, head):
@@ -75,7 +84,6 @@ class CutoverFixture(ServiceFixture):
 
 
 class CutoverTests(CutoverFixture, unittest.TestCase):
-
     def test_adopt_and_release(self):
         """Adoption rewrites the marker and enqueues the task; release hands it back and stops observing it."""
         self.assertEqual(self.cutover.adopt(KEY[0]), {"adopted": [7], "refused": {}})
@@ -87,8 +95,11 @@ class CutoverTests(CutoverFixture, unittest.TestCase):
         self.assertNotEqual(self.state()["stage"], stage, "the service advances an adopted task")
         before = deepcopy((self.fake.comments, self.fake.artifacts, self.fake.issue["labels"]))
         Controller(self.fake, FakeAgents(), self.config).advance(7)
-        self.assertEqual(deepcopy((self.fake.comments, self.fake.artifacts, self.fake.issue["labels"])), before,
-                         "a re-enabled Actions controller writes nothing to an adopted task")
+        self.assertEqual(
+            deepcopy((self.fake.comments, self.fake.artifacts, self.fake.issue["labels"])),
+            before,
+            "a re-enabled Actions controller writes nothing to an adopted task",
+        )
         self.registry.enqueue(KEY, "retry", self.clock() + 300)
         self.assertEqual(self.cutover.adopt(KEY[0], (7,))["refused"], {7: "task is not owned by actions"})
         self.assertIn("retry", self.registry.due(self.clock() + 300)[0].causes, "a refusal keeps queued work")
@@ -99,6 +110,7 @@ class CutoverTests(CutoverFixture, unittest.TestCase):
 
     def test_refusals_write_nothing(self):
         """Missing permissions, an old pin, enabled or running Actions, or an ambiguous workflow refuse cutover."""
+
         def permissions():
             self.identity.permitted = False
 
@@ -112,8 +124,12 @@ class CutoverTests(CutoverFixture, unittest.TestCase):
             "repository variable": (lambda: enabled("actions/variables"), CutoverError),
             "environment variable": (lambda: enabled("environments/concurro/variables"), CutoverError),
             "running": (lambda: self.actions.runs.append({"path": WORKFLOW}), CutoverError),
-            "two pins": (lambda: self.backend.files.update({WORKFLOW: self.backend.files[WORKFLOW] + "      - uses: "
-                                                            f"concurro/concurro@{'d' * 40}\n"}), CutoverError),
+            "two pins": (
+                lambda: self.backend.files.update(
+                    {WORKFLOW: self.backend.files[WORKFLOW] + f"      - uses: concurro/concurro@{'d' * 40}\n"}
+                ),
+                CutoverError,
+            ),
         }
         workflow = self.backend.files[WORKFLOW]
         for name, (change, error) in refusals.items():
@@ -139,8 +155,15 @@ class CutoverTests(CutoverFixture, unittest.TestCase):
         reply = self.control.handle({"command": "release", "repository": KEY[0], "issue": 7})
         self.assertEqual(reply, {"ok": False, "error": "resolve the task's unknown writes before releasing it"})
         self.assertEqual(self.drain(), 0, "an unresolved task is never scheduled")
-        reply = self.control.handle({"command": "resolve", "intent": record.intent, "disposition": "applied",
-                                     "evidence": "comment observed on the issue", "operator": "operator"})
+        reply = self.control.handle(
+            {
+                "command": "resolve",
+                "intent": record.intent,
+                "disposition": "applied",
+                "evidence": "comment observed on the issue",
+                "operator": "operator",
+            }
+        )
         self.assertEqual(reply, {"ok": True, "result": {"repository": KEY[0], "issue": 7}})
         resolution = self.registry.mutation(record.intent).resolution
         self.assertEqual((resolution["disposition"], resolution["operator"]), ("applied", "operator"))
@@ -168,10 +191,13 @@ class ControlChannelTests(CutoverFixture, unittest.TestCase):
         self.addCleanup(server.shutdown)
         status = control.request(self.directory.name, {"command": "status"})
         self.assertTrue(status["ok"])
-        self.assertEqual(control.request(self.directory.name, {"command": "adopt", "repository": KEY[0]})["result"],
-                         {"adopted": [7], "refused": {}})
-        self.assertEqual(control.request(self.directory.name, {"command": "unknown"}),
-                         {"ok": False, "error": "unknown command"})
+        self.assertEqual(
+            control.request(self.directory.name, {"command": "adopt", "repository": KEY[0]})["result"],
+            {"adopted": [7], "refused": {}},
+        )
+        self.assertEqual(
+            control.request(self.directory.name, {"command": "unknown"}), {"ok": False, "error": "unknown command"}
+        )
         [task] = control.request(self.directory.name, {"command": "status"})["result"]
         self.assertEqual((task["issue"], task["queued"]["causes"]), (7, ["adopt"]))
 

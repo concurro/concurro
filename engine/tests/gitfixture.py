@@ -6,8 +6,12 @@ import subprocess
 from mirror import Mirror, git_environment
 import repository
 
-IDENTITY = {"GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@invalid",
-            "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@invalid"}
+IDENTITY = {
+    "GIT_AUTHOR_NAME": "Fixture",
+    "GIT_AUTHOR_EMAIL": "fixture@invalid",
+    "GIT_COMMITTER_NAME": "Fixture",
+    "GIT_COMMITTER_EMAIL": "fixture@invalid",
+}
 
 
 class Upstream:
@@ -15,13 +19,26 @@ class Upstream:
 
     def __init__(self, path):
         self.path = Path(path)
-        subprocess.run(["git", "init", "--quiet", "--bare", "--initial-branch=main", str(self.path)],
-                       env=git_environment(), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "--quiet", "--bare", "--initial-branch=main", str(self.path)],
+            env=git_environment(),
+            check=True,
+            capture_output=True,
+        )
 
     def git(self, *args, data=None, extra=None):
         """Run Git in the upstream and return its trimmed output."""
-        return subprocess.run(["git", "--git-dir", str(self.path), *args], input=data, capture_output=True,
-                              env={**git_environment(), **IDENTITY, **(extra or {})}, check=True).stdout.decode().strip()
+        return (
+            subprocess.run(
+                ["git", "--git-dir", str(self.path), *args],
+                input=data,
+                capture_output=True,
+                env={**git_environment(), **IDENTITY, **(extra or {})},
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
 
     def commit(self, files, parent=None, branch=None, message="fixture", executable=()):
         """Commit `files` (path: bytes or text; None removes) on `parent`, optionally moving `branch`."""

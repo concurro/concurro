@@ -15,7 +15,6 @@ from policy import Blocked
 
 
 class MirrorTests(unittest.TestCase):
-
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -40,8 +39,13 @@ class MirrorTests(unittest.TestCase):
         offline = Mirror(self.root / "offline", "owner/target", url="")
         with self.assertRaisesRegex(Blocked, "lacks a pinned commit"):
             offline.borrow("snap", "main", [self.base])
-        for name, branch, commits in (("snap", "main", ["abc"]), ("snap", "main;rm", [self.base]),
-                                      ("snap", "..", [self.base]), ("../x", "main", [self.base]), ("snap", "main", [])):
+        for name, branch, commits in (
+            ("snap", "main", ["abc"]),
+            ("snap", "main;rm", [self.base]),
+            ("snap", "..", [self.base]),
+            ("../x", "main", [self.base]),
+            ("snap", "main", []),
+        ):
             with self.subTest(name=name, branch=branch), self.assertRaises(Blocked):
                 self.mirror.borrow(name, branch, commits)
 
@@ -114,7 +118,11 @@ class MirrorTests(unittest.TestCase):
                 events.append("pin")
             return real_git(mirror, *args, **kwargs)
 
-        with patch.object(Mirror, "locked", locked), patch.object(Mirror, "fetch", fetch), patch.object(Mirror, "git", git):
+        with (
+            patch.object(Mirror, "locked", locked),
+            patch.object(Mirror, "fetch", fetch),
+            patch.object(Mirror, "git", git),
+        ):
             self.mirror.borrow("snap", "main", [self.base])
         self.assertEqual(events, ["lock", "fetch", "pin", "unlock"])
 

@@ -20,50 +20,85 @@ class CIEvidenceTests(unittest.TestCase):
             self.assertTrue(ci_reasons([("a", [check], [])]))
         self.assertTrue(ci_reasons([]))
         for conclusion in ("neutral", "skipped"):
-            self.assertTrue(ci_reasons([("a", [{"name": "test", "head_sha": "a", "status": "completed",
-                                                  "conclusion": conclusion}], [])]))
+            self.assertTrue(
+                ci_reasons(
+                    [("a", [{"name": "test", "head_sha": "a", "status": "completed", "conclusion": conclusion}], [])]
+                )
+            )
 
     def test_latest_results_and_status_only(self):
         failed = {"id": 1, "name": "test", "head_sha": "a", "status": "completed", "conclusion": "failure"}
         success = {**failed, "id": 2, "conclusion": "success"}
         skipped = {**success, "name": "optional", "conclusion": "skipped"}
         self.assertEqual(ci_reasons([("a", [success, failed, skipped], [])]), [])
-        statuses = [{"id": 1, "context": "external", "state": "failure"},
-                    {"id": 2, "context": "external", "state": "success"}]
+        statuses = [
+            {"id": 1, "context": "external", "state": "failure"},
+            {"id": 2, "context": "external", "state": "success"},
+        ]
         self.assertEqual(ci_reasons([("a", [], statuses)]), [])
         self.assertTrue(ci_reasons([("b", [success], [])]))
         self.assertTrue(ci_reasons([("a", [success], []), ("b", [failed], [])]))
 
     def test_empty_external_suite_does_not_block_or_supply_success(self):
-        suite = {"id": 10, "app": {"slug": "external-checks"}, "head_sha": "a", "status": "queued",
-                 "conclusion": None, "latest_check_runs_count": 0}
+        suite = {
+            "id": 10,
+            "app": {"slug": "external-checks"},
+            "head_sha": "a",
+            "status": "queued",
+            "conclusion": None,
+            "latest_check_runs_count": 0,
+        }
         passing = {"id": 1, "context": "external", "state": "success"}
         self.assertEqual(ci_reasons([("a", [], [passing], [suite], [])]), [])
         self.assertEqual(ci_reasons([("a", [], [], [suite], [])]), ["CI has no successful result yet"])
 
     def test_actions_nonempty_failed_and_unknown_suites_still_block(self):
-        suite = {"id": 10, "app": {"slug": "external-checks"}, "head_sha": "a", "status": "queued",
-                 "conclusion": None, "latest_check_runs_count": 0}
+        suite = {
+            "id": 10,
+            "app": {"slug": "external-checks"},
+            "head_sha": "a",
+            "status": "queued",
+            "conclusion": None,
+            "latest_check_runs_count": 0,
+        }
         passing = [{"id": 1, "context": "external", "state": "success"}]
         variants = [{**suite, "app": app} for app in (None, {}, {"slug": ""}, {"slug": "github-actions"})]
         variants += [{**suite, "latest_check_runs_count": count} for count in (None, False, 0.0, 1)]
-        variants += [{k: v for k, v in suite.items() if k != missing}
-                     for missing in ("latest_check_runs_count", "conclusion", "id", "head_sha")]
-        variants += [{**suite, "status": "in_progress"}, {**suite, "head_sha": "old"},
-                     {**suite, "conclusion": "failure"},
-                     {**suite, "status": "completed", "conclusion": "action_required"}]
+        variants += [
+            {k: v for k, v in suite.items() if k != missing}
+            for missing in ("latest_check_runs_count", "conclusion", "id", "head_sha")
+        ]
+        variants += [
+            {**suite, "status": "in_progress"},
+            {**suite, "head_sha": "old"},
+            {**suite, "conclusion": "failure"},
+            {**suite, "status": "completed", "conclusion": "action_required"},
+        ]
         for variant in variants:
             with self.subTest(suite=variant):
-                self.assertTrue(any(reason.startswith("CI suite ")
-                                    for reason in ci_reasons([("a", [], passing, [variant], [])])))
+                self.assertTrue(
+                    any(reason.startswith("CI suite ") for reason in ci_reasons([("a", [], passing, [variant], [])]))
+                )
 
     def test_fetched_run_prevents_empty_external_suite_exception(self):
-        suite = {"id": 10, "app": {"slug": "external-checks"}, "head_sha": "a", "status": "queued",
-                 "conclusion": None, "latest_check_runs_count": 0}
+        suite = {
+            "id": 10,
+            "app": {"slug": "external-checks"},
+            "head_sha": "a",
+            "status": "queued",
+            "conclusion": None,
+            "latest_check_runs_count": 0,
+        }
         passing = [{"id": 1, "context": "external", "state": "success"}]
         for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "success")):
-            check = {"id": 20, "check_suite": {"id": 10}, "name": "test", "head_sha": "a",
-                     "status": status, "conclusion": conclusion}
+            check = {
+                "id": 20,
+                "check_suite": {"id": 10},
+                "name": "test",
+                "head_sha": "a",
+                "status": status,
+                "conclusion": conclusion,
+            }
             with self.subTest(status=status, conclusion=conclusion):
                 reasons = ci_reasons([("a", [check], passing, [suite], [])])
                 self.assertIn("CI suite pending: 10", reasons)
@@ -115,33 +150,51 @@ class ReadinessPipelineTests(PipelineFixture, unittest.TestCase):
     def test_waiting_workflow_blocks_a_passing_external_status(self):
         controller = self.reviewed()
         original = self.gh.pages
+
         def pages(path, key=None):
-            if '/check-runs' in path:
+            if "/check-runs" in path:
                 return []
-            if path.endswith('/statuses'):
+            if path.endswith("/statuses"):
                 return [{"id": 1, "context": "CLA", "state": "success"}]
-            if path.startswith('actions/runs?'):
-                return [{"id": 10, "workflow_id": 1, "head_sha": controller.state["head"],
-                         "name": "CI", "status": "waiting", "conclusion": None}]
+            if path.startswith("actions/runs?"):
+                return [
+                    {
+                        "id": 10,
+                        "workflow_id": 1,
+                        "head_sha": controller.state["head"],
+                        "name": "CI",
+                        "status": "waiting",
+                        "conclusion": None,
+                    }
+                ]
             return original(path, key)
-        with patch.object(self.gh, 'pages', side_effect=pages):
+
+        with patch.object(self.gh, "pages", side_effect=pages):
             controller.gates()
-        self.assertTrue(self.gh.pr['draft'])
-        self.assertIn('CI workflow pending', controller.state['reason'])
+        self.assertTrue(self.gh.pr["draft"])
+        self.assertIn("CI workflow pending", controller.state["reason"])
 
     def test_empty_external_suite_allows_ready_but_empty_actions_suite_does_not(self):
         controller = self.reviewed()
-        suite = {"id": 10, "app": {"slug": "github-actions"}, "head_sha": controller.state["head"],
-                 "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        suite = {
+            "id": 10,
+            "app": {"slug": "github-actions"},
+            "head_sha": controller.state["head"],
+            "status": "queued",
+            "conclusion": None,
+            "latest_check_runs_count": 0,
+        }
         original = self.gh.pages
+
         def pages(path, key=None):
-            return [deepcopy(suite)] if path.endswith('/check-suites') else original(path, key)
-        with patch.object(self.gh, 'pages', side_effect=pages):
+            return [deepcopy(suite)] if path.endswith("/check-suites") else original(path, key)
+
+        with patch.object(self.gh, "pages", side_effect=pages):
             controller.gates()
-            self.assertTrue(self.gh.pr['draft'])
-            suite['app']['slug'] = 'external-checks'
+            self.assertTrue(self.gh.pr["draft"])
+            suite["app"]["slug"] = "external-checks"
             controller.gates()
-        self.assertFalse(self.gh.pr['draft'])
+        self.assertFalse(self.gh.pr["draft"])
         self.assertEqual(self.gh.ready_calls, 1)
 
     def test_lost_ready_response_recovers_without_another_write(self):
@@ -163,11 +216,13 @@ class ReadinessPipelineTests(PipelineFixture, unittest.TestCase):
     def test_ci_recheck_detects_merge_commit_change(self):
         controller = self.reviewed()
         original = self.gh.pages
+
         def pages(path, key=None):
             result = original(path, key)
             if "/check-runs" in path:
                 self.gh.pr["merge_commit_sha"] = "b" * 40
             return result
+
         with patch.object(self.gh, "pages", side_effect=pages):
             controller.gates()
         self.assertTrue(self.gh.pr["draft"])
@@ -217,6 +272,7 @@ class ReadinessPipelineTests(PipelineFixture, unittest.TestCase):
         self.gh.comment("Another bounded change please.")
         self.gh.comment("/concurro retry")
         from policy import Blocked
+
         with self.assertRaisesRegex(Blocked, "allowance exhausted"):
             controller.commands(self.gh.comments)
 

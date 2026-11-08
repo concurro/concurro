@@ -57,7 +57,7 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
                     return {"check_runs": [{"name": "CI", "status": "completed", "conclusion": "success"}]}
                 raise AssertionError(path)
 
-        self.reconciler.reader = lambda repository: (Upstream() if repository == "upstream/project" else self.backend)
+        self.reconciler.reader = lambda repository: Upstream() if repository == "upstream/project" else self.backend
         snapshot = self.reconciler.snapshot(KEY)
         self.assertEqual(snapshot["pull"]["number"], 9)
         self.assertEqual(snapshot["pull"]["checks"], [["c" * 40, None, None, "CI", "completed", "success"]])
@@ -69,10 +69,12 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
         self.link_pull()
         request = self.backend.request
         status = {"context": "external", "state": "pending"}
+
         def reading(method, path, data=None):
             if "/status?" in path:
                 return {"statuses": [dict(status)]}
             return request(method, path, data)
+
         self.reconciler.reader = lambda _: type("Reader", (), {"request": staticmethod(reading)})()
         self.settle()
         status["state"] = "success"
@@ -96,7 +98,8 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
             "requirements": lambda: self.fake.issue.update(body="Explain this term and its history."),
             "closed": lambda: self.fake.issue.update(state="closed"),
             "enrollment": lambda: self.fake.events.append(
-                {"id": 3, "event": "unlabeled", "label": {"name": "concurro"}, "actor": {"login": "writer"}}),
+                {"id": 3, "event": "unlabeled", "label": {"name": "concurro"}, "actor": {"login": "writer"}}
+            ),
             "review": lambda: self.fake.human_reviews.append({"id": 2, "state": "CHANGES_REQUESTED"}),
             "review dismissal": lambda: self.fake.human_reviews[0].update(state="DISMISSED"),
             "check run": lambda: setattr(self.fake, "checks_green", False),
@@ -119,7 +122,9 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
     def test_concurro_writes_never_wake_a_task(self):
         """The App's own comments and enrollment-label events are not input."""
         self.fake.comment("Concurro summary update.", self.bot)
-        self.fake.events.append({"id": 9, "event": "labeled", "label": {"name": "concurro"}, "actor": {"login": self.bot}})
+        self.fake.events.append(
+            {"id": 9, "event": "labeled", "label": {"name": "concurro"}, "actor": {"login": self.bot}}
+        )
         self.fake.issue["labels"].append({"name": "concurro:stage:plan"})
         self.assertEqual(self.reconciler.poll(), [])
 
@@ -141,7 +146,9 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
     def test_label_removed_from_an_active_task(self):
         """The task is still observed and ticked; the engine decides what removal means."""
         self.fake.issue["labels"] = [label for label in self.fake.issue["labels"] if label["name"] != "concurro"]
-        self.fake.events.append({"id": 3, "event": "unlabeled", "label": {"name": "concurro"}, "actor": {"login": "writer"}})
+        self.fake.events.append(
+            {"id": 3, "event": "unlabeled", "label": {"name": "concurro"}, "actor": {"login": "writer"}}
+        )
         self.assertEqual(self.reconciler.candidates(KEY[0]), [KEY])
         self.assertEqual(self.reconciler.poll(), [KEY])
         self.assertEqual(self.drain(), 1)

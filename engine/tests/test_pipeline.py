@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from pipeline_fixtures import ManualPipelineFixture
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from controller import Controller, MARKER, validate_config
@@ -54,7 +55,9 @@ class PipelineTests(ManualPipelineFixture, unittest.TestCase):
         self.assertTrue(self.tick()["handoff_ready"])
         gateway = {"url": "https://gateway.invalid", "headers": {}}
         for provider in ("claude", "codex"):
-            cmd = command_for({"provider": provider, "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o")
+            cmd = command_for(
+                {"provider": provider, "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o"
+            )
             self.assertEqual(cmd[cmd.index("--model") + 1], "chosen-model")
         with self.assertRaises(ValueError, msg="Copilot has no gateway route yet"):
             command_for({"provider": "copilot", "model": "chosen-model", "schema": {}, "gateway": gateway}, "s", "o")
@@ -175,14 +178,27 @@ class PipelineTests(ManualPipelineFixture, unittest.TestCase):
 
     def test_forbidden_paths_and_scope_escape(self):
         """Traversal, hooks, dependency manifests and automation edits are rejected."""
-        for path in ("../escape.md", "/docs/x.md", "docs/../x.md", ".github/a.md", "docs/.git/a.md",
-                     "docs/CLAUDE.md", "tools/a.rs", "docs/x\\y.md", "docs//a.md"):
+        for path in (
+            "../escape.md",
+            "/docs/x.md",
+            "docs/../x.md",
+            ".github/a.md",
+            "docs/.git/a.md",
+            "docs/CLAUDE.md",
+            "tools/a.rs",
+            "docs/x\\y.md",
+            "docs//a.md",
+        ):
             with self.subTest(path=path):
                 self.assertFalse(path_allowed(path, self.config))
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config)
+            validate_edits(
+                {"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config
+            )
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config)
+            validate_edits(
+                {"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config
+            )
 
     def test_contradictory_review_is_rejected(self):
         """An approve verdict with an outstanding finding is never accepted."""
@@ -195,8 +211,14 @@ class PipelineTests(ManualPipelineFixture, unittest.TestCase):
         """Git modes, not filename suffixes, decide whether a blob is safe to read."""
         controller = Controller(self.gh, self.agents, self.config)
         for mode in ("120000", "100755", "160000"):
-            with self.subTest(mode=mode), patch.object(controller, "tree", return_value={
-                    "docs/guide.md": {"mode": mode, "type": "blob", "sha": "unsafe", "size": 10}}):
+            with (
+                self.subTest(mode=mode),
+                patch.object(
+                    controller,
+                    "tree",
+                    return_value={"docs/guide.md": {"mode": mode, "type": "blob", "sha": "unsafe", "size": 10}},
+                ),
+            ):
                 with self.assertRaises(Blocked):
                     controller.files(self.gh.base, ["docs/guide.md"])
 
@@ -204,11 +226,13 @@ class PipelineTests(ManualPipelineFixture, unittest.TestCase):
         """Human merge policy stays GitHub's responsibility; readiness needs only reviews and CI."""
         self.ready()
         original = self.gh.repo
+
         def no_policy_reads(path, method="GET", data=None):
             self.assertNotIn("protection", path)
             self.assertFalse(path.startswith(("rules/", "rulesets/")))
             self.assertNotIn("/merge", path)
             return original(path, method, data)
+
         with patch.object(self.gh, "repo", side_effect=no_policy_reads):
             self.assertTrue(self.tick()["handoff_ready"])
         self.assertEqual(self.gh.merges, 0)

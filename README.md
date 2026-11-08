@@ -101,12 +101,21 @@ python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
 ruff check engine service gateway
+ruff format --check engine service gateway
 python3 -m unittest discover -s engine/tests -v
 python3 -m unittest discover -s service/tests -v
 python3 -m unittest discover -s gateway/tests -v
 python3 -m compileall -q engine service gateway/exchange
 python3 engine/bundle.py examples/stacks-core
 ```
+
+Configure Git once per clone to omit the formatting commit from blame:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+After committing the one-time format, add its full commit SHA to `.git-blame-ignore-revs`.
 
 Tests use fake GitHub/provider transports and local Git/HTTP fixtures. They do not call
 live models or Docker.

@@ -17,8 +17,12 @@ import sys
 import agent_entry
 import turns
 
-SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"],
-          "additionalProperties": False}
+SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
 
 
 class ProofFailed(Exception):
@@ -35,10 +39,19 @@ def prepare(directory):
 
 def turn(key, directory, request, prompt):
     """Run one Codex turn as the agent native process does; returns its thread ID and answer."""
-    command = agent_entry.command_for(request, str(directory / "proof/schema.json"), str(directory / "proof/result.json"))
+    command = agent_entry.command_for(
+        request, str(directory / "proof/schema.json"), str(directory / "proof/result.json")
+    )
     (directory / "retained/codex").mkdir(exist_ok=True)
-    result = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=900,
-                            cwd=directory / "work", env=turns.agent_environment(directory, key, True))
+    result = subprocess.run(
+        command,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        cwd=directory / "work",
+        env=turns.agent_environment(directory, key, True),
+    )
     if result.returncode:
         raise ProofFailed(f"Codex exited {result.returncode}")
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
@@ -70,20 +83,30 @@ def main(argv=None):
     args = parser.parse_args(argv)
     key = args.key.read_text().strip()
     codeword = "concurro-" + secrets.token_hex(4)
-    request = {"provider": "codex", "model": args.model, "session": {"scope": "proof"}, "resume_id": None,
-               "gateway": {"url": args.gateway, "headers": {"codex": {"x-concurro-plan": "chatgpt"}}}}
+    request = {
+        "provider": "codex",
+        "model": args.model,
+        "session": {"scope": "proof"},
+        "resume_id": None,
+        "gateway": {"url": args.gateway, "headers": {"codex": {"x-concurro-plan": "chatgpt"}}},
+    }
     first, second = prepare(args.root / "first"), prepare(args.root / "second")
 
-    thread, _ = turn(key, first, request,
-                     f"Remember this codeword for a later turn: {codeword}. Answer with the single word: noted.")
+    thread, _ = turn(
+        key, first, request, f"Remember this codeword for a later turn: {codeword}. Answer with the single word: noted."
+    )
     print(f"first turn: thread {thread}; retained directory:")
     report(first / "retained")
     archive = turns.pack(first / "retained")
     print(f"archive: {len(archive) * 3 // 4 // 1024} KiB compressed (limit {turns.MAX_RETAINED // 1024} KiB)")
 
     turns.unpack(archive, second / "retained")
-    resumed, answer = turn(key, second, {**request, "resume_id": thread},
-                           "What codeword did I give you in the earlier turn? Answer with the codeword alone.")
+    resumed, answer = turn(
+        key,
+        second,
+        {**request, "resume_id": thread},
+        "What codeword did I give you in the earlier turn? Answer with the codeword alone.",
+    )
     print(f"resumed turn in a fresh native process and directory: thread {resumed}; answer {json.dumps(answer)}")
     if resumed != thread:
         raise ProofFailed("Codex resumed a different thread")

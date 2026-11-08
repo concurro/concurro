@@ -7,13 +7,27 @@ value is trusted to be Markdown-safe.
 
 import re
 
-VERDICT = {"approve": ("✅", "Approve"), "changes_requested": ("🛠️", "Changes requested"),
-           "reopen": ("🧭", "Design reopened")}
-DECISION = {"proceed": ("✅", "Proceed"), "approve": ("✅", "Approve"), "revise": ("🛠️", "Revise"),
-            "clarify": ("❓", "Clarify"), "reject": ("🛑", "Reject"), "escalate": ("📣", "Escalate")}
+VERDICT = {
+    "approve": ("✅", "Approve"),
+    "changes_requested": ("🛠️", "Changes requested"),
+    "reopen": ("🧭", "Design reopened"),
+}
+DECISION = {
+    "proceed": ("✅", "Proceed"),
+    "approve": ("✅", "Approve"),
+    "revise": ("🛠️", "Revise"),
+    "clarify": ("❓", "Clarify"),
+    "reject": ("🛑", "Reject"),
+    "escalate": ("📣", "Escalate"),
+}
 SEVERITY = {"critical": ("‼️", "Critical"), "high": ("❗", "High"), "medium": ("⚠️", "Medium"), "low": ("ℹ️", "Low")}
-STATUS = {"open": ("📌", "Open"), "fixed": ("✅", "Fixed"), "obsolete": ("🗃️", "Obsolete"),
-          "withdrawn": ("↩️", "Withdrawn"), "resolved": ("✅", "Resolved")}
+STATUS = {
+    "open": ("📌", "Open"),
+    "fixed": ("✅", "Fixed"),
+    "obsolete": ("🗃️", "Obsolete"),
+    "withdrawn": ("↩️", "Withdrawn"),
+    "resolved": ("✅", "Resolved"),
+}
 PASS, FAIL = ("🟩", "Pass"), ("🟥", "Fail")
 GATE, BLOCKED, ESCALATED = "🚧", "🛑", "📣"
 BLOCKING_NOTE = "Every open finding blocks the merge, whatever its severity."
@@ -41,7 +55,7 @@ def text(value, limit=None):
     """Plain inline text: one line, cut to `limit`, with every Markdown and HTML metacharacter escaped."""
     value = one_line(value)
     if limit and len(value) > limit:
-        value = value[:limit - 1].rstrip() + "…"
+        value = value[: limit - 1].rstrip() + "…"
     value = INLINE.sub(lambda m: "\\" + m[0], value).replace("<", "&lt;").replace(">", "&gt;")
     if BLOCK_START.match(value):
         return "\\" + value
@@ -85,12 +99,12 @@ def inline_html(line):
     out, i = [], 0
     while i < len(line):
         if line[i] == "\\" and i + 1 < len(line) and line[i + 1] in PUNCTUATION:
-            out.append(line[i:i + 2])
+            out.append(line[i : i + 2])
             i += 2
             continue
         if line[i] == "`":
             run = re.match(r"`+", line[i:])[0]
-            close = re.search(r"(?<!`)" + run + r"(?!`)", line[i + len(run):])
+            close = re.search(r"(?<!`)" + run + r"(?!`)", line[i + len(run) :])
             if close:
                 end = i + len(run) + close.end()
                 out.append(line[i:end])
@@ -114,10 +128,10 @@ def block(value):
     for line in str(value).strip("\n").split("\n"):
         match = FENCE.match(line)
         if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence) and not line[match.end():].strip():
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence) and not line[match.end() :].strip():
                 fence = None
             lines.append(line)
-        elif match and not (match[1][0] == "`" and "`" in line[match.end():]):
+        elif match and not (match[1][0] == "`" and "`" in line[match.end() :]):
             fence = match[1]
             lines.append(line)
         else:
@@ -142,7 +156,7 @@ def first_sentence(value):
     value = one_line(value)
     for match in SENTENCE.finditer(value):
         if match.end() >= 20:
-            sentence = value[:match.end()]
+            sentence = value[: match.end()]
             return sentence if len(sentence) <= FALLBACK_LIMIT else None
     return None
 
@@ -158,7 +172,9 @@ def headline(report, field):
 
 def redundant(report, field):
     """Whether the main text says no more than its fallback headline: one short sentence."""
-    return not one_line(report.get("headline") or "") and first_sentence(report.get(field) or "") == one_line(report.get(field) or "")
+    return not one_line(report.get("headline") or "") and first_sentence(report.get(field) or "") == one_line(
+        report.get(field) or ""
+    )
 
 
 def finding_title(finding):
@@ -176,12 +192,12 @@ def severity(finding):
 def excerpt(value, max_bytes, note):
     """Bound a Markdown display excerpt without changing its stored source text."""
     if len(note.encode()) + 2 > max_bytes:
-        raise ValueError('excerpt note exceeds display capacity')
+        raise ValueError("excerpt note exceeds display capacity")
     rendered = block(value)
     if len(rendered.encode()) <= max_bytes:
         return rendered
     while len((rendered + "\n\n" + note).encode()) > max_bytes:
-        value = value[:len(value) // 2]
+        value = value[: len(value) // 2]
         rendered = block(value)
     return rendered + "\n\n" + note
 

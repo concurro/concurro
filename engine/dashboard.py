@@ -17,12 +17,26 @@ from vocab import MERGED_STAGES
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
 STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
-STAGE_STEP = {"intake": 0, "plan": 1, "plan_qc": 2, "planned": 2, "implement": 3, "publish": 3, "review": 4,
-              "gates": 5, "merging": 5}
+STAGE_STEP = {
+    "intake": 0,
+    "plan": 1,
+    "plan_qc": 2,
+    "planned": 2,
+    "implement": 3,
+    "publish": 3,
+    "review": 4,
+    "gates": 5,
+    "merging": 5,
+}
 
 
-BATCH_STATUS = {'queued': 'queued', 'running': 'reviewing', 'retrying': 'retrying',
-                'complete': 'result received', 'done': 'result received'}
+BATCH_STATUS = {
+    "queued": "queued",
+    "running": "reviewing",
+    "retrying": "retrying",
+    "complete": "result received",
+    "done": "result received",
+}
 
 
 def dependency_summary(path, delta):
@@ -59,7 +73,7 @@ class Dashboard:
     @cached_property
     def current_reports(self):
         """Keep only report links from the current run."""
-        return [r for r in self.state.get('reports', []) if r['artifact'] > self.boundary['artifact']]
+        return [r for r in self.state.get("reports", []) if r["artifact"] > self.boundary["artifact"]]
 
     def summary_body(self):
         """The status comment: stage, plan, PR and votes first; reports and evidence collapsed.
@@ -80,11 +94,25 @@ class Dashboard:
         state = self.state
         current = self.current_step()
         rows = [self.step_row(index, name, current) for index, name in enumerate(STEPS)]
-        progress = " → ".join(f"**{name} {status.split(' ')[0]}**" if index == current else
-                              f"{name} {status.split(' ')[0]}" if not status.startswith("Pending") else name
-                              for index, (name, status, _) in enumerate(rows))
-        lines = [MARKER, "## Concurro", "", self.activity_line(), "", progress, "",
-                 markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact, current)), ""]
+        progress = " → ".join(
+            f"**{name} {status.split(' ')[0]}**"
+            if index == current
+            else f"{name} {status.split(' ')[0]}"
+            if not status.startswith("Pending")
+            else name
+            for index, (name, status, _) in enumerate(rows)
+        )
+        lines = [
+            MARKER,
+            "## Concurro",
+            "",
+            self.activity_line(),
+            "",
+            progress,
+            "",
+            markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact, current)),
+            "",
+        ]
         classification_row = self.classification_row()
         if classification_row:
             lines += [classification_row, ""]
@@ -95,90 +123,122 @@ class Dashboard:
             lines += [action, ""]
         diagnostics = self.diagnostics_table()
         if diagnostics and compact:
-            diagnostics = 'Output corrections and previous runs are recorded in the linked automation audit state.'
+            diagnostics = "Output corrections and previous runs are recorded in the linked automation audit state."
         audit, reference = self.checkpoints.links()
-        diagnostics = '\n\n'.join(part for part in (diagnostics, audit) if part)
+        diagnostics = "\n\n".join(part for part in (diagnostics, audit) if part)
         return "\n".join(lines + [markup.details("Diagnostics", diagnostics), "", reference, ""])
 
     def activity_line(self):
         """Name current work without implying a paused or queued turn is running."""
-        stage = self.state['stage']
-        paused = {'clarify': 'Waiting for your answers before continuing.',
-                  'blocked': 'Paused — a blocker needs attention.',
-                  'escalated': 'Paused — the task needs attention before it can continue.',
-                  'rejected': 'This issue was not accepted for implementation.',
-                  'stopped': 'Work on this issue has stopped.',
-                  'closed': 'The pull request was closed without merging.',
-                  'merged': 'The pull request has been merged.',
-                  'observed_merged': 'The pull request has been merged.',
-                  'planned': 'The plan is ready; waiting for your approval.',
-                  'publish': 'Publishing the implementation and preparing its pull request.'}
-        handlers = {'gates': self._gate_activity, 'plan_qc': self._design_activity,
-                    'review': self._review_activity,
-                    **dict.fromkeys(('intake', 'plan', 'implement'), self._agent_activity)}
+        stage = self.state["stage"]
+        paused = {
+            "clarify": "Waiting for your answers before continuing.",
+            "blocked": "Paused — a blocker needs attention.",
+            "escalated": "Paused — the task needs attention before it can continue.",
+            "rejected": "This issue was not accepted for implementation.",
+            "stopped": "Work on this issue has stopped.",
+            "closed": "The pull request was closed without merging.",
+            "merged": "The pull request has been merged.",
+            "observed_merged": "The pull request has been merged.",
+            "planned": "The plan is ready; waiting for your approval.",
+            "publish": "Publishing the implementation and preparing its pull request.",
+        }
+        handlers = {
+            "gates": self._gate_activity,
+            "plan_qc": self._design_activity,
+            "review": self._review_activity,
+            **dict.fromkeys(("intake", "plan", "implement"), self._agent_activity),
+        }
         message = paused[stage] if stage in paused else handlers.get(stage, self._default_activity)()
-        alert = ('IMPORTANT' if stage in ('planned', 'clarify') else
-                 'WARNING' if stage in ('blocked', 'escalated', 'rejected') else 'TIP')
-        return f'> [!{alert}]\n> ' + message.replace('\n', '\n> ')
+        alert = (
+            "IMPORTANT"
+            if stage in ("planned", "clarify")
+            else "WARNING"
+            if stage in ("blocked", "escalated", "rejected")
+            else "TIP"
+        )
+        return f"> [!{alert}]\n> " + message.replace("\n", "\n> ")
 
     def _gate_activity(self):
         """Describe readiness checks or the completed human hand-off."""
         state = self.state
-        return ('Ready for your review. A human decides whether to merge.' if state.get('handoff_ready') else
-                'PR readiness is waiting on: ' + text(state['reason'], 240) if state.get('reason') else
-                'Checking reviews and CI before marking the pull request ready.')
+        return (
+            "Ready for your review. A human decides whether to merge."
+            if state.get("handoff_ready")
+            else "PR readiness is waiting on: " + text(state["reason"], 240)
+            if state.get("reason")
+            else "Checking reviews and CI before marking the pull request ready."
+        )
 
     def _design_activity(self):
         """Describe pending design reviewers, preferring batch progress over serial repair state."""
         state = self.state
-        members = [m for m in design_roster(self.config) if m['id'] not in state.get('design_votes', {})]
+        members = [m for m in design_roster(self.config) if m["id"] not in state.get("design_votes", {})]
         if not members:
-            return 'Checking the design-review decisions before moving on.'
-        phase = text(markup.review_phase(state.get('design_phase', 'cooperative')))
-        batch = state.get('review_batch', {}).get('members', {})
+            return "Checking the design-review decisions before moving on."
+        phase = text(markup.review_phase(state.get("design_phase", "cooperative")))
+        batch = state.get("review_batch", {}).get("members", {})
         if batch:
             tasks = []
             for member in members:
-                record = batch.get(member['id'], {})
-                activity = ('correcting its output' if record.get('review_repair') else
-                            BATCH_STATUS.get(record.get('status'), 'waiting'))
+                record = batch.get(member["id"], {})
+                activity = (
+                    "correcting its output"
+                    if record.get("review_repair")
+                    else BATCH_STATUS.get(record.get("status"), "waiting")
+                )
                 tasks.append(f"{markup.code(member['provider'])}: {activity}")
-            return f"{phase.capitalize()} design review — " + '; '.join(tasks) + '.'
-        repair = state.get('review_repair', {})
-        correcting = next((m for m in members if repair and repair.get('binding') ==
-                           digest([approval_binding(state, self.config), m])), None)
+            return f"{phase.capitalize()} design review — " + "; ".join(tasks) + "."
+        repair = state.get("review_repair", {})
+        correcting = next(
+            (
+                m
+                for m in members
+                if repair and repair.get("binding") == digest([approval_binding(state, self.config), m])
+            ),
+            None,
+        )
         if correcting:
             tasks = []
             for member in members:
-                task = (f"correct its {phase} design review — correction {repair.get('attempts', 0)} "
-                        f"of {self.config['max_review_repairs']}" if member == correcting else
-                        f"complete its {phase} design review")
+                task = (
+                    f"correct its {phase} design review — correction {repair.get('attempts', 0)} "
+                    f"of {self.config['max_review_repairs']}"
+                    if member == correcting
+                    else f"complete its {phase} design review"
+                )
                 tasks.append(f"{markup.code(member['provider'])} to {task}")
-            return "We're waiting for " + '; and '.join(tasks) + '.'
-        names = ' and '.join(markup.code(m['provider']) for m in members)
-        task = 'its' if len(members) == 1 else 'their'
+            return "We're waiting for " + "; and ".join(tasks) + "."
+        names = " and ".join(markup.code(m["provider"]) for m in members)
+        task = "its" if len(members) == 1 else "their"
         return f"We're waiting for {names} to complete {task} {phase} design review."
 
     def _review_activity(self):
         """List all PR reviewers whose current-head results are still outstanding."""
-        providers = [p for p in assigned(self.config, 'pr_reviewers') if p not in self.state.get('reviews', {})]
-        names = ' and '.join(markup.code(p) for p in providers)
-        return (f"We're waiting for {names} to review the pull request."
-                if providers else 'Checking review findings and deciding whether a repair is needed.')
+        providers = [p for p in assigned(self.config, "pr_reviewers") if p not in self.state.get("reviews", {})]
+        names = " and ".join(markup.code(p) for p in providers)
+        return (
+            f"We're waiting for {names} to review the pull request."
+            if providers
+            else "Checking review findings and deciding whether a repair is needed."
+        )
 
     def _agent_activity(self):
         """Describe intake, planning or implementation, including rejected-output correction."""
-        state, stage = self.state, self.state['stage']
-        role, task = {'intake': ('triage', 'assess the issue'),
-                      'plan': ('planner', 'prepare the implementation plan'),
-                      'implement': ('implementer', 'implement the approved plan')}[stage]
-        draft = state.get('intake_draft' if stage == 'intake' else 'plan_draft') if stage != 'implement' else None
-        return (f"Waiting for {markup.code(assigned(self.config, role))} to "
-                + ('correct its output; details are in Diagnostics.' if draft else task + '.'))
+        state, stage = self.state, self.state["stage"]
+        role, task = {
+            "intake": ("triage", "assess the issue"),
+            "plan": ("planner", "prepare the implementation plan"),
+            "implement": ("implementer", "implement the approved plan"),
+        }[stage]
+        draft = state.get("intake_draft" if stage == "intake" else "plan_draft") if stage != "implement" else None
+        return f"Waiting for {markup.code(assigned(self.config, role))} to " + (
+            "correct its output; details are in Diagnostics." if draft else task + "."
+        )
 
     def _default_activity(self):
         """Keep the fallback for stages with no specialized activity message."""
-        return 'Checking the task’s current state.'
+        return "Checking the task’s current state."
 
     def classification_row(self):
         """Render labels and archive links, never model-written rationale, on the dashboard."""
@@ -187,25 +247,43 @@ class Dashboard:
             return "**Estimate:** Not assessed yet."
         estimate = result.estimate
         scope = estimate.binding
-        label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope['stage']]
-        revision = ("head " + str(scope.get('head', ''))[:7] if scope['stage'] == 'review' else
-                    "plan " + str(scope.get('plan', ''))[:8] + " · " + markup.review_phase(scope.get('phase', ''))
-                    if scope['stage'] == 'plan_qc' else "current issue")
+        label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope["stage"]]
+        revision = (
+            "head " + str(scope.get("head", ""))[:7]
+            if scope["stage"] == "review"
+            else "plan " + str(scope.get("plan", ""))[:8] + " · " + markup.review_phase(scope.get("phase", ""))
+            if scope["stage"] == "plan_qc"
+            else "current issue"
+        )
         detail = f"{label} {revision} · {result.assessed}/{result.expected} assessed"
         if result.provisional:
             detail += " · provisional"
         if result.previous_binding and result.previous_binding != scope:
             prior = result.previous_binding
-            detail += " · retains earlier " + str(prior['stage']) + " " + str(prior.get('head') or prior.get('plan') or '')[:8]
-            if prior.get('phase'):
-                detail += " " + markup.review_phase(prior['phase'])
+            detail += (
+                " · retains earlier "
+                + str(prior["stage"])
+                + " "
+                + str(prior.get("head") or prior.get("plan") or "")[:8]
+            )
+            if prior.get("phase"):
+                detail += " " + markup.review_phase(prior["phase"])
         if result.disagreement:
             detail += " · reviewers disagree"
         sources = classification.resolve_sources(estimate.sources, self.state)
-        links = [link("Report " + str(s['artifact']), self.artifact_url(s['artifact'])) for s in sources if s.get('artifact')]
-        return markup.table(["Estimate", "Assessment", "Evidence"], [[
-            f"Complexity: {estimate.complexity} · Change risk: {estimate.change_risk}",
-            text(f"Confidence: {estimate.confidence} · {detail}"), " · ".join(dict.fromkeys(links))]])
+        links = [
+            link("Report " + str(s["artifact"]), self.artifact_url(s["artifact"])) for s in sources if s.get("artifact")
+        ]
+        return markup.table(
+            ["Estimate", "Assessment", "Evidence"],
+            [
+                [
+                    f"Complexity: {estimate.complexity} · Change risk: {estimate.change_risk}",
+                    text(f"Confidence: {estimate.confidence} · {detail}"),
+                    " · ".join(dict.fromkeys(links)),
+                ]
+            ],
+        )
 
     def artifact_url(self, number):
         """An artifact of this issue on GitHub."""
@@ -219,13 +297,18 @@ class Dashboard:
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
-        if stage in ('blocked', 'escalated') and state.get('retry_stage') in STAGE_STEP:
-            return STAGE_STEP[state['retry_stage']]
+        if stage in ("blocked", "escalated") and state.get("retry_stage") in STAGE_STEP:
+            return STAGE_STEP[state["retry_stage"]]
         if state.get("pr"):
             return 4 if len(state.get("reviews", {})) < len(assigned(self.config, "pr_reviewers")) else 5
         if state.get("local_status") or state.get("approval"):
             return 3
-        if state.get("design_votes") or stage == "clarify" and not state.get("plan", {}).get("questions") and state.get("plan"):
+        if (
+            state.get("design_votes")
+            or stage == "clarify"
+            and not state.get("plan", {}).get("questions")
+            and state.get("plan")
+        ):
             return 2
         return 1 if state.get("plan") or state.get("plan_draft") else 0
 
@@ -235,9 +318,14 @@ class Dashboard:
         stage = state["stage"]
         if index > current:
             return name, "Pending", ""
-        paused = {"clarify": ("❓", "Input needed"), "blocked": (markup.BLOCKED, "Blocked"),
-                  "escalated": (markup.ESCALATED, "Escalated"), "rejected": (markup.BLOCKED, "Rejected"),
-                  "stopped": ("⏹️", "Stopped"), "closed": ("⏹️", "Closed without merge")}
+        paused = {
+            "clarify": ("❓", "Input needed"),
+            "blocked": (markup.BLOCKED, "Blocked"),
+            "escalated": (markup.ESCALATED, "Escalated"),
+            "rejected": (markup.BLOCKED, "Rejected"),
+            "stopped": ("⏹️", "Stopped"),
+            "closed": ("⏹️", "Closed without merge"),
+        }
         done = index < current
         intake = state.get("qc", {}).get("intake")
         if name == "Intake":
@@ -247,14 +335,21 @@ class Dashboard:
             version = f"Version {state.get('plan_revisions', 0) - self.boundary['plan_revisions'] + 1}"
             status = f"✅ {version}" if done else "▶️ In progress"
             plan = self.checkpoints.plan
-            detail = link("Implementation plan", self.artifact_url(plan["number"])) if plan and (state.get('plan') or state.get('plan_draft')) else ""
+            detail = (
+                link("Implementation plan", self.artifact_url(plan["number"]))
+                if plan and (state.get("plan") or state.get("plan_draft"))
+                else ""
+            )
         elif name == "Design review":
             roster = len(design_roster(self.config))
             approve = sum(v["report"]["decision"] == "approve" for v in state.get("design_votes", {}).values())
             objections = sum(not v["resolved"] for v in state.get("objections", []))
             round_ = f"Round {state.get('design_generation', 0) + 1 - self.boundary['generation']} · {markup.review_phase(state.get('design_phase', 'cooperative'))}"
-            status = f"✅ {approve} of {roster} approve" if done else (
-                "Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
+            status = (
+                f"✅ {approve} of {roster} approve"
+                if done
+                else ("Awaiting writer approval" if stage == "planned" else f"▶️ {approve} of {roster} approve")
+            )
             detail = f"{round_} · {objections} open objection{'s' if objections != 1 else ''}"
         elif name == "Implement":
             candidate = state.get("candidate", {})
@@ -267,7 +362,9 @@ class Dashboard:
             status = f"✅ {approve} of {total} approve" if done else f"▶️ {len(reviews)} of {total} reviewed"
             open_findings = sum(f["status"] in ("open", "withdrawn") for f in state.get("findings", []))
             pr = link(f"PR #{state['pr']}", self.pr_url(state["pr"])) if state.get("pr") else ""
-            detail = " · ".join(p for p in (pr, f"{open_findings} open finding{'s' if open_findings != 1 else ''}") if p)
+            detail = " · ".join(
+                p for p in (pr, f"{open_findings} open finding{'s' if open_findings != 1 else ''}") if p
+            )
         else:
             if current == len(STEPS):
                 status, detail = "✅ Merged", ""
@@ -285,15 +382,26 @@ class Dashboard:
         state = self.state
         journal = state.get("conversation", {})
         latest = journal.get("latest")
-        url = (f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{latest}"
-               if latest else None)
-        open_request = next((r for r in reversed(state.get("requests", [])) if r["state"] == "open" and r.get("comment")), None)
+        url = (
+            f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{latest}"
+            if latest
+            else None
+        )
+        open_request = next(
+            (r for r in reversed(state.get("requests", [])) if r["state"] == "open" and r.get("comment")), None
+        )
         if open_request:
-            url = (f"https://github.com/{self.config['repository']}/issues/{state['issue']}"
-                   f"#issuecomment-{open_request['comment']}")
+            url = (
+                f"https://github.com/{self.config['repository']}/issues/{state['issue']}"
+                f"#issuecomment-{open_request['comment']}"
+            )
             return f"**Action needed:** {link('answer the questions', url)}."
-        needs = {"blocked": "a fix and a retry", "escalated": "a decision", "rejected": "an edit and a retry",
-                 "planned": "plan approval" if state.get("mode") == "manual" else None}.get(state["stage"])
+        needs = {
+            "blocked": "a fix and a retry",
+            "escalated": "a decision",
+            "rejected": "an edit and a retry",
+            "planned": "plan approval" if state.get("mode") == "manual" else None,
+        }.get(state["stage"])
         if state["stage"] in ("blocked", "stopped", "escalated") and self.waiting_revision():
             needs = "a writer to grant revision capacity with " + code("/concurro retry --plan-revisions 1")
         if state["stage"] == "blocked" and state.get("reason") == BUNDLE_REASON:
@@ -303,131 +411,195 @@ class Dashboard:
         if not needs:
             return ""
         line = f"**Action needed:** {needs}" + (f" ({link('details', url)})." if url else ".")
-        paused = {"blocked": (markup.BLOCKED, "Blocked"), "escalated": (markup.ESCALATED, "Escalated"),
-                  "rejected": (markup.BLOCKED, "Rejected")}.get(state["stage"])
+        paused = {
+            "blocked": (markup.BLOCKED, "Blocked"),
+            "escalated": (markup.ESCALATED, "Escalated"),
+            "rejected": (markup.BLOCKED, "Rejected"),
+        }.get(state["stage"])
         if paused and state.get("reason"):
             line = f"{paused[0]} **{paused[1]}:** {text(state['reason'], 300)}\n\n" + line
         return line
 
     def progress_rows(self, steps, compact=False, current=None):
         """Place each round below its stage, keeping archived votes linked in their original order."""
-        reports = [r for r in self.current_reports if not r.get('diagnostic')]
+        reports = [r for r in self.current_reports if not r.get("diagnostic")]
         current = self.current_step() if current is None else current
         rows = []
         for step, status, detail in steps:
             rows.append([step, status, detail])
             if compact:
                 continue
-            rounds = list(dict.fromkeys(r['round'] for r in reports if r['step'] == step))
+            rounds = list(dict.fromkeys(r["round"] for r in reports if r["step"] == step))
             current_round, expected = None, []
-            if step == 'Design review' and current == 2:
-                current_round = f"{self.state.get('design_generation', 0) + 1} {self.state.get('design_phase', 'cooperative')}"
-                expected = [member['provider'] for member in design_roster(self.config)]
-            elif step == 'Code review' and current == 4:
-                current_round = str(self.state.get('round', 0) + 1)
-                expected = assigned(self.config, 'pr_reviewers')
+            if step == "Design review" and current == 2:
+                current_round = (
+                    f"{self.state.get('design_generation', 0) + 1} {self.state.get('design_phase', 'cooperative')}"
+                )
+                expected = [member["provider"] for member in design_roster(self.config)]
+            elif step == "Code review" and current == 4:
+                current_round = str(self.state.get("round", 0) + 1)
+                expected = assigned(self.config, "pr_reviewers")
             if current_round and current_round not in rounds:
                 rounds.append(current_round)
             for round_ in rounds:
-                entries = {r['provider']: r for r in reports if (r['step'], r['round']) == (step, round_)}
+                entries = {r["provider"]: r for r in reports if (r["step"], r["round"]) == (step, round_)}
                 cells = self._round_cells(step, entries, expected if round_ == current_round else [])
-                rows.append([text('↳ Round ' + dashboard_runs.display_round(step, round_, self.boundary)),
-                             'Current' if round_ == current_round else '', '<br>'.join(cells)])
+                rows.append(
+                    [
+                        text("↳ Round " + dashboard_runs.display_round(step, round_, self.boundary)),
+                        "Current" if round_ == current_round else "",
+                        "<br>".join(cells),
+                    ]
+                )
         return rows
 
     def _round_cells(self, step, entries, expected):
         """Render recorded votes first, then outstanding reviewers in roster order."""
         cells = []
-        vocabulary = markup.DECISION if step in ('Intake', 'Design review') else markup.VERDICT
+        vocabulary = markup.DECISION if step in ("Intake", "Design review") else markup.VERDICT
         for provider, entry in entries.items():
-            label = (('⚠️', 'Output rejected') if entry['outcome'] == 'invalid'
-                     else vocabulary.get(entry['outcome'], ('📝', 'Agent report')))
-            cells.append(link(f"{provider}: {markup.label(label)}", self.artifact_url(entry['artifact'])))
+            label = (
+                ("⚠️", "Output rejected")
+                if entry["outcome"] == "invalid"
+                else vocabulary.get(entry["outcome"], ("📝", "Agent report"))
+            )
+            cells.append(link(f"{provider}: {markup.label(label)}", self.artifact_url(entry["artifact"])))
         for provider in expected:
             if provider not in entries:
-                cells.append(text(provider + ': ' + self._pending_reviewer_status(provider)))
+                cells.append(text(provider + ": " + self._pending_reviewer_status(provider)))
         return cells
 
     def _pending_reviewer_status(self, provider):
         """Distinguish paused, serial and batch work without changing correction wording."""
         state = self.state
         operation = review_state.operation(state)
-        active = (state['stage'] in ('plan_qc', 'review')
-                  and operation.get('status') == 'started' and operation.get('provider') == provider)
-        member = next((m for m in state.get('review_batch', {}).get('members', {}).values()
-                       if m['identity']['provider'] == provider), None)
-        if member and state['stage'] == 'plan_qc':
-            return ('Correcting output' if member.get('review_repair') else
-                    BATCH_STATUS.get(member.get('status'), 'waiting').capitalize())
-        return 'Paused' if state['stage'] not in ('plan_qc', 'review') else 'Reviewing' if active else 'Waiting'
+        active = (
+            state["stage"] in ("plan_qc", "review")
+            and operation.get("status") == "started"
+            and operation.get("provider") == provider
+        )
+        member = next(
+            (
+                m
+                for m in state.get("review_batch", {}).get("members", {}).values()
+                if m["identity"]["provider"] == provider
+            ),
+            None,
+        )
+        if member and state["stage"] == "plan_qc":
+            return (
+                "Correcting output"
+                if member.get("review_repair")
+                else BATCH_STATUS.get(member.get("status"), "waiting").capitalize()
+            )
+        return "Paused" if state["stage"] not in ("plan_qc", "review") else "Reviewing" if active else "Waiting"
 
     def diagnostics_table(self):
         """Show output corrections below the live status, with links to immutable evidence."""
         rows = []
         for report in self.current_reports:
-            diagnostic = report.get('diagnostic')
+            diagnostic = report.get("diagnostic")
             if not diagnostic:
                 continue
-            rows.append([text(report['provider']), text(dashboard_runs.display_round(report['step'], report['round'], self.boundary)),
-                         text(f"{diagnostic['status']} · {diagnostic['attempt']}/{diagnostic['limit']} corrections"),
-                         text(diagnostic['detail'], 300),
-                         link('Rejected output', self.artifact_url(report['artifact']))])
-        repair = self.state.get('review_repair', {})
-        if repair and not any(r.get('diagnostic', {}).get('binding') == repair.get('binding')
-                              for r in self.state.get('reports', [])):
+            rows.append(
+                [
+                    text(report["provider"]),
+                    text(dashboard_runs.display_round(report["step"], report["round"], self.boundary)),
+                    text(f"{diagnostic['status']} · {diagnostic['attempt']}/{diagnostic['limit']} corrections"),
+                    text(diagnostic["detail"], 300),
+                    link("Rejected output", self.artifact_url(report["artifact"])),
+                ]
+            )
+        repair = self.state.get("review_repair", {})
+        if repair and not any(
+            r.get("diagnostic", {}).get("binding") == repair.get("binding") for r in self.state.get("reports", [])
+        ):
             # Older checkpoints have no rejected-report archive or reviewer identity.
-            rows.append(['Design reviewer', text(markup.review_phase(self.state.get('design_phase', ''))),
-                         text(f"{repair.get('attempts', 0)}/{self.config['max_review_repairs']} corrections"),
-                         text(repair.get('feedback', {}).get('detail', 'Output needs correction.'), 300),
-                         'Not retained by the earlier engine'])
-        for key, label in (('intake_draft', 'Intake'), ('plan_draft', 'Planner')):
+            rows.append(
+                [
+                    "Design reviewer",
+                    text(markup.review_phase(self.state.get("design_phase", ""))),
+                    text(f"{repair.get('attempts', 0)}/{self.config['max_review_repairs']} corrections"),
+                    text(repair.get("feedback", {}).get("detail", "Output needs correction."), 300),
+                    "Not retained by the earlier engine",
+                ]
+            )
+        for key, label in (("intake_draft", "Intake"), ("plan_draft", "Planner")):
             draft = self.state.get(key)
             if draft:
-                rows.append([label, '—', text(f"Rejected output {draft['attempt']}"),
-                             text(draft['reason'], 300), 'See the linked report or plan'])
+                rows.append(
+                    [
+                        label,
+                        "—",
+                        text(f"Rejected output {draft['attempt']}"),
+                        text(draft["reason"], 300),
+                        "See the linked report or plan",
+                    ]
+                )
         sections = []
         if rows:
-            sections.append('Output validation and correction history; these are not design objections.\n\n'
-                            + markup.table(['Agent', 'Round', 'Outcome', 'Reason', 'Evidence'], rows))
+            sections.append(
+                "Output validation and correction history; these are not design objections.\n\n"
+                + markup.table(["Agent", "Round", "Outcome", "Reason", "Evidence"], rows)
+            )
         timings = []
         for report in self.current_reports:
-            observed = review_timing.normalize(report.get('timing'))
+            observed = review_timing.normalize(report.get("timing"))
             if observed:
                 measured = review_timing.durations(observed)
-                labels = ['Unknown' if measured[key] is None else f"{measured[key]:.1f} s"
-                          for key in ('admission_to_claim_seconds', 'execution_seconds')]
-                timings.append([text(report['provider']),
-                                text(dashboard_runs.display_round(report['step'], report['round'],
-                                                               self.boundary)), *labels,
-                                link('Report', self.artifact_url(report['artifact']))])
+                labels = [
+                    "Unknown" if measured[key] is None else f"{measured[key]:.1f} s"
+                    for key in ("admission_to_claim_seconds", "execution_seconds")
+                ]
+                timings.append(
+                    [
+                        text(report["provider"]),
+                        text(dashboard_runs.display_round(report["step"], report["round"], self.boundary)),
+                        *labels,
+                        link("Report", self.artifact_url(report["artifact"])),
+                    ]
+                )
         if timings:
-            sections.append('Observed turn timing (includes setup/tools; missing durations are unknown).\n\n'
-                            + markup.table(['Agent', 'Round', 'Admission to claim', 'Execution', 'Evidence'], timings))
+            sections.append(
+                "Observed turn timing (includes setup/tools; missing durations are unknown).\n\n"
+                + markup.table(["Agent", "Round", "Admission to claim", "Execution", "Evidence"], timings)
+            )
         previous = self.previous_runs()
         if previous:
-            sections.append(markup.details('Previous runs', previous))
-        return '\n\n'.join(sections)
+            sections.append(markup.details("Previous runs", previous))
+        return "\n\n".join(sections)
 
     def previous_runs(self):
         """Link invalidated run evidence separately from current progress, without copying reports."""
         boundaries = self.run_boundaries
         sections = []
-        for i, record in enumerate(self.state.get('invalidations', [])):
-            reports = [r for r in self.state.get('reports', [])
-                       if boundaries[i]['artifact'] < r['artifact'] <= boundaries[i + 1]['artifact']]
+        for i, record in enumerate(self.state.get("invalidations", [])):
+            reports = [
+                r
+                for r in self.state.get("reports", [])
+                if boundaries[i]["artifact"] < r["artifact"] <= boundaries[i + 1]["artifact"]
+            ]
             command = f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}#issuecomment-{record['comment']}"
-            sections.append(f"**Run {i + 1} — invalidated**\n\n"
-                            + link('Writer requested reassessment', command) + '. Earlier approvals no longer apply.')
+            sections.append(
+                f"**Run {i + 1} — invalidated**\n\n"
+                + link("Writer requested reassessment", command)
+                + ". Earlier approvals no longer apply."
+            )
             rows = []
             for report in reports:
-                diagnostic = report.get('diagnostic')
-                outcome = ('Output rejected: ' + diagnostic['detail'] if diagnostic else report['outcome'])
-                rows.append([text(report['step']),
-                             text(dashboard_runs.display_round(report['step'], report['round'], boundaries[i])),
-                             text(report['provider']), text(outcome, 300),
-                             link('Report ' + str(report['artifact']), self.artifact_url(report['artifact']))])
+                diagnostic = report.get("diagnostic")
+                outcome = "Output rejected: " + diagnostic["detail"] if diagnostic else report["outcome"]
+                rows.append(
+                    [
+                        text(report["step"]),
+                        text(dashboard_runs.display_round(report["step"], report["round"], boundaries[i])),
+                        text(report["provider"]),
+                        text(outcome, 300),
+                        link("Report " + str(report["artifact"]), self.artifact_url(report["artifact"])),
+                    ]
+                )
             if rows:
-                sections.append(markup.table(['Step', 'Round', 'Agent', 'Outcome', 'Evidence'], rows))
+                sections.append(markup.table(["Step", "Round", "Agent", "Outcome", "Evidence"], rows))
             else:
-                sections.append('Earlier report links are available in the audit artifact history.')
-        return '\n\n'.join(sections)
+                sections.append("Earlier report links are available in the audit artifact history.")
+        return "\n\n".join(sections)

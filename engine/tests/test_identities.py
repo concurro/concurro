@@ -40,11 +40,21 @@ class IdentityContractTests(unittest.TestCase):
         """The controller identity and human accounts cannot be conversation publishers."""
         valid = Identities(CONFIG, publishers={"review:claude": CLAUDE, "plan-qc:codex:gpt-6.1": "concurro-codex[bot]"})
         self.assertEqual(valid.author("conversation", "plan-qc:codex:gpt-6.1"), "concurro-codex[bot]")
-        for publishers in ({"review:claude": CONFIG["bot_login"]}, {"review:claude": "alice"}, {"review": 1},
-                           {"": CLAUDE}, {"review:claude": "[bot]"}, {"review:claude": "not a login[bot]"},
-                           {"review:claude": "Concurro[bot]"}, {"review:claude": "-claude[bot]"},
-                           {"review:claude": CLAUDE + " "}, {"Review": CLAUDE}, {"review:": CLAUDE},
-                           {"review claude": CLAUDE}, {1: CLAUDE}):
+        for publishers in (
+            {"review:claude": CONFIG["bot_login"]},
+            {"review:claude": "alice"},
+            {"review": 1},
+            {"": CLAUDE},
+            {"review:claude": "[bot]"},
+            {"review:claude": "not a login[bot]"},
+            {"review:claude": "Concurro[bot]"},
+            {"review:claude": "-claude[bot]"},
+            {"review:claude": CLAUDE + " "},
+            {"Review": CLAUDE},
+            {"review:": CLAUDE},
+            {"review claude": CLAUDE},
+            {1: CLAUDE},
+        ):
             with self.subTest(publishers=publishers), self.assertRaises(Blocked):
                 Identities(CONFIG, publishers=publishers)
 

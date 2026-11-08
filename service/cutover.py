@@ -40,11 +40,22 @@ class Token:
 
 def compare(repository, base, head, connection=transport.connect):
     """`status` of GitHub's unauthenticated compare of two engine commits (`identical`, `ahead`, …)."""
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": transport.API_VERSION,
-               "User-Agent": transport.USER_AGENT}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": transport.API_VERSION,
+        "User-Agent": transport.USER_AGENT,
+    }
     try:
-        response = transport.exchange(connection, transport.API, "GET", f"/repos/{repository}/compare/{base}...{head}",
-                                      headers, None, COMPARE_LIMIT, transport.TIMEOUT)
+        response = transport.exchange(
+            connection,
+            transport.API,
+            "GET",
+            f"/repos/{repository}/compare/{base}...{head}",
+            headers,
+            None,
+            COMPARE_LIMIT,
+            transport.TIMEOUT,
+        )
         status = response.json().get("status") if response.sent and response.status == 200 else None
     except (OSError, http.client.HTTPException, ValueError, AttributeError):
         status = None
@@ -56,8 +67,18 @@ def compare(repository, base, head, connection=transport.connect):
 class Cutover:
     """`adopt` and `release`, run by the daemon for an operator."""
 
-    def __init__(self, settings, identity, gateway, registry, reader, loader, clock=time.time,
-                 compare=compare, transport_factory=transport.Transport):
+    def __init__(
+        self,
+        settings,
+        identity,
+        gateway,
+        registry,
+        reader,
+        loader,
+        clock=time.time,
+        compare=compare,
+        transport_factory=transport.Transport,
+    ):
         """`loader(repository)` returns the worker's validated `Target`; `reader(repository)` a read transport."""
         self.settings, self.identity, self.gateway, self.registry = settings, identity, gateway, registry
         self.reader, self.loader, self.clock, self.compare = reader, loader, clock, compare

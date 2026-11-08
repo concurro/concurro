@@ -48,9 +48,11 @@ WRITES = (
 # A runner session's start: the agent event type, carrying only the session's ID.
 DISPATCH = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The App only ever comments on its PRs; it never approves or requests changes.
-PR_BODIES = ((re.compile(rf"pulls/{NUMBER}/reviews"), {"commit_id", "event", "body", "comments"}),
-             (re.compile(rf"pulls/{NUMBER}/comments"), {"commit_id", "path", "subject_type", "body"}),
-             (re.compile(rf"pulls/{NUMBER}/comments/{NUMBER}/replies"), {"body"}))
+PR_BODIES = (
+    (re.compile(rf"pulls/{NUMBER}/reviews"), {"commit_id", "event", "body", "comments"}),
+    (re.compile(rf"pulls/{NUMBER}/comments"), {"commit_id", "path", "subject_type", "body"}),
+    (re.compile(rf"pulls/{NUMBER}/comments/{NUMBER}/replies"), {"body"}),
+)
 ISSUE_COMMENT = re.compile(rf"issues/comments/(?P<comment>{NUMBER})")
 # The App's issue comments it edits: the status comment, its health notice and Input needed requests.
 EDITABLE = (STATUS_MARKER, HEALTH_MARKER, EVENT_MARKER)
@@ -79,9 +81,13 @@ class TreeUnavailable(Rejected):
 
 def text_blob(body):
     """Only a UTF-8 text blob may be created for controller publication."""
-    return (isinstance(body, dict) and set(body) == {"content", "encoding"}
-            and body["encoding"] == "utf-8" and isinstance(body["content"], str)
-            and "\x00" not in body["content"])
+    return (
+        isinstance(body, dict)
+        and set(body) == {"content", "encoding"}
+        and body["encoding"] == "utf-8"
+        and isinstance(body["content"], str)
+        and "\x00" not in body["content"]
+    )
 
 
 def allowed(key, method, path, body):
@@ -95,7 +101,7 @@ def allowed(key, method, path, body):
     prefix = f"repos/{key[0]}/"
     if not path.startswith(prefix):
         return False
-    relative = path[len(prefix):]
+    relative = path[len(prefix) :]
     for verb, pattern in WRITES:
         match = re.fullmatch(pattern, relative) if verb == method else None
         if match:
@@ -104,17 +110,24 @@ def allowed(key, method, path, body):
             if relative == "git/blobs":
                 return text_blob(body)
             if relative == "git/refs":
-                return (isinstance(body, dict) and set(body) == {"ref", "sha"}
-                        and body["ref"] == "refs/heads/" + task_branch(*key)
-                        and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
+                return (
+                    isinstance(body, dict)
+                    and set(body) == {"ref", "sha"}
+                    and body["ref"] == "refs/heads/" + task_branch(*key)
+                    and isinstance(body["sha"], str)
+                    and OID.fullmatch(body["sha"]) is not None
+                )
             # Branch updates are fast-forward only.
             if relative.startswith("git/refs/"):
                 return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
             for shape, fields in PR_BODIES:
                 if shape.fullmatch(relative):
-                    return (isinstance(body, dict) and set(body) == fields
-                            and body.get("event", "COMMENT") == "COMMENT"
-                            and body.get("subject_type", "file") == "file")
+                    return (
+                        isinstance(body, dict)
+                        and set(body) == fields
+                        and body.get("event", "COMMENT") == "COMMENT"
+                        and body.get("subject_type", "file") == "file"
+                    )
             return True
     return False
 
@@ -144,23 +157,36 @@ def allowed_target(key, binding, method, path, body):
         if method == "POST" and relative in ("git/trees", "git/commits"):
             return isinstance(body, dict)
         if method == "POST" and relative == "git/refs":
-            return (isinstance(body, dict) and set(body) == {"ref", "sha"}
-                    and body["ref"] == "refs/heads/" + branch
-                    and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
-        return (method == "PATCH" and relative == "git/refs/heads/" + branch and isinstance(body, dict)
-                and set(body) == {"sha", "force"} and body["force"] is False
-                and isinstance(body["sha"], str) and OID.fullmatch(body["sha"]) is not None)
+            return (
+                isinstance(body, dict)
+                and set(body) == {"ref", "sha"}
+                and body["ref"] == "refs/heads/" + branch
+                and isinstance(body["sha"], str)
+                and OID.fullmatch(body["sha"]) is not None
+            )
+        return (
+            method == "PATCH"
+            and relative == "git/refs/heads/" + branch
+            and isinstance(body, dict)
+            and set(body) == {"sha", "force"}
+            and body["force"] is False
+            and isinstance(body["sha"], str)
+            and OID.fullmatch(body["sha"]) is not None
+        )
     if repository != binding.upstream:
         return False
     if method == "POST" and relative == "pulls":
-        return (isinstance(body, dict) and set(body) == {"head", "head_repo", "base", "title", "body", "draft", "maintainer_can_modify"}
-                and body["head"] == binding.fork.split("/")[0] + ":" + branch
-                and body["head_repo"] == binding.fork.split("/")[1] and body["draft"] is True
-                and body["maintainer_can_modify"] is False
-                and all(isinstance(body[k], str) for k in ("base", "title", "body"))
-                and BRANCH.fullmatch(body["base"]) is not None)
-    return (relative.startswith("pulls/") and method == "POST"
-            and allowed((repository, key[1]), method, path, body))
+        return (
+            isinstance(body, dict)
+            and set(body) == {"head", "head_repo", "base", "title", "body", "draft", "maintainer_can_modify"}
+            and body["head"] == binding.fork.split("/")[0] + ":" + branch
+            and body["head_repo"] == binding.fork.split("/")[1]
+            and body["draft"] is True
+            and body["maintainer_can_modify"] is False
+            and all(isinstance(body[k], str) for k in ("base", "title", "body"))
+            and BRANCH.fullmatch(body["base"]) is not None
+        )
+    return relative.startswith("pulls/") and method == "POST" and allowed((repository, key[1]), method, path, body)
 
 
 def runner_write(path, method, body):
@@ -169,13 +195,22 @@ def runner_write(path, method, body):
     if method == "POST" and relative == "git/refs" and isinstance(body, dict) and set(body) == {"ref", "sha"}:
         ref = body["ref"]
         prefix = "refs/heads/concurro/runs/"
-        return ref[len(prefix):] if isinstance(ref, str) and ref.startswith(prefix) and DISPATCH.fullmatch(ref[len(prefix):]) else None
+        return (
+            ref[len(prefix) :]
+            if isinstance(ref, str) and ref.startswith(prefix) and DISPATCH.fullmatch(ref[len(prefix) :])
+            else None
+        )
     if method == "DELETE" and relative.startswith("git/refs/heads/concurro/runs/") and body is None:
         value = relative.removeprefix("git/refs/heads/concurro/runs/")
         return value if DISPATCH.fullmatch(value) else None
-    if (method == "POST" and relative == "actions/workflows/concurro-executor.yml/dispatches"
-            and isinstance(body, dict) and set(body) == {"ref", "inputs"}
-            and isinstance(body["inputs"], dict) and set(body["inputs"]) == {"session"}):
+    if (
+        method == "POST"
+        and relative == "actions/workflows/concurro-executor.yml/dispatches"
+        and isinstance(body, dict)
+        and set(body) == {"ref", "inputs"}
+        and isinstance(body["inputs"], dict)
+        and set(body["inputs"]) == {"session"}
+    ):
         session = body["inputs"]["session"]
         if isinstance(session, str) and DISPATCH.fullmatch(session) and body["ref"] == "concurro/runs/" + session:
             return session
@@ -254,8 +289,13 @@ def settle(path, response, now, body=None):
         detail = rejection(response)
         log.warning("GitHub rejected a write to %s (HTTP %s): %s", path, status, detail)
         error_type = Rejected
-        if (status == 422 and re.fullmatch(r"repos/[^/]+/[^/]+/git/commits", path)
-                and isinstance(body, dict) and isinstance(body.get("tree"), str) and OID.fullmatch(body["tree"])):
+        if (
+            status == 422
+            and re.fullmatch(r"repos/[^/]+/[^/]+/git/commits", path)
+            and isinstance(body, dict)
+            and isinstance(body.get("tree"), str)
+            and OID.fullmatch(body["tree"])
+        ):
             if missing_tree(response):
                 error_type = TreeUnavailable
         return "failed", None, error_type(f"GitHub rejected the write (HTTP {status}): {detail}", status=status)
@@ -274,14 +314,15 @@ def missing_tree(response):
     if errors:
         return isinstance(errors, list) and all(
             isinstance(error, dict) and error.get("field") == "tree" and error.get("code") == "missing"
-            for error in errors)
+            for error in errors
+        )
     message = payload.get("message")
-    return (isinstance(message, str)
-            and " ".join(message.split()).rstrip(".").casefold() == "tree sha does not exist")
+    return isinstance(message, str) and " ".join(message.split()).rstrip(".").casefold() == "tree sha does not exist"
 
 
 def rejection(response):
     """Bounded, single-line GitHub validation details for operator logs, excluding arbitrary payload fields."""
+
     def clean(value):
         """Keep string diagnostics printable and bounded, including terminal control characters."""
         if not isinstance(value, str):
@@ -299,8 +340,11 @@ def rejection(response):
     if isinstance(errors, list):
         for error in errors[:5]:
             if isinstance(error, dict):
-                detail = " ".join(f"{key}={value}" for key in ("resource", "field", "code", "message")
-                                  if (value := clean(error.get(key))))
+                detail = " ".join(
+                    f"{key}={value}"
+                    for key in ("resource", "field", "code", "message")
+                    if (value := clean(error.get(key)))
+                )
             else:
                 detail = clean(error)
             if detail:
@@ -356,15 +400,22 @@ class MutationGateway:
             head = pr.get("head") or {}
             branch = head.get("ref")
             ours = binding is not None and branch == task_branch(*key)
-            self.pulls[identity] = (ours and self.bot_login is not None
+            self.pulls[identity] = (
+                ours
+                and self.bot_login is not None
                 and (pr.get("user") or {}).get("login") == self.bot_login
-                and (head.get("repo") or {}).get("full_name", "").lower() == fork.lower())
+                and (head.get("repo") or {}).get("full_name", "").lower() == fork.lower()
+            )
         return self.pulls[identity]
 
     def ours(self, login, body):
         """Whether a comment is the App's own finding comment (GraphQL names a bot without `[bot]`)."""
-        return (self.bot_login is not None and login in (self.bot_login, self.bot_login.removesuffix("[bot]"))
-                and isinstance(body, str) and body.startswith(FINDING_MARKER))
+        return (
+            self.bot_login is not None
+            and login in (self.bot_login, self.bot_login.removesuffix("[bot]"))
+            and isinstance(body, str)
+            and body.startswith(FINDING_MARKER)
+        )
 
     def bound(self, key, path, body):
         """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads;
@@ -374,31 +425,52 @@ class MutationGateway:
         ready = ready_pull(body) if path == "graphql" else None
         if ready is not None:
             query = "query($id:ID!) { node(id:$id) { ... on PullRequest { number repository { nameWithOwner } } } }"
-            node = ((self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": ready}})
-                     or {}).get("data") or {}).get("node") or {}
-            return ((node.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
-                    and type(node.get("number")) is int and self.owned_pull(key, node["number"]))
+            node = (
+                (
+                    self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": ready}})
+                    or {}
+                ).get("data")
+                or {}
+            ).get("node") or {}
+            return (
+                (node.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
+                and type(node.get("number")) is int
+                and self.owned_pull(key, node["number"])
+            )
         thread = resolved_thread(body) if path == "graphql" else None
         if thread is not None:
-            query = ("query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
-                     "pullRequest { number repository { nameWithOwner } } "
-                     "comments(first:1) { nodes { author { login } body } } } } }")
-            node = ((self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": thread}})
-                     or {}).get("data") or {}).get("node") or {}
+            query = (
+                "query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
+                "pullRequest { number repository { nameWithOwner } } "
+                "comments(first:1) { nodes { author { login } body } } } } }"
+            )
+            node = (
+                (
+                    self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": thread}})
+                    or {}
+                ).get("data")
+                or {}
+            ).get("node") or {}
             pr = node.get("pullRequest") or {}
             first = (node.get("comments") or {}).get("nodes") or [{}]
-            return ((pr.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower() and isinstance(pr.get("number"), int)
-                    and self.owned_pull(key, pr["number"])
-                    and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body")))
+            return (
+                (pr.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
+                and isinstance(pr.get("number"), int)
+                and self.owned_pull(key, pr["number"])
+                and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body"))
+            )
         prefix = f"repos/{key[0]}/"
-        edit = ISSUE_COMMENT.fullmatch(path[len(prefix):]) if path.startswith(prefix) else None
+        edit = ISSUE_COMMENT.fullmatch(path[len(prefix) :]) if path.startswith(prefix) else None
         if edit:
             comment = self.reader(key[0]).request("GET", path) or {}
-            return (self.bot_login is not None and (comment.get("user") or {}).get("login") == self.bot_login
-                    and str(comment.get("body", "")).startswith(EDITABLE)
-                    and str(comment.get("issue_url", "")).endswith(f"/issues/{key[1]}"))
+            return (
+                self.bot_login is not None
+                and (comment.get("user") or {}).get("login") == self.bot_login
+                and str(comment.get("body", "")).startswith(EDITABLE)
+                and str(comment.get("issue_url", "")).endswith(f"/issues/{key[1]}")
+            )
         prefix = f"repos/{repository}/"
-        match = PULL.fullmatch(path[len(prefix):]) if path.startswith(prefix + "pulls/") else None
+        match = PULL.fullmatch(path[len(prefix) :]) if path.startswith(prefix + "pulls/") else None
         if match is None:
             return True
         if not self.owned_pull(key, int(match["pull"])):
@@ -406,8 +478,9 @@ class MutationGateway:
         if match["comment"] is None:
             return True
         comment = self.reader(repository).request("GET", f"{prefix}pulls/comments/{match['comment']}")
-        return (self.ours((comment.get("user") or {}).get("login"), comment.get("body"))
-                and str(comment.get("pull_request_url", "")).endswith(f"/pulls/{match['pull']}"))
+        return self.ours((comment.get("user") or {}).get("login"), comment.get("body")) and str(
+            comment.get("pull_request_url", "")
+        ).endswith(f"/pulls/{match['pull']}")
 
     def check_owner(self, key, generation):
         """Refuse model work and stale results once task ownership or mutation authority is lost."""
@@ -439,9 +512,16 @@ class MutationGateway:
             if found[0]["object"]["sha"] != binding.config_sha:
                 raise Disallowed("session ref moved outside the controller")
         else:
-            self.mutate(key, generation, "POST", root + "git/refs", {"ref": "refs/heads/" + ref, "sha": binding.config_sha})
-        self.mutate(key, generation, "POST", root + "actions/workflows/concurro-executor.yml/dispatches",
-                    {"ref": ref, "inputs": {"session": session}})
+            self.mutate(
+                key, generation, "POST", root + "git/refs", {"ref": "refs/heads/" + ref, "sha": binding.config_sha}
+            )
+        self.mutate(
+            key,
+            generation,
+            "POST",
+            root + "actions/workflows/concurro-executor.yml/dispatches",
+            {"ref": ref, "inputs": {"session": session}},
+        )
 
     def runner_allowed(self, key, generation, method, path, body):
         """Authorize session writes only against a prior durable record for this task."""
@@ -450,8 +530,13 @@ class MutationGateway:
             return False
         record = self.registry.runner_session(session)
         target = self.registry.binding(key)
-        if (not record or not target or (record["repository"], record["issue"]) != key or record["removed"]
-                or destination(key, target, path) != target.fork):
+        if (
+            not record
+            or not target
+            or (record["repository"], record["issue"]) != key
+            or record["removed"]
+            or destination(key, target, path) != target.fork
+        ):
             return False
         if method == "DELETE":
             return True
@@ -502,10 +587,12 @@ class MutationGateway:
         settle, then rechecks ownership and unresolved writes before its own admission.
         """
         binding = self.binding(key)
-        admitted = (self.runner_allowed(key, generation, method, path, body)
-                    or (allowed_target(key, binding, method, path, body) if binding else
-                        (path.startswith(f"repos/{key[0]}/issues/") or path == f"repos/{key[0]}/labels")
-                        and allowed(key, method, path, body)))
+        admitted = self.runner_allowed(key, generation, method, path, body) or (
+            allowed_target(key, binding, method, path, body)
+            if binding
+            else (path.startswith(f"repos/{key[0]}/issues/") or path == f"repos/{key[0]}/labels")
+            and allowed(key, method, path, body)
+        )
         if not admitted or not self.bound(key, path, body):
             raise Disallowed("write is not on the gateway allow-list")
         # One pacer across tasks and repositories; waiting holds no task ownership lock.
@@ -534,8 +621,12 @@ class MutationGateway:
             self.sending.add(key)
         try:
             try:
-                result, payload, error = settle(path, self.writer(destination(key, binding, path)).send(method, path, body),
-                                                self.registry.clock(), body)
+                result, payload, error = settle(
+                    path,
+                    self.writer(destination(key, binding, path)).send(method, path, body),
+                    self.registry.clock(),
+                    body,
+                )
             except Exception:
                 result, payload, error = "unknown", None, None
             self.registry.settle(intent, result)
@@ -544,7 +635,9 @@ class MutationGateway:
                 self.sending.discard(key)
                 condition.notify_all()
         if result == "unknown":
-            self.halt(key, generation, Unresolved(f"write {intent} has an unknown outcome; operator resolution required"))
+            self.halt(
+                key, generation, Unresolved(f"write {intent} has an unknown outcome; operator resolution required")
+            )
         if error:
             raise error
         return payload
@@ -569,8 +662,13 @@ class GatewayGitHub(GitHub):
         """Retry definite 422s only for trees referencing blobs uploaded by this publication."""
         body = {"base_tree": base_tree, "tree": deepcopy(entries)}
         uploaded = {sha for sha in uploaded_blobs if isinstance(sha, str) and OID.fullmatch(sha)}
-        recent = any(isinstance(entry, dict) and entry.get("type") == "blob"
-                     and isinstance(entry.get("sha"), str) and entry["sha"] in uploaded for entry in body["tree"])
+        recent = any(
+            isinstance(entry, dict)
+            and entry.get("type") == "blob"
+            and isinstance(entry.get("sha"), str)
+            and entry["sha"] in uploaded
+            for entry in body["tree"]
+        )
         return self.write(self.root + "/git/trees", "POST", body, retry_tree=recent)
 
     def write(self, path, method, data, retry_tree=False):

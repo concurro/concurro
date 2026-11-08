@@ -41,8 +41,10 @@ ENROLLED = "issues?state=open&labels=concurro"
 
 def target_files(config, charter=None):
     """The target's `.concurro/` files as the default branch holds them, pinning the test engine."""
-    return {".concurro/config.json": json.dumps({**config, "engine": ENGINE}),
-            ".concurro/charter.json": charter or (TARGET / ".concurro/charter.json").read_text()}
+    return {
+        ".concurro/config.json": json.dumps({**config, "engine": ENGINE}),
+        ".concurro/charter.json": charter or (TARGET / ".concurro/charter.json").read_text(),
+    }
 
 
 class Clock:
@@ -72,15 +74,32 @@ class RestBackend:
         self.read_faults = []
         self.files = target_files(fake.config)
 
-    def fail(self, method, prefix, status=None, lost=False, body="", truncated=False, headers=None,
-             message="fixture rejection"):
+    def fail(
+        self,
+        method,
+        prefix,
+        status=None,
+        lost=False,
+        body="",
+        truncated=False,
+        headers=None,
+        message="fixture rejection",
+    ):
         """Fail the next matching write.
 
         Reject it with `status` (and `headers`), or apply it and then lose the response
         (`lost`) or truncate its body (`truncated`). The returned fault records the body it saw.
         """
-        fault = {"method": method, "prefix": prefix, "status": status, "lost": lost, "body": body,
-                 "truncated": truncated, "headers": headers or {}, "message": message}
+        fault = {
+            "method": method,
+            "prefix": prefix,
+            "status": status,
+            "lost": lost,
+            "body": body,
+            "truncated": truncated,
+            "headers": headers or {},
+            "message": message,
+        }
         self.faults.append(fault)
         return fault
 
@@ -92,7 +111,7 @@ class RestBackend:
         """Strip and require the repository prefix."""
         if not path.startswith(self.root):
             raise AssertionError(path)
-        return path[len(self.root):]
+        return path[len(self.root) :]
 
     def request(self, method, path, data=None):
         """Answer reads, including bounded pagination and GraphQL queries."""
@@ -117,12 +136,22 @@ class RestBackend:
             if comment is None:
                 raise NotFound("GitHub request failed: GET " + relative)
             return {**deepcopy(comment), "pull_request_url": f"https://api.github.com/{self.root}pulls/9"}
-        if match := re.fullmatch(r'(.*)[?&]per_page=(\d+)&page=(\d+)', relative):
+        if match := re.fullmatch(r"(.*)[?&]per_page=(\d+)&page=(\d+)", relative):
             base, size, page = match[1], int(match[2]), int(match[3])
-            key = next((key for part, key in (("/check-runs", "check_runs"), ("/check-suites", "check_suites"),
-                                              ("actions/runs?", "workflow_runs")) if part in base), None)
+            key = next(
+                (
+                    key
+                    for part, key in (
+                        ("/check-runs", "check_runs"),
+                        ("/check-suites", "check_suites"),
+                        ("actions/runs?", "workflow_runs"),
+                    )
+                    if part in base
+                ),
+                None,
+            )
             values = self.page(base)
-            items = values[(page - 1) * size:page * size] if isinstance(values, list) else values
+            items = values[(page - 1) * size : page * size] if isinstance(values, list) else values
             return {key: items} if key else items
         if relative.startswith("issues?"):
             return []  # no prior outcomes to learn from
@@ -133,12 +162,17 @@ class RestBackend:
 
     def content(self, relative):
         """A file of the default branch through the contents API."""
-        path, _, ref = unquote(relative[len("contents/"):]).partition("?ref=")
+        path, _, ref = unquote(relative[len("contents/") :]).partition("?ref=")
         if ref != self.fake.base or path not in self.files:
             raise NotFound("GitHub request failed: GET " + relative)
         data = self.files[path].encode()
-        return {"type": "file", "encoding": "base64", "path": path, "size": len(data),
-                "content": base64.b64encode(data).decode()}
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "path": path,
+            "size": len(data),
+            "content": base64.b64encode(data).decode(),
+        }
 
     def page(self, base):
         """The first and only page of a collection."""
@@ -161,8 +195,10 @@ class RestBackend:
             ref = {"name": "main", "target": {"oid": self.fake.base}}
             return {"data": {"repository": {"defaultBranchRef": ref}}}
         if "linkedBranches" in data["query"]:
-            nodes = [{"ref": {"name": b, "repository": {"nameWithOwner": self.fake.config["repository"]}}}
-                     for b in sorted(self.fake.linked_branches)]
+            nodes = [
+                {"ref": {"name": b, "repository": {"nameWithOwner": self.fake.config["repository"]}}}
+                for b in sorted(self.fake.linked_branches)
+            ]
             page = {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
             return {"data": {"repository": {"issue": {"linkedBranches": page}}}}
         if "node(id:" in data["query"] and variables["id"] == "PR_9":
@@ -170,7 +206,10 @@ class RestBackend:
         if "node(id:" in data["query"]:
             return {"data": {"node": self.thread_node(variables["id"])}}
         if "reviewThreads" in data["query"]:
-            page = {"nodes": self.fake.threads(variables["number"]), "pageInfo": {"hasNextPage": False, "endCursor": None}}
+            page = {
+                "nodes": self.fake.threads(variables["number"]),
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
             return {"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}
         raise AssertionError(data["query"])
 
@@ -181,8 +220,10 @@ class RestBackend:
             return None
         first = next(c for c in self.fake.review_comments if c["id"] == thread["comments"]["nodes"][0]["databaseId"])
         author = first["user"]["login"].removesuffix("[bot]")
-        return {"pullRequest": {"number": 9, "repository": {"nameWithOwner": self.fake.config["repository"]}},
-                "comments": {"nodes": [{"author": {"login": author}, "body": first["body"]}]}}
+        return {
+            "pullRequest": {"number": 9, "repository": {"nameWithOwner": self.fake.config["repository"]}},
+            "comments": {"nodes": [{"author": {"login": author}, "body": first["body"]}]},
+        }
 
     def archive(self, path):
         """Serve the fake's source archive."""
@@ -191,13 +232,23 @@ class RestBackend:
     def send(self, method, path, body):
         """Apply one write and return its `Response`, honouring the next matching fault."""
         relative = "graphql" if path == "graphql" else self.relative(path)
-        fault = next((f for f in self.faults if f["method"] == method and relative.startswith(f["prefix"])
-                      and (body or {}).get("body", "").startswith(f["body"])), None)
+        fault = next(
+            (
+                f
+                for f in self.faults
+                if f["method"] == method
+                and relative.startswith(f["prefix"])
+                and (body or {}).get("body", "").startswith(f["body"])
+            ),
+            None,
+        )
         if fault:
             self.faults.remove(fault)
             fault["seen"] = deepcopy(body)
             if fault["status"]:
-                return Response(True, fault["status"], fault["headers"], json.dumps({"message": fault["message"]}).encode())
+                return Response(
+                    True, fault["status"], fault["headers"], json.dumps({"message": fault["message"]}).encode()
+                )
         result = self.apply(method, relative, body)
         self.writes.append((method, relative))
         if fault and fault["lost"]:
@@ -211,8 +262,13 @@ class RestBackend:
         issue = self.fake.issue
         if relative == "graphql" and "markPullRequestReadyForReview" in body["query"]:
             self.fake.mark_ready(body["variables"]["input"]["pullRequestId"])
-            return {"data": {"markPullRequestReadyForReview": {"pullRequest": {
-                "id": "PR_9", "isDraft": False, "headRefOid": self.fake.pr["head"]["sha"]}}}}
+            return {
+                "data": {
+                    "markPullRequestReadyForReview": {
+                        "pullRequest": {"id": "PR_9", "isDraft": False, "headRefOid": self.fake.pr["head"]["sha"]}
+                    }
+                }
+            }
         if relative == "graphql" and "resolveReviewThread" in body["query"]:
             thread = body["variables"]["input"]["threadId"]
             self.fake.resolve_thread(thread)
@@ -333,8 +389,13 @@ class ServiceFixture:
         self.config["autonomous"] = False
         self.fake = FakeGitHub(self.config)
         self.backend = RestBackend(self.fake)
-        self.gateway = MutationGateway(self.registry, lambda repository: self.backend, lambda repository: self.backend,
-                                       self.config["bot_login"], **self.pacing)
+        self.gateway = MutationGateway(
+            self.registry,
+            lambda repository: self.backend,
+            lambda repository: self.backend,
+            self.config["bot_login"],
+            **self.pacing,
+        )
         self.reader = self.backend
         self.agents = FakeAgents()
 
@@ -351,8 +412,7 @@ class ServiceFixture:
     def controller(self, generation):
         """A service-owned controller for one tick."""
         self.registry.bind(KEY, KEY[0], KEY[0], ENGINE)
-        return Controller(self.facade(generation), self.agents, self.config,
-                          controller_id=SERVICE)
+        return Controller(self.facade(generation), self.agents, self.config, controller_id=SERVICE)
 
     def tick(self):
         """Acquire, advance once and release, as the worker will; approve any plan awaiting a writer."""
@@ -371,15 +431,32 @@ class ServiceFixture:
     def service(self, executor=None, limits=None):
         """The reconciler, worker and scheduler over the fakes, with the fake agents."""
         bot = self.config["bot_login"]
-        self.settings = SimpleNamespace(controller_id=SERVICE, engine=ENGINE, limits=limits or Limits(4, 2),
-                                        targets=(Target(KEY[0], KEY[0], "both"),),
-                                        state_dir=Path(self.directory.name))
+        self.settings = SimpleNamespace(
+            controller_id=SERVICE,
+            engine=ENGINE,
+            limits=limits or Limits(4, 2),
+            targets=(Target(KEY[0], KEY[0], "both"),),
+            state_dir=Path(self.directory.name),
+        )
         self.reconciler = Reconciler(self.registry, lambda repository: self.backend, [KEY[0]], {bot}, clock=self.clock)
-        self.worker = Worker(self.settings, self.gateway, self.registry, self.reconciler, lambda repository: self.backend,
-                             bot, agents=lambda *args, **kwargs: self.agents,
-                             executor=lambda repository, github: None)
-        self.scheduler = Scheduler(self.registry, self.gateway, self.worker, self.settings.limits, clock=self.clock,
-                                   executor=executor or Inline())
+        self.worker = Worker(
+            self.settings,
+            self.gateway,
+            self.registry,
+            self.reconciler,
+            lambda repository: self.backend,
+            bot,
+            agents=lambda *args, **kwargs: self.agents,
+            executor=lambda repository, github: None,
+        )
+        self.scheduler = Scheduler(
+            self.registry,
+            self.gateway,
+            self.worker,
+            self.settings.limits,
+            clock=self.clock,
+            executor=executor or Inline(),
+        )
         return self.scheduler
 
     def drain(self, limit=20):
@@ -394,8 +471,10 @@ class ServiceFixture:
 
     def stage(self):
         """The task's stage, as its progress label shows it."""
-        return next((label[len("concurro:stage:"):] for label in self.backend.labels()
-                     if label.startswith("concurro:stage:")), None)
+        return next(
+            (label[len("concurro:stage:") :] for label in self.backend.labels() if label.startswith("concurro:stage:")),
+            None,
+        )
 
     def state(self):
         """The task's verified checkpoint state, read directly from the fake."""

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from checks import MAX_OVERLAY_FILES
 from controller import MAX_DIFF, changes, transport_size
@@ -36,10 +37,12 @@ class RepositoryTests(unittest.TestCase):
             repo = Repository(root)
             self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG))
             self.assertIn("CONTRIBUTING.md", json.loads(repo.call("list_files", {}))["paths"])
-            self.assertEqual(json.loads(repo.call("read_file", {"path": "CONTRIBUTING.md"}))["lines"][0]["text"],
-                             "Writer enrollment")
-            self.assertEqual(json.loads(repo.call("search", {"query": "enrollment"}))["matches"][0]["path"],
-                             "CONTRIBUTING.md")
+            self.assertEqual(
+                json.loads(repo.call("read_file", {"path": "CONTRIBUTING.md"}))["lines"][0]["text"], "Writer enrollment"
+            )
+            self.assertEqual(
+                json.loads(repo.call("search", {"query": "enrollment"}))["matches"][0]["path"], "CONTRIBUTING.md"
+            )
             self.assertEqual(repo.read(".concurro/config.json"), "{}")
 
     def test_file_tools_reject_symlink_components_and_git_metadata(self):
@@ -78,9 +81,14 @@ class RepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             requests = [
                 {"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
-                {"method": "notifications/initialized"}, {"id": 2, "method": "tools/list"},
+                {"method": "notifications/initialized"},
+                {"id": 2, "method": "tools/list"},
                 {"id": 3, "method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "/secret"}}},
-                {"id": 4, "method": "tools/call", "params": {"name": "shell", "arguments": {"command": "touch /tmp/pwn"}}},
+                {
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "shell", "arguments": {"command": "touch /tmp/pwn"}},
+                },
                 {"id": 5, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}},
             ]
             output = io.StringIO()
@@ -95,9 +103,13 @@ class RepositoryTests(unittest.TestCase):
 
     def test_mcp_recovers_after_malformed_messages(self):
         """Bad frames receive protocol errors without losing the next valid request."""
-        frames = ["not-json", "[]", '{"id":1,"method":"initialize","params":null}',
-                  '{"id":2,"method":"tools/call","params":[]}',
-                  '{"id":3,"method":"tools/list"}']
+        frames = [
+            "not-json",
+            "[]",
+            '{"id":1,"method":"initialize","params":null}',
+            '{"id":2,"method":"tools/call","params":[]}',
+            '{"id":3,"method":"tools/list"}',
+        ]
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
             serve(Repository(Path(directory)), io.StringIO("\n".join(frames)), output)
@@ -144,11 +156,19 @@ class GitSnapshotTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.upstream = Upstream(self.root / "upstream.git")
-        self.base = self.upstream.commit({"docs/guide.md": "Guide\n", "tool.sh": "#!/bin/sh\n",
-                                          ".gitattributes": "* binary\n*.md text eol=crlf filter=secret -diff\n"},
-                                         branch="main", message="base", executable=("tool.sh",))
-        self.head = self.upstream.commit({"docs/guide.md": "Guide\nMore\n"}, parent=self.base,
-                                         branch="concurro/issue-1", message="head")
+        self.base = self.upstream.commit(
+            {
+                "docs/guide.md": "Guide\n",
+                "tool.sh": "#!/bin/sh\n",
+                ".gitattributes": "* binary\n*.md text eol=crlf filter=secret -diff\n",
+            },
+            branch="main",
+            message="base",
+            executable=("tool.sh",),
+        )
+        self.head = self.upstream.commit(
+            {"docs/guide.md": "Guide\nMore\n"}, parent=self.base, branch="concurro/issue-1", message="head"
+        )
         self.mirror = mirror_of(self.upstream, self.root / "mirrors")
         self.refs = {"main": self.base, "concurro/issue-1": self.head}
 
@@ -170,10 +190,19 @@ class GitSnapshotTests(unittest.TestCase):
         self.assertIn("+More", repo.git(["show", "concurro/issue-1"])["output"])
 
     def test_candidate_commit_keeps_exact_bytes_and_modes(self):
-        files = {"docs/guide.md": "Guide\r\nCandidate\r\n", "tool.sh": "#!/bin/sh\necho hi\n", "docs/new.md": "New\n",
-                 "docs/absent.md": None}
-        repo = build(self.mirror, self.root / "snap", {**self.refs, "concurro/published": self.head},
-                     "concurro/issue-1", candidate={"files": files})
+        files = {
+            "docs/guide.md": "Guide\r\nCandidate\r\n",
+            "tool.sh": "#!/bin/sh\necho hi\n",
+            "docs/new.md": "New\n",
+            "docs/absent.md": None,
+        }
+        repo = build(
+            self.mirror,
+            self.root / "snap",
+            {**self.refs, "concurro/published": self.head},
+            "concurro/issue-1",
+            candidate={"files": files},
+        )
         self.assertEqual((self.root / "snap/docs/guide.md").read_bytes(), b"Guide\r\nCandidate\r\n")
         blob = repo.git(["cat-file", "-p", "concurro/issue-1:docs/guide.md"])["output"]
         self.assertEqual(blob, "Guide\r\nCandidate\r\n")
@@ -184,15 +213,19 @@ class GitSnapshotTests(unittest.TestCase):
 
     def test_candidates_and_refs_are_validated(self):
         for refs, head, candidate in (
-                ({"main": self.base}, "other", None),
-                ({"main": "f" * 40}, "main", None),
-                ({"bad..name": self.base}, "bad..name", None),
-                ({"main": self.base, "x.lock": self.head}, "main", None),
-                ({**self.refs}, "concurro/issue-1", {"files": {"../escape": "x"}}),
-                ({**self.refs}, "concurro/issue-1", {"files": {"CONTRIBUTING.md": "x"}}),
-                ({**self.refs}, "concurro/issue-1", {"files": {f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES + 1)}})):
-            with self.subTest(refs=refs, head=head, candidate=candidate is not None), \
-                    tempfile.TemporaryDirectory() as directory, self.assertRaises((ValueError, Blocked)):
+            ({"main": self.base}, "other", None),
+            ({"main": "f" * 40}, "main", None),
+            ({"bad..name": self.base}, "bad..name", None),
+            ({"main": self.base, "x.lock": self.head}, "main", None),
+            ({**self.refs}, "concurro/issue-1", {"files": {"../escape": "x"}}),
+            ({**self.refs}, "concurro/issue-1", {"files": {"CONTRIBUTING.md": "x"}}),
+            ({**self.refs}, "concurro/issue-1", {"files": {f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES + 1)}}),
+        ):
+            with (
+                self.subTest(refs=refs, head=head, candidate=candidate is not None),
+                tempfile.TemporaryDirectory() as directory,
+                self.assertRaises((ValueError, Blocked)),
+            ):
                 build(self.mirror, Path(directory), refs, head, candidate)
 
     def test_git_tool_pages_bounds_and_refuses_writes(self):
@@ -218,8 +251,13 @@ class GitSnapshotTests(unittest.TestCase):
         repo = build(self.mirror, self.root / "snap", self.refs, "concurro/issue-1")
         with self.assertRaises(ToolTimeout):
             run_git(repo.root, ["grep", "--open-files-in-pager=sleep 5;", "Guide"], timeout=1)
-        requests = [{"id": 1, "method": "tools/call", "params": {"name": "git", "arguments": {
-            "args": ["grep", "--open-files-in-pager=sleep 5;", "Guide"]}}}]
+        requests = [
+            {
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "git", "arguments": {"args": ["grep", "--open-files-in-pager=sleep 5;", "Guide"]}},
+            }
+        ]
         output = io.StringIO()
         with patch.object(repository, "GIT_TIMEOUT", 1), self.assertRaises(ToolTimeout):
             serve(repo, io.StringIO(json.dumps(requests[0])), output)
@@ -231,8 +269,10 @@ class GitSnapshotTests(unittest.TestCase):
         self.addCleanup(lambda: Path(directory, "s").unlink(missing_ok=True))
         path = Path(directory) / "s"
         threading.Thread(target=repository.listen, args=(path, self.root / "snap", 3600), daemon=True).start()
-        requests = [{"id": 1, "method": "tools/call", "params": {"name": "git", "arguments": {"args": ["diff", "main"]}}},
-                    {"id": 2, "method": "tools/list"}]
+        requests = [
+            {"id": 1, "method": "tools/call", "params": {"name": "git", "arguments": {"args": ["diff", "main"]}}},
+            {"id": 2, "method": "tools/list"},
+        ]
         incoming = io.BytesIO("\n".join(map(json.dumps, requests)).encode() + b"\n")
         outgoing = io.BytesIO()
         relay(path, incoming, outgoing, wait=10)
@@ -248,9 +288,13 @@ class TransportTests(unittest.TestCase):
         refs = {"refs": {"main": "a" * 40}, "head": "main"}
         self.assertIsNone(inspection(refs, None, "review", "main")["candidate"])
         self.assertEqual(inspection(refs, {"x": "y"}, "develop", "main")["candidate"], {"files": {"x": "y"}})
-        for repository_refs, candidate, stage in ((None, None, "plan"), ({"refs": {"main": "main"}, "head": "main"}, None, "plan"),
-                                                  ({"refs": {"main": "a" * 40}, "head": "other"}, None, "plan"),
-                                                  (refs, None, "local_review"), (refs, {"x": "y"}, "review")):
+        for repository_refs, candidate, stage in (
+            (None, None, "plan"),
+            ({"refs": {"main": "main"}, "head": "main"}, None, "plan"),
+            ({"refs": {"main": "a" * 40}, "head": "other"}, None, "plan"),
+            (refs, None, "local_review"),
+            (refs, {"x": "y"}, "review"),
+        ):
             with self.subTest(stage=stage), self.assertRaises(Blocked):
                 inspection(repository_refs, candidate, stage, "main")
 
@@ -258,19 +302,31 @@ class TransportTests(unittest.TestCase):
         """Models cannot substitute the revision; candidates are committed on the task branch."""
         agents = FakeAgents()
         controller = Controller(FakeGitHub(CONFIG), agents, CONFIG)
-        controller.state = {"base": "a" * 40, "calls": 0, "issue": 7, "requirements": {}, "branch": "concurro/issue-7",
-                            "bundle_id": controller.bundle.identity, "charter_id": digest(controller.bundle.charter),
-                            "agent_image": "image", "config_digest": "config"}
+        controller.state = {
+            "base": "a" * 40,
+            "calls": 0,
+            "issue": 7,
+            "requirements": {},
+            "branch": "concurro/issue-7",
+            "bundle_id": controller.bundle.identity,
+            "charter_id": digest(controller.bundle.charter),
+            "agent_image": "image",
+            "config_digest": "config",
+        }
         with patch.object(controller, "save"), patch.object(controller, "checkpoint"):
             controller.ask("claude", "plan", {"repository_commit": "f" * 40, "repository": {"refs": {}, "head": "x"}})
             self.assertEqual(agents.calls[-1][2]["repository"], {"refs": {"main": "a" * 40}, "head": "main"})
             controller.ask("codex", "develop", {"controller_candidate": {}})
-            self.assertEqual(agents.calls[-1][2]["repository"],
-                             {"refs": {"main": "a" * 40, "concurro/issue-7": "a" * 40}, "head": "concurro/issue-7"})
+            self.assertEqual(
+                agents.calls[-1][2]["repository"],
+                {"refs": {"main": "a" * 40, "concurro/issue-7": "a" * 40}, "head": "concurro/issue-7"},
+            )
             controller.state["head"] = "b" * 40
             controller.ask("claude", "review", {})
-            self.assertEqual(agents.calls[-1][2]["repository"],
-                             {"refs": {"main": "a" * 40, "concurro/issue-7": "b" * 40}, "head": "concurro/issue-7"})
+            self.assertEqual(
+                agents.calls[-1][2]["repository"],
+                {"refs": {"main": "a" * 40, "concurro/issue-7": "b" * 40}, "head": "concurro/issue-7"},
+            )
             controller.ask("claude", "local_review", {"controller_candidate": {}})
             self.assertEqual(agents.calls[-1][2]["repository"]["refs"]["concurro/published"], "b" * 40)
             self.assertEqual(agents.calls[-1][2]["repository_commit"], "b" * 40)
@@ -280,10 +336,14 @@ class ReviewContextTests(unittest.TestCase):
     """Reviewers get diffs and digests, not whole files; controller-only keys never reach a model."""
 
     def test_changes_describe_each_file_with_digests_and_counts(self):
-        result = changes({"a.md": "x\n--old\n", "gone.md": "g\n", "same.md": "s\n"},
-                         {"a.md": "x\n++new", "new.md": "n\n", "same.md": "s\n"})
-        self.assertEqual([(c["path"], c["status"]) for c in result],
-                         [("a.md", "modified"), ("gone.md", "deleted"), ("new.md", "added")])
+        result = changes(
+            {"a.md": "x\n--old\n", "gone.md": "g\n", "same.md": "s\n"},
+            {"a.md": "x\n++new", "new.md": "n\n", "same.md": "s\n"},
+        )
+        self.assertEqual(
+            [(c["path"], c["status"]) for c in result],
+            [("a.md", "modified"), ("gone.md", "deleted"), ("new.md", "added")],
+        )
         modified = result[0]
         self.assertEqual((modified["added"], modified["removed"]), (1, 1))
         self.assertIn("+++new", modified["diff"])

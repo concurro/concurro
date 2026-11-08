@@ -28,14 +28,28 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score([{"id": c["id"], "decision": c["expected"]} for c in cases()])["correct"], 4)
 
     def test_runner_builds_fixture_locally_without_fetching_target_history(self):
-        code = ('import json,pathlib,sys; r=json.load(sys.stdin); '
-                'print(json.dumps({"text":(pathlib.Path(r["workspace"])/"docs/workflow.md").read_text(),'
-                '"head":r["context"]["repository"]["head"]}))')
-        turn = {"request": {"stage": "plan_qc", "provider": "codex", "evaluation": "a" * 32,
-                            "session": None, "context": {}, "gateway": {"url": "https://invalid", "headers": {}}},
-                "spec": {"refs": {"main": "b" * 40}, "head": "main", "base_branch": "main", "candidate": None},
-                "timeout": 60, "retained": None}
-        with tempfile.TemporaryDirectory() as directory, patch.object(turns, "command", return_value=[sys.executable, "-c", code]):
+        code = (
+            "import json,pathlib,sys; r=json.load(sys.stdin); "
+            'print(json.dumps({"text":(pathlib.Path(r["workspace"])/"docs/workflow.md").read_text(),'
+            '"head":r["context"]["repository"]["head"]}))'
+        )
+        turn = {
+            "request": {
+                "stage": "plan_qc",
+                "provider": "codex",
+                "evaluation": "a" * 32,
+                "session": None,
+                "context": {},
+                "gateway": {"url": "https://invalid", "headers": {}},
+            },
+            "spec": {"refs": {"main": "b" * 40}, "head": "main", "base_branch": "main", "candidate": None},
+            "timeout": 60,
+            "retained": None,
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(turns, "command", return_value=[sys.executable, "-c", code]),
+        ):
             root = Path(directory) / "turn-00000000000000000000000000000001"
             root.mkdir()
             result = turns.execute(turn, "session-key", None, root)
@@ -47,9 +61,11 @@ class EvaluationTests(unittest.TestCase):
     def test_results_are_saved_even_for_invalid_provider_output(self):
         class Agents:
             bundle = Bundle(target=TARGET)
+
             def ask(self, provider, stage, context):
                 self.calls.append((provider, stage, context))
                 return {"invalid": True}
+
         agents = Agents()
         agents.calls = []
         with tempfile.TemporaryDirectory() as directory:

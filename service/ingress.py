@@ -8,7 +8,17 @@ import logging
 import time
 
 ENROLLMENT = "concurro"
-EVENTS = {"issues", "issue_comment", "pull_request", "pull_request_review", "check_suite", "check_run", "status", "pull_request_review_comment", "pull_request_review_thread"}
+EVENTS = {
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "check_suite",
+    "check_run",
+    "status",
+    "pull_request_review_comment",
+    "pull_request_review_thread",
+}
 # The Actions workflow's triggers and filters, kept for parity.
 ISSUE_ACTIONS = {"opened", "labeled", "unlabeled", "edited", "reopened", "closed"}
 DISPLAY_LABELS = ("concurro:stage:", "concurro:attention")
@@ -84,7 +94,12 @@ class Ingress:
             return self.comment(repository, action, payload)
         if event == "status":
             return self.registry.commit_tasks(repository, payload["sha"])
-        if event in ("pull_request", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"):
+        if event in (
+            "pull_request",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "pull_request_review_thread",
+        ):
             numbers = [payload["pull_request"]["number"]]
         else:
             check = payload[event]
@@ -111,8 +126,12 @@ class Ingress:
         """Human comments from the issue author or a writer on an enrolled issue, or a `/concurro` command."""
         issue, comment = payload["issue"], payload["comment"]
         user = comment["user"]
-        if (action not in COMMENT_ACTIONS or "pull_request" in issue or user.get("type") == "Bot"
-                or self.ours(user["login"])):
+        if (
+            action not in COMMENT_ACTIONS
+            or "pull_request" in issue
+            or user.get("type") == "Bot"
+            or self.ours(user["login"])
+        ):
             return []
         if user["login"] != issue["user"]["login"] and comment.get("author_association") not in WRITER_ASSOCIATIONS:
             return []
@@ -134,8 +153,9 @@ class Handler(BaseHTTPRequestHandler):
         if int(length) > BODY_LIMIT:
             return self.reply(413, "payload too large")
         body = self.rfile.read(int(length))
-        headers = {name: self.headers.get(name, "") for name in
-                   ("X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery")}
+        headers = {
+            name: self.headers.get(name, "") for name in ("X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery")
+        }
         try:
             status, text = self.ingress.handle(headers, body)
         except Exception as error:

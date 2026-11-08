@@ -31,8 +31,10 @@ def decode(text, path):
                 """A safe mapping loader that rejects ambiguous duplicate keys."""
 
                 def construct_mapping(self, node, deep=False):
-                    return pairs((self.construct_object(key, deep=deep), self.construct_object(value, deep=deep))
-                                 for key, value in node.value)
+                    return pairs(
+                        (self.construct_object(key, deep=deep), self.construct_object(value, deep=deep))
+                        for key, value in node.value
+                    )
 
             # Configs need only ordinary maps/lists/scalars; aliases allow recursive or amplified data.
             if any(isinstance(token, yaml.tokens.AliasToken) for token in yaml.scan(text)):

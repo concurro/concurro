@@ -29,15 +29,15 @@ class ConversationSizeTests(unittest.TestCase):
             result = original_ask(provider, stage, context)
             if stage == "plan":
                 result["steps"] = [plan_text]
-            elif stage == 'plan_qc':
-                result['rationale'] = rationale[:1200]
+            elif stage == "plan_qc":
+                result["rationale"] = rationale[:1200]
             elif stage == "intake":
                 result["rationale"] = rationale
             elif stage == "local_review":
                 result["summary"] = summary
             elif stage == "review":
                 # Fill the review to the room its budget reports (twice the budget, as it has no findings).
-                result["summary"] = summary[:2 * context["review_output_budget"]["max_json_bytes"] - 1500]
+                result["summary"] = summary[: 2 * context["review_output_budget"]["max_json_bytes"] - 1500]
             return result
 
         def measure(path, method="GET", data=None):
@@ -60,10 +60,24 @@ class ConversationSizeTests(unittest.TestCase):
         self.assertTrue(state["conversation"]["receipts"])
         self.assertTrue(all(not v["resolved"] for v in state.get("objections", [])))
         timeline = "\n".join(gh.archives())
-        self.assertFalse([c for c in gh.comments if c["body"].startswith(conversation.MARKER)
-                          and not any(label in c["body"] for label in ("Ready for review", "Implementation started", "I've picked up this issue and will start digging in!"))], "only the welcome and actionable comments are posted")
+        self.assertFalse(
+            [
+                c
+                for c in gh.comments
+                if c["body"].startswith(conversation.MARKER)
+                and not any(
+                    label in c["body"]
+                    for label in (
+                        "Ready for review",
+                        "Implementation started",
+                        "I've picked up this issue and will start digging in!",
+                    )
+                )
+            ],
+            "only the welcome and actionable comments are posted",
+        )
         self.assertNotIn(plan_text, timeline)
-        self.assertIn(plan_text, controller.checkpoints.plan['body'])
+        self.assertIn(plan_text, controller.checkpoints.plan["body"])
         for full_text in (rationale,):
             self.assertIn(full_text, timeline)
         self.assertEqual(len(state["reviews"]["claude"]["summary"]), 15000)
@@ -71,12 +85,16 @@ class ConversationSizeTests(unittest.TestCase):
 
     def test_compaction_preserves_pending_and_unpublished_evidence(self):
         """Only acknowledged narrative is shortened; bindings, findings and open objections survive."""
-        report = {"summary": "\u2028\\\"" * 1500, "findings": [{"path": "a", "detail": "Keep this finding"}]}
-        state = {"issue": 7, "reviews": {"claude": deepcopy(report)},
-                 "approval": {"binding": "exact"}, "plan": {"steps": ["unchanged"]},
-                 "objections": [{"id": "open", "resolved": False}, {"id": "old", "resolved": True}],
-                 "cooperative_votes": {"unused": report},
-                 "conversation": {"pending": [], "receipts": {"reviews/claude": {"source_digest": digest(report)}}}}
+        report = {"summary": '\u2028\\"' * 1500, "findings": [{"path": "a", "detail": "Keep this finding"}]}
+        state = {
+            "issue": 7,
+            "reviews": {"claude": deepcopy(report)},
+            "approval": {"binding": "exact"},
+            "plan": {"steps": ["unchanged"]},
+            "objections": [{"id": "open", "resolved": False}, {"id": "old", "resolved": True}],
+            "cooperative_votes": {"unused": report},
+            "conversation": {"pending": [], "receipts": {"reviews/claude": {"source_digest": digest(report)}}},
+        }
         state["qc"] = {"intake": {"rationale": "unpublished" * 1000}}
         before = deepcopy(state)
         state["conversation"]["pending"] = [{"id": "pending"}]
@@ -92,11 +110,33 @@ class ConversationSizeTests(unittest.TestCase):
 
     def test_reference_outbox_rejects_source_mutation(self):
         """A queued report cannot silently change between checkpointing and publication."""
-        state = {"issue": 7, "reviews": {"claude": {"verdict": "approve", "summary": "original", "findings": [],
-                                                    "dispositions": [], "finding_ids": [], "design_issue": None}}}
-        conversation.queue(state, None, source=("reviews", "claude"), kind="review",
-                           details={"head": "a" * 40, "round": 1, "pr": 9, "provider": "claude", "model": "m",
-                                    "pr_url": "https://github.com/o/r/pull/9"})
+        state = {
+            "issue": 7,
+            "reviews": {
+                "claude": {
+                    "verdict": "approve",
+                    "summary": "original",
+                    "findings": [],
+                    "dispositions": [],
+                    "finding_ids": [],
+                    "design_issue": None,
+                }
+            },
+        }
+        conversation.queue(
+            state,
+            None,
+            source=("reviews", "claude"),
+            kind="review",
+            details={
+                "head": "a" * 40,
+                "round": 1,
+                "pr": 9,
+                "provider": "claude",
+                "model": "m",
+                "pr_url": "https://github.com/o/r/pull/9",
+            },
+        )
         event = state["conversation"]["pending"][0]
         self.assertNotIn("body", event)
         self.assertEqual(event["content_digest"], digest(state["reviews"]["claude"]))

@@ -18,9 +18,11 @@ JSON_LIMIT = 4 * MB
 ARCHIVE_LIMIT = 100 * MB
 # Endpoint-specific bounds; blobs cover GitHub's 100 MB endpoint plus base64/JSON overhead.
 # https://docs.github.com/en/rest/git/blobs#get-a-blob
-LIMITS = ((re.compile(r"git/blobs/[0-9a-f]{40}"), 144 * MB),
-          (re.compile(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?"), 16 * MB),
-          (re.compile(r"git/trees/[^/?#]+\?recursive=1"), 16 * MB))
+LIMITS = (
+    (re.compile(r"git/blobs/[0-9a-f]{40}"), 144 * MB),
+    (re.compile(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?"), 16 * MB),
+    (re.compile(r"git/trees/[^/?#]+\?recursive=1"), 16 * MB),
+)
 # Headers kept for settlement and redirects; nothing else leaves the transport.
 KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location")
 # A secondary rate limit without a requested delay: GitHub asks for at least a minute.
@@ -126,7 +128,8 @@ def graphql_throttle(payload, headers, now):
     """The delay for a GraphQL HTTP 200 whose errors report rate limiting, else None."""
     errors = payload.get("errors") if isinstance(payload, dict) else None
     if not isinstance(errors, list) or not any(
-            isinstance(e, dict) and (e.get("type") == "RATE_LIMITED" or limited(e.get("message"))) for e in errors):
+        isinstance(e, dict) and (e.get("type") == "RATE_LIMITED" or limited(e.get("message"))) for e in errors
+    ):
         return None
     return delay(headers, now)
 
@@ -152,8 +155,11 @@ class Transport:
 
     def call(self, method, path, data, host=API, limit=None, timeout=TIMEOUT, authorize=True):
         """Authorize and send one request; a missing token is a request not sent."""
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": API_VERSION,
-                   "User-Agent": USER_AGENT}
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": API_VERSION,
+            "User-Agent": USER_AGENT,
+        }
         token = None
         if authorize:
             try:
@@ -166,8 +172,7 @@ class Transport:
             body = json.dumps(data).encode()
             headers["Content-Type"] = "application/json"
         target = path if path.startswith("/") else "/" + path
-        response = exchange(self.connection, host, method, target, headers, body,
-                            limit or self.limit(path), timeout)
+        response = exchange(self.connection, host, method, target, headers, body, limit or self.limit(path), timeout)
         if token and response.status == 401:
             self.credential.drop(token)
         return response
@@ -226,16 +231,25 @@ class Transport:
         try:
             response = self.call("GET", path, None)
             location = urlsplit(response.headers.get("location", ""))
-            if response.status != 302 or location.scheme != "https" or location.hostname != CODELOAD \
-                    or location.port is not None or location.username or location.password:
-                raise (None if response.sent and response.status < 400 else self.failure(response)) \
-                    or RuntimeError("source archive unavailable or too large")
+            if (
+                response.status != 302
+                or location.scheme != "https"
+                or location.hostname != CODELOAD
+                or location.port is not None
+                or location.username
+                or location.password
+            ):
+                raise (None if response.sent and response.status < 400 else self.failure(response)) or RuntimeError(
+                    "source archive unavailable or too large"
+                )
             target = location.path + ("?" + location.query if location.query else "")
-            source = self.call("GET", target, None, host=CODELOAD, limit=ARCHIVE_LIMIT,
-                               timeout=ARCHIVE_TIMEOUT, authorize=False)
+            source = self.call(
+                "GET", target, None, host=CODELOAD, limit=ARCHIVE_LIMIT, timeout=ARCHIVE_TIMEOUT, authorize=False
+            )
         except (OSError, http.client.HTTPException):
             raise Transient("unavailable") from None
         if source.sent and source.status == 200 and source.body is not None:
             return source.body
-        raise (None if source.sent and 300 <= source.status < 400 else self.failure(source)) \
-            or RuntimeError("source archive unavailable or too large")
+        raise (None if source.sent and 300 <= source.status < 400 else self.failure(source)) or RuntimeError(
+            "source archive unavailable or too large"
+        )

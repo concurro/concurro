@@ -11,9 +11,9 @@ import time
 def children():
     """Direct children of the runner, including orphaned descendants adopted by its subreaper."""
     result = set()
-    for path in Path('/proc').glob('[0-9]*/stat'):
+    for path in Path("/proc").glob("[0-9]*/stat"):
         try:
-            fields = path.read_text().rsplit(')', 1)[1].split()
+            fields = path.read_text().rsplit(")", 1)[1].split()
             if int(fields[1]) == os.getpid():
                 result.add(int(path.parent.name))
         except (FileNotFoundError, ProcessLookupError):
@@ -23,10 +23,10 @@ def children():
 
 def begin():
     """Enable orphan adoption before a native turn; preserve pre-existing helper children."""
-    if sys.platform != 'linux':
+    if sys.platform != "linux":
         return None  # Offline development tests; production runs on Linux GitHub runners.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
-        raise OSError(ctypes.get_errno(), 'cannot contain native turn descendants')
+        raise OSError(ctypes.get_errno(), "cannot contain native turn descendants")
     return children()
 
 
@@ -46,5 +46,5 @@ def finish(baseline, timeout=5):
             except ChildProcessError:
                 pass
         if time.monotonic() >= deadline:
-            raise RuntimeError('native turn descendants did not exit')
+            raise RuntimeError("native turn descendants did not exit")
         time.sleep(0.01)

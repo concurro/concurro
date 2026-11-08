@@ -32,8 +32,11 @@ class App:
             return 200, {"slug": "concurro-controller"}
         if method == "GET" and target.endswith("/installation"):
             repository = target.removeprefix("/repos/").removesuffix("/installation")
-            return 200, {"id": 5, "repository_selection": self.selection,
-                         "account": {"login": self.owner or repository.split("/")[0]}}
+            return 200, {
+                "id": 5,
+                "repository_selection": self.selection,
+                "account": {"login": self.owner or repository.split("/")[0]},
+            }
         if (method, target) == ("POST", "/app/installations/5/access_tokens"):
             time.sleep(self.delay)
             with self.guard:

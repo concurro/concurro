@@ -31,10 +31,12 @@ class RepositoryRoutingTests(unittest.TestCase):
         issue, upstream, fork = (FakeGitHub(config) for _ in range(3))
         upstream.publication_source = fork
         agents = FakeAgents()
+
         def tick():
             controller = Controller(issue, agents, config, target_root=TARGET, code=fork, pulls=upstream)
             controller.advance(7)
             return controller
+
         for _ in range(30):
             controller = tick()
             if controller.state["stage"] == "planned":
@@ -45,12 +47,14 @@ class RepositoryRoutingTests(unittest.TestCase):
             self.fail("implementation never completed")
         original = upstream.repo
         posted = []
+
         def lose(path, method="GET", data=None):
             result = original(path, method, data)
             if path == "pulls" and method == "POST":
                 posted.append(deepcopy(data))
                 raise RuntimeError("lost PR response")
             return result
+
         with patch.object(upstream, "repo", side_effect=lose), self.assertRaises(RuntimeError):
             tick()
         self.assertTrue(upstream.pr["draft"])

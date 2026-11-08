@@ -199,11 +199,25 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         def reject(method, path, body):
             """Return the reported cross-fork validation failure only for PR creation."""
             if method == "POST" and path.endswith("/pulls"):
-                return Response(True, 422, {}, json.dumps({"message": "Validation Failed", "errors": [
-                    {"field": "fork_collab", "code": "custom", "message": "Operator-only error detail"}]}).encode())
+                return Response(
+                    True,
+                    422,
+                    {},
+                    json.dumps(
+                        {
+                            "message": "Validation Failed",
+                            "errors": [
+                                {"field": "fork_collab", "code": "custom", "message": "Operator-only error detail"}
+                            ],
+                        }
+                    ).encode(),
+                )
             return send(method, path, body)
 
-        with patch.object(self.backend, "send", side_effect=reject), self.assertLogs("concurro.service", "WARNING") as logged:
+        with (
+            patch.object(self.backend, "send", side_effect=reject),
+            self.assertLogs("concurro.service", "WARNING") as logged,
+        ):
             self.reconciler.poll()
             self.drain()
         self.assertIn("field=fork_collab", "\n".join(logged.output))
@@ -240,7 +254,9 @@ class FailureTests(ServiceFixture, unittest.TestCase):
 
     def test_unpinned_target_runs_the_served_engine(self):
         """A target without an `engine` pin accepts whatever engine the operator serves."""
-        self.backend.files[".concurro/config.json"] = json.dumps({k: v for k, v in self.config.items() if k != "engine"})
+        self.backend.files[".concurro/config.json"] = json.dumps(
+            {k: v for k, v in self.config.items() if k != "engine"}
+        )
         self.service()
         self.assertEqual(self.reconciler.poll(), [KEY])
         self.drain()
@@ -249,8 +265,12 @@ class FailureTests(ServiceFixture, unittest.TestCase):
     def test_target_mismatches_make_no_writes(self):
         """Another engine pin, App or merge setting is refused before any state is read or written."""
         self.service()
-        for change in ({"engine": "f" * 40}, {"bot_login": "other[bot]"}, {"merge_enabled": True},
-                       {"repository": "owner/elsewhere"}):
+        for change in (
+            {"engine": "f" * 40},
+            {"bot_login": "other[bot]"},
+            {"merge_enabled": True},
+            {"repository": "owner/elsewhere"},
+        ):
             with self.subTest(change=change):
                 self.backend.files[".concurro/config.json"] = json.dumps({**self.config, "engine": ENGINE, **change})
                 self.registry.enqueue(KEY, "test", self.clock())
@@ -307,8 +327,7 @@ class SchedulerTests(ServiceFixture, unittest.TestCase):
     def test_unresolved_task_does_not_starve_others(self):
         ran = []
         worker = type("Worker", (), {"run": lambda _, key, generation: ran.append(key) or Outcome("await-human")})()
-        scheduler = Scheduler(self.registry, self.gateway, worker, Limits(1, 1), clock=self.clock,
-                              executor=Inline())
+        scheduler = Scheduler(self.registry, self.gateway, worker, Limits(1, 1), clock=self.clock, executor=Inline())
         stuck, healthy = KEY, (KEY[0], 8)
         generation = self.registry.grant(stuck, "worker", 60)
         self.registry.settle(self.registry.admit(stuck, generation, "POST", "p", "d"), "unknown")
@@ -334,18 +353,39 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
 
         def agents(config, executor, bundle, retained):
             repository = config["repository"]
-            seen[repository] = {"config": config["repository"], "bundle": bundle.identity, "executor": executor,
-                                "retained": retained}
+            seen[repository] = {
+                "config": config["repository"],
+                "bundle": bundle.identity,
+                "executor": executor,
+                "retained": retained,
+            }
             barrier.wait()
             return FakeAgents()
 
         targets = (Target(KEY[0], KEY[0], "both"), Target("owner/two", "owner/two", "both"))
-        settings = type("Settings", (), {"controller_id": "service:primary", "engine": ENGINE, "targets": targets,
-                                         "limits": Limits(2, 1), "state_dir": Path(self.directory.name)})
+        settings = type(
+            "Settings",
+            (),
+            {
+                "controller_id": "service:primary",
+                "engine": ENGINE,
+                "targets": targets,
+                "limits": Limits(2, 1),
+                "state_dir": Path(self.directory.name),
+            },
+        )
         gateway = MutationGateway(self.registry, backends.__getitem__, backends.__getitem__, **self.pacing)
         reconciler = Reconciler(self.registry, backends.__getitem__, list(fakes), {bot}, clock=self.clock)
-        worker = Worker(settings, gateway, self.registry, reconciler, backends.__getitem__, bot, agents=agents,
-                        executor=lambda repository, github: ("executor", repository))
+        worker = Worker(
+            settings,
+            gateway,
+            self.registry,
+            reconciler,
+            backends.__getitem__,
+            bot,
+            agents=agents,
+            executor=lambda repository, github: ("executor", repository),
+        )
         with ThreadPoolExecutor(2) as pool:
             scheduler = Scheduler(self.registry, gateway, worker, settings.limits, clock=self.clock, executor=pool)
             self.assertEqual(sorted(reconciler.poll()), [(KEY[0], 7), ("owner/two", 7)])
@@ -355,8 +395,9 @@ class TwoTargets(ServiceFixture, unittest.TestCase):
         for repository in fakes:
             self.assertEqual(seen[repository]["config"], repository)
             self.assertEqual(seen[repository]["executor"], ("executor", repository))
-            self.assertEqual(seen[repository]["retained"],
-                             Path(self.directory.name) / "sessions" / repository.replace("/", "__"))
+            self.assertEqual(
+                seen[repository]["retained"], Path(self.directory.name) / "sessions" / repository.replace("/", "__")
+            )
 
 
 class ExecutorTests(unittest.TestCase):
@@ -365,44 +406,82 @@ class ExecutorTests(unittest.TestCase):
     class Reader:
         def request(self, method, path, data=None):
             if path == "graphql":
-                return {"data": {"repository": {"databaseId": 11, "owner": {"databaseId": 22},
-                                                "defaultBranchRef": {"name": "trunk", "target": {"oid": "a" * 40}}}}}
+                return {
+                    "data": {
+                        "repository": {
+                            "databaseId": 11,
+                            "owner": {"databaseId": 22},
+                            "defaultBranchRef": {"name": "trunk", "target": {"oid": "a" * 40}},
+                        }
+                    }
+                }
             return {"users/concurro%5Bbot%5D": {"id": 33, "login": "concurro[bot]"}}[path]
 
     def worker(self, executor):
         import tempfile
+
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         token = root / "operator"
         token.write_text("operator-secret\n")
         token.chmod(0o600)
-        gateway = Gateway("https://gateway.invalid/concurro", token, executor,
-                          "concurro/concurro/.github/workflows/agent.yml@refs/heads/main", ("claude-*",), 1000,
-                          {"codex": {"x-concurro-plan": "chatgpt"}})
-        settings = type("Settings", (), {"controller_id": "service:primary", "engine": "e" * 40, "targets": (Target("owner/one", "owner/one", "both"),),
-                                         "state_dir": root, "gateway": gateway, "agent_image": "sha256:" + "a" * 64})
+        gateway = Gateway(
+            "https://gateway.invalid/concurro",
+            token,
+            executor,
+            "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
+            ("claude-*",),
+            1000,
+            {"codex": {"x-concurro-plan": "chatgpt"}},
+        )
+        settings = type(
+            "Settings",
+            (),
+            {
+                "controller_id": "service:primary",
+                "engine": "e" * 40,
+                "targets": (Target("owner/one", "owner/one", "both"),),
+                "state_dir": root,
+                "gateway": gateway,
+                "agent_image": "sha256:" + "a" * 64,
+            },
+        )
         from service.registry import Registry
+
         registry = Registry.open(root, "test", initialize=True)
         self.addCleanup(registry.close)
         registry.bind(("owner/one", 7), "owner/one", "owner/one", "b" * 40)
         return Worker(settings, None, registry, None, lambda repository: self.Reader(), "concurro[bot]")
 
     def test_runner_claims_name_the_target_workflow_commit_and_bot(self):
-        self.assertEqual(runner_claims(self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main",
-                                       "e" * 40, "concurro[bot]"),
-                         {"repository_id": "11", "repository_owner_id": "22",
-                          "job_workflow_ref": "o/r/.github/workflows/agent.yml@refs/heads/main", "job_workflow_sha": "e" * 40,
-                          "event_name": "workflow_dispatch", "ref": "", "actor_id": "33"})
+        self.assertEqual(
+            runner_claims(
+                self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main", "e" * 40, "concurro[bot]"
+            ),
+            {
+                "repository_id": "11",
+                "repository_owner_id": "22",
+                "job_workflow_ref": "o/r/.github/workflows/agent.yml@refs/heads/main",
+                "job_workflow_sha": "e" * 40,
+                "event_name": "workflow_dispatch",
+                "ref": "",
+                "actor_id": "33",
+            },
+        )
 
     def test_the_gateway_settings_choose_the_executor(self):
         github = type("GitHub", (), {"key": ("owner/one", 7), "generation": 1})()
         runner = self.worker("runner").executor("owner/one", github)
         self.assertIsInstance(runner, RunnerExecutor)
-        self.assertEqual((runner.expected["job_workflow_sha"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000))
+        self.assertEqual(
+            (runner.expected["job_workflow_sha"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000)
+        )
         self.assertEqual(runner.operator.token, "operator-secret")
-        self.assertEqual(runner.gateway, {"url": "https://gateway.invalid/concurro",
-                                          "headers": {"codex": {"x-concurro-plan": "chatgpt"}}})
+        self.assertEqual(
+            runner.gateway,
+            {"url": "https://gateway.invalid/concurro", "headers": {"codex": {"x-concurro-plan": "chatgpt"}}},
+        )
         self.assertEqual(runner.task["config_sha"], "b" * 40)
 
 
@@ -414,8 +493,9 @@ class FairnessTests(unittest.TestCase):
 
     def test_round_robin(self):
         due = self.items(("a/a", 1), ("a/a", 2), ("a/a", 3), ("b/b", 1), ("c/c", 1), ("b/b", 2))
-        self.assertEqual(fair(due, {}, Limits(10, 10)),
-                         [("a/a", 1), ("b/b", 1), ("c/c", 1), ("a/a", 2), ("b/b", 2), ("a/a", 3)])
+        self.assertEqual(
+            fair(due, {}, Limits(10, 10)), [("a/a", 1), ("b/b", 1), ("c/c", 1), ("a/a", 2), ("b/b", 2), ("a/a", 3)]
+        )
 
     def test_limits(self):
         due = self.items(("a/a", 1), ("a/a", 2), ("a/a", 3), ("b/b", 1), ("b/b", 2))
@@ -431,29 +511,34 @@ class LeaseTests(ServiceFixture, unittest.TestCase):
     def test_renewal_while_parallel_reviews_wait_preserves_one_owner(self):
         """The real worker lease renews while two independently submitted reviews wait."""
         from fakes import BatchAgents
+
         self.agents = BatchAgents()
         self.service()
         self.worker.renew_seconds = 0.01
         renewed = threading.Event()
         original = self.gateway.renew
+
         def renew(key, generation, *args):
             """Record renewal only after both review submissions, not during setup."""
             result = original(key, generation, *args)
             if len(self.agents.handles) == 2:
                 renewed.set()
             return result
+
         self.gateway.renew = renew
         observe = self.agents.observe
+
         def waiting(handle):
             """Wait for independent renewal without releasing the controller invocation."""
             self.assertEqual(len(self.agents.handles), 2)
             self.assertTrue(renewed.wait(5))
             return observe(handle)
+
         self.agents.observe = waiting
-        self.registry.enqueue(KEY, 'test', self.clock())
+        self.registry.enqueue(KEY, "test", self.clock())
         self.drain()
         self.assertTrue(renewed.is_set())
-        self.assertEqual(self.registry.outcome(KEY).kind, 'await-human')
+        self.assertEqual(self.registry.outcome(KEY).kind, "await-human")
         self.assertEqual(len(self.agents.handles), 2)
 
     def test_renewal_during_a_tick(self):
@@ -486,8 +571,10 @@ class EvaluationWorkerTests(ServiceFixture, unittest.TestCase):
     def test_evaluation_releases_ownership_and_preserves_the_queue(self):
         self.service()
         self.registry.enqueue(KEY, "input", self.clock())
-        with patch("design_eval.evaluate", return_value={"cases": 4}) as evaluate, \
-                patch.object(self.worker, "cleanup_runners") as cleanup:
+        with (
+            patch("design_eval.evaluate", return_value={"cases": 4}) as evaluate,
+            patch.object(self.worker, "cleanup_runners") as cleanup,
+        ):
             self.assertEqual(self.worker.evaluate(*KEY, "codex"), {"cases": 4})
         self.assertEqual(evaluate.call_args.args[2], "codex")
         self.assertFalse(self.registry.current(KEY).live)

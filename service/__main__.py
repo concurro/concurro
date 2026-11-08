@@ -72,7 +72,9 @@ class Daemon:
         self.identity = Identity(settings)
         bot_login = self.identity.verify()
         repositories = sorted({repository for target in settings.targets for repository in target.repositories})
-        issue_repositories = sorted({repository for target in settings.targets for repository in target.issue_repositories})
+        issue_repositories = sorted(
+            {repository for target in settings.targets for repository in target.issue_repositories}
+        )
         installations = {repository: self.identity.installation(repository) for repository in repositories}
         readers = {r: Transport(r, self.identity.credential(r, "read"), time.time) for r in repositories}
         verify(settings.targets, readers.__getitem__)
@@ -84,8 +86,13 @@ class Daemon:
         self.reconciler.cleanup = worker.cleanup_runners
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
-        self.http = ingress.server(ingress.Ingress(secret, self.registry, installations, {bot_login}, issue_repositories=issue_repositories), *self.listen)
-        self.control = control.server(control.Control(self.registry, self.reconciler, cutover, worker.evaluate), settings.state_dir)
+        self.http = ingress.server(
+            ingress.Ingress(secret, self.registry, installations, {bot_login}, issue_repositories=issue_repositories),
+            *self.listen,
+        )
+        self.control = control.server(
+            control.Control(self.registry, self.reconciler, cutover, worker.evaluate), settings.state_dir
+        )
         for name, target in (("ingress", self.http.serve_forever), ("control", self.control.serve_forever)):
             threading.Thread(target=target, name=name, daemon=True).start()
         log.info("serving %d repositories as %s on %s:%d", len(repositories), bot_login, *self.listen)
@@ -129,10 +136,20 @@ def serve(arguments, settings):
 def command(arguments):
     """The control request for a client command."""
     if arguments.command == "resolve":
-        return {"command": "resolve", "intent": arguments.intent, "disposition": arguments.disposition,
-                "evidence": arguments.evidence, "operator": arguments.operator}
+        return {
+            "command": "resolve",
+            "intent": arguments.intent,
+            "disposition": arguments.disposition,
+            "evidence": arguments.evidence,
+            "operator": arguments.operator,
+        }
     if arguments.command == "evaluate":
-        return {"command": "evaluate", "repository": arguments.repository, "issue": arguments.issue, "provider": arguments.provider}
+        return {
+            "command": "evaluate",
+            "repository": arguments.repository,
+            "issue": arguments.issue,
+            "provider": arguments.provider,
+        }
     if arguments.command == "adopt":
         return {"command": "adopt", "repository": arguments.repository, "issues": arguments.issues}
     if arguments.command == "release":
@@ -157,7 +174,9 @@ def parser():
     release = commands.add_parser("release", help="hand an idle task back to the Actions controller")
     release.add_argument("repository")
     release.add_argument("issue", type=int)
-    evaluation = commands.add_parser("evaluate", help="run four fresh design-review fixtures on GitHub runners (uses model budget)")
+    evaluation = commands.add_parser(
+        "evaluate", help="run four fresh design-review fixtures on GitHub runners (uses model budget)"
+    )
     evaluation.add_argument("repository")
     evaluation.add_argument("issue", type=int)
     evaluation.add_argument("provider", help="model profile name (legacy configs: claude or codex)")

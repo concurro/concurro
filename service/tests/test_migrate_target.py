@@ -8,8 +8,13 @@ from service.migrate_target import migrate
 
 class MigrationTests(unittest.TestCase):
     def test_rust_config_preserves_policy_and_removes_retired_fields(self):
-        config = {**deepcopy(CONFIG), "execution_profiles": ["rust"], "merge_enabled": False,
-                  "required_checks": ["Rust"], "max_local_seconds": 900}
+        config = {
+            **deepcopy(CONFIG),
+            "execution_profiles": ["rust"],
+            "merge_enabled": False,
+            "required_checks": ["Rust"],
+            "max_local_seconds": 900,
+        }
         result = migrate(config)
         self.assertEqual(result["paths"]["protected_files"], config["paths"]["protected_files"])
         self.assertIn("**/Cargo.lock", result["paths"]["generated"])

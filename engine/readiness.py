@@ -12,8 +12,11 @@ def review_reasons(state, pr, files, threads, config):
     if pr.get("user", {}).get("login") != config["bot_login"] or pr.get("number") != state.get("pr"):
         reasons.append("PR identity differs from the controller publication")
     head = pr.get("head", {})
-    if (head.get("sha") != state.get("head") or head.get("ref") != state["branch"]
-            or head.get("repo", {}).get("full_name", "").lower() != config.get("fork", config["repository"]).lower()):
+    if (
+        head.get("sha") != state.get("head")
+        or head.get("ref") != state["branch"]
+        or head.get("repo", {}).get("full_name", "").lower() != config.get("fork", config["repository"]).lower()
+    ):
         reasons.append("head changed outside the controller")
     if pr.get("base", {}).get("ref") != config["base"]:
         reasons.append("PR targets a different base branch")
@@ -21,8 +24,12 @@ def review_reasons(state, pr, files, threads, config):
         reasons.append("approved plan missing or stale")
     for provider in assigned(config, "pr_reviewers"):
         report = state.get("reviews", {}).get(provider, {})
-        if (report.get("head") != state.get("head") or report.get("verdict") != "approve"
-                or report.get("findings") or report.get("input_revision") != state.get("input_revision", 0)):
+        if (
+            report.get("head") != state.get("head")
+            or report.get("verdict") != "approve"
+            or report.get("findings")
+            or report.get("input_revision") != state.get("input_revision", 0)
+        ):
             reasons.append(provider + " approval missing or stale")
     if state.get("pr_outbox") or state.get("conversation", {}).get("pending"):
         reasons.append("review publication incomplete")
@@ -41,8 +48,12 @@ def review_reasons(state, pr, files, threads, config):
 
 def ci_refs(pr):
     """The current head and, when available, GitHub's current test-merge commit."""
-    return list(dict.fromkeys([pr["head"]["sha"]] + ([pr["merge_commit_sha"]]
-                         if pr.get("merge_commit_sha") and not pr.get("merged") else [])))
+    return list(
+        dict.fromkeys(
+            [pr["head"]["sha"]]
+            + ([pr["merge_commit_sha"]] if pr.get("merge_commit_sha") and not pr.get("merged") else [])
+        )
+    )
 
 
 def empty_external_suite(suite, populated):
@@ -51,10 +62,19 @@ def empty_external_suite(suite, populated):
     slug = app.get("slug")
     count = suite.get("latest_check_runs_count")
     identifier = suite.get("id")
-    return (type(identifier) is int and identifier > 0 and identifier not in populated
-            and isinstance(slug, str) and bool(slug.strip()) and slug.lower() != "github-actions"
-            and type(count) is int and count == 0 and suite.get("status") == "queued"
-            and "conclusion" in suite and suite["conclusion"] is None)
+    return (
+        type(identifier) is int
+        and identifier > 0
+        and identifier not in populated
+        and isinstance(slug, str)
+        and bool(slug.strip())
+        and slug.lower() != "github-actions"
+        and type(count) is int
+        and count == 0
+        and suite.get("status") == "queued"
+        and "conclusion" in suite
+        and suite["conclusion"] is None
+    )
 
 
 def ci_reasons(observations):

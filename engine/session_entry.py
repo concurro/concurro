@@ -66,17 +66,29 @@ class SessionTurn:
             raise ValueError("retained instruction contract changed")
         prior, current = before["untrusted_context"], self.prompt["untrusted_context"]
         self.write({"scope": self.session["scope"], "status": "pending"})
-        return json.dumps({"context_update": {k: v for k, v in current.items() if prior.get(k) != v},
-                           "removed_context_keys": [k for k in prior if k not in current],
-                           "repository_snapshot": self.prompt["repository_snapshot"],
-                           "controller_verified_authorization": self.prompt.get("controller_verified_authorization")})
+        return json.dumps(
+            {
+                "context_update": {k: v for k, v in current.items() if prior.get(k) != v},
+                "removed_context_keys": [k for k in prior if k not in current],
+                "repository_snapshot": self.prompt["repository_snapshot"],
+                "controller_verified_authorization": self.prompt.get("controller_verified_authorization"),
+            }
+        )
 
     def finish(self, response, identifier):
         """Cache the exact response for recovery after a lost controller response."""
         uuid.UUID(identifier)
-        self.write({"scope": self.session["scope"], "status": "complete", "turn": self.session["turn"],
-                    "request": self.request_digest, "identifier": identifier,
-                    "prompt": self.prompt, "response": response})
+        self.write(
+            {
+                "scope": self.session["scope"],
+                "status": "complete",
+                "turn": self.session["turn"],
+                "request": self.request_digest,
+                "identifier": identifier,
+                "prompt": self.prompt,
+                "response": response,
+            }
+        )
 
     def close(self):
         """Release the role lock after output has been validated and journaled."""

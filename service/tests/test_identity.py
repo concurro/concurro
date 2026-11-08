@@ -56,11 +56,17 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(decode(claims)), {"iat": 1_000_000 - 60, "exp": 1_000_000 + 540, "iss": "123"})
         with tempfile.TemporaryDirectory() as scratch:
             public, sig = Path(scratch) / "public.pem", Path(scratch) / "signature"
-            subprocess.run(["openssl", "rsa", "-in", str(self.key), "-pubout", "-out", str(public)],
-                           check=True, capture_output=True)
+            subprocess.run(
+                ["openssl", "rsa", "-in", str(self.key), "-pubout", "-out", str(public)],
+                check=True,
+                capture_output=True,
+            )
             sig.write_bytes(decode(signature))
-            verified = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(public), "-signature", str(sig)],
-                                      input=f"{header}.{claims}".encode(), capture_output=True)
+            verified = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-verify", str(public), "-signature", str(sig)],
+                input=f"{header}.{claims}".encode(),
+                capture_output=True,
+            )
         self.assertEqual(verified.returncode, 0)
 
     def test_tokens_are_narrowed_to_one_repository_and_use(self):
@@ -68,8 +74,10 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(self.identity.token(REPOSITORY, "read"), "token-0")
         self.assertEqual(self.identity.token(REPOSITORY, "write"), "token-1")
         self.assertEqual(self.identity.token(OTHER, "read"), "token-2")
-        self.assertEqual([(names, permissions) for _, names, permissions in self.app.minted],
-                         [(["target"], READ), (["target"], WRITE), (["second"], READ)])
+        self.assertEqual(
+            [(names, permissions) for _, names, permissions in self.app.minted],
+            [(["target"], READ), (["target"], WRITE), (["second"], READ)],
+        )
         self.assertNotIn("workflows", {**READ, **WRITE, **CUTOVER})
 
     def test_installation_must_be_selected_and_owned(self):
@@ -98,8 +106,9 @@ class IdentityTests(unittest.TestCase):
         """One lock per repository and kind."""
         self.app.delay = 0.05
         results = []
-        threads = [threading.Thread(target=lambda: results.append(self.identity.token(REPOSITORY, "write")))
-                   for _ in range(8)]
+        threads = [
+            threading.Thread(target=lambda: results.append(self.identity.token(REPOSITORY, "write"))) for _ in range(8)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -133,8 +142,10 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(self.app.minted[-1][2], CUTOVER)
             self.assertEqual(self.app.revoked, [])
         self.assertEqual(self.app.revoked, [token])
-        for call in (lambda: self.identity.token(REPOSITORY, "cutover"),
-                     lambda: self.identity.credential(REPOSITORY, "cutover")):
+        for call in (
+            lambda: self.identity.token(REPOSITORY, "cutover"),
+            lambda: self.identity.credential(REPOSITORY, "cutover"),
+        ):
             with self.assertRaises(IdentityError):
                 call()
 

@@ -23,8 +23,10 @@ HEARTBEAT = 30
 
 def oidc_token():
     """Request fresh GitHub proof of this job for the exchange."""
-    request = urllib.request.Request(os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=" + AUDIENCE,
-                                     headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+    request = urllib.request.Request(
+        os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=" + AUDIENCE,
+        headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+    )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)["value"]
 
@@ -139,9 +141,11 @@ def stop_helper(root):
 def checkout(repository, sha, path):
     """Materialize an exact public commit without persisting a GitHub credential."""
     environment = git_environment()
-    for command in (["git", "init", "--quiet", str(path)],
-                    ["git", "-C", str(path), "fetch", "--quiet", "--depth=1", "https://github.com/" + repository + ".git", sha],
-                    ["git", "-C", str(path), "checkout", "--quiet", "--detach", "FETCH_HEAD"]):
+    for command in (
+        ["git", "init", "--quiet", str(path)],
+        ["git", "-C", str(path), "fetch", "--quiet", "--depth=1", "https://github.com/" + repository + ".git", sha],
+        ["git", "-C", str(path), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    ):
         subprocess.run(command, check=True, capture_output=True, env=environment, timeout=1800)
 
 
@@ -198,10 +202,23 @@ def main():
             client.end()
             raise ValueError("session has no task/role binding")
         save_grant(root, grant)
-        helper = subprocess.Popen([sys.executable, __file__, "heartbeat", "--session", args.session,
-                                   "--gateway", args.gateway, "--root", str(root)],
-                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                  start_new_session=True)
+        helper = subprocess.Popen(
+            [
+                sys.executable,
+                __file__,
+                "heartbeat",
+                "--session",
+                args.session,
+                "--gateway",
+                args.gateway,
+                "--root",
+                str(root),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         (root / "heartbeat.pid").write_text(str(helper.pid))
         return
     if args.command == "end" and not (root / "grant.json").exists():

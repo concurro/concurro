@@ -6,8 +6,10 @@ import json
 import re
 
 HARNESSES = {"anthropic": "claude", "openai": "codex"}
-EFFORTS = {"anthropic": {"low", "medium", "high", "xhigh", "max"},
-           "openai": {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}}
+EFFORTS = {
+    "anthropic": {"low", "medium", "high", "xhigh", "max"},
+    "openai": {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+}
 LEGACY_ROLES = {"triage": "qc", "planner": "planner", "implementer": "implementer", "pr_reviewers": "reviewers"}
 LEGACY_FIELDS = {"qc", "qc_model", "planner", "implementer", "reviewers"}
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
@@ -74,8 +76,7 @@ def _parse(serialized):
         raise ValueError("models must be a non-empty map of named profiles")
     profiles = []
     for name, value in models.items():
-        if (not NAME.fullmatch(name) or not isinstance(value, dict)
-                or set(value) != {"provider", "model", "effort"}):
+        if not NAME.fullmatch(name) or not isinstance(value, dict) or set(value) != {"provider", "model", "effort"}:
             raise ValueError("invalid model profile fields or name")
         provider, model, effort = (value[k] for k in ("provider", "model", "effort"))
         if not isinstance(provider, str) or provider not in HARNESSES:
@@ -90,8 +91,12 @@ def _parse(serialized):
     selected = {}
     for role, value in roles.items():
         if role.endswith("reviewers"):
-            if (not isinstance(value, list) or len(value) < 2
-                    or not all(isinstance(v, str) for v in value) or len(set(value)) != len(value)):
+            if (
+                not isinstance(value, list)
+                or len(value) < 2
+                or not all(isinstance(v, str) for v in value)
+                or len(set(value)) != len(value)
+            ):
                 raise ValueError(role + " requires at least two distinct model profiles")
             selected[role] = tuple(value)
         else:

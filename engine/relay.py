@@ -18,9 +18,12 @@ class ExchangeError(RuntimeError):
 
 def call(base, token, method, path, body=None, timeout=WAIT + 30):
     """One JSON call with a bearer token; the token never appears in an error."""
-    request = urllib.request.Request(base.rstrip("/") + "/exchange/" + path, method=method,
-                                     data=None if body is None else json.dumps(body).encode(),
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    request = urllib.request.Request(
+        base.rstrip("/") + "/exchange/" + path,
+        method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read() or b"{}")
@@ -40,13 +43,26 @@ class Operator:
     def __init__(self, gateway, token):
         self.gateway, self.token = gateway, token
 
-
     def end(self, session):
         call(self.gateway, self.token, "POST", f"operator/sessions/{session}/end", {})
 
     def submit(self, turn, expected, models, budget, lease, payload, pin=None, binding=None):
-        return call(self.gateway, self.token, "POST", "operator/turns", {"turn": turn, "expected": expected,
-                    "models": models, "budget": budget, "lease": lease, "payload": payload, "pin": pin, "binding": binding})
+        return call(
+            self.gateway,
+            self.token,
+            "POST",
+            "operator/turns",
+            {
+                "turn": turn,
+                "expected": expected,
+                "models": models,
+                "budget": budget,
+                "lease": lease,
+                "payload": payload,
+                "pin": pin,
+                "binding": binding,
+            },
+        )
 
     def poll(self, turn, wait=WAIT):
         return call(self.gateway, self.token, "GET", f"operator/turns/{turn}?wait={wait}")
@@ -67,8 +83,9 @@ class Runner:
         return grant
 
     def next(self, capacity, wait):
-        return call(self.gateway, self.token, "POST", f"sessions/{self.session}/next",
-                    {"capacity": capacity, "wait": wait})["turns"]
+        return call(
+            self.gateway, self.token, "POST", f"sessions/{self.session}/next", {"capacity": capacity, "wait": wait}
+        )["turns"]
 
     def complete(self, turn, result):
         call(self.gateway, self.token, "POST", f"sessions/{self.session}/turns/{turn}", {"result": result})

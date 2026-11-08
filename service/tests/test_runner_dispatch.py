@@ -18,16 +18,20 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         self.registry.bind(KEY, UPSTREAM, FORK, SHA)
         self.refs, self.sent = {}, []
         outer = self
+
         class Transport:
             def __init__(inner, repository):
                 inner.repository = repository
+
             def request(inner, method, path, body=None):
                 return [{"ref": ref, "object": {"sha": sha}} for ref, sha in outer.refs.items()]
+
             def send(inner, method, path, body):
                 outer.sent.append((inner.repository, method, path, body))
                 if method == "POST" and path.endswith("git/refs"):
                     outer.refs[body["ref"]] = body["sha"]
                 return Response(True, 204, {}, b"")
+
         self.gateway = MutationGateway(self.registry, Transport, Transport, **self.pacing)
         self.generation = self.gateway.acquire(KEY, "worker")
         self.session = str(uuid.uuid4())
@@ -37,8 +41,15 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         ref = "concurro/runs/" + self.session
         self.assertEqual(self.refs, {"refs/heads/" + ref: SHA})
-        self.assertEqual(self.sent[-1], (FORK, "POST", f"repos/{FORK}/actions/workflows/concurro-executor.yml/dispatches",
-                                        {"ref": ref, "inputs": {"session": self.session}}))
+        self.assertEqual(
+            self.sent[-1],
+            (
+                FORK,
+                "POST",
+                f"repos/{FORK}/actions/workflows/concurro-executor.yml/dispatches",
+                {"ref": ref, "inputs": {"session": self.session}},
+            ),
+        )
         self.assertEqual(self.registry.runner_session(self.session)["generation"], self.generation)
         self.assertTrue(all(repository == FORK for repository, *_ in self.sent))
 
@@ -49,10 +60,15 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         with self.assertRaises(Disallowed):
             self.gateway.mutate(KEY, self.generation, "POST", root + "git/refs", create)
         self.registry.register_runner(KEY, self.generation, self.session, SHA)
-        requests = [(f"repos/{UPSTREAM}/git/refs", create), (root + "git/refs", {**create, "sha": "b" * 40}),
-                    (root + "actions/workflows/other.yml/dispatches", {"ref": ref, "inputs": {"session": self.session}}),
-                    (root + "actions/workflows/concurro-executor.yml/dispatches",
-                     {"ref": ref, "inputs": {"session": self.session, "role": "develop:codex"}})]
+        requests = [
+            (f"repos/{UPSTREAM}/git/refs", create),
+            (root + "git/refs", {**create, "sha": "b" * 40}),
+            (root + "actions/workflows/other.yml/dispatches", {"ref": ref, "inputs": {"session": self.session}}),
+            (
+                root + "actions/workflows/concurro-executor.yml/dispatches",
+                {"ref": ref, "inputs": {"session": self.session, "role": "develop:codex"}},
+            ),
+        ]
         for path, body in requests:
             with self.assertRaises(Disallowed):
                 self.gateway.mutate(KEY, self.generation, "POST", path, body)
@@ -68,6 +84,7 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
             self.gateway.dispatch_runner(KEY, self.generation, self.session)
         self.assertEqual(self.sent, [])
         from service.registry import RegistryError
+
         with self.assertRaises(RegistryError):
             self.registry.register_runner((KEY[0], 99), self.generation, self.session, SHA)
 
@@ -78,6 +95,7 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         from service.worker import Worker
         from controller import Outcome
         from relay import ExchangeError
+
         self.gateway.dispatch_runner(KEY, self.generation, self.session)
         self.gateway.release(KEY, self.generation, Outcome("blocked"))
         self.registry.enqueue(KEY, "new-input", self.clock())
@@ -85,8 +103,13 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         worker = object.__new__(Worker)
         worker.registry, worker.gateway = self.registry, self.gateway
         worker.reader = self.gateway.reader
-        worker.settings = SimpleNamespace(gateway=SimpleNamespace(url="https://gateway.invalid", operator_token_path=Path("/token")))
-        with patch("service.worker.private.read", return_value=b"operator"), patch("service.worker.Operator") as operator:
+        worker.settings = SimpleNamespace(
+            gateway=SimpleNamespace(url="https://gateway.invalid", operator_token_path=Path("/token"))
+        )
+        with (
+            patch("service.worker.private.read", return_value=b"operator"),
+            patch("service.worker.Operator") as operator,
+        ):
             operator.return_value.end.side_effect = ExchangeError(502, "unavailable")
             worker.cleanup_runners()
             self.assertFalse(self.registry.runner_session(self.session)["removed"])

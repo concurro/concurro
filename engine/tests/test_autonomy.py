@@ -125,8 +125,13 @@ class AutonomousTests(unittest.TestCase):
     def test_repeated_plan_rejection_escalates_within_budget(self):
         """The controller cannot loop indefinitely when QC keeps requesting changes."""
         self.config["max_plan_revisions"] = 1
-        self.agents.qc_reports = [decision("proceed"), decision("revise", concerns=["Missing test."]), decision("approve"),
-                                  decision("revise", concerns=["Still missing test."]), decision("approve")]
+        self.agents.qc_reports = [
+            decision("proceed"),
+            decision("revise", concerns=["Missing test."]),
+            decision("approve"),
+            decision("revise", concerns=["Still missing test."]),
+            decision("approve"),
+        ]
         for _ in range(5):
             state = self.tick()
         self.assertEqual(state["stage"], "escalated")
@@ -203,9 +208,12 @@ class AutonomousTests(unittest.TestCase):
         self.config["models"]["copilot"] = "chosen-review-model"
         validate_config(self.config)
         state = self.approved()
-        self.assertTrue(any(v["identity"]["provider"] == "copilot" and
-                            v["identity"]["model"] == "chosen-qc-model"
-                            for v in state["design_votes"].values()))
+        self.assertTrue(
+            any(
+                v["identity"]["provider"] == "copilot" and v["identity"]["model"] == "chosen-qc-model"
+                for v in state["design_votes"].values()
+            )
+        )
         self.assertEqual(selected_model(self.config, "copilot", "review"), "chosen-review-model")
         self.config["qc"] = self.config["planner"]
         with self.assertRaises(Blocked):
@@ -218,8 +226,12 @@ class AutonomousTests(unittest.TestCase):
             changed = deepcopy(state)
             changed[field] = "changed"
             self.assertFalse(approval_valid(changed, self.config))
-        for report in (decision("approve", questions=["Unresolved?"]), decision("clarify"),
-                       decision("revise"), decision("proceed")):
+        for report in (
+            decision("approve", questions=["Unresolved?"]),
+            decision("clarify"),
+            decision("revise"),
+            decision("proceed"),
+        ):
             with self.subTest(report=report), self.assertRaises(Blocked):
                 validate_qc(report, "plan_qc")
 

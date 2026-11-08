@@ -19,8 +19,6 @@ from service.gateway import LEASE_SECONDS
 from service.transport import Transport
 
 
-
-
 class Token:
     """A fixed read token."""
 
@@ -69,8 +67,13 @@ class StopTests(ServiceFixture, unittest.TestCase):
 
     def test_conversation_publication(self):
         """Publication wraps failures as `PublicationError`, but not a stop."""
-        self.assert_lost(self.stop_on(lambda method, path, body: path.endswith("/comments")
-                                      and body.get("body", "").startswith(conversation.MARKER)))
+        self.assert_lost(
+            self.stop_on(
+                lambda method, path, body: (
+                    path.endswith("/comments") and body.get("body", "").startswith(conversation.MARKER)
+                )
+            )
+        )
 
     def test_stage_label_sync(self):
         """Label sync swallows failures as display-only, but not a stop."""
@@ -86,7 +89,6 @@ class StopTests(ServiceFixture, unittest.TestCase):
                 sync_checkpoint_health(stale, self.config, 7, failed=True)
         self.assertEqual(mutate.call_count, 1)
         self.assertEqual(self.backend.writes, [])
-
 
 
 class Recovery(ServiceFixture):
@@ -147,12 +149,14 @@ class ReconstructionTests(Recovery, unittest.TestCase):
     def check_report_data_recovery(self, truncated):
         """Reconstruct canonical report parts before any dependent approval is saved."""
         if truncated:
-            self.truncate('POST', 'issues/7/artifacts', body=REPORT_DATA_MARKER)
+            self.truncate("POST", "issues/7/artifacts", body=REPORT_DATA_MARKER)
         else:
-            self.lose('POST', 'issues/7/artifacts', body=REPORT_DATA_MARKER)
-        parts = [item['artifact']['body'].split('\n', 1)[0]
-                 for item in self.fake.artifacts[7].values()
-                 if item['artifact']['body'].startswith(REPORT_DATA_MARKER)]
+            self.lose("POST", "issues/7/artifacts", body=REPORT_DATA_MARKER)
+        parts = [
+            item["artifact"]["body"].split("\n", 1)[0]
+            for item in self.fake.artifacts[7].values()
+            if item["artifact"]["body"].startswith(REPORT_DATA_MARKER)
+        ]
         self.assertTrue(parts)
         self.assertEqual(len(parts), len(set(parts)))
 
@@ -214,8 +218,9 @@ class TransientTests(Recovery, unittest.TestCase):
 
     def test_conversation_publication(self):
         """Pending events survive a throttled comment and are published once by the next tick."""
-        fault = self.backend.fail("POST", "issues/7/comments", status=403, body=conversation.MARKER,
-                                  headers={"retry-after": "30"})
+        fault = self.backend.fail(
+            "POST", "issues/7/comments", status=403, body=conversation.MARKER, headers={"retry-after": "30"}
+        )
         self.assert_resumes("throttled", 30)
         published = [c["body"] for c in self.fake.comments if c["body"].startswith(conversation.MARKER)]
         self.assertEqual(published.count(fault["seen"]["body"]), 1)
@@ -227,9 +232,12 @@ class TransientTests(Recovery, unittest.TestCase):
         wire = Wire(self.backend)
         reader = Transport(KEY[0], Token(), self.clock, wire.connection)
         self.reader = SimpleNamespace(request=reader.request, archive=self.backend.archive)
-        wire.reply(lambda method, path, data: path == "graphql" and "reviewThreads" in data["query"], 200,
-                   {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
-                   {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(self.clock()) + 90)})
+        wire.reply(
+            lambda method, path, data: path == "graphql" and "reviewThreads" in data["query"],
+            200,
+            {"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(self.clock()) + 90)},
+        )
         with self.assertRaises(Transient) as raised:
             self.tick()
         self.assertEqual((raised.exception.code, raised.exception.retry_after), ("throttled", 90))
@@ -251,20 +259,24 @@ class TransientTests(Recovery, unittest.TestCase):
         self.assertIs(failures.classify(Transient("throttled", 7200), stop), stop)
         self.assertIs(failures.classify(stop), stop)
         self.assertEqual(failures.classify(Transient("throttled", 7200)), Outcome("wait-until", retry_after=7200))
-        self.assertEqual(failures.classify(Transient("unavailable"), attempt=10),
-                         Outcome("wait-until", progressed=False, retry_after=failures.BACKOFF_LIMIT))
+        self.assertEqual(
+            failures.classify(Transient("unavailable"), attempt=10),
+            Outcome("wait-until", progressed=False, retry_after=failures.BACKOFF_LIMIT),
+        )
         self.assertEqual(failures.classify(Transient("unavailable")).retry_after, failures.BACKOFF_SECONDS)
 
     def test_remaining_classes(self):
         """Uncertain calls, checkpoint failures and unverified state keep the stage; the rest block."""
         wait = Outcome("wait-until", retry_after=failures.BACKOFF_SECONDS)
-        cases = [(UncertainOutcome("unknown"), True, wait, None),
-                 (CheckpointError("unknown"), True, wait, "health"),
-                 (conversation.PublicationError("conversation_conflict"), True, Outcome("blocked"), "suspend"),
-                 (Blocked("policy"), True, Outcome("blocked"), "suspend"),
-                 (RuntimeError("other"), True, Outcome("blocked"), "suspend"),
-                 (Blocked("policy"), False, wait, None),
-                 (Transient("unavailable"), True, wait, None)]
+        cases = [
+            (UncertainOutcome("unknown"), True, wait, None),
+            (CheckpointError("unknown"), True, wait, "health"),
+            (conversation.PublicationError("conversation_conflict"), True, Outcome("blocked"), "suspend"),
+            (Blocked("policy"), True, Outcome("blocked"), "suspend"),
+            (RuntimeError("other"), True, Outcome("blocked"), "suspend"),
+            (Blocked("policy"), False, wait, None),
+            (Transient("unavailable"), True, wait, None),
+        ]
         for error, verified, outcome, effect in cases:
             with self.subTest(error=type(error).__name__, verified=verified):
                 self.assertEqual(failures.classify(error, verified=verified), outcome)

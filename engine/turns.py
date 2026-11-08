@@ -27,8 +27,15 @@ MAX_RESPONSE = MODEL_RESPONSE_LIMIT
 MAX_RETAINED = 24 * 1024 * 1024
 # Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),
 # relative to the retained root; resuming needs only its transcript and thread state.
-RETAINED_CACHES = ("codex/.tmp", "codex/tmp", "codex/plugins", "codex/cache", "codex/log", "codex/logs_*.sqlite*",
-                   "codex/models_cache*.json")
+RETAINED_CACHES = (
+    "codex/.tmp",
+    "codex/tmp",
+    "codex/plugins",
+    "codex/cache",
+    "codex/log",
+    "codex/logs_*.sqlite*",
+    "codex/models_cache*.json",
+)
 MAX_WORKSPACE_CHANGES = 500
 # A turn's workspace name, also its mirror borrow name.
 NAME = re.compile(r"turn-[0-9a-f]{32}")
@@ -44,21 +51,43 @@ def agent_environment(root, key, retained):
     This is hygiene, not a sandbox: native tools can access their own ephemeral job.
     """
     excluded = ("ACTIONS_", "GITHUB_", "GIT_", "CONCURRO_", "OPENAI_", "ANTHROPIC_", "CLAUDE_", "CODEX_", "COPILOT_")
-    environment = {k: v for k, v in os.environ.items()
-                   if not k.startswith(excluded) and k not in ("GH_TOKEN", "GH_ENTERPRISE_TOKEN")}
+    environment = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(excluded) and k not in ("GH_TOKEN", "GH_ENTERPRISE_TOKEN")
+    }
     home = root / ("retained" if retained else "scratch")
-    return {**environment, KEY_VARIABLE: key, "CODEX_HOME": str(home / "codex"),
-            "CLAUDE_CONFIG_DIR": str(home / "claude"), "COPILOT_HOME": str(home / "copilot"),
-            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+    return {
+        **environment,
+        KEY_VARIABLE: key,
+        "CODEX_HOME": str(home / "codex"),
+        "CLAUDE_CONFIG_DIR": str(home / "claude"),
+        "COPILOT_HOME": str(home / "copilot"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
 
 
 def git_environment(work, git_dir, index):
     """Git over the agent's work tree with the pristine repository: no configuration, hook or filter of the agent's."""
-    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.gettempdir(), "LC_ALL": "C",
-            "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(work), "GIT_INDEX_FILE": str(index),
-            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": tempfile.gettempdir(),
+        "LC_ALL": "C",
+        "GIT_DIR": str(git_dir),
+        "GIT_WORK_TREE": str(work),
+        "GIT_INDEX_FILE": str(index),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
 
 
 def extract(work, pristine, root):
@@ -72,22 +101,44 @@ def extract(work, pristine, root):
     environment = git_environment(work, pristine, index)
 
     def git(*args):
-        result = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
-                                 "-c", "core.hooksPath=" + os.devnull, *args],
-                                capture_output=True, env=environment, timeout=600)
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-c",
+                "core.hooksPath=" + os.devnull,
+                *args,
+            ],
+            capture_output=True,
+            env=environment,
+            timeout=600,
+        )
         if result.returncode:
             raise TurnError("workspace extraction failed: git " + args[0])
         return result.stdout
 
     def unchanged(path, data):
-        result = subprocess.run(["git", "hash-object", "--no-filters", "--stdin"], input=data, capture_output=True,
-                                env=environment, timeout=60)
+        result = subprocess.run(
+            ["git", "hash-object", "--no-filters", "--stdin"],
+            input=data,
+            capture_output=True,
+            env=environment,
+            timeout=60,
+        )
         return not result.returncode and result.stdout.strip() == git("rev-parse", "HEAD:" + path).strip()
 
     git("read-tree", "HEAD")
     # Submodules are never entered: Git would read the agent's configuration inside them.
-    tree = {line.split("\t", 1)[1]: line.split(" ", 1)[0] for line in
-            git("ls-tree", "-r", "-z", "--full-tree", "HEAD").decode("utf-8", errors="surrogateescape").split("\0") if line}
+    tree = {
+        line.split("\t", 1)[1]: line.split(" ", 1)[0]
+        for line in git("ls-tree", "-r", "-z", "--full-tree", "HEAD")
+        .decode("utf-8", errors="surrogateescape")
+        .split("\0")
+        if line
+    }
     gitlinks = {path for path, mode in tree.items() if mode == "160000"}
     listed = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
     edits, removed, skipped = [], [], []
@@ -145,9 +196,12 @@ def retained_entries(directory):
     """A retained directory's archived entries, sorted: everything but the CLIs' regenerable caches."""
     root = Path(directory)
     caches = {path for pattern in RETAINED_CACHES for path in root.glob(pattern)}
-    return [path for path in sorted(root.rglob("*"))
-            if not caches.intersection((path, *path.parents))
-            and (path.is_file() and not path.is_symlink() or path.is_dir())]
+    return [
+        path
+        for path in sorted(root.rglob("*"))
+        if not caches.intersection((path, *path.parents))
+        and (path.is_file() and not path.is_symlink() or path.is_dir())
+    ]
 
 
 def pack(directory):
@@ -203,7 +257,8 @@ def execute(turn, key, mirror, root, stopped=None):
     started = time.monotonic()
     request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
     if not (timeout is None and runner_bound(request.get("stage"))) and (
-            type(timeout) is not int or not 60 <= timeout <= 7200):
+        type(timeout) is not int or not 60 <= timeout <= 7200
+    ):
         raise TurnError("invalid turn timeout")
     root = Path(root).resolve()
     name = root.name
@@ -216,10 +271,15 @@ def execute(turn, key, mirror, root, stopped=None):
         if request["stage"] != "plan_qc" or session is not None:
             raise TurnError("evaluation is limited to fresh design review")
         from design_eval import fixture_mirror
+
         mirror, commit = fixture_mirror(root / "evaluation", "concurro/evaluation")
         spec = {"refs": {"fixture": commit}, "head": "fixture", "base_branch": "fixture", "candidate": None}
-        context = {**request["context"], "base": commit, "repository_commit": commit,
-                   "repository": {"refs": spec["refs"], "head": "fixture"}}
+        context = {
+            **request["context"],
+            "base": commit,
+            "repository_commit": commit,
+            "repository": {"refs": spec["refs"], "head": "fixture"},
+        }
         request = {**request, "context": context}
     mirror.borrow(name, spec["base_branch"], sorted(set(spec["refs"].values())))
     try:
@@ -227,16 +287,29 @@ def execute(turn, key, mirror, root, stopped=None):
         shutil.copytree(root / "work" / ".git", root / "pristine.git", symlinks=True)
         if session:
             unpack(turn.get("retained"), root / "retained")
-        payload = {**request, "workspace": str(root / "work"), "scratch": str(root / "scratch"),
-                   "retained_root": str(root / "retained"), "timeout": timeout}
+        payload = {
+            **request,
+            "workspace": str(root / "work"),
+            "scratch": str(root / "scratch"),
+            "retained_root": str(root / "retained"),
+            "timeout": timeout,
+        }
         if turn.get("feedback"):
             payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / "feedback")
         baseline = processes.begin()
-        with subprocess.Popen(command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              text=True, env=agent_environment(root, key, bool(session)), start_new_session=True) as process:
+        with subprocess.Popen(
+            command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=agent_environment(root, key, bool(session)),
+            start_new_session=True,
+        ) as process:
             timer = None
             if stopped is not None:
                 import threading
+
                 def cancel():
                     while process.poll() is None:
                         if stopped.wait(1):
@@ -245,6 +318,7 @@ def execute(turn, key, mirror, root, stopped=None):
                             except ProcessLookupError:
                                 pass
                             return
+
                 timer = threading.Thread(target=cancel, daemon=True)
                 timer.start()
             try:
@@ -268,13 +342,24 @@ def execute(turn, key, mirror, root, stopped=None):
                         stopped.set()
                     raise
         result, response = outcome(code, stdout)
-        if runner_bound(request["stage"]) and (code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())):
+        if runner_bound(request["stage"]) and (
+            code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())
+        ):
             result, response = TurnOutcome.TERMINATED, None
-        reply = {"outcome": result, "response": response, "workspace": None,
-                 "retained": pack(root / "retained") if session else None}
+        reply = {
+            "outcome": result,
+            "response": response,
+            "workspace": None,
+            "retained": pack(root / "retained") if session else None,
+        }
         if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
-            reply["termination_reason"] = ("runner_stopped" if stopped is not None and stopped.is_set()
-                else "turn_timeout" if code == TIMEOUT_EXIT else "process_signal")
+            reply["termination_reason"] = (
+                "runner_stopped"
+                if stopped is not None and stopped.is_set()
+                else "turn_timeout"
+                if code == TIMEOUT_EXIT
+                else "process_signal"
+            )
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
         if result == TurnOutcome.OK and request["stage"] == "develop":
             try:
@@ -295,7 +380,9 @@ def directory(parent):
 
 def remove(path):
     """Delete a turn directory, including files the agent made read-only."""
+
     def writable(function, target, _):
         os.chmod(target, 0o700)
         function(target)
+
     shutil.rmtree(path, onexc=writable)

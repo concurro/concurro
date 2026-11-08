@@ -9,10 +9,21 @@ def prepare(state, config, provider, stage, context):
     if stage not in ("plan", "plan_qc", "develop") or context.get("review_phase") == "fresh":
         return None
     model = context.get("reviewer_identity", {}).get("model") or selected_model(config, provider, stage)
-    scope = digest([config["repository"], state["issue"], provider, model, stage,
-                    state["base"], state["requirements"], state["bundle_id"],
-                    state["config_digest"], state.get("design_reopens", 0),
-                    state.get("plan_id") if stage == "develop" else None])
+    scope = digest(
+        [
+            config["repository"],
+            state["issue"],
+            provider,
+            model,
+            stage,
+            state["base"],
+            state["requirements"],
+            state["bundle_id"],
+            state["config_digest"],
+            state.get("design_reopens", 0),
+            state.get("plan_id") if stage == "develop" else None,
+        ]
+    )
     if state.get("session_epoch"):
         scope = digest([scope, state["session_epoch"]])
     role = role_key(config, provider, stage, model)
@@ -34,8 +45,12 @@ def restart(state, session):
     binding = current.get("binding", current["scope"])
     count = current.get("restarts", 0) + 1
     state["sessions"][session["role"]] = {
-        "binding": binding, "scope": digest([binding, count]), "turn": 0, "restarts": count,
-        "previous": {"scope": current["scope"], "turn": current["turn"]}}
+        "binding": binding,
+        "scope": digest([binding, count]),
+        "turn": 0,
+        "restarts": count,
+        "previous": {"scope": current["scope"], "turn": current["turn"]},
+    }
 
 
 def role_key(config, provider, stage, model):

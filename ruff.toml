@@ -7,10 +7,12 @@
 # SIM105: retain explicit best-effort exception handling and its current boundaries.
 # SIM117: defer nested context-manager reshaping to the structural/formatting iterations.
 # SIM300: keep mathematical subset notation (FIELDS <= value.keys()).
-# E501 and quote rules are not selected; formatting is deferred to iteration 17.
+# E501 and quote rules are not selected; the formatter handles layout and quoting.
 
 required-version = ">=0.17.4,<0.18"
 target-version = "py312"
+line-length = 120
+include = ["engine/**/*.py", "service/**/*.py", "gateway/**/*.py"]
 
 [lint]
 select = ["F", "E9", "PLE", "B", "SIM"]

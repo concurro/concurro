@@ -55,16 +55,27 @@ class Reconciler:
         if hint and cached and cached[0] == hint and cached[1] > self.clock():
             comments, enrollment = cached[2], cached[3]
         else:
-            comments = sorted([c["id"], digest(c["body"])] for c in pages(reader, root + f"issues/{key[1]}/comments")
-                              if not self.ours(c["user"]["login"]))
-            enrollment = [[e["id"], e["event"], e["actor"]["login"]]
-                          for e in pages(reader, root + f"issues/{key[1]}/events")
-                          if e["event"] in ("labeled", "unlabeled") and e.get("label", {}).get("name") == ENROLLMENT
-                          and e.get("actor") and not self.ours(e["actor"]["login"])]
+            comments = sorted(
+                [c["id"], digest(c["body"])]
+                for c in pages(reader, root + f"issues/{key[1]}/comments")
+                if not self.ours(c["user"]["login"])
+            )
+            enrollment = [
+                [e["id"], e["event"], e["actor"]["login"]]
+                for e in pages(reader, root + f"issues/{key[1]}/events")
+                if e["event"] in ("labeled", "unlabeled")
+                and e.get("label", {}).get("name") == ENROLLMENT
+                and e.get("actor")
+                and not self.ours(e["actor"]["login"])
+            ]
             with self.guard:
                 self.hints[key] = (hint, self.clock() + HINT_SECONDS, comments, enrollment)
-        return {"issue": {"state": issue["state"], "requirements": digest([issue["title"], issue["body"]])},
-                "comments": comments, "enrollment": enrollment, "pull": self.pull(reader, root, key)}
+        return {
+            "issue": {"state": issue["state"], "requirements": digest([issue["title"], issue["body"]])},
+            "comments": comments,
+            "enrollment": enrollment,
+            "pull": self.pull(reader, root, key),
+        }
 
     def pull(self, reader, root, key):
         """The linked pull request's head, merge state, reviews and check runs, or None."""
@@ -75,22 +86,41 @@ class Reconciler:
         number = pull.number
         pr = reader.request("GET", root + f"pulls/{number}")
         head = pr["head"]["sha"]
-        reviews = sorted([r["id"], r["state"]] for r in pages(reader, root + f"pulls/{number}/reviews")
-                         if not self.ours((r.get("user") or {}).get("login")))
+        reviews = sorted(
+            [r["id"], r["state"]]
+            for r in pages(reader, root + f"pulls/{number}/reviews")
+            if not self.ours((r.get("user") or {}).get("login"))
+        )
         checks, statuses, suites, runs = [], [], [], []
         for sha in ci_refs(pr):
-            checks.extend([sha, c.get("id"), (c.get("check_suite") or {}).get("id"), c["name"], c["status"], c.get("conclusion")]
-                          for c in pages(reader, root + f"commits/{sha}/check-runs?filter=all", "check_runs"))
-            statuses.extend([sha, c["context"], c["state"]]
-                            for c in pages(reader, root + f"commits/{sha}/status", "statuses"))
-            suites.extend([sha, c["id"], c["status"], c.get("conclusion")]
-                          for c in pages(reader, root + f"commits/{sha}/check-suites", "check_suites"))
-            runs.extend([sha, r["id"], r["status"], r.get("conclusion")]
-                        for r in pages(reader, root + f"actions/runs?head_sha={sha}", "workflow_runs"))
-        return {"number": number, "head": head, "merge_head": pr.get("merge_commit_sha"),
-                "state": pr.get("state"), "draft": pr.get("draft"), "merged": bool(pr.get("merged")),
-                "reviews": reviews, "checks": sorted(checks), "statuses": sorted(statuses),
-                "suites": sorted(suites), "runs": sorted(runs)}
+            checks.extend(
+                [sha, c.get("id"), (c.get("check_suite") or {}).get("id"), c["name"], c["status"], c.get("conclusion")]
+                for c in pages(reader, root + f"commits/{sha}/check-runs?filter=all", "check_runs")
+            )
+            statuses.extend(
+                [sha, c["context"], c["state"]] for c in pages(reader, root + f"commits/{sha}/status", "statuses")
+            )
+            suites.extend(
+                [sha, c["id"], c["status"], c.get("conclusion")]
+                for c in pages(reader, root + f"commits/{sha}/check-suites", "check_suites")
+            )
+            runs.extend(
+                [sha, r["id"], r["status"], r.get("conclusion")]
+                for r in pages(reader, root + f"actions/runs?head_sha={sha}", "workflow_runs")
+            )
+        return {
+            "number": number,
+            "head": head,
+            "merge_head": pr.get("merge_commit_sha"),
+            "state": pr.get("state"),
+            "draft": pr.get("draft"),
+            "merged": bool(pr.get("merged")),
+            "reviews": reviews,
+            "checks": sorted(checks),
+            "statuses": sorted(statuses),
+            "suites": sorted(suites),
+            "runs": sorted(runs),
+        }
 
     def candidates(self, repository):
         """Open enrolled issues, plus every task the registry still holds active (its label may be gone)."""

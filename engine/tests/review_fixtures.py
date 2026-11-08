@@ -13,8 +13,13 @@ DESIGN_ISSUE = {"kind": "plan", "explanation": "The plan misses a case.", "evide
 
 
 def report(verdict="approve", findings=(), dispositions=(), design_issue=None):
-    return {"verdict": verdict, "summary": "Reviewed.", "findings": [dict(f) for f in findings],
-            "dispositions": [dict(d) for d in dispositions], "design_issue": design_issue}
+    return {
+        "verdict": verdict,
+        "summary": "Reviewed.",
+        "findings": [dict(f) for f in findings],
+        "dispositions": [dict(d) for d in dispositions],
+        "design_issue": design_issue,
+    }
 
 
 def answer(identifier, status="fixed"):
@@ -36,6 +41,7 @@ class Reviewers(FakeAgents):
 
     def ask(self, provider, stage, context):
         from feedback import restore
+
         context = restore(context)
         if stage == "develop" and self.reopen_once and context["review_findings"]:
             self.reopen_once = False
@@ -46,10 +52,15 @@ class Reviewers(FakeAgents):
         self.calls.append((provider, stage, deepcopy(context)))
         if provider in self.requesting:
             self.requesting.discard(provider)
-            found = (self.findings or {}).get(provider) or [{**FINDING, "detail": provider + " finds the term undefined."}]
+            found = (self.findings or {}).get(provider) or [
+                {**FINDING, "detail": provider + " finds the term undefined."}
+            ]
             return report("changes_requested", found)
-        return report(dispositions=[answer(f["id"], "obsolete" if f["status"] == "withdrawn" else "fixed")
-                                    for f in context["own_findings"]])
+        return report(
+            dispositions=[
+                answer(f["id"], "obsolete" if f["status"] == "withdrawn" else "fixed") for f in context["own_findings"]
+            ]
+        )
 
 
 class Harness:

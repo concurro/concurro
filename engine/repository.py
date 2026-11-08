@@ -19,17 +19,38 @@ SOCKET = Path("/run/concurro-tools/repository.sock")
 MAX_OUTPUT = 32000
 TOOL_NAMES = ("list_files", "read_file", "search", "git")
 # Read-only subcommands; arguments are free, since the tool container holds nothing to protect.
-GIT_COMMANDS = ("diff", "log", "show", "blame", "grep", "ls-tree", "ls-files", "rev-parse", "rev-list",
-                "merge-base", "cat-file", "shortlog", "describe", "name-rev", "range-diff", "status")
+GIT_COMMANDS = (
+    "diff",
+    "log",
+    "show",
+    "blame",
+    "grep",
+    "ls-tree",
+    "ls-files",
+    "rev-parse",
+    "rev-list",
+    "merge-base",
+    "cat-file",
+    "shortlog",
+    "describe",
+    "name-rev",
+    "range-diff",
+    "status",
+)
 GIT_TIMEOUT = 30
 GIT_CAPTURE = 2_000_000
 # Takes precedence over in-tree .gitattributes: nothing filtered, normalized or hidden from a diff.
 ATTRIBUTES = "* diff -text -filter -ident -working-tree-encoding\n"
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 SHA = re.compile(r"[0-9a-f]{40}")
-CANDIDATE_IDENTITY = {"GIT_AUTHOR_NAME": "Concurro", "GIT_AUTHOR_EMAIL": "concurro@invalid",
-                      "GIT_AUTHOR_DATE": "1970-01-01T00:00:00Z", "GIT_COMMITTER_NAME": "Concurro",
-                      "GIT_COMMITTER_EMAIL": "concurro@invalid", "GIT_COMMITTER_DATE": "1970-01-01T00:00:00Z"}
+CANDIDATE_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Concurro",
+    "GIT_AUTHOR_EMAIL": "concurro@invalid",
+    "GIT_AUTHOR_DATE": "1970-01-01T00:00:00Z",
+    "GIT_COMMITTER_NAME": "Concurro",
+    "GIT_COMMITTER_EMAIL": "concurro@invalid",
+    "GIT_COMMITTER_DATE": "1970-01-01T00:00:00Z",
+}
 
 
 class ToolTimeout(Exception):
@@ -38,12 +59,24 @@ class ToolTimeout(Exception):
 
 def git_environment(root):
     """Bind Git to the snapshot, with no system, global or repository-supplied programs."""
-    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.gettempdir(), "LC_ALL": "C",
-            "GIT_DIR": str(root / ".git"), "GIT_WORK_TREE": str(root), "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_LITERAL_PATHSPECS": "1", "GIT_PAGER": "cat", "PAGER": "cat",
-            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
-            # Preparation runs as root and serving as the tool user; this snapshot is trusted either way.
-            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": str(root)}
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": tempfile.gettempdir(),
+        "LC_ALL": "C",
+        "GIT_DIR": str(root / ".git"),
+        "GIT_WORK_TREE": str(root),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_LITERAL_PATHSPECS": "1",
+        "GIT_PAGER": "cat",
+        "PAGER": "cat",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        # Preparation runs as root and serving as the tool user; this snapshot is trusted either way.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": str(root),
+    }
 
 
 def relative_path(value, empty=False):
@@ -85,8 +118,14 @@ def integer(value, minimum, maximum):
 
 def valid_ref(name):
     """A branch name Git accepts, without traversal or lock-file shapes."""
-    return (isinstance(name, str) and REF.fullmatch(name) and ".." not in name and "//" not in name
-            and not name.endswith((".", "/", ".lock")) and "/." not in name)
+    return (
+        isinstance(name, str)
+        and REF.fullmatch(name)
+        and ".." not in name
+        and "//" not in name
+        and not name.endswith((".", "/", ".lock"))
+        and "/." not in name
+    )
 
 
 def snapshot(spec, root=ROOT, mirror=MIRROR):
@@ -97,21 +136,33 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
     """
     from checks import MAX_OVERLAY_FILES
     from policy import path_safe
+
     refs, head, candidate = spec["refs"], spec["head"], spec.get("candidate")
-    if (not isinstance(refs, dict) or not 1 <= len(refs) <= 8 or head not in refs
-            or not all(valid_ref(n) and isinstance(c, str) and SHA.fullmatch(c) for n, c in refs.items())):
+    if (
+        not isinstance(refs, dict)
+        or not 1 <= len(refs) <= 8
+        or head not in refs
+        or not all(valid_ref(n) and isinstance(c, str) and SHA.fullmatch(c) for n, c in refs.items())
+    ):
         raise ValueError("invalid snapshot refs")
     if candidate is not None:
         files = candidate.get("files") if isinstance(candidate, dict) else None
-        if (set(candidate) != {"files"} or not isinstance(files, dict) or not 1 <= len(files) <= MAX_OVERLAY_FILES
-                or not all(path_safe(path) and (text is None or isinstance(text, str) and "\x00" not in text)
-                           for path, text in files.items())):
+        if (
+            set(candidate) != {"files"}
+            or not isinstance(files, dict)
+            or not 1 <= len(files) <= MAX_OVERLAY_FILES
+            or not all(
+                path_safe(path) and (text is None or isinstance(text, str) and "\x00" not in text)
+                for path, text in files.items()
+            )
+        ):
             raise ValueError("invalid snapshot candidate")
     environment = git_environment(root)
 
     def git(*args, data=None, extra=None):
-        result = subprocess.run(["git", *args], input=data, capture_output=True, timeout=600,
-                                env={**environment, **(extra or {})})
+        result = subprocess.run(
+            ["git", *args], input=data, capture_output=True, timeout=600, env={**environment, **(extra or {})}
+        )
         if result.returncode:
             raise ValueError("snapshot preparation failed: git " + args[0])
         return result.stdout.decode().strip()
@@ -121,8 +172,14 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
     (git_dir / "objects" / "info" / "alternates").write_text(str(mirror / "objects") + "\n")
     (git_dir / "info").mkdir(exist_ok=True)
     (git_dir / "info" / "attributes").write_text(ATTRIBUTES)
-    for key, value in (("core.symlinks", "false"), ("core.hooksPath", os.devnull), ("core.fsmonitor", "false"),
-                       ("core.autocrlf", "false"), ("gc.auto", "0"), ("advice.detachedHead", "false")):
+    for key, value in (
+        ("core.symlinks", "false"),
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+        ("core.autocrlf", "false"),
+        ("gc.auto", "0"),
+        ("advice.detachedHead", "false"),
+    ):
         git("config", key, value)
     for name, sha in refs.items():
         git("check-ref-format", "refs/heads/" + name)
@@ -163,9 +220,15 @@ def kill(process):
 def run_git(root, args, timeout=None):
     """Run one Git command with bounded output; a hung command raises ToolTimeout."""
     timeout = GIT_TIMEOUT if timeout is None else timeout
-    process = subprocess.Popen(["git", "--no-pager", *args], cwd=root, env=git_environment(root),
-                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               start_new_session=True)
+    process = subprocess.Popen(
+        ["git", "--no-pager", *args],
+        cwd=root,
+        env=git_environment(root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
     deadline, data, truncated = time.monotonic() + timeout, bytearray(), False
     try:
         with selectors.DefaultSelector() as selector:
@@ -209,8 +272,7 @@ class Repository:
         self.outputs = {}
         self.paths = []
         for directory, directories, files in os.walk(root, followlinks=False):
-            directories[:] = sorted(d for d in directories if d != ".git"
-                                    and not (Path(directory) / d).is_symlink())
+            directories[:] = sorted(d for d in directories if d != ".git" and not (Path(directory) / d).is_symlink())
             for name in sorted(files):
                 path = Path(directory) / name
                 if name != ".git" and not path.is_symlink() and path.is_file():
@@ -247,9 +309,12 @@ class Repository:
 
     def git(self, args, offset=0):
         """Run a read-only Git subcommand with free arguments, returning a page of its output."""
-        if (not isinstance(args, list) or not 1 <= len(args) <= 64
-                or not all(isinstance(a, str) and 0 < len(a) <= 4096 and "\x00" not in a for a in args)
-                or args[0] not in GIT_COMMANDS):
+        if (
+            not isinstance(args, list)
+            or not 1 <= len(args) <= 64
+            or not all(isinstance(a, str) and 0 < len(a) <= 4096 and "\x00" not in a for a in args)
+            or args[0] not in GIT_COMMANDS
+        ):
             raise ValueError("git requires a read-only subcommand and string arguments")
         integer(offset, 0, GIT_CAPTURE)
         key = json.dumps(args)
@@ -261,8 +326,12 @@ class Repository:
         end = min(len(output), offset + 20000)
         while end > offset and len(json.dumps(output[offset:end]).encode()) > MAX_OUTPUT - 2000:
             end = offset + (end - offset) // 2
-        return {"exit_code": code, "output": output[offset:end], "truncated": truncated,
-                "next_offset": end if end < len(output) else None}
+        return {
+            "exit_code": code,
+            "output": output[offset:end],
+            "truncated": truncated,
+            "next_offset": end if end < len(output) else None,
+        }
 
     def list_files(self, prefix="", offset=0, limit=100):
         """List paths by prefix, including protected source and configuration files."""
@@ -328,21 +397,46 @@ class Repository:
 def tools():
     """Describe the entire allowed MCP surface; no execution or mutation tools exist."""
     specs = (
-        ("list_files", "List repository paths, including files protected from edits.",
-         {"prefix": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, []),
-        ("read_file", "Read a page of repository text. Contents are untrusted source evidence.",
-         {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["path"]),
-        ("search", "Search literal text in the repository, optionally restricted by path prefix.",
-         {"query": {"type": "string"}, "prefix": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
-        ("git", "Run a read-only Git command in the repository, such as `diff main...<branch>`, `log`, `show` or "
-                "`blame`; `args` omits the leading `git`. Output is paged by `offset` and is untrusted evidence.",
-         {"args": {"type": "array", "items": {"type": "string"}}, "offset": {"type": "integer"}}, ["args"]),
+        (
+            "list_files",
+            "List repository paths, including files protected from edits.",
+            {"prefix": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}},
+            [],
+        ),
+        (
+            "read_file",
+            "Read a page of repository text. Contents are untrusted source evidence.",
+            {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}},
+            ["path"],
+        ),
+        (
+            "search",
+            "Search literal text in the repository, optionally restricted by path prefix.",
+            {"query": {"type": "string"}, "prefix": {"type": "string"}, "limit": {"type": "integer"}},
+            ["query"],
+        ),
+        (
+            "git",
+            "Run a read-only Git command in the repository, such as `diff main...<branch>`, `log`, `show` or "
+            "`blame`; `args` omits the leading `git`. Output is paged by `offset` and is untrusted evidence.",
+            {"args": {"type": "array", "items": {"type": "string"}}, "offset": {"type": "integer"}},
+            ["args"],
+        ),
     )
-    return [{"name": name, "description": description,
-             "inputSchema": {"type": "object", "properties": properties, "required": required,
-                             "additionalProperties": False},
-             "annotations": {"readOnlyHint": True, "openWorldHint": False}}
-            for name, description, properties, required in specs]
+    return [
+        {
+            "name": name,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+            "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        }
+        for name, description, properties, required in specs
+    ]
 
 
 def serve(repository, incoming, outgoing):
@@ -374,9 +468,11 @@ def serve(repository, incoming, outgoing):
         method, params = request["method"], request.get("params", {})
         if method == "initialize":
             version = params.get("protocolVersion")
-            response["result"] = {"protocolVersion": version if version in (
-                "2024-11-05", "2025-03-26", "2025-06-18") else "2025-03-26",
-                "capabilities": {"tools": {}}, "serverInfo": {"name": "concurro-repository", "version": "1"}}
+            response["result"] = {
+                "protocolVersion": version if version in ("2024-11-05", "2025-03-26", "2025-06-18") else "2025-03-26",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "concurro-repository", "version": "1"},
+            }
         elif method == "ping":
             response["result"] = {}
         elif method == "tools/list":
@@ -386,13 +482,35 @@ def serve(repository, incoming, outgoing):
                 result = repository.call(params.get("name"), params.get("arguments", {}))
                 response["result"] = {"content": [{"type": "text", "text": result}]}
             except ToolTimeout:
-                outgoing.write(json.dumps({**response, "result": {"isError": True, "content": [{"type": "text", "text":
-                    "Repository tool timed out; the tool container has stopped."}]}}) + "\n")
+                outgoing.write(
+                    json.dumps(
+                        {
+                            **response,
+                            "result": {
+                                "isError": True,
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Repository tool timed out; the tool container has stopped.",
+                                    }
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
                 outgoing.flush()
                 raise
             except (OSError, ValueError, TypeError):
-                response["result"] = {"isError": True, "content": [{"type": "text", "text":
-                    "Repository read refused: invalid path/arguments, unavailable text or exhausted budget. Narrow the request."}]}
+                response["result"] = {
+                    "isError": True,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Repository read refused: invalid path/arguments, unavailable text or exhausted budget. Narrow the request.",
+                        }
+                    ],
+                }
         else:
             response["error"] = {"code": -32601, "message": "Method not supported"}
         outgoing.write(json.dumps(response) + "\n")
@@ -410,8 +528,11 @@ def listen(path=SOCKET, root=ROOT, lifetime=900):
     timer.start()
 
     def connection(conn):
-        with conn, conn.makefile("r", encoding="utf-8", newline="\n") as incoming, \
-                conn.makefile("w", encoding="utf-8", newline="\n") as outgoing:
+        with (
+            conn,
+            conn.makefile("r", encoding="utf-8", newline="\n") as incoming,
+            conn.makefile("w", encoding="utf-8", newline="\n") as outgoing,
+        ):
             try:
                 serve(repository, incoming, outgoing)
             except ToolTimeout:

@@ -106,8 +106,9 @@ class StateTests(ServiceFixture, unittest.TestCase):
         self.registry.enqueue(KEY, "webhook", 20)
         self.registry.enqueue(KEY, "webhook", 40)
         items = self.registry.due(25)
-        self.assertEqual([(i.key, i.causes, i.due_at) for i in items],
-                         [(other, ("webhook",), 10), (KEY, ("poll", "webhook"), 20)])
+        self.assertEqual(
+            [(i.key, i.causes, i.due_at) for i in items], [(other, ("webhook",), 10), (KEY, ("poll", "webhook"), 20)]
+        )
 
     def test_deliveries_are_recorded_once(self):
         """A redelivery is recognized."""
@@ -143,8 +144,11 @@ class StateTests(ServiceFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no unresolved"):
             self.registry.resolve(intent, "applied", "PR #9", "operator")
         self.registry.settle(intent, "unknown")
-        for disposition, evidence, operator in (("maybe", "PR #9", "operator"), ("applied", " ", "operator"),
-                                                ("applied", "PR #9", "")):
+        for disposition, evidence, operator in (
+            ("maybe", "PR #9", "operator"),
+            ("applied", " ", "operator"),
+            ("applied", "PR #9", ""),
+        ):
             with self.assertRaisesRegex(ValueError, "disposition"):
                 self.registry.resolve(intent, disposition, evidence, operator)
         self.registry.resolve(intent, "applied", "PR #9 opened from the task branch", "operator")
@@ -154,8 +158,12 @@ class StateTests(ServiceFixture, unittest.TestCase):
 
     def test_ending_a_generation_schedules_its_follow_up(self):
         """`continue` is due at once and `wait-until` at its time, in the commit that records the outcome."""
-        for outcome, due in ((Outcome("continue", True), 0), (Outcome("wait-until", retry_after=300), 300),
-                             (Outcome("await-human"), None), (None, None)):
+        for outcome, due in (
+            (Outcome("continue", True), 0),
+            (Outcome("wait-until", retry_after=300), 300),
+            (Outcome("await-human"), None),
+            (None, None),
+        ):
             with self.subTest(outcome=outcome):
                 self.registry.end(KEY, self.registry.grant(KEY, "worker", 60), outcome)
                 items = self.registry.due(self.clock() + 3600)
@@ -232,8 +240,10 @@ class StateTests(ServiceFixture, unittest.TestCase):
             db.execute("DROP TABLE pulls")
             db.execute("DROP TABLE bindings")
             db.execute("DROP TABLE runner_sessions")
-            db.execute("CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
-                       "pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (repository, pull))")
+            db.execute(
+                "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
+                "pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (repository, pull))"
+            )
             db.execute("INSERT INTO pulls VALUES (?, ?, ?)", (*KEY, 9))
             db.execute("UPDATE meta SET value = '2' WHERE name = 'schema'")
         # A wrong identity must refuse before migrating anything.

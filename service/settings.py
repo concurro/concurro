@@ -17,13 +17,25 @@ CONTROLLER = re.compile(r"service:[a-z0-9-]{1,32}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 REGISTRY = re.compile(r"[A-Za-z0-9._-]{1,64}")
-FIELDS = {"controller_id", "engine", "app_id", "private_key_path", "webhook_secret_path", "state_dir",
-          "registry_id", "targets", "limits", "gateway"}
+FIELDS = {
+    "controller_id",
+    "engine",
+    "app_id",
+    "private_key_path",
+    "webhook_secret_path",
+    "state_dir",
+    "registry_id",
+    "targets",
+    "limits",
+    "gateway",
+}
 OPTIONAL = {"engine"}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
-WORKFLOW_REF = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/\.github/workflows/[A-Za-z0-9._-]+\.ya?ml"
-                          r"@refs/(?:heads|tags)/[A-Za-z0-9._/-]{1,100}")
+WORKFLOW_REF = re.compile(
+    r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/\.github/workflows/[A-Za-z0-9._-]+\.ya?ml"
+    r"@refs/(?:heads|tags)/[A-Za-z0-9._/-]{1,100}"
+)
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9.*_:-]{1,100}")
 HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
 PROVIDERS = ("claude", "codex")
@@ -82,8 +94,7 @@ def absolute(value, field):
     Canonical means no symlink anywhere along it and no `.` or `..` component, so each
     path names exactly one location.
     """
-    require(isinstance(value, str) and value and Path(value).is_absolute()
-            and os.path.realpath(value) == value, field)
+    require(isinstance(value, str) and value and Path(value).is_absolute() and os.path.realpath(value) == value, field)
     try:
         return private.outside(value, (CHECKOUT,))
     except Blocked:
@@ -153,11 +164,17 @@ def load(path):
     total = integer(limits["global"], "limits.global")
     require(integer(limits["per_repository"], "limits.per_repository") <= total, "limits.per_repository")
     return Settings(
-        controller_id=data["controller_id"], engine=data.get("engine"), app_id=integer(data["app_id"], "app_id"),
-        private_key_path=key, webhook_secret_path=webhook,
-        state_dir=state(data["state_dir"]), registry_id=data["registry_id"],
+        controller_id=data["controller_id"],
+        engine=data.get("engine"),
+        app_id=integer(data["app_id"], "app_id"),
+        private_key_path=key,
+        webhook_secret_path=webhook,
+        state_dir=state(data["state_dir"]),
+        registry_id=data["registry_id"],
         targets=tuple(targets),
-        limits=Limits(total, limits["per_repository"]), gateway=gateway)
+        limits=Limits(total, limits["per_repository"]),
+        gateway=gateway,
+    )
 
 
 def gateway_settings(data, identities):
@@ -170,12 +187,30 @@ def gateway_settings(data, identities):
     workflow = data["workflow_ref"]
     require(isinstance(workflow, str) and WORKFLOW_REF.fullmatch(workflow), "gateway.workflow_ref")
     models = data["models"]
-    require(isinstance(models, list) and models and all(isinstance(m, str) and MODEL_PATTERN.fullmatch(m)
-                                                        for m in models), "gateway.models")
+    require(
+        isinstance(models, list) and models and all(isinstance(m, str) and MODEL_PATTERN.fullmatch(m) for m in models),
+        "gateway.models",
+    )
     headers = data["headers"]
-    require(isinstance(headers, dict) and set(headers) <= set(PROVIDERS) and all(
-        isinstance(h, dict) and all(isinstance(k, str) and HEADER.fullmatch(k) and isinstance(v, str)
-                                    and v.isprintable() and len(v) <= 200 for k, v in h.items())
-        for h in headers.values()), "gateway.headers")
-    return Gateway(data["url"], token, data["executor"], workflow, tuple(models), integer(data["budget"], "gateway.budget"),
-                   headers)
+    require(
+        isinstance(headers, dict)
+        and set(headers) <= set(PROVIDERS)
+        and all(
+            isinstance(h, dict)
+            and all(
+                isinstance(k, str) and HEADER.fullmatch(k) and isinstance(v, str) and v.isprintable() and len(v) <= 200
+                for k, v in h.items()
+            )
+            for h in headers.values()
+        ),
+        "gateway.headers",
+    )
+    return Gateway(
+        data["url"],
+        token,
+        data["executor"],
+        workflow,
+        tuple(models),
+        integer(data["budget"], "gateway.budget"),
+        headers,
+    )

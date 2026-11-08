@@ -30,7 +30,13 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(config_digest(config), config_digest(decoded))
 
     def test_yaml_rejects_unsafe_tags_duplicates_and_aliases(self):
-        for text in ("!!python/object/apply:os.system ['false']", "models: {}\nmodels: {}", "a: &a [*a]", "[one, two]", "bad: ["):
+        for text in (
+            "!!python/object/apply:os.system ['false']",
+            "models: {}\nmodels: {}",
+            "a: &a [*a]",
+            "[one, two]",
+            "bad: [",
+        ):
             with self.subTest(text=text), self.assertRaises(Blocked):
                 decode(text, "config.yaml")
         with self.assertRaises(Blocked):
@@ -38,10 +44,12 @@ class DecodeTests(unittest.TestCase):
 
     def test_config_source_is_unambiguous(self):
         for files in ({}, {".concurro/config.yaml": "{}", ".concurro/config.json": "{}"}):
+
             def read(path):
                 if path not in files:
                     raise NotFound()
                 return files[path]
+
             with self.assertRaises(Blocked):
                 read_remote(read)
 

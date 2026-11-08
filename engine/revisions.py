@@ -19,9 +19,13 @@ class RevisionBudget:
         if waiting in ("plan", "intake"):
             return waiting
         # Older checkpoints lost the resume target after recording this exact transition.
-        if (self.state.get("reason") == "Plan revision budget exhausted: Design reviewers require a revision."
-                and self.state.get("design_feedback") and self.state.get("plan")
-                and not self.state.get("design_votes") and not self.state.get("approval")):
+        if (
+            self.state.get("reason") == "Plan revision budget exhausted: Design reviewers require a revision."
+            and self.state.get("design_feedback")
+            and self.state.get("plan")
+            and not self.state.get("design_votes")
+            and not self.state.get("approval")
+        ):
             return "plan"
         return None
 
@@ -30,8 +34,12 @@ class RevisionBudget:
         if invalidate:
             invalidate_design(reason)
         if self.state["plan_revisions"] >= self.limit():
-            self.state.update(stage="escalated", retry_stage=stage, revision_wait={"stage": stage},
-                              reason="Plan revision budget exhausted: " + reason)
+            self.state.update(
+                stage="escalated",
+                retry_stage=stage,
+                revision_wait={"stage": stage},
+                reason="Plan revision budget exhausted: " + reason,
+            )
             if save_exhausted:
                 save()
             return False
@@ -39,4 +47,3 @@ class RevisionBudget:
         self.state.pop("revision_wait", None)
         self.state.update(stage=stage, reason=reason)
         return True
-

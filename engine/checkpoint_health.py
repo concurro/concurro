@@ -6,12 +6,16 @@ from checkpoints import CheckpointError
 from identities import Identities
 
 MARKER = "<!-- concurro:checkpoint-health:v1 -->"
-FAILED = (MARKER + "\n## Concurro checkpoint needs attention\n\n"
-          "The controller could not verify or safely save its checkpoint and stopped. "
-          "Check artifact access and integrity before retrying. Stage labels retain the last known progress; "
-          "this notice does not reset budgets or approvals.\n")
-RECOVERED = (MARKER + "\n## Concurro checkpoint recovered\n\n"
-             "The controller verified checkpoint access and integrity and completed its invocation.\n")
+FAILED = (
+    MARKER + "\n## Concurro checkpoint needs attention\n\n"
+    "The controller could not verify or safely save its checkpoint and stopped. "
+    "Check artifact access and integrity before retrying. Stage labels retain the last known progress; "
+    "this notice does not reset budgets or approvals.\n"
+)
+RECOVERED = (
+    MARKER + "\n## Concurro checkpoint recovered\n\n"
+    "The controller verified checkpoint access and integrity and completed its invocation.\n"
+)
 
 
 def sync_checkpoint_health(gh, config, number, failed, error=None):
@@ -24,8 +28,9 @@ def sync_checkpoint_health(gh, config, number, failed, error=None):
     try:
         comments = gh.pages(f"issues/{number}/comments")
         author = Identities(config).author("state")
-        matches = [c for c in comments if c.get("user", {}).get("login") == author
-                   and c.get("body", "").startswith(MARKER)]
+        matches = [
+            c for c in comments if c.get("user", {}).get("login") == author and c.get("body", "").startswith(MARKER)
+        ]
         if len(matches) > 1:
             raise ValueError("duplicate health notices")
         body = FAILED if failed else RECOVERED

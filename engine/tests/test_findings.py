@@ -26,19 +26,31 @@ class ContractTests(unittest.TestCase):
         validate_pr_review(report("reopen", design_issue=DESIGN_ISSUE), ["F1"], [])
 
     def test_invalid_findings(self):
-        for change in ({"path": "/etc/passwd"}, {"path": "docs/../x"}, {"path": ""}, {"line": 0},
-                       {"start_line": 4, "line": 3}, {"start_line": 3, "line": None}, {"path": None, "line": 2},
-                       {"detail": ""}, {"extra": 1}):
+        for change in (
+            {"path": "/etc/passwd"},
+            {"path": "docs/../x"},
+            {"path": ""},
+            {"line": 0},
+            {"start_line": 4, "line": 3},
+            {"start_line": 3, "line": None},
+            {"path": None, "line": 2},
+            {"detail": ""},
+            {"extra": 1},
+        ):
             with self.subTest(change=change), self.assertRaises(Blocked):
                 validate_pr_review(report("changes_requested", [{**FINDING, **change}]), [], [])
         with self.assertRaises(Blocked):
             validate_pr_review(report("changes_requested", [FINDING] * 21), [], [])
 
     def test_dispositions_answer_each_finding_once(self):
-        cases = {"missing": ([], ["F1"], []), "duplicate": ([answer("F1"), answer("F1")], ["F1"], []),
-                 "unknown": ([answer("F2")], ["F1"], []), "obsolete while open": ([answer("F1", "obsolete")], ["F1"], []),
-                 "bad status": ([answer("F1", "maybe")], ["F1"], []),
-                 "no evidence": ([{**answer("F1"), "evidence": " "}], ["F1"], [])}
+        cases = {
+            "missing": ([], ["F1"], []),
+            "duplicate": ([answer("F1"), answer("F1")], ["F1"], []),
+            "unknown": ([answer("F2")], ["F1"], []),
+            "obsolete while open": ([answer("F1", "obsolete")], ["F1"], []),
+            "bad status": ([answer("F1", "maybe")], ["F1"], []),
+            "no evidence": ([{**answer("F1"), "evidence": " "}], ["F1"], []),
+        }
         for name, (dispositions, open_ids, withdrawn_ids) in cases.items():
             with self.subTest(case=name), self.assertRaises(Blocked):
                 validate_pr_review(report(dispositions=dispositions), open_ids, withdrawn_ids)
@@ -53,8 +65,12 @@ class ContractTests(unittest.TestCase):
 
     def test_local_review_contract_is_unchanged(self):
         """Local review, and evidence stored before this change, keep the original contract."""
-        local = {"verdict": "changes_requested", "summary": "Define it.", "findings": [{"path": "a", "detail": "b"}],
-                 "design_issue": None}
+        local = {
+            "verdict": "changes_requested",
+            "summary": "Define it.",
+            "findings": [{"path": "a", "detail": "b"}],
+            "design_issue": None,
+        }
         validate_review(local)
         validate_review(deepcopy(APPROVE))
         with self.assertRaises(Blocked):
@@ -79,22 +95,31 @@ class LedgerTests(unittest.TestCase):
     def test_dispositions_close_withdraw_retire_and_readopt(self):
         state = {}
         reviews.apply(state, "claude", report("changes_requested", [FINDING, FINDING, FINDING]), "a" * 40)
-        reviews.apply(state, "claude", report("changes_requested", dispositions=[
-            answer("F1"), answer("F2", "open"), answer("F3", "open")]), "b" * 40)
+        reviews.apply(
+            state,
+            "claude",
+            report("changes_requested", dispositions=[answer("F1"), answer("F2", "open"), answer("F3", "open")]),
+            "b" * 40,
+        )
         self.assertEqual([f["status"] for f in state["findings"]], ["fixed", "open", "open"])
         reviews.withdraw(state)
         self.assertEqual([f["status"] for f in state["findings"]], ["fixed", "withdrawn", "withdrawn"])
         self.assertEqual([f["id"] for f in reviews.owned(state, "claude")], ["F2", "F3"])
-        reviews.apply(state, "claude", report("changes_requested", dispositions=[
-            answer("F2", "obsolete"), answer("F3", "open")]), "c" * 40)
+        reviews.apply(
+            state,
+            "claude",
+            report("changes_requested", dispositions=[answer("F2", "obsolete"), answer("F3", "open")]),
+            "c" * 40,
+        )
         self.assertEqual([f["status"] for f in state["findings"]], ["fixed", "obsolete", "open"])
 
     def test_compaction_excerpts_only_closed_findings(self):
         state = {}
         long = {**FINDING, "detail": "word " * 200}
         reviews.apply(state, "claude", report("changes_requested", [long, long]), "a" * 40)
-        reviews.apply(state, "claude", report("changes_requested", dispositions=[answer("F1"), answer("F2", "open")]),
-                      "b" * 40)
+        reviews.apply(
+            state, "claude", report("changes_requested", dispositions=[answer("F1"), answer("F2", "open")]), "b" * 40
+        )
         digests = [f["text_digest"] for f in state["findings"]]
         reviews.compact(state)
         reviews.compact(state)
@@ -111,23 +136,41 @@ class LegacyRenderingTests(unittest.TestCase):
     def setUp(self):
         self.config = deepcopy(CONFIG)
         self.gh = FakeGitHub(self.config)
-        legacy = {"verdict": "changes_requested", "summary": "One ambiguity remains.",
-                  "findings": [{"path": "docs/guide.md", "detail": "Define the term."},
-                               {"path": "docs/other.md", "detail": "Link it."}],
-                  "design_issue": None, "head": "c" * 40, "model": "m"}
+        legacy = {
+            "verdict": "changes_requested",
+            "summary": "One ambiguity remains.",
+            "findings": [
+                {"path": "docs/guide.md", "detail": "Define the term."},
+                {"path": "docs/other.md", "detail": "Link it."},
+            ],
+            "design_issue": None,
+            "head": "c" * 40,
+            "model": "m",
+        }
         self.state = {"issue": 7, "reviews": {"claude": legacy}}
         # Queued before format 2: no `format`, so it renders in format 1 forever.
         details = {"head": "c" * 40, "round": 1}
-        event = {"id": "e" * 64, "title": "claude / m · PR review · changes_requested", "sequence": 1,
-                 "at": "2026-11-01T00:00:00+00:00", "source": ["reviews", "claude"], "kind": "review", "details": details}
-        event["content_digest"] = digest(conversation.content(event, conversation.render(
-            self.state, "review", ("reviews", "claude"), details)))
+        event = {
+            "id": "e" * 64,
+            "title": "claude / m · PR review · changes_requested",
+            "sequence": 1,
+            "at": "2026-11-01T00:00:00+00:00",
+            "source": ["reviews", "claude"],
+            "kind": "review",
+            "details": details,
+        }
+        event["content_digest"] = digest(
+            conversation.content(event, conversation.render(self.state, "review", ("reviews", "claude"), details))
+        )
         self.state["conversation"] = {"sequence": 1, "pending": [event]}
 
     def test_rendering_is_unchanged(self):
         body = conversation.render(self.state, "review", ("reviews", "claude"), {"head": "c" * 40, "round": 1})
-        self.assertEqual(body, f"Commit `{'c' * 40}` · round 1\n\nOne ambiguity remains."
-                               "\n\n- docs/guide.md: Define the term.\n\n- docs/other.md: Link it.")
+        self.assertEqual(
+            body,
+            f"Commit `{'c' * 40}` · round 1\n\nOne ambiguity remains."
+            "\n\n- docs/guide.md: Define the term.\n\n- docs/other.md: Link it.",
+        )
 
     def test_unpublished_and_already_posted_events_publish_once(self):
         pending = deepcopy(self.state["conversation"]["pending"])
@@ -147,8 +190,10 @@ class LifecycleTests(Harness, unittest.TestCase):
         state = self.run_to(agents, "gates").state
         self.assertEqual(state["round"], 1)
         self.assertEqual(sum(1 for _, stage, _ in agents.calls if stage == "review"), 4)
-        self.assertEqual([(f["id"], f["provider"], f["status"]) for f in state["findings"]],
-                         [("F1", "claude", "fixed"), ("F2", "codex", "fixed")])
+        self.assertEqual(
+            [(f["id"], f["provider"], f["status"]) for f in state["findings"]],
+            [("F1", "claude", "fixed"), ("F2", "codex", "fixed")],
+        )
         self.assertNotIn("claude approval missing or stale", self.reasons(state))
         self.assertNotIn("codex approval missing or stale", self.reasons(state))
         archives = [a for a in self.gh.archives() if "Code review ·" in a.split("\n")[1]]
@@ -206,10 +251,11 @@ class LifecycleTests(Harness, unittest.TestCase):
     def test_large_reviews_keep_all_findings_and_reach_the_gates(self):
         """Full reviews and their ledger copies use references rather than shrinking reviewer capacity."""
         large = [{**FINDING, "detail": "x" * 3800}] * 6
-        agents = Reviewers({"claude", "codex"}, findings={"claude": [{**FINDING, "detail": "y" * 1500}] * 2,
-                                                           "codex": large})
+        agents = Reviewers(
+            {"claude", "codex"}, findings={"claude": [{**FINDING, "detail": "y" * 1500}] * 2, "codex": large}
+        )
         controller = self.run_to(agents, "gates")
-        self.assertEqual(len(controller.state['findings']), 8)
+        self.assertEqual(len(controller.state["findings"]), 8)
         self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
 
     def test_review_steps_never_overflow_the_checkpoint(self):
@@ -227,19 +273,23 @@ class LifecycleTests(Harness, unittest.TestCase):
         self.run_to(Reviewers(set()), "review")
         self.pad(51000)
         agents = FakeAgents()
-        agents.ask = lambda provider, stage, context: report(
-            "reopen", design_issue={**DESIGN_ISSUE, "explanation": "e" * 500}) | {"summary": "s" * 2500}
+        agents.ask = lambda provider, stage, context: (
+            report("reopen", design_issue={**DESIGN_ISSUE, "explanation": "e" * 500}) | {"summary": "s" * 2500}
+        )
         controller = Controller(self.gh, agents, self.config)
         controller.advance(7)
         _, after = self.load()
         self.assertEqual(after["stage"], "plan")
-        self.assertEqual(after['design_reopens'], 1)
-        self.assertIn('e' * 500, '\n'.join(self.gh.archives()))
+        self.assertEqual(after["design_reopens"], 1)
+        self.assertIn("e" * 500, "\n".join(self.gh.archives()))
 
     def test_design_reopen_withdraws_and_a_new_review_retires(self):
         """Open findings are withdrawn with the design; their provider answers them under the new plan."""
-        controller = self.run_to(Reviewers({"claude"}), "implement",
-                                 until=lambda state: any(f["status"] == "open" for f in state.get("findings", [])))
+        controller = self.run_to(
+            Reviewers({"claude"}),
+            "implement",
+            until=lambda state: any(f["status"] == "open" for f in state.get("findings", [])),
+        )
         state = controller.state
         revision = state["input_revision"]
         controller.invalidate_design("The plan misses a case.")
@@ -261,14 +311,16 @@ class PlacementTests(unittest.TestCase):
 
     def test_placement(self):
         patches = {"a.md": PATCH, "big.md": None}
-        cases = [({"path": "a.md", "start_line": None, "line": 2}, "inline"),
-                 ({"path": "a.md", "start_line": 2, "line": 4}, "inline"),
-                 ({"path": "a.md", "start_line": 4, "line": 21}, "file"),
-                 ({"path": "a.md", "start_line": None, "line": 10}, "file"),
-                 ({"path": "a.md", "start_line": None, "line": None}, "file"),
-                 ({"path": "big.md", "start_line": None, "line": 1}, "file"),
-                 ({"path": "other.md", "start_line": None, "line": 1}, "body"),
-                 ({"path": None, "start_line": None, "line": None}, "body")]
+        cases = [
+            ({"path": "a.md", "start_line": None, "line": 2}, "inline"),
+            ({"path": "a.md", "start_line": 2, "line": 4}, "inline"),
+            ({"path": "a.md", "start_line": 4, "line": 21}, "file"),
+            ({"path": "a.md", "start_line": None, "line": 10}, "file"),
+            ({"path": "a.md", "start_line": None, "line": None}, "file"),
+            ({"path": "big.md", "start_line": None, "line": 1}, "file"),
+            ({"path": "other.md", "start_line": None, "line": 1}, "body"),
+            ({"path": None, "start_line": None, "line": None}, "body"),
+        ]
         for finding, expected in cases:
             with self.subTest(finding=finding):
                 self.assertEqual(reviews.placement(finding, patches), expected)
@@ -433,8 +485,10 @@ class PublicationTests(Harness, unittest.TestCase):
         agents.ask = long_summary
         state = self.run_to(agents, "gates").state
         self.assertEqual([summary in r["body"] for r in self.gh.app_reviews], [True, True])
-        self.assertTrue(all(r["summary"] == summary for r in state["reviews"].values()),
-                        "canonical report references retain the full summary")
+        self.assertTrue(
+            all(r["summary"] == summary for r in state["reviews"].values()),
+            "canonical report references retain the full summary",
+        )
 
     def test_hidden_opening_comment_is_retried_not_unthreaded(self):
         """An opening comment missing from one read keeps the review pending; it is never recorded as body-only."""
@@ -476,9 +530,11 @@ class PublicationTests(Harness, unittest.TestCase):
                     self.gh.review_comments[0]["body"] += " Edited."
                     run = lambda: self.run_to(agents, "gates")
                 else:
+
                     def run():
                         with patch.object(self.gh, "repo", side_effect=edit):
                             self.run_to(agents, "gates")
+
                 with self.assertRaisesRegex(Blocked, "differs from its recorded content"):
                     run()
                 self.assertEqual(self.comments(f"{reviews.DISPOSITION_MARKER}F1:"), [])

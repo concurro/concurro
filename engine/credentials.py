@@ -27,8 +27,11 @@ class Credential:
         if not isinstance(record, dict) or set(record) != set(cls.__dataclass_fields__):
             raise Blocked("invalid credential identity")
         credential = cls(**record)
-        if (not all(isinstance(v, str) and v for v in (credential.id, credential.provider, credential.adapter))
-                or credential.kind not in KINDS
-                or credential.account is not None and not isinstance(credential.account, str)):
+        if (
+            not all(isinstance(v, str) and v for v in (credential.id, credential.provider, credential.adapter))
+            or credential.kind not in KINDS
+            or credential.account is not None
+            and not isinstance(credential.account, str)
+        ):
             raise Blocked("invalid credential identity")
         return credential

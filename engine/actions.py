@@ -16,17 +16,34 @@ from vocab import TERMINAL_STAGES
 POLICY_REASONS = {"autonomous merge is disabled", "autonomous merge is limited to configured low-risk paths"}
 GITHUB_REASON = "GitHub mergeability is not clean"
 COMMENT_URL = "https://github.com/{repository}/issues/{issue}#issuecomment-{comment}"
-BUNDLE_REASON = ("Trusted charter, role, skill or schema bundle changed. "
-                 "A writer must use /concurro invalidate to reassess under the current bundle; "
-                 "/concurro retry does not change the task's bundle.")
+BUNDLE_REASON = (
+    "Trusted charter, role, skill or schema bundle changed. "
+    "A writer must use /concurro invalidate to reassess under the current bundle; "
+    "/concurro retry does not change the task's bundle."
+)
 # Blocks already reported by the checkpoint health notice.
 PUBLICATION_REASONS = {DIAGNOSTICS["conversation_publish"], DIAGNOSTICS["conversation_conflict"]}
-RESUMED_STAGES = {"intake", "plan", "plan_qc", "planned", "clarify", "implement", "publish", "review", "gates", "merging"}
+RESUMED_STAGES = {
+    "intake",
+    "plan",
+    "plan_qc",
+    "planned",
+    "clarify",
+    "implement",
+    "publish",
+    "review",
+    "gates",
+    "merging",
+}
 BLOCKED_HEADER = re.compile(r"<!-- concurro:event:v1:[a-f0-9]{64} -->\n### (?:🛑 )?Blocked\n")
-BLOCKED_RETRY = (f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
-                 "a reason that asks for reconciliation needs an operator first.")
-BLOCKED_INVALIDATE = (f"A writer accepts a new assessment with {code('/concurro invalidate')}. "
-                      "Otherwise restore the previous bundle before retrying.")
+BLOCKED_RETRY = (
+    f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
+    "a reason that asks for reconciliation needs an operator first."
+)
+BLOCKED_INVALIDATE = (
+    f"A writer accepts a new assessment with {code('/concurro invalidate')}. "
+    "Otherwise restore the previous bundle before retrying."
+)
 
 
 def transition(state, config, author, plan_url=None):
@@ -40,9 +57,11 @@ def transition(state, config, author, plan_url=None):
     reason = (state.get("reason") or "")[:4000]
     retry = f"Edit the issue if needed, then a writer comments {code('/concurro retry')}."
     if state.get("revision_wait"):
-        retry = ("A writer can grant 1–3 additional plan revisions, for example "
-                 + code("/concurro retry --plan-revisions 1")
-                 + ". Findings and spent budgets are preserved; plain retry cannot increase the allowance.")
+        retry = (
+            "A writer can grant 1–3 additional plan revisions, for example "
+            + code("/concurro retry --plan-revisions 1")
+            + ". Findings and spent budgets are preserved; plain retry cannot increase the allowance."
+        )
     if stage == "clarify":
         request(state, config, author)
     elif stage == "escalated":
@@ -54,9 +73,14 @@ def transition(state, config, author, plan_url=None):
         conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation))
     elif stage == "planned" and state.get("mode") == "manual":
         plan = link("Implementation plan", plan_url) if plan_url else "The implementation plan"
-        conversation.queue(state, "Plan ready for approval", (
-            f"{plan} passed design review. A writer approves it by commenting:\n\n"
-            f"{code('/concurro approve ' + state['plan_id'])}"))
+        conversation.queue(
+            state,
+            "Plan ready for approval",
+            (
+                f"{plan} passed design review. A writer approves it by commenting:\n\n"
+                f"{code('/concurro approve ' + state['plan_id'])}"
+            ),
+        )
 
 
 def blocked_posted(state, comment, body):
@@ -127,14 +151,15 @@ def explain(reason, continuation):
     else:
         body = block(reason)
     if len(body.encode()) > 16000:
-        body = markup.excerpt(reason, 16000, 'Full reason in the report archive linked from the dashboard.')
+        body = markup.excerpt(reason, 16000, "Full reason in the report archive linked from the dashboard.")
     return (body + "\n\n" if body else "") + continuation
 
 
 def ready(reasons, pr):
     """Whether only a human merge stands between the PR and its base."""
-    return bool(reasons) and all(r in POLICY_REASONS or r == GITHUB_REASON and pr.get("mergeable") is True
-                                 for r in reasons)
+    return bool(reasons) and all(
+        r in POLICY_REASONS or r == GITHUB_REASON and pr.get("mergeable") is True for r in reasons
+    )
 
 
 def handoff(state, config, reasons, pr):
@@ -151,9 +176,14 @@ def handoff(state, config, reasons, pr):
     number = state["pr"]
     url = f"https://github.com/{config['repository']}/pull/{number}"
     remaining = "\n".join("- " + text(r) for r in reasons)
-    conversation.queue(state, "✅ Handed off for merge", (
-        f"Concurro's work on {link(f'PR #{number}', url)} is done. A human reviews and merges it.\n\n"
-        f"{remaining}\n\nGitHub's own requirements, such as required reviews and checks, are shown on the PR."))
+    conversation.queue(
+        state,
+        "✅ Handed off for merge",
+        (
+            f"Concurro's work on {link(f'PR #{number}', url)} is done. A human reviews and merges it.\n\n"
+            f"{remaining}\n\nGitHub's own requirements, such as required reviews and checks, are shown on the PR."
+        ),
+    )
     return True
 
 
@@ -191,15 +221,19 @@ def request(state, config, author):
     lines = [f"{mention}Concurro needs answers before it can continue.", ""]
     for index, item in enumerate(asked, 1):
         tag = f" ({text(item['provider'])})" if item["provider"] else ""
-        question = markup.excerpt(item['question'], max(1000, 16000 // len(asked)),
-                                  'Full question in the report archive linked from the dashboard.')
+        question = markup.excerpt(
+            item["question"],
+            max(1000, 16000 // len(asked)),
+            "Full question in the report archive linked from the dashboard.",
+        )
         lines += [f"**Q{index}.**{tag} {question}", ""]
     how = "Reply in a comment or edit the issue description; the author or any writer may answer."
     if state.get("mode") == "manual":
         how += f" Then a writer comments {code('/concurro start')}."
     lines.append(how)
-    records.append({"number": number, "questions": asked, "state": "open", "comment": None,
-                    "issue_digest": state["issue_digest"]})
+    records.append(
+        {"number": number, "questions": asked, "state": "open", "comment": None, "issue_digest": state["issue_digest"]}
+    )
     conversation.queue(state, "❓ Input needed", "\n".join(lines), request=number)
 
 
@@ -227,9 +261,16 @@ def answers(state, config, comments, issue_digest, answerer):
     for record in state.get("requests", []):
         if record["state"] != "open" or not record.get("comment"):
             continue
-        reply = next((c for c in sorted(comments, key=lambda c: c["id"]) if c["id"] > record["comment"]
-                      and not c["body"].startswith(("<!-- concurro:", "/concurro "))
-                      and answerer(c["user"]["login"])), None)
+        reply = next(
+            (
+                c
+                for c in sorted(comments, key=lambda c: c["id"])
+                if c["id"] > record["comment"]
+                and not c["body"].startswith(("<!-- concurro:", "/concurro "))
+                and answerer(c["user"]["login"])
+            ),
+            None,
+        )
         if reply:
             url = COMMENT_URL.format(repository=config["repository"], issue=state["issue"], comment=reply["id"])
             record.update(state="answered", answer={"comment": reply["id"]})

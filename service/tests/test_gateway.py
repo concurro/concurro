@@ -20,7 +20,9 @@ class FencingTests(ServiceFixture, unittest.TestCase):
 
     def admitted(self):
         """Every occurrence recorded for the task, in any status."""
-        return [r for status in ("in-flight", "done", "failed", "unknown") for r in self.registry.mutations(KEY, status)]
+        return [
+            r for status in ("in-flight", "done", "failed", "unknown") for r in self.registry.mutations(KEY, status)
+        ]
 
     def test_grant_waits_for_an_in_flight_write(self):
         """No handoff while a write is outstanding, even after the lease expired; then the old owner is fenced."""
@@ -166,13 +168,14 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
     def test_writes_off_the_allow_list_are_refused_before_admission(self):
         """No reconstruction rule, another issue or repository, or a forced ref update."""
         root = f"repos/{KEY[0]}/"
-        refused = [("PATCH", root + "issues/7", {"state": "closed"}),
-                   ("POST", root + "issues/8/comments", {"body": "x"}),
-                   ("POST", "repos/other/repo/issues/7/comments", {"body": "x"}),
-                   ("PATCH", root + "git/refs/heads/concurro/7", {"sha": "a" * 40, "force": True}),
-                   ("DELETE", root + "git/refs/heads/concurro/7", None),
-                   ("POST", "graphql", {"query": "mutation { deleteIssue(input: {}) { clientMutationId } }",
-                                        "variables": {}})]
+        refused = [
+            ("PATCH", root + "issues/7", {"state": "closed"}),
+            ("POST", root + "issues/8/comments", {"body": "x"}),
+            ("POST", "repos/other/repo/issues/7/comments", {"body": "x"}),
+            ("PATCH", root + "git/refs/heads/concurro/7", {"sha": "a" * 40, "force": True}),
+            ("DELETE", root + "git/refs/heads/concurro/7", None),
+            ("POST", "graphql", {"query": "mutation { deleteIssue(input: {}) { clientMutationId } }", "variables": {}}),
+        ]
         for method, path, body in refused:
             with self.subTest(method=method, path=path), self.assertRaises(Disallowed):
                 self.gh.api(path, method, body)
@@ -182,15 +185,25 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
     def test_repository_dispatch_is_retired(self):
         """A dispatch starts a runner session and carries nothing but its ID."""
         path, session = f"repos/{KEY[0]}/dispatches", "0f0e0d0c-0b0a-4908-8706-050403020100"
-        self.assertFalse(allowed(KEY, "POST", path, {"event_type": "concurro-agent", "client_payload": {"session": session}}))
-        for body in ({"event_type": "deploy", "client_payload": {"session": session}},
-                     {"event_type": "concurro-agent", "client_payload": {"session": session, "ref": "x"}},
-                     {"event_type": "concurro-agent", "client_payload": {"session": "not-a-uuid"}},
-                     {"event_type": "concurro-agent"}):
+        self.assertFalse(
+            allowed(KEY, "POST", path, {"event_type": "concurro-agent", "client_payload": {"session": session}})
+        )
+        for body in (
+            {"event_type": "deploy", "client_payload": {"session": session}},
+            {"event_type": "concurro-agent", "client_payload": {"session": session, "ref": "x"}},
+            {"event_type": "concurro-agent", "client_payload": {"session": "not-a-uuid"}},
+            {"event_type": "concurro-agent"},
+        ):
             with self.subTest(body=body):
                 self.assertFalse(allowed(KEY, "POST", path, body))
-        self.assertFalse(allowed(KEY, "POST", "repos/other/repo/dispatches",
-                                 {"event_type": "concurro-agent", "client_payload": {"session": session}}))
+        self.assertFalse(
+            allowed(
+                KEY,
+                "POST",
+                "repos/other/repo/dispatches",
+                {"event_type": "concurro-agent", "client_payload": {"session": session}},
+            )
+        )
 
     def test_issue_comment_edits_only_on_the_apps_marked_comments(self):
         """A human comment, an unmarked App comment, or none are refused; a Concurro request is edited."""
@@ -212,8 +225,11 @@ class OccurrenceTests(ServiceFixture, unittest.TestCase):
     def test_linked_branches_and_merges_are_never_admitted(self):
         """No compatibility path can merge or create GitHub Development links."""
         with self.assertRaises(Disallowed):
-            self.gh.api("graphql", "POST", {"query": "mutation { createLinkedBranch(input:{}) { clientMutationId } }",
-                                             "variables": {}})
+            self.gh.api(
+                "graphql",
+                "POST",
+                {"query": "mutation { createLinkedBranch(input:{}) { clientMutationId } }", "variables": {}},
+            )
         with self.assertRaises(Disallowed):
             self.gh.repo("pulls/9/merge", "PUT", {"sha": "a" * 40})
         self.assertEqual(self.backend.writes, [])
@@ -270,17 +286,39 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
 
     def test_validation_details_reach_operator_logs(self):
         """GitHub's nested 422 cause survives without dumping arbitrary response fields."""
-        response = Response(True, 422, {}, json.dumps({
-            "message": "Validation Failed", "token": "do-not-log-this",
-            "errors": [{"resource": "PullRequest", "field": "fork_collab", "code": "custom",
-                        "message": "Fork collab can't be granted by someone without permission",
-                        "value": "do-not-log-this"}, "A second validation error"]}).encode())
+        response = Response(
+            True,
+            422,
+            {},
+            json.dumps(
+                {
+                    "message": "Validation Failed",
+                    "token": "do-not-log-this",
+                    "errors": [
+                        {
+                            "resource": "PullRequest",
+                            "field": "fork_collab",
+                            "code": "custom",
+                            "message": "Fork collab can't be granted by someone without permission",
+                            "value": "do-not-log-this",
+                        },
+                        "A second validation error",
+                    ],
+                }
+            ).encode(),
+        )
         with self.assertLogs("concurro.service", "WARNING") as logged:
             status, payload, error = settle("repos/upstream/project/pulls", response, 0)
         self.assertEqual((status, payload), ("failed", None))
         self.assertIsInstance(error, Rejected)
-        for detail in ("Validation Failed", "resource=PullRequest", "field=fork_collab", "code=custom",
-                       "Fork collab can't be granted", "A second validation error"):
+        for detail in (
+            "Validation Failed",
+            "resource=PullRequest",
+            "field=fork_collab",
+            "code=custom",
+            "Fork collab can't be granted",
+            "A second validation error",
+        ):
             self.assertIn(detail, logged.output[0])
             self.assertIn(detail, str(error))
         self.assertNotIn("do-not-log-this", logged.output[0])
@@ -288,8 +326,10 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
 
     def test_validation_diagnostics_are_bounded_and_single_line(self):
         """Malformed, large and control-bearing errors cannot break settlement or forge log lines."""
-        diagnostic = {"message": "Validation\nFailed\x1b[31m", "errors": [
-            {"field": "head\r\nInjected", "message": "bad\x00value"}] + ["x" * 500] * 20}
+        diagnostic = {
+            "message": "Validation\nFailed\x1b[31m",
+            "errors": [{"field": "head\r\nInjected", "message": "bad\x00value"}] + ["x" * 500] * 20,
+        }
         response = Response(True, 422, {}, json.dumps(diagnostic).encode())
         detail = rejection(response)
         self.assertLessEqual(len(detail), 2000)
@@ -298,11 +338,26 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
         self.assertIn("message=bad value", detail)
         self.assertIn("additional errors omitted", detail)
         self.assertNotIn("x" * 301, detail)
-        huge = Response(True, 422, {}, json.dumps({"message": "m" * 10000, "errors": [
-            {k: "x" * 10000 for k in ("resource", "field", "code", "message")} for _ in range(20)]}).encode())
+        huge = Response(
+            True,
+            422,
+            {},
+            json.dumps(
+                {
+                    "message": "m" * 10000,
+                    "errors": [{k: "x" * 10000 for k in ("resource", "field", "code", "message")} for _ in range(20)],
+                }
+            ).encode(),
+        )
         self.assertLessEqual(len(rejection(huge)), 2000)
-        for body in (b"not JSON", b"null", b"[]", b'"error"', b'{"message": [], "errors": {}}',
-                     b'{"errors": [null, 42, [], {"message": {}, "field": 3}]}'):
+        for body in (
+            b"not JSON",
+            b"null",
+            b"[]",
+            b'"error"',
+            b'{"message": [], "errors": {}}',
+            b'{"errors": [null, 42, [], {"message": {}, "field": 3}]}',
+        ):
             with self.subTest(body=body), self.assertLogs("concurro.service", "WARNING"):
                 status, _, error = settle(COMMENTS, Response(True, 422, {}, body), 0)
                 self.assertEqual(status, "failed")
@@ -311,12 +366,17 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
 
     def test_requests_not_sent_or_refused_before_execution(self):
         """Not sent, 401 and a throttled 403 did not apply: `failed`, `Transient`, and nothing to resolve."""
-        cases = [(lambda *_: Response(sent=False), "unavailable", None),
-                 (None, "unavailable", {"status": 401}),
-                 (None, "throttled", {"status": 403, "headers": {"retry-after": "7200"}}),
-                 (None, "throttled", {"status": 403, "headers": {"x-ratelimit-remaining": "0",
-                                                                  "x-ratelimit-reset": str(1_000_000 + 7200)}}),
-                 (None, "throttled", {"status": 403, "message": "You have exceeded a secondary rate limit"})]
+        cases = [
+            (lambda *_: Response(sent=False), "unavailable", None),
+            (None, "unavailable", {"status": 401}),
+            (None, "throttled", {"status": 403, "headers": {"retry-after": "7200"}}),
+            (
+                None,
+                "throttled",
+                {"status": 403, "headers": {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(1_000_000 + 7200)}},
+            ),
+            (None, "throttled", {"status": 403, "message": "You have exceeded a secondary rate limit"}),
+        ]
         send = self.backend.send
         for index, (replacement, code, fault) in enumerate(cases):
             with self.subTest(case=index):
@@ -333,8 +393,13 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
 
     def test_ordinary_quota_headers_are_not_throttling(self):
         """A permission 403 that carries the usual quota headers is a plain rejection."""
-        self.backend.fail("POST", "issues/7/comments", status=403, message="Resource not accessible by integration",
-                          headers={"x-ratelimit-remaining": "4999", "x-ratelimit-reset": "1000060"})
+        self.backend.fail(
+            "POST",
+            "issues/7/comments",
+            status=403,
+            message="Resource not accessible by integration",
+            headers={"x-ratelimit-remaining": "4999", "x-ratelimit-reset": "1000060"},
+        )
         with self.assertRaises(Rejected) as raised:
             self.comment()
         self.assertNotIsInstance(raised.exception, Transient)
@@ -355,10 +420,13 @@ class SettlementTests(ServiceFixture, unittest.TestCase):
     def test_graphql_settles_done_only_on_a_complete_result(self):
         """GraphQL errors, null data and unreadable bodies are ambiguous even alongside a result."""
         pr = {"pullRequest": {"id": "PR_9", "isDraft": False}}
-        responses = [{"errors": [{"type": "INTERNAL"}], "data": {"markPullRequestReadyForReview": pr}},
-                     {"errors": [{"type": "UNPROCESSABLE"}], "data": {"markPullRequestReadyForReview": None}},
-                     {"errors": [{"type": "NOT_FOUND"}], "data": None},
-                     {"data": {"markPullRequestReadyForReview": None}}, None]
+        responses = [
+            {"errors": [{"type": "INTERNAL"}], "data": {"markPullRequestReadyForReview": pr}},
+            {"errors": [{"type": "UNPROCESSABLE"}], "data": {"markPullRequestReadyForReview": None}},
+            {"errors": [{"type": "NOT_FOUND"}], "data": None},
+            {"data": {"markPullRequestReadyForReview": None}},
+            None,
+        ]
         request = {"query": MARK_READY, "variables": {"input": {"pullRequestId": "PR_9"}}}
         for payload in responses:
             body = None if payload is None else json.dumps(payload).encode()

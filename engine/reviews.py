@@ -46,10 +46,18 @@ def apply(state, provider, report, head, issue_url=None):
         number = state.get("finding_sequence", 0) + 1
         state["finding_sequence"] = number
         identifier = f"F{number}"
-        finding = {"id": identifier, "provider": provider, **item, "text_digest": digest(item["detail"]),
-                   "head": head, "review": sequence, "status": "open", "format": FORMAT}
+        finding = {
+            "id": identifier,
+            "provider": provider,
+            **item,
+            "text_digest": digest(item["detail"]),
+            "head": head,
+            "review": sequence,
+            "status": "open",
+            "format": FORMAT,
+        }
         if issue_url:
-            finding['report_url'] = issue_url
+            finding["report_url"] = issue_url
         finding["opening_digest"] = digest(finding_body(finding))
         ledger(state).append(finding)
         identifiers.append(identifier)
@@ -71,8 +79,11 @@ def withdraw(state):
 
 def open_findings(state):
     """Open findings for the implementer's repair context."""
-    return [{k: f[k] for k in ("id", "provider", "path", "start_line", "line", "detail")}
-            for f in ledger(state) if f["status"] == "open"]
+    return [
+        {k: f[k] for k in ("id", "provider", "path", "start_line", "line", "detail")}
+        for f in ledger(state)
+        if f["status"] == "open"
+    ]
 
 
 def compact(state):
@@ -82,8 +93,11 @@ def compact(state):
     `text_digest` still identifies it.
     """
     for finding in state.get("findings", []):
-        if (finding["status"] in ("fixed", "obsolete") and len(finding["detail"]) > EXCERPT
-                and not finding["detail"].endswith(ELIDED)):
+        if (
+            finding["status"] in ("fixed", "obsolete")
+            and len(finding["detail"]) > EXCERPT
+            and not finding["detail"].endswith(ELIDED)
+        ):
             finding["detail"] = finding["detail"][:EXCERPT] + ELIDED
 
 
@@ -169,15 +183,17 @@ def finding_body(finding):
     if finding.get("format", 1) == 1:
         return finding_prefix(finding) + finding["detail"]
     severity = markup.SEVERITY.get(finding.get("severity"))
-    heading = " · ".join(["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)])
+    heading = " · ".join(
+        ["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)]
+    )
     prefix = f"{FINDING_MARKER}{finding['id']} -->\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
     suffix = "\n\n" + markup.sub("Concurro review · " + text(finding["provider"]))
-    detail = block(finding['detail'])
-    if finding.get('format', 1) >= 3:
+    detail = block(finding["detail"])
+    if finding.get("format", 1) >= 3:
         note = "Full finding in the report archive linked from the issue dashboard."
-        if finding.get('report_url'):
-            note = link(note, finding['report_url'])
-        detail = markup.excerpt(finding['detail'], REVIEW_BODY_LIMIT - len((prefix + suffix).encode()), note)
+        if finding.get("report_url"):
+            note = link(note, finding["report_url"])
+        detail = markup.excerpt(finding["detail"], REVIEW_BODY_LIMIT - len((prefix + suffix).encode()), note)
     body = prefix + detail + suffix
     return body
 
@@ -194,7 +210,7 @@ def opening_matches(finding, comment):
     if finding.get("format", 1) != 1:
         return digest(body) == finding["opening_digest"]
     prefix = finding_prefix(finding)
-    return body.startswith(prefix) and digest(body[len(prefix):]) == finding["text_digest"]
+    return body.startswith(prefix) and digest(body[len(prefix) :]) == finding["text_digest"]
 
 
 def thread_url(state, config, finding):
@@ -225,8 +241,10 @@ def review_body(state, config, item, report, findings, placed):
 def review_body_v2(state, config, item, report, findings, placed):
     """Verdict and headline, new findings by severity, answers to earlier ones; the rest collapsed."""
     emoji, outcome = markup.VERDICT[report["verdict"]]
-    lines = [f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
-             f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}"]
+    lines = [
+        f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
+        f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}",
+    ]
     # The summary itself leads when it is one short sentence or has no headline to lead with.
     # Long model text is `Droppable`: it goes, for one note, when the body would exceed GitHub's limit.
     title = markup.headline(report, "summary")
@@ -234,36 +252,59 @@ def review_body_v2(state, config, item, report, findings, placed):
     summary = block(report["summary"])
     lines += ["", title if collapse else Droppable(summary) if len(summary) > KEPT_TEXT else summary]
     order = list(markup.SEVERITY)
-    ordered = sorted(findings, key=lambda f: (order.index(f["severity"]) if f.get("severity") in order else len(order),
-                                              int(f["id"][1:])))
+    ordered = sorted(
+        findings,
+        key=lambda f: (order.index(f["severity"]) if f.get("severity") in order else len(order), int(f["id"][1:])),
+    )
     if ordered:
-        rows = [[markup.severity(f) or "—", f"**{text(f['id'])}** {markup.finding_title(f)}", where(f)] for f in ordered]
+        rows = [
+            [markup.severity(f) or "—", f"**{text(f['id'])}** {markup.finding_title(f)}", where(f)] for f in ordered
+        ]
         lines += ["", table(["Severity", "Finding", "Where"], rows)]
     if report["dispositions"]:
         answers = []
         for disposition in report["dispositions"]:
             finding = find(state, disposition["id"])
-            name = link(disposition["id"], thread_url(state, config, finding)) if finding.get("comment") else text(disposition["id"])
+            name = (
+                link(disposition["id"], thread_url(state, config, finding))
+                if finding.get("comment")
+                else text(disposition["id"])
+            )
             answers.append(f"{name} {markup.label(markup.STATUS[disposition['status']])}")
         lines += ["", "**Earlier findings:** " + " · ".join(answers)]
     if ordered or any(d["status"] == "open" for d in report["dispositions"]):
         lines += ["", markup.BLOCKING_NOTE]
     if report["design_issue"]:
         issue = report["design_issue"]
-        explanation = block(issue['explanation'])
-        evidence = "\n".join("- " + text(value, 1000) for value in issue['evidence'])
-        if item.get('format', 1) >= 3:
+        explanation = block(issue["explanation"])
+        evidence = "\n".join("- " + text(value, 1000) for value in issue["evidence"])
+        if item.get("format", 1) >= 3:
             explanation, evidence = Droppable(explanation), Droppable(evidence)
         lines += ["", f"**Design issue** · {text(issue['kind'])}", "", explanation, "", evidence]
     if collapse:
         lines += ["", Droppable(markup.details("Full review", summary))]
     unthreaded = [f for f in ordered if placed[f["id"]] == "body"]
     if unthreaded:
-        lines += ["", Droppable(markup.details("Findings without a file", "\n\n".join(
-            f"**{text(f['id'])} · {markup.finding_title(f)}**\n\n{block(f['detail'])}" for f in unthreaded)))]
+        lines += [
+            "",
+            Droppable(
+                markup.details(
+                    "Findings without a file",
+                    "\n\n".join(
+                        f"**{text(f['id'])} · {markup.finding_title(f)}**\n\n{block(f['detail'])}" for f in unthreaded
+                    ),
+                )
+            ),
+        ]
     effort = (" / effort " + report["agent"]["effort"]) if report.get("agent") else ""
-    lines += ["", markup.sub(text(f"{item['provider']} / {report['model']}" + effort), "head " + code(item["head"][:7]),
-                             f"review {item['sequence']}")]
+    lines += [
+        "",
+        markup.sub(
+            text(f"{item['provider']} / {report['model']}" + effort),
+            "head " + code(item["head"][:7]),
+            f"review {item['sequence']}",
+        ),
+    ]
     body = "\n".join(str(line) for line in lines)
     if len(body) > REVIEW_BODY_LIMIT:
         body = "\n".join(OMITTED if isinstance(line, Droppable) else line for line in lines)
@@ -272,8 +313,12 @@ def review_body_v2(state, config, item, report, findings, placed):
 
 def review_body_v1(state, config, item, report, findings, placed):
     """The review's own body: verdict, summary, answers to earlier findings, and unthreaded findings."""
-    lines = [f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
-             f"### {item['provider']} / {report['model']} · {report['verdict'].replace('_', ' ')}", "", report["summary"]]
+    lines = [
+        f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
+        f"### {item['provider']} / {report['model']} · {report['verdict'].replace('_', ' ')}",
+        "",
+        report["summary"],
+    ]
     if report["design_issue"]:
         issue = report["design_issue"]
         lines += ["", f"Design reopened ({issue['kind']}): {issue['explanation']}", ""]
@@ -285,8 +330,9 @@ def review_body_v1(state, config, item, report, findings, placed):
     if unthreaded:
         lines += ["", "New findings:", ""] + ["- " + label(f["id"], f) for f in unthreaded]
     if report["dispositions"]:
-        lines += ["", "Earlier findings:", ""] + [f"- **{d['id']}** {d['status']}: {d['evidence']}"
-                                                  for d in report["dispositions"]]
+        lines += ["", "Earlier findings:", ""] + [
+            f"- **{d['id']}** {d['status']}: {d['evidence']}" for d in report["dispositions"]
+        ]
     return "\n".join(lines)
 
 
@@ -295,18 +341,24 @@ def disposition_body(state, item, disposition):
     marker = f"{DISPOSITION_MARKER}{disposition['id']}:{item['sequence']} -->"
     if item.get("format", 1) != 1:
         emoji, status = markup.STATUS[disposition["status"]]
-        location = {"fixed": "in " + code(item["head"][:7]), "open": "on " + code(item["head"][:7]),
-                 "obsolete": "under plan " + code(state["plan_id"][:12])}[disposition["status"]]
-        evidence = block(disposition['evidence'])
-        if item.get('format', 1) >= 3:
-            note = 'Full evidence in the report archive linked from the issue dashboard.'
-            finding = find(state, disposition['id']) or {}
-            if finding.get('report_url'):
-                note = link(note, finding['report_url'])
-            evidence = markup.excerpt(disposition['evidence'], REVIEW_BODY_LIMIT - 1000, note)
+        location = {
+            "fixed": "in " + code(item["head"][:7]),
+            "open": "on " + code(item["head"][:7]),
+            "obsolete": "under plan " + code(state["plan_id"][:12]),
+        }[disposition["status"]]
+        evidence = block(disposition["evidence"])
+        if item.get("format", 1) >= 3:
+            note = "Full evidence in the report archive linked from the issue dashboard."
+            finding = find(state, disposition["id"]) or {}
+            if finding.get("report_url"):
+                note = link(note, finding["report_url"])
+            evidence = markup.excerpt(disposition["evidence"], REVIEW_BODY_LIMIT - 1000, note)
         return f"{marker}\n{emoji} **{status}** {location}\n\n{evidence}"
-    answer = {"fixed": f"Fixed in `{item['head']}`", "open": f"Still open on `{item['head']}`",
-              "obsolete": f"Obsolete under plan `{state['plan_id']}`"}[disposition["status"]]
+    answer = {
+        "fixed": f"Fixed in `{item['head']}`",
+        "open": f"Still open on `{item['head']}`",
+        "obsolete": f"Obsolete under plan `{state['plan_id']}`",
+    }[disposition["status"]]
     return f"{marker}\n{answer}: {disposition['evidence']}"
 
 
@@ -315,8 +367,15 @@ def queue_review(state, provider, report):
 
     A design reopen is not kept among the head's reports, so its item carries the report.
     """
-    item = {"kind": "review", "provider": provider, "sequence": report["sequence"],
-            "head": report["head"], "attempts": 0, "inline": True, "format": FORMAT}
+    item = {
+        "kind": "review",
+        "provider": provider,
+        "sequence": report["sequence"],
+        "head": report["head"],
+        "attempts": 0,
+        "inline": True,
+        "format": FORMAT,
+    }
     if report["verdict"] == "reopen":
         item["report"] = report
     state.setdefault("pr_outbox", []).append(item)
@@ -326,9 +385,15 @@ def queue_withdrawal(state, identifiers):
     """Queue one notice in each withdrawn finding's thread."""
     threaded = [i for i in identifiers if (find(state, i) or {}).get("comment")]
     if threaded:
-        state.setdefault("pr_outbox", []).append({"kind": "withdrawn", "findings": threaded,
-                                                  "generation": state["design_generation"], "attempts": 0,
-                                                  "format": FORMAT})
+        state.setdefault("pr_outbox", []).append(
+            {
+                "kind": "withdrawn",
+                "findings": threaded,
+                "generation": state["design_generation"],
+                "attempts": 0,
+                "format": FORMAT,
+            }
+        )
 
 
 def find(state, identifier):
@@ -357,7 +422,9 @@ class Publisher:
 
     def ours(self, items, marker):
         """App-authored items whose body starts with `marker`; more than one is a conflict."""
-        found = [i for i in items if i.get("user", {}).get("login") == self.bot and i.get("body", "").startswith(marker)]
+        found = [
+            i for i in items if i.get("user", {}).get("login") == self.bot and i.get("body", "").startswith(marker)
+        ]
         if len(found) > 1:
             raise Blocked("duplicate PR review publication; reconcile manually")
         return found[0] if found else None
@@ -413,14 +480,22 @@ class Publisher:
                     if f["start_line"] not in (None, f["line"]):
                         comment.update(start_line=f["start_line"], start_side="RIGHT")
                     inline.append(comment)
-            self.gh.repo(f"pulls/{self.pr}/reviews", "POST",
-                         {"commit_id": item["head"], "event": "COMMENT", "body": body, "comments": inline})
+            self.gh.repo(
+                f"pulls/{self.pr}/reviews",
+                "POST",
+                {"commit_id": item["head"], "event": "COMMENT", "body": body, "comments": inline},
+            )
             comments = self.gh.pages(f"pulls/{self.pr}/comments")
         for f in findings:
             if placed[f["id"]] == "file":
                 comment_body = finding_body(f)
-                self.comment(comments, f"{FINDING_MARKER}{f['id']} -->", f"pulls/{self.pr}/comments", comment_body,
-                             {"commit_id": item["head"], "path": f["path"], "subject_type": "file", "body": comment_body})
+                self.comment(
+                    comments,
+                    f"{FINDING_MARKER}{f['id']} -->",
+                    f"pulls/{self.pr}/comments",
+                    comment_body,
+                    {"commit_id": item["head"], "path": f["path"], "subject_type": "file", "body": comment_body},
+                )
         self.map_threads(findings, comments, placed)
         self.checkpoint()
         for disposition in report["dispositions"]:
@@ -428,8 +503,13 @@ class Publisher:
             if finding.get("comment"):
                 self.opening(comments, finding)
                 comment_body = disposition_body(state, item, disposition)
-                self.comment(comments, comment_body.split("\n", 1)[0], f"pulls/{self.pr}/comments/{finding['comment']}/replies",
-                             comment_body, {"body": comment_body})
+                self.comment(
+                    comments,
+                    comment_body.split("\n", 1)[0],
+                    f"pulls/{self.pr}/comments/{finding['comment']}/replies",
+                    comment_body,
+                    {"body": comment_body},
+                )
         self.resolve([find(state, d["id"]) for d in report["dispositions"] if d["status"] in ("fixed", "obsolete")])
 
     def map_threads(self, findings, comments, placed):
@@ -471,14 +551,19 @@ class Publisher:
             self.opening(comments, finding)
             marker = f"{WITHDRAWN_MARKER}{identifier}:{item['generation']} -->"
             if item.get("format", 1) == 1:
-                notice = (f"{marker}\nThe design was reopened. {finding['provider']} will re-assess this finding "
-                          "under the new plan.")
+                notice = (
+                    f"{marker}\nThe design was reopened. {finding['provider']} will re-assess this finding "
+                    "under the new plan."
+                )
             else:
                 emoji, status = markup.STATUS["withdrawn"]
-                notice = (f"{marker}\n{emoji} **{status}**: the design was reopened. {text(finding['provider'])} "
-                          "will re-assess this finding under the new plan.")
-            self.comment(comments, marker, f"pulls/{self.pr}/comments/{finding['comment']}/replies", notice,
-                         {"body": notice})
+                notice = (
+                    f"{marker}\n{emoji} **{status}**: the design was reopened. {text(finding['provider'])} "
+                    "will re-assess this finding under the new plan."
+                )
+            self.comment(
+                comments, marker, f"pulls/{self.pr}/comments/{finding['comment']}/replies", notice, {"body": notice}
+            )
 
     def run(self):
         """Publish pending items in order; return whether the outbox is now empty.

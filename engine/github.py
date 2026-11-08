@@ -32,9 +32,11 @@ class Transient(RuntimeError):
     fixed per code, so it is safe to log and publish.
     """
 
-    TEXT = {"throttled": "GitHub rate limit reached; retry later.",
-            "unavailable": "GitHub unavailable; retry later.",
-            "response_lost": "GitHub response lost after the write applied; reconstruct on retry."}
+    TEXT = {
+        "throttled": "GitHub rate limit reached; retry later.",
+        "unavailable": "GitHub unavailable; retry later.",
+        "response_lost": "GitHub response lost after the write applied; reconstruct on retry.",
+    }
 
     def __init__(self, code, retry_after=None):
         """Select a fixed text; unknown codes become `unavailable`."""
@@ -57,8 +59,9 @@ class GitHub:
         command = ["gh", "api", "--method", method, path]
         if data is not None:
             command += ["--input", "-"]
-        result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
-                                text=True, capture_output=True, timeout=90)
+        result = subprocess.run(
+            command, input=json.dumps(data) if data is not None else None, text=True, capture_output=True, timeout=90
+        )
         if result.returncode:
             error = NotFound if "(HTTP 404)" in result.stderr else RuntimeError
             raise error("GitHub request failed: " + method + " " + path)
@@ -78,8 +81,7 @@ class GitHub:
 
     def archive(self, sha):
         """Download a pinned source archive without extracting candidate files on the host."""
-        result = subprocess.run(["gh", "api", self.root + "/tarball/" + sha],
-                                capture_output=True, timeout=120)
+        result = subprocess.run(["gh", "api", self.root + "/tarball/" + sha], capture_output=True, timeout=120)
         if result.returncode or len(result.stdout) > 100_000_000:
             raise RuntimeError("source archive unavailable or too large")
         return result.stdout
@@ -91,7 +93,9 @@ class GitHub:
         wanted = STAGE_LABEL_PREFIX + stage.replace("_", "-")
         current = {label["name"] for label in self.pages(f"issues/{number}/labels")}
         if wanted not in current:
-            self.ensure_label(wanted, "8250df", "Concurro progress display; does not grant execution or merge approval.")
+            self.ensure_label(
+                wanted, "8250df", "Concurro progress display; does not grant execution or merge approval."
+            )
             self.repo(f"issues/{number}/labels", "POST", {"labels": [wanted]})
         for old in sorted(current - {wanted}):
             if old.startswith(STAGE_LABEL_PREFIX):
@@ -117,7 +121,7 @@ class GitHub:
     def pages(self, path, key=None):
         """Read all pages or fail if the bounded traversal cannot finish."""
         result = []
-        page_size = 10 if path.endswith('/artifacts') else 100
+        page_size = 10 if path.endswith("/artifacts") else 100
         for page in range(1, 10000 // page_size + 1):
             sep = "&" if "?" in path else "?"
             batch = self.repo(f"{path}{sep}per_page={page_size}&page={page}")
@@ -157,15 +161,23 @@ class GitHub:
         }"""
         cursor, result = None, []
         for _ in range(100):
-            response = self.api("graphql", "POST", {"query": query, "variables": {
-                "owner": owner, "name": name, "number": number, "cursor": cursor}})
+            response = self.api(
+                "graphql",
+                "POST",
+                {"query": query, "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor}},
+            )
             if response.get("errors"):
                 raise RuntimeError("cannot establish review-thread state")
             page = response["data"]["repository"]["pullRequest"]["reviewThreads"]
             for node in page["nodes"]:
                 first = node["comments"]["nodes"]
-                result.append({"id": node["id"], "isResolved": node["isResolved"],
-                               "comment": first[0]["databaseId"] if first else None})
+                result.append(
+                    {
+                        "id": node["id"],
+                        "isResolved": node["isResolved"],
+                        "comment": first[0]["databaseId"] if first else None,
+                    }
+                )
             if not page["pageInfo"]["hasNextPage"]:
                 return result
             cursor = page["pageInfo"]["endCursor"]
@@ -173,8 +185,7 @@ class GitHub:
 
     def mark_ready(self, node_id):
         """Mark the bound draft PR ready; callers verify the current head before and after."""
-        result = self.api("graphql", "POST", {"query": MARK_READY,
-                          "variables": {"input": {"pullRequestId": node_id}}})
+        result = self.api("graphql", "POST", {"query": MARK_READY, "variables": {"input": {"pullRequestId": node_id}}})
         pr = ((result.get("data") or {}).get("markPullRequestReadyForReview") or {}).get("pullRequest")
         if result.get("errors") or not pr or pr.get("isDraft") is not False:
             raise RuntimeError("GitHub did not confirm PR readiness")
@@ -201,8 +212,11 @@ class GitHub:
         }"""
         cursor, result = None, []
         for _ in range(100):
-            response = self.api("graphql", "POST", {"query": query, "variables": {
-                "owner": owner, "name": name, "number": number, "cursor": cursor}})
+            response = self.api(
+                "graphql",
+                "POST",
+                {"query": query, "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor}},
+            )
             if response.get("errors"):
                 raise RuntimeError("cannot establish review-thread state")
             page = response["data"]["repository"]["pullRequest"]["reviewThreads"]

@@ -30,14 +30,15 @@ class CandidateTests(unittest.TestCase):
         # No mandatory primary-file edit: a valid follow-on change is still in scope.
         self.assertEqual(candidates.validate({}, {"docs/b.md": "x"}, self.plan, CONFIG), ["docs/b.md"])
         with self.assertRaisesRegex(Blocked, "existing regular"):
-            validate_edits({"summary": "x", "edits": [{"path": "docs/missing.md", "content": None}]},
-                           self.plan, {}, CONFIG)
+            validate_edits(
+                {"summary": "x", "edits": [{"path": "docs/missing.md", "content": None}]}, self.plan, {}, CONFIG
+            )
 
     def test_newline_delimiters_are_source_lines(self):
         [item] = changes({"x": "a\u2028b\fc\n"}, {"x": "a\u2028d\fc\n"})
-        self.assertEqual((item['added'], item['removed']), (1, 1))
+        self.assertEqual((item["added"], item["removed"]), (1, 1))
         [item] = changes({"x": "x"}, {"x": "x\n"})
-        self.assertEqual((item['added'], item['removed']), (1, 1))
+        self.assertEqual((item["added"], item["removed"]), (1, 1))
 
 
 class NativePublicationTests(unittest.TestCase):
@@ -46,6 +47,7 @@ class NativePublicationTests(unittest.TestCase):
     def test_delete_add_rename_reaches_reviews_and_ready_with_controller_objects(self):
         config = {**deepcopy(CONFIG), "autonomous": True}
         gh = FakeGitHub(config)
+
         class Rename(FakeAgents):
             def ask(self, provider, stage, context):
                 if stage == "plan":
@@ -54,15 +56,24 @@ class NativePublicationTests(unittest.TestCase):
                     return report
                 if stage == "develop":
                     self.calls.append((provider, stage, deepcopy(context)))
-                    return {"summary": "Rename the guide.", "validation": "Checked links.", "design_issue": None,
-                            "edits": [{"path": "docs/guide.md", "content": None},
-                                      {"path": "docs/new-guide.md", "content": "Moved guide\n"}]}
+                    return {
+                        "summary": "Rename the guide.",
+                        "validation": "Checked links.",
+                        "design_issue": None,
+                        "edits": [
+                            {"path": "docs/guide.md", "content": None},
+                            {"path": "docs/new-guide.md", "content": "Moved guide\n"},
+                        ],
+                    }
                 return super().ask(provider, stage, context)
+
         original_pages = gh.pages
+
         def pages(path, *args):
             if path == "pulls/9/files":
                 return [{"filename": "docs/new-guide.md", "previous_filename": "docs/guide.md", "status": "renamed"}]
             return original_pages(path, *args)
+
         gh.pages = pages
         agents = Rename()
         for _ in range(20):
@@ -90,11 +101,13 @@ class NativePublicationTests(unittest.TestCase):
         gh, agents = FakeGitHub(config), FakeAgents()
         original = gh.repo
         fail = [True]
+
         def api(path, method="GET", data=None):
             if path == "git/trees" and method == "POST" and fail[0]:
                 fail[0] = False
                 raise OSError("crash after the model completion checkpoint")
             return original(path, method, data)
+
         gh.repo = api
         crashed = False
         for _ in range(20):

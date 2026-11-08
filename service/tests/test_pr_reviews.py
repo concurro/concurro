@@ -9,6 +9,7 @@ from service.gateway import Disallowed
 import reviews
 
 from policy import task_branch
+
 BRANCH = task_branch(*KEY)
 
 
@@ -18,8 +19,13 @@ class PullRequestWrites(ServiceFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.registry.bind(KEY, KEY[0], KEY[0], "a" * 40)
-        self.fake.pr = {"user": {"login": self.config["bot_login"]}, "number": 9, "state": "open", "head": {"sha": "c" * 40, "ref": BRANCH,
-                        "repo": {"full_name": KEY[0]}}, "base": {"ref": "main", "sha": self.fake.base}}
+        self.fake.pr = {
+            "user": {"login": self.config["bot_login"]},
+            "number": 9,
+            "state": "open",
+            "head": {"sha": "c" * 40, "ref": BRANCH, "repo": {"full_name": KEY[0]}},
+            "base": {"ref": "main", "sha": self.fake.base},
+        }
         self.generation = self.gateway.acquire(KEY, "worker")
 
     def write(self, path, body):
@@ -37,8 +43,9 @@ class PullRequestWrites(ServiceFixture, unittest.TestCase):
 
     def finding_comment(self, login=None, body=None):
         """Open a thread with one App finding comment, as a published review would."""
-        comment = self.fake.review_comment({"body": body or f"{reviews.FINDING_MARKER}F1 -->\n**F1**: Define it."},
-                                           path="docs/guide.md")
+        comment = self.fake.review_comment(
+            {"body": body or f"{reviews.FINDING_MARKER}F1 -->\n**F1**: Define it."}, path="docs/guide.md"
+        )
         if login:
             comment["user"]["login"] = login
         self.fake.thread(comment)
@@ -54,15 +61,18 @@ class PullRequestWrites(ServiceFixture, unittest.TestCase):
     def test_another_tasks_pull_request_is_refused(self):
         self.fake.pr["head"]["ref"] = "concurro/issue-8-" + "a" * 12
         self.refused("pulls/9/reviews", self.review())
-        self.refused("pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "file",
-                                          "body": "x"})
+        self.refused(
+            "pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "file", "body": "x"}
+        )
 
     def test_file_comments_only(self):
-        self.refused("pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "line",
-                                          "body": "x"})
+        self.refused(
+            "pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "line", "body": "x"}
+        )
         self.refused("pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "line": 1, "body": "x"})
-        self.write("pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "file",
-                                        "body": "x"})
+        self.write(
+            "pulls/9/comments", {"commit_id": "c" * 40, "path": "docs/guide.md", "subject_type": "file", "body": "x"}
+        )
 
     def test_replies_only_in_the_apps_finding_threads(self):
         human = self.finding_comment(login="writer")
@@ -99,7 +109,9 @@ class ServiceRun(ServiceFixture, unittest.TestCase):
             self.drain()
         self.assertEqual(self.stage(), "gates")
         state = self.state()
-        self.assertEqual([(f["id"], f["status"], f["resolution"]) for f in state["findings"]], [("F1", "fixed", "done")])
+        self.assertEqual(
+            [(f["id"], f["status"], f["resolution"]) for f in state["findings"]], [("F1", "fixed", "done")]
+        )
         self.assertEqual([t["isResolved"] for t in self.fake.thread_list], [True])
         self.assertEqual({r["event"] for r in self.fake.app_reviews}, {"COMMENT"})
         self.assertEqual(self.registry.unresolved(KEY), [])

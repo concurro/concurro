@@ -30,9 +30,14 @@ def validate(before, after, plan, config):
 
 def development(report):
     """Require an explanation, agent-reported validation and either edits or a design-reopen request."""
-    if (not isinstance(report, dict) or set(report) != {"summary", "validation", "edits", "design_issue"}
-            or not isinstance(report["summary"], str) or not report["summary"].strip()
-            or not isinstance(report["validation"], str) or len(report["validation"].encode()) > 4000):
+    if (
+        not isinstance(report, dict)
+        or set(report) != {"summary", "validation", "edits", "design_issue"}
+        or not isinstance(report["summary"], str)
+        or not report["summary"].strip()
+        or not isinstance(report["validation"], str)
+        or len(report["validation"].encode()) > 4000
+    ):
         raise Blocked("invalid implementation response")
     if report["design_issue"] is not None and report["edits"]:
         raise Blocked("design reopening cannot include candidate edits")

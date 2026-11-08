@@ -17,8 +17,19 @@ from . import settings as settings_module
 WORKFLOW_REF = "concurro/concurro/.github/workflows/agent.yml@refs/heads/deployed"
 
 
-def migrate(data, url, token, executor="runner", workflow_ref=WORKFLOW_REF, models=("claude-*", "gpt-*"),
-            budget=20_000_000, headers=None, upstream=None, fork=None, issues="fork"):
+def migrate(
+    data,
+    url,
+    token,
+    executor="runner",
+    workflow_ref=WORKFLOW_REF,
+    models=("claude-*", "gpt-*"),
+    budget=20_000_000,
+    headers=None,
+    upstream=None,
+    fork=None,
+    issues="fork",
+):
     """The settings with the gateway block in place of provider credentials and the engine pin."""
     # With runners, this host runs no containers, so it names no images.
     dropped = {"engine"} | ({"agent_image", "execution_image"} if executor == "runner" else set())
@@ -28,10 +39,18 @@ def migrate(data, url, token, executor="runner", workflow_ref=WORKFLOW_REF, mode
             raise ValueError("provide both --upstream and --fork for a single-target migration")
         data["targets"] = [{"upstream": upstream, "fork": fork, "issues": issues}]
     elif any(set(t) != {"upstream", "fork", "issues"} for t in data["targets"]):
-        raise ValueError("legacy targets need explicit --upstream and --fork; multi-target settings must be edited explicitly")
-    data["gateway"] = {"url": url, "operator_token_path": str(token), "executor": executor,
-                       "workflow_ref": workflow_ref if executor == "runner" else None, "models": list(models),
-                       "budget": budget, "headers": {"codex": {"x-concurro-plan": "chatgpt"}} if headers is None else headers}
+        raise ValueError(
+            "legacy targets need explicit --upstream and --fork; multi-target settings must be edited explicitly"
+        )
+    data["gateway"] = {
+        "url": url,
+        "operator_token_path": str(token),
+        "executor": executor,
+        "workflow_ref": workflow_ref if executor == "runner" else None,
+        "models": list(models),
+        "budget": budget,
+        "headers": {"codex": {"x-concurro-plan": "chatgpt"}} if headers is None else headers,
+    }
     return data
 
 
@@ -48,8 +67,16 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     path = arguments.settings
     try:
-        data = migrate(json.loads(path.read_text()), arguments.url, arguments.operator_token.resolve(), arguments.executor,
-                       arguments.workflow_ref, upstream=arguments.upstream, fork=arguments.fork, issues=arguments.issues)
+        data = migrate(
+            json.loads(path.read_text()),
+            arguments.url,
+            arguments.operator_token.resolve(),
+            arguments.executor,
+            arguments.workflow_ref,
+            upstream=arguments.upstream,
+            fork=arguments.fork,
+            issues=arguments.issues,
+        )
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1

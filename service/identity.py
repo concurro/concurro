@@ -14,8 +14,7 @@ import private
 from . import transport
 from .targets import permissions
 
-READ = {"contents": "read", "issues": "read", "pull_requests": "read", "checks": "read",
-        "administration": "read"}
+READ = {"contents": "read", "issues": "read", "pull_requests": "read", "checks": "read", "administration": "read"}
 WRITE = {"contents": "write", "issues": "write", "pull_requests": "write"}
 CUTOVER = {"actions": "read", "actions_variables": "read", "environments": "read"}
 KINDS = {"read": READ, "write": WRITE, "cutover": CUTOVER}
@@ -36,8 +35,9 @@ def segment(value):
 
 def sign(key_path, message):
     """RS256 over `message` with the App's private key, as the pilot does."""
-    result = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key_path)],
-                            input=message, capture_output=True, timeout=15)
+    result = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", str(key_path)], input=message, capture_output=True, timeout=15
+    )
     if result.returncode:
         raise IdentityError("GitHub App key could not sign authentication request")
     return result.stdout
@@ -75,15 +75,20 @@ class Identity:
 
     def api(self, method, path, token, data=None):
         """One App API call with in-memory credentials and sanitized errors."""
-        headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
-                   "X-GitHub-Api-Version": transport.API_VERSION, "User-Agent": transport.USER_AGENT}
+        headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": transport.API_VERSION,
+            "User-Agent": transport.USER_AGENT,
+        }
         body = None
         if data is not None:
             body = json.dumps(data).encode()
             headers["Content-Type"] = "application/json"
         try:
-            response = transport.exchange(self.connection, transport.API, method, "/" + path, headers, body,
-                                          APP_LIMIT, transport.TIMEOUT)
+            response = transport.exchange(
+                self.connection, transport.API, method, "/" + path, headers, body, APP_LIMIT, transport.TIMEOUT
+            )
         except (OSError, http.client.HTTPException):
             raise IdentityError("GitHub App connection failed") from None
         if not response.sent:
@@ -134,8 +139,12 @@ class Identity:
                 raise IdentityError("repository is not enabled for this token use")
         else:
             wanted = KINDS[kind]
-        granted = self.api("POST", f"app/installations/{self.installation(repository)}/access_tokens",
-                           self.app_jwt(), {"repositories": [repository.split("/")[1]], "permissions": wanted})
+        granted = self.api(
+            "POST",
+            f"app/installations/{self.installation(repository)}/access_tokens",
+            self.app_jwt(),
+            {"repositories": [repository.split("/")[1]], "permissions": wanted},
+        )
         token = granted.get("token")
         if not isinstance(token, str) or not token:
             raise IdentityError("GitHub App token unavailable")
@@ -144,7 +153,9 @@ class Identity:
             if permissions != wanted:
                 raise IdentityError("App token permissions differ from the requested least-privilege scope")
             listed = self.api("GET", "installation/repositories?per_page=100", token)
-            if listed.get("total_count") != 1 or [r.get("full_name", "").lower() for r in listed.get("repositories", [])] != [repository.lower()]:
+            if listed.get("total_count") != 1 or [
+                r.get("full_name", "").lower() for r in listed.get("repositories", [])
+            ] != [repository.lower()]:
                 raise IdentityError("App token repository scope differs from the requested repository")
             expires = datetime.fromisoformat(granted["expires_at"]).timestamp()
         except BaseException as error:

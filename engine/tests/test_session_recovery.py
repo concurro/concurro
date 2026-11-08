@@ -29,8 +29,14 @@ class JournalAgents(FakeAgents):
             return report
         root = self.root / session["scope"]
         root.mkdir(exist_ok=True)
-        prompt = json.dumps({"instructions": "fixture", "response_schema": {}, "repository_snapshot": {},
-                             "untrusted_context": {k: v for k, v in context.items() if k != "controller_session"}})
+        prompt = json.dumps(
+            {
+                "instructions": "fixture",
+                "response_schema": {},
+                "repository_snapshot": {},
+                "untrusted_context": {k: v for k, v in context.items() if k != "controller_session"},
+            }
+        )
         turn = None
         try:
             turn = SessionTurn(session, prompt, root)
@@ -91,7 +97,9 @@ class SessionRecoveryTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(current["completed"]["response"], digest(result))
         self.assertEqual(self.agents.prompts[-1][1]["untrusted_context"]["issue"], state["requirements"])
         self.assertNotIn("context_update", self.agents.prompts[-1][1])
-        self.assertEqual(json.loads((Path(self.directory.name) / old["scope"] / "turn.json").read_text())["status"], "pending")
+        self.assertEqual(
+            json.loads((Path(self.directory.name) / old["scope"] / "turn.json").read_text())["status"], "pending"
+        )
         self.assertEqual(state["plan_revisions"], before["plan_revisions"])
         self.assertEqual(state["design_votes"], before["design_votes"])
 

@@ -8,10 +8,23 @@ from pathlib import Path
 from controller import validate_config
 from .target_config import read_local
 
-REMOVED = {"execution_profiles", "execution_profile", "required_checks", "merge_enabled",
-           "local_reviewer", "local_reviewer_model", "max_local_repairs", "max_local_seconds",
-           "max_check_seconds", "max_session_seconds", "local_review_model", "max_local_fix_rounds",
-           "local_timeout_seconds", "local_check_timeout_seconds", "max_validation_repairs"}
+REMOVED = {
+    "execution_profiles",
+    "execution_profile",
+    "required_checks",
+    "merge_enabled",
+    "local_reviewer",
+    "local_reviewer_model",
+    "max_local_repairs",
+    "max_local_seconds",
+    "max_check_seconds",
+    "max_session_seconds",
+    "local_review_model",
+    "max_local_fix_rounds",
+    "local_timeout_seconds",
+    "local_check_timeout_seconds",
+    "max_validation_repairs",
+}
 
 
 def migrate(config):

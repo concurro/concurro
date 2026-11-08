@@ -20,9 +20,15 @@ MAINTENANCE_SECONDS = 86400
 
 def git_environment():
     """No system, global or interactive Git configuration, and no credentials."""
-    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.gettempdir(),
-            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
-            "GIT_ASKPASS": "true", "LC_ALL": "C"}
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": tempfile.gettempdir(),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "true",
+        "LC_ALL": "C",
+    }
 
 
 def default_root():
@@ -46,8 +52,9 @@ class Mirror:
 
     def git(self, *args, timeout=60):
         """Run Git against the mirror only."""
-        result = subprocess.run(["git", "--git-dir", str(self.path), *args], capture_output=True,
-                                env=git_environment(), timeout=timeout)
+        result = subprocess.run(
+            ["git", "--git-dir", str(self.path), *args], capture_output=True, env=git_environment(), timeout=timeout
+        )
         return result
 
     @contextmanager
@@ -62,8 +69,9 @@ class Mirror:
         """Create the bare mirror, readable by the unprivileged tool container user."""
         if self.path.exists():
             return
-        if subprocess.run(["git", "init", "--quiet", "--bare", str(self.path)], capture_output=True,
-                          env=git_environment(), timeout=60).returncode:
+        if subprocess.run(
+            ["git", "init", "--quiet", "--bare", str(self.path)], capture_output=True, env=git_environment(), timeout=60
+        ).returncode:
             raise Blocked("repository mirror could not be created")
         for key, value in (("gc.auto", "0"), ("core.sharedRepository", "0644"), ("fetch.writeFetchHEAD", "false")):
             self.git("config", key, value)
@@ -77,8 +85,12 @@ class Mirror:
 
         A failure releases any pin already made, so nothing is left blocking later maintenance.
         """
-        if (not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name) or not valid_ref(branch)
-                or not commits or not all(SHA.fullmatch(c) for c in commits)):
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name)
+            or not valid_ref(branch)
+            or not commits
+            or not all(SHA.fullmatch(c) for c in commits)
+        ):
             raise Blocked("invalid mirror request")
         with self.locked():
             self.initialize()
@@ -100,8 +112,9 @@ class Mirror:
         """Fetch missing commits with the base branch, so later fetches negotiate incrementally; the lock is held."""
         missing = sorted({c for c in commits if not self.present(c)})
         if missing and self.url:
-            self.git("fetch", "--quiet", "--no-tags", self.url,
-                     f"+refs/heads/{branch}:refs/heads/{branch}", timeout=1800)
+            self.git(
+                "fetch", "--quiet", "--no-tags", self.url, f"+refs/heads/{branch}:refs/heads/{branch}", timeout=1800
+            )
             missing = [sha for sha in missing if not self.present(sha)]
         for url in dict.fromkeys((self.url, *self.sources)):
             if not missing or not url:

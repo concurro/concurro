@@ -60,6 +60,7 @@ def permissions(targets):
 def verify(targets, reader):
     """Require public repositories in one fork network before dispatching anonymous source fetches."""
     from policy import Blocked
+
     found = {}
     for target in targets:
         for repository in target.repositories:

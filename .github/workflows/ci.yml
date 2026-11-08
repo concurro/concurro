@@ -27,6 +27,8 @@ jobs:
       - run: python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4
       - name: Lint Python
         run: ruff check engine service gateway
+      - name: Check Python formatting
+        run: ruff format --check engine service gateway
       - run: python3 -m unittest discover -s engine/tests -v
       - run: python3 -m unittest discover -s service/tests -v
       - run: python3 -m unittest discover -s gateway/tests -v

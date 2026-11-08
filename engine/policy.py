@@ -6,8 +6,7 @@ import model_config
 import json
 import re
 from pathlib import PurePosixPath
-from checks import (MAX_PLAN_FILES, glob_matches as instruction_matches,
-                    in_scope, scope_errors, scope_of)
+from checks import MAX_PLAN_FILES, glob_matches as instruction_matches, in_scope, scope_errors, scope_of
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
 
@@ -100,8 +99,8 @@ def validate_qc(report, stage, charter=None):
     """Reject incomplete or contradictory decisions before they can authorize work."""
     report = classification.core(report)
     fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
-    if stage == 'plan_qc':
-        fields |= {'sources', 'assessments', 'objection_updates'}
+    if stage == "plan_qc":
+        fields |= {"sources", "assessments", "objection_updates"}
     if not isinstance(report, dict) or set(report) != presentation(report, fields, {"headline"}):
         raise Blocked("invalid QC fields")
     decisions = {"clarify", "reject", "escalate"} | ({"proceed"} if stage == "intake" else {"approve", "revise"})
@@ -112,18 +111,26 @@ def validate_qc(report, stage, charter=None):
     for key in ("questions", "concerns"):
         if not isinstance(report[key], list) or not all(isinstance(v, str) and v.strip() for v in report[key]):
             raise Blocked("invalid QC questions or concerns")
-    if stage != 'plan_qc' and len(json.dumps(report).encode()) > 6000:
+    if stage != "plan_qc" and len(json.dumps(report).encode()) > 6000:
         raise Blocked("QC report too large")
     scope = report["scope"]
-    if (not isinstance(scope, dict) or set(scope) != {"goal_ids", "fit", "conflicts"}
-            or not isinstance(scope["goal_ids"], list) or not isinstance(scope["conflicts"], list)
-            or not all(isinstance(v, str) and v.strip() for v in scope["goal_ids"] + scope["conflicts"])
-            or not isinstance(scope["fit"], str) or not scope["fit"].strip()
-            or len(scope["goal_ids"]) != len(set(scope["goal_ids"]))):
+    if (
+        not isinstance(scope, dict)
+        or set(scope) != {"goal_ids", "fit", "conflicts"}
+        or not isinstance(scope["goal_ids"], list)
+        or not isinstance(scope["conflicts"], list)
+        or not all(isinstance(v, str) and v.strip() for v in scope["goal_ids"] + scope["conflicts"])
+        or not isinstance(scope["fit"], str)
+        or not scope["fit"].strip()
+        or len(scope["goal_ids"]) != len(set(scope["goal_ids"]))
+    ):
         raise Blocked("incomplete charter scope judgment")
     if charter is not None and not set(scope["goal_ids"]).issubset(charter["goals"]):
-        raise Blocked("scope cites an unknown charter goal; copy exact IDs from "
-                      + json.dumps(sorted(charter["goals"])) + "; put explanations in scope.fit")
+        raise Blocked(
+            "scope cites an unknown charter goal; copy exact IDs from "
+            + json.dumps(sorted(charter["goals"]))
+            + "; put explanations in scope.fit"
+        )
     decision = report["decision"]
     if decision in ("proceed", "approve") and (not scope["goal_ids"] or scope["conflicts"]):
         raise Blocked("acceptance contradicts charter scope")
@@ -139,12 +146,18 @@ def design_roster(config):
     """The explicit plan reviewers, or the original deduplicated roster for legacy tasks."""
     if "agents" in config:
         parsed = model_config.parse(config)
-        return [{"id": digest(parsed.resolve(name).record()), "provider": name,
-                 "model": parsed.resolve(name).profile.model, "effort": parsed.resolve(name).profile.effort,
-                 "agent": parsed.resolve(name).record(), "roles": ["plan_qc"]}
-                for name in parsed.agents.plan_reviewers]
-    members = [(config["planner"], "plan"), (config["implementer"], "develop"),
-               (config["qc"], "intake")]
+        return [
+            {
+                "id": digest(parsed.resolve(name).record()),
+                "provider": name,
+                "model": parsed.resolve(name).profile.model,
+                "effort": parsed.resolve(name).profile.effort,
+                "agent": parsed.resolve(name).record(),
+                "roles": ["plan_qc"],
+            }
+            for name in parsed.agents.plan_reviewers
+        ]
+    members = [(config["planner"], "plan"), (config["implementer"], "develop"), (config["qc"], "intake")]
     members += [(provider, "review") for provider in config["reviewers"]]
     roster = {}
     for provider, stage in members:
@@ -158,11 +171,22 @@ def design_roster(config):
 
 def approval_binding(state, config):
     """Bind every vote to the exact design generation, governance and participating identities."""
-    return digest({"plan": state["plan_id"], "plan_content": state["plan"], "base": state["base"],
-                   "requirements": state["requirements"], "config": state["config_digest"],
-                   "bundle": state.get("bundle_id"), "charter": state.get("charter_id"),
-                   "generation": state.get("design_generation"), "phase": state.get("design_phase"), "roster": design_roster(config),
-                   "parent": state.get("design_parent"), "changed_files": state.get("approved_accumulated_files", [])})
+    return digest(
+        {
+            "plan": state["plan_id"],
+            "plan_content": state["plan"],
+            "base": state["base"],
+            "requirements": state["requirements"],
+            "config": state["config_digest"],
+            "bundle": state.get("bundle_id"),
+            "charter": state.get("charter_id"),
+            "generation": state.get("design_generation"),
+            "phase": state.get("design_phase"),
+            "roster": design_roster(config),
+            "parent": state.get("design_parent"),
+            "changed_files": state.get("approved_accumulated_files", []),
+        }
+    )
 
 
 def consensus_valid(state, config, require_final=True):
@@ -172,8 +196,7 @@ def consensus_valid(state, config, require_final=True):
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False
     if require_final and state.get("design_phase") != "fresh":
-        if (state.get("design_phase") != "cooperative"
-                or not all(v.get("first_pass") is True for v in votes.values())):
+        if state.get("design_phase") != "cooperative" or not all(v.get("first_pass") is True for v in votes.values()):
             return False
     binding = approval_binding(state, config)
     for member in roster:
@@ -183,8 +206,9 @@ def consensus_valid(state, config, require_final=True):
         report = vote.get("report")
         try:
             from design import validate_evidence
+
             validate_qc(report, "plan_qc", state["charter"])
-            validate_evidence(report, state['requirements'], [{'id': v} for v in vote.get('objection_ids', [])])
+            validate_evidence(report, state["requirements"], [{"id": v} for v in vote.get("objection_ids", [])])
         except (Blocked, TypeError, KeyError):
             return False
         if report["decision"] != "approve" or report["risk"] == "high":
@@ -195,19 +219,27 @@ def consensus_valid(state, config, require_final=True):
 def approval_valid(state, config):
     """Manual commands add writer approval; they cannot waive the unanimous design gate."""
     approval = state.get("approval", {})
-    if (approval.get("plan") != state.get("plan_id") or not consensus_valid(state, config)
-            or approval.get("binding") != approval_binding(state, config)):
+    if (
+        approval.get("plan") != state.get("plan_id")
+        or not consensus_valid(state, config)
+        or approval.get("binding") != approval_binding(state, config)
+    ):
         return False
     return approval.get("kind") == ("human" if state.get("mode") == "manual" else "consensus")
 
 
 def validate_design_issue(issue):
     """Require concrete evidence before reopening requirements or design."""
-    if (not isinstance(issue, dict) or set(issue) != {"kind", "explanation", "evidence"}
-            or issue["kind"] not in ("requirements", "plan")
-            or not isinstance(issue["explanation"], str) or not issue["explanation"].strip()
-            or not isinstance(issue["evidence"], list) or not issue["evidence"]
-            or not all(isinstance(v, str) and v.strip() for v in issue["evidence"])):
+    if (
+        not isinstance(issue, dict)
+        or set(issue) != {"kind", "explanation", "evidence"}
+        or issue["kind"] not in ("requirements", "plan")
+        or not isinstance(issue["explanation"], str)
+        or not issue["explanation"].strip()
+        or not isinstance(issue["evidence"], list)
+        or not issue["evidence"]
+        or not all(isinstance(v, str) and v.strip() for v in issue["evidence"])
+    ):
         raise Blocked("design reopening requires structured evidence")
 
 
@@ -232,8 +264,10 @@ def path_allowed(path, config):
     policy = config["paths"]
     return (
         path.endswith(tuple(policy["editable_extensions"]))
-        and not any(p in policy["protected_names"] or p.startswith(tuple(policy["protected_name_prefixes"]))
-                    for p in path.split("/"))
+        and not any(
+            p in policy["protected_names"] or p.startswith(tuple(policy["protected_name_prefixes"]))
+            for p in path.split("/")
+        )
         and path not in policy["protected_files"]
         and path not in config["policy_documents"]
         and not path.startswith(tuple(policy["protected_prefixes"]))
@@ -245,14 +279,24 @@ def validate_plan(plan, config):
     fields = {"summary", "questions", "files", "steps", "tests", "responses", "publication"}
     if not isinstance(plan, dict) or set(plan) - {"scope"} != presentation(plan, fields, {"headline"}):
         raise Blocked("invalid plan fields")
-    publication = plan['publication']
-    if (not isinstance(publication, dict) or set(publication) != {'changes', 'review_focus'}
-            or any(not isinstance(publication[k], list) or not 1 <= len(publication[k]) <= 5
-                   or not all(isinstance(t, str) and 0 < len(t) <= 300 for t in publication[k]) for k in publication)):
-        raise Blocked('plan publication needs bounded changes and review focus')
+    publication = plan["publication"]
+    if (
+        not isinstance(publication, dict)
+        or set(publication) != {"changes", "review_focus"}
+        or any(
+            not isinstance(publication[k], list)
+            or not 1 <= len(publication[k]) <= 5
+            or not all(isinstance(t, str) and 0 < len(t) <= 300 for t in publication[k])
+            for k in publication
+        )
+    ):
+        raise Blocked("plan publication needs bounded changes and review focus")
     if not isinstance(plan["responses"], list) or any(
-            not isinstance(v, dict) or set(v) != {"id", "response"}
-            or not all(isinstance(t, str) and t.strip() for t in v.values()) for v in plan["responses"]):
+        not isinstance(v, dict)
+        or set(v) != {"id", "response"}
+        or not all(isinstance(t, str) and t.strip() for t in v.values())
+        for v in plan["responses"]
+    ):
         raise Blocked("invalid planner objection responses")
     for key in ("questions", "files", "steps", "tests"):
         if not isinstance(plan[key], list) or not all(isinstance(v, str) for v in plan[key]):
@@ -286,8 +330,11 @@ def validate_edits(result, plan, originals, config):
         raise Blocked("invalid edit fields")
     # A proposal reaching outside the envelope, or touching a path no edit may change, is refused
     # whole before anything is applied; the implementer gets the paths back as feedback.
-    outside = {e["path"] for e in edits if isinstance(e["path"], str)
-               and (not path_allowed(e["path"], config) or not in_scope(e["path"], plan))}
+    outside = {
+        e["path"]
+        for e in edits
+        if isinstance(e["path"], str) and (not path_allowed(e["path"], config) or not in_scope(e["path"], plan))
+    }
     if outside:
         raise OutsideScope(outside)
     seen = set()
@@ -312,11 +359,19 @@ def manifest_fields(review, manifests):
     Reviews recorded before assessments existed have none, which is valid when no manifest changed.
     """
     entries = review.get("manifests", []) if isinstance(review, dict) else []
-    if (not isinstance(entries, list) or len(entries) > 16
-            or not all(isinstance(e, dict) and set(e) == {"path", "assessment"} and isinstance(e["path"], str)
-                       and isinstance(e["assessment"], str) and 1 <= len(e["assessment"].strip()) <= 2000
-                       for e in entries)
-            or len({e["path"] for e in entries}) != len(entries)):
+    if (
+        not isinstance(entries, list)
+        or len(entries) > 16
+        or not all(
+            isinstance(e, dict)
+            and set(e) == {"path", "assessment"}
+            and isinstance(e["path"], str)
+            and isinstance(e["assessment"], str)
+            and 1 <= len(e["assessment"].strip()) <= 2000
+            for e in entries
+        )
+        or len({e["path"] for e in entries}) != len(entries)
+    ):
         raise Blocked("invalid manifest assessments")
     missing = set(manifests) - {e["path"] for e in entries}
     if missing:
@@ -326,8 +381,9 @@ def manifest_fields(review, manifests):
 
 def validate_review(review, manifests=()):
     """Reject contradictory approvals and incomplete structured findings."""
-    if set(review) != presentation(review, {"verdict", "summary", "findings", "design_issue"},
-                                   {"headline"}) | manifest_fields(review, manifests):
+    if set(review) != presentation(
+        review, {"verdict", "summary", "findings", "design_issue"}, {"headline"}
+    ) | manifest_fields(review, manifests):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")
@@ -368,8 +424,13 @@ def validate_pr_finding(finding):
     if "severity" in finding and finding["severity"] not in SEVERITIES:
         raise Blocked("invalid finding severity")
     path, start, line, detail = (finding[k] for k in ("path", "start_line", "line", "detail"))
-    if path is not None and (not isinstance(path, str) or not path.strip() or len(path) > 240
-                             or PurePosixPath(path).is_absolute() or ".." in path.split("/")):
+    if path is not None and (
+        not isinstance(path, str)
+        or not path.strip()
+        or len(path) > 240
+        or PurePosixPath(path).is_absolute()
+        or ".." in path.split("/")
+    ):
         raise Blocked("finding path must be a relative repository path")
     if not line_number(start) or not line_number(line) or start is not None and (line is None or start > line):
         raise Blocked("finding lines must be 1-based with start_line ≤ line")
@@ -385,13 +446,17 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
     Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
     """
     review = classification.core(review)
-    if (not isinstance(review, dict)
-            or set(review) != presentation(review, PR_REVIEW_FIELDS, {"headline"}) | manifest_fields(review, manifests)):
+    if not isinstance(review, dict) or set(review) != presentation(
+        review, PR_REVIEW_FIELDS, {"headline"}
+    ) | manifest_fields(review, manifests):
         raise Blocked("invalid review fields")
     if review["verdict"] not in ("approve", "changes_requested", "reopen"):
         raise Blocked("invalid review verdict")
-    if (not isinstance(review["summary"], str) or not isinstance(review["findings"], list)
-            or not isinstance(review["dispositions"], list)):
+    if (
+        not isinstance(review["summary"], str)
+        or not isinstance(review["findings"], list)
+        or not isinstance(review["dispositions"], list)
+    ):
         raise Blocked("invalid review content")
     if len(review["findings"]) > MAX_PR_FINDINGS:
         raise Blocked("review too large")
@@ -406,8 +471,13 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
         validate_pr_finding(finding)
     answered = []
     for disposition in review["dispositions"]:
-        if (not isinstance(disposition, dict) or set(disposition) != {"id", "status", "evidence"}
-                or not isinstance(disposition["id"], str) or not isinstance(disposition["evidence"], str) or not disposition["evidence"].strip()):
+        if (
+            not isinstance(disposition, dict)
+            or set(disposition) != {"id", "status", "evidence"}
+            or not isinstance(disposition["id"], str)
+            or not isinstance(disposition["evidence"], str)
+            or not disposition["evidence"].strip()
+        ):
             raise Blocked("invalid disposition")
         allowed = ("fixed", "open", "obsolete") if disposition["id"] in withdrawn_ids else ("fixed", "open")
         if disposition["status"] not in allowed:

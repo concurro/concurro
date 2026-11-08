@@ -86,12 +86,12 @@ class Agents:
     @property
     def parallel(self):
         """Whether the executor supports independent nonblocking turns."""
-        return hasattr(self.executor, 'submit') and hasattr(self.executor, 'observe')
+        return hasattr(self.executor, "submit") and hasattr(self.executor, "observe")
 
     @property
     def generation(self):
         """The current service ownership generation, retained only as attempt provenance."""
-        return self.executor.task.get('generation') if self.executor.task else None
+        return self.executor.task.get("generation") if self.executor.task else None
 
     def prepare(self, provider, stage, context):
         """Prepare a validated turn payload without dispatching or changing controller state."""
@@ -102,8 +102,9 @@ class Agents:
         candidate = context.pop("controller_candidate", None)
         feedback = context.pop("controller_feedback", {})
         evaluation = context.pop("controller_evaluation", None)
-        if evaluation is not None and (stage != "plan_qc" or session is not None
-                                       or not re.fullmatch(r"[a-f0-9]{32}", evaluation)):
+        if evaluation is not None and (
+            stage != "plan_qc" or session is not None or not re.fullmatch(r"[a-f0-9]{32}", evaluation)
+        ):
             raise Blocked("evaluation requires a fresh design-review turn")
         agent = resolve(self.config, provider, stage, context.get("reviewer_identity"))
         model = agent.profile.model
@@ -116,19 +117,34 @@ class Agents:
             raise Blocked("agent transport bundle differs from the approved bundle")
         if session and not self.retained:
             raise Blocked("retained sessions need a transcript store")
-        request = {"provider": agent.profile.harness, "model": model, "effort": agent.profile.effort,
-                   **({"agent": agent.record()} if "agents" in self.config else {}), "stage": stage, "gateway": self.executor.gateway,
-                   "bundle_id": self.bundle.identity, "charter": self.bundle.charter_text, "instruction_texts": self.bundle.instruction_texts,
-                   "context": context, "session": session, "local_candidate": candidate is not None, "evaluation": evaluation}
-        turn = {"request": request, "feedback": feedback, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
-                "retained": self.retained.load(session) if session else None,
-                "timeout": None if runner_bound(stage) else DEFAULT_TURN_SECONDS}
+        request = {
+            "provider": agent.profile.harness,
+            "model": model,
+            "effort": agent.profile.effort,
+            **({"agent": agent.record()} if "agents" in self.config else {}),
+            "stage": stage,
+            "gateway": self.executor.gateway,
+            "bundle_id": self.bundle.identity,
+            "charter": self.bundle.charter_text,
+            "instruction_texts": self.bundle.instruction_texts,
+            "context": context,
+            "session": session,
+            "local_candidate": candidate is not None,
+            "evaluation": evaluation,
+        }
+        turn = {
+            "request": request,
+            "feedback": feedback,
+            "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
+            "retained": self.retained.load(session) if session else None,
+            "timeout": None if runner_bound(stage) else DEFAULT_TURN_SECONDS,
+        }
         return turn
 
     def decode(self, turn, result):
         """Persist the transcript and decode one result, independently of other turns."""
-        request = turn['request']
-        session, provider, stage = request['session'], request['provider'], request['stage']
+        request = turn["request"]
+        session, provider, stage = request["session"], request["provider"], request["stage"]
         return self.decode_result(session, provider, stage, result)
 
     def decode_result(self, session, provider, stage, result):
@@ -140,20 +156,36 @@ class Agents:
                 TurnOutcome.ADMISSION_UNKNOWN: f"{turn_label(stage)} admission outcome is unknown; no start was confirmed.",
                 TurnOutcome.QUEUE_EXPIRED: f"No {turn_label(stage).lower()} start was observed within the 30-minute dispatch/setup limit.",
             }[result["outcome"]]
-            raise RunnerTerminated(message + " Withdrawal was attempted, but admission or cancellation can race "
-                                   "with execution. Inspect the exchange and runner before a writer retries; "
-                                   "no automatic restart was attempted.")
+            raise RunnerTerminated(
+                message + " Withdrawal was attempted, but admission or cancellation can race "
+                "with execution. Inspect the exchange and runner before a writer retries; "
+                "no automatic restart was attempted."
+            )
         if runner_bound(stage) and result["outcome"] in (
-                TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED, TurnOutcome.LOST, TurnOutcome.UNCERTAIN):
-            reasons = {"turn_timeout": "reached Concurro's execution time limit",
-                       "runner_stopped": "was stopped", "process_signal": "was terminated by a signal"}
+            TurnOutcome.TIMED_OUT,
+            TurnOutcome.TERMINATED,
+            TurnOutcome.LOST,
+            TurnOutcome.UNCERTAIN,
+        ):
+            reasons = {
+                "turn_timeout": "reached Concurro's execution time limit",
+                "runner_stopped": "was stopped",
+                "process_signal": "was terminated by a signal",
+            }
             cause = result.get("termination_reason")
-            reason = ("reached Concurro's execution time limit" if result["outcome"] == TurnOutcome.TIMED_OUT
-                      else reasons.get(cause if isinstance(cause, str) else None, "ended; the cause is unconfirmed"))
+            reason = (
+                "reached Concurro's execution time limit"
+                if result["outcome"] == TurnOutcome.TIMED_OUT
+                else reasons.get(cause if isinstance(cause, str) else None, "ended; the cause is unconfirmed")
+            )
             seconds = result.get("elapsed_seconds")
-            duration = f" after {seconds:.0f}s of turn time" if type(seconds) in (int, float) and 0 <= seconds <= 86400 else ""
-            raise RunnerTerminated(f"{turn_label(stage)} {reason}{duration}. No result was saved; execution may be incomplete. "
-                                   "Inspect the runner before a writer retries; no automatic restart was attempted.")
+            duration = (
+                f" after {seconds:.0f}s of turn time" if type(seconds) in (int, float) and 0 <= seconds <= 86400 else ""
+            )
+            raise RunnerTerminated(
+                f"{turn_label(stage)} {reason}{duration}. No result was saved; execution may be incomplete. "
+                "Inspect the runner before a writer retries; no automatic restart was attempted."
+            )
         if result["outcome"] != TurnOutcome.OK:
             uncertain = result["outcome"] in (TurnOutcome.UNCERTAIN, TurnOutcome.LOST, TurnOutcome.TIMED_OUT)
             if result["outcome"] == TurnOutcome.TIMED_OUT:
@@ -162,7 +194,9 @@ class Agents:
                     raise SessionFailure(message, uncertain=True)
                 raise UncertainOutcome(message)
             if session:
-                raise SessionFailure("provider session failed; output suppressed to protect credentials", uncertain=uncertain)
+                raise SessionFailure(
+                    "provider session failed; output suppressed to protect credentials", uncertain=uncertain
+                )
             if uncertain:
                 raise UncertainOutcome(f"{provider} outcome is unknown; output suppressed")
             raise Blocked(f"{provider} failed; output suppressed to protect credentials")
@@ -207,8 +241,11 @@ def workspace_response(response, workspace):
         raise Blocked("implementation turn returned no workspace changes")
     if workspace.get("error") and response.get("design_issue") is None:
         return {**response, "edits": [], "workspace_error": str(workspace["error"])[:1000]}
-    edits = [] if response.get("design_issue") is not None else [
-        *workspace["edits"], *({"path": path, "content": None} for path in workspace["removed"])]
+    edits = (
+        []
+        if response.get("design_issue") is not None
+        else [*workspace["edits"], *({"path": path, "content": None} for path in workspace["removed"])]
+    )
     return {**{k: v for k, v in response.items() if k != "edits"}, "edits": edits}
 
 
@@ -225,14 +262,27 @@ class TurnHandle:
     timing: dict | None = None
     failures: int = 0
     next_poll: float = 0
-    status: str = 'queued'
+    status: str = "queued"
 
 
 class RunnerExecutor:
     """Turns on GitHub-hosted runners of the target, queued at the exchange and served by runner sessions."""
 
-    def __init__(self, operator, gateway, expected, models, budget, dispatch, lease=6 * 3600, clock=time.monotonic,
-                 sleep=time.sleep, task=None, check_owner=None, runner_status=None):
+    def __init__(
+        self,
+        operator,
+        gateway,
+        expected,
+        models,
+        budget,
+        dispatch,
+        lease=6 * 3600,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        task=None,
+        check_owner=None,
+        runner_status=None,
+    ):
         """`expected` are the OIDC claims a runner of this target must present; `dispatch(session)` starts one."""
         self.operator, self.gateway, self.expected = operator, gateway, expected
         self.models, self.budget, self.dispatch, self.lease = models, budget, dispatch, lease
@@ -251,7 +301,11 @@ class RunnerExecutor:
             raise Blocked("runner turn lacks its task binding or allowed model")
         role = str(request.get("stage")) + ":" + str(request.get("provider"))
         base = request.get("context", {}).get("base") or turn["spec"]["refs"][turn["spec"]["base_branch"]]
-        phase = request.get("evaluation") or (request.get("session") or {}).get("scope") or request.get("context", {}).get("review_phase", "single")
+        phase = (
+            request.get("evaluation")
+            or (request.get("session") or {}).get("scope")
+            or request.get("context", {}).get("review_phase", "single")
+        )
         if request.get("agent"):
             # Staffing includes the resolved profile, even for fresh turns on the same CLI.
             phase = digest([phase, request["agent"]])
@@ -286,15 +340,20 @@ class RunnerExecutor:
         identifier = identifier or str(uuid.uuid4())
         binding, model = self.binding(turn, identifier)
         group = digest([binding, model])
-        handle = TurnHandle(identifier, turn,
-                            self.clock() + (turn['timeout'] or 0) + QUEUE_SECONDS, group,
-                            set(self.groups.get(group, ())))
+        handle = TurnHandle(
+            identifier,
+            turn,
+            self.clock() + (turn["timeout"] or 0) + QUEUE_SECONDS,
+            group,
+            set(self.groups.get(group, ())),
+        )
         try:
             reply = self.admit(handle.identifier, turn, pin)
             if reply is None:
                 self.withdraw(handle.identifier)
-                handle.result = self.lost(TurnOutcome.ADMISSION_UNKNOWN if runner_bound(turn['request']['stage'])
-                                         else TurnOutcome.UNCERTAIN)
+                handle.result = self.lost(
+                    TurnOutcome.ADMISSION_UNKNOWN if runner_bound(turn["request"]["stage"]) else TurnOutcome.UNCERTAIN
+                )
             else:
                 self.receive(handle, reply)
             return handle
@@ -305,31 +364,34 @@ class RunnerExecutor:
     @staticmethod
     def lost(outcome):
         """An absent result cannot authorize work."""
-        return {'outcome': outcome, 'response': None, 'retained': None, 'workspace': None}
+        return {"outcome": outcome, "response": None, "retained": None, "workspace": None}
 
     def receive(self, handle, reply):
         """Update one observation; dispatch and retain no sibling's session."""
         self.check_owner()
         observed = review_timing.normalize(reply)
-        if observed and observed['turn'] == handle.identifier:
+        if observed and observed["turn"] == handle.identifier:
             handle.timing = observed
-        handle.status = reply.get('status', handle.status)
-        if runner_bound(handle.turn['request']['stage']) and handle.status == 'running':
+        handle.status = reply.get("status", handle.status)
+        if runner_bound(handle.turn["request"]["stage"]) and handle.status == "running":
             handle.deadline = None
-        session = reply.get('dispatch')
+        session = reply.get("dispatch")
         if session and session not in handle.sessions:
             handle.sessions.add(session)
             self.groups.setdefault(handle.group, set()).add(session)
             self.start(session)
-        if reply.get('refusal'):
-            raise Blocked('a runner of the target was refused by the gateway: ' + reply['refusal'])
-        if reply.get('status') == 'done' and 'result' in reply:
-            handle.result = reply['result']
-        elif reply.get('status') in ('lost', 'cancelled'):
-            if runner_bound(handle.turn['request']['stage']):
+        if reply.get("refusal"):
+            raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
+        if reply.get("status") == "done" and "result" in reply:
+            handle.result = reply["result"]
+        elif reply.get("status") in ("lost", "cancelled"):
+            if runner_bound(handle.turn["request"]["stage"]):
                 detail = self.runner_status(reply)
-                raise RunnerTerminated(detail or f"{turn_label(handle.turn['request']['stage'])} runner stopped reporting or was ended; no result was saved. "
-                                       'The cause is unconfirmed. Inspect the runner before a writer retries.')
+                raise RunnerTerminated(
+                    detail
+                    or f"{turn_label(handle.turn['request']['stage'])} runner stopped reporting or was ended; no result was saved. "
+                    "The cause is unconfirmed. Inspect the runner before a writer retries."
+                )
             handle.result = self.lost(TurnOutcome.LOST)
 
     def observe(self, handle, wait=0):
@@ -337,8 +399,11 @@ class RunnerExecutor:
         self.check_owner()
         if handle.result is not None:
             return handle.result
-        if (not runner_bound(handle.turn["request"]["stage"])
-                and handle.deadline is not None and self.clock() > handle.deadline):
+        if (
+            not runner_bound(handle.turn["request"]["stage"])
+            and handle.deadline is not None
+            and self.clock() > handle.deadline
+        ):
             self.withdraw(handle.identifier)
             handle.result = self.lost(TurnOutcome.UNCERTAIN)
             return handle.result
@@ -348,11 +413,13 @@ class RunnerExecutor:
             reply = self.operator.poll(handle.identifier, wait=wait)
             handle.failures = 0
         except ExchangeError as error:
-            job_bound = runner_bound(handle.turn['request']['stage'])
+            job_bound = runner_bound(handle.turn["request"]["stage"])
             if job_bound and not (error.status in (0, 408, 429) or 500 <= error.status <= 599):
-                raise RunnerTerminated(f"{turn_label(handle.turn['request']['stage'])} status could not be read: exchange refused polling "
-                                       f"(HTTP {error.status}). Execution status is unknown. Inspect the exchange "
-                                       "and runner before a writer retries; no automatic restart was attempted.") from None
+                raise RunnerTerminated(
+                    f"{turn_label(handle.turn['request']['stage'])} status could not be read: exchange refused polling "
+                    f"(HTTP {error.status}). Execution status is unknown. Inspect the exchange "
+                    "and runner before a writer retries; no automatic restart was attempted."
+                ) from None
             handle.failures += 1
             delay = min(60, 15 * 2 ** min(handle.failures - 1, 2)) if job_bound else 15
             handle.next_poll = self.clock() + delay
@@ -363,8 +430,13 @@ class RunnerExecutor:
             return handle.result
         self.receive(handle, reply)
         # Observe first: a queued turn may have started since our last poll.
-        if (runner_bound(handle.turn['request']['stage']) and handle.result is None
-                and handle.status == 'queued' and handle.deadline is not None and self.clock() > handle.deadline):
+        if (
+            runner_bound(handle.turn["request"]["stage"])
+            and handle.result is None
+            and handle.status == "queued"
+            and handle.deadline is not None
+            and self.clock() > handle.deadline
+        ):
             self.withdraw(handle.identifier)
             handle.result = self.lost(TurnOutcome.QUEUE_EXPIRED)
         return handle.result
@@ -383,7 +455,7 @@ class RunnerExecutor:
             except ExchangeError as failed:
                 error = failed
         if error:
-            raise GatewayUnavailable('unavailable') from None
+            raise GatewayUnavailable("unavailable") from None
 
     def cancel_quietly(self, handle):
         """Best-effort cleanup must not mask an existing transport or ownership failure."""
@@ -401,9 +473,18 @@ class RunnerExecutor:
                 result = self.observe(handle, wait=45)
                 self.timing = handle.timing
                 if result is not None:
-                    if (result.get('outcome') == TurnOutcome.TIMED_OUT or runner_bound(turn['request']['stage'])
-                            and result.get('outcome') in (TurnOutcome.LOST, TurnOutcome.UNCERTAIN, TurnOutcome.TERMINATED,
-                                                        TurnOutcome.ADMISSION_UNKNOWN, TurnOutcome.QUEUE_EXPIRED)):
+                    if (
+                        result.get("outcome") == TurnOutcome.TIMED_OUT
+                        or runner_bound(turn["request"]["stage"])
+                        and result.get("outcome")
+                        in (
+                            TurnOutcome.LOST,
+                            TurnOutcome.UNCERTAIN,
+                            TurnOutcome.TERMINATED,
+                            TurnOutcome.ADMISSION_UNKNOWN,
+                            TurnOutcome.QUEUE_EXPIRED,
+                        )
+                    ):
                         self.cancel_quietly(handle)
                     return result
                 delay = max(0, handle.next_poll - self.clock())

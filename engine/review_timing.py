@@ -13,8 +13,12 @@ def normalize(value):
     if not isinstance(value, dict):
         return None
     turn = value.get("turn")
-    if (not isinstance(turn, str) or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", turn)
-            or not isinstance(value.get("status"), str) or value["status"] not in STATUSES):
+    if (
+        not isinstance(turn, str)
+        or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", turn)
+        or not isinstance(value.get("status"), str)
+        or value["status"] not in STATUSES
+    ):
         return None
     result = {"turn": turn, "status": value["status"]}
     for key in ("created", "started", "finished"):
@@ -28,22 +32,33 @@ def durations(value):
     value = normalize(value) or {}
     created, started, finished = (value.get(k) for k in ("created", "started", "finished"))
     admitted = started - created if created is not None and started is not None and started >= created else None
-    execution = (finished - started if value.get("status") == "done" and started is not None
-                 and finished is not None and finished >= started else None)
+    execution = (
+        finished - started
+        if value.get("status") == "done" and started is not None and finished is not None and finished >= started
+        else None
+    )
     return {"admission_to_claim_seconds": admitted, "execution_seconds": execution}
 
 
 def index_receipt(state, kind, details):
     """Associate telemetry only with the current operation's own report, never model text."""
-    stage = {"review": "review", "review_rejection": "plan_qc", "intake_rejection": "intake",
-             "implementation": "develop"}.get(kind)
+    stage = {
+        "review": "review",
+        "review_rejection": "plan_qc",
+        "intake_rejection": "intake",
+        "implementation": "develop",
+    }.get(kind)
     if kind == "qc":
         stage = "intake" if details.get("phase") == "intake" else "plan_qc"
     operation = review_state.operation(state)
     value = normalize(operation.get("timing"))
-    if (not value or not stage or operation.get("stage") != stage
-            or operation.get("provider") != details.get("provider")
-            or operation.get("status") not in ("completed", "consumed")):
+    if (
+        not value
+        or not stage
+        or operation.get("stage") != stage
+        or operation.get("provider") != details.get("provider")
+        or operation.get("status") not in ("completed", "consumed")
+    ):
         return None
     return {"operation": operation["id"], "attempt": operation["attempt"], **value}
 

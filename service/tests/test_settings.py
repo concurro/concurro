@@ -32,16 +32,28 @@ class SettingsTests(unittest.TestCase):
         for name in ("app.pem", "webhook", "operator", "two.json"):
             self.private(name)
         self.data = {
-            "controller_id": "service:primary", "engine": "b" * 40, "app_id": 123,
-            "private_key_path": str(self.root / "app.pem"), "webhook_secret_path": str(self.root / "webhook"),
-            "state_dir": str(self.root / "state"), "registry_id": "registry-1",
-            "targets": [{"upstream": "source/one", "fork": "owner/one", "issues": "fork"},
-                        {"upstream": "source/two", "fork": "owner/two", "issues": "both"}],
+            "controller_id": "service:primary",
+            "engine": "b" * 40,
+            "app_id": 123,
+            "private_key_path": str(self.root / "app.pem"),
+            "webhook_secret_path": str(self.root / "webhook"),
+            "state_dir": str(self.root / "state"),
+            "registry_id": "registry-1",
+            "targets": [
+                {"upstream": "source/one", "fork": "owner/one", "issues": "fork"},
+                {"upstream": "source/two", "fork": "owner/two", "issues": "both"},
+            ],
             "limits": {"global": 4, "per_repository": 2},
-            "gateway": {"url": "https://gateway.invalid/concurro", "operator_token_path": str(self.root / "operator"),
-                        "executor": "runner", "workflow_ref": "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
-                        "models": ["claude-*", "gpt-*"], "budget": 1000000,
-                        "headers": {"codex": {"x-concurro-plan": "chatgpt"}}}}
+            "gateway": {
+                "url": "https://gateway.invalid/concurro",
+                "operator_token_path": str(self.root / "operator"),
+                "executor": "runner",
+                "workflow_ref": "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
+                "models": ["claude-*", "gpt-*"],
+                "budget": 1000000,
+                "headers": {"codex": {"x-concurro-plan": "chatgpt"}},
+            },
+        }
 
     def private(self, name, content="{}"):
         path = self.root / name
@@ -61,8 +73,10 @@ class SettingsTests(unittest.TestCase):
         loaded = self.load(self.data)
         self.assertEqual([t.fork for t in loaded.targets], ["owner/one", "owner/two"])
         self.assertEqual((loaded.limits.global_ticks, loaded.limits.per_repository), (4, 2))
-        self.assertEqual((loaded.gateway.executor, loaded.gateway.models, loaded.gateway.operator_token_path),
-                         ("runner", ("claude-*", "gpt-*"), self.root / "operator"))
+        self.assertEqual(
+            (loaded.gateway.executor, loaded.gateway.models, loaded.gateway.operator_token_path),
+            ("runner", ("claude-*", "gpt-*"), self.root / "operator"),
+        )
         with self.assertRaises(settings.SettingsError):
             self.load({**self.data, "gateway": {**self.data["gateway"], "executor": "host"}})
         with self.assertRaises(AttributeError):
@@ -78,8 +92,18 @@ class SettingsTests(unittest.TestCase):
         old["targets"] = [{"repository": "owner/one", "credentials_file": str(self.root / "two.json")}]
         path.write_text(json.dumps(old))
         path.chmod(0o600)
-        arguments = ["--settings", str(path), "--url", "https://gateway.invalid/concurro",
-                     "--operator-token", str(self.root / "operator"), "--upstream", "source/one", "--fork", "owner/one"]
+        arguments = [
+            "--settings",
+            str(path),
+            "--url",
+            "https://gateway.invalid/concurro",
+            "--operator-token",
+            str(self.root / "operator"),
+            "--upstream",
+            "source/one",
+            "--fork",
+            "owner/one",
+        ]
         self.assertEqual(use_gateway.main(arguments), 0)
         loaded = settings.load(path)
         self.assertEqual((loaded.engine, [t.fork for t in loaded.targets]), (None, ["owner/one"]))
@@ -91,6 +115,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_invalid_fields(self):
         """Unknown, missing or ill-typed fields, unpinned images and out-of-range limits are refused."""
+
         def changed(**fields):
             data = deepcopy(self.data)
             for name, value in fields.items():
@@ -101,29 +126,57 @@ class SettingsTests(unittest.TestCase):
             return data
 
         cases = {
-            "unknown": changed(extra=1), "missing": changed(app_id=KeyError),
-            "controller": changed(controller_id="actions"), "engine": changed(engine="main"),
-            "boolean app": changed(app_id=True), "string app": changed(app_id="123"), "zero app": changed(app_id=0),
+            "unknown": changed(extra=1),
+            "missing": changed(app_id=KeyError),
+            "controller": changed(controller_id="actions"),
+            "engine": changed(engine="main"),
+            "boolean app": changed(app_id=True),
+            "string app": changed(app_id="123"),
+            "zero app": changed(app_id=0),
             "runner images": changed(**IMAGES),
-            **{"host " + name: changed(**images, gateway={**self.data["gateway"], "executor": "host", "workflow_ref": None})
-               for name, images in {"without images": {}, "mutable image": {**IMAGES, "agent_image": "concurro-agent:latest"},
-                                    "one image": {"agent_image": IMAGE}}.items()},
-            "relative": changed(state_dir="state"), "no targets": changed(targets=[]),
+            **{
+                "host " + name: changed(
+                    **images, gateway={**self.data["gateway"], "executor": "host", "workflow_ref": None}
+                )
+                for name, images in {
+                    "without images": {},
+                    "mutable image": {**IMAGES, "agent_image": "concurro-agent:latest"},
+                    "one image": {"agent_image": IMAGE},
+                }.items()
+            },
+            "relative": changed(state_dir="state"),
+            "no targets": changed(targets=[]),
             "bad repository": changed(targets=[{"repository": "owner"}]),
             "repeated": changed(targets=[self.data["targets"][0], self.data["targets"][0]]),
             "same repository": changed(targets=[{"upstream": "Owner/One", "fork": "owner/one", "issues": "both"}]),
             "source": changed(targets=[{**self.data["targets"][0], "issues": "separate"}]),
-            "ambiguous": changed(targets=[self.data["targets"][1],
-                {"upstream": "source/two", "fork": "owner/third", "issues": "upstream"}]),
-            "target credentials": changed(targets=[{**self.data["targets"][0], "credentials_file": str(self.root / "two.json")}]),
+            "ambiguous": changed(
+                targets=[
+                    self.data["targets"][1],
+                    {"upstream": "source/two", "fork": "owner/third", "issues": "upstream"},
+                ]
+            ),
+            "target credentials": changed(
+                targets=[{**self.data["targets"][0], "credentials_file": str(self.root / "two.json")}]
+            ),
             "no gateway": changed(gateway=KeyError),
-            **{"gateway " + name: changed(gateway={**self.data["gateway"], **value}) for name, value in {
-                "http": {"url": "http://gateway.invalid"}, "url path": {"url": "https://gateway.invalid/a b"},
-                "executor": {"executor": "local"}, "runner without workflow": {"workflow_ref": None},
-                "workflow": {"workflow_ref": "concurro/concurro/agent.yml@main"}, "models": {"models": []},
-                "model pattern": {"models": ["claude *"]}, "budget": {"budget": 0},
-                "header provider": {"headers": {"copilot": {}}}, "header name": {"headers": {"codex": {"x y": "z"}}},
-                "token": {"operator_token_path": str(self.root / "absent")}, "extra": {"key": "x"}}.items()},
+            **{
+                "gateway " + name: changed(gateway={**self.data["gateway"], **value})
+                for name, value in {
+                    "http": {"url": "http://gateway.invalid"},
+                    "url path": {"url": "https://gateway.invalid/a b"},
+                    "executor": {"executor": "local"},
+                    "runner without workflow": {"workflow_ref": None},
+                    "workflow": {"workflow_ref": "concurro/concurro/agent.yml@main"},
+                    "models": {"models": []},
+                    "model pattern": {"models": ["claude *"]},
+                    "budget": {"budget": 0},
+                    "header provider": {"headers": {"copilot": {}}},
+                    "header name": {"headers": {"codex": {"x y": "z"}}},
+                    "token": {"operator_token_path": str(self.root / "absent")},
+                    "extra": {"key": "x"},
+                }.items()
+            },
             "limits": changed(limits={"global": 1, "per_repository": 2}),
             "limit type": changed(limits={"global": 2.0, "per_repository": 1}),
             "inside checkout": changed(state_dir=str(settings.CHECKOUT / "state")),
@@ -195,7 +248,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "invalid settings field: engine")
 
 
-
 class HostCheckTests(unittest.TestCase):
     """Startup serves the clean checkout's HEAD, or refuses a checkout away from the configured commit."""
 
@@ -206,8 +258,9 @@ class HostCheckTests(unittest.TestCase):
             out = next((v for k, v in replies.items() if k in command), "")
             return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
 
-        loaded = settings.Settings("service:p", engine, 1, Path("/k"), Path("/w"), Path("/s"), "r", (),
-                                   settings.Limits(1, 1), None)
+        loaded = settings.Settings(
+            "service:p", engine, 1, Path("/k"), Path("/w"), Path("/s"), "r", (), settings.Limits(1, 1), None
+        )
         with patch.object(daemon.subprocess, "run", side_effect=run):
             return daemon.host_checks(loaded)
 
@@ -218,6 +271,7 @@ class HostCheckTests(unittest.TestCase):
             self.check("b" * 40)
         with self.assertRaisesRegex(daemon.StartupError, "clean"):
             self.check(None, dirty=" M engine/controller.py\n")
+
 
 if __name__ == "__main__":
     unittest.main()

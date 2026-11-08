@@ -12,7 +12,18 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from runner_fixtures import ExecutorFixture, GATEWAY, MODELS, AGENT, Workspace, FakeExecutor, FakeOperator, TASK, TURN, FakeRunner
+from runner_fixtures import (
+    ExecutorFixture,
+    GATEWAY,
+    MODELS,
+    AGENT,
+    Workspace,
+    FakeExecutor,
+    FakeOperator,
+    TASK,
+    TURN,
+    FakeRunner,
+)
 import agent_entry
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from credentials import Credential
@@ -24,9 +35,7 @@ import runner
 import turns
 
 
-
 class ExtractionTests(Workspace, unittest.TestCase):
-
     def test_changes_are_extracted_against_the_snapshot_head(self):
         root = self.prepare(candidate={"files": {"docs/guide.md": "Candidate\n"}})
         work = root / "work"
@@ -37,8 +46,13 @@ class ExtractionTests(Workspace, unittest.TestCase):
         (work / "target").mkdir()
         (work / "target/debug.bin").write_bytes(b"\xff\x00")
         changes = turns.extract(work, root / "pristine.git", root)
-        self.assertEqual(changes["edits"], [{"path": "src/lib.rs", "content": "fn main() { run(); }\n"},
-                                            {"path": "src/run.rs", "content": "pub fn run() {}\n"}])
+        self.assertEqual(
+            changes["edits"],
+            [
+                {"path": "src/lib.rs", "content": "fn main() { run(); }\n"},
+                {"path": "src/run.rs", "content": "pub fn run() {}\n"},
+            ],
+        )
         self.assertEqual(changes["removed"], ["docs/guide.md"])
 
     def test_nothing_the_agent_wrote_under_git_takes_part(self):
@@ -48,8 +62,10 @@ class ExtractionTests(Workspace, unittest.TestCase):
         hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
         hook.chmod(0o755)
         with (work / ".git/config").open("a") as config:
-            config.write(f"[core]\n\tfsmonitor = {hook}\n\thooksPath = {self.tmp}\n"
-                         f"[filter \"evil\"]\n\tclean = {hook}\n\trequired = true\n")
+            config.write(
+                f"[core]\n\tfsmonitor = {hook}\n\thooksPath = {self.tmp}\n"
+                f'[filter "evil"]\n\tclean = {hook}\n\trequired = true\n'
+            )
         (work / ".gitattributes").write_text("* filter=evil\n")
         (work / ".git/info").mkdir(exist_ok=True)
         (work / ".git/info/exclude").write_text("src/hidden.rs\n")
@@ -68,13 +84,25 @@ class ExtractionTests(Workspace, unittest.TestCase):
 
         run("git", "read-tree", "HEAD")
         run("git", "update-index", "--add", "--cacheinfo", f"160000,{self.base},vendor/sub")
-        commit = run("git", "-c", "user.useConfigOnly=true", "commit-tree", run("git", "write-tree"),
-                     "-p", "HEAD", "-m", "submodule")
+        commit = run(
+            "git",
+            "-c",
+            "user.useConfigOnly=true",
+            "commit-tree",
+            run("git", "write-tree"),
+            "-p",
+            "HEAD",
+            "-m",
+            "submodule",
+        )
         run("git", "update-ref", "HEAD", commit)
         sub = work / "vendor/sub"
         sub.mkdir(parents=True)
-        inner = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, "GIT_CONFIG_GLOBAL": os.devnull,
-                 "GIT_CONFIG_NOSYSTEM": "1"}
+        inner = {
+            **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
         run("git", "init", "-q", str(sub), env=inner)
         (sub / "file").write_text("x\n")
         run("git", "-C", str(sub), "add", "file", env=inner)
@@ -83,7 +111,7 @@ class ExtractionTests(Workspace, unittest.TestCase):
         hook.write_text(f"#!/bin/sh\ntouch {marker}\ncat\n")
         hook.chmod(0o755)
         with (sub / ".git/config").open("a") as config:
-            config.write(f"[filter \"evil\"]\n\tclean = {hook}\n")
+            config.write(f'[filter "evil"]\n\tclean = {hook}\n')
         (sub / ".gitattributes").write_text("* filter=evil\n")
         # Same size, new mtime: Git must hash the file, through the filter.
         (sub / "file").write_text("y\n")
@@ -101,8 +129,10 @@ class ExtractionTests(Workspace, unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(nested)], check=True)
         (nested / "x").write_text("x")
         self.assertEqual(turns.extract(work, root / "pristine.git", root)["skipped"], ["vendor/clone/"])
-        for name, make in (("link", lambda p: p.symlink_to("/etc/passwd")),
-                           ("binary", lambda p: p.write_bytes(b"\xff\xfe"))):
+        for name, make in (
+            ("link", lambda p: p.symlink_to("/etc/passwd")),
+            ("binary", lambda p: p.write_bytes(b"\xff\xfe")),
+        ):
             path = work / ("src/" + name)
             make(path)
             with self.subTest(name=name), self.assertRaises(turns.TurnError):
@@ -111,14 +141,17 @@ class ExtractionTests(Workspace, unittest.TestCase):
 
 
 class ExecuteTests(Workspace, unittest.TestCase):
-
     def execute(self, request, retained=None, feedback_files=None):
         root = turns.directory(self.tmp / "turns")
         fake = lambda: [sys.executable, "-c", AGENT, str(root)]
-        turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": None if request["stage"] == "develop" else 1800,
-                "feedback": feedback_files or {}}
-        with patch.object(turns, "command", side_effect=fake), \
-                patch.dict(os.environ, {"GH_TOKEN": "owner-secret"}):
+        turn = {
+            "request": request,
+            "spec": self.spec,
+            "retained": retained,
+            "timeout": None if request["stage"] == "develop" else 1800,
+            "feedback": feedback_files or {},
+        }
+        with patch.object(turns, "command", side_effect=fake), patch.dict(os.environ, {"GH_TOKEN": "owner-secret"}):
             result = turns.execute(turn, "sk-agw-test", self.mirror, root)
         return result, root
 
@@ -127,8 +160,10 @@ class ExecuteTests(Workspace, unittest.TestCase):
         result, root = self.execute({"stage": "develop", "session": session}, retained=None)
         self.assertEqual(result["outcome"], "ok")
         self.assertEqual(result["response"], {"summary": "done", "checks": [], "design_issue": None})
-        self.assertEqual(result["workspace"]["edits"], [{"path": "docs/guide.md", "content": "Guide\nEdited\n"},
-                                                        {"path": "docs/new.md", "content": "New\n"}])
+        self.assertEqual(
+            result["workspace"]["edits"],
+            [{"path": "docs/guide.md", "content": "Guide\nEdited\n"}, {"path": "docs/new.md", "content": "New\n"}],
+        )
         restored = self.tmp / "restored"
         turns.unpack(result["retained"], restored)
         self.assertEqual(json.loads((restored / "turn.json").read_text()), {"turn": 1})
@@ -137,13 +172,13 @@ class ExecuteTests(Workspace, unittest.TestCase):
     def test_native_turn_reads_full_feedback_outside_checkout_and_retained_home(self):
         """The actual agent subprocess receives files before it starts; extraction excludes them."""
         from policy import digest
-        evidence = {'id': 'F1', 'detail': 'complete feedback ' * 20000}
-        result, root = self.execute({'stage': 'develop', 'session': None},
-                                    feedback_files={digest(evidence): evidence})
-        self.assertEqual(result['outcome'], 'ok')
-        self.assertEqual(json.loads((root / 'scratch/feedback-read.json').read_text()), [evidence])
-        self.assertFalse(any('feedback' in edit['path'] for edit in result['workspace']['edits']))
-        self.assertFalse(list((root / 'retained').rglob('*.json')))
+
+        evidence = {"id": "F1", "detail": "complete feedback " * 20000}
+        result, root = self.execute({"stage": "develop", "session": None}, feedback_files={digest(evidence): evidence})
+        self.assertEqual(result["outcome"], "ok")
+        self.assertEqual(json.loads((root / "scratch/feedback-read.json").read_text()), [evidence])
+        self.assertFalse(any("feedback" in edit["path"] for edit in result["workspace"]["edits"]))
+        self.assertFalse(list((root / "retained").rglob("*.json")))
 
     def test_a_review_turn_carries_no_workspace(self):
         result, _ = self.execute({"stage": "review", "session": None})
@@ -151,20 +186,35 @@ class ExecuteTests(Workspace, unittest.TestCase):
 
     def test_exit_codes_and_output_map_to_outcomes(self):
         self.assertEqual(turns.outcome(0, '{"a": 1}'), ("ok", {"a": 1}))
-        for code, stdout, expected in ((75, "", "uncertain"), (137, "", "uncertain"), (-9, "", "uncertain"),
-                                       (1, '{"a": 1}', "failed"), (0, "not json", "failed"),
-                                       (0, "1" * (turns.MAX_RESPONSE + 1), "failed")):
+        for code, stdout, expected in (
+            (75, "", "uncertain"),
+            (137, "", "uncertain"),
+            (-9, "", "uncertain"),
+            (1, '{"a": 1}', "failed"),
+            (0, "not json", "failed"),
+            (0, "1" * (turns.MAX_RESPONSE + 1), "failed"),
+        ):
             with self.subTest(code=code, stdout=stdout[:10]):
                 self.assertEqual(turns.outcome(code, stdout)[0], expected)
 
     def test_native_tools_keep_target_home_and_tools_but_not_job_credentials(self):
         root = Path("/runner/turn-" + "0" * 32)
-        with patch.dict(os.environ, {"HOME": "/home/runner", "CARGO_HOME": "/toolchain/cargo", "PATH": "/target/bin",
-                                     "GITHUB_TOKEN": "github-secret", "GH_TOKEN": "gh-secret",
-                                     "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-secret", "OPENAI_API_KEY": "provider-secret"}):
+        with patch.dict(
+            os.environ,
+            {
+                "HOME": "/home/runner",
+                "CARGO_HOME": "/toolchain/cargo",
+                "PATH": "/target/bin",
+                "GITHUB_TOKEN": "github-secret",
+                "GH_TOKEN": "gh-secret",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-secret",
+                "OPENAI_API_KEY": "provider-secret",
+            },
+        ):
             env = turns.agent_environment(root, "session-key", True)
-        self.assertEqual((env["HOME"], env["CARGO_HOME"], env["PATH"]),
-                         ("/home/runner", "/toolchain/cargo", "/target/bin"))
+        self.assertEqual(
+            (env["HOME"], env["CARGO_HOME"], env["PATH"]), ("/home/runner", "/toolchain/cargo", "/target/bin")
+        )
         self.assertEqual(env["CODEX_HOME"], str(root / "retained/codex"))
         self.assertEqual(env[turns.KEY_VARIABLE], "session-key")
         self.assertFalse(set(env) & {"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OPENAI_API_KEY"})
@@ -212,16 +262,34 @@ class ExecuteTests(Workspace, unittest.TestCase):
             Path(directory, "codex/sessions").mkdir(parents=True)
             Path(directory, "codex/sessions/r.jsonl").write_bytes(os.urandom(4096))
             Path(directory, 'codex/a"\nb').write_text("{}")
-            with patch.object(turns, "MAX_RETAINED", 10), self.assertRaisesRegex(
-                    turns.TurnError, r'largest \(uncompressed\): "codex/sessions" 4 KiB, "codex/a\\"\\nb" 0 KiB$'):
+            with (
+                patch.object(turns, "MAX_RETAINED", 10),
+                self.assertRaisesRegex(
+                    turns.TurnError, r'largest \(uncompressed\): "codex/sessions" 4 KiB, "codex/a\\"\\nb" 0 KiB$'
+                ),
+            ):
                 turns.pack(directory)
 
     def test_a_retained_codex_home_is_archived_without_its_caches(self):
-        kept = ["codex/sessions/2026/11/04/rollout.jsonl", "codex/state_5.sqlite", "codex/state_5.sqlite-wal",
-                "codex/thread_history_1.sqlite", "home/.config/x", "turn.json"]
-        cached = ["codex/.tmp/bundled-marketplaces/m.json", "codex/.tmp/plugins/p.json", "codex/tmp/arg0/x",
-                  "codex/plugins/cache/c", "codex/cache/remote_plugin_catalog/c", "codex/log/codex.log",
-                  "codex/logs_2.sqlite", "codex/logs_2.sqlite-wal", "codex/models_cache.json"]
+        kept = [
+            "codex/sessions/2026/11/04/rollout.jsonl",
+            "codex/state_5.sqlite",
+            "codex/state_5.sqlite-wal",
+            "codex/thread_history_1.sqlite",
+            "home/.config/x",
+            "turn.json",
+        ]
+        cached = [
+            "codex/.tmp/bundled-marketplaces/m.json",
+            "codex/.tmp/plugins/p.json",
+            "codex/tmp/arg0/x",
+            "codex/plugins/cache/c",
+            "codex/cache/remote_plugin_catalog/c",
+            "codex/log/codex.log",
+            "codex/logs_2.sqlite",
+            "codex/logs_2.sqlite-wal",
+            "codex/models_cache.json",
+        ]
         with tempfile.TemporaryDirectory() as directory:
             for name in kept + cached:
                 Path(directory, name).parent.mkdir(parents=True, exist_ok=True)
@@ -229,12 +297,12 @@ class ExecuteTests(Workspace, unittest.TestCase):
             archive = turns.pack(directory)
         with tempfile.TemporaryDirectory() as directory:
             turns.unpack(archive, directory)
-            self.assertEqual(sorted(str(p.relative_to(directory)) for p in Path(directory).rglob("*") if p.is_file()),
-                             sorted(kept))
+            self.assertEqual(
+                sorted(str(p.relative_to(directory)) for p in Path(directory).rglob("*") if p.is_file()), sorted(kept)
+            )
 
 
 class AgentsTests(unittest.TestCase):
-
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -244,8 +312,12 @@ class AgentsTests(unittest.TestCase):
     def ask(self, result=None, stage="review", session=None, candidate=None, **extra):
         executor = FakeExecutor(result)
         agents = Agents(self.config, executor, retained=self.retained)
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
-                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}, **extra}
+        context = {
+            "bundle_id": agents.bundle.identity,
+            "repository_commit": "a" * 40,
+            "repository": {"refs": {"main": "a" * 40}, "head": "main"},
+            **extra,
+        }
         if session:
             context["controller_session"] = session
         if candidate is not None:
@@ -253,9 +325,15 @@ class AgentsTests(unittest.TestCase):
         return agents.ask("codex", stage, context), executor, agents
 
     def test_a_turn_carries_the_request_spec_and_gateway(self):
-        _, executor, agents = self.ask(stage="develop", candidate={"docs/guide.md": "x"},
-                                       result={"outcome": "ok", "response": {"summary": "s", "checks": [], "design_issue": None},
-                                               "workspace": {"edits": [], "removed": [], "skipped": []}})
+        _, executor, agents = self.ask(
+            stage="develop",
+            candidate={"docs/guide.md": "x"},
+            result={
+                "outcome": "ok",
+                "response": {"summary": "s", "checks": [], "design_issue": None},
+                "workspace": {"edits": [], "removed": [], "skipped": []},
+            },
+        )
         [(turn, label)] = executor.turns
         request = turn["request"]
         self.assertEqual((request["provider"], request["model"], request["gateway"]), ("codex", "gpt-test", GATEWAY))
@@ -272,14 +350,20 @@ class AgentsTests(unittest.TestCase):
     def test_develop_returns_the_workspace_edits(self):
         response = {"summary": "s", "checks": ["lint"], "design_issue": None}
         workspace = {"edits": [{"path": "a.md", "content": "x"}], "removed": [], "skipped": []}
-        result, _, _ = self.ask({"outcome": "ok", "response": response, "workspace": workspace}, stage="develop",
-                                candidate={})
+        result, _, _ = self.ask(
+            {"outcome": "ok", "response": response, "workspace": workspace}, stage="develop", candidate={}
+        )
         self.assertEqual(result, {**response, "edits": workspace["edits"]})
         issue = {**response, "design_issue": {"kind": "plan", "explanation": "e", "evidence": []}}
-        result, _, _ = self.ask({"outcome": "ok", "response": issue, "workspace": workspace}, stage="develop", candidate={})
+        result, _, _ = self.ask(
+            {"outcome": "ok", "response": issue, "workspace": workspace}, stage="develop", candidate={}
+        )
         self.assertEqual(result["edits"], [], "a design issue keeps no edits")
-        result, _, _ = self.ask({"outcome": "ok", "response": response,
-                                 "workspace": {**workspace, "removed": ["b.md"]}}, stage="develop", candidate={})
+        result, _, _ = self.ask(
+            {"outcome": "ok", "response": response, "workspace": {**workspace, "removed": ["b.md"]}},
+            stage="develop",
+            candidate={},
+        )
         self.assertEqual(result["edits"], [*workspace["edits"], {"path": "b.md", "content": None}])
 
     def test_failures_map_to_the_engines_recovery(self):
@@ -306,7 +390,9 @@ class AgentsTests(unittest.TestCase):
 
     def test_routes_models_and_bundles_are_checked(self):
         agents = Agents(self.config, FakeExecutor())
-        self.assertEqual(agents.credential("claude", "plan", None), Credential("gateway:claude", "claude", "org", "gateway-key"))
+        self.assertEqual(
+            agents.credential("claude", "plan", None), Credential("gateway:claude", "claude", "org", "gateway-key")
+        )
         with self.assertRaisesRegex(Blocked, "no inference gateway route"):
             agents.credential("copilot", "review", None)
         foreign = agents.credential("claude", "review", None).record()
@@ -319,32 +405,59 @@ class AgentsTests(unittest.TestCase):
 
 
 class ExecutorTests(ExecutorFixture, unittest.TestCase):
-
     def test_a_runner_turn_dispatches_a_session_when_needed_and_returns_the_result(self):
         result = {"outcome": "ok", "response": {"a": 1}}
-        executor, operator, started = self.runner([{"turn": "t", "dispatch": "s-2"}, {"status": "queued"},
-                                                   {"status": "running"}, {"status": "done", "result": result}])
+        executor, operator, started = self.runner(
+            [
+                {"turn": "t", "dispatch": "s-2"},
+                {"status": "queued"},
+                {"status": "running"},
+                {"status": "done", "result": result},
+            ]
+        )
         self.assertEqual(executor.run(TURN, "label"), result)
         self.assertEqual(started, ["s-2"])
-        self.assertEqual(operator.calls[0], ("submit", ("t", {"repository_id": "1"}, ["claude-test"], 5000, 21600, TURN, None,
-                                           {**TASK, "base": "a" * 40, "role": "plan:claude", "phase": "single"})))
+        self.assertEqual(
+            operator.calls[0],
+            (
+                "submit",
+                (
+                    "t",
+                    {"repository_id": "1"},
+                    ["claude-test"],
+                    5000,
+                    21600,
+                    TURN,
+                    None,
+                    {**TASK, "base": "a" * 40, "role": "plan:claude", "phase": "single"},
+                ),
+            ),
+        )
 
     def test_a_lost_submission_reply_is_recovered_under_the_same_turn(self):
         result = {"outcome": "ok", "response": {}}
-        executor, operator, started = self.runner([ExchangeError(0, "unreachable"), ExchangeError(502, ""),
-                                                   {"turn": "t", "dispatch": "s-2"}, {"status": "queued", "dispatch": "s-2"},
-                                                   {"status": "done", "result": result}])
+        executor, operator, started = self.runner(
+            [
+                ExchangeError(0, "unreachable"),
+                ExchangeError(502, ""),
+                {"turn": "t", "dispatch": "s-2"},
+                {"status": "queued", "dispatch": "s-2"},
+                {"status": "done", "result": result},
+            ]
+        )
         self.assertEqual(executor.run(TURN, "label"), result)
         self.assertEqual([call[1][0] for call in operator.calls if call[0] == "submit"], ["t", "t", "t"])
         self.assertEqual(started, ["s-2"], "a session is dispatched once")
 
     def test_a_turn_completed_before_its_admission_is_recovered_returns_its_result(self):
         result = {"outcome": "ok", "response": {}}
-        executor, operator, _ = self.runner([ExchangeError(0, "unreachable"),
-                                             {"turn": "t", "dispatch": None, "status": "done", "result": result}])
+        executor, operator, _ = self.runner(
+            [ExchangeError(0, "unreachable"), {"turn": "t", "dispatch": None, "status": "done", "result": result}]
+        )
         self.assertEqual(executor.run(TURN, "label"), result)
-        executor, operator, _ = self.runner([{"turn": "t", "dispatch": None, "status": "done"},
-                                             {"status": "done", "result": result}])
+        executor, operator, _ = self.runner(
+            [{"turn": "t", "dispatch": None, "status": "done"}, {"status": "done", "result": result}]
+        )
         self.assertEqual(executor.run(TURN, "label"), result, "a reply without the result is polled for it")
         self.assertEqual(operator.calls[-1], ("poll", "t"))
 
@@ -360,14 +473,18 @@ class ExecutorTests(ExecutorFixture, unittest.TestCase):
     def test_a_lost_turn_is_uncertain_and_a_refusal_blocks(self):
         executor, _, _ = self.runner([{"turn": "t", "dispatch": None}, {"status": "lost"}])
         self.assertEqual(executor.run(TURN, "label")["outcome"], "lost")
-        executor, operator, _ = self.runner([{"turn": "t", "dispatch": None},
-                                             {"status": "queued", "refusal": "token does not match the session: actor_id"}])
+        executor, operator, _ = self.runner(
+            [
+                {"turn": "t", "dispatch": None},
+                {"status": "queued", "refusal": "token does not match the session: actor_id"},
+            ]
+        )
         with self.assertRaisesRegex(Blocked, "actor_id"):
             executor.run(TURN, "label")
         self.assertEqual(operator.calls[-1], ("cancel", "t"))
 
     def test_a_turn_past_its_deadline_is_withdrawn(self):
-        times = iter([0, 10 ** 6])
+        times = iter([0, 10**6])
         executor, operator, _ = self.runner([{"turn": "t", "dispatch": None}], clock=lambda: next(times))
         self.assertEqual(executor.run(TURN, "label")["outcome"], "uncertain")
         self.assertEqual(operator.calls[-1], ("cancel", "t"))
@@ -375,6 +492,7 @@ class ExecutorTests(ExecutorFixture, unittest.TestCase):
     def test_a_failed_dispatch_ends_its_session_and_withdraws_the_turn(self):
         def refuse(session):
             raise Blocked("GitHub rejected the write")
+
         executor, operator, _ = self.runner([{"turn": "t", "dispatch": "s-3"}], dispatch=refuse)
         with self.assertRaisesRegex(Blocked, "rejected"):
             executor.run(TURN, "label")
@@ -382,13 +500,14 @@ class ExecutorTests(ExecutorFixture, unittest.TestCase):
 
 
 class RunnerLoopTests(unittest.TestCase):
-
     def test_turns_run_and_report_until_the_session_ends(self):
         turn = {"id": "t1", "payload": {"request": {"stage": "plan", "provider": "claude"}}}
         client = FakeRunner([[turn], []])
         loop = runner.Loop(client, "sk-agw-run", object(), tempfile.mkdtemp(), 3600)
-        with patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute, \
-                patch.object(runner, "HEARTBEAT", 0):
+        with (
+            patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute,
+            patch.object(runner, "HEARTBEAT", 0),
+        ):
             loop.serve()
         self.assertEqual(execute.call_args.args[:2], (turn["payload"], "sk-agw-run"))
         self.assertEqual(client.completed, [("t1", {"outcome": "ok", "response": {}})])
@@ -450,12 +569,17 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
         import exchange_fixtures  # puts the exchange on the module path
         import exchange as exchange_module
+
         self.signer = exchange_fixtures.Signer(str(self.tmp))
-        self.exchange = exchange_module.Exchange(str(self.tmp / "exchange.db"), exchange_fixtures.FakeGateway(),
-                                                 exchange_module.Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
-                                                 exchange_fixtures.AUDIENCE)
+        self.exchange = exchange_module.Exchange(
+            str(self.tmp / "exchange.db"),
+            exchange_fixtures.FakeGateway(),
+            exchange_module.Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
+            exchange_fixtures.AUDIENCE,
+        )
         self.server = exchange_module.server(self.exchange, "127.0.0.1:0", "operator-secret")
         import threading
+
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -464,33 +588,49 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
     def test_same_cli_review_profiles_run_in_distinct_groups_and_cancel_independently(self):
         """Real HTTP exchange staffing separates profiles, while each runner stays serial."""
         from relay import Operator, Runner
+
         dispatched = []
-        executor = RunnerExecutor(Operator(self.url, 'operator-secret'), GATEWAY, self.expected,
-                                  ['gpt-*'], 1000, dispatched.append, task=TASK)
+        executor = RunnerExecutor(
+            Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatched.append, task=TASK
+        )
+
         def turn(profile):
             """Different model profiles deliberately share the codex harness and phase."""
-            return {**deepcopy(TURN), 'request': {'provider': 'codex', 'stage': 'plan_qc',
-                'model': 'gpt-' + profile, 'context': {'base': 'a' * 40, 'review_phase': 'cooperative'},
-                'agent': {'profile': profile, 'provider': 'openai', 'harness': 'codex',
-                          'model': 'gpt-' + profile, 'effort': 'high'}}}
-        first, second = executor.submit(turn('one')), executor.submit(turn('two'))
-        queued = executor.submit(turn('one'))
+            return {
+                **deepcopy(TURN),
+                "request": {
+                    "provider": "codex",
+                    "stage": "plan_qc",
+                    "model": "gpt-" + profile,
+                    "context": {"base": "a" * 40, "review_phase": "cooperative"},
+                    "agent": {
+                        "profile": profile,
+                        "provider": "openai",
+                        "harness": "codex",
+                        "model": "gpt-" + profile,
+                        "effort": "high",
+                    },
+                },
+            }
+
+        first, second = executor.submit(turn("one")), executor.submit(turn("two"))
+        queued = executor.submit(turn("one"))
         self.assertEqual(len(dispatched), 2)
         self.assertNotEqual(first.group, second.group)
         runners = []
         for session in dispatched:
             client = Runner(self.url, session)
-            client.key(self.signer.token(actor_id='3003', ref='refs/heads/concurro/runs/' + session))
+            client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session))
             runners.append(client)
         a, b = runners
-        self.assertEqual([t['id'] for t in a.next(8, 0)], [first.identifier])
-        self.assertEqual([t['id'] for t in b.next(8, 0)], [second.identifier])
+        self.assertEqual([t["id"] for t in a.next(8, 0)], [first.identifier])
+        self.assertEqual([t["id"] for t in b.next(8, 0)], [second.identifier])
         self.assertEqual(a.next(8, 0), [])
         self.assertEqual(b.next(8, 0), [])
         executor.cancel(second)
-        a.complete(first.identifier, {'outcome': 'ok', 'response': {}})
-        self.assertEqual(executor.observe(first)['outcome'], 'ok')
-        self.assertEqual([t['id'] for t in a.next(8, 0)], [queued.identifier])
+        a.complete(first.identifier, {"outcome": "ok", "response": {}})
+        self.assertEqual(executor.observe(first)["outcome"], "ok")
+        self.assertEqual([t["id"] for t in a.next(8, 0)], [queued.identifier])
         executor.cancel(queued)
 
     def test_a_develop_turn_round_trips_through_a_runner_session(self):
@@ -508,6 +648,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
         """Run the real relay and extraction, optionally returning a multi-megabyte edit."""
         import threading
         from relay import Operator, Runner
+
         loops = []
 
         def dispatch(session):
@@ -517,6 +658,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
                 loop = runner.Loop(client, grant["key"], self.mirror, self.tmp / "runner", 0)
                 loop.serve()
                 client.end()
+
             thread = threading.Thread(target=serve)
             thread.start()
             loops.append(thread)
@@ -526,31 +668,46 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
             """Locate the turn from its CLI home now that command takes no directory."""
             script = AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]')
             if with_feedback:
-                script = script.replace('request = json.load(sys.stdin)',
+                script = script.replace(
+                    "request = json.load(sys.stdin)",
                     'request = json.load(sys.stdin)\nassert request.get("feedback_directory")\n'
                     'assert json.loads(next(pathlib.Path(request["feedback_directory"]).glob("*.json")).read_text())'
-                    ' == [{"id": "F1", "detail": "full evidence " * 20000}]')
+                    ' == [{"id": "F1", "detail": "full evidence " * 20000}]',
+                )
             if large:
                 script = script.replace('"Guide\\nEdited\\n"', '"Source\\n" * 500000')
-            script = script.replace("root = pathlib.Path(sys.argv[1])",
-                                    'root = pathlib.Path(os.environ["CODEX_HOME"]).parents[1]')
+            script = script.replace(
+                "root = pathlib.Path(sys.argv[1])", 'root = pathlib.Path(os.environ["CODEX_HOME"]).parents[1]'
+            )
             return [sys.executable, "-c", script]
 
-        executor = RunnerExecutor(Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch, task=TASK)
+        executor = RunnerExecutor(
+            Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch, task=TASK
+        )
         agents = Agents({**CONFIG, "models": MODELS, "base": "main"}, executor, retained=self.tmp / "sessions")
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": self.base,
-                   "repository": {"refs": {"main": self.base}, "head": "main"},
-                   "controller_candidate": {"src/lib.rs": "fn main() {}\n"}}
+        context = {
+            "bundle_id": agents.bundle.identity,
+            "repository_commit": self.base,
+            "repository": {"refs": {"main": self.base}, "head": "main"},
+            "controller_candidate": {"src/lib.rs": "fn main() {}\n"},
+        }
         if with_feedback:
             import feedback
-            context = feedback.prepare({**context, 'review_findings': [{'id': 'F1', 'detail': 'full evidence ' * 20000}]})
-        with patch.object(turns, "command", side_effect=fake), \
-                patch.object(runner, "HEARTBEAT", 1):
+
+            context = feedback.prepare(
+                {**context, "review_findings": [{"id": "F1", "detail": "full evidence " * 20000}]}
+            )
+        with patch.object(turns, "command", side_effect=fake), patch.object(runner, "HEARTBEAT", 1):
             result = agents.ask("codex", "develop", context)
             for thread in loops:
                 thread.join(30)
-        self.assertEqual(result["edits"], [{"path": "docs/guide.md", "content": "Source\n" * 500000 if large else "Guide\nEdited\n"},
-                                           {"path": "docs/new.md", "content": "New\n"}])
+        self.assertEqual(
+            result["edits"],
+            [
+                {"path": "docs/guide.md", "content": "Source\n" * 500000 if large else "Guide\nEdited\n"},
+                {"path": "docs/new.md", "content": "New\n"},
+            ],
+        )
         self.assertEqual(len(loops), 1, "one session served the target")
         self.assertEqual(self.exchange.gateway.list(), [], "the session's key is gone once its runner ended it")
 
@@ -560,14 +717,17 @@ class SetupLifecycleTests(unittest.TestCase):
 
     def test_setup_heartbeat_never_takes_a_turn_and_stops_on_revocation(self):
         import threading
+
         stopped = threading.Event()
         calls = []
+
         class Client:
             def next(self, capacity, wait):
                 calls.append((capacity, wait))
                 if len(calls) == 4:
                     raise ExchangeError(410, "ended")
                 return []
+
         runner.heartbeat(Client(), stopped, interval=0)
         self.assertEqual(calls, [(0, 0)] * 4)
         self.assertTrue(stopped.is_set())
@@ -593,8 +753,12 @@ class SetupLifecycleTests(unittest.TestCase):
             root = Path(temporary) / "session"
             args = ["runner.py", "claim", "--session", "s", "--gateway", "https://gateway.invalid", "--root", str(root)]
             grant = {"key": "session-key", "token": "runner-token", "binding": TASK}
-            with patch.object(sys, "argv", args), patch.object(runner, "oidc_token", return_value="jwt"), \
-                    patch.object(runner.Runner, "key", return_value=grant), patch.object(runner.subprocess, "Popen") as start:
+            with (
+                patch.object(sys, "argv", args),
+                patch.object(runner, "oidc_token", return_value="jwt"),
+                patch.object(runner.Runner, "key", return_value=grant),
+                patch.object(runner.subprocess, "Popen") as start,
+            ):
                 start.return_value.pid = 42
                 runner.main()
             self.assertEqual(json.loads((root / "grant.json").read_text()), grant)
@@ -605,14 +769,18 @@ class SetupLifecycleTests(unittest.TestCase):
 
     def test_lost_ownership_cancels_dispatched_session_and_discards_result(self):
         from service.errors import OwnershipLost
+
         operator = FakeOperator([{"turn": "t", "dispatch": "s"}, {"status": "done", "result": {"outcome": "ok"}}])
         checks = []
+
         def owner():
             checks.append(1)
             if len(checks) == 3:
                 raise OwnershipLost("new owner")
-        executor = RunnerExecutor(operator, GATEWAY, {}, ["claude-*"], 1000, lambda _: None,
-                                  task=TASK, check_owner=owner)
+
+        executor = RunnerExecutor(
+            operator, GATEWAY, {}, ["claude-*"], 1000, lambda _: None, task=TASK, check_owner=owner
+        )
         with self.assertRaises(OwnershipLost):
             executor.run(TURN, "test")
         self.assertIn(("end", "s"), operator.calls)

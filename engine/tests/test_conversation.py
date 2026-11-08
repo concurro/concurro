@@ -26,9 +26,13 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
 
     def test_revision_conversation_sessions_and_fresh_gate(self):
         """Two revisions keep each model's session while fresh final votes authorize work."""
-        self.agents.qc_reports = [decision("proceed"), decision("approve"),
-            decision("revise", concerns=["Define the error behavior."]), decision("approve"),
-            decision("revise", concerns=["Test the boundary."])]
+        self.agents.qc_reports = [
+            decision("proceed"),
+            decision("approve"),
+            decision("revise", concerns=["Define the error behavior."]),
+            decision("approve"),
+            decision("revise", concerns=["Test the boundary."]),
+        ]
         for _ in range(15):
             controller = self.tick()
             if controller.state["stage"] == "implement":
@@ -54,8 +58,11 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
             self.assertEqual([s["turn"] for s in sessions], [0, 1, 2])
             self.assertEqual(len({s["scope"] for s in sessions}), 1)
             self.assertNotEqual(sessions[0]["scope"], plans[0]["controller_session"]["scope"])
-        self.assertEqual([c["body"].split("\n")[1] for c in self.events()], ["@writer I've picked up this issue and will start digging in!"],
-                         "progress posts no additional issue comments")
+        self.assertEqual(
+            [c["body"].split("\n")[1] for c in self.events()],
+            ["@writer I've picked up this issue and will start digging in!"],
+            "progress posts no additional issue comments",
+        )
         archives = self.gh.archives()
         self.assertIn("Define the error behavior.", "\n".join(archives))
         self.assertEqual(sum(a.split("\n")[1].startswith("### ✅ Plan QC · ") for a in archives), 6)
@@ -78,7 +85,12 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
             """Disconnect once after the server stores the first archive."""
             nonlocal failed
             result = original(path, method, data)
-            if not failed and method == "POST" and path.endswith("/artifacts") and (data or {}).get("body", "").startswith(conversation.MARKER):
+            if (
+                not failed
+                and method == "POST"
+                and path.endswith("/artifacts")
+                and (data or {}).get("body", "").startswith(conversation.MARKER)
+            ):
                 failed = True
                 raise RuntimeError("lost response")
             return result
@@ -109,10 +121,15 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
     def test_fresh_dissent_reopens_instead_of_using_cooperative_approvals(self):
         """Final independent objections invalidate the exact plan and require revision."""
         self.config["max_plan_revisions"] = 2
-        self.agents.qc_reports = [decision("proceed"), decision("approve"),
-                                 decision("revise", concerns=["Specify the boundary."]),
-                                 decision("approve"), decision("approve"),
-                                 decision("approve"), decision("revise", concerns=["Missed edge case."])]
+        self.agents.qc_reports = [
+            decision("proceed"),
+            decision("approve"),
+            decision("revise", concerns=["Specify the boundary."]),
+            decision("approve"),
+            decision("approve"),
+            decision("approve"),
+            decision("revise", concerns=["Missed edge case."]),
+        ]
         for _ in range(9):
             controller = self.tick()
         self.assertEqual(controller.state["stage"], "plan")
@@ -122,8 +139,11 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
 
     def test_planner_cannot_omit_objection_responses(self):
         """A missing objection response is corrected before design review can continue."""
-        self.agents.qc_reports = [decision("proceed"), decision("approve"),
-                                 decision("revise", concerns=["Specify the boundary."])]
+        self.agents.qc_reports = [
+            decision("proceed"),
+            decision("approve"),
+            decision("revise", concerns=["Specify the boundary."]),
+        ]
         for _ in range(4):
             self.tick()
         original = self.agents.ask
@@ -141,5 +161,7 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
         self.assertNotIn("approval", state)
         repaired = self.tick().state
         self.assertEqual(repaired["stage"], "plan_qc")
-        self.assertEqual({v["id"] for v in repaired["plan"]["responses"]},
-                         {v["id"] for v in repaired["objections"] if not v["resolved"]})
+        self.assertEqual(
+            {v["id"] for v in repaired["plan"]["responses"]},
+            {v["id"] for v in repaired["objections"] if not v["resolved"]},
+        )

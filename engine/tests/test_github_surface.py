@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from controller import Controller, ESCALATION_REASON, STATE_PREFIX
 from github import GitHub, NotFound
@@ -107,8 +108,10 @@ class SurfaceTests(unittest.TestCase):
     def test_labels_are_retryable_display_and_cannot_authorize_execution(self):
         """A failed label update preserves state; a forged label cannot skip design review."""
         controller = self.controller()
-        with patch.object(self.gh, "sync_stage", side_effect=RuntimeError("private transport error")), \
-                patch("sys.stderr", new_callable=io.StringIO) as output:
+        with (
+            patch.object(self.gh, "sync_stage", side_effect=RuntimeError("private transport error")),
+            patch("sys.stderr", new_callable=io.StringIO) as output,
+        ):
             controller.advance(7)
         self.assertNotIn("private transport error", output.getvalue())
         visible = self.gh.summary()["body"].split("<details>")[0]
@@ -139,8 +142,10 @@ class SurfaceTests(unittest.TestCase):
             self.assertEqual(self.controller().state, state)
             raise RuntimeError("private transport error")
 
-        with patch.object(self.gh, "sync_stage", side_effect=fail_after_checkpoint), \
-                patch("sys.stderr", new_callable=io.StringIO):
+        with (
+            patch.object(self.gh, "sync_stage", side_effect=fail_after_checkpoint),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
             self.assertFalse(resumed.advance(7))
         self.assertEqual(self.controller().state, state)
         visible = self.gh.summary()["body"].split("<details>")[0]
@@ -245,16 +250,24 @@ class GitHubSurfaceAdapterTests(unittest.TestCase):
         with patch.object(gh, "pages", side_effect=[current, current]), patch.object(gh, "repo") as repo:
             gh.sync_stage(4, "plan_qc")
         self.assertEqual(repo.call_args_list[0].args[0:2], ("labels", "POST"))
-        self.assertEqual(repo.call_args_list[1].args, ("issues/4/labels", "POST", {"labels": ["concurro:stage:plan-qc"]}))
+        self.assertEqual(
+            repo.call_args_list[1].args, ("issues/4/labels", "POST", {"labels": ["concurro:stage:plan-qc"]})
+        )
         self.assertEqual(repo.call_args_list[2].args, ("issues/4/labels/concurro%3Astage%3Aintake", "DELETE"))
-        with patch.object(gh, "pages", return_value=[{"name": "concurro:stage:plan-qc"}]), patch.object(gh, "repo") as repo:
+        with (
+            patch.object(gh, "pages", return_value=[{"name": "concurro:stage:plan-qc"}]),
+            patch.object(gh, "repo") as repo,
+        ):
             gh.sync_stage(4, "plan_qc")
             repo.assert_not_called()
 
     def test_only_not_found_responses_are_distinguished(self):
         """Absent classic protection is a 404; every other failure stays a generic error."""
         gh = GitHub(CONFIG["repository"])
-        for stderr, error in (("gh: Branch not protected (HTTP 404)", NotFound), ("gh: Forbidden (HTTP 403)", RuntimeError)):
+        for stderr, error in (
+            ("gh: Branch not protected (HTTP 404)", NotFound),
+            ("gh: Forbidden (HTTP 403)", RuntimeError),
+        ):
             with self.subTest(stderr=stderr), patch("github.subprocess.run") as run:
                 run.return_value.returncode, run.return_value.stderr = 1, stderr
                 with self.assertRaises(error) as raised:

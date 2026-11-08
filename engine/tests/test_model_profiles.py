@@ -112,20 +112,31 @@ class InvocationTests(unittest.TestCase):
         agents = Agents(config, executor)
         for name in ("sol-high", "astra-high", "opus-high"):
             resolved = resolve(config, name, "review")
-            context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
-                       "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
+            context = {
+                "bundle_id": agents.bundle.identity,
+                "repository_commit": "a" * 40,
+                "repository": {"refs": {"main": "a" * 40}, "head": "main"},
+            }
             agents.ask(name, "review", context)
             request = executor.turns[-1][0]["request"]
             self.assertEqual(request["agent"], resolved.record())
-            self.assertEqual((request["provider"], request["model"], request["effort"]),
-                             (resolved.profile.harness, resolved.profile.model, "high"))
+            self.assertEqual(
+                (request["provider"], request["model"], request["effort"]),
+                (resolved.profile.harness, resolved.profile.model, "high"),
+            )
             self.assertEqual(agents.credential(name, "review", None).provider, resolved.profile.harness)
 
     def test_explicit_effort_is_sent_on_fresh_and_resumed_cli_calls(self):
         for harness in ("codex", "claude"):
             for resume in (False, True):
-                request = {"provider": harness, "model": "model", "schema": {}, "gateway": GATEWAY,
-                           "effort": "high", **({"resume_id": "thread", "session": {"turn": 1}} if resume else {})}
+                request = {
+                    "provider": harness,
+                    "model": "model",
+                    "schema": {},
+                    "gateway": GATEWAY,
+                    "effort": "high",
+                    **({"resume_id": "thread", "session": {"turn": 1}} if resume else {}),
+                }
                 command = command_for(request, "schema", "out")
                 if harness == "codex":
                     self.assertIn('model_reasoning_effort="high"', command)
@@ -137,6 +148,7 @@ class InvocationTests(unittest.TestCase):
     def test_evaluation_uses_the_selected_profile(self):
         from bundle import Bundle
         from design_eval import request, cases
+
         config = named_config()
         context = request(cases()[0], "astra-high", config, Bundle(), "a" * 40)
         self.assertEqual(context["reviewer_identity"]["agent"], resolve(config, "astra-high", "plan_qc").record())
@@ -215,8 +227,10 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("effort medium", bodies)
         changed = deepcopy(controller.state)
         changed["reviews"].pop("astra-high")
-        self.assertIn("astra-high approval missing or stale", review_reasons(changed, fake.pr,
-                      changed["changed_files"], [], controller.config))
+        self.assertIn(
+            "astra-high approval missing or stale",
+            review_reasons(changed, fake.pr, changed["changed_files"], [], controller.config),
+        )
 
     def test_same_vendor_findings_belong_only_to_the_raising_profile(self):
         controller, fake, agents = self.run_pipeline(repair=True)

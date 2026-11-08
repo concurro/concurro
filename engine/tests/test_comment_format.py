@@ -27,7 +27,7 @@ def outside_code(rendered):
     for line in rendered.split("\n"):
         match = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence) and not line[match.end():].strip():
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence) and not line[match.end() :].strip():
                 fence = None
             continue
         if match:
@@ -49,6 +49,7 @@ def parser():
             nodes = [t for t in tokens if t.type == "html_block"]
             nodes += [c for t in tokens if t.children for c in t.children if c.type == "html_inline"]
             return [n.content for n in nodes]
+
         return html
     if importlib.util.find_spec("commonmark"):
         import commonmark
@@ -56,6 +57,7 @@ def parser():
         def html(document):
             walker = commonmark.Parser().parse(document).walker()
             return [node.literal for node, entering in walker if entering and node.t in ("html_block", "html_inline")]
+
         return html
     return None
 
@@ -65,7 +67,7 @@ def assert_structure(test, rendered):
     parsed, fence = outside_code(rendered)
     test.assertIsNone(fence, "a code fence is left open")
     for match in re.finditer("<", parsed):
-        test.assertRegex(parsed[match.start():], ENGINE_TAG, "model text opened HTML")
+        test.assertRegex(parsed[match.start() :], ENGINE_TAG, "model text opened HTML")
     test.assertEqual(parsed.count("<details>"), parsed.count("</details>"))
 
 
@@ -113,20 +115,37 @@ class Format2Tests(unittest.TestCase):
     def test_finding_titles_are_plain_text(self):
         review = self.cases()["pr/review"]
         self.assertIn(r"Missing \*changelog\* \[fragment\]\(x\)", review)
-        self.assertIn("❗ **Concurro · High · F3 · Missing", reviews.finding_body(
-            {**format_samples.FINDING, "id": "F3", "provider": "claude", "severity": "high",
-             "title": "Missing *changelog* [fragment](x)", "format": 2}))
+        self.assertIn(
+            "❗ **Concurro · High · F3 · Missing",
+            reviews.finding_body(
+                {
+                    **format_samples.FINDING,
+                    "id": "F3",
+                    "provider": "claude",
+                    "severity": "high",
+                    "title": "Missing *changelog* [fragment](x)",
+                    "format": 2,
+                }
+            ),
+        )
 
 
 class MarkupTests(unittest.TestCase):
     """Serializers: titles and headlines are plain text, cells cannot break tables, blocks cannot open HTML."""
 
     def test_plain_text(self):
-        cases = {"Vec<u8> length is not validated": "Vec&lt;u8&gt; length is not validated",
-                 "![status](https://e.com/b.png)": r"\!\[status\]\(https://e.com/b.png\)",
-                 "*em* _u_ `code` ~s~ a|b": r"\*em\* \_u\_ \`code\` \~s\~ a\|b",
-                 "# Heading": r"\# Heading", "- item": r"\- item", "+ item": r"\+ item", "---": r"\---",
-                 "> quote": "&gt; quote", "12. step": r"12\. step", "line\nbreak\t here": "line break here"}
+        cases = {
+            "Vec<u8> length is not validated": "Vec&lt;u8&gt; length is not validated",
+            "![status](https://e.com/b.png)": r"\!\[status\]\(https://e.com/b.png\)",
+            "*em* _u_ `code` ~s~ a|b": r"\*em\* \_u\_ \`code\` \~s\~ a\|b",
+            "# Heading": r"\# Heading",
+            "- item": r"\- item",
+            "+ item": r"\+ item",
+            "---": r"\---",
+            "> quote": "&gt; quote",
+            "12. step": r"12\. step",
+            "line\nbreak\t here": "line break here",
+        }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(markup.text(raw), expected)
@@ -137,14 +156,27 @@ class MarkupTests(unittest.TestCase):
         self.assertEqual(markup.code("`x"), "`` `x ``")
         table = markup.table(["Where"], [[markup.code("a|b", cell=True)]])
         self.assertEqual(table.split("\n")[2], r"| `a\|b` |")
-        self.assertEqual(markup.link("PR #9", "https://github.com/o/r/pull/9)x"),
-                         "[PR #9](https://github.com/o/r/pull/9%29x)")
+        self.assertEqual(
+            markup.link("PR #9", "https://github.com/o/r/pull/9)x"), "[PR #9](https://github.com/o/r/pull/9%29x)"
+        )
 
     def test_blocks_are_inert(self):
-        hostile = ["</details>", "<summary>x</summary>", "<!-- open", "<?php", "<div>\nraw", "<script>x</script>",
-                   "```\nunclosed", "````rust\nlet x = 1;\n```\nstill code", "~~~\ntilde", "~~~~\n~~~\nnested",
-                   "# Heading\n\n---\n\n* list", "text `Vec<u8>` and <b>bold</b>",
-                   "\\`</details><details><summary>Injected section</summary>`", "a \\\\`<b>` b \\`<i>"]
+        hostile = [
+            "</details>",
+            "<summary>x</summary>",
+            "<!-- open",
+            "<?php",
+            "<div>\nraw",
+            "<script>x</script>",
+            "```\nunclosed",
+            "````rust\nlet x = 1;\n```\nstill code",
+            "~~~\ntilde",
+            "~~~~\n~~~\nnested",
+            "# Heading\n\n---\n\n* list",
+            "text `Vec<u8>` and <b>bold</b>",
+            "\\`</details><details><summary>Injected section</summary>`",
+            "a \\\\`<b>` b \\`<i>",
+        ]
         for raw in hostile:
             with self.subTest(raw=raw):
                 parsed, fence = outside_code(markup.block(raw))
@@ -160,8 +192,16 @@ class MarkupTests(unittest.TestCase):
     def test_parser_sees_only_engine_html(self):
         """With a real parser: every HTML node in a rendered comment is one the engine wrote."""
         html = parser()
-        hostile = ["\\`</details><details><summary>Injected section</summary>`", "<!-- open", "<?php x", "<div>\nraw",
-                   "```\nunclosed", "~~~~\n~~~\nnested", "text `Vec<u8>` and <b>bold</b>", "a \\\\`<b>` b \\`<i>"]
+        hostile = [
+            "\\`</details><details><summary>Injected section</summary>`",
+            "<!-- open",
+            "<?php x",
+            "<div>\nraw",
+            "```\nunclosed",
+            "~~~~\n~~~\nnested",
+            "text `Vec<u8>` and <b>bold</b>",
+            "a \\\\`<b>` b \\`<i>",
+        ]
         documents = [markup.details("Full review", markup.block(raw)) + "\n\n" + markup.sub("meta") for raw in hostile]
         documents += list(Format2Tests().cases().values())
         for document in documents:
@@ -170,16 +210,20 @@ class MarkupTests(unittest.TestCase):
                     self.assertRegex(node.strip(), r"^(<(/?(details|summary|sub)>)|<!-- concurro:)", node)
 
     def test_headline_fallback(self):
-        cases = {"The whole plan holds firm. Step 2 is fine.": "The whole plan holds firm.",
-                 "Too short. The rest of it follows here.": "Too short. The rest of it follows here.",
-                 "Dockerfile:12. Next it builds.": "Dockerfile:12. Next it builds.",
-                 "no sentence break here": None, "x" * 300 + ". More.": None,
-                 "# Heading text that is long enough. Rest.": r"\# Heading text that is long enough."}
+        cases = {
+            "The whole plan holds firm. Step 2 is fine.": "The whole plan holds firm.",
+            "Too short. The rest of it follows here.": "Too short. The rest of it follows here.",
+            "Dockerfile:12. Next it builds.": "Dockerfile:12. Next it builds.",
+            "no sentence break here": None,
+            "x" * 300 + ". More.": None,
+            "# Heading text that is long enough. Rest.": r"\# Heading text that is long enough.",
+        }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(markup.headline({"rationale": raw}, "rationale"), expected)
-        self.assertEqual(markup.headline({"headline": "Use <this>\nline.", "rationale": "x"}, "rationale"),
-                         "Use &lt;this&gt; line.")
+        self.assertEqual(
+            markup.headline({"headline": "Use <this>\nline.", "rationale": "x"}, "rationale"), "Use &lt;this&gt; line."
+        )
 
 
 class ContractTests(unittest.TestCase):
@@ -193,8 +237,14 @@ class ContractTests(unittest.TestCase):
             validate_pr_review(report("changes_requested", [{**finding, "severity": "blocker"}]), [], [])
         with self.assertRaisesRegex(Blocked, "presentation"):
             validate_pr_review(report("changes_requested", [FINDING]) | {"headline": 1}, [], [])
-        qc = {"decision": "proceed", "rationale": "Fine.", "risk": "low", "questions": [], "concerns": [],
-              "scope": {"goal_ids": ["G-USABILITY"], "fit": "Fits.", "conflicts": []}}
+        qc = {
+            "decision": "proceed",
+            "rationale": "Fine.",
+            "risk": "low",
+            "questions": [],
+            "concerns": [],
+            "scope": {"goal_ids": ["G-USABILITY"], "fit": "Fits.", "conflicts": []},
+        }
         validate_qc(qc | {"headline": "Proceed."}, "intake")
         validate_qc(qc, "intake")
 
@@ -205,9 +255,11 @@ class ArchiveNameTests(unittest.TestCase):
     RULE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._-]*[A-Za-z0-9])?")
 
     def test_names_follow_githubs_rules(self):
-        for index in ({"step": "Design review", "provider": "claude", "round": "1 cooperative"},
-                      {"step": "Code review", "provider": "c·d<x>", "round": "2"},
-                      {"step": "Intake", "provider": "codex", "round": "1" + "9" * 300}):
+        for index in (
+            {"step": "Design review", "provider": "claude", "round": "1 cooperative"},
+            {"step": "Code review", "provider": "c·d<x>", "round": "2"},
+            {"step": "Intake", "provider": "codex", "round": "1" + "9" * 300},
+        ):
             with self.subTest(index=index):
                 name = conversation.archive_name({"sequence": 12, "index": index})
                 self.assertRegex(name, self.RULE)
@@ -219,22 +271,38 @@ class SizeTests(unittest.TestCase):
 
     def v2(self, state, kind, source, details):
         """A format 2 event as a pending pre-change event renders it."""
-        return conversation.content_v2({"id": "e" * 64, "sequence": 3}, *conversation.render_v2(state, kind, source, details))
+        return conversation.content_v2(
+            {"id": "e" * 64, "sequence": 3}, *conversation.render_v2(state, kind, source, details)
+        )
 
     def test_oversized_format2_event_drops_collapsed_sections(self):
         state, source, details = format_samples.qc_state()
         state["qc"]["plan_qc"]["objection_updates"] = [
-            {"id": f"O{i}", "status": "open", "detail": "d" * 600, "evidence": "e_" * 250,
-             "counterexample": "x*" * 150, "closure": "y[" * 200} for i in range(24)]
-        body = self.v2(state, "qc", source, format_samples.v2_details(details, disposition_ids=[f"O{i}" for i in range(24)]))
+            {
+                "id": f"O{i}",
+                "status": "open",
+                "detail": "d" * 600,
+                "evidence": "e_" * 250,
+                "counterexample": "x*" * 150,
+                "closure": "y[" * 200,
+            }
+            for i in range(24)
+        ]
+        body = self.v2(
+            state, "qc", source, format_samples.v2_details(details, disposition_ids=[f"O{i}" for i in range(24)])
+        )
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn(conversation.OMITTED, body)
         self.assertIn("| `O23` | Objection | 📌 Open |", body)
 
     def test_long_expanded_format2_text_is_dropped(self):
         """Text shown without a headline goes too: an approval's summary, a review's, a design issue's."""
-        status = {"attempt": 0, "local_commit": "c" * 40, "checks": [],
-                  "review": {"verdict": "approve", "summary": "<" * 12700, "findings": [], "design_issue": None}}
+        status = {
+            "attempt": 0,
+            "local_commit": "c" * 40,
+            "checks": [],
+            "review": {"verdict": "approve", "summary": "<" * 12700, "findings": [], "design_issue": None},
+        }
         body = self.v2({"issue": 7, "local_status": status}, "local", ("local_status",), {"reviewer": "claude"})
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn(conversation.OMITTED, body)
@@ -252,14 +320,15 @@ class SizeTests(unittest.TestCase):
         conversation.queue(state, None, source=source, kind="review", details=format_samples.v2_details(details))
         from fakes import FakeGitHub
         from report_store import Store
+
         gh = FakeGitHub(CONFIG)
         conversation.publish(state, gh, CONFIG)
-        receipt = state['conversation']['receipts']['/'.join(source)]
-        data = receipt['data']
-        restored = Store(gh, 7, CONFIG['bot_login']).get(data['digest'], data['artifacts'])
-        self.assertEqual(restored, state['reviews']['claude'])
+        receipt = state["conversation"]["receipts"]["/".join(source)]
+        data = receipt["data"]
+        restored = Store(gh, 7, CONFIG["bot_login"]).get(data["digest"], data["artifacts"])
+        self.assertEqual(restored, state["reviews"]["claude"])
         for item in gh.artifacts[7].values():
-            body = item['artifact']['body']
+            body = item["artifact"]["body"]
             self.assertLessEqual(len(body.encode()), conversation.ARCHIVE_LIMIT)
             assert_structure(self, body)
 
@@ -267,13 +336,25 @@ class SizeTests(unittest.TestCase):
         findings = [{**FINDING, "severity": "low", "title": "t" * 100, "detail": "*_[" * 360} for _ in range(20)]
         large = report("changes_requested", findings) | {"summary": "<" * 1000}
         self.assertLessEqual(len(json.dumps(large)), 24000 * 2)
-        state = {"issue": 7, "pr": 9, "findings": [{"id": f"F{i + 1}", "provider": "claude", **f, "status": "open",
-                                                    "format": 2} for i, f in enumerate(findings)]}
+        state = {
+            "issue": 7,
+            "pr": 9,
+            "findings": [
+                {"id": f"F{i + 1}", "provider": "claude", **f, "status": "open", "format": 2}
+                for i, f in enumerate(findings)
+            ],
+        }
         item = {"provider": "claude", "sequence": 1, "head": "d" * 40, "format": 2}
         for summary in ("<" * 1000, "<" * 23000):
             with self.subTest(summary=len(summary)):
-                body = reviews.review_body(state, {"repository": "o/r"}, item, large | {"model": "m", "summary": summary},
-                                           state["findings"], {f["id"]: "body" for f in state["findings"]})
+                body = reviews.review_body(
+                    state,
+                    {"repository": "o/r"},
+                    item,
+                    large | {"model": "m", "summary": summary},
+                    state["findings"],
+                    {f["id"]: "body" for f in state["findings"]},
+                )
                 self.assertLessEqual(len(body), reviews.REVIEW_BODY_LIMIT)
                 self.assertEqual(reviews.OMITTED in body, len(summary) > 1000)
                 self.assertIn("| ℹ️ Low | **F20**", body, "the findings table always stays")
@@ -295,8 +376,16 @@ class StatusSizeTests(Harness, unittest.TestCase):
 
     def test_oversized_status_comment_drops_historical_rows(self):
         controller = self.run_to(Reviewers(set()), "gates")
-        controller.state["reports"] = [{"step": "Code review", "round": "x" * 2000 + str(i), "provider": "claude",
-                                        "outcome": "approve", "artifact": i} for i in range(40)]
+        controller.state["reports"] = [
+            {
+                "step": "Code review",
+                "round": "x" * 2000 + str(i),
+                "provider": "claude",
+                "outcome": "approve",
+                "artifact": i,
+            }
+            for i in range(40)
+        ]
         body = controller.summary_body()
         self.assertLessEqual(len(body.encode()), SUMMARY_LIMIT)
         self.assertNotIn("↳ Round", body)
@@ -330,7 +419,11 @@ class UpgradeTests(Harness, unittest.TestCase):
         with patch.object(self.gh, "repo", side_effect=lose):
             state = self.run_to(agents, "gates").state
         self.assertTrue(lost)
-        first = [r for r in self.gh.app_reviews if r["body"].startswith(f"{reviews.REVIEW_MARKER}{CONFIG['repository']}#7:1 -->")]
+        first = [
+            r
+            for r in self.gh.app_reviews
+            if r["body"].startswith(f"{reviews.REVIEW_MARKER}{CONFIG['repository']}#7:1 -->")
+        ]
         self.assertEqual(len(first), 1)
         self.assertIn("### claude / ", first[0]["body"], "published in format 1")
         [opening] = [c for c in self.gh.review_comments if c["body"].startswith(f"{reviews.FINDING_MARKER}F1 -->")]

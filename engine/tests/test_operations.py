@@ -193,8 +193,11 @@ class OperationTests(unittest.TestCase):
             return original_save(checkpoints, state)
 
         seen, patched = self.dispatches("intake", lambda *a: FakeAgents.ask(self.agents, *a))
-        with patched, patch.object(Checkpoints, "save", crash_after_completion), \
-                patch.object(controller_module, "RESULT_MARGIN", controller_module.CHECKPOINT_LIMIT):
+        with (
+            patched,
+            patch.object(Checkpoints, "save", crash_after_completion),
+            patch.object(controller_module, "RESULT_MARGIN", controller_module.CHECKPOINT_LIMIT),
+        ):
             self.advance()
             self.assertNotIn("response", self.stored()["operation"])
             self.advance()
@@ -255,10 +258,15 @@ class OperationTests(unittest.TestCase):
                 raise Interrupted()
             return original_save(checkpoints, state)
 
-        budgets = iter([{"max_json_bytes": 9000, "encoding": "JSON"}] + [{"max_json_bytes": 10, "encoding": "JSON"}] * 20)
+        budgets = iter(
+            [{"max_json_bytes": 9000, "encoding": "JSON"}] + [{"max_json_bytes": 10, "encoding": "JSON"}] * 20
+        )
         seen, patched = self.dispatches("plan_qc", lambda *a: FakeAgents.ask(self.agents, *a))
-        with patched, patch.object(Checkpoints, "save", crash_after_completion), \
-                patch.object(Controller, "review_output_budget", side_effect=lambda *_: next(budgets)):
+        with (
+            patched,
+            patch.object(Checkpoints, "save", crash_after_completion),
+            patch.object(Controller, "review_output_budget", side_effect=lambda *_: next(budgets)),
+        ):
             self.advance()
             self.assertEqual(self.stored()["operation"]["status"], "completed")
             self.advance()
@@ -291,18 +299,21 @@ class OperationTests(unittest.TestCase):
 class ContainerBoundaryTests(unittest.TestCase):
     """The entry point's exit status carries provider uncertainty to the host classification."""
 
-    PROBE = ("import subprocess, sys, agent_entry\n"
-             "def timeout():\n"
-             "    subprocess.run([sys.executable, '-c', 'import time; time.sleep(5)'], timeout=0.2)\n"
-             "def fails():\n"
-             "    raise RuntimeError('provider invocation failed')\n"
-             "agent_entry.main = {main}\n"
-             "sys.exit(agent_entry.run())\n")
+    PROBE = (
+        "import subprocess, sys, agent_entry\n"
+        "def timeout():\n"
+        "    subprocess.run([sys.executable, '-c', 'import time; time.sleep(5)'], timeout=0.2)\n"
+        "def fails():\n"
+        "    raise RuntimeError('provider invocation failed')\n"
+        "agent_entry.main = {main}\n"
+        "sys.exit(agent_entry.run())\n"
+    )
 
     def entry(self, main):
         """Run the real entry-point exit mapping in a separate process."""
-        return subprocess.run([sys.executable, "-c", self.PROBE.format(main=main)], cwd=ENGINE,
-                              capture_output=True, text=True, timeout=30)
+        return subprocess.run(
+            [sys.executable, "-c", self.PROBE.format(main=main)], cwd=ENGINE, capture_output=True, text=True, timeout=30
+        )
 
     def host(self, completed, session=None):
         """Feed an entry-point result through the turn outcome mapping and the agents, in place of Docker."""
@@ -315,14 +326,18 @@ class ContainerBoundaryTests(unittest.TestCase):
                 return {"outcome": result, "response": response, "retained": None, "workspace": None}
 
         agents = Agents(CONFIG, Executor(), retained=self.retained())
-        context = {"bundle_id": agents.bundle.identity, "repository_commit": "a" * 40,
-                   "repository": {"refs": {"main": "a" * 40}, "head": "main"}}
+        context = {
+            "bundle_id": agents.bundle.identity,
+            "repository_commit": "a" * 40,
+            "repository": {"refs": {"main": "a" * 40}, "head": "main"},
+        }
         if session:
             context["controller_session"] = session
         agents.ask("codex", "review", context)
 
     def retained(self):
         import tempfile
+
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         return directory.name
@@ -336,7 +351,7 @@ class ContainerBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(RunnerTerminated, "execution time limit") as raised:
                 self.host(completed, session=session)
             self.assertTrue(raised.exception.result_uncertain)
-            self.assertFalse(getattr(raised.exception, "uncertain", False), 'no automatic repetition')
+            self.assertFalse(getattr(raised.exception, "uncertain", False), "no automatic repetition")
 
     def test_reported_provider_failure_stays_definite(self):
         """Other entry-point failures remain reported failures on the host."""
