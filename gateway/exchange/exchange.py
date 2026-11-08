@@ -112,6 +112,9 @@ def verify_rs256(pem, message, signature):
     return result.returncode == 0
 
 
+JWKS_REFRESH_SECONDS = 60
+
+
 class Keys:
     """GitHub's OIDC signing keys, refreshed when an unknown key ID appears (at most once a minute)."""
 
@@ -121,15 +124,20 @@ class Keys:
 
     def pem(self, kid):
         with self.guard:
-            if kid not in self.keys and time.time() - self.fetched > 60:
+            if kid not in self.keys and time.time() - self.fetched > JWKS_REFRESH_SECONDS:
                 self.keys = {k["kid"]: jwk_pem(k) for k in self.fetch()["keys"] if k.get("kty") == "RSA"}
                 self.fetched = time.time()
             return self.keys.get(kid)
 
 
+def _now(now):
+    """Use the supplied observation time, sampling the clock only when absent."""
+    return time.time() if now is None else now
+
+
 def claims(token, audience, keys, now=None):
     """Verify a GitHub Actions OIDC token's signature and standard claims; return its claims."""
-    now = time.time() if now is None else now
+    now = _now(now)
     try:
         header_b64, payload_b64, signature_b64 = token.split(".")
         header, payload = json.loads(b64decode(header_b64)), json.loads(b64decode(payload_b64))
@@ -152,6 +160,10 @@ def claims(token, audience, keys, now=None):
     if not isinstance(payload.get("jti"), str) or not payload["jti"]:
         raise Refused(401, "token has no ID")
     return payload
+
+
+ACTIVATION_ATTEMPTS = 50
+ACTIVATION_POLL_SECONDS = 0.2
 
 
 class Gateway:
@@ -202,10 +214,10 @@ class Gateway:
 
     def activated(self, key):
         """Wait until a key is accepted for traffic; new keys reach the traffic path asynchronously."""
-        for _ in range(50):
+        for _ in range(ACTIVATION_ATTEMPTS):
             if self.call("GET", self.inference + "/v1/models", headers={"Authorization": "Bearer " + key})[0] != 401:
                 return
-            time.sleep(0.2)
+            time.sleep(ACTIVATION_POLL_SECONDS)
         raise Refused(504, "gateway never activated the key")
 
     def list(self):
@@ -254,6 +266,27 @@ def staffing(expected, binding, models, budget, lease):
     return hashlib.sha256(
         json.dumps([claims, binding, models, budget, float(lease)], sort_keys=True).encode()
     ).hexdigest()
+
+
+SESSION_COLUMNS = (
+    "expected",
+    "models",
+    "budget",
+    "deadline",
+    "run_id",
+    "key",
+    "key_id",
+    "ended",
+    "kind",
+    "token",
+    "seen",
+    "created",
+    "binding",
+    "staffing",
+)
+MAX_CAPACITY = 8
+MAX_WAIT_SECONDS = 50
+FINISHED_RETENTION_SECONDS = 86400
 
 
 class Exchange:
@@ -356,34 +389,14 @@ class Exchange:
         return session
 
     def row(self, session):
+        """Read a session in its stable persisted-column order; caller holds the lock."""
         found = self.db.execute(
-            "SELECT expected, models, budget, deadline, run_id, key, key_id, ended, kind, token, "
-            "seen, created, binding, staffing FROM sessions WHERE id = ?",
+            "SELECT " + ", ".join(SESSION_COLUMNS) + " FROM sessions WHERE id = ?",
             (session,),
         ).fetchone()
         if not found:
             raise Refused(404, "unknown session")
-        return dict(
-            zip(
-                (
-                    "expected",
-                    "models",
-                    "budget",
-                    "deadline",
-                    "run_id",
-                    "key",
-                    "key_id",
-                    "ended",
-                    "kind",
-                    "token",
-                    "seen",
-                    "created",
-                    "binding",
-                    "staffing",
-                ),
-                found,
-            )
-        )
+        return dict(zip(SESSION_COLUMNS, found))
 
     def refuse(self, session, status, reason):
         """Refuse a runner and record why, so the operator can see why a session never started."""
@@ -421,7 +434,7 @@ class Exchange:
 
     def key(self, session, token, now=None):
         """The session's key and runner token, minted on first request; a retry from the bound run gets the same."""
-        now = time.time() if now is None else now
+        now = _now(now)
         with self.locked():
             record = self.authorize(session, token, now)
             if not record["binding"]:
@@ -469,15 +482,15 @@ class Exchange:
         """Up to `capacity` queued turns of the session's target, waiting up to `wait` seconds for one."""
         if (
             type(capacity) is not int
-            or not 0 <= capacity <= 8
+            or not 0 <= capacity <= MAX_CAPACITY
             or not isinstance(wait, (int, float))
-            or not 0 <= wait <= 50
+            or not 0 <= wait <= MAX_WAIT_SECONDS
         ):
             raise Refused(400, "invalid capacity or wait")
         stop = time.monotonic() + wait
         while True:
             with self.locked():
-                current = time.time() if now is None else now
+                current = _now(now)
                 record = self.runner(session, token, current)
                 busy = self.db.execute(
                     "SELECT 1 FROM turns WHERE session = ? AND status = 'running'", (session,)
@@ -502,7 +515,7 @@ class Exchange:
 
     def complete(self, session, token, turn, result, now=None):
         """Record a running turn's result; a turn no longer running for this session is refused."""
-        now = time.time() if now is None else now
+        now = _now(now)
         if not isinstance(result, dict):
             raise Refused(400, "a result must be an object")
         with self.locked():
@@ -524,7 +537,7 @@ class Exchange:
 
     def end(self, session, token=None, runner=None, now=None):
         """End a session and delete its key: by OIDC token, by runner token, or (neither) by the operator."""
-        now = time.time() if now is None else now
+        now = _now(now)
         with self.locked():
             if runner is not None:
                 record = self.runner(session, runner, now)
@@ -534,14 +547,22 @@ class Exchange:
                 record = self.row(session)
             self.retire(session, record, now)
 
-    def retire(self, session, record, now):
-        """End a session, then delete its key; a failed deletion is retried by reconciliation."""
-        self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
+    def _lose_session_turns(self, session, now):
+        """Lose running and pinned queued work while the caller holds the lifecycle lock."""
         self.db.execute(
             "UPDATE turns SET status = 'lost', finished = ? WHERE (session = ? AND status = 'running') "
             "OR (pin = ? AND status = 'queued')",
             (now, session, session),
         )
+
+    def _lose_turn(self, turn, now):
+        """Lose one turn while the caller holds the lifecycle lock."""
+        self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE id = ?", (now, turn))
+
+    def retire(self, session, record, now):
+        """End a session, then delete its key; a failed deletion is retried by reconciliation."""
+        self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
+        self._lose_session_turns(session, now)
         key_id = record["key_id"] or (self.gateway.find(record["key"]) if record["key"] else None)
         if key_id and not self.gateway.delete(key_id):
             raise Refused(502, "gateway did not delete the key; reconciliation will retry")
@@ -561,15 +582,10 @@ class Exchange:
 
     def observation(self, turn):
         """Operator-only timing from the stored turn; caller holds the exchange lock."""
-        status, created, started, finished = self.db.execute(
-            "SELECT status, created, started, finished FROM turns WHERE id = ?", (turn,)
+        status, created, started, finished, session = self.db.execute(
+            "SELECT status, created, started, finished, session FROM turns WHERE id = ?", (turn,)
         ).fetchone()
-        session = (
-            self.db.execute("SELECT session FROM turns WHERE id = ?", (turn,)).fetchone()[0]
-            if status in ("lost", "cancelled")
-            else None
-        )
-        runner = self.row(session) if session else None
+        runner = self.row(session) if session and status in ("lost", "cancelled") else None
         return {
             "turn": turn,
             "status": status,
@@ -609,7 +625,7 @@ class Exchange:
         if binding["role"] != str(request.get("stage")) + ":" + str(request.get("provider")):
             raise ValueError("turn does not match its role")
         group = staffing(expected, binding, models, budget, lease)
-        now = time.time() if now is None else now
+        now = _now(now)
         digest = hashlib.sha256(
             json.dumps([expected, models, budget, lease, payload, pin, binding], sort_keys=True).encode()
         ).hexdigest()
@@ -671,12 +687,12 @@ class Exchange:
         A queued turn whose target has no live session gets one: its ID comes back as `dispatch`,
         with the latest refusal of a runner for that target since the turn was queued.
         """
-        if not isinstance(wait, (int, float)) or not 0 <= wait <= 50:
+        if not isinstance(wait, (int, float)) or not 0 <= wait <= MAX_WAIT_SECONDS:
             raise Refused(400, "invalid wait")
         stop = time.monotonic() + wait
         while True:
             with self.locked():
-                current = time.time() if now is None else now
+                current = _now(now)
                 found = self.db.execute(
                     "SELECT status, session, result, expected, created, pin, staffing FROM turns WHERE id = ?", (turn,)
                 ).fetchone()
@@ -684,11 +700,11 @@ class Exchange:
                     raise Refused(404, "unknown turn")
                 status, session, result, expected, created, pin, group = found
                 if group is None and status in ("queued", "running"):
-                    self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE id = ?", (current, turn))
+                    self._lose_turn(turn, current)
                     status = "lost"
                 if status == "queued" and pin and not self.live(self.row(pin), current):
                     # Only its session could serve it.
-                    self.db.execute("UPDATE turns SET status = 'lost', finished = ? WHERE id = ?", (current, turn))
+                    self._lose_turn(turn, current)
                     status = "lost"
                 if status == "done":
                     return {**self.observation(turn), "result": json.loads(result)}
@@ -719,7 +735,7 @@ class Exchange:
 
     def cancel(self, turn, now=None):
         """Withdraw a queued or running turn; a runner's later result for it is refused."""
-        now = time.time() if now is None else now
+        now = _now(now)
         with self.locked():
             self.db.execute(
                 "UPDATE turns SET status = 'cancelled', finished = ? WHERE id = ? AND status IN ('queued', 'running')",
@@ -737,7 +753,7 @@ class Exchange:
 
         Returns what was deleted. Finished turns are dropped after a day.
         """
-        now = time.time() if now is None else now
+        now = _now(now)
         with self.locked():
             for (session,) in self.db.execute(
                 "SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL"
@@ -745,12 +761,10 @@ class Exchange:
                 record = self.row(session)
                 if not self.live(record, now):
                     self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
-                    self.db.execute(
-                        "UPDATE turns SET status = 'lost', finished = ? WHERE (session = ? AND status = 'running') "
-                        "OR (pin = ? AND status = 'queued')",
-                        (now, session, session),
-                    )
-            self.db.execute("DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (now - 86400,))
+                    self._lose_session_turns(session, now)
+            self.db.execute(
+                "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (now - FINISHED_RETENTION_SECONDS,)
+            )
             live, retired = set(), {}
             for session, key, deadline, ended in self.db.execute(
                 "SELECT id, key, deadline, ended FROM sessions WHERE key IS NOT NULL"
@@ -795,145 +809,153 @@ class Budget:
                 self.condition.notify_all()
 
 
+class Handler(BaseHTTPRequestHandler):
+    """Serve the runner and operator APIs using this server's dependencies."""
+
+    timeout = REQUEST_TIMEOUT
+
+    def do_GET(self):
+        self.handle_request("GET")
+
+    def do_POST(self):
+        self.handle_request("POST")
+
+    def do_DELETE(self):
+        self.handle_request("DELETE")
+
+    def handle_request(self, method):
+        auth = self.headers.get("Authorization", "")
+        bearer = auth[7:] if auth.startswith("Bearer ") else None
+        path, _, query = self.path.partition("?")
+        try:
+            # Authenticate first: only a proven caller's submission or result may be large.
+            if path.startswith("/exchange/operator/"):
+                if (
+                    not self.server.operator_digest
+                    or not bearer
+                    or not hmac.compare_digest(hashlib.sha256(bearer.encode()).digest(), self.server.operator_digest)
+                ):
+                    raise Refused(401, "operator token required")
+                limit = MAX_BODY if path == "/exchange/operator/turns" else SMALL_BODY
+                handle = lambda body: self.operator(method, path[len("/exchange/operator/") :], query, body)
+            else:
+                match = SESSION_PATH.fullmatch(path)
+                if not match or method != "POST":
+                    raise Refused(404, "not found")
+                if not bearer:
+                    raise Refused(401, "a bearer token is required")
+                limit = SMALL_BODY
+                if match["turn"]:
+                    self.server.exchange.prove(match["session"], bearer)
+                    limit = MAX_BODY
+                handle = lambda body: self.runner(match["session"], match["action"], match["turn"], bearer, body)
+            size = int(self.headers.get("Content-Length") or 0) if method == "POST" else 0
+            if not 0 <= size <= limit:
+                raise Refused(413, "request too large")
+            with self.server.body_budget.reserve(size):
+                reply = handle(self.body(size) if method == "POST" else {})
+            self.reply(200, reply)
+        except Refused as error:
+            self.reply(error.status, {"error": str(error)})
+        except ValueError as error:
+            self.reply(400, {"error": str(error)})
+        except Exception:
+            self.reply(500, {"error": "internal error"})
+
+    def runner(self, session, action, turn, bearer, body):
+        if action == "key":
+            return self.server.exchange.key(session, bearer)
+        if action == "end":
+            # A runner token is 64 hex characters; anything else is an OIDC token.
+            runner = RUNNER_TOKEN.fullmatch(bearer)
+            self.server.exchange.end(session, token=None if runner else bearer, runner=bearer if runner else None)
+            return {}
+        if action == "next":
+            return self.server.exchange.next(session, bearer, body.get("capacity", 1), body.get("wait", 0))
+        self.server.exchange.complete(session, bearer, turn, body.get("result"))
+        return {}
+
+    def operator(self, method, path, query, body):
+        wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
+        if method == "POST" and path == "turns":
+            return self.server.exchange.submit(
+                body.get("turn"),
+                body.get("expected"),
+                body.get("models"),
+                body.get("budget"),
+                body.get("lease"),
+                body.get("payload"),
+                body.get("pin"),
+                binding=body.get("binding"),
+            )
+        match = OPERATOR_PATH.fullmatch(path)
+        if match and match["kind"] == "sessions" and method == "POST" and match["action"] == "end":
+            self.server.exchange.end(match["id"])
+            return {}
+        if match and match["kind"] == "turns" and not match["action"]:
+            if method == "GET":
+                return self.server.exchange.poll(match["id"], wait)
+            if method == "DELETE":
+                self.server.exchange.cancel(match["id"])
+                return {}
+        raise Refused(404, "not found")
+
+    def body(self, size):
+        data = self.rfile.read(size) if size else b"{}"
+        parsed = json.loads(data)
+        if not isinstance(parsed, dict):
+            raise Refused(400, "a JSON object is required")
+        return parsed
+
+    def reply(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        # Paths and statuses only; tokens and keys never reach the log.
+        sys.stderr.write("exchange %s %s\n" % (self.command, fmt % args))
+
+
+class Bounded(ThreadingHTTPServer):
+    """Serves at most MAX_REQUESTS at once; further connections are answered 503 and closed."""
+
+    daemon_threads = True
+
+    def __init__(self, address, handler):
+        """Give each server its own request slots before accepting connections."""
+        self.slots = threading.BoundedSemaphore(MAX_REQUESTS)
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            finally:
+                self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 def server(exchange, address, operator=None):
-    """The HTTP API. Runners: `/exchange/sessions/<id>/{key,end}` with an OIDC token, then `next`, `turns/<id>`
-    and `end` with the session's runner token. The operator: `/exchange/operator/...` with its token."""
+    """Build an HTTP server with its own exchange, operator credentials and body budget."""
     digest = hashlib.sha256(operator.encode()).digest() if operator else None
     budget = Budget(BODY_BUDGET)
-
-    class Handler(BaseHTTPRequestHandler):
-        timeout = REQUEST_TIMEOUT
-
-        def do_GET(self):
-            self.handle_request("GET")
-
-        def do_POST(self):
-            self.handle_request("POST")
-
-        def do_DELETE(self):
-            self.handle_request("DELETE")
-
-        def handle_request(self, method):
-            auth = self.headers.get("Authorization", "")
-            bearer = auth[7:] if auth.startswith("Bearer ") else None
-            path, _, query = self.path.partition("?")
-            try:
-                # Authenticate first: only a proven caller's submission or result may be large.
-                if path.startswith("/exchange/operator/"):
-                    if (
-                        not digest
-                        or not bearer
-                        or not hmac.compare_digest(hashlib.sha256(bearer.encode()).digest(), digest)
-                    ):
-                        raise Refused(401, "operator token required")
-                    limit = MAX_BODY if path == "/exchange/operator/turns" else SMALL_BODY
-                    handle = lambda body: self.operator(method, path[len("/exchange/operator/") :], query, body)
-                else:
-                    match = SESSION_PATH.fullmatch(path)
-                    if not match or method != "POST":
-                        raise Refused(404, "not found")
-                    if not bearer:
-                        raise Refused(401, "a bearer token is required")
-                    limit = SMALL_BODY
-                    if match["turn"]:
-                        exchange.prove(match["session"], bearer)
-                        limit = MAX_BODY
-                    handle = lambda body: self.runner(match["session"], match["action"], match["turn"], bearer, body)
-                size = int(self.headers.get("Content-Length") or 0) if method == "POST" else 0
-                if not 0 <= size <= limit:
-                    raise Refused(413, "request too large")
-                with budget.reserve(size):
-                    reply = handle(self.body(size) if method == "POST" else {})
-                self.reply(200, reply)
-            except Refused as error:
-                self.reply(error.status, {"error": str(error)})
-            except ValueError as error:
-                self.reply(400, {"error": str(error)})
-            except Exception:
-                self.reply(500, {"error": "internal error"})
-
-        def runner(self, session, action, turn, bearer, body):
-            if action == "key":
-                return exchange.key(session, bearer)
-            if action == "end":
-                # A runner token is 64 hex characters; anything else is an OIDC token.
-                runner = RUNNER_TOKEN.fullmatch(bearer)
-                exchange.end(session, token=None if runner else bearer, runner=bearer if runner else None)
-                return {}
-            if action == "next":
-                return exchange.next(session, bearer, body.get("capacity", 1), body.get("wait", 0))
-            exchange.complete(session, bearer, turn, body.get("result"))
-            return {}
-
-        def operator(self, method, path, query, body):
-            wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
-            if method == "POST" and path == "turns":
-                return exchange.submit(
-                    body.get("turn"),
-                    body.get("expected"),
-                    body.get("models"),
-                    body.get("budget"),
-                    body.get("lease"),
-                    body.get("payload"),
-                    body.get("pin"),
-                    binding=body.get("binding"),
-                )
-            match = OPERATOR_PATH.fullmatch(path)
-            if match and match["kind"] == "sessions" and method == "POST" and match["action"] == "end":
-                exchange.end(match["id"])
-                return {}
-            if match and match["kind"] == "turns" and not match["action"]:
-                if method == "GET":
-                    return exchange.poll(match["id"], wait)
-                if method == "DELETE":
-                    exchange.cancel(match["id"])
-                    return {}
-            raise Refused(404, "not found")
-
-        def body(self, size):
-            data = self.rfile.read(size) if size else b"{}"
-            parsed = json.loads(data)
-            if not isinstance(parsed, dict):
-                raise Refused(400, "a JSON object is required")
-            return parsed
-
-        def reply(self, status, body):
-            data = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def log_message(self, fmt, *args):
-            # Paths and statuses only; tokens and keys never reach the log.
-            sys.stderr.write("exchange %s %s\n" % (self.command, fmt % args))
-
-    class Bounded(ThreadingHTTPServer):
-        """Serves at most MAX_REQUESTS at once; further connections are answered 503 and closed."""
-
-        daemon_threads = True
-        slots = threading.BoundedSemaphore(MAX_REQUESTS)
-
-        def process_request(self, request, client_address):
-            if not self.slots.acquire(blocking=False):
-                try:
-                    request.sendall(
-                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    )
-                finally:
-                    self.shutdown_request(request)
-                return
-            super().process_request(request, client_address)
-
-        def process_request_thread(self, request, client_address):
-            try:
-                super().process_request_thread(request, client_address)
-            finally:
-                self.slots.release()
-
     host, port = address.rsplit(":", 1)
-    return Bounded((host, int(port)), Handler)
+    instance = Bounded((host, int(port)), Handler)
+    instance.exchange = exchange
+    instance.operator_digest = digest
+    instance.body_budget = budget
+    return instance
 
 
 def reconciling(exchange, interval=60):
