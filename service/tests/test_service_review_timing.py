@@ -3,6 +3,8 @@
 import unittest
 from types import SimpleNamespace
 
+import fixtures  # noqa: F401 -- initializes the service and engine test paths
+
 from service.worker import DeferredExecutor
 
 
