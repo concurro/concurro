@@ -13,6 +13,9 @@ The dashboard opens with an activity alert, then a progress line and one table. 
 rounds sit directly below their stage, with one reviewer per line in a cell. It lists
 all reviewers still outstanding, distinguishing the current call from a waiting reviewer.
 Waiting for a result does not prove that a runner is already executing.
+A PR closed without merging shows “Closed without merge” with a stop indicator on
+the step reached. Unfinished reviewers stay “Paused” and later steps stay Pending.
+Only a confirmed merge shows “Merged” with a success indicator.
 
 ```markdown
 > [!TIP]

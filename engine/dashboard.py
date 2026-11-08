@@ -107,7 +107,7 @@ class Dashboard:
                   'escalated': 'Paused — the task needs attention before it can continue.',
                   'rejected': 'This issue was not accepted for implementation.',
                   'stopped': 'Work on this issue has stopped.',
-                  'closed': 'The pull request is closed.',
+                  'closed': 'The pull request was closed without merging.',
                   'merged': 'The pull request has been merged.',
                   'observed_merged': 'The pull request has been merged.',
                   'planned': 'The plan is ready; waiting for your approval.',
@@ -211,10 +211,10 @@ class Dashboard:
         return f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}/artifacts/{number}"
 
     def current_step(self):
-        """The step the task is on, or the furthest it reached when paused; len(STEPS) once merged."""
+        """The step the task is on, or the furthest it reached when paused; len(STEPS) only once merged."""
         state = self.state
         stage = state["stage"]
-        if stage in ("merged", "observed_merged", "closed"):
+        if stage in ("merged", "observed_merged"):
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
@@ -236,7 +236,7 @@ class Dashboard:
             return name, "Pending", ""
         paused = {"clarify": ("❓", "Input needed"), "blocked": (markup.BLOCKED, "Blocked"),
                   "escalated": (markup.ESCALATED, "Escalated"), "rejected": (markup.BLOCKED, "Rejected"),
-                  "stopped": ("⏹️", "Stopped")}
+                  "stopped": ("⏹️", "Stopped"), "closed": ("⏹️", "Closed without merge")}
         done = index < current
         intake = state.get("qc", {}).get("intake")
         if name == "Intake":

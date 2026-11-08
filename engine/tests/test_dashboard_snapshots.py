@@ -1,4 +1,4 @@
-"""Byte-for-byte dashboard contracts captured before extracting the renderer."""
+"""Dashboard rendering contracts, based on the pre-extraction snapshots."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -103,7 +103,7 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.state['issue'], ISSUE)
         return bodies
 
-    def test_dashboard_bodies_match_pre_extraction_snapshots(self):
+    def test_dashboard_bodies_match_snapshots(self):
         """Keep every byte, including links, alert severity, table order and recovery metadata."""
         bodies = self.scenarios()
         self.assertEqual(set(bodies), {p.stem for p in GOLDENS.glob('*.md')})
@@ -122,7 +122,11 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
         self.assertIn('`/concurro invalidate`', bodies['blocked'])
         self.assertIn('`/concurro retry --plan-revisions 1`', bodies['escalated'])
         self.assertIn('Handed off', bodies['handoff'])
-        self.assertIn('has been merged', bodies['merged'])
+        for stage in ('merged', 'observed_merged'):
+            self.assertIn('has been merged', bodies[stage])
+            self.assertIn('| Merge | ✅ Merged |', bodies[stage])
+        self.assertIn('| Merge | ⏹️ Closed without merge |', bodies['closed'])
+        self.assertNotIn('Merge ✅', bodies['closed'])
         self.assertNotIn('↳ Round', bodies['compact'])
         self.assertLess(len(bodies['compact'].encode()), 60000)
         main, diagnostics = bodies['previous_run'].split('<details><summary>Diagnostics</summary>', 1)

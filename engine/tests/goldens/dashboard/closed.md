@@ -2,9 +2,9 @@
 ## Concurro
 
 > [!TIP]
-> The pull request is closed.
+> The pull request was closed without merging.
 
-Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → Merge ✅
+Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Merge ⏹️**
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -17,7 +17,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 | ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
 | Code review | ✅ 2 of 2 approve | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
 | ↳ Round 1 |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
-| Merge | ✅ Merged |  |
+| Merge | ⏹️ Closed without merge |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |

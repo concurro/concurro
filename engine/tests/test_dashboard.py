@@ -66,6 +66,72 @@ class HappyPathTests(Harness, unittest.TestCase):
         self.assertEqual(actionable(self.gh).count("### Ready for review"), 1)
 
 
+class TerminalStatusTests(Harness, unittest.TestCase):
+    """Closing a PR ends work without claiming a merge, even after a ready hand-off."""
+
+    def test_closed_unmerged_pr_never_displays_a_successful_merge(self):
+        """Exercise actual closure before review finishes and after a ready hand-off."""
+        for starting_stage in ('review', 'partial_review', 'gates'):
+            with self.subTest(starting_stage=starting_stage):
+                self.setUp()
+                agents = Reviewers(set())
+                controller = self.run_to(agents, 'review' if starting_stage == 'partial_review' else starting_stage)
+                if starting_stage == 'partial_review':
+                    controller.advance(7)
+                    self.assertEqual(len(controller.state['reviews']), 1)
+                if starting_stage == 'gates':
+                    controller.advance(7)
+                    self.assertTrue(controller.state['handoff_ready'])
+                calls = controller.state['calls']
+                self.gh.pr.update(state='closed', merged=False)
+                controller = Controller(self.gh, agents, self.config)
+                controller.advance(7)
+                self.assertEqual(controller.state['stage'], 'closed')
+                self.assertEqual(controller.state['calls'], calls)
+                bodies = [self.gh.summary()['body'], controller.summary_lines(compact=True)]
+                for body in bodies:
+                    self.assertIn('The pull request was closed without merging.', body)
+                    if starting_stage == 'gates':
+                        self.assertIn('Merge ⏹️', body)
+                        self.assertIn('| Merge | ⏹️ Closed without merge |  |', body)
+                        self.assertIn('Code review ✅', body)
+                        self.assertIn('| Code review | ✅ 2 of 2 approve |', body)
+                    else:
+                        self.assertIn('Code review ⏹️', body)
+                        self.assertIn('| Code review | ⏹️ Closed without merge |', body)
+                        self.assertIn('| Merge | Pending |  |', body)
+                        self.assertNotIn('Code review ✅', body)
+                        self.assertNotIn('✅ 0 of 2 approve', body)
+                        self.assertNotIn('✅ 1 of 2 approve', body)
+                    self.assertNotIn('Merge ✅', body)
+                    self.assertNotIn('✅ Merged', body)
+                    self.assertNotIn('Handed off', body)
+                    self.assertNotIn('a human review and merge', body)
+                if starting_stage != 'gates':
+                    summary = self.gh.summary()['body']
+                    for provider in self.config['reviewers']:
+                        if provider not in controller.state['reviews']:
+                            self.assertIn(provider + ': Paused', summary)
+                        else:
+                            self.assertIn(provider + ': ✅ Approve', summary)
+                    self.assertNotIn(': Waiting', summary)
+                    self.assertNotIn(': Reviewing', summary)
+
+    def test_closed_merged_pr_still_displays_a_successful_merge(self):
+        """GitHub also closes merged PRs; confirmed merge evidence takes precedence."""
+        agents = Reviewers(set())
+        self.run_to(agents, 'review')
+        self.gh.pr.update(state='closed', merged=True, merge_commit_sha='f' * 40)
+        controller = Controller(self.gh, agents, self.config)
+        controller.advance(7)
+        self.assertEqual(controller.state['stage'], 'observed_merged')
+        for body in (self.gh.summary()['body'], controller.summary_lines(compact=True)):
+            self.assertIn('The pull request has been merged.', body)
+            self.assertIn('Merge ✅', body)
+            self.assertIn('| Merge | ✅ Merged |  |', body)
+            self.assertNotIn('Closed without merge', body)
+
+
 class PullRequestTests(Harness, unittest.TestCase):
     """The PR is titled and described from the plan, without claims GitHub shows natively."""
 
