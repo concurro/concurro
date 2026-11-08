@@ -27,32 +27,57 @@ or extract only where it makes the lifecycle easier to follow. 10b can also adop
 
 ## 10a: Native turn execution and process cleanup
 
+Re-checked against `1f49de3`. Find code by symbol.
+
 **Scope:** `engine/turns.py`, `engine/processes.py`, `engine/policy.py`, tests.
+`engine/repository.py` also contains a `killpg` block. **Leave it alone**, because of
+`repository.py`'s import constraints.
 
-1. **Split `turns.execute`** (200–285):
-   - `_validated_timeout(request, timeout)`;
-   - `_run_agent(payload, env, timeout, stopped) -> (code, stdout)`, which owns the
-     process group, the cancel thread and cleanup. Move the function-local
-     `import threading` to the top of the module.
-   - `_termination(code, stopped, stage, started)`: turn the nested ternary (275–276)
-     into an if-chain.
+1. **Split `turns.execute`** (about 119 lines). Split it only where the named steps read
+   more clearly:
+   - **`_validated_timeout(request, timeout)`**, for the timeout validation at the top.
+   - **`_run_agent(payload, env, stopped, timeout) -> (code, stdout)`**, which owns the
+     process group. Keep this order exactly:
+     1. start the cancel thread if `stopped` is given;
+     2. `communicate` with `timeout + 60` (or `None`), where `TimeoutExpired` gives
+        `TIMEOUT_EXIT` and `""`;
+     3. in `finally`: kill the process group, `process.wait()`, join the timer (2 s),
+        then `processes.finish(baseline)`. If `finish` raises, set `stopped` and
+        re-raise.
 
-   Leave the evaluation-fixture swap inline if extracting it doesn't make it clearer.
-2. **Named exit codes:** move `(-2, -15, 130, 143)` (270) into `policy.SIGNALLED`, next to
-   `KILLED`.
-3. **Process-group kill:** add `processes.kill_group(pid)` for the duplicated `killpg` /
-   `ProcessLookupError` blocks (241–245, 256–259).
-4. **Named `prctl` option:** name `prctl(36, …)` (`processes.py:28`) as
-   `PR_SET_CHILD_SUBREAPER`.
+     Move the function-local `import threading` to the top of the module.
+   - **`_termination(code, stopped)`**, which returns the `termination_reason`. Turn the
+     nested ternary into an `if` chain with the same precedence: `runner_stopped`
+     (stopped is set), then `turn_timeout` (`TIMEOUT_EXIT`), then `process_signal`.
+   - **Keep the evaluation-fixture swap inline**, and keep its `from design_eval import
+     fixture_mirror` lazy: `design_eval` pulls in `design`, `mirror` and `policy`, and is
+     needed only for evaluation runs. Add a one-line comment saying so.
+2. **Named exit codes:** move `(-2, -15, 130, 143)` into `policy.SIGNALLED`, next to
+   `KILLED`. The runner-bound termination check becomes `code in (*KILLED, *SIGNALLED)`.
+   The membership must be unchanged.
+3. **Process-group kill:** add `processes.kill_group(pid)` for the two identical
+   `os.killpg(…, SIGKILL)` / `ProcessLookupError` blocks in `turns.execute`: the cancel
+   thread and the `finally`.
+4. **Named `prctl` option:** `PR_SET_CHILD_SUBREAPER = 36` in `processes.py`, replacing
+   the literal and its trailing comment.
 
-**Tests first:** `test_runner_termination.py` and `test_turns.py` exercise the real
-subprocess paths; they must pass unchanged. Add a test that pins the
-`(outcome, termination_reason)` pair for:
+**Linux-only path.** `processes.begin()` returns `None` off Linux. The subreaper and
+descendant-reaping paths therefore run only in CI (ubuntu), not in local macOS runs, and
+the CI run is the real check for this iteration. Tests must pass on both platforms. Don't
+skip them on macOS unless they already are skipped.
 
-- a normal exit;
-- `TIMEOUT_EXIT`;
-- each signalled code;
-- a stopped runner.
+**Tests first:**
+
+- `test_runner_termination.py` and `test_turns.py` exercise the real subprocess paths;
+  they must pass unchanged.
+- Add a test that pins the `(outcome, termination_reason)` pair, and whether
+  `elapsed_seconds` is present, for:
+  - a normal exit;
+  - `TIMEOUT_EXIT`;
+  - each killed and signalled code, for runner-bound and non-runner-bound stages;
+  - a stopped runner;
+  - `processes.finish` raising, which must set `stopped` and propagate.
+- Use `tempfile`; no host paths.
 
 **Commit message:**
 
