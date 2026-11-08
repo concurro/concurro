@@ -176,7 +176,7 @@ Status values:
 | 06 | [Test fixtures](06-test-fixtures.md) | Tests | Low | Done |
 | 07 | [Dashboard extraction](07-dashboard-extraction.md) | Refactor | Low | Done |
 | 04 | [Stage and turn-outcome vocabulary](04-shared-vocabulary.md) | Refactor | Low | Done |
-| 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Next |
+| 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Done |
 | 08b | [Serial and batch call bookkeeping](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-reassess-after-08a) | Refactor | Medium | Reassess after 08a |
 | 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Next after 08 |
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Candidate |

@@ -1,6 +1,7 @@
 """Durable issue-to-PR state machine. Only this trusted process writes to GitHub."""
 
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 import difflib
 import hashlib
@@ -657,6 +658,10 @@ class Controller:
             return None
         return {"actor": actor["login"], "event": event["id"]}
 
+    def issue_digest(self):
+        """Bind issue identity to its title and body, excluding discussion and metadata."""
+        return digest([self.issue["title"], self.issue["body"]])
+
     def requirements(self, comments):
         """Snapshot issue text and author/writer replies without treating them as authority."""
         author = self.issue.get("user", {}).get("login")
@@ -677,7 +682,7 @@ class Controller:
                       "stage": "intake", "enrollment": enrollment,
                       "base": base, "calls": 0, "round": 0, "plan_revisions": 0, "reviews": {},
                       "command_id": command_id, "requirements": self.requirements(comments),
-                      "issue_digest": digest([self.issue["title"], self.issue["body"]]),
+                      "issue_digest": self.issue_digest(),
                       "config_digest": config_digest(self.config), "bundle_id": self.bundle.identity,
                       "implementation_skill": self.bundle.hashes[implementation_bundle.SKILL],
                       "charter_id": digest(self.bundle.charter),
@@ -759,6 +764,32 @@ class Controller:
         conversation.queue(state, "Plan revision command not applied", body)
         self.save()
 
+    def require_pr_unchanged(self, message):
+        """Read the recorded PR once and require the same head, open and not merged."""
+        state = self.state
+        pr = self.pulls.repo(f"pulls/{state['pr']}")
+        if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
+            raise Blocked(message)
+
+    @contextmanager
+    def consume_on_refusal(self, comment, *, save=True):
+        """Consume only Blocked validation refusals, preserving the caller's save policy."""
+        state = self.state
+        try:
+            yield
+        except Blocked:
+            state["command_id"] = comment["id"]
+            if save:
+                self.save()
+            raise
+
+    def reconciled_changed_paths(self):
+        """Read accumulated PR paths once and require a nonempty, policy-allowed set."""
+        changed = candidates.changed_paths(self.pulls.pages(f"pulls/{self.state['pr']}/files"))
+        if not changed or not all(path_allowed(path, self.config) for path in changed):
+            raise Blocked("cannot reconcile accumulated PR changes")
+        return changed
+
     def extend_plan_revisions(self, comment, amount, comments):
         """Atomically grant bounded revision capacity and resume the recorded revision, never waive findings."""
         state = self.state
@@ -768,7 +799,7 @@ class Controller:
             self.refuse_revision_command(comment)
             return False
         state.setdefault("revision_wait", {"stage": stage})
-        try:
+        with self.consume_on_refusal(comment):
             if not 1 <= amount <= 3:
                 raise Blocked("Grant between 1 and 3 additional plan revisions per command.")
             if state.get("pending"):
@@ -778,13 +809,7 @@ class Controller:
                 raise Blocked("Configuration or requirements changed; reassess them before granting revision capacity.")
             self.require_current_bundle()
             if state.get("pr"):
-                pr = self.pulls.repo(f"pulls/{state['pr']}")
-                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
-                    raise Blocked("PR changed outside the controller; cannot resume its plan revision.")
-        except Blocked:
-            state["command_id"] = comment["id"]
-            self.save()
-            raise
+                self.require_pr_unchanged("PR changed outside the controller; cannot resume its plan revision.")
         previous = self.plan_revision_limit()
         state["plan_revision_extra"] = state.get("plan_revision_extra", 0) + amount
         state["plan_revision_grant"] = {"actor": comment["user"]["login"], "comment": comment["id"],
@@ -848,10 +873,7 @@ class Controller:
             return
         state["design_parent"] = state.get("head")
         if state.get("pr"):
-            changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
-            if not changed or not all(path_allowed(p, self.config) for p in changed):
-                raise Blocked("cannot reconcile accumulated PR changes")
-            state["changed_files"] = changed
+            state["changed_files"] = self.reconciled_changed_paths()
         self.save()
 
     def record_outcome(self):
@@ -922,7 +944,7 @@ class Controller:
         if not self.revise_plan("intake", "Requirements or base changed; QC is reassessing."):
             return False
         state.update(requirements=requirements,
-                     issue_digest=digest([self.issue["title"], self.issue["body"]]))
+                     issue_digest=self.issue_digest())
         for key in ("plan", "plan_id", "branch", "qc"):
             state.pop(key, None)
         self.save()
@@ -932,6 +954,10 @@ class Controller:
         """Expose the response transport capacity, independent of audit history size."""
         return {'max_json_bytes': MODEL_RESPONSE_LIMIT, 'encoding': 'UTF-8 JSON'}
 
+    def agent_fields(self, provider, stage):
+        """Attach profile identity to reports only for named-agent configurations."""
+        return {"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}
+
     def record_pr_review(self, state, provider, report):
         """Apply a validated PR review to the ledger and queue its publication on the PR.
 
@@ -939,8 +965,7 @@ class Controller:
         """
         sequence, identifiers = review_rules.apply(state, provider, report, state["head"],
                                                f"https://github.com/{self.config['repository']}/issues/{state['issue']}")
-        if "agents" in self.config:
-            report["agent"] = resolve(self.config, provider, "review").record()
+        report.update(self.agent_fields(provider, "review"))
         report.update(head=state["head"], model=selected_model(self.config, provider, "review") or "CLI default",
                       input_revision=state.get("input_revision", 0), sequence=sequence, finding_ids=identifiers)
         if report["verdict"] == "reopen":
@@ -1101,14 +1126,14 @@ class Controller:
             "base": state["base"], "requirements_digest": digest(state["requirements"]),
             "plan": state.get("plan_id"), "provider": provider,
             "model": member["model"] if member else selected_model(self.config, provider, stage),
-            **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
+            **self.agent_fields(provider, stage),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "round": state["design_generation"] + 1, "phase": phase if member else "intake"})
         identity = member or {"id": digest([provider, "intake"]), "provider": provider,
                               "model": selected_model(self.config, provider, stage)}
         conversation.queue(state, None, source=("qc", stage), kind="qc", details={
                                "provider": provider, "model": identity["model"],
-                               **({"agent": resolve(self.config, provider, stage).record()} if "agents" in self.config else {}),
+                               **self.agent_fields(provider, stage),
                                "plan": state.get("plan_id", "intake"), "round": state["design_generation"] + 1,
                                "phase": phase if member else "intake", "reviewer": identity["id"],
                                "resolved": resolved, "disposition_ids": disposition_ids})
@@ -1190,14 +1215,14 @@ class Controller:
             return True
         self.reopen_design({"kind": "requirements", "explanation": "Authorized issue requirements changed.",
                             "evidence": [digest(requirements)]}, "requirements")
-        state.update(requirements=requirements, issue_digest=digest([self.issue["title"], self.issue["body"]]))
+        state.update(requirements=requirements, issue_digest=self.issue_digest())
         self.save()
         return state["stage"] == "plan"
 
     def retry_reviewed(self, comment, comments):
         """A writer may request a bounded repair with fresh feedback; CI events alone never do."""
         state = self.state
-        if state["issue_digest"] != digest([self.issue["title"], self.issue["body"]]):
+        if state["issue_digest"] != self.issue_digest():
             state["command_id"] = comment["id"]
             self.resume_with_head(self.requirements(comments))
             return
@@ -1236,7 +1261,7 @@ class Controller:
         state = self.state
         if implementation_bundle.current(state, self.bundle):
             return
-        try:
+        with self.consume_on_refusal(comment):
             if state.get("pending"):
                 raise Blocked("Publication is pending; finish the recorded publication before adopting instructions.")
             if (state["config_digest"] != config_digest(self.config)
@@ -1244,16 +1269,10 @@ class Controller:
                     or not approval_valid(state, self.config)):
                 raise Blocked("Configuration, requirements or approval changed; cannot preserve the approved plan.")
             if state.get("pr"):
-                pr = self.pulls.repo(f"pulls/{state['pr']}")
-                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
-                    raise Blocked("PR changed outside the controller; cannot retry its implementation.")
+                self.require_pr_unchanged("PR changed outside the controller; cannot retry its implementation.")
             original = implementation_bundle.original_skill(state, self.bundle)
             if original is None or state.get("charter_id") != digest(self.bundle.charter):
                 raise Blocked(BUNDLE_REASON)
-        except Blocked:
-            state["command_id"] = comment["id"]
-            self.save()
-            raise
         previous = state.get("implementation_bundle", {}).get("new_bundle", state["bundle_id"])
         state["implementation_skill"] = original
         state["implementation_bundle"] = {
@@ -1274,23 +1293,15 @@ class Controller:
     def invalidate_task(self, comment, comments):
         """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
         state = self.state
-        try:
+        with self.consume_on_refusal(comment, save=False):
             if state.get("pending"):
                 raise Blocked("Publication is pending. Use /concurro retry to finish the recorded publication, "
                               "then /concurro invalidate to reassess it.")
             if state["config_digest"] != config_digest(self.config):
                 raise Blocked("Controller configuration changed; start a new task with the new configuration.")
             if state.get("pr"):
-                pr = self.pulls.repo(f"pulls/{state['pr']}")
-                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
-                    raise Blocked("PR changed outside the controller; cannot invalidate its recorded design")
-                changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
-                if not changed or not all(path_allowed(p, self.config) for p in changed):
-                    raise Blocked("cannot reconcile accumulated PR changes")
-                state["changed_files"] = changed
-        except Blocked:
-            state["command_id"] = comment["id"]
-            raise
+                self.require_pr_unchanged("PR changed outside the controller; cannot invalidate its recorded design")
+                state["changed_files"] = self.reconciled_changed_paths()
         record = {"actor": comment["user"]["login"], "comment": comment["id"],
                   "old_bundle": state["bundle_id"], "new_bundle": self.bundle.identity,
                   "old_charter": state["charter_id"], "new_charter": digest(self.bundle.charter),
@@ -1310,7 +1321,7 @@ class Controller:
                      charter_id=digest(self.bundle.charter),
                      charter=deepcopy(self.bundle.charter), stage="intake", command_id=comment["id"],
                      requirements=self.requirements(comments),
-                     issue_digest=digest([self.issue["title"], self.issue["body"]]),
+                     issue_digest=self.issue_digest(),
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
         for key in ("revision_wait", "implementation_bundle", "review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
@@ -1359,7 +1370,7 @@ class Controller:
                         continue
                     base = self.pulls.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
                     self.state.update(base=base, requirements=self.requirements(comments), command_id=comment["id"],
-                        issue_digest=digest([self.issue["title"], self.issue["body"]]))
+                        issue_digest=self.issue_digest())
                     for key in ("plan", "plan_id", "branch", "qc", "design_parent", "approved_accumulated_files"):
                         self.state.pop(key, None)
                     self.save()
@@ -1400,7 +1411,7 @@ class Controller:
                         continue
                     # Reassessment reads the issue as it is now, including edits made to answer the escalation.
                     self.state.update(requirements=self.requirements(comments),
-                                      issue_digest=digest([self.issue["title"], self.issue["body"]]))
+                                      issue_digest=self.issue_digest())
                     self.state.pop("retry_stage", None)
                     self.state["command_id"] = comment["id"]
                 else:
@@ -1683,8 +1694,7 @@ class Controller:
         state["stage"] = "publish"
         conversation.queue(state, None, source=("candidate",), kind="implementation",
                            details={"provider": assigned(self.config, "implementer"), "round": state["round"],
-                                    **({"agent": resolve(self.config, assigned(self.config, "implementer"), "develop").record()}
-                                       if "agents" in self.config else {})})
+                                    **self.agent_fields(assigned(self.config, "implementer"), "develop")})
         self.save()
 
     def publish(self):
@@ -1795,7 +1805,7 @@ class Controller:
             conversation.queue(state, None, source=source, kind="review", details={
                 "head": state["head"], "round": state["round"] + 1, "pr": state["pr"], "provider": provider,
                 "model": selected_model(self.config, provider, "review") or "CLI default", "pr_url": self.pr_url(state["pr"]),
-                **({"agent": resolve(self.config, provider, "review").record()} if "agents" in self.config else {})})
+                **self.agent_fields(provider, "review")})
             self.refresh_classification()
             if report["verdict"] == "reopen":
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
@@ -1959,7 +1969,7 @@ class Controller:
             if enrollment:
                 self.initialize(comments, "autonomous", enrollment=enrollment)
         if self.state and actions.answers(self.state, self.config, comments,
-                                          digest([self.issue["title"], self.issue["body"]]), self.answerer):
+                                          self.issue_digest(), self.answerer):
             self.save()
         if self.commands(comments):
             return True
@@ -1975,7 +1985,7 @@ class Controller:
                 return False
         elif state["stage"] == "clarify":
             return False
-        if state["issue_digest"] != digest([self.issue["title"], self.issue["body"]]):
+        if state["issue_digest"] != self.issue_digest():
             raise Blocked("issue requirements changed; re-plan required")
         if state["stage"] in ("intake", "plan", "plan_qc", "implement", "review"):
             self.require_current_bundle()
