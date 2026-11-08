@@ -184,7 +184,7 @@ Status values:
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Done |
 | 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Done |
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Done |
-| 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Next |
+| 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Approved |
 | 10 | [Execution path](10-execution-path.md) (10a, 10c, 10d; separate commits) | Refactor | Medium | Candidate (10a next) |
 | 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate (09b after 05) |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |

@@ -6,6 +6,8 @@ import urllib.request
 
 # Long polls wait up to this long on the exchange; the HTTP timeout leaves room beyond it.
 WAIT = 45
+# A runner can no longer renew or acknowledge this session.
+SESSION_GONE = frozenset({401, 403, 409, 410})
 
 
 class ExchangeError(RuntimeError):

@@ -15,7 +15,7 @@ import protocol
 import turns
 from mirror import Mirror, git_environment
 from policy import runner_bound
-from relay import ExchangeError, Runner
+from relay import SESSION_GONE, ExchangeError, Runner
 from vocab import TurnOutcome
 
 AUDIENCE = "concurro-gateway"
@@ -45,7 +45,7 @@ def heartbeat(client, stopped, interval=HEARTBEAT):
             client.next(0, 0)
             last = time.monotonic()
         except ExchangeError as error:
-            if error.status in (401, 403, 409, 410) or time.monotonic() - last >= 150:
+            if error.status in SESSION_GONE or time.monotonic() - last >= 150:
                 stopped.set()
                 return
         stopped.wait(interval)
@@ -68,7 +68,7 @@ class Loop:
                 try:
                     taken = self.runner.next(1, HEARTBEAT)
                 except ExchangeError as error:
-                    if error.status in (401, 403, 409, 410):
+                    if error.status in SESSION_GONE:
                         return
                     self.stopped.wait(5)
                     continue
@@ -104,7 +104,7 @@ class Loop:
                     self.runner.complete(identifier, result)
                     return
                 except ExchangeError as error:
-                    if error.status in (401, 403, 409, 410):
+                    if error.status in SESSION_GONE:
                         self.stopped.set()
                         return
                     self.stopped.wait(5 * (attempt + 1))
@@ -180,7 +180,7 @@ def renew_before_serve(client):
             client.next(0, 0)
             return
         except ExchangeError as error:
-            if error.status in (401, 403, 409, 410) or attempt == 4:
+            if error.status in SESSION_GONE or attempt == 4:
                 raise
             time.sleep(5)
 
