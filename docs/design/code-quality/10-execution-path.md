@@ -63,29 +63,64 @@ refactor(engine): split native turn execution and share process cleanup
 ## 10b: Result decoding and the runner executor
 
 **Scope:** `engine/agents.py`, `engine/relay.py`, `engine/runner.py`, `engine/turns.py`, tests.
+If the optional vocabulary (item 5) is included, also `engine/vocab.py` and
+`engine/review_timing.py`.
 
-1. **`decode_result`** (136–173):
+Line numbers below are from `f1225e6`; find code by symbol. Re-checked against `9d3ebfb`
+before approval.
+
+1. **`Agents.decode_result`:**
    - Move the message dicts to module constants.
-   - Add a `runner_terminated(detail)` factory for the shared suffix, "Inspect … before a
-     writer retries; no automatic restart was attempted" (145–147, 156–157, 331–332,
-     353–355). Use it only where the produced text is identical character for character.
+   - **The failure-message suffixes are not one string.**
+     - Two messages end "Inspect the exchange and runner before a writer retries; no
+       automatic restart was attempted."
+     - One ends "Inspect the runner before a writer retries; no automatic restart was
+       attempted."
+     - The lost-runner message in `RunnerExecutor.receive` ends "The cause is unconfirmed.
+       Inspect the runner before a writer retries." It has no restart clause.
+
+     **Preferred:** name the two exact full suffix strings as constants and leave the
+     outlier inline. Don't add a configurable factory.
    - Derive `"30-minute"` from `QUEUE_SECONDS // 60`, producing the same text.
 2. **`RunnerExecutor`:**
-   - Cache `job_bound` on `TurnHandle`; it is recomputed six times.
-   - Name the constants `ADMIT_RETRY_SECONDS` (15), `POLL_BACKOFF_CAP` (60),
-     `MAX_POLL_FAILURES` (20) and `LEASE_MARGIN` (300).
-   - Use `relay.WAIT` for the 45, only if it is the same value.
+   - **`job_bound`:** cache it on `TurnHandle`, and use it **only where a handle exists**.
+     `runner_bound(...)` is also evaluated during preparation and decoding. Don't reshape
+     those APIs just to eliminate every call. This is about lifecycle clarity, not
+     performance.
+   - **Name constants by purpose:** `POLL_BACKOFF_CAP` (60), `MAX_POLL_FAILURES` (20),
+     `LEASE_MARGIN` (300) and the default `6 * 3600` lease.
+     - Three separate 15-second intervals share a value but not a meaning: the admission
+       retry sleep, the polling backoff base and non-job poll delay, and the
+       ownership-check interval in `run()`. Give each its own name, or leave it inline.
+       Never share one constant between them.
+   - **`relay.WAIT`:** replace only `run()`'s `self.observe(handle, wait=45)` argument with
+     it. `observe()` keeps its `wait=0` default for parallel polling.
+   - **Backoff:** leave the short backoff calculation inline. A `PollBackoff` object is
+     not needed.
 3. **Session-gone statuses:** add `relay.SESSION_GONE = frozenset({401, 403, 409, 410})`
-   for `runner.py` 44, 67, 103 and 177. **Keep** `agents.py:352`'s classification
-   separate.
-4. **Empty result:** add `turns.empty_result(outcome)` for `runner.py:95` and `agents.py:308`.
+   for the four checks in `runner.py`. **Keep** the polling-error classification in
+   `RunnerExecutor.observe` separate: it treats 3xx differently.
+4. **Empty result: leave both inline.** `RunnerExecutor.lost()` and `runner.Loop`'s
+   failure result build the same empty result **with a different key order**
+   (`retained, workspace` vs `workspace, retained`), and the runner's dict is serialised to
+   the exchange. The JSON-byte test pins both.
+5. **Optional vocabulary:** if it makes the lifecycle clearer, add `ExchangeStatus`
+   (`queued`, `running`, `done`, `lost`, `cancelled`) and `TerminationReason`
+   (`turn_timeout`, `runner_stopped`, `process_signal`) to `vocab.py`, next to
+   `TurnOutcome`. Compare against members; don't coerce incoming strings.
+   `review_timing.STATUSES` stays importable with identical contents.
 
-Extracting a `PollBackoff` object is optional. Do it only if the backoff logic reads more
-clearly as an object than as three lines.
+**Tests first**, against the current code:
 
-**Tests first:** a table-driven test over every
-`(stage, outcome, termination_reason, session?)` combination `decode_result` handles,
-pinning the exception type and exact message on the old code.
+- **Decoding table:** a table-driven test over every
+  `(stage, outcome, termination_reason, session?)` combination `decode_result` handles.
+  Pin the exception type and exact message. Include unknown outcomes and unknown
+  termination reasons.
+- **Executor messages:** pin the exact `RunnerTerminated` messages raised in
+  `RunnerExecutor.receive` and `observe`, including the HTTP-refusal message.
+- **Empty results:** pin the exact JSON bytes of the runner's failure result and of `lost()`.
+- **Backoff and leases:** pin the poll backoff sequence for a job-bound turn
+  (15/30/60/60 seconds), and the lease arithmetic.
 
 **Commit message:**
 
