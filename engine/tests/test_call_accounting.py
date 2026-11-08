@@ -234,12 +234,12 @@ class AccountingTests(ConsensusFixture, unittest.TestCase):
     def test_uncertain_count_boundaries(self):
         """Pin begin_attempt and the actual batch pre-check, including completed normalization."""
         expected = {
-            'new': ([False, False, True], [False, False, False]),
+            'new': ([False, False, True], [False, False, True]),
             'started': ([False, True, True], [False, True, True]),
             'uncertain': ([False, True, True], [False, True, True]),
-            'failed': ([False, False, True], [False, False, False]),
+            'failed': ([False, False, True], [False, False, True]),
             'completed': ([False, False, True], [False, True, True]),
-            'consumed': ([False, False, True], [False, False, False]),
+            'consumed': ([False, False, True], [False, False, True]),
         }
         for status, (serial, batch) in expected.items():
             for count in range(3):
@@ -319,3 +319,48 @@ class AccountingTests(ConsensusFixture, unittest.TestCase):
         self.assertNotIn('response', first)
         self.assertEqual(second['status'], 'completed')
         self.assertIn('response', second)
+
+    def test_exhausted_late_member_cannot_persist_partial_roster_charges(self):
+        """Even unexpected exhausted states fail before any member starts or is charged."""
+        baseline = deepcopy(self.loaded().state)
+        for status, count in (('new', 2), ('failed', 2), ('completed', 1)):
+            with self.subTest(status=status, count=count):
+                controller = self.loaded()
+                controller.state = deepcopy(baseline)
+                adapter = Design(controller)
+                keys = adapter.open()
+                for key in keys:
+                    member = adapter.select(key)
+                    provider = member['identity']['provider']
+                    context = controller.prepare_context(provider, 'plan_qc', deepcopy(adapter.contexts[key]))
+                    controller.operation(provider, 'plan_qc', context)
+                adapter.batch['members'][keys[-1]]['operation'].update(status=status, uncertain=count)
+                before = deepcopy(controller.state)
+                with self.trace(controller) as trace:
+                    with self.assertRaisesRegex(Blocked, '^' + UNCERTAIN_MESSAGE + '$'):
+                        adapter.reserve(keys, initial=True)
+                controller.suspend('blocked', UNCERTAIN_MESSAGE, publish_events=False, outboxes=False)
+                restored = self.loaded().state
+                self.assertEqual(restored['stage'], 'blocked')
+                self.assertEqual(restored['calls'], before['calls'])
+                self.assertEqual(restored['credentials'], before['credentials'])
+                self.assertEqual([restored['review_batch']['members'][k]['operation']['attempts'] for k in keys],
+                                 [0, 0, 0])
+                self.assertEqual(trace[0], ['prepare', 'prepare'])
+                self.assertFalse(any(method != 'GET' for _, method, _, _ in trace[2]))
+
+    def test_consumed_operation_gets_a_new_allowance_before_batch_admission(self):
+        """The defensive check does not reuse the previous operation's exhausted allowance."""
+        controller, adapter, keys = self.batch()
+        key = keys[-1]
+        member = adapter.select(key)
+        provider = member['identity']['provider']
+        context = controller.prepare_context(provider, 'plan_qc', deepcopy(adapter.contexts[key]))
+        old = controller.operation(provider, 'plan_qc', context)
+        old.update(status='consumed', uncertain=2, attempts=2)
+        before = controller.state['calls']
+        adapter.reserve(keys, initial=True)
+        current = adapter.batch['members'][key]['operation']
+        self.assertIsNot(current, old)
+        self.assertEqual((current['status'], current['uncertain'], current['attempts']), ('started', 0, 1))
+        self.assertEqual(controller.state['calls'], before + len(keys))

@@ -114,8 +114,7 @@ class Design:
             context.update(operation['contract'])
             if operation.get('status') == 'completed':
                 operation['status'] = 'uncertain'
-            if operation.get('status') in ('started', 'uncertain'):
-                c.require_uncertain_budget(c.next_uncertain_count(operation))
+            c.require_uncertain_budget(c.next_uncertain_count(operation))
             session = sessions.prepare(c.state, c.config, provider, 'plan_qc', context)
             design_eligibility.prepare(c.state, context, session, operation)
             credential = self.transport.credential(provider, 'plan_qc', {'repository': c.config['repository'], 'issue': c.state['issue']})
