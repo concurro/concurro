@@ -50,6 +50,8 @@ PR_TITLE_LIMIT = 72
 # Correct malformed intake and planner output without spending a semantic design-revision round.
 PLAN_OUTPUT_REPAIRS = 2
 INTAKE_OUTPUT_REPAIRS = 2
+MAX_UNCERTAIN = 2
+UNCERTAIN_MESSAGE = "model call outcome was uncertain twice; operator reconciliation required"
 # Context bytes `ask()` adds at dispatch (the repository commit and refs, and the operation contract).
 DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
@@ -553,10 +555,7 @@ class Controller:
             if session:
                 request["controller_session"] = session
             self.begin_attempt(operation, context)
-            self.state["calls"] += 1
-            used = self.state.setdefault("credentials", {}).setdefault(
-                credential.id, {k: v for k, v in credential.record().items() if k != "id"} | {"calls": 0})
-            used["calls"] += 1
+            self.charge_call(credential)
             self.save()
             try:
                 try:
@@ -584,12 +583,38 @@ class Controller:
                     raise Blocked("provider session failed twice; a fresh session is prepared for retry") from None
                 continue
             if session:
-                current = self.state["sessions"][session["role"]]
-                current["turn"] += 1
-                current["completed"] = {"call": self.state["calls"], "request": digest(context),
-                                        "response": digest(response)}
+                self.record_session_turn(session, self.state["calls"], context, response)
             self.complete(operation, response)
             return response
+
+    def charge_call(self, credential):
+        """Debit the in-memory task and credential ledgers and return the assigned call number."""
+        self.state["calls"] += 1
+        used = self.state.setdefault("credentials", {}).setdefault(
+            credential.id, {k: v for k, v in credential.record().items() if k != "id"} | {"calls": 0})
+        used["calls"] += 1
+        return self.state["calls"]
+
+    def record_session_turn(self, session, call, request, response):
+        """Record one completed turn and its request/response binding without persisting it."""
+        current = self.state["sessions"][session["role"]]
+        current["turn"] += 1
+        current["completed"] = {"call": call, "request": digest(request), "response": digest(response)}
+
+    def release_result(self):
+        """Clear the consumption cursor so a later checkpoint retains the selected response."""
+        self.consuming = None
+
+    @staticmethod
+    def next_uncertain_count(operation):
+        """Count an unresolved prior attempt without mutating its operation record."""
+        return operation["uncertain"] + (operation["status"] in ("started", "uncertain"))
+
+    @staticmethod
+    def require_uncertain_budget(count):
+        """Refuse another attempt once the existing uncertainty allowance is exhausted."""
+        if count >= MAX_UNCERTAIN:
+            raise Blocked(UNCERTAIN_MESSAGE)
 
     def operation(self, provider, stage, context):
         """Bind a model call to its intended work, so incidental request changes keep its allowance."""
@@ -621,9 +646,8 @@ class Controller:
     def begin_attempt(self, operation, context):
         """Persist each attempt before dispatch; unresolved prior attempts count as uncertain."""
         if operation["status"] in ("started", "uncertain"):
-            operation["uncertain"] += 1
-        if operation["uncertain"] >= 2:
-            raise Blocked("model call outcome was uncertain twice; operator reconciliation required")
+            operation["uncertain"] = self.next_uncertain_count(operation)
+        self.require_uncertain_budget(operation["uncertain"])
         operation.pop("timing", None)
         operation.update(attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started",
                          request=digest(context))

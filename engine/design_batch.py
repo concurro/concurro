@@ -6,7 +6,7 @@ import design_eligibility
 import review_batch
 import review_timing
 import sessions
-from policy import Blocked, SessionFailure, UncertainOutcome, approval_binding, design_roster, digest
+from policy import Blocked, SessionFailure, UncertainOutcome, approval_binding, design_roster
 
 
 def run(controller):
@@ -37,7 +37,7 @@ class Design:
     def select(self, key):
         """Select one canonical member for existing operation and attribution helpers."""
         self.batch['active'] = key
-        self.controller.consuming = None
+        self.controller.release_result()
         return self.batch['members'][key]
 
     def open(self):
@@ -114,8 +114,8 @@ class Design:
             context.update(operation['contract'])
             if operation.get('status') == 'completed':
                 operation['status'] = 'uncertain'
-            if operation.get('status') in ('started', 'uncertain') and operation['uncertain'] + 1 >= 2:
-                raise Blocked('model call outcome was uncertain twice; operator reconciliation required')
+            if operation.get('status') in ('started', 'uncertain'):
+                c.require_uncertain_budget(c.next_uncertain_count(operation))
             session = sessions.prepare(c.state, c.config, provider, 'plan_qc', context)
             design_eligibility.prepare(c.state, context, session, operation)
             credential = self.transport.credential(provider, 'plan_qc', {'repository': c.config['repository'], 'issue': c.state['issue']})
@@ -131,11 +131,7 @@ class Design:
             c.begin_attempt(operation, context)
             member.update(session=session, status='queued')
             operation['owner_generation'] = getattr(self.transport, 'generation', None)
-            c.state['calls'] += 1
-            operation['call'] = c.state['calls']
-            used = c.state.setdefault('credentials', {}).setdefault(credential.id,
-                {**{k: v for k, v in credential.record().items() if k != 'id'}, 'calls': 0})
-            used['calls'] += 1
+            operation['call'] = c.charge_call(credential)
             self.contexts[key] = context
         self.batch.pop('active', None)
         c.save()
@@ -162,13 +158,10 @@ class Design:
         response = self.transport.decode(turn, result)
         session = member.get('session')
         if session:
-            current = c.state['sessions'][session['role']]
-            current['turn'] += 1
-            current['completed'] = {'call': member['operation']['call'],
-                                    'request': digest(self.contexts[key]), 'response': digest(response)}
+            c.record_session_turn(session, member['operation']['call'], self.contexts[key], response)
         member['status'] = 'complete'
         c.complete(member['operation'], response)
-        c.consuming = None
+        c.release_result()
 
     def apply(self, key):
         """Use the same validator, objection ledger and publication path as serial review."""
@@ -185,7 +178,7 @@ class Design:
             member['status'] = 'correcting'
         else:
             member['status'] = 'complete'
-        c.consuming = None
+        c.release_result()
 
     def failed(self, key, error):
         """Isolate explicit uncertain outcomes and session failures within their existing bounds."""
@@ -220,7 +213,7 @@ class Design:
         if not batch:
             return
         batch.pop('active', None)
-        c.consuming = None
+        c.release_result()
         # Keep terminal records for retry; a successful phase no longer needs them.
         if (c.state['stage'] in ('implement', 'planned', 'plan') or
                 c.state['stage'] == 'plan_qc' and approval_binding(c.state, c.config) != self.binding):
