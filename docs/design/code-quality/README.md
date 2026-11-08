@@ -179,38 +179,40 @@ Status values:
 | 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Done |
 | 08b | [Serial and batch call accounting](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-narrowed) (narrowed) | Refactor | Low–medium | Done |
 | 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Done |
-| 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Candidate |
-| 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate |
-| 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate |
-| 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Candidate, after 12 |
-| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Candidate, after 08 and 12 |
-| 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate |
-| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate |
-| 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate |
-| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate |
-| 17 | [One-time format](17-format.md) | Style | Low (noisy) | Candidate, at a quiet point |
+| 17 | [One-time format](17-format.md) | Style | Low (noisy) | Approved |
+| 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Next |
+| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Next after 05 |
+| 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Next after 13 |
+| 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate (10b, then 10a) |
+| 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate (09b after 05) |
+| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
+| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate, prepared |
+| 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
+| 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate, prepared |
 
 ### Ordering rationale
 
-- **Done (01–03, 06, 07):** the confirmed bug fix, noise removal, a lint gate, shared
-  fixtures and the dashboard extraction.
-- **04 → 08a → 08b (narrowed after reassessment) → 12:** the agreed next sequence.
-  - 04 names the stage and outcome concepts that later controller work refers to.
-  - 08a gives the authorisation and recovery guards one contract each.
-  - 12's command characterisation matrix is a prerequisite, and may land in its own
-    commit.
-- **Then reassess the remaining candidates on maintainability value and risk.**
-  - 05, 10 and 09 are self-contained.
-  - 18 types the components that 07 and 12 extracted.
-  - 13 depends on how much 08 and 12 shrink the controller.
-  - 11, 14, 15 and 16 are worthwhile, but each needs strong guard tests first:
-    - pagination bounds (11);
+- **Done:** 01–04, 06, 07, 08a, 08b and 12, plus two behavioural fixes found along the
+  way: closed PRs displayed as merged, and the `/concurro start` wedge.
+- **Second reassessment** (after 12, 2026-11-08):
+  - **17 now:** no other branch is in flight. Formatting before the remaining refactors
+    means they are reviewed on formatted code. Its only ordering constraint is never to
+    share a commit with structural changes.
+  - **05 → 13 → 18:**
+    - 05 is small and unblocks 09b.
+    - 13 targets `step()` (90 lines, 48 branches), the controller's largest remaining
+      knot, and the publication module boundary.
+    - 18 then types the extracted components, including `publication`.
+  - **Then 10b, 09a, 09b and 10a,** each self-contained.
+  - **Prepared group: 16, 14, 11, 15.** Each is worthwhile, and each needs its guard
+    tests first:
+    - lock maps and concurrency tests (16);
     - an admission decision table (14);
-    - schema and migration fixtures (15);
-    - lock maps and concurrency tests (16).
+    - pagination bounds (11);
+    - schema and migration fixtures (15).
 
     Higher risk means more preparation, not exclusion.
-- **17 runs only when no other branch is in flight,** because it touches every file.
+  - **10c and 10d:** standalone later, or bundled with nearby work.
 
 Numbers are stable identifiers, not the execution order.
 
