@@ -1,27 +1,19 @@
 """Run one controller tick for one owned task, with that target's own configuration and bundle."""
 
-import base64
 import logging
-import re
-import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
 from functools import cached_property
-from pathlib import Path
-from urllib.parse import quote
 
 import private
 from agents import Agents, RunnerExecutor
-from bundle import CHARTER, RESOURCE_LIMIT, TARGET_INSTRUCTIONS, Bundle
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
-from controller import Controller, validate_config
+from controller import Controller
 from conversation import PublicationError
-from github import NotFound, Transient
-from model_config import parse as parse_models, resolve
+from github import Transient
+from model_config import resolve
 from policy import Blocked
 from relay import ExchangeError, Operator
 from report_store import Cache
@@ -30,194 +22,22 @@ from . import failures
 from .admission import RUN_BRANCH_PREFIX
 from .errors import GatewayStop
 from .gateway import LEASE_SECONDS, GatewayGitHub
+from .github_reads import (
+    DEFAULT_BRANCH as DEFAULT_BRANCH,
+    RUNNER_IDENTITY as RUNNER_IDENTITY,
+    content as content,
+    default_branch as default_branch,
+    head as head,
+    runner_claims as runner_claims,
+)
+from .runner_diagnostics import runner_termination as runner_termination
 from .settings import CHECKOUT
-from .target_config import read_remote
+from .target_loader import CONFIG_LIMIT as CONFIG_LIMIT, Target as Target, load_target as load_target
 from .targets import enrollment
 
-CONFIG_LIMIT = 64_000
 RENEW_SECONDS = LEASE_SECONDS // 3
-DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
-  repository(owner:$owner,name:$name) { defaultBranchRef { name target { oid } } }
-}"""
-RUNNER_IDENTITY = """query($owner:String!,$name:String!) {
-  repository(owner:$owner,name:$name) {
-    databaseId defaultBranchRef { name }
-    owner { ... on User { databaseId } ... on Organization { databaseId } }
-  }
-}"""
 
 log = logging.getLogger("concurro.service")
-
-
-@dataclass(frozen=True)
-class Target:
-    """One repository's validated configuration and bundle at its default-branch head."""
-
-    config: dict
-    bundle: Bundle
-    config_sha: str
-
-
-def default_branch(reader, repository):
-    """The default branch's name and head commit."""
-    owner, name = repository.split("/")
-    response = reader.request("POST", "graphql", {"query": DEFAULT_BRANCH, "variables": {"owner": owner, "name": name}})
-    branch = ((response or {}).get("data") or {}).get("repository", {}).get("defaultBranchRef") or {}
-    sha = (branch.get("target") or {}).get("oid")
-    if response.get("errors") or not isinstance(sha, str) or len(sha) != 40 or not isinstance(branch.get("name"), str):
-        raise Blocked("cannot establish the target's default branch")
-    return branch["name"], sha
-
-
-def head(reader, repository):
-    """The default branch's head commit."""
-    return default_branch(reader, repository)[1]
-
-
-def runner_claims(reader, repository, workflow_ref, engine, bot_login):
-    """The OIDC claims a runner session of this target must present: the target, the pinned agent
-    workflow at the served engine commit, a dispatch by the App's bot on the default branch."""
-    owner, name = repository.split("/")
-    response = reader.request(
-        "POST", "graphql", {"query": RUNNER_IDENTITY, "variables": {"owner": owner, "name": name}}
-    )
-    found = ((response or {}).get("data") or {}).get("repository") or {}
-    branch = (found.get("defaultBranchRef") or {}).get("name")
-    # A bot is not a GraphQL `user`; its public profile is the one read outside the repository.
-    bot = reader.request("GET", "users/" + quote(bot_login))
-    if (
-        response.get("errors")
-        or not isinstance(found.get("databaseId"), int)
-        or not isinstance((found.get("owner") or {}).get("databaseId"), int)
-        or not isinstance(branch, str)
-        or not isinstance(bot, dict)
-        or not isinstance(bot.get("id"), int)
-        or bot.get("login") != bot_login
-    ):
-        raise Blocked("cannot establish the target's runner identity")
-    return {
-        "repository_id": str(found["databaseId"]),
-        "repository_owner_id": str(found["owner"]["databaseId"]),
-        "job_workflow_ref": workflow_ref,
-        "job_workflow_sha": engine,
-        "event_name": "workflow_dispatch",
-        "ref": "",
-        "actor_id": str(bot["id"]),
-    }
-
-
-def content(reader, repository, path, sha, limit):
-    """A regular file's text at one commit; links, directories and oversized files are refused."""
-    item = reader.request("GET", f"repos/{repository}/contents/{quote(path)}?ref={sha}")
-    if (
-        not isinstance(item, dict)
-        or item.get("type") != "file"
-        or item.get("encoding") != "base64"
-        or item.get("path") != path
-        or not isinstance(item.get("size"), int)
-        or item["size"] > limit
-    ):
-        raise Blocked("target configuration must be bounded regular files")
-    data = base64.b64decode(item["content"])
-    if len(data) != item["size"]:
-        raise Blocked("target configuration must be bounded regular files")
-    return data.decode("utf-8")
-
-
-def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_sha=None):
-    """Read JSON or YAML `.concurro/` configuration at the default-branch head, through the read token.
-
-    The target must name the verified App. Its `engine` pin is
-    optional: without one, it runs whatever engine the operator serves; with one, only that. Files are staged in a private temporary directory only while the
-    bundle reads them.
-    """
-    repository = target.fork
-    sha = config_sha or head(reader, repository)
-    config = read_remote(lambda path: content(reader, repository, path, sha, CONFIG_LIMIT))
-    if not isinstance(config, dict):
-        raise Blocked("target configuration must be an object")
-    validate_config(config)
-    active = (
-        {a.profile.harness for a in parse_models(config).profiles}
-        if "agents" in config
-        else {config["planner"], config["implementer"], config["qc"], *config["reviewers"]}
-    )
-    if not active <= {"claude", "codex"}:
-        raise Blocked("the MVP runner supports Claude and Codex roles only")
-    if config["repository"].lower() != repository.lower():
-        raise Blocked("target configuration names another repository")
-    if "engine" in config and config["engine"] != engine:
-        raise Blocked("target pins another engine commit")
-    if config["bot_login"] != bot_login:
-        raise Blocked("target bot_login differs from the controller App")
-    paths = [CHARTER]
-    with tempfile.TemporaryDirectory(prefix="concurro-target-") as staging:
-        root = Path(staging)
-        root.chmod(0o700)
-        for path in paths + sorted(TARGET_INSTRUCTIONS):
-            try:
-                text = content(reader, repository, path, sha, RESOURCE_LIMIT)
-            except NotFound:
-                if path in TARGET_INSTRUCTIONS:
-                    continue
-                raise
-            file = root / path
-            file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            file.write_text(text, encoding="utf-8")
-            file.chmod(0o600)
-        bundle = Bundle(engine_root, target=root)
-    return Target(config, bundle, sha)
-
-
-def runner_termination(reader, fork, config_sha, observation):
-    """Diagnose only the OIDC-bound job after exchange loss; unavailable evidence stays unknown."""
-    runner = observation.get("runner", {})
-    session, identity = runner.get("session", ""), runner.get("run_id", "")
-    if not isinstance(session, str) or not re.fullmatch(r"[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}", session):
-        return None
-    if not isinstance(identity, str) or not re.fullmatch(r"[1-9][0-9]*/1", identity):
-        return None
-    run_id, attempt = identity.split("/")
-    path = f"repos/{fork}/actions/runs/{run_id}/attempts/{attempt}"
-    try:
-        run = reader.request("GET", path)
-        if (
-            str(run.get("id")) != run_id
-            or run.get("run_attempt") != 1
-            or run.get("head_branch") != RUN_BRANCH_PREFIX + session
-            or run.get("head_sha") != config_sha
-            or run.get("event") != "workflow_dispatch"
-            or run.get("status") != "completed"
-        ):
-            return None
-        jobs = reader.request("GET", path + "/jobs?per_page=100").get("jobs", [])
-    except Exception:
-        # Diagnostics must not turn runner loss into an automatically retried transport error.
-        return None
-    conclusion = run.get("conclusion")
-    if any(job.get("conclusion") == "timed_out" for job in jobs):
-        conclusion = "timed_out"
-    labels = {
-        "timed_out": "timed out",
-        "cancelled": "was cancelled",
-        "failure": "failed",
-        "success": "finished without delivering the result",
-    }
-    label = labels.get(conclusion, "ended without a result")
-    duration = ""
-    try:
-        starts = [datetime.fromisoformat(job["started_at"].replace("Z", "+00:00")) for job in jobs]
-        ends = [datetime.fromisoformat(job["completed_at"].replace("Z", "+00:00")) for job in jobs]
-        seconds = int((max(ends) - min(starts)).total_seconds())
-        if 0 <= seconds <= 86400:
-            duration = f" after {seconds // 60}m {seconds % 60}s of job time"
-    except (AttributeError, KeyError, TypeError, ValueError):
-        pass
-    return (
-        f"Runner {label}{duration}: https://github.com/{fork}/actions/runs/{run_id}. "
-        "No result was saved; work may be incomplete. No automatic restart was attempted. "
-        "Inspect the run before a writer retries."
-    )
 
 
 class DeferredExecutor:
@@ -298,10 +118,24 @@ class Worker:
         self.claims = {}
         self.report_cache = Cache()
 
+    def _operator(self):
+        """Read the operator credential when starting runner authorization or cleanup."""
+        gateway = self.settings.gateway
+        return Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+
+    def _acknowledge(self, key, snapshot, controller):
+        """Acknowledge the pre-tick input with the controller's resulting stage."""
+        self.registry.acknowledge(key, {**snapshot, "_stage": controller.state["stage"] if controller.state else None})
+
+    def _facade(self, repository, issue, generation, task_key=None):
+        """Build a read/write facade, optionally bound to another repository's task."""
+        options = {"task_key": task_key} if task_key is not None else {}
+        return GatewayGitHub(repository, issue, generation, self.gateway, self.reader(repository), **options)
+
     def executor(self, repository, github):
         """The task's role jobs, dispatched in its fork at the recorded configuration commit."""
         gateway = self.settings.gateway
-        operator = Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+        operator = self._operator()
         request = {"url": gateway.url, "headers": gateway.headers}
         binding = self.registry.binding(github.key)
         if binding is None:
@@ -346,7 +180,7 @@ class Worker:
         try:
             with self.renewing(key, generation):
                 target = self.load(repository, issue, pin=True)
-                facade = GatewayGitHub(repository, issue, generation, self.gateway, self.reader(repository))
+                facade = self._facade(repository, issue, generation)
                 executor = self.make_executor(repository, facade)
                 resolve(target.config, provider, "plan_qc")
                 agents = self.agents(target.config, executor, bundle=target.bundle)
@@ -362,8 +196,7 @@ class Worker:
 
     def cleanup_runners(self):
         """Revoke stale jobs and sweep only recorded session refs, preserving task queues and outcomes."""
-        gateway = self.settings.gateway
-        operator = Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+        operator = self._operator()
         for session, repository, issue, generation in self.registry.runner_sessions():
             key = (repository, issue)
             owner = self.registry.current(key)
@@ -459,23 +292,9 @@ class Worker:
             try:
                 snapshot = self.reconciler.snapshot(key)
                 target = self.load(key[0], key[1])
-                facade = GatewayGitHub(key[0], key[1], generation, self.gateway, self.reader(key[0]))
-                code = GatewayGitHub(
-                    target.config["fork"],
-                    key[1],
-                    generation,
-                    self.gateway,
-                    self.reader(target.config["fork"]),
-                    task_key=key,
-                )
-                pulls = GatewayGitHub(
-                    target.config["upstream"],
-                    key[1],
-                    generation,
-                    self.gateway,
-                    self.reader(target.config["upstream"]),
-                    task_key=key,
-                )
+                facade = self._facade(key[0], key[1], generation)
+                code = self._facade(target.config["fork"], key[1], generation, task_key=key)
+                pulls = self._facade(target.config["upstream"], key[1], generation, task_key=key)
                 executor = self.make_executor(key[0], facade)
                 agents = self.agents(
                     target.config,
@@ -506,9 +325,7 @@ class Worker:
             stop = self.gateway.stop(key, generation)
             if stop is not None:
                 return stop
-            self.registry.acknowledge(
-                key, {**snapshot, "_stage": controller.state["stage"] if controller.state else None}
-            )
+            self._acknowledge(key, snapshot, controller)
             with self.guard:
                 self.failures.pop(key, None)
             return outcome
@@ -525,34 +342,14 @@ class Worker:
         try:
             action = failures.effect(error, verified)
             if action == "suspend":
-                reason = (
-                    str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect service health."
-                )
-                try:
-                    # The Blocked comment is posted now; a publication failure has the health notice instead.
-                    controller.suspend(
-                        "blocked", reason, outboxes=False, publish_events=not isinstance(error, PublicationError)
-                    )
-                except Exception as display_error:
-                    diagnostic = (
-                        display_error
-                        if isinstance(display_error, CheckpointError)
-                        else CheckpointError("failure_display")
-                    )
-                    sync_checkpoint_health(controller.gh, controller.config, key[1], failed=True, error=diagnostic)
-                    result = failures.classify(display_error, attempt=attempt, verified=False)
-                else:
-                    if isinstance(error, CheckpointError):
-                        sync_checkpoint_health(controller.gh, controller.config, key[1], failed=True, error=error)
+                result = self._suspend_failure(controller, key[1], error, result, attempt)
             elif action == "health":
-                sync_checkpoint_health(controller.gh, controller.config, key[1], failed=True, error=error)
+                self._failure_health(controller, key[1], error)
         except GatewayStop as stop:
             return self.gateway.stop(key, generation) or stop
         if result.kind == "blocked":
             # Suspended durably: the pre-tick input is handled, and only new input wakes the task.
-            self.registry.acknowledge(
-                key, {**snapshot, "_stage": controller.state["stage"] if controller.state else None}
-            )
+            self._acknowledge(key, snapshot, controller)
         elif result.kind == "wait-until" and snapshot is not None:
             # Polling must not run this input again before its retry is due.
             self.registry.defer(key, snapshot)
@@ -562,6 +359,29 @@ class Worker:
             else:
                 self.failures.pop(key, None)
         return result
+
+    def _suspend_failure(self, controller, issue, error, result, attempt):
+        """Suspend a failed tick, reporting display failures before reclassifying them."""
+        reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect service health."
+        try:
+            # The Blocked comment is posted now; a publication failure has the health notice instead.
+            controller.suspend(
+                "blocked", reason, outboxes=False, publish_events=not isinstance(error, PublicationError)
+            )
+        except Exception as display_error:
+            diagnostic = (
+                display_error if isinstance(display_error, CheckpointError) else CheckpointError("failure_display")
+            )
+            self._failure_health(controller, issue, diagnostic)
+            result = failures.classify(display_error, attempt=attempt, verified=False)
+        else:
+            if isinstance(error, CheckpointError):
+                self._failure_health(controller, issue, error)
+        return result
+
+    def _failure_health(self, controller, issue, error):
+        """Publish a checkpoint diagnostic under the caller's effect exception boundary."""
+        sync_checkpoint_health(controller.gh, controller.config, issue, failed=True, error=error)
 
 
 def describe(error):

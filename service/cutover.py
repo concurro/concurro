@@ -9,9 +9,9 @@ from github import NotFound
 
 from . import transport
 from .gateway import GatewayGitHub
+from .github_reads import content, head
 from .reconciler import ENROLLMENT, pages
 from .transport import StaticCredential as Token
-from .worker import content, head
 
 # The engine commit that made the Actions controller honour ownership markers.
 MARKER_AWARE = "b2aaafbcad761e294634789b0de580dbc0451207"

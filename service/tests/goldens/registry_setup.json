@@ -1,0 +1,331 @@
+{
+  "initialize": [
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA checkpoint_fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "BEGIN IMMEDIATE",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n                        worker TEXT NOT NULL, lease_until REAL NOT NULL, live INTEGER NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,\n                       progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "\nCREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                    pull_repository TEXT NOT NULL, pull INTEGER NOT NULL,\n                    PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
+      []
+    ],
+    [
+      "executemany",
+      "INSERT INTO meta VALUES (?, ?)",
+      [
+        [
+          "registry_id",
+          "test"
+        ],
+        [
+          "schema",
+          "3"
+        ]
+      ]
+    ],
+    [
+      "execute",
+      "COMMIT",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA integrity_check",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name, value FROM meta",
+      []
+    ],
+    [
+      "execute",
+      "BEGIN IMMEDIATE",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE mutations SET status = 'unknown', settled = ? WHERE status = 'in-flight'",
+      [
+        1000
+      ]
+    ],
+    [
+      "execute",
+      "SELECT repository, issue FROM ownership WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE ownership SET live = 0 WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "COMMIT",
+      []
+    ]
+  ],
+  "fresh": {
+    "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+    "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+    "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
+    "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+    "outcomes": "CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,\n                       progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+    "ownership": "CREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n                        worker TEXT NOT NULL, lease_until REAL NOT NULL, live INTEGER NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "pulls": "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                    pull_repository TEXT NOT NULL, pull INTEGER NOT NULL,\n                    PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
+    "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
+    "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
+    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))"
+  },
+  "open": [
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA checkpoint_fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA integrity_check",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name, value FROM meta",
+      []
+    ],
+    [
+      "execute",
+      "BEGIN IMMEDIATE",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE mutations SET status = 'unknown', settled = ? WHERE status = 'in-flight'",
+      [
+        1000
+      ]
+    ],
+    [
+      "execute",
+      "SELECT repository, issue FROM ownership WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE ownership SET live = 0 WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "COMMIT",
+      []
+    ]
+  ],
+  "migrate": [
+    [
+      "execute",
+      "PRAGMA journal_mode=WAL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA synchronous=FULL",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA checkpoint_fullfsync=ON",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA integrity_check",
+      []
+    ],
+    [
+      "execute",
+      "SELECT name, value FROM meta",
+      []
+    ],
+    [
+      "execute",
+      "BEGIN IMMEDIATE",
+      []
+    ],
+    [
+      "execute",
+      "ALTER TABLE pulls RENAME TO pulls_v2",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
+      []
+    ],
+    [
+      "execute",
+      "INSERT INTO pulls SELECT repository, issue, repository, pull FROM pulls_v2",
+      []
+    ],
+    [
+      "execute",
+      "DROP TABLE pulls_v2",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE meta SET value = ? WHERE name = 'schema'",
+      [
+        "3"
+      ]
+    ],
+    [
+      "execute",
+      "COMMIT",
+      []
+    ],
+    [
+      "execute",
+      "BEGIN IMMEDIATE",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE mutations SET status = 'unknown', settled = ? WHERE status = 'in-flight'",
+      [
+        1000
+      ]
+    ],
+    [
+      "execute",
+      "SELECT repository, issue FROM ownership WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "UPDATE ownership SET live = 0 WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "COMMIT",
+      []
+    ]
+  ],
+  "migrated": {
+    "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+    "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+    "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
+    "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+    "outcomes": "CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,\n                       progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,\n                       PRIMARY KEY (repository, issue))",
+    "ownership": "CREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n                        worker TEXT NOT NULL, lease_until REAL NOT NULL, live INTEGER NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "pulls": "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
+    "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
+    "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
+    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))"
+  }
+}

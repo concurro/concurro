@@ -15,6 +15,7 @@ from policy import digest
 
 from .errors import RegistryError, RegistryFailure
 
+BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
 SCHEMA_VERSION = 3
 DATABASE = "registry.db"
 LOCK = "lock"
@@ -114,6 +115,68 @@ class MutationRecord:
     resolution: dict | None
 
 
+def _lock_state_dir(root):
+    """Acquire the exclusive writer lock in an owner-private directory."""
+    if not root.is_dir() or root.stat().st_mode & 0o077:
+        raise RegistryError("state directory must exist and be private to its owner")
+    fd = os.open(root / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise RegistryError("state directory is in use by another process") from None
+    return fd
+
+
+def _connect(path):
+    """Open the store with durable pragmas, closing a partially configured connection on failure."""
+    db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    try:
+        for pragma in ("journal_mode=WAL", "synchronous=FULL", "fullfsync=ON", "checkpoint_fullfsync=ON"):
+            db.execute("PRAGMA " + pragma)
+    except (RegistryError, sqlite3.Error):
+        db.close()
+        raise
+    return db
+
+
+def _initialize(db, registry_id):
+    """Create the current schema and identity in one explicit transaction."""
+    db.execute("BEGIN IMMEDIATE")
+    for statement in filter(str.strip, SCHEMA.split(";")):
+        db.execute(statement)
+    db.executemany("INSERT INTO meta VALUES (?, ?)", [("registry_id", registry_id), ("schema", str(SCHEMA_VERSION))])
+    db.execute("COMMIT")
+
+
+def _migrate_v2(db):
+    """Preserve old PR identities and journals while adding target bindings."""
+    # Old PRs lived beside their issues. Preserve that identity and all journals.
+    db.execute("BEGIN IMMEDIATE")
+    db.execute("ALTER TABLE pulls RENAME TO pulls_v2")
+    db.execute(
+        "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
+        "pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, "
+        "PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))"
+    )
+    db.execute("INSERT INTO pulls SELECT repository, issue, repository, pull FROM pulls_v2")
+    db.execute("DROP TABLE pulls_v2")
+    db.execute(BINDINGS)
+    db.execute(RUNNER_SESSIONS)
+    db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
+    db.execute("COMMIT")
+
+
+def _mutation_record(row):
+    """Decode one stored write occurrence, including optional resolution evidence."""
+    return MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None)
+
+
+def without_stage(snapshot):
+    """Remove saved stage metadata while retaining all observed input and CI fields."""
+    return {k: v for k, v in snapshot.items() if k != "_stage"}
+
+
 def queue(db, key, cause, due_at):
     """Merge one cause into a task's work item within the caller's transaction."""
     row = db.execute("SELECT causes, due_at FROM queue WHERE repository = ? AND issue = ?", key).fetchone()
@@ -128,7 +191,7 @@ def human_input(snapshot):
     """Separate task inputs from CI-only observation and saved stage metadata."""
     if snapshot is None:
         return None
-    result = {k: v for k, v in snapshot.items() if k != "_stage"}
+    result = without_stage(snapshot)
     if result.get("pull"):
         result["pull"] = {
             k: v for k, v in result["pull"].items() if k not in ("checks", "statuses", "suites", "runs", "merge_head")
@@ -172,14 +235,7 @@ class Registry:
     def open(cls, state_dir, registry_id, initialize=False, clock=time.time):
         """Lock the state directory and verify the store; never replace lost state silently."""
         root = Path(state_dir)
-        if not root.is_dir() or root.stat().st_mode & 0o077:
-            raise RegistryError("state directory must exist and be private to its owner")
-        fd = os.open(root / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-            raise RegistryError("state directory is in use by another process") from None
+        fd = _lock_state_dir(root)
         path = root / DATABASE
         db = None
         try:
@@ -189,37 +245,16 @@ class Registry:
                 os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
             elif not path.exists() or not path.stat().st_size:
                 raise RegistryError("registry is missing or empty; initialize a new one explicitly")
-            db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-            for pragma in ("journal_mode=WAL", "synchronous=FULL", "fullfsync=ON", "checkpoint_fullfsync=ON"):
-                db.execute("PRAGMA " + pragma)
+            db = _connect(path)
             if initialize:
-                db.execute("BEGIN IMMEDIATE")
-                for statement in filter(str.strip, SCHEMA.split(";")):
-                    db.execute(statement)
-                db.executemany(
-                    "INSERT INTO meta VALUES (?, ?)", [("registry_id", registry_id), ("schema", str(SCHEMA_VERSION))]
-                )
-                db.execute("COMMIT")
+                _initialize(db, registry_id)
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise RegistryError("registry integrity check failed")
             meta = dict(db.execute("SELECT name, value FROM meta").fetchall())
             if meta.get("registry_id") != registry_id or set(meta) != {"registry_id", "schema"}:
                 raise RegistryError("registry identity or schema version mismatch")
             if meta["schema"] == "2":
-                # Old PRs lived beside their issues. Preserve that identity and all journals.
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("ALTER TABLE pulls RENAME TO pulls_v2")
-                db.execute(
-                    "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
-                    "pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, "
-                    "PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))"
-                )
-                db.execute("INSERT INTO pulls SELECT repository, issue, repository, pull FROM pulls_v2")
-                db.execute("DROP TABLE pulls_v2")
-                db.execute(BINDINGS)
-                db.execute(RUNNER_SESSIONS)
-                db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
-                db.execute("COMMIT")
+                _migrate_v2(db)
             elif meta["schema"] != str(SCHEMA_VERSION):
                 raise RegistryError("registry identity or schema version mismatch")
         except (RegistryError, sqlite3.Error) as error:
@@ -403,17 +438,13 @@ class Registry:
                 "ORDER BY generation, sequence",
                 (*key, status),
             ).fetchall()
-        return [MutationRecord(r[0], (r[1], r[2]), *r[3:11], json.loads(r[11]) if r[11] else None) for r in rows]
+        return [_mutation_record(row) for row in rows]
 
     def mutation(self, intent):
         """One occurrence by its intent ID, or None."""
         with self.transaction() as db:
             row = db.execute("SELECT * FROM mutations WHERE intent = ?", (intent,)).fetchone()
-        return (
-            MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None)
-            if row
-            else None
-        )
+        return _mutation_record(row) if row else None
 
     def in_flight(self, key):
         """Occurrences sent or about to be sent and not yet settled."""
@@ -504,8 +535,7 @@ class Registry:
                     not new
                     and deferred is None
                     and (acknowledged or {}).get("_stage") == "gates"
-                    and {k: v for k, v in snapshot.items() if k != "_stage"}
-                    != {k: v for k, v in acknowledged.items() if k != "_stage"}
+                    and without_stage(snapshot) != without_stage(acknowledged)
                 ):
                     queue(db, key, "ci", self.clock())
                     return True
@@ -524,17 +554,13 @@ class Registry:
     def binding(self, key):
         """The task's pinned configuration and destinations, or None before enrollment."""
         with self.transaction() as db:
-            row = db.execute(
-                "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?", key
-            ).fetchone()
+            row = db.execute(BINDING_QUERY, key).fetchone()
         return TaskBinding(*row) if row else None
 
     def bind(self, key, upstream, fork, config_sha):
         """Pin the first configuration; refuse retargeting and reuse it on subsequent ticks."""
         with self.transaction() as db:
-            row = db.execute(
-                "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?", key
-            ).fetchone()
+            row = db.execute(BINDING_QUERY, key).fetchone()
             if row is not None:
                 if tuple(row[:2]) != (upstream, fork):
                     raise ValueError("task target changed; reconcile before continuing")

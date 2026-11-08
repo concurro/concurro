@@ -16,7 +16,10 @@ operator-requested design evaluation. There is no host executor or build workben
 | `service/ingress.py` | Verify webhook signatures, filter and enqueue |
 | `service/reconciler.py` | Observe relevant GitHub changes and recover missed events |
 | `service/scheduler.py` | Bound concurrent ticks and distribute work across repositories |
-| `service/worker.py` | Load pinned target configuration and run the engine under ownership |
+| `service/worker.py` | Run the engine under ownership and classify tick failures |
+| `service/target_loader.py` | Load and validate pinned target configuration and bundles |
+| `service/github_reads.py` | Read target files, default-branch heads and runner identities |
+| `service/runner_diagnostics.py` | Diagnose termination of the OIDC-bound Actions run |
 | `service/gateway.py` | Fence, bind, pace and record all GitHub mutations |
 | `service/admission.py` | Pure request-shape admission for task, publication and runner writes |
 | `service/settlement.py` | Classify write outcomes and log bounded rejection diagnostics |
