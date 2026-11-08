@@ -343,7 +343,7 @@ class LifecycleTests(unittest.TestCase):
     def test_checkpoint_pressure_sheds_only_archived_metadata(self):
         controller, _ = self.ready()
         state = controller.state
-        core_budget = controller.pr_review_output_budget()['max_json_bytes']
+        core_budget = controller.review_output_budget()['max_json_bytes']
         self.assertGreater(core_budget, 0)
         before = deepcopy(state)
         archive_bodies = self.gh.archives()
@@ -359,7 +359,7 @@ class LifecycleTests(unittest.TestCase):
             if entry.get('assessment') not in protected:
                 entry.pop('assessment', None)
         self.assertEqual(projected, ratings.without_hints(state))
-        self.assertEqual(controller.pr_review_output_budget()['max_json_bytes'], core_budget)
+        self.assertEqual(controller.review_output_budget()['max_json_bytes'], core_budget)
         self.assertEqual(archive_bodies, self.gh.archives())
         self.assertTrue(consensus_valid(state, self.config))
         # Historical-but-unarchived and pending reports are protected independently of current slots.

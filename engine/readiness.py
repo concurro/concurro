@@ -34,7 +34,7 @@ def review_reasons(state, pr, files, threads, config):
         reasons.append("unresolved review threads")
     if not files or set(files) != set(state.get("changed_files", [])):
         reasons.append("PR file set differs from controller evidence")
-    if not all(path_allowed(p, config, state.get("execution")) and in_scope(p, state["plan"]) for p in files):
+    if not all(path_allowed(p, config) and in_scope(p, state["plan"]) for p in files):
         reasons.append("unapproved path")
     return reasons
 

@@ -9,7 +9,6 @@ left out. Uses the agent's own Codex invocation (`agent_entry.command_for`).
 
 import argparse
 import json
-import os
 from pathlib import Path
 import secrets
 import subprocess

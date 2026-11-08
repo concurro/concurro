@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, EXECUTION, setUpModule, tearDownModule
+from support import CONFIG, setUpModule, tearDownModule
 from checkpoints import Checkpoints, PLAN_NAME, LIMIT
 from controller import Controller, PLAN_OUTPUT_REPAIRS
 from policy import Blocked, validate_plan
@@ -20,13 +20,13 @@ class DirectoryScopeTests(unittest.TestCase):
         """The pilot's directory notation is accepted and does not match a sibling prefix."""
         plan = {**deepcopy(PLAN), "scope": {"paths": ["docs/guide.md", "changelog.d/"],
                                           "max_files": 2}}
-        validate_plan(plan, CONFIG, EXECUTION)
+        validate_plan(plan, CONFIG)
         self.assertEqual(checks.scope_of(plan)["paths"], ["docs/guide.md", "changelog.d/**"])
         self.assertTrue(checks.in_scope("changelog.d/nested/change.md", plan))
         self.assertFalse(checks.in_scope("changelog.d-other/change.md", plan))
         self.assertFalse(checks.in_scope("docs/other.md", PLAN))
         plan["scope"]["paths"] = ["docs/"]
-        validate_plan(plan, CONFIG, EXECUTION)
+        validate_plan(plan, CONFIG)
         self.assertTrue(checks.in_scope("docs/guide.md", plan))
 
     def test_unsafe_directories_and_invalid_types_are_still_rejected(self):
@@ -35,7 +35,7 @@ class DirectoryScopeTests(unittest.TestCase):
             with self.subTest(value=value):
                 plan = {**deepcopy(PLAN), "scope": {"paths": [value], "max_files": 2}}
                 with self.assertRaises(Blocked):
-                    validate_plan(plan, CONFIG, EXECUTION)
+                    validate_plan(plan, CONFIG)
 
 
 class PlanRepairTests(unittest.TestCase):

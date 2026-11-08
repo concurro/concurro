@@ -12,7 +12,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from support import EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
+from support import setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from checks import MAX_OVERLAY_FILES
 from controller import MAX_DIFF, changes, transport_size
@@ -35,7 +35,7 @@ class RepositoryTests(unittest.TestCase):
             (root / "CONTRIBUTING.md").write_text("Writer enrollment\nMerge disabled\n")
             (root / ".concurro/config.json").write_text("{}")
             repo = Repository(root)
-            self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG, EXECUTION))
+            self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG))
             self.assertIn("CONTRIBUTING.md", json.loads(repo.call("list_files", {}))["paths"])
             self.assertEqual(json.loads(repo.call("read_file", {"path": "CONTRIBUTING.md"}))["lines"][0]["text"],
                              "Writer enrollment")

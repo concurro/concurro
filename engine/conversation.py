@@ -58,8 +58,8 @@ def render(state, kind, source, details):
         return '\n'.join([
             f"[Implementation plan]({details['url']}) · artifact version {details['revision']}",
             f"Plan `{details['plan']}` · round {details['round']}", '', 'Changes:', '',
-            *['- ' + text for text in publication['changes']], '', 'Review focus:', '',
-            *['- ' + text for text in publication['review_focus']]])
+            *['- ' + entry for entry in publication['changes']], '', 'Review focus:', '',
+            *['- ' + entry for entry in publication['review_focus']]])
     if kind == "plan":
         lines = [f"Plan `{details['plan']}` · round {details['round']}", "", value["summary"], "",
                  *["- " + step for step in value["steps"]], "", "Validation:", "",
@@ -455,17 +455,17 @@ def publish(state, github, config, store=None):
                 if artifacts is None:
                     artifacts = store.collection()
                 author = identities.author("state")
-                items = artifacts
+                published_items = artifacts
                 create = lambda: github.repo(f"issues/{state['issue']}/artifacts", "POST", {
                     "type": "generic", "name": archive_name(event), "body": body})
                 login = lambda item: item.get("creator", {}).get("login")
             else:
                 # Recovery trusts only the one identity expected to author this event.
                 author = identities.author("conversation", event.get("role"))
-                items = comments
+                published_items = comments
                 create = lambda: github.repo(f"issues/{state['issue']}/comments", "POST", {"body": body})
                 login = lambda item: item.get("user", {}).get("login")
-            matches = [c for c in items if login(c) == author and c.get("body", "").startswith(marker)]
+            matches = [c for c in published_items if login(c) == author and c.get("body", "").startswith(marker)]
             if len(matches) > 1 or matches and matches[0]["body"] != body:
                 raise PublicationError("conversation_conflict")
             published = matches[0] if matches else create()
@@ -535,14 +535,14 @@ def compact(state):
             notes[id(s["review"])] = ARCHIVED if receipt_matches(s, archived) else None
     for report in reports:
         for key in ("rationale", "summary"):
-            text = report.get(key, "")
-            size = len(json.dumps(text).encode())
+            report_text = report.get(key, "")
+            size = len(json.dumps(report_text).encode())
             if size > 1000:
-                excerpt = text[:max(1, len(text) * 800 // size)]
+                excerpt = report_text[:max(1, len(report_text) * 800 // size)]
                 while len(json.dumps(excerpt).encode()) > 900:
                     excerpt = excerpt[:len(excerpt) // 2]
                 report[key] = excerpt + (notes.get(id(report)) or "… [Full text in the published issue conversation.]")
-                if state.get("reason") == text:
+                if state.get("reason") == report_text:
                     state["reason"] = report[key]
 
 
@@ -558,7 +558,7 @@ def review_body(state, report, phase, member, concern_ids=()):
         if resolved:
             lines += ["", "This approval closes earlier objections: " + ", ".join(resolved) + "."]
     for key in ("concerns", "questions"):
-        for index, text in enumerate(report[key], 1):
+        for index, concern_text in enumerate(report[key], 1):
             identifier = concern_ids[index - 1] if key == 'concerns' and concern_ids else f"{prefix}-{key[0]}{index}"
-            lines += ["", f"- **{identifier}**: {text}"]
+            lines += ["", f"- **{identifier}**: {concern_text}"]
     return "\n".join(lines)

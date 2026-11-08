@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
-import json
 import logging
 import re
 from pathlib import Path
@@ -21,7 +20,6 @@ from checkpoints import CheckpointError
 from controller import Controller, validate_config
 from conversation import PublicationError
 from github import NotFound, Transient
-from mirror import Mirror
 from model_config import parse as parse_models, resolve
 from policy import Blocked
 import private

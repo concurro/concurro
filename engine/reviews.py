@@ -295,7 +295,7 @@ def disposition_body(state, item, disposition):
     marker = f"{DISPOSITION_MARKER}{disposition['id']}:{item['sequence']} -->"
     if item.get("format", 1) != 1:
         emoji, status = markup.STATUS[disposition["status"]]
-        where = {"fixed": "in " + code(item["head"][:7]), "open": "on " + code(item["head"][:7]),
+        location = {"fixed": "in " + code(item["head"][:7]), "open": "on " + code(item["head"][:7]),
                  "obsolete": "under plan " + code(state["plan_id"][:12])}[disposition["status"]]
         evidence = block(disposition['evidence'])
         if item.get('format', 1) >= 3:
@@ -304,7 +304,7 @@ def disposition_body(state, item, disposition):
             if finding.get('report_url'):
                 note = link(note, finding['report_url'])
             evidence = markup.excerpt(disposition['evidence'], REVIEW_BODY_LIMIT - 1000, note)
-        return f"{marker}\n{emoji} **{status}** {where}\n\n{evidence}"
+        return f"{marker}\n{emoji} **{status}** {location}\n\n{evidence}"
     answer = {"fixed": f"Fixed in `{item['head']}`", "open": f"Still open on `{item['head']}`",
               "obsolete": f"Obsolete under plan `{state['plan_id']}`"}[disposition["status"]]
     return f"{marker}\n{answer}: {disposition['evidence']}"
@@ -418,18 +418,18 @@ class Publisher:
             comments = self.gh.pages(f"pulls/{self.pr}/comments")
         for f in findings:
             if placed[f["id"]] == "file":
-                text = finding_body(f)
-                self.comment(comments, f"{FINDING_MARKER}{f['id']} -->", f"pulls/{self.pr}/comments", text,
-                             {"commit_id": item["head"], "path": f["path"], "subject_type": "file", "body": text})
+                comment_body = finding_body(f)
+                self.comment(comments, f"{FINDING_MARKER}{f['id']} -->", f"pulls/{self.pr}/comments", comment_body,
+                             {"commit_id": item["head"], "path": f["path"], "subject_type": "file", "body": comment_body})
         self.map_threads(findings, comments, placed)
         self.checkpoint()
         for disposition in report["dispositions"]:
             finding = find(state, disposition["id"])
             if finding.get("comment"):
                 self.opening(comments, finding)
-                text = disposition_body(state, item, disposition)
-                self.comment(comments, text.split("\n", 1)[0], f"pulls/{self.pr}/comments/{finding['comment']}/replies",
-                             text, {"body": text})
+                comment_body = disposition_body(state, item, disposition)
+                self.comment(comments, comment_body.split("\n", 1)[0], f"pulls/{self.pr}/comments/{finding['comment']}/replies",
+                             comment_body, {"body": comment_body})
         self.resolve([find(state, d["id"]) for d in report["dispositions"] if d["status"] in ("fixed", "obsolete")])
 
     def map_threads(self, findings, comments, placed):

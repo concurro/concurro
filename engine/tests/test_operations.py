@@ -274,10 +274,9 @@ class OperationTests(unittest.TestCase):
         controller = Controller(self.gh, self.agents, self.config)
         controller.issue = self.gh.repo("issues/7")
         controller.load(self.gh.pages("issues/7/comments"))
-        context = {"review_criteria": [{"id": "c"}] * 4, "own_objections": []}
-        before = controller.review_output_budget(context)
+        before = controller.review_output_budget()
         controller.state["operation"] = {"status": "completed", "response": {"text": "x" * 20000}}
-        self.assertEqual(controller.review_output_budget(context), before)
+        self.assertEqual(controller.review_output_budget(), before)
 
     def test_saved_design_votes_consume_their_operation(self):
         """Design review saves a speculative state copy; the saved vote still consumes the result."""

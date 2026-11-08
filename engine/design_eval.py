@@ -74,7 +74,7 @@ def request(case, provider, config, bundle, base):
                                   "provider": provider, "model": agent.profile.model, "roles": ["review"],
                                   **({"agent": agent.record()} if "agents" in config else {})},
             "review_criteria": criteria(REQUIREMENTS),
-            "review_output_budget": {"max_json_bytes": report_limit(len(criteria(REQUIREMENTS)))},
+            "review_output_budget": {"max_json_bytes": report_limit()},
             "plan": {k: v for k, v in case["plan"].items() if k not in ("summary", "publication", "responses")}}
 
 
@@ -102,7 +102,7 @@ def evaluate(agents, config, provider, base, output):
         try:
             report = agents.ask(provider, "plan_qc", request(case, provider, config, agents.bundle, base))
             item["report"] = report
-            validate_qc(report, "plan_qc", agents.bundle.charter, len(criteria(REQUIREMENTS)))
+            validate_qc(report, "plan_qc", agents.bundle.charter)
             validate_evidence(report, REQUIREMENTS, files=SOURCE)
             item["decision"] = report["decision"]
         except Exception as error:

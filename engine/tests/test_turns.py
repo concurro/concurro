@@ -162,7 +162,7 @@ class ExecuteTests(Workspace):
 
     def execute(self, request, retained=None, feedback_files=None):
         root = turns.directory(self.tmp / "turns")
-        fake = lambda directory: [sys.executable, "-c", AGENT, str(directory)]
+        fake = lambda: [sys.executable, "-c", AGENT, str(root)]
         turn = {"request": request, "spec": self.spec, "retained": retained, "timeout": None if request["stage"] == "develop" else 1800,
                 "feedback": feedback_files or {}}
         with patch.object(turns, "command", side_effect=fake), \
@@ -216,7 +216,7 @@ class ExecuteTests(Workspace):
         self.assertEqual(env["CODEX_HOME"], str(root / "retained/codex"))
         self.assertEqual(env[turns.KEY_VARIABLE], "session-key")
         self.assertFalse(set(env) & {"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OPENAI_API_KEY"})
-        self.assertNotIn("docker", turns.command(root))
+        self.assertNotIn("docker", turns.command())
 
     def test_mode_only_and_nul_binary_changes_are_rejected(self):
         root = self.prepare()
@@ -643,7 +643,8 @@ class RelayEndToEndTests(Workspace):
             loops.append(thread)
 
         # The runner's agent: the stand-in container script, with the key the exchange minted.
-        def fake(directory):
+        def fake():
+            """Locate the turn from its CLI home now that command takes no directory."""
             script = AGENT.replace('"sk-agw-test"', 'os.environ["CONCURRO_GATEWAY_KEY"]')
             if with_feedback:
                 script = script.replace('request = json.load(sys.stdin)',
@@ -652,7 +653,9 @@ class RelayEndToEndTests(Workspace):
                     ' == [{"id": "F1", "detail": "full evidence " * 20000}]')
             if large:
                 script = script.replace('"Guide\\nEdited\\n"', '"Source\\n" * 500000')
-            return [sys.executable, "-c", script, str(directory)]
+            script = script.replace("root = pathlib.Path(sys.argv[1])",
+                                    'root = pathlib.Path(os.environ["CODEX_HOME"]).parents[1]')
+            return [sys.executable, "-c", script]
 
         executor = RunnerExecutor(Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatch, task=TASK)
         agents = Agents({**CONFIG, "models": MODELS, "base": "main"}, executor, retained=self.tmp / "sessions")

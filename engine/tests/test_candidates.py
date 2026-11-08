@@ -3,7 +3,7 @@
 from copy import deepcopy
 import unittest
 
-from support import CONFIG, EXECUTION, setUpModule, tearDownModule
+from support import CONFIG, setUpModule, tearDownModule
 import candidates
 from controller import Controller, changes
 from policy import Blocked, OutsideScope, validate_edits
@@ -19,19 +19,19 @@ class CandidateTests(unittest.TestCase):
     def test_rename_validates_both_paths(self):
         before = {"docs/old.md": "one\ntwo\n", "docs/new.md": None}
         after = {"docs/old.md": None, "docs/new.md": "one\ntwo\n"}
-        self.assertEqual(candidates.validate(before, after, self.plan, CONFIG, EXECUTION), sorted(before))
+        self.assertEqual(candidates.validate(before, after, self.plan, CONFIG), sorted(before))
         proposal = {"summary": "rename", "edits": [{"path": p, "content": c} for p, c in after.items()]}
-        self.assertEqual(len(validate_edits(proposal, self.plan, before, CONFIG, EXECUTION)), 2)
+        self.assertEqual(len(validate_edits(proposal, self.plan, before, CONFIG)), 2)
         proposal["edits"].append({"path": "AGENTS.md", "content": None})
         with self.assertRaises(OutsideScope):
-            validate_edits(proposal, self.plan, before, CONFIG, EXECUTION)
+            validate_edits(proposal, self.plan, before, CONFIG)
 
     def test_follow_on_change_and_missing_deletion(self):
         # No mandatory primary-file edit: a valid follow-on change is still in scope.
-        self.assertEqual(candidates.validate({}, {"docs/b.md": "x"}, self.plan, CONFIG, EXECUTION), ["docs/b.md"])
+        self.assertEqual(candidates.validate({}, {"docs/b.md": "x"}, self.plan, CONFIG), ["docs/b.md"])
         with self.assertRaisesRegex(Blocked, "existing regular"):
             validate_edits({"summary": "x", "edits": [{"path": "docs/missing.md", "content": None}]},
-                           self.plan, {}, CONFIG, EXECUTION)
+                           self.plan, {}, CONFIG)
 
     def test_newline_delimiters_are_source_lines(self):
         [item] = changes({"x": "a\u2028b\fc\n"}, {"x": "a\u2028d\fc\n"})

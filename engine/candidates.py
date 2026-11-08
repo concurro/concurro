@@ -14,12 +14,12 @@ def diff_work(before, after):
     return sum(count * right.get(line, 0) for line, count in left.items())
 
 
-def validate(before, after, plan, config, execution):
+def validate(before, after, plan, config):
     """Validate the complete approved-base-to-candidate change and return its sorted paths."""
     paths = sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
     if not paths:
         raise Blocked("candidate changes nothing")
-    outside = [path for path in paths if not path_allowed(path, config, execution) or not checks.in_scope(path, plan)]
+    outside = [path for path in paths if not path_allowed(path, config) or not checks.in_scope(path, plan)]
     if outside:
         raise OutsideScope(outside)
     scope = checks.scope_of(plan)

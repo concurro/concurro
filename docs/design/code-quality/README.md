@@ -1,7 +1,6 @@
 # Code-quality refactoring programme
 
-Status: iteration 01 approved; the rest is a prioritised backlog, 2026-11-08. Baseline
-commit `f1225e6`.
+Status: see the iteration table below. Baseline commit `f1225e6`.
 
 ## Purpose
 
@@ -10,7 +9,8 @@ a read-only audit against idiomatic Python, DRY, SOLID and KISS. The work is spl
 iterations. Each iteration is **one deliverable and one commit**, reviewed before the next
 one starts.
 
-Only iteration 01 is approved. Iterations 02, 03, 06 and 07 are the intended next steps.
+Only the approved iteration in the table is authorised. Iterations 06 and 07 are the intended
+next steps.
 Everything else is a **candidate**, to be reassessed after the first extractions land.
 Reassessment may reshape, split or drop a candidate.
 
@@ -117,7 +117,7 @@ force it through.
 Install the CI test dependencies once, if needed:
 
 ```bash
-python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0
+python3 -m pip install -r service/requirements.txt markdown-it-py==3.0.0 ruff==0.17.1
 ```
 
 Then run all of the following:
@@ -161,9 +161,9 @@ Status values:
 
 | # | Brief | Kind | Risk | Status |
 | ---- | ---- | ---- | ---- | ---- |
-| 01 | [Audit report-link fix](01-report-link-fix.md) | Bug fix | Very low | Implemented; awaiting review |
-| 02 | [Dead code and naming](02-dead-code-and-naming.md) | Cleanup | Very low | Next |
-| 03 | [Lint gate](03-lint-gate.md) | Tooling | Low | Next |
+| 01 | [Audit report-link fix](01-report-link-fix.md) | Bug fix | Very low | Done |
+| 02 | [Dead code and naming](02-dead-code-and-naming.md) | Cleanup | Very low | Done |
+| 03 | [Lint gate](03-lint-gate.md) | Tooling | Low | Approved |
 | 06 | [Test fixtures](06-test-fixtures.md) | Tests | Low | Next |
 | 07 | [Dashboard extraction](07-dashboard-extraction.md) | Refactor | Low | Next |
 | 04 | [Shared vocabulary](04-shared-vocabulary.md) | Refactor | Low | Candidate |

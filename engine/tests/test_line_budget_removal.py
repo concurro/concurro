@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import unittest
 
-from support import CONFIG, EXECUTION, ROOT, setUpModule, tearDownModule
+from support import CONFIG, ROOT, setUpModule, tearDownModule
 import candidates
 import checks
 from controller import Controller, changes
@@ -25,7 +25,7 @@ class LineBudgetRemovalTests(unittest.TestCase):
         self.assertEqual(set(scope['required']), {'paths', 'max_files'})
         self.assertEqual(set(scope['properties']), {'paths', 'max_files'})
         self.assertFalse(scope['additionalProperties'])
-        validate_plan(self.plan, CONFIG, EXECUTION)
+        validate_plan(self.plan, CONFIG)
 
     def test_large_cumulative_change_ignores_legacy_limit_without_rewriting_plan(self):
         """Both new and stored plans admit many short lines, with informational diff counts."""
@@ -39,8 +39,8 @@ class LineBudgetRemovalTests(unittest.TestCase):
                     plan['scope']['max_changed_lines'] = 1
                 original = deepcopy(plan)
                 identifier = digest(plan)
-                validate_plan(plan, CONFIG, EXECUTION)
-                self.assertEqual(candidates.validate(before, after, plan, CONFIG, EXECUTION), sorted(after))
+                validate_plan(plan, CONFIG)
+                self.assertEqual(candidates.validate(before, after, plan, CONFIG), sorted(after))
                 self.assertNotIn('max_changed_lines', checks.scope_of(plan))
                 self.assertEqual(plan, original)
                 self.assertEqual(digest(plan), identifier)
@@ -51,14 +51,14 @@ class LineBudgetRemovalTests(unittest.TestCase):
         """Dropping size quotas does not broaden path or file-count authorization."""
         for path in ('outside.md', '.github/workflows/ci.yml', 'docs/../escape.md'):
             with self.subTest(path=path), self.assertRaises(OutsideScope):
-                candidates.validate({}, {path: 'x'}, self.plan, CONFIG, EXECUTION)
+                candidates.validate({}, {path: 'x'}, self.plan, CONFIG)
         with self.assertRaisesRegex(Blocked, '4 files'):
-            candidates.validate({}, {f'docs/{i}.md': 'x' for i in range(4)}, self.plan, CONFIG, EXECUTION)
+            candidates.validate({}, {f'docs/{i}.md': 'x' for i in range(4)}, self.plan, CONFIG)
         with self.assertRaisesRegex(Blocked, 'invalid text replacement'):
             validate_edits({'summary': 'binary', 'edits': [{'path': 'docs/a.md', 'content': 'x\x00'}]},
-                           self.plan, {}, CONFIG, EXECUTION)
+                           self.plan, {}, CONFIG)
         with self.assertRaisesRegex(Blocked, 'changes nothing'):
-            candidates.validate({'docs/a.md': 'x'}, {'docs/a.md': 'x'}, self.plan, CONFIG, EXECUTION)
+            candidates.validate({'docs/a.md': 'x'}, {'docs/a.md': 'x'}, self.plan, CONFIG)
 
     def test_large_change_reaches_publication_reviews_and_ready(self):
         """A real controller loop accepts over 3,000 lines with new and legacy scope records."""

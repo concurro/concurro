@@ -192,7 +192,7 @@ def outcome(code, stdout):
         return "failed", None
 
 
-def command(root):
+def command():
     """The native agent entry point; stdout is the bounded structured response."""
     return [sys.executable, str(Path(__file__).with_name("agent_entry.py"))]
 
@@ -231,7 +231,7 @@ def execute(turn, key, mirror, root, stopped=None):
         if turn.get("feedback"):
             payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / "feedback")
         baseline = processes.begin()
-        with subprocess.Popen(command(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        with subprocess.Popen(command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               text=True, env=agent_environment(root, key, bool(session)), start_new_session=True) as process:
             timer = None
             if stopped is not None:

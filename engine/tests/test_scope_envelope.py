@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
 from test_findings import Harness, Reviewers
 from test_pipeline import APPROVE, PLAN
 import checks
@@ -52,8 +52,8 @@ class ContractTests(unittest.TestCase):
     """A plan's scope is validated, and its envelope decides the approved profiles."""
 
     def test_scope_validation(self):
-        validate_plan({**deepcopy(PLAN), "scope": deepcopy(SCOPE)}, CONFIG, EXECUTION)
-        validate_plan(deepcopy(PLAN), CONFIG, EXECUTION)
+        validate_plan({**deepcopy(PLAN), "scope": deepcopy(SCOPE)}, CONFIG)
+        validate_plan(deepcopy(PLAN), CONFIG)
         for name, scope in {"no globs": {**SCOPE, "paths": []}, "absolute": {**SCOPE, "paths": ["/docs/**"]},
                             "traversal": {**SCOPE, "paths": ["docs/../src/**"]},
                             "outside the files": {**SCOPE, "paths": ["src/**"]},
@@ -61,17 +61,17 @@ class ContractTests(unittest.TestCase):
                             "over the file cap": {**SCOPE, "max_files": 33},
                             "extra key": {**SCOPE, "x": 1}}.items():
             with self.subTest(name=name), self.assertRaises(Blocked):
-                validate_plan({**deepcopy(PLAN), "scope": scope}, CONFIG, EXECUTION)
+                validate_plan({**deepcopy(PLAN), "scope": scope}, CONFIG)
 
 
     def test_out_of_envelope_proposals_are_refused_whole(self):
         plan = {**deepcopy(PLAN), "scope": deepcopy(SCOPE)}
         edits = [{"path": "docs/guide.md", "content": "a"}, {"path": "guides/x.md", "content": "b"}]
         with self.assertRaises(OutsideScope) as raised:
-            validate_edits({"summary": "s", "edits": edits}, plan, {}, CONFIG, EXECUTION)
+            validate_edits({"summary": "s", "edits": edits}, plan, {}, CONFIG)
         self.assertEqual(raised.exception.paths, ["guides/x.md"])
         validate_edits({"summary": "s", "edits": [edits[0], {"path": "docs/new.md", "content": "c"}]},
-                       plan, {}, CONFIG, EXECUTION)
+                       plan, {}, CONFIG)
 
 
 class ImplementationTests(Harness, unittest.TestCase):

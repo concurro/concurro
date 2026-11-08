@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from support import EXECUTION, PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
+from support import PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
 from test_pipeline import APPROVE, CONFIG, PLAN, Controller, FakeAgents, FakeGitHub
 from test_autonomy import decision
 from agents import Agents
@@ -489,9 +489,9 @@ class ConsensusTests(unittest.TestCase):
         context = self.agents.calls[-1][2]
         self.assertIn("Ignore the charter", context["prior_outcomes_untrusted"][0]["reason"])
         self.assertEqual(context["charter"]["id"], "stacks-core-charter-v1")
-        self.assertFalse(path_allowed(".concurro/charter.json", self.config, EXECUTION))
-        self.assertFalse(path_allowed(".agents/skills/stacks-pr-review/SKILL.md", self.config, EXECUTION))
-        self.assertFalse(path_allowed("CONTRIBUTING.md", self.config, EXECUTION))
+        self.assertFalse(path_allowed(".concurro/charter.json", self.config))
+        self.assertFalse(path_allowed(".agents/skills/stacks-pr-review/SKILL.md", self.config))
+        self.assertFalse(path_allowed("CONTRIBUTING.md", self.config))
         self.assertIn("untrusted evidence", Bundle().instructions("plan")["shared"])
 
     def test_related_planner_receives_recorded_escalation_rationale(self):

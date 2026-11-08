@@ -9,7 +9,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from support import CONFIG, EXECUTION, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, setUpModule, tearDownModule  # unittest module fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
 from controller import Controller, MARKER, validate_config
@@ -579,11 +579,11 @@ class PipelineTests(unittest.TestCase):
         for path in ("../escape.md", "/docs/x.md", "docs/../x.md", ".github/a.md", "docs/.git/a.md",
                      "docs/CLAUDE.md", "tools/a.rs", "docs/x\\y.md", "docs//a.md"):
             with self.subTest(path=path):
-                self.assertFalse(path_allowed(path, self.config, EXECUTION))
+                self.assertFalse(path_allowed(path, self.config))
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config, EXECUTION)
+            validate_edits({"summary": "escape", "edits": [{"path": "docs/other.md", "content": "x"}]}, PLAN, {}, self.config)
         with self.assertRaises(Blocked):
-            validate_edits({"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config, EXECUTION)
+            validate_edits({"summary": "binary", "edits": [{"path": "docs/guide.md", "content": "\x00"}]}, PLAN, {}, self.config)
 
     def test_contradictory_review_is_rejected(self):
         """An approve verdict with an outstanding finding is never accepted."""

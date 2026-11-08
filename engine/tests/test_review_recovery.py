@@ -77,7 +77,7 @@ class ReviewEvidenceTests(unittest.TestCase):
         context = {'review_criteria': design.criteria(request)}
         report = sized_report(context)
         self.assertGreater(len(json.dumps(report).encode()), 12000)
-        validate_qc(report, 'plan_qc', criteria_count=13)
+        validate_qc(report, 'plan_qc')
         design.validate_evidence(report, request, files={'CONTRIBUTING.md': 'Use docs.'})
         oversized = deepcopy(report)
         oversized['assessments'][0]['reason'] += 'x' * 10000
@@ -89,7 +89,7 @@ class ReviewEvidenceTests(unittest.TestCase):
         unicode_report = deepcopy(report)
         for assessment in unicode_report['assessments']:
             assessment['reason'] = '\U0001f600' * 400
-        validate_qc(unicode_report, 'plan_qc', criteria_count=13)
+        validate_qc(unicode_report, 'plan_qc')
 
 
 class ReviewerRepairTests(unittest.TestCase):

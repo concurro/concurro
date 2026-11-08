@@ -96,7 +96,7 @@ def presentation(report, fields, optional):
     return fields | present
 
 
-def validate_qc(report, stage, charter=None, criteria_count=32, objection_count=0):
+def validate_qc(report, stage, charter=None):
     """Reject incomplete or contradictory decisions before they can authorize work."""
     report = classification.core(report)
     fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
@@ -182,9 +182,8 @@ def consensus_valid(state, config, require_final=True):
             return False
         report = vote.get("report")
         try:
-            from design import validate_evidence, criteria
-            validate_qc(report, "plan_qc", state["charter"], len(criteria(state['requirements'])),
-                        len(vote.get('objection_ids', [])))
+            from design import validate_evidence
+            validate_qc(report, "plan_qc", state["charter"])
             validate_evidence(report, state['requirements'], [{'id': v} for v in vote.get('objection_ids', [])])
         except (Blocked, TypeError, KeyError):
             return False
@@ -226,7 +225,7 @@ def path_safe(path):
     )
 
 
-def path_allowed(path, config, execution):
+def path_allowed(path, config):
     """Apply the target's editable-path policy and profile protections on top of engine invariants."""
     if not path_safe(path) or any(instruction_matches(path, g) for g in config["paths"].get("protected", [])):
         return False
@@ -241,7 +240,7 @@ def path_allowed(path, config, execution):
     )
 
 
-def validate_plan(plan, config, execution):
+def validate_plan(plan, config):
     """Require a bounded, reviewable plan or explicit clarification questions."""
     fields = {"summary", "questions", "files", "steps", "tests", "responses", "publication"}
     if not isinstance(plan, dict) or set(plan) - {"scope"} != presentation(plan, fields, {"headline"}):
@@ -266,7 +265,7 @@ def validate_plan(plan, config, execution):
         return
     if not 1 <= len(plan["files"]) <= MAX_PLAN_FILES or len(set(plan["files"])) != len(plan["files"]):
         raise Blocked("plan must name 1–8 distinct files")
-    if not all(path_allowed(p, config, execution) for p in plan["files"]):
+    if not all(path_allowed(p, config) for p in plan["files"]):
         raise Blocked("plan includes protected or unsupported files")
     problem = scope_errors(plan)
     if problem:
@@ -275,7 +274,7 @@ def validate_plan(plan, config, execution):
         raise Blocked("plan needs steps and validation criteria")
 
 
-def validate_edits(result, plan, originals, config, execution):
+def validate_edits(result, plan, originals, config):
     """Accept complete text replacements only within the approved file set."""
     if set(result) != {"summary", "edits"} or not isinstance(result["summary"], str):
         raise Blocked("invalid implementation response")
@@ -288,13 +287,13 @@ def validate_edits(result, plan, originals, config, execution):
     # A proposal reaching outside the envelope, or touching a path no edit may change, is refused
     # whole before anything is applied; the implementer gets the paths back as feedback.
     outside = {e["path"] for e in edits if isinstance(e["path"], str)
-               and (not path_allowed(e["path"], config, execution) or not in_scope(e["path"], plan))}
+               and (not path_allowed(e["path"], config) or not in_scope(e["path"], plan))}
     if outside:
         raise OutsideScope(outside)
     seen = set()
     for edit in edits:
         path, content = edit["path"], edit["content"]
-        if not path_allowed(path, config, execution) or path in seen:
+        if not path_allowed(path, config) or path in seen:
             raise Blocked("edit outside approved scope or duplicate path")
         if content is None:
             if originals.get(path) is None:

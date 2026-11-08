@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import unittest
 
-from support import CONFIG, EXECUTION, setUpModule, tearDownModule
+from support import CONFIG, setUpModule, tearDownModule
 from controller import Controller, DISPATCH_ALLOWANCE, transport_size, sha256, changes, diff_preview, DIFF_TRUNCATED, MAX_DIFF
 from policy import Blocked, validate_edits
 from repository import Repository
@@ -128,14 +128,14 @@ class WorkspaceTests(Workspace):
         extracted = turns.extract(work, root / 'pristine.git', root)
         self.assertEqual(extracted['edits'], [{'path': 'docs/guide.md', 'content': SOURCE + 'changed\n'}])
         proposal = {'summary': 'Change one line.', 'edits': extracted['edits']}
-        self.assertEqual(validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG, EXECUTION), extracted['edits'])
+        self.assertEqual(validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG), extracted['edits'])
         (work / 'docs/guide.md').unlink()
         self.assertEqual(turns.extract(work, root / 'pristine.git', root)['removed'], ['docs/guide.md'])
         proposal['edits'] = [{'path': 'docs/guide.md', 'content': None}]
-        validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG, EXECUTION)
+        validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG)
         proposal['edits'][0]['content'] = SOURCE + '\x00binary'
         with self.assertRaisesRegex(Blocked, 'invalid text replacement'):
-            validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG, EXECUTION)
+            validate_edits(proposal, PLAN, {'docs/guide.md': SOURCE}, CONFIG)
 
 
 if __name__ == '__main__':

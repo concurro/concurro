@@ -3,11 +3,9 @@
 import base64
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
-import json
 import os
 from pathlib import Path
 import re
-import tempfile
 import time
 import uuid
 
@@ -16,9 +14,8 @@ from credentials import Credential
 from model_config import resolve
 from github import Transient
 from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest, runner_bound, turn_label
-from relay import ExchangeError, Operator
+from relay import ExchangeError
 from snapshot import inspection
-import turns
 import review_timing
 
 # Providers whose CLIs the gateway serves natively.
@@ -320,7 +317,7 @@ class RunnerExecutor:
         if session and session not in handle.sessions:
             handle.sessions.add(session)
             self.groups.setdefault(handle.group, set()).add(session)
-            self.start(session, handle.identifier)
+            self.start(session)
         if reply.get('refusal'):
             raise Blocked('a runner of the target was refused by the gateway: ' + reply['refusal'])
         if reply.get('status') == 'done' and 'result' in reply:
@@ -418,7 +415,7 @@ class RunnerExecutor:
         finally:
             self.timing = handle.timing
 
-    def start(self, session, identifier):
+    def start(self, session):
         """Dispatch the runner issued for this turn."""
         self.sessions.add(session)
         self.dispatch(session)

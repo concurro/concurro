@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import unittest
 
-from support import CONFIG, EXECUTION, PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
+from support import CONFIG, PROFILES, ROOT, TARGET, setUpModule, tearDownModule  # unittest module fixtures
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config
@@ -51,19 +51,19 @@ class PathPolicyTests(unittest.TestCase):
                      "AGENTS.md", "docs/CLAUDE.md", "SECURITY.md"):
             with self.subTest(path=path):
                 self.assertFalse(path_safe(path))
-                self.assertFalse(path_allowed(path, permissive, EXECUTION))
-        self.assertTrue(path_allowed("docs/guide.md", permissive, EXECUTION))
+                self.assertFalse(path_allowed(path, permissive))
+        self.assertTrue(path_allowed("docs/guide.md", permissive))
 
     def test_target_rules_protect_configured_paths(self):
         """Configured names, prefixes, files and policy documents are not editable."""
         config = {**CONFIG, "policy_documents": ["docs/policy.md"],
                   "paths": {**CONFIG["paths"], "protected_files": ["docs/frozen.md"]}}
-        self.assertTrue(path_allowed("docs/guide.md", config, EXECUTION))
-        self.assertTrue(path_allowed("Cargo.toml", config, EXECUTION), "manifests are ordinary code")
+        self.assertTrue(path_allowed("docs/guide.md", config))
+        self.assertTrue(path_allowed("Cargo.toml", config), "manifests are ordinary code")
         for path in ("rust-toolchain.toml", "scripts/a.md",
                      "docs/frozen.md", "docs/policy.md", "docs/image.png"):
             with self.subTest(path=path):
-                self.assertFalse(path_allowed(path, config, EXECUTION))
+                self.assertFalse(path_allowed(path, config))
 
 
 class BundleSplitTests(unittest.TestCase):

@@ -5,11 +5,9 @@ from dataclasses import dataclass
 import difflib
 import hashlib
 import json
-import os
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 import re
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -33,18 +31,17 @@ import sessions
 import checks
 import design
 import design_eligibility
-import reviews as findings
+import reviews as review_rules
 from copy import deepcopy
 from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
-from checkpoint_health import sync_checkpoint_health
-from github import GitHub, NotFound, Transient
+from github import Transient
 from identities import Identities
-from policy import (MODEL_RESPONSE_LIMIT, Blocked, OutsideScope, RunnerTerminated, SessionFailure, approval_binding, approval_valid,
+from policy import (MODEL_RESPONSE_LIMIT, Blocked, RunnerTerminated, SessionFailure, approval_binding, approval_valid,
                     digest, task_branch,
                     consensus_valid, design_roster, path_allowed, selected_model,
                     instruction_matches, validate_design_issue, validate_edits, validate_plan, validate_pr_review,
-                    validate_qc, validate_review)
+                    validate_qc)
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
@@ -297,7 +294,7 @@ class Controller:
             self.checkpoint()
         if publish_events and outboxes:
             actions.publish(state, self.gh, self.checkpoint)
-            findings.publish(state, self.pulls, self.config, self.checkpoint)
+            review_rules.publish(state, self.pulls, self.config, self.checkpoint)
         body = self.summary_body()
         if len(body.encode()) > SUMMARY_LIMIT:
             raise Blocked("summary exceeds comment limit")
@@ -746,7 +743,6 @@ class Controller:
         self.trees[sha] = {v["path"]: v for v in result["tree"]}
         return self.trees[sha]
 
-
     def file_manifest(self, sha, paths):
         """Identify every planned file at a pinned commit; agents read its contents from Git."""
         tree = self.tree(sha)
@@ -1139,9 +1135,9 @@ class Controller:
             state.pop('review_batch', None)
         state["design_generation"] += 1
         state["input_revision"] = state.get("input_revision", 0) + 1
-        withdrawn = findings.withdraw(state)
+        withdrawn = review_rules.withdraw(state)
         if state.get("pr"):
-            findings.queue_withdrawal(state, withdrawn)
+            review_rules.queue_withdrawal(state, withdrawn)
         state["design_phase"] = "cooperative"
         state.pop("cooperative_votes", None)
         state["design_votes"] = {}
@@ -1170,7 +1166,7 @@ class Controller:
         state["design_parent"] = state.get("head")
         if state.get("pr"):
             changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
-            if not changed or not all(path_allowed(p, self.config, self.state["execution"]) for p in changed):
+            if not changed or not all(path_allowed(p, self.config) for p in changed):
                 raise Blocked("cannot reconcile accumulated PR changes")
             state["changed_files"] = changed
         self.save()
@@ -1233,37 +1229,32 @@ class Controller:
         if self.enrollment() != state["enrollment"]:
             raise Blocked("autonomous enrollment removed, changed or no longer authorized")
         requirements = self.requirements(comments)
-        base = state["base"]
         changed = requirements != state["requirements"]
         if not changed:
             return state["stage"] != "clarify"
         if state.get("head") or state.get("pending"):
-            if base != state["base"] or state.get("pending"):
+            if state.get("pending"):
                 raise Blocked("approved base or prepared publication changed; reconcile manually")
             return self.resume_with_head(requirements)
         if not self.revise_plan("intake", "Requirements or base changed; QC is reassessing."):
             return False
-        state.update(requirements=requirements, base=base,
+        state.update(requirements=requirements,
                      issue_digest=digest([self.issue["title"], self.issue["body"]]))
         for key in ("plan", "plan_id", "branch", "qc"):
             state.pop(key, None)
         self.save()
         return True
 
-    def review_output_budget(self, context=None):
+    def review_output_budget(self):
         """Expose the response transport capacity, independent of audit history size."""
         return {'max_json_bytes': MODEL_RESPONSE_LIMIT, 'encoding': 'UTF-8 JSON'}
-
-    def pr_review_output_budget(self):
-        """Use the same response capacity for both review stages."""
-        return self.review_output_budget()
 
     def record_pr_review(self, state, provider, report):
         """Apply a validated PR review to the ledger and queue its publication on the PR.
 
         A design reopen is kept as the pending review event, not as the head's report.
         """
-        sequence, identifiers = findings.apply(state, provider, report, state["head"],
+        sequence, identifiers = review_rules.apply(state, provider, report, state["head"],
                                                f"https://github.com/{self.config['repository']}/issues/{state['issue']}")
         if "agents" in self.config:
             report["agent"] = resolve(self.config, provider, "review").record()
@@ -1273,14 +1264,13 @@ class Controller:
             state["review_event"] = report
         else:
             state["reviews"][provider] = report
-        findings.queue_review(state, provider, report)
+        review_rules.queue_review(state, provider, report)
 
     def validate_design_report(self, report, context):
         """Validate reviewer output before recording any vote or resolving an objection."""
         report = classification.core(report)
         try:
-            validate_qc(report, 'plan_qc', self.bundle.charter, len(context['review_criteria']),
-                        len(context.get('own_objections', [])))
+            validate_qc(report, 'plan_qc', self.bundle.charter)
         except Blocked as error:
             raise design.ReviewError('review_shape', detail=str(error)) from None
         except (TypeError, KeyError, ValueError):
@@ -1350,12 +1340,12 @@ class Controller:
                            accumulated_changed_files=state.get("changed_files", []),
                            published_parent=state.get("design_parent"))
         else:
-            context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config, self.state["execution"])]
+            context["editable_files"] = [p for p in self.tree(state["base"]) if path_allowed(p, self.config)]
         if member and state.get("head"):
             context["published_files"] = self.file_manifest(state["head"], state["plan"]["files"])
         provider = member["provider"] if member else assigned(self.config, "triage")
         if member:
-            context['review_output_budget'] = self.review_output_budget(context)
+            context['review_output_budget'] = self.review_output_budget()
             repair = review_state.slot(state).get('review_repair', {})
             if repair.get('binding') == digest([approval_binding(state, self.config), member]):
                 context['review_validation_feedback'] = {**repair['feedback'],
@@ -1441,7 +1431,6 @@ class Controller:
                                "resolved": resolved, "disposition_ids": disposition_ids})
 
         state["reason"] = report["rationale"]
-        decision = report["decision"]
         if member:
             role = sessions.role_key(self.config, provider, stage, member["model"])
             session = {**state.get("sessions", {}).get(role, {}), "role": role}
@@ -1530,12 +1519,12 @@ class Controller:
             self.resume_with_head(self.requirements(comments))
             return
         previous = state["requirements"].get("discussion", [])
-        feedback = [c for c in comments if state.get("command_id", 0) < c["id"] < comment["id"]
+        writer_feedback = [c for c in comments if state.get("command_id", 0) < c["id"] < comment["id"]
                     and not c["body"].strip().startswith("/concurro ")
                     and not self.identities.ours(c["user"]["login"]) and self.permitted(c["user"]["login"])
                     and {"author": c["user"]["login"], "body": c["body"]} not in previous]
-        if feedback:
-            latest = max(feedback, key=lambda c: c["id"])
+        if writer_feedback:
+            latest = max(writer_feedback, key=lambda c: c["id"])
             if len(latest["body"].encode()) > 4000:
                 raise Blocked("repair feedback exceeds 4000 bytes; provide a shorter writer comment")
             if state["round"] >= self.config["max_fix_rounds"]:
@@ -1613,7 +1602,7 @@ class Controller:
                 if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
                     raise Blocked("PR changed outside the controller; cannot invalidate its recorded design")
                 changed = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
-                if not changed or not all(path_allowed(p, self.config, state["execution"]) for p in changed):
+                if not changed or not all(path_allowed(p, self.config) for p in changed):
                     raise Blocked("cannot reconcile accumulated PR changes")
                 state["changed_files"] = changed
         except Blocked:
@@ -1656,16 +1645,16 @@ class Controller:
         for comment in comments:
             if comment["id"] <= (self.state or {}).get("command_id", 0):
                 continue
-            text = comment["body"].strip()
-            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)", text):
+            body = comment["body"].strip()
+            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)", body):
                 continue
             if not self.permitted(comment["user"]["login"]):
                 continue
-            if self.state and text.startswith("/concurro retry --plan-revisions "):
-                if self.extend_plan_revisions(comment, int(text.split()[-1]), comments):
+            if self.state and body.startswith("/concurro retry --plan-revisions "):
+                if self.extend_plan_revisions(comment, int(body.split()[-1]), comments):
                     return True
                 continue
-            if text == "/concurro start":
+            if body == "/concurro start":
                 if self.state and self.waiting_revision():
                     self.refuse_revision_command(comment, exhausted=True)
                     continue
@@ -1693,9 +1682,9 @@ class Controller:
                     self.save()
                 else:
                     self.initialize([c for c in comments if c["id"] <= comment["id"]], "manual", comment["id"])
-            elif (self.state and text.startswith("/concurro approve ") and self.state["stage"] == "planned"
+            elif (self.state and body.startswith("/concurro approve ") and self.state["stage"] == "planned"
                   and self.state.get("mode", "manual") == "manual"):
-                if text.split()[-1] == self.state["plan_id"]:
+                if body.split()[-1] == self.state["plan_id"]:
                     if not consensus_valid(self.state, self.config):
                         raise Blocked("writer command cannot waive design consensus")
                     self.state.update(stage="implement", command_id=comment["id"],
@@ -1703,12 +1692,12 @@ class Controller:
                                                 "plan": self.state["plan_id"],
                                                 "actor": comment["user"]["login"], "comment": comment["id"]})
                     self.save()
-            elif self.state and text == "/concurro invalidate":
+            elif self.state and body == "/concurro invalidate":
                 self.invalidate_task(comment, comments)
                 return True
-            elif self.state and text == "/concurro retry" and self.state["stage"] == "gates":
+            elif self.state and body == "/concurro retry" and self.state["stage"] == "gates":
                 self.retry_reviewed(comment, comments)
-            elif (self.state and text == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
+            elif (self.state and body == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
                   and self.state.get("retry_stage")):
                 if self.state["stage"] in ("blocked", "stopped") and self.state["retry_stage"] == "implement":
                     self.retry_implementation_bundle(comment, comments)
@@ -1751,7 +1740,7 @@ class Controller:
                         member.pop('operation', None)
                 self.state.pop("operation", None)
                 self.save()
-            elif self.state and text == "/concurro stop":
+            elif self.state and body == "/concurro stop":
                 self.state["command_id"] = comment["id"]
                 self.suspend("stopped")
 
@@ -1802,7 +1791,7 @@ class Controller:
         if self.state.get("plan_draft"):
             context["plan_validation_feedback"] = self.state["plan_draft"]
         context["open_objections"] = [v for v in self.state.get("objections", []) if not v["resolved"]]
-        context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config, self.state["execution"])]
+        context["editable_files"] = [p for p in self.tree(self.state["base"]) if path_allowed(p, self.config)]
         if self.state.get("head"):
             paths = self.state["changed_files"]
             context["accumulated_changes"] = changes(self.files(self.state["base"], paths, inspection=True),
@@ -1810,7 +1799,7 @@ class Controller:
                                                      self.config["paths"])
         plan = self.ask(assigned(self.config, "planner"), "plan", context)
         try:
-            validate_plan(plan, self.config, self.state["execution"])
+            validate_plan(plan, self.config)
             expected = {v["id"] for v in context["open_objections"]}
             if {v["id"] for v in plan["responses"]} != expected or len(plan["responses"]) != len(expected):
                 raise Blocked("planner must respond to every open objection exactly once")
@@ -1840,7 +1829,6 @@ class Controller:
         self.state["stage"] = "clarify" if plan["questions"] else "plan_qc"
         self.save()
 
-
     def design_authorization(self):
         """Attest the supplied implementation plan only from current validated controller consensus."""
         state = self.state
@@ -1866,11 +1854,11 @@ class Controller:
         round_key = f"{state['design_generation']}:{state['round']}"
         attempts = state.setdefault("implementation_attempts", {})
         feedbacks = state.setdefault("implementation_feedback", {})
-        feedback = feedbacks.get(round_key)
+        repair_feedback = feedbacks.get(round_key)
         for attempt in range(attempts.get(round_key, 0), self.config["max_fix_rounds"] + 1):
             context = self.context()
-            context.update(prior_reviews=state["reviews"], review_findings=findings.open_findings(state),
-                           implementation_feedback=feedback, design_authorization=self.design_authorization())
+            context.update(prior_reviews=state["reviews"], review_findings=review_rules.open_findings(state),
+                           implementation_feedback=repair_feedback, design_authorization=self.design_authorization())
             report = self.ask(assigned(self.config, "implementer"), "develop", context)
             extraction_error = report.get("workspace_error")
             report = {key: value for key, value in report.items() if key != "workspace_error"}
@@ -1881,24 +1869,24 @@ class Controller:
             proposal = {"summary": report["summary"], "edits": report["edits"]}
             names = [e.get("path") for e in report["edits"] if isinstance(e, dict)] if isinstance(report["edits"], list) else []
             # Validate paths before reading them, and refuse the entire proposal before creating Git objects.
-            readable = sorted({p for p in names if path_allowed(p, self.config, state["execution"])
+            readable = sorted({p for p in names if path_allowed(p, self.config)
                                and checks.in_scope(p, state["plan"])})
             try:
                 if extraction_error:
                     raise Blocked(extraction_error)
                 originals = self.files(parent, readable, inspection=True)
-                edits = validate_edits(proposal, state["plan"], originals, self.config, state["execution"])
+                edits = validate_edits(proposal, state["plan"], originals, self.config)
                 all_paths = sorted(set(readable) | set(state.get("changed_files", [])))
                 before = self.files(state["base"], all_paths, inspection=True)
                 after = {**self.files(parent, all_paths, inspection=True), **{e["path"]: e["content"] for e in edits}}
-                changed = candidates.validate(before, after, state["plan"], self.config, state["execution"])
+                changed = candidates.validate(before, after, state["plan"], self.config)
                 before, after = ({p: values[p] for p in changed} for values in (before, after))
                 over = self.oversized(None, before, after)
                 if over:
                     raise Blocked(over)
             except Blocked as error:
-                feedback = str(error) + ". Reduce the change or request a design reopen. Nothing was applied."
-                feedbacks[round_key], attempts[round_key] = feedback, attempt + 1
+                repair_feedback = str(error) + ". Reduce the change or request a design reopen. Nothing was applied."
+                feedbacks[round_key], attempts[round_key] = repair_feedback, attempt + 1
                 self.save()
                 continue
             return proposal, {"changed_files": changed, "validation": report["validation"],
@@ -1926,8 +1914,8 @@ class Controller:
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
         context.update(changes=changes(before, after), head=head)
-        context["own_findings"] = findings.context(self.state, provider)
-        context["review_output_budget"] = self.pr_review_output_budget()
+        context["own_findings"] = review_rules.context(self.state, provider)
+        context["review_output_budget"] = self.review_output_budget()
         context["prior_outcomes_untrusted"] = classification.without_hints(context["prior_outcomes_untrusted"])
         context = feedback.prepare(context)
         # Diff previews are optional; file identities, findings and review criteria are not.
@@ -1985,7 +1973,7 @@ class Controller:
             return
         result, evidence = developed
         edits = validate_edits(result, state["plan"], self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
-                               self.config, state["execution"])
+                               self.config)
         # Large contents go through blob objects so the tree request contains only small entries.
         entries, uploaded_blobs = [], []
         for edit in edits:
@@ -2115,7 +2103,7 @@ class Controller:
                                              self.files(state["head"], changed, inspection=True), state["head"],
                                              None)
             report = self.ask(provider, "review", context)
-            owned = findings.owned(state, provider)
+            owned = review_rules.owned(state, provider)
             validate_pr_review(report, [f["id"] for f in owned if f["status"] == "open"],
                                [f["id"] for f in owned if f["status"] == "withdrawn"])
             report = self.classify(report, provider, "review", MODEL_RESPONSE_LIMIT)
@@ -2330,7 +2318,7 @@ class Controller:
         state = self.state
         if not self.permitted(state["approval"]["actor"]):
             raise Blocked("plan approver no longer has write access")
-        if state.get("approval") and not any(
+        if not any(
                 c["id"] == state["approval"]["comment"]
                 and c["user"]["login"] == state["approval"]["actor"]
                 and c["body"].strip() == "/concurro approve " + state["plan_id"] for c in comments):

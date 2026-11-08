@@ -72,7 +72,7 @@ def criteria(requirements):
     return [{'id': 'R' + str(i + 1), 'text': value} for i, value in enumerate(values)]
 
 
-def report_limit(count, objections=0):
+def report_limit():
     """Expose the fixed response transport capacity; stored history does not reduce it."""
     return MODEL_RESPONSE_LIMIT
 
