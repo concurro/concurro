@@ -86,13 +86,17 @@ Write these against the current code, and keep them:
 refactor(engine): give controller authorisation guards one implementation each
 ```
 
-## 08b: Serial and batch call bookkeeping (reassess after 08a)
+## 08b: Serial and batch call bookkeeping (narrowed)
+
+Reassessed after 08a, 2026-11-08. The duplicated code is small, about 15 lines. The value
+is in keeping the **accounting and recovery rules** of the serial path (`Controller.ask`)
+and the batch path (`design_batch.Design`) from drifting apart.
 
 ### Goal
 
-The serial path (`Controller.ask`) and the parallel design-review path (`design_batch`)
-each implement model-call bookkeeping by hand. Give them one implementation. Also stop
-`design_batch` from assigning to controller attributes.
+Give each shared bookkeeping rule one implementation, and stop `design_batch` from writing
+controller internals. Session restart is deliberately **not** unified: the two control
+flows differ.
 
 ### Scope
 
@@ -102,38 +106,106 @@ each implement model-call bookkeeping by hand. Give them one implementation. Als
 
 ### Changes
 
-| Logic | Serial copy | Batch copy | Shared implementation |
-| ---- | ---- | ---- | ---- |
-| Increment `state["calls"]` and charge the credential | `Controller.ask` | `Design.reserve` | `charge_call(operation, credential)` |
-| Record a completed session turn | `Controller.ask` | `Design.complete` | `record_session_turn(session, call, request, response)` |
-| Session restart after a `SessionFailure`, with the "failed twice" limit | `Controller.ask` | `Design.failed` | `restart_session(session)` plus a shared limit constant |
-| The "uncertain twice" limit and message | `Controller` operation recovery | `Design.reserve` | One constant and one message |
-| Releasing the consumed result | — | `design_batch` sets `controller.consuming = None` at four sites | `Controller.release_result()` |
+1. **`charge_call(credential) -> int`:**
+   - increments `state["calls"]`;
+   - charges the per-credential `calls` counter;
+   - returns the new call number.
 
-- **The two call sources differ.** The serial path uses `state["calls"]`; the batch path
-  uses `operation["call"]`. Pass `call` explicitly.
-- **No helper calls `save()`,** unless both copies already save at that exact point.
+   The serial path uses it in `ask`. The batch path uses it in `Design.reserve`, and
+   keeps storing the returned number in `operation["call"]`. The credential record must
+   be built exactly as today: the two copies spell it differently but produce the same
+   dict.
+2. **`record_session_turn(session, call, request, response)`:** increments the session
+   `turn` and writes `completed = {call, request digest, response digest}`. The callers
+   pass their own call number and request context:
+   - serial: `state["calls"]` and `context`;
+   - batch: `operation["call"]` and the member's frozen context.
+3. **The uncertain-attempt rule:** one constant (`MAX_UNCERTAIN = 2`) and one message,
+   shared by `begin_attempt()` and the batch's pre-admission check in `Design.reserve`.
+   **The two checks are not identical today:**
+   - `begin_attempt()` increments `operation["uncertain"]` when the status is `started`
+     or `uncertain`, then checks the count **unconditionally**.
+   - The batch pre-check only fires when the status is `started` or `uncertain`, and
+     checks `uncertain + 1`.
+
+   Define one calculation that reproduces **each caller's current result exactly**. For
+   example, a function returning the count after this attempt's increment, which each
+   caller compares as it does today. If making them share a calculation would change
+   either caller's result for any reachable state, don't fix it here. Report the
+   discrepancy as a separate behavioural finding.
+4. **`Controller.release_result()`:** replaces the four direct
+   `controller.consuming = None` writes in `design_batch` (`select`, `complete`, `apply`,
+   `close`).
+   - `consuming` tells `checkpoint()` which retained response to drop once its result has
+     been used. The method names that recovery operation.
+   - Behaviour is identical: it sets `consuming` to `None`.
+   - The controller's own internal writes may use it too.
+
+**Not in scope:** unifying session restart after `SessionFailure`.
+- `ask` uses a two-attempt loop; the batch keeps a per-member failure counter.
+- The serial `RunnerTerminated` path deliberately restarts only the session, not
+  eligibility.
+- Sharing the `"provider session failed twice"` message text is optional; nothing more.
+
+### Persistence boundaries
+
+The helpers are pure bookkeeping on in-memory state:
+
+- **`charge_call` and `record_session_turn`** must not call `save()` or `checkpoint()`,
+  dispatch or prepare a turn, restart a session, or change design eligibility. The callers
+  keep every one of those calls exactly where they are.
+- **`release_result()`** only resets `consuming`.
 
 ### Must not change
 
-Along each path, the order and count of:
-
-- `save()`, `checkpoint()`;
-- credential charges, `state["calls"]` increments, session-turn increments;
-- transport `prepare` / `submit` calls.
+- **Order and count of side effects,** along each path:
+  - `save()`, `checkpoint()`;
+  - credential charges, `state["calls"]` increments, session-turn increments;
+  - transport `prepare` / `submit` calls.
+- **Batch call numbers:** the call number assigned to each roster member, and to
+  `operation["call"]`.
+- **Atomic roster admission:** in `Design.reserve`, a refusal for any member, including a
+  later one, happens before any member is charged, begun or dispatched. The whole-roster
+  budget check also stays ahead of all preparation.
+- **Messages:** `Blocked` message text.
 
 ### Tests first
 
-**Call-order spy test.** Spy on `save`, `checkpoint`, the transport and the GitHub fake.
-Pin the ordered call sequence and the resulting counts for:
+Write these against the current code, and keep them.
 
-- a serial intake call;
-- a design-review batch with one reviewer succeeding, one hitting `SessionFailure` once,
-  and one returning `UncertainOutcome`;
-- a crash after `begin_attempt`, then a resume.
+- **Call-order spy test.** Spy on `save`, `checkpoint`, the transport and the GitHub fake.
+  Pin the ordered call sequence and the resulting counts for:
+  - a serial intake call;
+  - a design-review batch with one reviewer succeeding, one hitting `SessionFailure` once,
+    and one returning `UncertainOutcome`;
+  - a crash after `begin_attempt`, then a resume.
+- **Batch call numbers:** pin the `operation["call"]` assigned to each member, and the
+  final `state["calls"]` and per-credential counts.
+- **Roster refusal is atomic.** Two cases.
+  - **A later member fails its uncertainty check.** Assert:
+    - no calls or credentials are charged;
+    - no member's attempt is begun;
+    - no turn is submitted;
+    - no partial charges are saved.
+
+    Earlier members **may** already have been prepared with `transport.prepare()`, which
+    is local and neither dispatches nor charges. Pin today's preparation calls rather than
+    requiring none.
+  - **The call budget can't admit the whole roster.** That refusal happens before any
+    member is prepared. Assert no preparation either.
+- **Uncertain-count boundaries:** for both `begin_attempt()` and the batch pre-check,
+  and for each status (`new`, `started`, `uncertain`, `failed`, `completed` without a
+  response, `consumed`), cover counts 0, 1 and 2. Pin whether each refuses. Any status
+  and count where the two disagree goes in the summary as a finding.
+  - These tests show how each check behaves for the states supplied; they don't show
+    which states are reachable.
+  - The view that a disagreeing state may be unreachable today is provisional. If the
+    summary reports a disagreement, say whether you found a path that reaches it.
+- **`release_result()`:** the existing batch recovery tests pass unchanged. A retained
+  response is still dropped only when its own result is consumed.
 
 ### Commit message
 
 ```text
-refactor(engine): share serial and batch model-call bookkeeping
+refactor(engine): share serial and batch model-call accounting
 ```

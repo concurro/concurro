@@ -177,7 +177,7 @@ Status values:
 | 07 | [Dashboard extraction](07-dashboard-extraction.md) | Refactor | Low | Done |
 | 04 | [Stage and turn-outcome vocabulary](04-shared-vocabulary.md) | Refactor | Low | Done |
 | 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Done |
-| 08b | [Serial and batch call bookkeeping](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-reassess-after-08a) | Refactor | Medium | Reassess after 08a |
+| 08b | [Serial and batch call accounting](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-narrowed) (narrowed) | Refactor | Low–medium | Next |
 | 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Next after 08 |
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Candidate |
 | 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate |
@@ -194,7 +194,7 @@ Status values:
 
 - **Done (01–03, 06, 07):** the confirmed bug fix, noise removal, a lint gate, shared
   fixtures and the dashboard extraction.
-- **04 → 08a → reassess 08b → 12:** the agreed next sequence.
+- **04 → 08a → 08b (narrowed after reassessment) → 12:** the agreed next sequence.
   - 04 names the stage and outcome concepts that later controller work refers to.
   - 08a gives the authorisation and recovery guards one contract each.
   - 12's command characterisation matrix is a prerequisite, and may land in its own
