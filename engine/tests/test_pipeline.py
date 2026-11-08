@@ -143,7 +143,7 @@ class FakeGitHub:
     def archives(self):
         """The bodies of the report archive artifacts, oldest first."""
         items = self.artifacts.get(7, {}).values()
-        import re
+        from conversation import REPORT_LINK
         from report_store import Store, MARKER as DATA_MARKER
         store = Store(self, 7, self.config['bot_login'])
         bodies = []
@@ -152,7 +152,7 @@ class FakeGitHub:
                 continue
             body = i['artifact']['body']
             # Follow format-4 links as an archive reader would; legacy archives remain verbatim.
-            numbers = [int(n) for n in re.findall(r'\[Full report(?: part \d+)?\]\([^)]*/artifacts/(\d+)\)', body)]
+            numbers = [int(match['number']) for match in REPORT_LINK.finditer(body)]
             if numbers:
                 first = self.artifacts[7][numbers[0]]['artifact']['body']
                 key = first[len(DATA_MARKER):].split(':', 1)[0]

@@ -10,6 +10,7 @@ import re
 import subprocess
 
 import dashboard_runs
+from conversation import MARKER, REPORT_LINK
 import review_timing
 from policy import digest
 from report_store import Store
@@ -73,10 +74,10 @@ def json_block(body):
 def archived_report(snapshot, store, number):
     """Verify immutable authorship and full-report commitments, including nested parts."""
     item = store.verify(snapshot.repo(f'issues/{snapshot.issue}/artifacts/{number}'))
-    if not item['body'].startswith('<!-- concurro:event:v1:'):
+    if not item['body'].startswith(MARKER):
         raise ValueError('Not a report archive')
     root = f'https://github.com/{snapshot.repository}/issues/{snapshot.issue}/artifacts/'
-    parts = re.findall(r'\[Full report(?:, part [0-9]+)?\]\(' + re.escape(root) + r'([0-9]+)\)', item['body'])
+    parts = [match['number'] for match in REPORT_LINK.finditer(item['body']) if match['root'] == root]
     if not parts:
         return json_block(item['body'])
     numbers = list(map(int, parts))

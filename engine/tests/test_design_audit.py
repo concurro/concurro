@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from support import setUpModule, tearDownModule
 import test_consensus
-from design_audit import Snapshot, measure
+import conversation
+from design_audit import Snapshot, archived_report, measure
+from report_store import Store
 from test_pipeline import Controller
 
 
@@ -101,3 +103,75 @@ class AuditTests(unittest.TestCase):
                                      ('issues/7/comments', 'GET'), ('issues/7/artifacts/1?x=y', 'GET')):
                     with self.subTest(path=path, method=method), self.assertRaises(ValueError):
                         snapshot.repo(path, method)
+
+    def test_multipart_design_reports_are_verified_through_the_real_writer(self):
+        """Split published design reports remain measurable rather than unavailable."""
+        with patch('report_store.CHUNK', 128):
+            state = self.reach('implement')
+        numbers = [r['artifact'] for r in state['reports'] if r['step'] == 'Design review']
+        self.assertEqual(len(numbers), 2)
+        for number in numbers:
+            self.assertIn('[Full report part 2](', self.gh.artifacts[7][number]['artifact']['body'])
+        with tempfile.TemporaryDirectory() as directory:
+            result = measure(self.snapshot(directory), self.config['bot_login'])
+        self.assertEqual([r['verification'] for r in result['reports']], ['verified', 'verified'])
+        self.assertTrue(all('report_digest' in r for r in result['reports']))
+
+    def test_report_link_text_is_unchanged(self):
+        """Literal expectations pin the existing single- and multipart link spelling."""
+        root = 'https://github.com/example/repo/issues/7/artifacts/'
+        self.assertEqual(conversation.report_link(root, 1, 1, 12),
+                         '[Full report](https://github.com/example/repo/issues/7/artifacts/12)')
+        self.assertEqual([conversation.report_link(root, i, 3, n) for i, n in enumerate((12, 13, 14), 1)], [
+            '[Full report part 1](https://github.com/example/repo/issues/7/artifacts/12)',
+            '[Full report part 2](https://github.com/example/repo/issues/7/artifacts/13)',
+            '[Full report part 3](https://github.com/example/repo/issues/7/artifacts/14)',
+        ])
+
+    def literal_archive(self, links, multipart=False):
+        """Store real committed report parts behind an independently written archive."""
+        report = {'decision': 'approve', 'rationale': 'x' * 250}
+        store = Store(self.gh, 7, self.config['bot_login'])
+        with patch('report_store.CHUNK', 128 if multipart else 16000):
+            key = store.put(report)
+        self.assertEqual(store.numbers[key], [1, 2, 3] if multipart else [1])
+        item = self.gh.repo('issues/7/artifacts', 'POST', {
+            'type': 'generic', 'name': 'Concurro report fixture',
+            'body': '<!-- concurro:event:v1:fixture -->\n### Review\n\n' + links})
+        return report, item['number']
+
+    def test_literal_three_part_archive_is_verified(self):
+        """Parsing must work independently of the shared link writer and regex."""
+        report, number = self.literal_archive(
+            '- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n'
+            '- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n'
+            '- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)',
+            multipart=True)
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = self.snapshot(directory)
+            store = Store(snapshot, 7, self.config['bot_login'])
+            self.assertEqual(archived_report(snapshot, store, number), report)
+
+    def test_literal_single_part_archive_is_unchanged(self):
+        """Existing single-part links still recover the same verified report."""
+        report, number = self.literal_archive(
+            '- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)')
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = self.snapshot(directory)
+            store = Store(snapshot, 7, self.config['bot_login'])
+            self.assertEqual(archived_report(snapshot, store, number), report)
+
+    def test_report_links_must_belong_to_the_exact_artifact_root(self):
+        """A foreign link must never be interpreted as a local artifact number."""
+        for root in ('https://other.example/cylewitruk/stacks-core-autobot/issues/7/artifacts/',
+                     'https://github.com/other/repo/issues/7/artifacts/',
+                     'https://github.com/cylewitruk/stacks-core-autobot/issues/8/artifacts/'):
+            with self.subTest(root=root):
+                self.setUp()
+                _, number = self.literal_archive('- [Full report part 1](' + root + '1)')
+                with tempfile.TemporaryDirectory() as directory:
+                    snapshot = self.snapshot(directory)
+                    store = Store(snapshot, 7, self.config['bot_login'])
+                    with self.assertRaisesRegex(ValueError, 'JSON block unavailable'):
+                        archived_report(snapshot, store, number)
+                    self.assertEqual(set(snapshot.reads), {number})

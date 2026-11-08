@@ -36,6 +36,13 @@ EVENT_RESERVE = 1000
 KEPT_TEXT = 1000
 OMITTED = "Full text omitted: it exceeds the comment limit. It is kept in the automation audit state."
 
+REPORT_LINK = re.compile(r'\[Full report(?: part [0-9]+)?\]\((?P<root>[^)\n]*/artifacts/)(?P<number>[0-9]+)\)')
+
+
+def report_link(root, index, count, number):
+    """Format an immutable report link; readers must check the captured artifact root."""
+    return f"[Full report{' part ' + str(index) if count > 1 else ''}]({root}{number})"
+
 
 class PublicationError(CheckpointError):
     """A fixed diagnostic for delivery failure, separate from checkpoint integrity."""
@@ -436,7 +443,7 @@ def publish(state, github, config, store=None):
                 numbers = store.numbers[key]
                 title, _, meta = render_v2(state, event['kind'], event['source'], event['details'])
                 root = f"https://github.com/{config['repository']}/issues/{state['issue']}/artifacts/"
-                links = '\n'.join(f"- [Full report{' part ' + str(i) if len(numbers) > 1 else ''}]({root}{n})"
+                links = '\n'.join('- ' + report_link(root, i, len(numbers), n)
                                   for i, n in enumerate(numbers, 1))
                 body = content_v2(event, title, links, meta)
                 if event['kind'] == 'review_rejection':
