@@ -7,10 +7,9 @@ import sys
 from pathlib import Path
 
 from bundle import Bundle
-from policy import KILLED, TIMEOUT_EXIT, UNCERTAIN_EXIT
+from model_config import default_effort
+from policy import KEY_VARIABLE as KEY_VARIABLE, KILLED, TIMEOUT_EXIT, UNCERTAIN_EXIT
 from session_entry import SessionTurn
-
-KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 
 
 class ProviderUncertain(RuntimeError):
@@ -32,7 +31,7 @@ def command_for(request, schema_path, output_path):
     """Construct provider-specific invocations: native tools, the gateway as the only model endpoint."""
     model = ["--model", request["model"]] if request["model"] else []
     provider = request["provider"]
-    effort = request.get("effort", "medium" if provider == "claude" else "low")
+    effort = request.get("effort", default_effort(provider))
     session = request.get("session")
     resume = request.get("resume_id")
     gateway = request["gateway"]
@@ -116,7 +115,7 @@ def provider_environment(request):
             "ANTHROPIC_BASE_URL": request["gateway"]["url"],
             "ANTHROPIC_AUTH_TOKEN": key,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "CLAUDE_CODE_EFFORT_LEVEL": request.get("effort", "medium"),
+            "CLAUDE_CODE_EFFORT_LEVEL": request.get("effort", default_effort(request["provider"])),
             **(
                 {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1", "CLAUDE_CODE_ENABLE_TASKS": "1"}
                 if request.get("stage") == "develop"
@@ -180,48 +179,50 @@ def main():
     Path(schema_path).write_text(json.dumps(request["schema"]))
     prompt = prompt_for(request, bundle)
     turn = SessionTurn(request["session"], prompt, Path(request["retained_root"])) if request.get("session") else None
-    if turn:
-        if turn.cached is not None:
-            print(json.dumps(turn.cached))
-            turn.close()
-            return
-        request["session_id"] = turn.identifier
-        request["resume_id"] = turn.identifier if turn.previous else None
-        prompt = turn.start()
-    command = command_for(request, schema_path, output_path)
-    result = subprocess.run(
-        command,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=request["timeout"],
-        env={**os.environ, **provider_environment(request)},
-    )
-    if result.returncode in KILLED:
-        raise ProviderUncertain()
-    if result.returncode:
-        raise RuntimeError("provider invocation failed")
-    if request["provider"] == "codex":
-        response = json.loads(Path(output_path).read_text())
-    else:
-        envelope = json.loads(result.stdout)
-        if envelope.get("is_error") or envelope.get("subtype") != "success":
-            raise RuntimeError("Claude did not complete successfully")
-        response = envelope["structured_output"]
-    if turn:
-        identifier = turn.identifier
+    try:
+        if turn:
+            if turn.cached is not None:
+                print(json.dumps(turn.cached))
+                return
+            request["session_id"] = turn.identifier
+            request["resume_id"] = turn.identifier if turn.previous else None
+            prompt = turn.start()
+        command = command_for(request, schema_path, output_path)
+        result = subprocess.run(
+            command,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=request["timeout"],
+            env={**os.environ, **provider_environment(request)},
+        )
+        if result.returncode in KILLED:
+            raise ProviderUncertain()
+        if result.returncode:
+            raise RuntimeError("provider invocation failed")
         if request["provider"] == "codex":
-            started = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-            identifiers = [event["thread_id"] for event in started if event.get("type") == "thread.started"]
-            if len(identifiers) != 1:
-                raise ValueError("missing Codex thread identity")
-            identifier = identifiers[0]
-        elif request["provider"] == "claude":
-            identifier = envelope["session_id"]
-        if request.get("resume_id") and identifier != request["resume_id"]:
-            raise ValueError("provider resumed a different session")
-        turn.finish(response, identifier)
-        turn.close()
+            response = json.loads(Path(output_path).read_text())
+        else:
+            envelope = json.loads(result.stdout)
+            if envelope.get("is_error") or envelope.get("subtype") != "success":
+                raise RuntimeError("Claude did not complete successfully")
+            response = envelope["structured_output"]
+        if turn:
+            identifier = turn.identifier
+            if request["provider"] == "codex":
+                started = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+                identifiers = [event["thread_id"] for event in started if event.get("type") == "thread.started"]
+                if len(identifiers) != 1:
+                    raise ValueError("missing Codex thread identity")
+                identifier = identifiers[0]
+            elif request["provider"] == "claude":
+                identifier = envelope["session_id"]
+            if request.get("resume_id") and identifier != request["resume_id"]:
+                raise ValueError("provider resumed a different session")
+            turn.finish(response, identifier)
+    finally:
+        if turn:
+            turn.close()
     print(json.dumps(response))
 
 

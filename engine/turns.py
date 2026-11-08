@@ -17,11 +17,18 @@ from pathlib import Path
 import feedback
 import git_env
 import processes
-from policy import KILLED, MODEL_RESPONSE_LIMIT, SIGNALLED, TIMEOUT_EXIT, UNCERTAIN_EXIT, runner_bound
+from policy import (
+    KEY_VARIABLE as KEY_VARIABLE,
+    KILLED,
+    MODEL_RESPONSE_LIMIT,
+    SIGNALLED,
+    TIMEOUT_EXIT,
+    UNCERTAIN_EXIT,
+    runner_bound,
+)
 from repository import snapshot
 from vocab import TurnOutcome
 
-KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 MAX_RESPONSE = MODEL_RESPONSE_LIMIT
 MAX_RETAINED = 24 * 1024 * 1024
 # Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),

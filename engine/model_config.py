@@ -15,6 +15,11 @@ LEGACY_FIELDS = {"qc", "qc_model", "planner", "implementer", "reviewers"}
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
+def default_effort(provider):
+    """The legacy CLI effort default when no explicit effort is supplied."""
+    return "medium" if provider == "claude" else "low"
+
+
 @dataclass(frozen=True)
 class ModelProfile:
     """A vendor model and its explicit reasoning effort."""
@@ -138,4 +143,4 @@ def resolve(config, name, stage, reviewer=None):
     vendor = {"claude": "anthropic", "codex": "openai"}.get(name)
     if vendor is None:
         raise ValueError("the runner supports Claude and Codex only")
-    return ResolvedAgent(name, ModelProfile(vendor, model, "medium" if name == "claude" else "low"))
+    return ResolvedAgent(name, ModelProfile(vendor, model, default_effort(name)))

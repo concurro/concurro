@@ -35,6 +35,8 @@ class SessionFailure(Blocked):
         self.uncertain = uncertain
 
 
+KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
+
 # Exit statuses meaning a provider call may have completed upstream: the agent entry point's
 # own uncertainty signal and a container killed by a signal. Timeouts remain distinct.
 UNCERTAIN_EXIT = 75

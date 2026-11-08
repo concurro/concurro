@@ -91,5 +91,5 @@ class SessionTurn:
         )
 
     def close(self):
-        """Release the role lock after output has been validated and journaled."""
+        """Release the role lock without changing the journal."""
         self.lock.close()
