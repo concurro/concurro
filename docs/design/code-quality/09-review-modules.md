@@ -6,9 +6,8 @@ This brief covers **two separate commits**, each reassessed and approved on its 
 
 - **09a, policy and imports:** see "09a (refreshed)" below. It **replaces** changes 1 and
   4 and the `nonblank` / `reviewer_identity` items in change 8.
-- **09b, conversation and review helpers:** changes 2, 3, 5, 6 and 7, plus the
-  `readiness.ci_reasons` and `conversation.publish` items from change 8. Re-check them
-  against the code before approval, as 09a was.
+- **09b, conversation and review helpers:** see "09b (refreshed)" below. It **replaces**
+  changes 2, 3, 5, 6 and 7 and the remaining change-8 items.
 
 The shared protocol constants from iteration 05 already exist (`engine/protocol.py`).
 09b's marker changes use them; don't create a second marker definition.
@@ -90,6 +89,119 @@ Write these against the current code, and keep them:
 
 ```text
 refactor(engine): remove policy and classification import cycles
+```
+
+## 09b (refreshed)
+
+Re-checked against the 09a working tree (after `cec2780`). Find code by symbol; line numbers
+are hints.
+
+### Goal
+
+Give the repeated conversation and review rendering details one definition each, where
+they really are the same concept, and make `conversation.publish` easier to follow. All
+rendered text, markers and IDs stay byte-identical.
+
+### Scope
+
+- `engine/conversation.py`, `engine/classification.py`, `engine/reviews.py`,
+  `engine/readiness.py`, `engine/design_eligibility.py`
+- One stdlib-only leaf location for the path walk: `review_state.py`, `report_core.py`, or
+  similar.
+- Tests
+
+### Changes
+
+1. **Checkpoint path walk.** Three copies walk `state` along a `source` key path:
+   `conversation.render`, `conversation.source_value`, and the pending-event loop in
+   `classification.make_room`.
+   - Put `source_value` where `classification` can import it without importing
+     `conversation`, because `conversation` imports `classification`.
+   - Both modules call it, and `conversation.source_value` stays importable.
+2. **Classification source reference.**
+   `.get("classification", {}).get("source", {}).get("report")` appears three times in
+   `classification.make_room` and once in `conversation`. Add `classification.source_ref(report)`.
+3. **Current reports.** `classification.make_room` and `conversation.compact` both collect
+   `qc` + `reviews` + design-vote reports.
+   - **They differ:** `make_room` also appends `state["review_event"]`.
+   - Share only the common collection, and keep that append at its call site. Order
+     matters for the frozen set, so keep it.
+4. **Review markers and messages in `reviews.py`:**
+   - `finding_marker(id)` for the four `f"{FINDING_MARKER}{…} -->"` copies.
+   - `review_marker(state, config, sequence)` for the three
+     `f"{REVIEW_MARKER}{task_id(…)}:{…} -->"` copies.
+   - A `CONFLICT` constant for the four "PR review publication differs from its recorded
+     content; reconcile manually" messages.
+   - `line_suffix(start, line)` for the shared logic in `label` and `where`.
+5. **Objection IDs in `conversation.py`:**
+   - `objection_prefix(round, reviewer_id, phase)` for the two
+     `D{round}-{id[:8]}-{phase}` copies (`objections` and `review_body`).
+   - `open_concern_ids(disposition_ids, updates)` for the two identical "open
+     disposition IDs" derivations.
+   - `update_label(ids, index, update)` for the two
+     `ids[i] if ids else u["id"] or "New finding"` copies.
+6. **`ELIDED`:** replace the literal `"… [Full text in the published issue conversation.]"`
+   in `conversation.compact` with `reviews.ELIDED`. `conversation` already imports `reviews`.
+7. **`readiness.ci_reasons`:**
+   - **Keep-latest loops:** there are three: workflow runs, check runs and statuses.
+     Extract a `latest_by(items, key, ident)` helper only if it stays at two or three
+     parameters. Pass already-filtered items for the check-run loop, which skips
+     superseded suites. Keep each loop's own ID lookup: `run["id"]` vs `.get("id", 0)`.
+   - **`PASSING`:** a constant for the `("success", "neutral", "skipped")` tuple, used
+     twice. Leave the check-run branch as it is: it treats `success` separately.
+8. **`conversation.publish`** (about 82 lines):
+   - Replace the per-branch `create`/`login` lambdas with small named functions, or a
+     target object.
+   - Make the format-4 `key`/`numbers` explicit locals, instead of re-testing
+     `event.get("format") == 4`.
+   - Name the format-selection expression in `queue` as `event_format(kind, details)`.
+   - Extract `_format4_body`, `_target` and `_receipt` only where they read more clearly.
+     Keep the order of every write and receipt.
+9. **Ternaries:**
+   - Rewrite the ternary used as a statement in `Publisher`
+     (`self.review(item) if … else self.withdrawn(item)`) as `if`/`else`.
+   - Rewrite the nested ternaries in `reviews.where`, the summary line in `reviews`, and
+     `design_eligibility.prepare`'s `reason`, where an `if` chain reads more clearly.
+
+**Dropped from this iteration: unifying the droppable-text mechanisms.** `conversation`
+and `reviews` differ in three ways:
+- the measure (bytes vs characters);
+- the message ("comment limit" vs "GitHub's review limit");
+- the behaviour: `conversation.join` removes droppable parts and appends `OMITTED` once,
+  while `reviews` replaces each droppable line in place.
+
+A shared mechanism would need all three as parameters.
+
+### Must not change
+
+- **Rendered text:** every comment, review, finding, disposition and archive body,
+  byte for byte, including truncation points.
+- **Identity text:** markers, objection IDs and labels.
+- **Publication behaviour:** the order of publication writes and receipts, and
+  recovery behaviour after a lost reply.
+- **CI evaluation:** `ci_reasons` output and its order, including deduplication.
+
+### Tests first
+
+Write these against the current code, and keep them:
+
+- **Conversation snapshots:** each event kind (`plan_summary`, `qc` intake and design,
+  `review`, `review_rejection`, implementation) in both single-part and multi-part
+  archive form, plus compact mode with dropped text.
+- **Review publication snapshots:** a finding comment, a file-level finding, a
+  disposition reply, and a conflict refusal.
+- **`ci_reasons` table:** superseded suites, an empty external suite, pending vs
+  unsuccessful runs, duplicate check runs and statuses (latest wins), and no success at
+  all.
+- **Objection IDs:** the IDs and labels for a design review with open, resolved and new
+  updates.
+
+Use `tempfile` for any filesystem need; no host paths.
+
+### Commit message
+
+```text
+refactor(engine): share conversation and review rendering helpers
 ```
 
 ## Goal
