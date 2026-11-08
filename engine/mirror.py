@@ -9,6 +9,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import git_env
 import protocol
 from policy import Blocked
 from repository import valid_ref
@@ -21,15 +22,7 @@ MAINTENANCE_SECONDS = 86400
 
 def git_environment():
     """No system, global or interactive Git configuration, and no credentials."""
-    return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": tempfile.gettempdir(),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_ASKPASS": "true",
-        "LC_ALL": "C",
-    }
+    return {**git_env.isolated_git_env(), "GIT_ASKPASS": "true"}
 
 
 def default_root():

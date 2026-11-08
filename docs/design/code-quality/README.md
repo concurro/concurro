@@ -186,7 +186,7 @@ Status values:
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Done |
 | 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Done |
 | 10a | [Native turn execution and process cleanup](10-execution-path.md#10a-native-turn-execution-and-process-cleanup) | Refactor | Medium | Done |
-| 10c | [Git environment helpers](10-execution-path.md#10c-git-environment-helpers) | Refactor | Low–medium | Next |
+| 10c | [Git environment helpers](10-execution-path.md#10c-git-environment-helpers) | Refactor | Low–medium | Approved |
 | 10d | [Agent entry and session lock](10-execution-path.md#10d-agent-entry-and-session-lock) | Refactor | Low | Next after 10c |
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |

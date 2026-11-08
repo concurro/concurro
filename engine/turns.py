@@ -9,13 +9,13 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 
 import feedback
+import git_env
 import processes
 from policy import KILLED, MODEL_RESPONSE_LIMIT, SIGNALLED, TIMEOUT_EXIT, UNCERTAIN_EXIT, runner_bound
 from repository import snapshot
@@ -62,30 +62,19 @@ def agent_environment(root, key, retained):
         "CODEX_HOME": str(home / "codex"),
         "CLAUDE_CONFIG_DIR": str(home / "claude"),
         "COPILOT_HOME": str(home / "copilot"),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "safe.directory",
-        "GIT_CONFIG_VALUE_0": "*",
+        **git_env.GIT_ISOLATION,
+        **git_env.safe_directory("*"),
     }
 
 
 def git_environment(work, git_dir, index):
     """Git over the agent's work tree with the pristine repository: no configuration, hook or filter of the agent's."""
     return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": tempfile.gettempdir(),
-        "LC_ALL": "C",
+        **git_env.isolated_git_env(),
         "GIT_DIR": str(git_dir),
         "GIT_WORK_TREE": str(work),
         "GIT_INDEX_FILE": str(index),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "safe.directory",
-        "GIT_CONFIG_VALUE_0": "*",
+        **git_env.safe_directory("*"),
     }
 
 

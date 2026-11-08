@@ -17,6 +17,7 @@ if __name__ == "__main__":
     # -I excludes the script directory from imports.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import git_env
 import protocol
 
 ROOT = Path("/repository")
@@ -66,22 +67,15 @@ class ToolTimeout(Exception):
 def git_environment(root):
     """Bind Git to the snapshot, with no system, global or repository-supplied programs."""
     return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": tempfile.gettempdir(),
-        "LC_ALL": "C",
+        **git_env.isolated_git_env(),
         "GIT_DIR": str(root / ".git"),
         "GIT_WORK_TREE": str(root),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_LITERAL_PATHSPECS": "1",
         "GIT_PAGER": "cat",
         "PAGER": "cat",
         "GIT_OPTIONAL_LOCKS": "0",
-        "GIT_TERMINAL_PROMPT": "0",
         # Preparation runs as root and serving as the tool user; this snapshot is trusted either way.
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "safe.directory",
-        "GIT_CONFIG_VALUE_0": str(root),
+        **git_env.safe_directory(str(root)),
     }
 
 
