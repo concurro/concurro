@@ -153,25 +153,59 @@ before approval.
 refactor(engine): simplify turn decoding and name executor constants
 ```
 
-## 10c: Git environment and command helpers
+## 10c: Git environment helpers
 
-**Scope:** `engine/mirror.py`, `engine/turns.py`, `engine/repository.py`, possibly a new
-stdlib-only leaf module, tests.
+Re-checked against `a24bbf1`. Find code by symbol.
 
-1. **Environment builders:** the three copies (`mirror.git_environment` 21–25,
-   `turns.git_environment` / `agent_environment` 40–60, `repository.git_environment`
-   39–46) share the `GIT_CONFIG_NOSYSTEM` / `GLOBAL` / `TERMINAL_PROMPT` / `safe.directory`
-   keys. Add a base `isolated_git_env(**overrides)`. Each caller's resulting dict must be
-   **identical** to today's.
-2. **Checked-git wrappers:** turn the three copies (`turns.extract.git` 73–79,
-   `repository.snapshot.git` 112–117, `Mirror.git` / `initialize` 47–67) into one
-   `run_git(...)`. Do this only if their error handling and timeouts can be expressed
-   with at most two parameters. Otherwise share only the environment, and say so.
-3. **Placement:** the shared code lives where `repository.py` can import it under its
-   constraints.
+**Scope:**
+- `engine/mirror.py`, `engine/turns.py`, `engine/repository.py`
+- One new stdlib-only leaf module, for example `engine/git_env.py`
+- Tests
 
-**Tests first:** pin each caller's git-environment dict and a representative argv and
-error for each wrapper.
+**Goal:** name the git isolation the engine relies on, so the four environment builders
+can't drift apart.
+
+1. **Shared isolation keys.** All four builders set `GIT_CONFIG_NOSYSTEM="1"`,
+   `GIT_CONFIG_GLOBAL=os.devnull` and `GIT_TERMINAL_PROMPT="0"`. The four builders are
+   `mirror.git_environment`, `turns.git_environment`, `turns.agent_environment` and
+   `repository.git_environment`. Name those three keys once, for example as a
+   `GIT_ISOLATION` mapping or function.
+2. **Shared base for the git-only builders.** The three git-only builders also set
+   `PATH` (from the environment, defaulting to `/usr/bin:/bin`), `HOME`
+   (`tempfile.gettempdir()`) and `LC_ALL="C"`. Give them one base, for example
+   `isolated_git_env(**extra)`. Each builder adds its own keys on top:
+   - `mirror`: `GIT_ASKPASS`;
+   - `turns.git_environment`: `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`;
+   - `repository`: `GIT_DIR`, `GIT_WORK_TREE`, pathspec, pager and optional-lock
+     settings.
+3. **`safe.directory`.** `turns.git_environment`, `turns.agent_environment` and
+   `repository.git_environment` set the same three keys (`GIT_CONFIG_COUNT=1`,
+   `GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=…`), with different values: `*`
+   for the turns builders, the snapshot root for `repository`. Add a
+   `safe_directory(value)` helper.
+4. **`agent_environment` keeps its own contract.** It inherits `os.environ` minus the
+   excluded prefixes, then adds the provider homes. It uses only items 1 and 3. Don't
+   give it the git-only base.
+5. **Placement.** The new module must be stdlib-only, so `repository.py` can import it
+   in-process, and as a script under `python -I` after its `__main__` path bootstrap.
+   This is the same arrangement as `protocol`.
+6. **Each builder's resulting dict must be identical** to today's: the same keys and the
+   same values. Key order doesn't matter to `subprocess`, but keep it where convenient.
+
+**Dropped from this iteration: a shared `run_git`.** The four git runners differ in
+arguments (`-c` hardening flags), input (stdin), extra environment, failure handling
+(none, `TurnError`, `ValueError`, and paged output with exit codes) and return type. A
+shared runner would need several parameters.
+
+**Tests first**, against the current code:
+
+- **Builder dicts:** pin each builder's exact dict for representative arguments. For
+  `agent_environment`, patch `os.environ` to a controlled mapping that includes excluded
+  keys (`GITHUB_TOKEN`, `GH_TOKEN`, `OPENAI_API_KEY`, …), and confirm they are dropped.
+- **Script mode:** `repository.py` still imports and runs under `python -I` from a
+  `tempfile` working directory. Extend the existing `test_protocol` script tests if that
+  is simplest.
+- Use no host paths.
 
 **Commit message:**
 
