@@ -1,0 +1,1250 @@
+{
+  "normal": [
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/refs",
+      "POST",
+      {
+        "ref": "refs/heads/concurro/issue-7-36b026fd7001",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees",
+      "POST",
+      {
+        "base_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": [
+          {
+            "path": "docs/guide.md",
+            "mode": "100644",
+            "type": "blob",
+            "content": "Updated guide 5\n"
+          }
+        ]
+      }
+    ],
+    [
+      "repo",
+      "git/commits",
+      "POST",
+      {
+        "message": "fix(concurro): address issue #7 (round 0)",
+        "tree": "000000000000000000000000000000000000000e",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    [
+      "save",
+      "publish",
+      {
+        "head": "000000000000000000000000000000000000000f",
+        "parent": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "summary": "Explain the guide.",
+        "initial": true
+      },
+      {}
+    ],
+    [
+      "saved",
+      "publish"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/refs/heads/concurro/issue-7-36b026fd7001",
+      "PATCH",
+      {
+        "sha": "000000000000000000000000000000000000000f",
+        "force": false
+      }
+    ],
+    [
+      "pages",
+      "pulls?state=all&head=cylewitruk%3Aconcurro/issue-7-36b026fd7001&base=main",
+      null
+    ],
+    [
+      "repo",
+      "pulls",
+      "POST",
+      {
+        "title": "Clarify the guide (#7)",
+        "head": "cylewitruk:concurro/issue-7-36b026fd7001",
+        "head_repo": "stacks-core-autobot",
+        "base": "main",
+        "body": "Clarify the guide.\n\n[Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\nCloses #7",
+        "draft": true,
+        "maintainer_can_modify": false
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees/000000000000000000000000000000000000000f?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/000000000000000000000000000000000000000e:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/reviews",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9/reviews",
+      "POST",
+      {
+        "commit_id": "000000000000000000000000000000000000000f",
+        "event": "COMMENT",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "comments": []
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "saved",
+      "review"
+    ]
+  ],
+  "tree-crash": [
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/refs",
+      "POST",
+      {
+        "ref": "refs/heads/concurro/issue-7-36b026fd7001",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees",
+      "POST",
+      {
+        "base_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": [
+          {
+            "path": "docs/guide.md",
+            "mode": "100644",
+            "type": "blob",
+            "content": "Updated guide 5\n"
+          }
+        ]
+      }
+    ],
+    [
+      "lost-response",
+      "git/trees"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees",
+      "POST",
+      {
+        "base_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": [
+          {
+            "path": "docs/guide.md",
+            "mode": "100644",
+            "type": "blob",
+            "content": "Updated guide 5\n"
+          }
+        ]
+      }
+    ],
+    [
+      "repo",
+      "git/commits",
+      "POST",
+      {
+        "message": "fix(concurro): address issue #7 (round 0)",
+        "tree": "000000000000000000000000000000000000000f",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    [
+      "save",
+      "publish",
+      {
+        "head": "0000000000000000000000000000000000000010",
+        "parent": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "summary": "Explain the guide.",
+        "initial": true
+      },
+      {}
+    ],
+    [
+      "saved",
+      "publish"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/refs/heads/concurro/issue-7-36b026fd7001",
+      "PATCH",
+      {
+        "sha": "0000000000000000000000000000000000000010",
+        "force": false
+      }
+    ],
+    [
+      "pages",
+      "pulls?state=all&head=cylewitruk%3Aconcurro/issue-7-36b026fd7001&base=main",
+      null
+    ],
+    [
+      "repo",
+      "pulls",
+      "POST",
+      {
+        "title": "Clarify the guide (#7)",
+        "head": "cylewitruk:concurro/issue-7-36b026fd7001",
+        "head_repo": "stacks-core-autobot",
+        "base": "main",
+        "body": "Clarify the guide.\n\n[Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\nCloses #7",
+        "draft": true,
+        "maintainer_can_modify": false
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees/0000000000000000000000000000000000000010?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/000000000000000000000000000000000000000f:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/reviews",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9/reviews",
+      "POST",
+      {
+        "commit_id": "0000000000000000000000000000000000000010",
+        "event": "COMMENT",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "comments": []
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "saved",
+      "review"
+    ]
+  ],
+  "pr-crash": [
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/refs",
+      "POST",
+      {
+        "ref": "refs/heads/concurro/issue-7-36b026fd7001",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees",
+      "POST",
+      {
+        "base_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": [
+          {
+            "path": "docs/guide.md",
+            "mode": "100644",
+            "type": "blob",
+            "content": "Updated guide 5\n"
+          }
+        ]
+      }
+    ],
+    [
+      "repo",
+      "git/commits",
+      "POST",
+      {
+        "message": "fix(concurro): address issue #7 (round 0)",
+        "tree": "000000000000000000000000000000000000000e",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    [
+      "save",
+      "publish",
+      {
+        "head": "000000000000000000000000000000000000000f",
+        "parent": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "summary": "Explain the guide.",
+        "initial": true
+      },
+      {}
+    ],
+    [
+      "saved",
+      "publish"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/refs/heads/concurro/issue-7-36b026fd7001",
+      "PATCH",
+      {
+        "sha": "000000000000000000000000000000000000000f",
+        "force": false
+      }
+    ],
+    [
+      "pages",
+      "pulls?state=all&head=cylewitruk%3Aconcurro/issue-7-36b026fd7001&base=main",
+      null
+    ],
+    [
+      "repo",
+      "pulls",
+      "POST",
+      {
+        "title": "Clarify the guide (#7)",
+        "head": "cylewitruk:concurro/issue-7-36b026fd7001",
+        "head_repo": "stacks-core-autobot",
+        "base": "main",
+        "body": "Clarify the guide.\n\n[Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\nCloses #7",
+        "draft": true,
+        "maintainer_can_modify": false
+      }
+    ],
+    [
+      "lost-response",
+      "pulls"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls?state=all&head=cylewitruk%3Aconcurro/issue-7-36b026fd7001&base=main",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees/000000000000000000000000000000000000000f?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/000000000000000000000000000000000000000e:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/reviews",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9/reviews",
+      "POST",
+      {
+        "commit_id": "000000000000000000000000000000000000000f",
+        "event": "COMMENT",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "comments": []
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "saved",
+      "review"
+    ]
+  ],
+  "blob": [
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/refs",
+      "POST",
+      {
+        "ref": "refs/heads/concurro/issue-7-36b026fd7001",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "implement",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "implement"
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs",
+      "POST",
+      {
+        "content": "Updated guide 5\n",
+        "encoding": "utf-8"
+      }
+    ],
+    [
+      "repo",
+      "git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees",
+      "POST",
+      {
+        "base_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": [
+          {
+            "path": "docs/guide.md",
+            "mode": "100644",
+            "type": "blob",
+            "sha": "690228e20e54f9e00e15b94f992609f0315f3e5e"
+          }
+        ]
+      }
+    ],
+    [
+      "repo",
+      "git/commits",
+      "POST",
+      {
+        "message": "fix(concurro): address issue #7 (round 0)",
+        "tree": "000000000000000000000000000000000000000e",
+        "parents": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    [
+      "save",
+      "publish",
+      {
+        "head": "000000000000000000000000000000000000000f",
+        "parent": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "summary": "Explain the guide.",
+        "initial": true
+      },
+      {}
+    ],
+    [
+      "saved",
+      "publish"
+    ],
+    [
+      "repo",
+      "git/matching-refs/heads/concurro/issue-7-36b026fd7001",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/refs/heads/concurro/issue-7-36b026fd7001",
+      "PATCH",
+      {
+        "sha": "000000000000000000000000000000000000000f",
+        "force": false
+      }
+    ],
+    [
+      "pages",
+      "pulls?state=all&head=cylewitruk%3Aconcurro/issue-7-36b026fd7001&base=main",
+      null
+    ],
+    [
+      "repo",
+      "pulls",
+      "POST",
+      {
+        "title": "Clarify the guide (#7)",
+        "head": "cylewitruk:concurro/issue-7-36b026fd7001",
+        "head_repo": "stacks-core-autobot",
+        "base": "main",
+        "body": "Clarify the guide.\n\n[Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\nCloses #7",
+        "draft": true,
+        "maintainer_can_modify": false
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "repo",
+      "git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/trees/000000000000000000000000000000000000000f?recursive=1",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/000000000000000000000000000000000000000e:docs/guide.md",
+      "GET",
+      null
+    ],
+    [
+      "repo",
+      "git/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:CONTRIBUTING.md",
+      "GET",
+      null
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "saved",
+      "review"
+    ],
+    [
+      "save",
+      "review",
+      null,
+      {}
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/files",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "pages",
+      "pulls/9/reviews",
+      null
+    ],
+    [
+      "repo",
+      "pulls/9/reviews",
+      "POST",
+      {
+        "commit_id": "000000000000000000000000000000000000000f",
+        "event": "COMMENT",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "comments": []
+      }
+    ],
+    [
+      "pages",
+      "pulls/9/comments",
+      null
+    ],
+    [
+      "saved",
+      "review"
+    ]
+  ]
+}

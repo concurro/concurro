@@ -89,3 +89,33 @@ cache, into a `RepositoryReader` class.
 ```text
 refactor(engine): split long controller methods and extract publication
 ```
+
+## Extraction boundaries
+
+- `step()` keeps the orchestration order. `_reconcile_external` handles PR completion
+  before issue closure; `_migrate_legacy_block`, `_needs_flush` and `_validate_authority`
+  name the remaining seams. The recorded-charter/path-policy guard stays before migration
+  and commands. The later PR authority guard still checks only open state and head.
+- `Publication` owns branch reservation, object creation, PR lookup/creation and PR text.
+  It receives the fork and upstream clients, config, task state and optional plan artifact.
+  Save and tree-read callbacks are explicit; it never receives the controller.
+  `_advance_branch` and `_find_or_open_pr` preserve the publication recovery sequence.
+- `RepositoryReader` owns pinned reads and the invocation-local tree cache. Controller
+  methods delegate, and `controller.trees` remains an alias for callers that clear the cache.
+- `apply_quality_report` delegates stage-specific validation to `_accept_design_report`
+  and `_accept_intake_report`, then records `_quality_history` at the original boundary.
+  The common application/transition/save tail remains together.
+- `gates` extracts `_observe_ci`. Ready-marking stays inline: intent save, final PR check,
+  possible write, confirmation and handoff belong to one recovery sequence. A `_mark_ready`
+  helper would need to carry both that early return and the surrounding observation state.
+- `ask` stays whole: its two-attempt recovery, eligibility changes and timing cleanup are
+  clearest together. `invalidate_task` stays in the command handler from iteration 12.
+- `validate_config` shares only the three type-strict integer checks through `_bounded_int`.
+  Older numeric checks still accept bools where they did before. `checks.relative_path`
+  exposes the existing private predicate without changing it.
+
+The 13 pre-extraction guards in `test_controller_splits.py` pin external-event precedence,
+legacy migration, the distinct PR authority check, integer boundaries and four publication
+traces: normal, blob upload, lost tree response and lost PR response. The traces include
+save boundaries through the first PR review; existing dashboard and command goldens remain
+unchanged.

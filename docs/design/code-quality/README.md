@@ -180,8 +180,8 @@ Status values:
 | 08b | [Serial and batch call accounting](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-narrowed) (narrowed) | Refactor | Low–medium | Done |
 | 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Done |
 | 17 | [One-time format](17-format.md) | Style | Low (noisy) | Done |
-| 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Approved |
-| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Next after 05 |
+| 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Done |
+| 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Approved |
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Next after 13 |
 | 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate (10b, then 10a) |
 | 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate (09b after 05) |

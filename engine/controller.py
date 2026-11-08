@@ -1,6 +1,5 @@
 """Durable issue-to-PR state machine. Only this trusted process writes to GitHub."""
 
-import base64
 import difflib
 import hashlib
 import json
@@ -12,7 +11,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from urllib.parse import quote
 
 import actions
 import candidates
@@ -37,10 +35,9 @@ import sessions
 from actions import BUNDLE_REASON
 from bundle import Bundle
 from checkpoints import LIMIT as CHECKPOINT_LIMIT, MARKER, STATE_PREFIX as STATE_PREFIX, CheckpointError, Checkpoints
-from dashboard import SUMMARY_LIMIT as SUMMARY_LIMIT, Dashboard, dependency_summary
-from github import Transient
+from dashboard import SUMMARY_LIMIT as SUMMARY_LIMIT, Dashboard
 from identities import Identities
-from markup import block, link, text
+from markup import link, text
 from model_config import assigned, parse as parse_models, resolve
 from policy import (
     MODEL_RESPONSE_LIMIT,
@@ -62,9 +59,10 @@ from policy import (
     validate_pr_review,
     validate_qc,
 )
+from publication import INLINE_BLOB_LIMIT as INLINE_BLOB_LIMIT, PR_TITLE_LIMIT as PR_TITLE_LIMIT, Publication
+from repository_reader import RepositoryReader
 from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 
-PR_TITLE_LIMIT = 72
 # Correct malformed intake and planner output without spending a semantic design-revision round.
 PLAN_OUTPUT_REPAIRS = 2
 INTAKE_OUTPUT_REPAIRS = 2
@@ -75,8 +73,6 @@ DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
 MAX_DIFF = 64000
 DIFF_TRUNCATED = "[diff truncated; inspect the pinned repository]\n"
-# Keep tree requests compact; larger contents are published as separate blob objects.
-INLINE_BLOB_LIMIT = 64000
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 LEGACY_BUNDLE_REASON = (
     "trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required"
@@ -104,6 +100,12 @@ def strings(value, limit=32):
         and len(set(value)) == len(value)
         and all(isinstance(v, str) and v.strip() and len(v) <= 240 for v in value)
     )
+
+
+def _bounded_int(value, low, high, message):
+    """Reject non-integers (including bools) and values outside an existing budget range."""
+    if type(value) is not int or not low <= value <= high:
+        raise Blocked(message)
 
 
 def validate_config(config):
@@ -155,10 +157,8 @@ def validate_config(config):
             raise Blocked("invalid autonomy or QC configuration")
         if config["autonomous"] and config["qc"] == config["planner"]:
             raise Blocked("QC must use a different provider from the planner")
-    if type(config["max_plan_revisions"]) is not int or not 0 <= config["max_plan_revisions"] <= 3:
-        raise Blocked("invalid plan revision budget")
-    if type(config.get("max_review_repairs")) is not int or not 0 <= config["max_review_repairs"] <= 8:
-        raise Blocked("invalid review repair budget")
+    _bounded_int(config["max_plan_revisions"], 0, 3, "invalid plan revision budget")
+    _bounded_int(config.get("max_review_repairs"), 0, 8, "invalid review repair budget")
     if "agents" not in config and (
         set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values())
     ):
@@ -176,13 +176,12 @@ def validate_config(config):
         or not paths["editable_extensions"]
         or not all(e.startswith(".") for e in paths["editable_extensions"])
         or not all(p.endswith("/") for p in paths["protected_prefixes"])
-        or not all(checks._relative(p) for p in paths["protected"] + paths["generated"])
+        or not all(checks.relative_path(p) for p in paths["protected"] + paths["generated"])
     ):
         raise Blocked("invalid editable path policy")
     if not 0 <= config["max_fix_rounds"] <= 3 or not 1 <= config["max_model_calls"] <= 64:
         raise Blocked("invalid budget")
-    if type(config["max_design_reopens"]) is not int or not 0 <= config["max_design_reopens"] <= 3:
-        raise Blocked("invalid design reopen budget")
+    _bounded_int(config["max_design_reopens"], 0, 3, "invalid design reopen budget")
     if not 1 <= config["max_outcome_issues"] <= 10 or not 1 <= config["max_outcome_lessons"] <= 3:
         raise Blocked("invalid outcome retrieval bound")
     if "engine" in config and not (isinstance(config["engine"], str) and COMMIT.fullmatch(config["engine"])):
@@ -277,6 +276,16 @@ def sha256(text):
 class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
 
+    STAGE_METHODS = {
+        "intake": "quality_control",
+        "plan_qc": "quality_control",
+        "plan": "plan",
+        "implement": "implement",
+        "publish": "publish",
+        "review": "review",
+        "gates": "gates",
+    }
+
     def __init__(
         self,
         github,
@@ -305,7 +314,8 @@ class Controller:
         self.state = None
         self.issue = None
         self.permissions = {}
-        self.trees = {}
+        self.reader = RepositoryReader(self.code, self.pulls)
+        self.trees = self.reader.trees
         self.identities = Identities(config)
         self.bundle = bundle or Bundle(bundle_root, target_root)
         self.stage_synced = None
@@ -512,54 +522,19 @@ class Controller:
 
     def source(self, sha):
         """Read the approved base from upstream and published candidates from the fork."""
-        return self.pulls if not self.state or sha == self.state.get("base") else self.code
+        return self.reader.source(self.state, sha)
 
     def tree(self, sha):
         """Fetch a complete tree; never silently treat truncation as missing files."""
-        if sha in self.trees:
-            return self.trees[sha]
-        result = self.source(sha).repo(f"git/trees/{sha}?recursive=1")
-        if result.get("truncated"):
-            raise Blocked("repository tree is truncated")
-        self.trees[sha] = {v["path"]: v for v in result["tree"]}
-        return self.trees[sha]
+        return self.reader.tree(self.state, sha)
 
     def file_manifest(self, sha, paths):
         """Identify every planned file at a pinned commit; agents read its contents from Git."""
-        tree = self.tree(sha)
-        return {
-            path: (
-                {key: tree[path][key] for key in ("sha", "size", "mode", "type") if key in tree[path]}
-                if path in tree
-                else None
-            )
-            for path in paths
-        }
+        return self.reader.file_manifest(self.state, sha, paths)
 
     def files(self, sha, paths, inspection=False):
         """Read regular UTF-8 blobs without imposing a source-file size policy."""
-        tree = self.tree(sha)
-        result = {}
-        for path in paths:
-            entry = tree.get(path)
-            if entry is None:
-                # Existing symlink/file ancestors must not be treated as new directories.
-                ancestors = ["/".join(path.split("/")[:i]) for i in range(1, len(path.split("/")))]
-                if any(a in tree and tree[a]["type"] != "tree" for a in ancestors):
-                    raise Blocked("non-directory path ancestor")
-                result[path] = None
-                continue
-            modes = ("100644", "100755") if inspection else ("100644",)
-            if entry["mode"] not in modes or entry["type"] != "blob":
-                raise Blocked("source must be a regular text file")
-            blob = self.source(sha).repo("git/blobs/" + entry["sha"])
-            if blob["encoding"] != "base64":
-                raise Blocked("unsupported blob encoding")
-            data = base64.b64decode(blob["content"])
-            if b"\x00" in data:
-                raise Blocked("source is binary")
-            result[path] = data.decode("utf-8")
-        return result
+        return self.reader.files(self.state, sha, paths, inspection)
 
     def context(self, changed=None):
         """Bind issue requirements and trusted repository guidance to the plan base.
@@ -1312,59 +1287,77 @@ class Controller:
         report = self.ask(provider, stage, context)
         self.apply_quality_report(stage, provider, member, context, report)
 
+    def _accept_design_report(self, report, context, member, phase):
+        """Validate before copying vote state; rejected reports schedule only a correction."""
+        try:
+            self.validate_design_report(report, context)
+        except design.ReviewError as error:
+            self.repair_review(report, error, member)
+            return
+        # Validate fully before recording a vote or resolving an objection.
+        state = deepcopy(self.state)
+        binding = digest([approval_binding(state, self.config), member])
+        for previous in state.get("reports", []):
+            if previous.get("diagnostic", {}).get("binding") == binding:
+                previous["diagnostic"]["status"] = "Recovered"
+        review_state.slot(state).pop("review_repair", None)
+        resolved, disposition_ids = design.update_objections(state, report, member, phase)
+        return state, resolved, disposition_ids
+
+    def _accept_intake_report(self, report, stage, provider):
+        """Validate intake or schedule its correction, leaving accepted state ready for recording."""
+        state = self.state
+        try:
+            validate_qc(report, stage, self.bundle.charter)
+        except Blocked as error:
+            self.repair_intake(report, str(error), provider)
+            return
+        except (KeyError, TypeError, ValueError):
+            self.repair_intake(report, "invalid intake field types; return the structured intake schema", provider)
+            return
+        state.pop("intake_draft", None)
+        return state
+
+    def _quality_history(self, state, stage, provider, member, phase, report):
+        """Build the accepted report's history entry at its existing recording boundary."""
+        return {
+            "stage": stage,
+            "decision": report["decision"],
+            "risk": report["risk"],
+            "rationale": report["rationale"][:500],
+            "report_digest": digest(report),
+            "base": state["base"],
+            "requirements_digest": digest(state["requirements"]),
+            "plan": state.get("plan_id"),
+            "provider": provider,
+            "model": member["model"] if member else selected_model(self.config, provider, stage),
+            **self.agent_fields(provider, stage),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "round": state["design_generation"] + 1,
+            "phase": phase if member else "intake",
+        }
+
     def apply_quality_report(self, stage, provider, member, context, report):
         """Validate and apply one result serially using the existing review policy."""
         state = self.state
         phase = context.get("review_phase", "cooperative")
         resolved, disposition_ids = [], []
         if member:
-            try:
-                self.validate_design_report(report, context)
-            except design.ReviewError as error:
-                self.repair_review(report, error, member)
+            accepted = self._accept_design_report(report, context, member, phase)
+            if accepted is None:
                 return
-            # Validate fully before recording a vote or resolving an objection.
-            state = deepcopy(self.state)
-            binding = digest([approval_binding(state, self.config), member])
-            for previous in state.get("reports", []):
-                if previous.get("diagnostic", {}).get("binding") == binding:
-                    previous["diagnostic"]["status"] = "Recovered"
-            review_state.slot(state).pop("review_repair", None)
-            resolved, disposition_ids = design.update_objections(state, report, member, phase)
+            state, resolved, disposition_ids = accepted
         else:
-            try:
-                validate_qc(report, stage, self.bundle.charter)
-            except Blocked as error:
-                self.repair_intake(report, str(error), provider)
+            state = self._accept_intake_report(report, stage, provider)
+            if state is None:
                 return
-            except (KeyError, TypeError, ValueError):
-                self.repair_intake(report, "invalid intake field types; return the structured intake schema", provider)
-                return
-            state.pop("intake_draft", None)
         limit = context["review_output_budget"]["max_json_bytes"] if member else 6000
         report = self.classify(report, provider, stage, limit, member)
         response = review_state.operation(state).get("response")
         if isinstance(response, dict):
             response.pop("classification", None)
         state.setdefault("qc", {})[stage] = report
-        state.setdefault("qc_history", []).append(
-            {
-                "stage": stage,
-                "decision": report["decision"],
-                "risk": report["risk"],
-                "rationale": report["rationale"][:500],
-                "report_digest": digest(report),
-                "base": state["base"],
-                "requirements_digest": digest(state["requirements"]),
-                "plan": state.get("plan_id"),
-                "provider": provider,
-                "model": member["model"] if member else selected_model(self.config, provider, stage),
-                **self.agent_fields(provider, stage),
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "round": state["design_generation"] + 1,
-                "phase": phase if member else "intake",
-            }
-        )
+        state.setdefault("qc_history", []).append(self._quality_history(state, stage, provider, member, phase, report))
         identity = member or {
             "id": digest([provider, "intake"]),
             "provider": provider,
@@ -1764,40 +1757,19 @@ class Controller:
                     change["truncated"] = True
         return context
 
+    def _publication(self):
+        """Bind publication to current state; checkpoint callbacks stay explicit at write boundaries."""
+        return Publication(
+            self.code,
+            self.pulls,
+            self.config,
+            self.state,
+            self.checkpoints.plan if self.checkpoints else None,
+        )
+
     def reserve_development_branch(self):
         """Reserve a fork branch and publish its issue link with recoverable intent."""
-        state = self.state
-        if state.get("head"):
-            return
-        branch, base = state["branch"], state["base"]
-        refs = [
-            ref for ref in self.code.repo("git/matching-refs/heads/" + branch) if ref["ref"] == "refs/heads/" + branch
-        ]
-        reservations = state.setdefault("development_branches", {})
-        if branch not in reservations:
-            if refs:
-                raise Blocked("implementation branch already exists without controller intent")
-            reservations[branch] = {"base": base, "created": False}
-            self.save()
-        reservation = reservations[branch]
-        if reservation["base"] != base:
-            raise Blocked("development branch reservation base changed")
-        if refs:
-            if refs[0]["object"]["sha"] != base:
-                raise Blocked("implementation branch moved outside the controller")
-        else:
-            if reservation["created"]:
-                raise Blocked("implementation branch disappeared")
-            self.code.repo("git/refs", "POST", {"ref": "refs/heads/" + branch, "sha": base})
-        if not reservation["created"]:
-            reservation["created"] = True
-            fork = self.config.get("fork", self.config["repository"])
-            conversation.queue(
-                state,
-                "Implementation started",
-                "Work branch: " + link(branch, f"https://github.com/{fork}/tree/{branch}"),
-            )
-            self.save()
+        return self._publication().reserve_development_branch(self.save)
 
     def implement(self):
         """Reserve the fork branch; publish candidate objects only after local acceptance."""
@@ -1815,34 +1787,7 @@ class Controller:
             self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
             self.config,
         )
-        # Large contents go through blob objects so the tree request contains only small entries.
-        entries, uploaded_blobs = [], []
-        for edit in edits:
-            entry = {
-                "path": edit["path"],
-                "mode": self.tree(parent).get(edit["path"], {}).get("mode", "100644"),
-                "type": "blob",
-            }
-            content = edit["content"]
-            if content is None:
-                entry["sha"] = None
-            elif len(content.encode()) > INLINE_BLOB_LIMIT:
-                entry["sha"] = self.code.repo("git/blobs", "POST", {"content": content, "encoding": "utf-8"})["sha"]
-                uploaded_blobs.append(entry["sha"])
-            else:
-                entry["content"] = content
-            entries.append(entry)
-        parent_commit = self.code.repo("git/commits/" + parent)
-        tree = self.code.create_tree(parent_commit["tree"]["sha"], entries, uploaded_blobs)
-        commit = self.code.repo(
-            "git/commits",
-            "POST",
-            {
-                "message": f"fix(concurro): address issue #{state['issue']} (round {state['round']})",
-                "tree": tree["sha"],
-                "parents": [parent],
-            },
-        )
+        commit = self._publication().build_commit(parent, edits, self.tree, INLINE_BLOB_LIMIT)
         state["pending"] = {
             "head": commit["sha"],
             "parent": parent,
@@ -1873,125 +1818,19 @@ class Controller:
 
     def publish(self):
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
-        state, pending = self.state, self.state["pending"]
-        candidate = state.get("candidate", {})
-        if (
-            not approval_valid(state, self.config)
-            or not candidate.get("edits_digest")
-            or any(
-                candidate.get(key) != value
-                for key, value in (
-                    ("head", pending["head"]),
-                    ("parent", pending["parent"]),
-                    ("base", state["base"]),
-                    ("plan", state["plan_id"]),
-                )
-            )
-        ):
-            raise Blocked("candidate does not match its recorded approval and publication intent")
-        refs = self.code.repo("git/matching-refs/heads/" + state["branch"])
-        refs = [r for r in refs if r["ref"] == "refs/heads/" + state["branch"]]
-        if refs:
-            current = refs[0]["object"]["sha"]
-            if current != pending["head"]:
-                reservation = state.get("development_branches", {}).get(state["branch"])
-                if current != pending["parent"] or (
-                    pending["initial"] and (reservation != {"base": pending["parent"], "created": True})
-                ):
-                    raise Blocked("branch moved outside the controller")
-                self.code.repo("git/refs/heads/" + state["branch"], "PATCH", {"sha": pending["head"], "force": False})
-        else:
-            raise Blocked("implementation branch disappeared")
-        fork = self.config.get("fork", self.config["repository"])
-        owner, repository = fork.split("/")
-        prs = self.pulls.pages(
-            "pulls?state=all&head=" + quote(owner + ":" + state["branch"]) + "&base=" + self.config["base"]
-        )
-        if len(prs) > 1 or (prs and prs[0]["state"] != "open"):
-            raise Blocked("PR was closed or duplicated; reconcile manually")
-        if prs:
-            pr = prs[0]
-            if (
-                pr.get("user", {}).get("login") != self.config["bot_login"]
-                or state.get("pr", pr["number"]) != pr["number"]
-                or pr["head"].get("repo", {}).get("full_name", "").lower() != fork.lower()
-                or pr["head"]["ref"] != state["branch"]
-                or pr["base"]["ref"] != self.config["base"]
-            ):
-                raise Blocked("PR does not match the controller's fork branch and author")
-            if pr["head"]["sha"] != pending["head"]:
-                raise Transient("unavailable", 30)
-        else:
-            if state.get("pr"):
-                raise Blocked("recorded PR disappeared; reconcile manually")
-            pr = self.pulls.repo(
-                "pulls",
-                "POST",
-                {
-                    "title": self.pr_title(),
-                    "head": owner + ":" + state["branch"],
-                    "head_repo": repository,
-                    "base": self.config["base"],
-                    "body": self.pr_body(),
-                    "draft": True,
-                    "maintainer_can_modify": False,
-                },
-            )
-        if pr.get("user", {}).get("login") != self.config["bot_login"]:
-            raise Blocked("PR is not authored by the controller App")
-        published_files = candidates.changed_paths(self.pulls.pages(f"pulls/{pr['number']}/files"))
-        if set(published_files) != set(candidate["changed_files"]):
-            raise Transient("unavailable", 30)
-        if state["reviews"]:
-            state.setdefault("review_history", []).append(state["reviews"])
-        state.update(
-            head=pending["head"],
-            pr=pr["number"],
-            reviews={},
-            stage="review",
-            input_revision=state.get("input_revision", 0) + 1,
-        )
-        state["changed_files"] = published_files
-        del state["pending"]
-        self.save()
+        return self._publication().publish(self.save)
 
     def pr_title(self):
         """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
-        plan, suffix = self.state["plan"], f" (#{self.state['issue']})"
-        title = (
-            markup.one_line(plan.get("headline") or "")
-            or markup.first_sentence(plan["summary"])
-            or markup.one_line(plan["summary"])
-        )
-        title = title.rstrip(".")
-        if not title:
-            return f"Address issue #{self.state['issue']}"
-        limit = PR_TITLE_LIMIT - len(suffix)
-        if len(title) > limit:
-            cut = title[: limit - 1]
-            # Cut at a word boundary unless the first word alone is too long.
-            title = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-") + "…"
-        return title + suffix
+        return self._publication().pr_title()
 
     def pr_body(self):
         """The plan's summary, its artifact, any dependency change, and the issue it closes."""
-        plan = self.checkpoints.plan
-        lines = [block(self.state["plan"]["summary"]), ""]
-        if plan:
-            lines += [link("Implementation plan", self.artifact_url(plan["number"])), ""]
-        for path, delta in sorted((self.state.get("candidate", {}).get("dependencies") or {}).items()):
-            lines += ["📦 " + text(dependency_summary(path, delta)), ""]
-        issue = protocol.issue_url(self.config["repository"], self.state["issue"])
-        closing = (
-            f"Closes #{self.state['issue']}"
-            if self.config.get("upstream", self.config["repository"]) == self.config["repository"]
-            else f"Closes {issue}"
-        )
-        return "\n".join(lines + [closing])
+        return self._publication().pr_body()
 
     def pr_url(self, number):
         """The task's pull request on GitHub."""
-        return f"https://github.com/{self.config.get('upstream', self.config['repository'])}/pull/{number}"
+        return self._publication().pr_url(number)
 
     def review(self):
         """Run one fresh provider review of the same immutable change."""
@@ -2048,13 +1887,9 @@ class Controller:
                 raise Blocked("independent reviews still request changes; fix budget exhausted")
             self.save()
 
-    def gates(self):
-        """Observe current reviews and CI; mark ready once, never merge or rerun CI."""
+    def _observe_ci(self, pr, files, threads, reasons):
+        """Collect CI evidence and recheck the PR, appending blockers in observation order."""
         state = self.state
-        pr = self.pulls.repo(f"pulls/{state['pr']}")
-        files = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
-        threads = self.pulls.threads(state["pr"])
-        reasons = readiness.review_reasons(state, pr, files, threads, self.config)
         refs = readiness.ci_refs(pr)
         if len(refs) > 1:
             commit = self.pulls.repo("git/commits/" + refs[1])
@@ -2075,6 +1910,16 @@ class Controller:
         if readiness.ci_refs(latest) != readiness.ci_refs(pr) or latest["base"] != pr["base"]:
             reasons.append("PR changed while observing CI")
         reasons += readiness.review_reasons(state, latest, files, threads, self.config)
+        return latest
+
+    def gates(self):
+        """Observe current reviews and CI; mark ready once, never merge or rerun CI."""
+        state = self.state
+        pr = self.pulls.repo(f"pulls/{state['pr']}")
+        files = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
+        threads = self.pulls.threads(state["pr"])
+        reasons = readiness.review_reasons(state, pr, files, threads, self.config)
+        latest = self._observe_ci(pr, files, threads, reasons)
         pr = latest
         seen_before = state.get("ready_seen", False)
         if not pr["draft"]:
@@ -2169,19 +2014,8 @@ class Controller:
             return Outcome("continue", True)
         return Outcome("wait-until", retry_after=WAIT_SECONDS)
 
-    def step(self, number):
-        """Process writer commands, validate current authority, and advance one stage."""
-        self.issue = self.gh.repo(f"issues/{number}")
-        if "pull_request" in self.issue:
-            return False
-        comments = self.gh.pages(f"issues/{number}/comments")
-        self.load(comments)
-        if self.state and self.state.get("controller", ACTIONS) != self.controller_id:
-            # Another controller owns this task: no label, comment, artifact or health write.
-            # Dropping the state also keeps the caller's health and failure paths silent.
-            self.state = None
-            self.foreign = True
-            return False
+    def _reconcile_external(self):
+        """Observe PR completion before issue closure; None permits normal processing."""
         if self.state and self.state.get("pr") and self.state["stage"] not in MERGED_STAGES:
             pr = self.pulls.repo(f"pulls/{self.state['pr']}")
             if pr.get("merged"):
@@ -2198,17 +2032,10 @@ class Controller:
                 self.save(outboxes=False)
                 return True
             return False
-        if self.state and self.state["stage"] in TERMINAL_STAGES:
-            return False
-        if self.state:
-            actions.discover_blocked(self.state, comments, self.identities.author("conversation"))
-        if self.state and (
-            digest(self.state.get("charter")) != self.state.get("charter_id")
-            or self.state.get("execution") != self.config["paths"]
-        ):
-            raise Blocked(
-                "Recorded charter or path policy is inconsistent; start a new task rather than adopting unverified state."
-            )
+        return None
+
+    def _migrate_legacy_block(self):
+        """Resume old observer-only bundle blocks without changing model-work authority."""
         if (
             self.state
             and self.state["stage"] == "blocked"
@@ -2220,8 +2047,10 @@ class Controller:
             self.state["stage"] = "gates"
             self.state.pop("retry_stage", None)
             self.state.pop("reason", None)
-        self.sync_stage()
-        if (
+
+    def _needs_flush(self):
+        """Identify retained outboxes or display state that must be saved before commands."""
+        return (
             self.stage_sync_warned
             or self.stage_fallback
             or self.checkpoints.dirty
@@ -2233,26 +2062,10 @@ class Controller:
                 or self.state.get("blocked_notices")
                 and self.state["stage"] in actions.RESUMED_STAGES
             )
-        ):
-            self.save()
-        if not self.state and self.config["autonomous"]:
-            enrollment = self.enrollment()
-            if enrollment:
-                self.initialize(comments, "autonomous", enrollment=enrollment)
-        if self.state and actions.answers(self.state, self.config, comments, self.issue_digest(), self.answerer):
-            self.save()
-        if self.commands(comments):
-            return True
-        if not self.state or self.state["stage"] in (
-            "planned",
-            "blocked",
-            "stopped",
-            "merged",
-            "observed_merged",
-            "rejected",
-            "escalated",
-        ):
-            return False
+        )
+
+    def _validate_authority(self, comments):
+        """Check current work authority; the PR guard deliberately checks only open/head."""
         state = self.state
         if state["stage"] == "merging":
             state["stage"] = "gates"
@@ -2275,18 +2088,65 @@ class Controller:
             pr = self.pulls.repo(f"pulls/{state['pr']}")
             if pr["state"] != "open" or pr["head"]["sha"] != state["head"]:
                 raise Blocked("PR closed or head changed outside the controller")
-        method = {
-            "intake": lambda: self.quality_control("intake"),
-            "plan_qc": lambda: self.quality_control("plan_qc"),
-            "plan": self.plan,
-            "implement": self.implement,
-            "publish": self.publish,
-            "review": self.review,
-            "gates": self.gates,
-        }.get(state["stage"])
-        if method is None:
+        return True
+
+    def step(self, number):
+        """Process writer commands, validate current authority, and advance one stage."""
+        self.issue = self.gh.repo(f"issues/{number}")
+        if "pull_request" in self.issue:
+            return False
+        comments = self.gh.pages(f"issues/{number}/comments")
+        self.load(comments)
+        if self.state and self.state.get("controller", ACTIONS) != self.controller_id:
+            # Another controller owns this task: no label, comment, artifact or health write.
+            # Dropping the state also keeps the caller's health and failure paths silent.
+            self.state = None
+            self.foreign = True
+            return False
+        reconciled = self._reconcile_external()
+        if reconciled is not None:
+            return reconciled
+        if self.state and self.state["stage"] in TERMINAL_STAGES:
+            return False
+        if self.state:
+            actions.discover_blocked(self.state, comments, self.identities.author("conversation"))
+        if self.state and (
+            digest(self.state.get("charter")) != self.state.get("charter_id")
+            or self.state.get("execution") != self.config["paths"]
+        ):
+            raise Blocked(
+                "Recorded charter or path policy is inconsistent; start a new task rather than adopting unverified state."
+            )
+        self._migrate_legacy_block()
+        self.sync_stage()
+        if self._needs_flush():
+            self.save()
+        if not self.state and self.config["autonomous"]:
+            enrollment = self.enrollment()
+            if enrollment:
+                self.initialize(comments, "autonomous", enrollment=enrollment)
+        if self.state and actions.answers(self.state, self.config, comments, self.issue_digest(), self.answerer):
+            self.save()
+        if self.commands(comments):
+            return True
+        if not self.state or self.state["stage"] in (
+            "planned",
+            "blocked",
+            "stopped",
+            "merged",
+            "observed_merged",
+            "rejected",
+            "escalated",
+        ):
+            return False
+        state = self.state
+        if not self._validate_authority(comments):
+            return False
+        method_name = self.STAGE_METHODS.get(state["stage"])
+        if method_name is None:
             raise Blocked("unknown state")
-        result = method()
+        method = getattr(self, method_name)
+        result = method(state["stage"]) if method_name == "quality_control" else method()
         return result is not False
 
     def check_human_approval(self, comments):

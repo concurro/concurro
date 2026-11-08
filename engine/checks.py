@@ -50,6 +50,11 @@ def _relative(value):
     )
 
 
+def relative_path(value):
+    """Expose the repository-relative path predicate without changing its validation rules."""
+    return _relative(value)
+
+
 def scope_pattern(value):
     """Treat a trailing slash as a recursive directory scope, without relaxing path validation."""
     return value + "**" if isinstance(value, str) and value.endswith("/") else value

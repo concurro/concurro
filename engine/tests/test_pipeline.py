@@ -219,7 +219,7 @@ class PipelineTests(ManualPipelineFixture, unittest.TestCase):
             with (
                 self.subTest(mode=mode),
                 patch.object(
-                    controller,
+                    controller.reader,
                     "tree",
                     return_value={"docs/guide.md": {"mode": mode, "type": "blob", "sha": "unsafe", "size": 10}},
                 ),
