@@ -4,14 +4,93 @@ Part of the [code-quality programme](README.md).
 
 This brief covers **two separate commits**, each reassessed and approved on its own:
 
-- **09a, policy and imports:** change 1 (leaf module for the circular imports), change 4
-  (review validators), and from change 8, the `nonblank` helpers and
-  `policy.reviewer_identity`.
+- **09a, policy and imports:** see "09a (refreshed)" below. It **replaces** changes 1 and
+  4 and the `nonblank` / `reviewer_identity` items in change 8.
 - **09b, conversation and review helpers:** changes 2, 3, 5, 6 and 7, plus the
-  `readiness.ci_reasons` and `conversation.publish` items from change 8.
+  `readiness.ci_reasons` and `conversation.publish` items from change 8. Re-check them
+  against the code before approval, as 09a was.
 
-The shared protocol constants from iteration 05 are a prerequisite for 09b's marker
-changes. Don't create a second marker definition here.
+The shared protocol constants from iteration 05 already exist (`engine/protocol.py`).
+09b's marker changes use them; don't create a second marker definition.
+
+## 09a (refreshed)
+
+Re-checked against `4391431`. Find code by symbol.
+
+### Goal
+
+Remove the hidden import cycles between `policy`, `classification` and `reviews`, and the
+genuinely shared parts of the two review validators.
+
+### Scope
+
+- `engine/policy.py`, `engine/classification.py`, `engine/design.py`
+- One small stdlib-only leaf module
+- Tests
+
+### Changes
+
+1. **Break the `policy` → `classification` edge.**
+   - `policy` imports `classification` only for `classification.core()`, a
+     dependency-free projection that drops the advisory `classification` field.
+   - Move `core` into a stdlib-only leaf module, and have `policy` import it from there.
+     `classification.core` stays importable as a re-export, because other modules and
+     tests use it.
+   - Then move `classification`'s function-local imports to the top of the module:
+     `policy` (in `binding` and `candidates`), `reviews` (in `make_room`) and
+     `model_config` (in `candidates`). `model_config` has no engine dependencies, so it
+     never needed to be local.
+   - Confirm with a fresh interpreter that `import policy`, `import classification`,
+     `import reviews` and `import design` each succeed on their own, in any order.
+2. **Keep the one real cycle explicit.** `policy.consensus_valid` imports `design` inside
+   the function, and `design` imports `policy`. Leave that import local, with a one-line
+   comment naming the cycle. Don't move `consensus_valid` in this iteration.
+3. **Out of scope:**
+   - the lazy imports in `repository.snapshot`, which `repository.py`'s import
+     constraints require;
+   - the lazy imports in `turns.execute`, which belong to 10a.
+4. **Review validators: only the genuinely shared parts.**
+   - `validate_review` and `validate_pr_review` share the verdict vocabulary
+     (`approve`, `changes_requested`, `reopen`), the "invalid review verdict" check, and
+     the "review verdict contradicts design issue" check.
+   - Name the vocabulary once, for example `REVIEW_VERDICTS`. Use it in both validators,
+     and in `markup.VERDICT` if its keys are the same set.
+   - Extract the verdict check only if it reads more clearly.
+   - **Don't** share the reopen branches. Their messages differ ("cannot also request
+     implementation fixes" vs "cannot also report or answer findings"), as do their
+     size checks (bytes vs finding count) and the order of those checks.
+5. **`design_roster`:** resolve each named agent once, instead of four
+   `parsed.resolve(name)` calls per member. The output must stay identical.
+6. **Optional:** a `nonblank(value)` helper, but only if it reads more clearly. There are
+   about six `isinstance(v, str) and v.strip()` checks across `policy.py` and `design.py`.
+
+**Dropped from this iteration:** `policy.reviewer_identity`. `design_eval`'s reviewer
+identity is a different contract: roles `review` vs `plan_qc`, no `effort`, and a
+different legacy ID. Sharing it would need a helper with several parameters.
+
+### Must not change
+
+- **Validator results:** each validator's acceptance and rejection, its check order,
+  and its messages.
+- **Data:** `design_roster` output, and `classification.core` output.
+- **Import-time behaviour:** importing `repository.py` stays stdlib-only.
+
+### Tests first
+
+Write these against the current code, and keep them:
+
+- **Validator equivalence:** for each validator, a table of invalid inputs where more than
+  one rule fails. Pin the first error raised.
+- **Import order:** a test that imports `policy`, `classification`, `reviews` and `design`
+  in several orders, each in a fresh subprocess, using a `tempfile` working directory
+  rather than a host path.
+- **`design_roster`:** pin its output for a named-agent config and a legacy config.
+
+### Commit message
+
+```text
+refactor(engine): remove policy and classification import cycles
+```
 
 ## Goal
 

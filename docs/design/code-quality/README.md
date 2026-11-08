@@ -184,9 +184,10 @@ Status values:
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Done |
 | 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Done |
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Done |
-| 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Approved |
+| 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Done |
 | 10 | [Execution path](10-execution-path.md) (10a, 10c, 10d; separate commits) | Refactor | Medium | Candidate (10a next) |
-| 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate (09b after 05) |
+| 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Next |
+| 09b | [Conversation and review helpers](09-review-modules.md) | Refactor | Low–medium | Candidate (re-check before approval) |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
 | 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate, prepared |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
