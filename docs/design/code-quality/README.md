@@ -190,9 +190,10 @@ Status values:
 | 10d | [Agent entry and session lock](10-execution-path.md#10d-agent-entry-and-session-lock) | Refactor | Low | Done |
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |
-| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Approved |
+| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Done |
 | 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Done |
-| 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
+| 11a | [GitHub I/O](11-github-and-storage.md#11a-github-io) | Refactor | Low–medium | Next (brief refreshed; Codex review first) |
+| 11b | [Storage helpers](11-github-and-storage.md#11b-storage-helpers) | Refactor | Low–medium | Next after 11a |
 | 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate, prepared |
 
 ### Ordering rationale
