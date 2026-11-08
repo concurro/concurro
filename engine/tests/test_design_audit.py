@@ -1,17 +1,18 @@
 """Audit baselines verify immutable data and never issue remote writes."""
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import ConsensusFixture
+
 import conversation
-from design_audit import Snapshot, archived_report, measure
-from report_store import Store
 from controller import Controller
+from design_audit import Snapshot, archived_report, measure
+from pipeline_fixtures import ConsensusFixture
+from report_store import Store
 
 
 class AuditTests(ConsensusFixture, unittest.TestCase):

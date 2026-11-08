@@ -1,25 +1,26 @@
 """Implementation job lifetime, termination, and writer-controlled recovery."""
 
-from copy import deepcopy
 import io
 import json
 import os
-from types import SimpleNamespace
 import subprocess
-import unittest
 import sys
+import unittest
+from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import agent_entry
+import runner_fixtures
+import turns
 from agents import Agents
 from bundle import Bundle
+from controller import Controller
+from pipeline_fixtures import ConsensusFixture
 from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome
 from relay import ExchangeError
-import turns
-import runner_fixtures
-from pipeline_fixtures import ConsensusFixture
-from controller import Controller
 
 
 class ExecutorTests(runner_fixtures.ExecutorFixture, unittest.TestCase):

@@ -1,14 +1,14 @@
 """Canonical immutable report artifacts shared by the audit and rounds table."""
 
-from collections import OrderedDict
-from copy import deepcopy
 import json
 import re
 import threading
+from collections import OrderedDict
+from copy import deepcopy
 
 import protocol
-from policy import Blocked, digest
 from github import NotFound
+from policy import Blocked, digest
 
 MARKER = "<!-- concurro:report-data:v1:"
 CHUNK = 16000

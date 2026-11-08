@@ -1,12 +1,15 @@
 """Autonomous admission, plan QC, revocation and quota regression tests."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
+from controller import Controller, validate_config
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision
-from controller import Controller
-from controller import validate_config
 from policy import Blocked, approval_valid, selected_model, validate_qc
 
 

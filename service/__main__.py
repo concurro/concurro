@@ -1,7 +1,6 @@
 """`serve` runs the daemon; every other command is a request to it over the control channel."""
 
 import argparse
-from dataclasses import replace
 import json
 import logging
 import os
@@ -11,9 +10,10 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 
-from policy import Blocked
 import private
+from policy import Blocked
 
 from . import control, ingress, settings as settings_module
 from .cutover import Cutover
@@ -24,8 +24,8 @@ from .reconciler import Reconciler
 from .registry import Registry
 from .scheduler import Scheduler
 from .settings import CHECKOUT, SettingsError
-from .transport import Transport
 from .targets import verify
+from .transport import Transport
 from .worker import Worker
 
 POLL_SECONDS = 300

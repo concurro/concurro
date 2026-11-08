@@ -1,17 +1,18 @@
 """Review corrections remain inspectable without obscuring live task progress."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
+
 from checkpoints import LIMIT
 from conversation import PublicationError
+from fakes import CONFIG, FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
 from policy import approval_valid, digest
 from report_store import Store
-from fakes import CONFIG, FakeAgents, FakeGitHub
 
 
 class DiagnosticsTests(PipelineFixture, unittest.TestCase):
@@ -378,8 +379,8 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
     def test_rejection_history_stays_bounded_through_the_call_budget(self):
         """Repeated invalid reviews retain links rather than copying raw output into the audit."""
         controller = self.reach_review()
-        from policy import design_roster
         from design import ReviewError
+        from policy import design_roster
 
         member = design_roster(self.config)[0]
         for i in range(48):

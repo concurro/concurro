@@ -1,11 +1,12 @@
 """Dashboard rendering contracts, based on the pre-extraction snapshots."""
 
+import unittest
 from copy import deepcopy
 from pathlib import Path
-import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 from actions import BUNDLE_REASON
 from controller import Controller
 from fakes import ClassifiedAgents

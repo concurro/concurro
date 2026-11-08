@@ -1,17 +1,16 @@
 """Actionable comments and Input needed requests; advisory intake notices use the conversation outbox."""
 
-import protocol
-from protocol import COMMENT_URL as COMMENT_URL
-
 import re
 
-from model_config import assigned
 import conversation
 import markup
-from markup import block, code, link, text
+import protocol
 from checkpoints import DIAGNOSTICS
 from github import NotFound
+from markup import block, code, link, text
+from model_config import assigned
 from policy import Blocked, digest
+from protocol import COMMENT_URL as COMMENT_URL
 from vocab import TERMINAL_STAGES
 
 # Gate reasons only a human merge resolves: Concurro's own merge policy, and GitHub's requirements

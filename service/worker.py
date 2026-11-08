@@ -1,20 +1,21 @@
 """Run one controller tick for one owned task, with that target's own configuration and bundle."""
 
 import base64
+import logging
+import re
+import tempfile
+import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
-import logging
-import re
 from pathlib import Path
-import tempfile
-import threading
-import uuid
 from urllib.parse import quote
 
+import private
 from agents import Agents, RunnerExecutor
-from bundle import CHARTER, Bundle, RESOURCE_LIMIT, TARGET_INSTRUCTIONS
+from bundle import CHARTER, RESOURCE_LIMIT, TARGET_INSTRUCTIONS, Bundle
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from controller import Controller, validate_config
@@ -22,16 +23,15 @@ from conversation import PublicationError
 from github import NotFound, Transient
 from model_config import parse as parse_models, resolve
 from policy import Blocked
-import private
 from relay import ExchangeError, Operator
 from report_store import Cache
 
 from . import failures
 from .errors import GatewayStop
-from .gateway import GatewayGitHub, LEASE_SECONDS
+from .gateway import LEASE_SECONDS, GatewayGitHub
 from .settings import CHECKOUT
-from .targets import enrollment
 from .target_config import read_remote
+from .targets import enrollment
 
 CONFIG_LIMIT = 64_000
 RENEW_SECONDS = LEASE_SECONDS // 3

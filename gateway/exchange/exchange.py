@@ -10,14 +10,11 @@ reconciliation finds it orphaned.
 
 import argparse
 import base64
-from contextlib import contextmanager
 import fcntl
 import hashlib
 import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import sqlite3
@@ -29,6 +26,9 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"

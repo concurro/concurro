@@ -1,11 +1,12 @@
 """Convert a legacy target config to the native-runner contract, writing a separate reviewed file."""
 
 import argparse
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from controller import validate_config
+
 from .target_config import read_local
 
 REMOVED = {

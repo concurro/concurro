@@ -1,17 +1,18 @@
 """Shared in-memory GitHub and model responses for offline engine and service tests."""
 
 import base64
-from copy import deepcopy
-from types import SimpleNamespace
 import difflib
 import json
+from copy import deepcopy
+from types import SimpleNamespace
+
 from support import CONFIG as CONFIG
+
 import classification as ratings
 from controller import MARKER
 from credentials import Credential
 from github import GitHub, NotFound
 from policy import Blocked, digest
-
 
 PLAN = {
     "summary": "Clarify the guide.",
@@ -213,7 +214,7 @@ class FakeGitHub:
         """The bodies of the report archive artifacts, oldest first."""
         items = self.artifacts.get(7, {}).values()
         from conversation import REPORT_LINK
-        from report_store import Store, MARKER as DATA_MARKER
+        from report_store import MARKER as DATA_MARKER, Store
 
         store = Store(self, 7, self.config["bot_login"])
         bodies = []

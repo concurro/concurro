@@ -2,10 +2,14 @@
 
 import unittest
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from credentials import Credential
-from policy import Blocked
 from pipeline_fixtures import ManualPipelineFixture
+from policy import Blocked
 
 
 class CredentialIdentityTests(unittest.TestCase):

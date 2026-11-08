@@ -1,16 +1,17 @@
 """Design evaluation uses fresh native runner fixtures, never a host model process."""
 
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import turns
 from bundle import Bundle
 from design_eval import SOURCE, cases, evaluate, request, score
-import turns
 
 
 class EvaluationTests(unittest.TestCase):

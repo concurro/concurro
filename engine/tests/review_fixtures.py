@@ -1,13 +1,14 @@
 """PR findings, model responses and manual publication lifecycle helpers."""
 
 from copy import deepcopy
+
 from support import CONFIG
-from fakes import FINDING, FakeAgents, FakeGitHub
+
 from checkpoints import Checkpoints
 from controller import Controller
-from readiness import review_reasons
+from fakes import FINDING, FakeAgents, FakeGitHub
 from pipeline_fixtures import ISSUE
-
+from readiness import review_reasons
 
 DESIGN_ISSUE = {"kind": "plan", "explanation": "The plan misses a case.", "evidence": ["The guide omits it."]}
 

@@ -1,17 +1,18 @@
 """Large source stays in Git while metadata and bounded previews guide independent reviews."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from controller import DISPATCH_ALLOWANCE, transport_size, sha256, changes, diff_preview, DIFF_TRUNCATED, MAX_DIFF
+
+import turns
+from controller import DIFF_TRUNCATED, DISPATCH_ALLOWANCE, MAX_DIFF, changes, diff_preview, sha256, transport_size
+from fakes import PLAN, FakeAgents
 from policy import Blocked, validate_edits
 from repository import Repository
 from review_fixtures import Harness
-from fakes import FakeAgents, PLAN
 from runner_fixtures import Workspace
-import turns
 
 # Above the former extraction/snapshot limit as well as both response-size limits.
 SOURCE = "// large source fixture\n" + "// unchanged body\n" * 200_000

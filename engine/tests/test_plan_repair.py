@@ -1,17 +1,18 @@
 """Rejected planner output stays visible and gets bounded, restartable correction."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
-from checkpoints import Checkpoints, PLAN_NAME, LIMIT
-from controller import PLAN_OUTPUT_REPAIRS
-from policy import Blocked, validate_plan
+
 import checks
+from checkpoints import LIMIT, PLAN_NAME, Checkpoints
+from controller import PLAN_OUTPUT_REPAIRS
 from fakes import PLAN, FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
+from policy import Blocked, validate_plan
 
 
 class DirectoryScopeTests(unittest.TestCase):

@@ -1,18 +1,23 @@
 """The transport over a loopback server: request phases, bounds, redirects and per-repository tokens."""
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
 import json
 import socket
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from github import NotFound, Transient
+from service import transport
 from service.errors import Unresolved
 from service.gateway import MutationGateway
-from service import transport
 from service.transport import Transport
 from service.worker import runner_claims
 

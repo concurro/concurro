@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture
+
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 from service.errors import OwnershipLost
 from service.gateway import Rejected
 from service.transport import Response

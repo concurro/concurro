@@ -1,7 +1,7 @@
 """Advisory complexity and change-risk estimates derived from bound model reports."""
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 
 import review_state
 

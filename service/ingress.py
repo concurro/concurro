@@ -2,10 +2,10 @@
 
 import hashlib
 import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ENROLLMENT = "concurro"
 EVENTS = {

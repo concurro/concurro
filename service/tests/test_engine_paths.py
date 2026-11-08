@@ -1,18 +1,23 @@
 """The real engine under the gateway: stops pass every wrapper, and lost writes are reconstructed."""
 
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture, Wire
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
+import conversation
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
-from report_store import MARKER as REPORT_DATA_MARKER
 from controller import MARKER, Outcome
-from policy import Blocked, UncertainOutcome
-import conversation
 from github import Transient
+from policy import Blocked, UncertainOutcome
+from report_store import MARKER as REPORT_DATA_MARKER
 from service import failures
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS

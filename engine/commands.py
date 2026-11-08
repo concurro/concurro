@@ -1,19 +1,19 @@
 """Parse writer commands and apply their lifecycle transitions."""
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
-import re
 
-import protocol
 import actions
-from actions import BUNDLE_REASON
 import conversation
 import dashboard_runs
 import implementation_bundle
+import protocol
+import sessions
+from actions import BUNDLE_REASON
 from markup import code, link
 from policy import Blocked, approval_binding, approval_valid, consensus_valid, digest
-import sessions
 from vocab import JUDGED_STAGES, SUSPENDED_STAGES
 
 

@@ -1,14 +1,19 @@
 """Cutover moves tasks between Actions and the service; operator commands reach only the running daemon."""
 
-from contextlib import contextmanager
-from copy import deepcopy
 import threading
 import unittest
+from contextlib import contextmanager
+from copy import deepcopy
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from fakes import FakeAgents
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from controller import ACTIONS, Controller
+from fakes import FakeAgents
 from github import NotFound
 from service import control
 from service.cutover import MARKER_AWARE, WORKFLOW, Cutover, CutoverError

@@ -1,14 +1,18 @@
 """Chronological decisions survive revisions, lost responses and controller restarts."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from pipeline_fixtures import PipelineFixture
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 import conversation
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision
+from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid
-from fakes import decision, CONFIG, FakeAgents, FakeGitHub
 
 
 class ConversationTests(PipelineFixture, unittest.TestCase):

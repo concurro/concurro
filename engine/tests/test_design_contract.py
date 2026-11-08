@@ -1,16 +1,20 @@
 """Evidence-based review, individual findings, bounded repairs and artifact publication."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from pipeline_fixtures import PipelineFixture
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 import conversation
 import design
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision, design_report
+from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid, consensus_valid
-from fakes import decision, CONFIG, FakeAgents, FakeGitHub, design_report
 
 
 class DesignContractTests(PipelineFixture, unittest.TestCase):

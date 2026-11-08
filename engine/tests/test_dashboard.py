@@ -1,16 +1,21 @@
 """The issue dashboard: progress in the status comment, new comments only when a human must act."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from fakes import decision, FakeAgents, FakeGitHub
-from review_fixtures import Harness, Reviewers
-from controller import Controller
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
 import actions
 import conversation
+from controller import Controller
+from fakes import FakeAgents, FakeGitHub, decision
 from policy import Blocked, digest
+from review_fixtures import Harness, Reviewers
 
 
 def actionable(gh):

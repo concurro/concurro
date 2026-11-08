@@ -1,38 +1,43 @@
 """Turns: workspaces from snapshots, extraction, the agent container contract, executors and the runner loop."""
 
-from copy import deepcopy
 import base64
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from runner_fixtures import (
-    ExecutorFixture,
-    GATEWAY,
-    MODELS,
-    AGENT,
-    Workspace,
-    FakeExecutor,
-    FakeOperator,
-    TASK,
-    TURN,
-    FakeRunner,
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
 )
+
 import agent_entry
+import runner
+import turns
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from credentials import Credential
 from gitfixture import IDENTITY
 from mirror import git_environment
 from policy import Blocked, SessionFailure, UncertainOutcome
 from relay import ExchangeError
-import runner
-import turns
+from runner_fixtures import (
+    AGENT,
+    GATEWAY,
+    MODELS,
+    TASK,
+    TURN,
+    ExecutorFixture,
+    FakeExecutor,
+    FakeOperator,
+    FakeRunner,
+    Workspace,
+)
 
 
 class ExtractionTests(Workspace, unittest.TestCase):
@@ -568,6 +573,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
         super().setUp()
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
         import exchange_fixtures  # puts the exchange on the module path
+
         import exchange as exchange_module
 
         self.signer = exchange_fixtures.Signer(str(self.tmp))
@@ -647,6 +653,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
     def round_trip(self, large=False, with_feedback=False):
         """Run the real relay and extraction, optionally returning a multi-megabyte edit."""
         import threading
+
         from relay import Operator, Runner
 
         loops = []

@@ -3,20 +3,20 @@
 import base64
 import http.client
 import json
-from pathlib import Path
 import sys
 import threading
 import unittest
-import uuid
-from unittest.mock import patch
 import urllib.error
 import urllib.request
+import uuid
+from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "exchange"))
+from exchange_fixtures import AUDIENCE, BINDING, EXPECTED, NOW, TURN, ExchangeFixture, segment
+
 import exchange
 from exchange import Exchange, Keys, Refused, server
-
-from exchange_fixtures import AUDIENCE, NOW, EXPECTED, BINDING, TURN, segment, ExchangeFixture
 
 
 class ExchangeTests(ExchangeFixture, unittest.TestCase):

@@ -1,16 +1,17 @@
 """Characterize authorization reads, command consumption and save ordering before extraction."""
 
+import unittest
 from contextlib import contextmanager
 from copy import deepcopy
-import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import implementation_bundle
+from fakes import APPROVE, named_config
+from github import Transient
 from pipeline_fixtures import ConsensusFixture
 from policy import Blocked, digest
-from github import Transient
-from fakes import APPROVE, named_config
-import implementation_bundle
 
 
 class GuardContractTests(ConsensusFixture, unittest.TestCase):

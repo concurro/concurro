@@ -1,13 +1,13 @@
 """Host-side Git mirror of a target: fetched outside any container, borrowed read-only by snapshots."""
 
-from contextlib import contextmanager
 import fcntl
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
+from pathlib import Path
 
 import protocol
 from policy import Blocked

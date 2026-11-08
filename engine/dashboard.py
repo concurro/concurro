@@ -2,10 +2,10 @@
 
 from functools import cached_property
 
-import protocol
 import classification
 import dashboard_runs
 import markup
+import protocol
 import review_state
 import review_timing
 from actions import BUNDLE_REASON

@@ -1,10 +1,10 @@
 """Real Git fixtures: an upstream repository, a target mirror fetched from it, and built snapshots."""
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
-from mirror import Mirror, git_environment
 import repository
+from mirror import Mirror, git_environment
 
 IDENTITY = {
     "GIT_AUTHOR_NAME": "Fixture",

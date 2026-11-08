@@ -1,48 +1,47 @@
 """Durable issue-to-PR state machine. Only this trusted process writes to GitHub."""
 
 import base64
-from contextlib import contextmanager
-from dataclasses import dataclass
 import difflib
 import hashlib
 import json
-from pathlib import PurePosixPath
 import re
 import sys
 import uuid
+from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from urllib.parse import quote
 
-import protocol
 import actions
-import commands
-import revisions
-import classification
-import implementation_bundle
-import dashboard_runs
-from dashboard import Dashboard, SUMMARY_LIMIT as SUMMARY_LIMIT, dependency_summary
-import feedback
-from actions import BUNDLE_REASON
-from model_config import assigned, resolve, parse as parse_models
-import readiness
 import candidates
-import review_state
-import design_batch
-import conversation
-import review_timing
-import markup
-from markup import block, link, text
-import sessions
 import checks
+import classification
+import commands
+import conversation
+import dashboard_runs
 import design
+import design_batch
 import design_eligibility
+import feedback
+import implementation_bundle
+import markup
+import protocol
+import readiness
+import review_state
+import review_timing
 import reviews as review_rules
-from copy import deepcopy
+import revisions
+import sessions
+from actions import BUNDLE_REASON
 from bundle import Bundle
-from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX as STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
+from checkpoints import LIMIT as CHECKPOINT_LIMIT, MARKER, STATE_PREFIX as STATE_PREFIX, CheckpointError, Checkpoints
+from dashboard import SUMMARY_LIMIT as SUMMARY_LIMIT, Dashboard, dependency_summary
 from github import Transient
 from identities import Identities
-from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
+from markup import block, link, text
+from model_config import assigned, parse as parse_models, resolve
 from policy import (
     MODEL_RESPONSE_LIMIT,
     Blocked,
@@ -50,19 +49,20 @@ from policy import (
     SessionFailure,
     approval_binding,
     approval_valid,
-    digest,
-    task_branch,
     consensus_valid,
     design_roster,
+    digest,
+    instruction_matches,
     path_allowed,
     selected_model,
-    instruction_matches,
+    task_branch,
     validate_design_issue,
     validate_edits,
     validate_plan,
     validate_pr_review,
     validate_qc,
 )
+from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 
 PR_TITLE_LIMIT = 72
 # Correct malformed intake and planner output without spending a semantic design-revision round.

@@ -1,28 +1,29 @@
 """Report storage traffic, immutable cache boundaries and checkpoint format migration."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from checkpoints import (
-    Checkpoints,
-    CheckpointError,
-    FORMAT,
-    BATCH_FORMAT,
-    AUDIT_MARKER,
-    STATE_PREFIX,
-    legacy_state,
-    LIMIT,
-)
-from controller import Controller
-from policy import digest, design_roster
-from report_store import Cache, Store, MARKER, ReportDataError
-from fakes import CONFIG, FakeAgents, FakeGitHub, APPROVE, design_report, assessment, intake
+
 import classification
 import conversation
 import design
+from checkpoints import (
+    AUDIT_MARKER,
+    BATCH_FORMAT,
+    FORMAT,
+    LIMIT,
+    STATE_PREFIX,
+    CheckpointError,
+    Checkpoints,
+    legacy_state,
+)
+from controller import Controller
+from fakes import APPROVE, CONFIG, FakeAgents, FakeGitHub, assessment, design_report, intake
+from policy import design_roster, digest
+from report_store import MARKER, Cache, ReportDataError, Store
 
 
 class StorageLifecycleTests(unittest.TestCase):

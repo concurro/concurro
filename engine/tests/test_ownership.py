@@ -3,13 +3,17 @@
 import unittest
 from unittest.mock import DEFAULT, patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from checkpoints import Checkpoints
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 import controller as controller_module
-from controller import ACTIONS, Controller
 import conversation
-from policy import Blocked
+from checkpoints import Checkpoints
+from controller import ACTIONS, Controller
 from pipeline_fixtures import ManualPipelineFixture
+from policy import Blocked
 
 SERVICE = "service:primary"
 MUTATORS = ("sync_stage", "sync_attention", "create_linked_branch")

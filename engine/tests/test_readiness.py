@@ -1,13 +1,14 @@
 """Draft-to-ready is a bounded observation, never merge or CI execution."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
-from fakes import FakeAgents, FakeGitHub
+
 from controller import Controller
+from fakes import FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
 from readiness import ci_reasons
 
 

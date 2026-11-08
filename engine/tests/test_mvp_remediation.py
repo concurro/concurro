@@ -1,24 +1,25 @@
 """Regressions from the independent MVP acceptance review."""
 
-from copy import deepcopy
-import subprocess
 import os
-from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import controller
+import processes
+import runner
 from controller import Controller, changes
+from fakes import FakeAgents, FakeGitHub
 from github import Transient
 from policy import Blocked
 from readiness import ci_reasons
 from relay import ExchangeError
-from fakes import FakeAgents, FakeGitHub
-import controller
-import runner
-import processes
 
 
 class RunnerCleanupTests(unittest.TestCase):

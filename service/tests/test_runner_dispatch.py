@@ -4,6 +4,7 @@ import unittest
 import uuid
 
 from fixtures import KEY, ServiceFixture
+
 from service.gateway import Disallowed, MutationGateway
 from service.transport import Response
 
@@ -92,9 +93,10 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         from pathlib import Path
         from types import SimpleNamespace
         from unittest.mock import patch
-        from service.worker import Worker
+
         from controller import Outcome
         from relay import ExchangeError
+        from service.worker import Worker
 
         self.gateway.dispatch_runner(KEY, self.generation, self.session)
         self.gateway.release(KEY, self.generation, Outcome("blocked"))

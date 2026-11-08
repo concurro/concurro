@@ -1,17 +1,22 @@
 """PR review findings: the contract, the ledger and its lifecycle through repair rounds and design reopens."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from fakes import APPROVE, FINDING, FakeAgents, FakeGitHub
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
+import conversation
+import reviews
 from checkpoints import LIMIT
 from controller import Controller
-import conversation
+from fakes import APPROVE, FINDING, FakeAgents, FakeGitHub
 from policy import Blocked, digest, validate_pr_review, validate_review
-import reviews
-from review_fixtures import DESIGN_ISSUE, report, answer, Reviewers, Harness
+from review_fixtures import DESIGN_ISSUE, Harness, Reviewers, answer, report
 
 
 class ContractTests(unittest.TestCase):

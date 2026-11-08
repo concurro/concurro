@@ -1,16 +1,20 @@
 """Session failures and killed repair checks recover without resetting task authority."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
+from fakes import CONFIG, FakeAgents, FakeGitHub
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, SessionFailure, digest
 from session_entry import SessionTurn
-from fakes import CONFIG, FakeAgents, FakeGitHub
 
 
 class JournalAgents(FakeAgents):

@@ -1,20 +1,23 @@
 """Native GitHub progress and Development links preserve the durable approval boundary."""
 
-from copy import deepcopy
 import io
 import json
-from pathlib import Path
 import sys
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from controller import Controller, ESCALATION_REASON, STATE_PREFIX
+from controller import ESCALATION_REASON, STATE_PREFIX, Controller
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision
 from github import GitHub, NotFound
 from policy import Blocked
-from fakes import CONFIG, FakeAgents, FakeGitHub, decision
 
 
 class SurfaceTests(unittest.TestCase):

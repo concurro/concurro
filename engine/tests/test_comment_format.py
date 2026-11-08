@@ -2,20 +2,25 @@
 
 import importlib.util
 import json
-from pathlib import Path
 import re
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-import format_samples
-from fakes import FINDING
-from review_fixtures import Harness, Reviewers, report
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
 import conversation
-from controller import SUMMARY_LIMIT
+import format_samples
 import markup
-from policy import Blocked, validate_pr_review, validate_qc
 import reviews
+from controller import SUMMARY_LIMIT
+from fakes import FINDING
+from policy import Blocked, validate_pr_review, validate_qc
+from review_fixtures import Harness, Reviewers, report
 
 GOLDENS = Path(__file__).parent / "goldens"
 ENGINE_TAG = re.compile(r"<(/?(details|summary|sub)>|!-- concurro:)")

@@ -1,11 +1,11 @@
 """Target-repository configuration and the engine/target bundle split."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 
 from support import (
     CONFIG,
@@ -14,6 +14,7 @@ from support import (
     setUpModule as setUpModule,
     tearDownModule as tearDownModule,
 )  # unittest module fixtures
+
 from agents import Agents
 from bundle import CHARTER, Bundle
 from controller import validate_config
@@ -118,8 +119,7 @@ class BundleSplitTests(unittest.TestCase):
 
     def test_goal_ids_remain_validated_with_actionable_feedback(self):
         """Schema bypasses are rejected without silently reinterpreting the submitted ID."""
-        from fakes import decision
-        from fakes import design_report
+        from fakes import decision, design_report
 
         charter = Bundle(target=TARGET).charter
         goal = next(iter(charter["goals"]))

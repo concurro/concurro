@@ -1,9 +1,9 @@
 """Role-selected feedback as verified runner files with a compact prompt index."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import re
+from copy import deepcopy
+from pathlib import Path
 
 import protocol
 from policy import digest

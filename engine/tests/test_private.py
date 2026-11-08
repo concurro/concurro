@@ -1,13 +1,14 @@
 """Owner-only secret files remain protected independently of any execution adapter."""
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from policy import Blocked
+
 import private
+from policy import Blocked
 
 
 class PrivateFileTests(unittest.TestCase):

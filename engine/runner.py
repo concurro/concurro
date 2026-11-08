@@ -3,20 +3,20 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import protocol
-from mirror import Mirror, git_environment
-from relay import ExchangeError, Runner
-from policy import runner_bound
-from vocab import TurnOutcome
 import turns
+from mirror import Mirror, git_environment
+from policy import runner_bound
+from relay import ExchangeError, Runner
+from vocab import TurnOutcome
 
 AUDIENCE = "concurro-gateway"
 HEARTBEAT = 30

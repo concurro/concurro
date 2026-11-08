@@ -1,24 +1,23 @@
 """Publish a bounded, recoverable outbox as a chronological issue conversation."""
 
-import protocol
-from protocol import EVENT_MARKER as MARKER
-
-from datetime import datetime, timezone
 import json
 import re
+from datetime import datetime, timezone
 from typing import NamedTuple
 
-from policy import Blocked, digest
+import actions
+import classification
+import markup
+import protocol
+import report_store
+import review_timing
+import reviews
 from checkpoints import CheckpointError
 from github import Transient
 from identities import Identities
-import markup
 from markup import block, code, details as collapsed, link, table, text
-import actions
-import classification
-import reviews
-import report_store
-import review_timing
+from policy import Blocked, digest
+from protocol import EVENT_MARKER as MARKER
 
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.

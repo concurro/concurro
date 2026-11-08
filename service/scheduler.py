@@ -1,9 +1,9 @@
 """Dispatch due work: one tick per task, bounded per repository and overall, fair across repositories."""
 
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from controller import Outcome
 

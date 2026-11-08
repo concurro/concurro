@@ -1,20 +1,21 @@
 """Complete feedback reaches native runner tools without overflowing prompts or crossing roles."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import feedback
 from agent_entry import prompt_for
 from agents import Agents
 from controller import Controller, transport_size
-from policy import digest, design_roster
 from fakes import CONFIG, FakeAgents, FakeGitHub
-from runner_fixtures import FakeExecutor, MODELS
+from policy import design_roster, digest
+from runner_fixtures import MODELS, FakeExecutor
 
 
 class FeedbackTests(unittest.TestCase):

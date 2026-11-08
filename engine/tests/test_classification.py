@@ -1,29 +1,30 @@
 """Advisory ratings never authorize work, consume extra calls, or change published PR text."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
+
 import classification as ratings
 import conversation
 import design
 import reviews
-from bundle import Bundle, ENGINE_RESOURCES
-from checkpoints import Checkpoints, LIMIT
+from bundle import ENGINE_RESOURCES, Bundle
+from checkpoints import LIMIT, Checkpoints
+from fakes import APPROVE, ClassifiedAgents, FakeGitHub, assessment, design_report, intake, named_config
 from model_config import resolve
+from pipeline_fixtures import PipelineFixture
 from policy import (
-    Blocked,
     MODEL_RESPONSE_LIMIT,
+    Blocked,
     approval_binding,
     consensus_valid,
     digest,
-    validate_qc,
     validate_pr_review,
+    validate_qc,
 )
-from fakes import FakeGitHub, APPROVE, design_report, named_config, assessment, intake, ClassifiedAgents
 
 
 class ContractTests(unittest.TestCase):

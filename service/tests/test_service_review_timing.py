@@ -1,7 +1,7 @@
 """Timing observations cross the lazy executor without changing its initialization."""
 
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 
 from service.worker import DeferredExecutor
 

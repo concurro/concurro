@@ -1,17 +1,18 @@
 """Resolved block notices retain history and recover safely across interrupted writes."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
-from fakes import FakeAgents, FakeGitHub
-from github import NotFound, Transient
-from policy import Blocked, digest
+
 import actions
 import conversation
+from fakes import FakeAgents, FakeGitHub
+from github import NotFound, Transient
+from pipeline_fixtures import PipelineFixture
+from policy import Blocked, digest
 
 
 class BlockedNoticeTests(PipelineFixture, unittest.TestCase):

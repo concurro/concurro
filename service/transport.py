@@ -1,10 +1,10 @@
 """HTTPS to the GitHub API with one repository's token; reads raise, writes report for settlement."""
 
-from dataclasses import dataclass, field
 import http.client
 import json
 import re
 import ssl
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from github import NotFound, Transient

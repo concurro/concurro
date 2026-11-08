@@ -1,12 +1,13 @@
 """Issue artifacts, upstream source/reviews and fork candidates use separate clients."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
+from unittest.mock import patch
 
 from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
+
 from controller import Controller
 from fakes import FakeAgents, FakeGitHub
-from unittest.mock import patch
 
 
 class RepositoryRoutingTests(unittest.TestCase):

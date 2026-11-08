@@ -1,10 +1,11 @@
 """Task configuration and publication identities stay pinned across ticks and restarts."""
 
+import unittest
 from copy import deepcopy
 from types import SimpleNamespace
-import unittest
 
-from fixtures import ENGINE, KEY, ServiceFixture, RestBackend
+from fixtures import ENGINE, KEY, RestBackend, ServiceFixture
+
 from fakes import FakeGitHub
 from policy import Blocked
 from service.registry import TaskBinding

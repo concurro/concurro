@@ -1,13 +1,14 @@
 """Native candidate publication: cumulative budgets, deletion/rename and reviewed-head recovery."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import candidates
 from controller import Controller, changes
+from fakes import PLAN, FakeAgents, FakeGitHub
 from policy import Blocked, OutsideScope, validate_edits
-from fakes import FakeAgents, FakeGitHub, PLAN
 
 
 class CandidateTests(unittest.TestCase):

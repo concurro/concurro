@@ -1,19 +1,23 @@
 """Realistic citation, review capacity and durable reviewer-repair regressions."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from pipeline_fixtures import PipelineFixture
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 import design
 from controller import Controller
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision, design_report, sized_report
+from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid, validate_qc
 from repository import Repository, source_lines
-from fakes import decision, CONFIG, FakeAgents, FakeGitHub, design_report, sized_report
 
 
 class ReviewEvidenceTests(unittest.TestCase):

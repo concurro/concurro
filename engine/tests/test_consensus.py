@@ -1,12 +1,12 @@
 """Governance, independent design consensus, drift, reopen and learning lifecycles."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
-import shutil
 import re
+import shutil
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 from support import (
@@ -15,21 +15,21 @@ from support import (
     setUpModule as setUpModule,
     tearDownModule as tearDownModule,
 )  # unittest module fixtures
-from pipeline_fixtures import ConsensusFixture, copy_roots
-from fakes import CONFIG, PLAN, decision, DESIGN_ISSUE
-from controller import Controller
-from agents import Agents
+
 from agent_entry import prompt_for
+from agents import Agents
 from bundle import Bundle
-from controller import MARKER, STATE_PREFIX
+from controller import MARKER, STATE_PREFIX, Controller
+from fakes import CONFIG, DESIGN_ISSUE, PLAN, decision
+from pipeline_fixtures import ConsensusFixture, copy_roots
 from policy import (
     Blocked,
     approval_valid,
     consensus_valid,
     design_roster,
     digest,
-    path_allowed,
     instruction_matches,
+    path_allowed,
     validate_qc,
 )
 

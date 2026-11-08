@@ -1,16 +1,20 @@
 """Retained sessions are scoped, explicit, recoverable, and never approval authority."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from agent_entry import command_for
+from fakes import CONFIG
 from session_entry import SessionTurn
 from sessions import prepare
-from fakes import CONFIG
 
 
 class SessionTests(unittest.TestCase):

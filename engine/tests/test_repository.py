@@ -3,25 +3,27 @@
 import hashlib
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import repository
 from checks import MAX_OVERLAY_FILES
-from controller import MAX_DIFF, changes, transport_size
+from controller import MAX_DIFF, Controller, changes, transport_size
+from fakes import CONFIG, FakeAgents, FakeGitHub
 from gitfixture import Upstream, build, mirror_of
 from policy import Blocked, digest, path_allowed
-import repository
-from repository import Repository, TOOL_NAMES, ToolTimeout, relay, run_git, serve
+from repository import TOOL_NAMES, Repository, ToolTimeout, relay, run_git, serve
 from snapshot import inspection
-from fakes import CONFIG, FakeAgents, FakeGitHub
-from controller import Controller
 
 
 class RepositoryTests(unittest.TestCase):

@@ -1,12 +1,13 @@
 """Pure validation rules shared by the controller and offline tests."""
 
-import protocol
-import classification
 import hashlib
-import model_config
 import json
 import re
 from pathlib import PurePosixPath
+
+import classification
+import model_config
+import protocol
 from checks import MAX_PLAN_FILES, glob_matches as instruction_matches, in_scope, scope_errors, scope_of
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:" + protocol.DIGEST_PATTERN)

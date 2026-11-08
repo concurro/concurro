@@ -1,18 +1,19 @@
 """Pinned writer-command contracts before extracting the handlers and revision budget."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import conversation
 from design import ReviewError
 from design_batch import Design
 from fakes import decision
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, design_roster
-import conversation
 
 GOLDEN = Path(__file__).parent / "goldens/commands.json"
 COMMANDS = (

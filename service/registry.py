@@ -1,14 +1,14 @@
 """The service's only durable state: one exclusive writer, synchronous commits, fail closed."""
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import fcntl
 import json
 import os
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 from controller import Outcome
 from policy import digest

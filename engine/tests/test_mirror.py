@@ -1,14 +1,18 @@
 """The host-side target mirror: fetch by full SHA, pin while borrowed, prune only when nothing is borrowed."""
 
-from contextlib import contextmanager
-from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from gitfixture import Upstream, mirror_of
 from mirror import SNAPSHOT_REFS, Mirror
 from policy import Blocked

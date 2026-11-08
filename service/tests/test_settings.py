@@ -1,15 +1,16 @@
 """Operator settings are private and strictly valid, or the service does not start."""
 
-from copy import deepcopy
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import fixtures  # noqa: F401  (puts the service and engine on the module path)
+
 from service import __main__ as daemon, settings, use_gateway
 from service.settings import SettingsError
 

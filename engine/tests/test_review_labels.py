@@ -1,10 +1,11 @@
 """Review terminology changes presentation without changing authority or replay text."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import conversation
 import dashboard_runs
 import markup

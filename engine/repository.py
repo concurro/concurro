@@ -2,7 +2,6 @@
 
 import json
 import os
-from pathlib import Path
 import re
 import selectors
 import signal
@@ -12,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 if __name__ == "__main__":
     # -I excludes the script directory from imports.

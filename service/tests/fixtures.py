@@ -1,13 +1,13 @@
 """Shared service fixtures: a REST view of the engine tests' in-memory GitHub, a registry, a clock."""
 
 import base64
-from copy import deepcopy
 import json
 import logging
 import re
-from pathlib import Path
 import sys
 import tempfile
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import unquote
 
@@ -16,18 +16,21 @@ sys.path[:0] = [str(ROOT), str(ROOT / "engine/tests")]
 
 # Imported once the repository root and the engine tests are on the module path.
 import service  # noqa: E402, F401 -- initializes the engine module path before imports below
-from service.gateway import GatewayGitHub, MutationGateway  # noqa: E402
-from service.transport import Response  # noqa: E402
+
+# isort: split
+from support import CONFIG, TARGET  # noqa: E402
+
+from checkpoints import Checkpoints  # noqa: E402
+from controller import Controller  # noqa: E402
+from fakes import FakeAgents, FakeGitHub
 from github import NotFound  # noqa: E402
+from service.gateway import GatewayGitHub, MutationGateway  # noqa: E402
 from service.reconciler import Reconciler  # noqa: E402
 from service.registry import Registry  # noqa: E402
 from service.scheduler import Scheduler  # noqa: E402
 from service.settings import Limits, Target  # noqa: E402
+from service.transport import Response  # noqa: E402
 from service.worker import Worker  # noqa: E402
-from support import CONFIG, TARGET  # noqa: E402
-from fakes import FakeAgents, FakeGitHub
-from checkpoints import Checkpoints  # noqa: E402
-from controller import Controller  # noqa: E402
 
 # Expected failures are logged by the service; keep test output clean.
 logging.getLogger("concurro.service").addHandler(logging.NullHandler())

@@ -2,17 +2,17 @@
 
 import base64
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from fixtures import Clock
+
+from app_fakes import OTHER, App
 from service import identity
 from service.identity import CUTOVER, READ, WRITE, Identity, IdentityError
-
-from app_fakes import App, OTHER
 
 REPOSITORY = "owner/target"
 

@@ -1,7 +1,7 @@
 """Scope provider transcripts to one role and one cooperative loop."""
 
-from policy import Blocked, digest, selected_model
 from model_config import resolve
+from policy import Blocked, digest, selected_model
 
 
 def prepare(state, config, provider, stage, context):

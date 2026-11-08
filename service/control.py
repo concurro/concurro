@@ -3,9 +3,9 @@
 import json
 import logging
 import os
-from pathlib import Path
 import socket
 import socketserver
+from pathlib import Path
 
 from policy import Blocked
 

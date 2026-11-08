@@ -1,8 +1,10 @@
 """Controller lifecycle fixtures; mixins contain helpers, never discovered tests."""
 
-from copy import deepcopy
 import shutil
+from copy import deepcopy
+
 from support import CONFIG, ROOT, TARGET
+
 from controller import Controller
 from fakes import FakeAgents, FakeGitHub
 

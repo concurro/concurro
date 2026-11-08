@@ -2,10 +2,10 @@
 
 import ctypes
 import os
-from pathlib import Path
 import signal
 import sys
 import time
+from pathlib import Path
 
 
 def children():

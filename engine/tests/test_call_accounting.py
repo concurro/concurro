@@ -1,17 +1,18 @@
 """Pre-extraction contracts for serial and batch accounting and recovery boundaries."""
 
-from contextlib import contextmanager, ExitStack
-from copy import deepcopy
 import unittest
+from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import design_eligibility
+import sessions
 from design_batch import Design
-from fakes import BatchAgents, FakeGitHub, Crash, named_config
+from fakes import BatchAgents, Crash, FakeGitHub, named_config
 from pipeline_fixtures import ConsensusFixture
 from policy import Blocked, SessionFailure, UncertainOutcome, digest
-import sessions
-import design_eligibility
 
 UNCERTAIN_MESSAGE = "model call outcome was uncertain twice; operator reconciliation required"
 

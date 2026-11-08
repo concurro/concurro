@@ -1,15 +1,20 @@
 """Ingress verifies, filters and de-duplicates deliveries, and only ever enqueues."""
 
-from copy import deepcopy
 import hashlib
 import hmac
 import http.client
 import json
 import threading
 import unittest
+from copy import deepcopy
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from controller import Outcome
 from service import ingress
 from service.ingress import Ingress

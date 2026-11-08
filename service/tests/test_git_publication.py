@@ -1,15 +1,17 @@
 """Commit publication tolerates tree visibility lag without replaying uncertain writes."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from fixtures import ENGINE, KEY, ServiceFixture
+
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 from github import Transient
 from service.errors import OwnershipLost, Unresolved
-from service.gateway import Rejected, TREE_RETRY_DELAYS, WRITE_INTERVAL, settle
+from service.gateway import TREE_RETRY_DELAYS, WRITE_INTERVAL, Rejected, settle
 from service.transport import Response
 
 

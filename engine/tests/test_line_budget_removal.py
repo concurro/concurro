@@ -1,15 +1,16 @@
 """Plans and candidates remain bounded without a predicted line quota."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 
 from support import CONFIG, ROOT, setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import candidates
 import checks
 from controller import Controller, changes
-from policy import Blocked, OutsideScope, digest, validate_edits, validate_plan
 from fakes import PLAN, FakeAgents, FakeGitHub
+from policy import Blocked, OutsideScope, digest, validate_edits, validate_plan
 
 
 class LineBudgetRemovalTests(unittest.TestCase):

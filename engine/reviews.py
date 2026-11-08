@@ -4,8 +4,8 @@ publication on the pull request as a native review with one thread per finding."
 import re
 import sys
 
-from github import Transient
 import markup
+from github import Transient
 from markup import block, code, link, table, text
 from policy import Blocked, digest
 

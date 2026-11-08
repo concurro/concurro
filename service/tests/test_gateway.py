@@ -5,7 +5,12 @@ import threading
 import unittest
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 from github import ATTENTION_LABEL, MARK_READY, NotFound, Transient
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS, Disallowed, Rejected, allowed, rejection, settle

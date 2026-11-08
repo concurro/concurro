@@ -1,15 +1,15 @@
 """Operator-requested design evaluation, executed through ordinary fresh runner role sessions."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
 import subprocess
 import uuid
+from copy import deepcopy
+from pathlib import Path
 
-from design import criteria, validate_evidence, report_limit
+from design import criteria, report_limit, validate_evidence
 from mirror import Mirror, git_environment
-from policy import digest, validate_qc
 from model_config import resolve
+from policy import digest, validate_qc
 
 SOURCE = {
     "docs/workflow.md": """# Contribution workflow

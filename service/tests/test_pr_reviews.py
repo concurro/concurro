@@ -3,12 +3,16 @@
 import unittest
 
 from fixtures import KEY, ServiceFixture
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from fakes import FakeAgents
-from service.gateway import Disallowed
-import reviews
 
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
+import reviews
+from fakes import FakeAgents
 from policy import task_branch
+from service.gateway import Disallowed
 
 BRANCH = task_branch(*KEY)
 

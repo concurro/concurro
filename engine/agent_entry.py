@@ -2,12 +2,12 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 from bundle import Bundle
-from policy import KILLED, UNCERTAIN_EXIT, TIMEOUT_EXIT
+from policy import KILLED, TIMEOUT_EXIT, UNCERTAIN_EXIT
 from session_entry import SessionTurn
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"

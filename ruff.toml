@@ -12,8 +12,19 @@
 required-version = ">=0.17.4,<0.18"
 target-version = "py312"
 line-length = 120
+# Flat engine and test modules are first-party alongside the service package.
+src = [".", "engine", "engine/tests", "service/tests", "gateway/exchange", "gateway/tests"]
 include = ["engine/**/*.py", "service/**/*.py", "gateway/**/*.py"]
 
 [lint]
-select = ["F", "E9", "PLE", "B", "SIM"]
+select = ["F", "E9", "PLE", "B", "SIM", "I"]
 ignore = ["B017", "B023", "B904", "B905", "SIM102", "SIM105", "SIM117", "SIM300"]
+
+# Fixtures establish import paths; service fixtures must run before engine support.
+[lint.isort]
+combine-as-imports = true
+section-order = ["future", "standard-library", "third-party", "test-fixtures", "test-support", "first-party", "local-folder"]
+
+[lint.isort.sections]
+test-fixtures = ["fixtures", "exchange_fixtures"]
+test-support = ["support"]

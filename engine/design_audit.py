@@ -1,18 +1,18 @@
 """Read-only, replayable design-review measurements from issue artifacts; never calls models."""
 
 import argparse
-from collections import Counter
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 
-import protocol
 import dashboard_runs
-from conversation import MARKER, REPORT_LINK
+import protocol
 import review_timing
+from conversation import MARKER, REPORT_LINK
 from policy import digest
 from report_store import Store
 

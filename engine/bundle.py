@@ -1,12 +1,12 @@
 """Load an operator-owned, bounded instruction bundle without candidate resources."""
 
-import classification
 import hashlib
 import json
-from pathlib import Path
 import stat
 import sys
+from pathlib import Path
 
+import classification
 from policy import Blocked, digest
 
 STAGES = ("intake", "plan", "plan_qc", "develop", "review")

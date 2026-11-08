@@ -1,11 +1,12 @@
 """MVP review regressions at the service/registry boundary."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture
+
 from controller import Outcome
 from github import Transient
 from service.gateway import Disallowed

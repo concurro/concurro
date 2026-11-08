@@ -6,10 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import fixtures  # noqa: F401
-from service.targets import Target, enrollment, permissions
-from service.identity import Identity, IdentityError
-from app_fakes import App
 from fixtures import Clock
+
+from app_fakes import App
+from service.identity import Identity, IdentityError
+from service.targets import Target, enrollment, permissions
 
 
 class TargetTests(unittest.TestCase):

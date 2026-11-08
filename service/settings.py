@@ -1,13 +1,13 @@
 """Operator settings outside any repository, validated strictly before anything else starts."""
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
-from policy import Blocked
 import private
+from policy import Blocked
 
 from . import ENGINE
 from .targets import Target, enrollment

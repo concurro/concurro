@@ -1,20 +1,20 @@
 """The only GitHub writer: fenced by ownership generation, one critical section per task."""
 
-from contextlib import contextmanager
-from copy import deepcopy
 import hashlib
 import json
 import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
+from copy import deepcopy
 
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
-from github import GitHub, NotFound, RESOLVE_THREAD, MARK_READY, Transient
-from reviews import FINDING_MARKER
+from github import MARK_READY, RESOLVE_THREAD, GitHub, NotFound, Transient
 from policy import task_branch
+from reviews import FINDING_MARKER
 
 from .errors import OwnershipLost, Unresolved
 from .transport import throttle

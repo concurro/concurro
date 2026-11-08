@@ -4,23 +4,22 @@ import base64
 import io
 import json
 import os
-from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
-import uuid
-import signal
-import sys
 import time
+import uuid
+from pathlib import Path
 
+import feedback
 import processes
-
-from policy import KILLED, UNCERTAIN_EXIT, TIMEOUT_EXIT, MODEL_RESPONSE_LIMIT, runner_bound
+from policy import KILLED, MODEL_RESPONSE_LIMIT, TIMEOUT_EXIT, UNCERTAIN_EXIT, runner_bound
 from repository import snapshot
 from vocab import TurnOutcome
-import feedback
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
 MAX_RESPONSE = MODEL_RESPONSE_LIMIT

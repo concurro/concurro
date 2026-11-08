@@ -1,19 +1,20 @@
 """Observed execution timing must not change reports, budgets or recovery decisions."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import review_timing
 from agents import Agents, RunnerExecutor
-from policy import RunnerTerminated, SessionFailure, approval_binding, digest
 from controller import Controller
 from fakes import CONFIG
-from runner_fixtures import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN, MODELS
 from pipeline_fixtures import ConsensusFixture
-import review_timing
+from policy import RunnerTerminated, SessionFailure, approval_binding, digest
 from relay import ExchangeError
+from runner_fixtures import GATEWAY, MODELS, TASK, TURN, FakeExecutor, FakeOperator
 
 TURN_ID = "12345678-1234-1234-1234-123456789abc"
 OBSERVED = {"turn": TURN_ID, "status": "done", "created": 100, "started": 110, "finished": 150}

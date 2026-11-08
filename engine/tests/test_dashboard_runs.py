@@ -1,13 +1,14 @@
 """Explicit invalidations reset the presentation while retaining evidence and budgets."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+
+import dashboard_runs
+from fakes import ClassifiedAgents, FakeGitHub
 from pipeline_fixtures import PipelineFixture
 from policy import approval_binding
-from fakes import FakeGitHub, ClassifiedAgents
-import dashboard_runs
 
 
 class DashboardRunTests(PipelineFixture, unittest.TestCase):

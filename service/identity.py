@@ -1,13 +1,13 @@
 """The controller App's identity: a JWT, and installation tokens narrowed to one repository and use."""
 
 import base64
-from contextlib import contextmanager
-from datetime import datetime
 import http.client
 import json
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
+from datetime import datetime
 
 import private
 

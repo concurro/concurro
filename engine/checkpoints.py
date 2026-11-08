@@ -1,12 +1,11 @@
 """App-authored issue artifacts with legacy checkpoint migration and restart recovery."""
 
-from copy import deepcopy
 import json
 import re
+from copy import deepcopy
 
 import protocol
 import report_store
-
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest

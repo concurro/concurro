@@ -1,16 +1,17 @@
 """Independent assessments survive corrections but never inherit negotiated approval."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import ConsensusFixture
-from fakes import named_config
-from controller import Controller
-from policy import SessionFailure, approval_valid, digest
+
 import design_eligibility as eligibility
 import feedback
+from controller import Controller
+from fakes import named_config
+from pipeline_fixtures import ConsensusFixture
+from policy import SessionFailure, approval_valid, digest
 
 
 class ReceiptTests(unittest.TestCase):

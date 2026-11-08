@@ -1,20 +1,21 @@
 """Parallel design dispatch with real controller persistence and deterministic turn barriers."""
 
-from copy import deepcopy
-from types import SimpleNamespace
 import json
 import unittest
+from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from controller import Controller
-from checkpoints import CheckpointError, legacy_state, BATCH_FORMAT, AUDIT_MARKER, STATE_PREFIX
-from policy import Blocked, SessionFailure, UncertainOutcome, design_roster
-from agents import Agents
-from fakes import BatchAgents, Crash, decision, named_config, FakeGitHub
-from pipeline_fixtures import ConsensusFixture
-import review_batch
+
 import conversation
+import review_batch
+from agents import Agents
+from checkpoints import AUDIT_MARKER, BATCH_FORMAT, STATE_PREFIX, CheckpointError, legacy_state
+from controller import Controller
+from fakes import BatchAgents, Crash, FakeGitHub, decision, named_config
+from pipeline_fixtures import ConsensusFixture
+from policy import Blocked, SessionFailure, UncertainOutcome, design_roster
 
 
 class ParallelTests(ConsensusFixture, unittest.TestCase):

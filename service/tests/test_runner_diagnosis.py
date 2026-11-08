@@ -1,8 +1,11 @@
 """GitHub conclusions are diagnostics for the exact OIDC-bound runner attempt."""
 
 import unittest
+
 import fixtures  # noqa: F401 -- initializes the service and engine test paths
+
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+
 from service.worker import runner_termination
 
 SESSION = "12345678-1234-1234-1234-123456789abc"

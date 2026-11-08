@@ -1,17 +1,18 @@
 """Literal wire-format contracts for shared URLs, markers and hexadecimal patterns."""
 
 import ast
-from pathlib import Path
 import re
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 from support import ENGINE
+
 import actions
 import agents
-import conversation
 import controller
+import conversation
 import mirror
 import policy
 import repository

@@ -1,13 +1,14 @@
 """Writer-granted revision capacity preserves substantive findings and all spent budgets."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from policy import Blocked, approval_valid
-from pipeline_fixtures import ConsensusFixture
+
 from fakes import decision
+from pipeline_fixtures import ConsensusFixture
+from policy import Blocked, approval_valid
 
 
 class RevisionExtensionTests(ConsensusFixture, unittest.TestCase):

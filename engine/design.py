@@ -1,14 +1,13 @@
 """Evidence contracts for independent design review and stable objection updates."""
 
-import classification
-import re
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 
+import classification
+from policy import MODEL_RESPONSE_LIMIT, Blocked
 from repository import source_lines
-
-from policy import Blocked, MODEL_RESPONSE_LIMIT
 
 OBJECTION_INSTRUCTIONS = (
     'For each new concern, add an objection_updates entry with id "" and status "open"; '

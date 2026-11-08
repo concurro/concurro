@@ -1,21 +1,24 @@
 """Checkpoint warnings are visible, idempotent and separate from recovery state."""
 
-from copy import deepcopy
 import io
-from pathlib import Path
 import sys
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from checkpoint_health import FAILED, MARKER, RECOVERED, sync_checkpoint_health
-from checkpoints import CheckpointError, DIAGNOSTICS
+from checkpoints import DIAGNOSTICS, CheckpointError
 from controller import Controller
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision
 from github import ATTENTION_LABEL, GitHub
-from fakes import decision, CONFIG, FakeAgents, FakeGitHub
 
 
 class CheckpointHealthTests(unittest.TestCase):

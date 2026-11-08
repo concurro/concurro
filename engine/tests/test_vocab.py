@@ -1,16 +1,17 @@
 """Compatibility of controller stage groups and native turn results."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+
 import actions
-from agents import Agents
 import bundle
+from agents import Agents
 from controller import Controller
 from github import STAGES
 from policy import Blocked, SessionFailure
-from runner_fixtures import ExecutorFixture, TURN
+from runner_fixtures import TURN, ExecutorFixture
 
 
 class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
@@ -138,6 +139,7 @@ class VocabularyTests(unittest.TestCase):
     def test_values_and_serialization(self):
         """Every member keeps its original spelling, JSON bytes, formatting and digest."""
         import json
+
         from policy import digest
         from vocab import Stage, TurnOutcome
 

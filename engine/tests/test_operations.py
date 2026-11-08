@@ -1,19 +1,24 @@
 """Model calls keep a stable logical ID; uncertain attempts are bounded across process restarts."""
 
-from copy import deepcopy
 import subprocess
 import sys
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
-from support import ENGINE, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    ENGINE,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
+import controller as controller_module
+import turns
 from agents import Agents
 from checkpoints import Checkpoints
-import controller as controller_module
 from controller import Controller
-from policy import Blocked, RunnerTerminated, SessionFailure, TIMEOUT_EXIT, UncertainOutcome
 from fakes import CONFIG, FakeAgents, FakeGitHub
-import turns
+from policy import TIMEOUT_EXIT, Blocked, RunnerTerminated, SessionFailure, UncertainOutcome
 
 
 class Interrupted(BaseException):

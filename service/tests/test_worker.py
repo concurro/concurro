@@ -1,29 +1,34 @@
 """The worker and scheduler drive the real controller: end to end, failures, waits and isolation."""
 
-from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 import json
-from pathlib import Path
-from unittest.mock import patch
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from pathlib import Path
+from unittest.mock import patch
 
 from fixtures import ENGINE, KEY, Inline, RestBackend, ServiceFixture, target_files
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from fakes import FakeAgents, FakeGitHub
-from controller import Controller, Outcome, config_digest
-from github import Transient
+
+from support import (
+    setUpModule as setUpModule,  # unittest module fixtures
+    tearDownModule as tearDownModule,
+)
+
 import reviews
+from agents import RunnerExecutor
+from controller import Controller, Outcome, config_digest
+from fakes import FakeAgents, FakeGitHub
+from github import Transient
 from policy import Blocked, UncertainOutcome
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import LEASE_SECONDS, MutationGateway
 from service.reconciler import Reconciler
-from service.scheduler import Scheduler, fair
 from service.registry import WorkItem
+from service.scheduler import Scheduler, fair
 from service.settings import Gateway, Limits, Target
-from service.worker import Worker, runner_claims
 from service.transport import Response
-from agents import RunnerExecutor
+from service.worker import Worker, runner_claims
 
 
 class FlakyAgents(FakeAgents):

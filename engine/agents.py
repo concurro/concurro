@@ -1,24 +1,24 @@
 """Model calls as turns: a gateway session key and native tools on a real workspace, here or on a runner."""
 
 import base64
-from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 import os
-from pathlib import Path
 import re
 import time
 import uuid
+from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
+from pathlib import Path
 
 import protocol
+import review_timing
 from bundle import Bundle
 from credentials import Credential
-from model_config import resolve
 from github import Transient
+from model_config import resolve
 from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest, runner_bound, turn_label
 from relay import ExchangeError
-from vocab import TurnOutcome
 from snapshot import inspection
-import review_timing
+from vocab import TurnOutcome
 
 # Providers whose CLIs the gateway serves natively.
 PROVIDERS = ("claude", "codex")

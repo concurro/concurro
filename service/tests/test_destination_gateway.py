@@ -4,6 +4,7 @@ import json
 import unittest
 
 from fixtures import KEY, ServiceFixture
+
 from policy import task_branch
 from service.errors import OwnershipLost, Unresolved
 from service.gateway import Disallowed, GatewayGitHub, MutationGateway, allowed_target

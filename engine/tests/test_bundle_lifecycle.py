@@ -1,22 +1,23 @@
 """Bundle upgrades preserve observers and permit only proven implementation-only retries."""
 
-from copy import deepcopy
-from pathlib import Path
-import tempfile
 import json
 import subprocess
+import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import copy_roots
-from fakes import FakeAgents, FakeGitHub
-from controller import BUNDLE_REASON, LEGACY_BUNDLE_REASON, Controller
-from policy import Blocked, approval_valid
-from github import Transient
-from conversation import PublicationError
-import sessions
+
 import implementation_bundle
+import sessions
+from controller import BUNDLE_REASON, LEGACY_BUNDLE_REASON, Controller
+from conversation import PublicationError
+from fakes import FakeAgents, FakeGitHub
+from github import Transient
+from pipeline_fixtures import copy_roots
+from policy import Blocked, approval_valid
 
 
 class BundleLifecycleTests(unittest.TestCase):

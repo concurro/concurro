@@ -1,21 +1,22 @@
 """Named profiles stay distinct through validation, consensus, findings and runner dispatch."""
 
-from copy import deepcopy
-from dataclasses import FrozenInstanceError
 import os
 import unittest
+from copy import deepcopy
+from dataclasses import FrozenInstanceError
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from agents import Agents, RunnerExecutor
+
+import sessions
 from agent_entry import command_for, provider_environment
+from agents import Agents, RunnerExecutor
 from controller import Controller, config_digest, validate_config
+from fakes import FINDING, FakeAgents, FakeGitHub, named_config
 from model_config import parse, resolve
 from policy import Blocked, approval_binding, design_roster, digest
 from readiness import review_reasons
-import sessions
-from fakes import FakeAgents, FakeGitHub, FINDING, named_config
-from runner_fixtures import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN
+from runner_fixtures import GATEWAY, TASK, TURN, FakeExecutor, FakeOperator
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -147,7 +148,7 @@ class InvocationTests(unittest.TestCase):
 
     def test_evaluation_uses_the_selected_profile(self):
         from bundle import Bundle
-        from design_eval import request, cases
+        from design_eval import cases, request
 
         config = named_config()
         context = request(cases()[0], "astra-high", config, Bundle(), "a" * 40)

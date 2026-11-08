@@ -1,16 +1,17 @@
 """Native workspaces and deterministic runner/exchange stand-ins without test cases."""
 
-from pathlib import Path
 import shutil
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
+
 from support import CONFIG
-from agents import RunnerExecutor
-from relay import ExchangeError
-from gitfixture import Upstream, mirror_of
+
 import repository
 import turns
-
+from agents import RunnerExecutor
+from gitfixture import Upstream, mirror_of
+from relay import ExchangeError
 
 GATEWAY = {"url": "https://gateway.invalid/concurro", "headers": {"codex": {"x-concurro-plan": "chatgpt"}}}
 

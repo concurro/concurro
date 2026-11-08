@@ -1,8 +1,10 @@
 """Target migration preserves explicit policy and refuses silently discarded custom profiles."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
+
 from fixtures import CONFIG
+
 from service.migrate_target import migrate
 
 

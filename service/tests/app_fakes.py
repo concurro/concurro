@@ -1,11 +1,11 @@
 """In-memory GitHub App transport shared by identity and target tests."""
 
-from datetime import datetime, timezone
 import json
 import threading
 import time
-from fixtures import Reply
+from datetime import datetime, timezone
 
+from fixtures import Reply
 
 OTHER = "owner/second"
 

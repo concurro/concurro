@@ -1,11 +1,12 @@
 """Contracts at the command parser and revision-budget extraction boundaries."""
 
+import unittest
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
-import unittest
 from unittest.mock import Mock
 
 import support  # noqa: F401 -- initializes engine imports for standalone discovery
+
 from commands import Command, CommandKind, parse
 from revisions import RevisionBudget
 

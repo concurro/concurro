@@ -8,9 +8,9 @@ block, and replaces the file only once the result validates.
 import argparse
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
+from pathlib import Path
 
 from . import settings as settings_module
 

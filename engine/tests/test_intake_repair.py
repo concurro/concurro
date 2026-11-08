@@ -1,16 +1,17 @@
 """Invalid intake output is visible, recoverable and corrected without authorizing work."""
 
-from copy import deepcopy
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
-from checkpoints import Checkpoints, LIMIT
+
+from checkpoints import LIMIT, Checkpoints
 from controller import INTAKE_OUTPUT_REPAIRS
-from conversation import PublicationError, ARCHIVE_LIMIT
-from policy import Blocked
+from conversation import ARCHIVE_LIMIT, PublicationError
 from fakes import FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
+from policy import Blocked
 
 
 class IntakeRepairTests(PipelineFixture, unittest.TestCase):

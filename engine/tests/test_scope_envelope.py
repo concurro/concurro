@@ -1,15 +1,20 @@
 """Scope envelope: a plan approves a design, an area and a budget; the implementer edits within them."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from review_fixtures import Harness, Reviewers
-from fakes import PLAN
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
 from controller import DISPATCH_ALLOWANCE
+from fakes import PLAN
 from policy import Blocked, OutsideScope, validate_edits, validate_plan
 from readiness import review_reasons
+from review_fixtures import Harness, Reviewers
 
 SCOPE = {"paths": ["docs/**"], "max_files": 3}
 

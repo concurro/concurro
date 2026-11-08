@@ -3,6 +3,7 @@
 import json
 import subprocess
 from urllib.parse import quote
+
 from vocab import Stage
 
 STAGE_LABEL_PREFIX = "concurro:stage:"

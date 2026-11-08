@@ -1,20 +1,25 @@
 """Offline lifecycle and adversarial gate tests; no network or model quota required."""
 
-from copy import deepcopy
-from pathlib import Path
 import sys
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from support import (
+    CONFIG,  # unittest module fixtures
+    setUpModule as setUpModule,
+    tearDownModule as tearDownModule,
+)
+
 from pipeline_fixtures import ManualPipelineFixture
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_entry import command_for
-from controller import Controller, MARKER, validate_config
-from readiness import review_reasons
+from controller import MARKER, Controller, validate_config
+from fakes import APPROVE, PLAN
 from policy import Blocked, path_allowed, validate_edits, validate_review
-from fakes import PLAN, APPROVE
+from readiness import review_reasons
 
 
 class PipelineTests(ManualPipelineFixture, unittest.TestCase):

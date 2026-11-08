@@ -1,19 +1,20 @@
 """Canonical report references, transport-sized parts and recovery without extra model calls."""
 
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from pipeline_fixtures import PipelineFixture
-from checkpoints import Checkpoints, CheckpointError, legacy_state
-from policy import approval_valid, digest, validate_pr_review
-from report_store import Store, MARKER, ReportDataError
-from fakes import CONFIG, FakeAgents, FakeGitHub, sized_report
+
 import conversation
 import format_samples
 import reviews
+from checkpoints import CheckpointError, Checkpoints, legacy_state
+from fakes import CONFIG, FakeAgents, FakeGitHub, sized_report
+from pipeline_fixtures import PipelineFixture
+from policy import approval_valid, digest, validate_pr_review
+from report_store import MARKER, ReportDataError, Store
 
 
 class StoreTests(unittest.TestCase):
