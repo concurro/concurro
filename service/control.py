@@ -35,21 +35,45 @@ class Control:
             return {"ok": False, "error": str(error) or type(error).__name__}
 
     def run(self, request):
+        """Dispatch one command without reading arguments for unknown or disabled commands."""
         command = request["command"]
-        if command == "evaluate" and self.evaluate is not None:
-            return self.evaluate(request["repository"], number(request["issue"]), request["provider"])
-        if command == "status":
-            return self.registry.status()
-        if command == "resolve":
-            return self.resolve(request["intent"], request["disposition"], request["evidence"], request["operator"])
-        if command == "reconcile-once":
-            return [list(key) for key in self.reconciler.poll()]
-        if command == "adopt":
-            return self.cutover.adopt(request["repository"], tuple(number(n) for n in request.get("issues", ())))
-        if command == "release":
-            self.cutover.release(request["repository"], number(request["issue"]))
-            return None
-        raise ValueError("unknown command")
+        handlers = {
+            "status": self._status,
+            "resolve": self._resolve_request,
+            "reconcile-once": self._reconcile,
+            "adopt": self._adopt,
+            "release": self._release,
+            "evaluate": self._evaluate,
+        }
+        handler = handlers.get(command) if isinstance(command, str) else None
+        if handler is None or (command == "evaluate" and self.evaluate is None):
+            raise ValueError("unknown command")
+        return handler(request)
+
+    def _status(self, request):
+        """Return the registry's task status."""
+        return self.registry.status()
+
+    def _resolve_request(self, request):
+        """Read resolution fields in protocol order before resolving a write."""
+        return self.resolve(request["intent"], request["disposition"], request["evidence"], request["operator"])
+
+    def _reconcile(self, request):
+        """Poll once and return JSON-shaped task keys."""
+        return [list(key) for key in self.reconciler.poll()]
+
+    def _adopt(self, request):
+        """Validate the optional issue selection before adopting tasks."""
+        return self.cutover.adopt(request["repository"], tuple(number(n) for n in request.get("issues", ())))
+
+    def _release(self, request):
+        """Release one task without forwarding the cutover method's return value."""
+        self.cutover.release(request["repository"], number(request["issue"]))
+        return None
+
+    def _evaluate(self, request):
+        """Run an enabled evaluation with the selected issue and model profile."""
+        return self.evaluate(request["repository"], number(request["issue"]), request["provider"])
 
     def resolve(self, intent, disposition, evidence, operator):
         """Record the operator's disposition; resolving the last unknown write makes the task due again."""
@@ -70,8 +94,6 @@ def number(value):
 class Handler(socketserver.StreamRequestHandler):
     """One JSON request line, one JSON reply line."""
 
-    control = None
-
     def handle(self):
         line = self.rfile.readline(REQUEST_LIMIT + 1)
         try:
@@ -83,7 +105,7 @@ class Handler(socketserver.StreamRequestHandler):
         except ValueError as error:
             reply = {"ok": False, "error": str(error)}
         else:
-            reply = self.control.handle(request)
+            reply = self.server.control.handle(request)
         self.wfile.write(json.dumps(reply).encode() + b"\n")
 
 
@@ -99,8 +121,8 @@ def server(control, state_dir):
     """
     path = Path(state_dir) / SOCKET
     path.unlink(missing_ok=True)
-    handler = type("ControlHandler", (Handler,), {"control": control})
-    instance = Server(str(path), handler)
+    instance = Server(str(path), Handler)
+    instance.control = control
     os.chmod(path, 0o600)
     return instance
 

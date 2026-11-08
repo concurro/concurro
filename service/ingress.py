@@ -144,8 +144,6 @@ class Ingress:
 class Handler(BaseHTTPRequestHandler):
     """One POST endpoint for deliveries and a health endpoint."""
 
-    ingress = None
-
     def do_POST(self):
         length = self.headers.get("Content-Length", "")
         if not length.isdecimal():
@@ -157,7 +155,7 @@ class Handler(BaseHTTPRequestHandler):
             name: self.headers.get(name, "") for name in ("X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery")
         }
         try:
-            status, text = self.ingress.handle(headers, body)
+            status, text = self.server.ingress.handle(headers, body)
         except Exception as error:
             log.warning("delivery failed: %s", type(error).__name__)
             status, text = 503, "unavailable"
@@ -180,5 +178,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def server(ingress, host, port):
     """An HTTP server for one ingress; the caller runs and stops it."""
-    handler = type("IngressHandler", (Handler,), {"ingress": ingress})
-    return ThreadingHTTPServer((host, port), handler)
+    instance = ThreadingHTTPServer((host, port), Handler)
+    instance.ingress = ingress
+    return instance

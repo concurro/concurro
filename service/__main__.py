@@ -31,6 +31,12 @@ from .worker import Worker
 POLL_SECONDS = 300
 DISPATCH_SECONDS = 1
 LISTEN = "127.0.0.1:8787"
+REQUEST_FIELDS = {
+    "resolve": ("intent", "disposition", "evidence", "operator"),
+    "evaluate": ("repository", "issue", "provider"),
+    "adopt": ("repository", "issues"),
+    "release": ("repository", "issue"),
+}
 
 log = logging.getLogger("concurro.service")
 
@@ -135,26 +141,8 @@ def serve(arguments, settings):
 
 def command(arguments):
     """The control request for a client command."""
-    if arguments.command == "resolve":
-        return {
-            "command": "resolve",
-            "intent": arguments.intent,
-            "disposition": arguments.disposition,
-            "evidence": arguments.evidence,
-            "operator": arguments.operator,
-        }
-    if arguments.command == "evaluate":
-        return {
-            "command": "evaluate",
-            "repository": arguments.repository,
-            "issue": arguments.issue,
-            "provider": arguments.provider,
-        }
-    if arguments.command == "adopt":
-        return {"command": "adopt", "repository": arguments.repository, "issues": arguments.issues}
-    if arguments.command == "release":
-        return {"command": "release", "repository": arguments.repository, "issue": arguments.issue}
-    return {"command": arguments.command}
+    fields = REQUEST_FIELDS.get(arguments.command, ()) if isinstance(arguments.command, str) else ()
+    return {"command": arguments.command, **{field: getattr(arguments, field) for field in fields}}
 
 
 def parser():
