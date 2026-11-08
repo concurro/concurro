@@ -5,10 +5,10 @@ import json
 import re
 from pathlib import PurePosixPath
 
-import classification
 import model_config
 import protocol
 from checks import MAX_PLAN_FILES, glob_matches as instruction_matches, in_scope, scope_errors, scope_of
+from report_core import core as report_core
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:" + protocol.DIGEST_PATTERN)
 
@@ -99,7 +99,7 @@ def presentation(report, fields, optional):
 
 def validate_qc(report, stage, charter=None):
     """Reject incomplete or contradictory decisions before they can authorize work."""
-    report = classification.core(report)
+    report = report_core(report)
     fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
     if stage == "plan_qc":
         fields |= {"sources", "assessments", "objection_updates"}
@@ -148,17 +148,21 @@ def design_roster(config):
     """The explicit plan reviewers, or the original deduplicated roster for legacy tasks."""
     if "agents" in config:
         parsed = model_config.parse(config)
-        return [
-            {
-                "id": digest(parsed.resolve(name).record()),
-                "provider": name,
-                "model": parsed.resolve(name).profile.model,
-                "effort": parsed.resolve(name).profile.effort,
-                "agent": parsed.resolve(name).record(),
-                "roles": ["plan_qc"],
-            }
-            for name in parsed.agents.plan_reviewers
-        ]
+        roster = []
+        for name in parsed.agents.plan_reviewers:
+            agent = parsed.resolve(name)
+            identity = agent.record()
+            roster.append(
+                {
+                    "id": digest(identity),
+                    "provider": name,
+                    "model": agent.profile.model,
+                    "effort": agent.profile.effort,
+                    "agent": identity,
+                    "roles": ["plan_qc"],
+                }
+            )
+        return roster
     members = [(config["planner"], "plan"), (config["implementer"], "develop"), (config["qc"], "intake")]
     members += [(provider, "review") for provider in config["reviewers"]]
     roster = {}
@@ -207,6 +211,7 @@ def consensus_valid(state, config, require_final=True):
             return False
         report = vote.get("report")
         try:
+            # design imports policy; defer the reverse edge until validation.
             from design import validate_evidence
 
             validate_qc(report, "plan_qc", state["charter"])
@@ -381,14 +386,28 @@ def manifest_fields(review, manifests):
     return {"manifests"} if isinstance(review, dict) and "manifests" in review else set()
 
 
+REVIEW_VERDICTS = ("approve", "changes_requested", "reopen")
+
+
+def _check_review_verdict(review):
+    """Require a known verdict before interpreting review content."""
+    if review["verdict"] not in REVIEW_VERDICTS:
+        raise Blocked("invalid review verdict")
+
+
+def _check_review_design_issue(review):
+    """Non-reopening verdicts cannot carry a design issue."""
+    if review["design_issue"] is not None:
+        raise Blocked("review verdict contradicts design issue")
+
+
 def validate_review(review, manifests=()):
     """Reject contradictory approvals and incomplete structured findings."""
     if set(review) != presentation(
         review, {"verdict", "summary", "findings", "design_issue"}, {"headline"}
     ) | manifest_fields(review, manifests):
         raise Blocked("invalid review fields")
-    if review["verdict"] not in ("approve", "changes_requested", "reopen"):
-        raise Blocked("invalid review verdict")
+    _check_review_verdict(review)
     if not isinstance(review["summary"], str) or not isinstance(review["findings"], list):
         raise Blocked("invalid review content")
     if review["verdict"] == "reopen":
@@ -396,8 +415,7 @@ def validate_review(review, manifests=()):
         if review["findings"]:
             raise Blocked("design reopening cannot also request implementation fixes")
         return
-    if review["design_issue"] is not None:
-        raise Blocked("review verdict contradicts design issue")
+    _check_review_design_issue(review)
     if (review["verdict"] == "approve") != (not review["findings"]):
         raise Blocked("review verdict contradicts findings")
     if len(json.dumps(review)) > 16000:
@@ -447,13 +465,12 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
 
     Local review keeps `validate_review`; only PR review carries line anchors and dispositions.
     """
-    review = classification.core(review)
+    review = report_core(review)
     if not isinstance(review, dict) or set(review) != presentation(
         review, PR_REVIEW_FIELDS, {"headline"}
     ) | manifest_fields(review, manifests):
         raise Blocked("invalid review fields")
-    if review["verdict"] not in ("approve", "changes_requested", "reopen"):
-        raise Blocked("invalid review verdict")
+    _check_review_verdict(review)
     if (
         not isinstance(review["summary"], str)
         or not isinstance(review["findings"], list)
@@ -467,8 +484,7 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
         if review["findings"] or review["dispositions"]:
             raise Blocked("design reopening cannot also report or answer findings")
         return
-    if review["design_issue"] is not None:
-        raise Blocked("review verdict contradicts design issue")
+    _check_review_design_issue(review)
     for finding in review["findings"]:
         validate_pr_finding(finding)
     answered = []

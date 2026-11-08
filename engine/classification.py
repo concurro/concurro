@@ -4,6 +4,10 @@ import json
 from dataclasses import asdict, dataclass
 
 import review_state
+from model_config import assigned
+from policy import approval_binding, design_roster, digest
+from report_core import core as core
+from reviews import report_for
 
 LEVELS = ("unknown", "low", "medium", "high")
 CONFIDENCE = ("low", "medium", "high")
@@ -62,11 +66,6 @@ class View:
     previous_binding: dict | None = None
 
 
-def core(report):
-    """Project only the advisory classification field away; preserve all core fields."""
-    return {k: v for k, v in report.items() if k != "classification"} if isinstance(report, dict) else report
-
-
 def size(value):
     """Count serialized bytes using the checkpoint's conservative ASCII encoding."""
     return len(json.dumps(value, ensure_ascii=True).encode())
@@ -119,8 +118,6 @@ def fit(value, limit):
 
 def binding(state, stage):
     """Use the task's existing authoritative revision identities for one assessment stage."""
-    from policy import digest
-
     value = {
         "stage": stage,
         "requirements": digest(state.get("requirements")),
@@ -201,9 +198,6 @@ def stage_of(state):
 
 def candidates(state, config, stage):
     """Read current report slots without adding a second observation store."""
-    from model_config import assigned
-    from policy import approval_binding, design_roster
-
     if stage == "intake":
         return [state.get("qc", {}).get("intake")]
     if stage == "plan_qc":
@@ -312,8 +306,6 @@ def make_room(state, limit, measure):
             value = value[key]
         if event.get("source") and isinstance(value, dict):
             frozen.add(value.get("classification", {}).get("source", {}).get("report"))
-    from reviews import report_for
-
     for item in state.get("pr_outbox", []):
         if item.get("kind") == "review":
             report = report_for(state, item) or {}
