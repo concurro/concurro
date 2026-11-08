@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
 import re
 
+import protocol
 import actions
 from actions import BUNDLE_REASON
 import conversation
@@ -47,7 +48,10 @@ def parse(body):
     """Parse only the existing exact command grammar, ignoring surrounding whitespace."""
     body = body.strip()
     if not re.fullmatch(
-        r"/concurro (start|approve [a-f0-9]{64}|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)", body
+        r"/concurro (start|approve "
+        + protocol.DIGEST_PATTERN
+        + r"|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
+        body,
     ):
         return None
     parts = body.split()
@@ -310,7 +314,7 @@ class CommandHandler:
             + f" granted {amount} additional plan revisions in "
             + link(
                 "this command",
-                f"https://github.com/{controller.config['repository']}/issues/{state['issue']}#issuecomment-{comment['id']}",
+                protocol.comment_url(controller.config["repository"], state["issue"], comment["id"]),
             )
             + f". The total allowance is now {controller.plan_revision_limit()} (previously {previous}). "
             "The pending revision is resuming with all findings and spent budgets preserved. "

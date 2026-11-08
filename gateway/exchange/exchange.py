@@ -48,6 +48,7 @@ SESSION_PATH = re.compile(
     rf"/exchange/sessions/(?P<session>{UUID})/(?:(?P<action>key|end|next)|turns/(?P<turn>{UUID}))"
 )
 OPERATOR_PATH = re.compile(rf"(?P<kind>sessions|turns)/(?P<id>{UUID})(?:/(?P<action>end))?")
+# Mirrors engine.protocol.DIGEST_PATTERN; this image ships as a single file.
 RUNNER_TOKEN = re.compile(r"[0-9a-f]{64}")
 LABEL = re.compile(r"[A-Za-z0-9._:/#-]{1,200}")
 EXPECTED = ("repository_id", "repository_owner_id", "job_workflow_ref", "job_workflow_sha", "event_name", "ref")
@@ -233,6 +234,7 @@ def session_binding(value):
             not isinstance(value[k], str) or re.fullmatch(repo, value[k]) is None
             for k in ("repository", "upstream", "fork")
         )
+        # Mirrors engine.protocol.SHA_PATTERN; keep the single-file exchange independent.
         or any(
             not isinstance(value[k], str) or re.fullmatch(r"[0-9a-f]{40}", value[k]) is None
             for k in ("base", "config_sha")

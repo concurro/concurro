@@ -1,5 +1,6 @@
 """Pure validation rules shared by the controller and offline tests."""
 
+import protocol
 import classification
 import hashlib
 import model_config
@@ -8,7 +9,7 @@ import re
 from pathlib import PurePosixPath
 from checks import MAX_PLAN_FILES, glob_matches as instruction_matches, in_scope, scope_errors, scope_of
 
-IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}")
+IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:" + protocol.DIGEST_PATTERN)
 
 
 PROTECTED_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"})

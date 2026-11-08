@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 
+import protocol
 from mirror import Mirror, git_environment
 from relay import ExchangeError, Runner
 from policy import runner_bound
@@ -143,7 +144,7 @@ def checkout(repository, sha, path):
     environment = git_environment()
     for command in (
         ["git", "init", "--quiet", str(path)],
-        ["git", "-C", str(path), "fetch", "--quiet", "--depth=1", "https://github.com/" + repository + ".git", sha],
+        ["git", "-C", str(path), "fetch", "--quiet", "--depth=1", protocol.clone_url(repository), sha],
         ["git", "-C", str(path), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ):
         subprocess.run(command, check=True, capture_output=True, env=environment, timeout=1800)

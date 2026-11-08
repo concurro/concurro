@@ -4,6 +4,7 @@ import hashlib
 import re
 import subprocess
 
+import protocol
 from policy import digest
 
 SKILL = "bundle/skills/concurro-implement/SKILL.md"
@@ -18,7 +19,7 @@ def matches(bundle, approved_bundle, approved_skill):
     """Prove every resource except the implementer skill matches the approved bundle."""
     return (
         isinstance(approved_skill, str)
-        and re.fullmatch(r"[0-9a-f]{64}", approved_skill) is not None
+        and re.fullmatch(protocol.DIGEST_PATTERN, approved_skill) is not None
         and digest({**bundle.hashes, SKILL: approved_skill}) == approved_bundle
     )
 

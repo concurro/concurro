@@ -6,6 +6,7 @@ import json
 import re
 import threading
 
+import protocol
 from policy import Blocked, digest
 from github import NotFound
 
@@ -273,9 +274,7 @@ class Store:
             self.archive_index = {}
             for item in self.collection():
                 body = item.get("body", "")
-                if item.get("creator", {}).get("login") != self.author or not body.startswith(
-                    "<!-- concurro:event:v1:"
-                ):
+                if item.get("creator", {}).get("login") != self.author or not body.startswith(protocol.EVENT_MARKER):
                     continue
                 match = re.search(r"\n(`{3,})json\n(.*)\n\1$", body, re.S)
                 if match:
@@ -295,7 +294,7 @@ class Store:
         refs = record.get("references", []) + ([record["report"]] if "report" in record else [])
         links = []
         if self.repository:
-            root = f"https://github.com/{self.repository}/issues/{self.issue}/artifacts/"
+            root = protocol.artifact_url(self.repository, self.issue)
             for ref in refs:
                 links += [
                     f"- [Referenced data {ref['digest'][:12]}, part {i}]({root}{n})"
@@ -351,7 +350,7 @@ class Store:
 
     def get(self, key, numbers=None):
         """Verify parts and nested references before exposing any recovered report."""
-        if not isinstance(key, str) or not re.fullmatch("[a-f0-9]{64}", key):
+        if not isinstance(key, str) or not re.fullmatch(protocol.DIGEST_PATTERN, key):
             raise ReportDataError("Invalid review data reference.")
         if numbers is not None and (
             not isinstance(numbers, list)
@@ -388,7 +387,7 @@ class Store:
                 if item["number"] != number:
                     raise ReportDataError("Review artifact identities changed.")
                 items.append(item)
-            if len(items) == 1 and items[0]["body"].startswith("<!-- concurro:event:v1:"):
+            if len(items) == 1 and items[0]["body"].startswith(protocol.EVENT_MARKER):
                 body = items[0]["body"]
                 match = re.search(r"\n(`{3,})json\n(.*)\n\1$", body, re.S)
                 value = json.loads(match[2]) if match else None

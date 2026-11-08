@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 
+import protocol
 from policy import digest
 
 FIELDS = {
@@ -75,7 +76,7 @@ def materialize(files, directory):
     directory = Path(directory)
     directory.mkdir(mode=0o700)
     for key, value in files.items():
-        if not isinstance(key, str) or not re.fullmatch("[a-f0-9]{64}", key) or digest(value) != key:
+        if not isinstance(key, str) or not re.fullmatch(protocol.DIGEST_PATTERN, key) or digest(value) != key:
             raise ValueError("Invalid feedback file commitment")
         path = directory / (key + ".json")
         with path.open("x", encoding="utf-8") as output:

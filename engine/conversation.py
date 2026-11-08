@@ -1,5 +1,8 @@
 """Publish a bounded, recoverable outbox as a chronological issue conversation."""
 
+import protocol
+from protocol import EVENT_MARKER as MARKER
+
 from datetime import datetime, timezone
 import json
 import re
@@ -17,7 +20,6 @@ import reviews
 import report_store
 import review_timing
 
-MARKER = "<!-- concurro:event:v1:"
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.
 FORMAT = 3
@@ -565,7 +567,7 @@ def publish(state, github, config, store=None):
                 key = store.put(source)
                 numbers = store.numbers[key]
                 title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
-                root = f"https://github.com/{config['repository']}/issues/{state['issue']}/artifacts/"
+                root = protocol.artifact_url(config["repository"], state["issue"])
                 links = "\n".join("- " + report_link(root, i, len(numbers), n) for i, n in enumerate(numbers, 1))
                 body = content_v2(event, title, links, meta)
                 if event["kind"] == "review_rejection":

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 
+import protocol
 import dashboard_runs
 from conversation import MARKER, REPORT_LINK
 import review_timing
@@ -69,7 +70,7 @@ class Snapshot:
         self.reads[number] = {
             "number": number,
             "id": artifact["id"],
-            "url": f"https://github.com/{self.repository}/issues/{self.issue}/artifacts/{number}",
+            "url": protocol.artifact_url(self.repository, self.issue, number),
             "body_sha256": hashlib.sha256(artifact["body"].encode()).hexdigest(),
             "response_digest": digest(value),
         }
@@ -89,13 +90,13 @@ def archived_report(snapshot, store, number):
     item = store.verify(snapshot.repo(f"issues/{snapshot.issue}/artifacts/{number}"))
     if not item["body"].startswith(MARKER):
         raise ValueError("Not a report archive")
-    root = f"https://github.com/{snapshot.repository}/issues/{snapshot.issue}/artifacts/"
+    root = protocol.artifact_url(snapshot.repository, snapshot.issue)
     parts = [match["number"] for match in REPORT_LINK.finditer(item["body"]) if match["root"] == root]
     if not parts:
         return json_block(item["body"])
     numbers = list(map(int, parts))
     first = store.verify(snapshot.repo(f"issues/{snapshot.issue}/artifacts/{numbers[0]}"))
-    marker = re.match(r"<!-- concurro:report-data:v1:([a-f0-9]{64}):", first["body"])
+    marker = re.match(r"<!-- concurro:report-data:v1:(" + protocol.DIGEST_PATTERN + r"):", first["body"])
     if not marker:
         raise ValueError("Missing report commitment")
     return store.get(marker[1], numbers)
@@ -139,7 +140,7 @@ def measure(snapshot, author="concurro[bot]"):
         if observed:
             record["attempt"] = entry["timing"].get("attempt")
             record["operation"] = entry["timing"].get("operation")
-        record["url"] = f"https://github.com/{snapshot.repository}/issues/{snapshot.issue}/artifacts/{number}"
+        record["url"] = protocol.artifact_url(snapshot.repository, snapshot.issue, number)
         if entry.get("diagnostic"):
             record["validation_code"] = entry["diagnostic"]["code"]
             count["validation:" + record["validation_code"]] += 1

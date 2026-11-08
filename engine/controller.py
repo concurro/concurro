@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
+import protocol
 import actions
 import commands
 import revisions
@@ -92,7 +93,7 @@ PATH_POLICY = {
 }
 REPOSITORY = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
-COMMIT = re.compile(r"[0-9a-f]{40}")
+COMMIT = re.compile(protocol.SHA_PATTERN)
 
 
 def strings(value, limit=32):
@@ -391,9 +392,7 @@ class Controller:
         """Post the comment a stage change asks of a human, if any."""
         artifact = self.checkpoints.plan if self.checkpoints else None
         plan_url = (
-            f"https://github.com/{self.config['repository']}/issues/{state['issue']}/artifacts/{artifact['number']}"
-            if artifact
-            else None
+            protocol.artifact_url(self.config["repository"], state["issue"], artifact["number"]) if artifact else None
         )
         actions.transition(state, self.config, (self.issue or {}).get("user", {}).get("login"), plan_url)
 
@@ -1147,7 +1146,7 @@ class Controller:
             provider,
             report,
             state["head"],
-            f"https://github.com/{self.config['repository']}/issues/{state['issue']}",
+            protocol.issue_url(self.config["repository"], state["issue"]),
         )
         report.update(self.agent_fields(provider, "review"))
         report.update(
@@ -1982,7 +1981,7 @@ class Controller:
             lines += [link("Implementation plan", self.artifact_url(plan["number"])), ""]
         for path, delta in sorted((self.state.get("candidate", {}).get("dependencies") or {}).items()):
             lines += ["📦 " + text(dependency_summary(path, delta)), ""]
-        issue = f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}"
+        issue = protocol.issue_url(self.config["repository"], self.state["issue"])
         closing = (
             f"Closes #{self.state['issue']}"
             if self.config.get("upstream", self.config["repository"]) == self.config["repository"]

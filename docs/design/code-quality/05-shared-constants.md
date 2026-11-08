@@ -76,6 +76,53 @@ where it is today.
 - **Existing exports:** `conversation.MARKER`, `actions.COMMENT_URL` and any other existing
   export keep their values.
 
+## Extraction audit
+
+The leaf module is `engine/protocol.py` and has no imports. Existing exports remain:
+`conversation.MARKER`, `actions.COMMENT_URL`, `actions.BLOCKED_HEADER`, `agents.SCOPE`,
+`controller.COMMIT`, `mirror.SHA`, `repository.SHA` and `policy.IMAGE`.
+
+| File | Replaced sites | Shared definition |
+| ---- | ---- | ---- |
+| `actions.py` | `COMMENT_URL`; `BLOCKED_HEADER`; `answers` reply link | Template re-export; event marker and digest pattern; `comment_url` |
+| `agents.py` | `SCOPE` | `DIGEST_PATTERN` |
+| `checkpoints.py` | `Checkpoints.audit_body` report-data links; `Checkpoints.links` root; `Checkpoints.load` pointer validation | `artifact_url`; `DIGEST_PATTERN` |
+| `commands.py` | `parse` approval ID; `CommandHandler.extend_plan_revisions` command link | `DIGEST_PATTERN`; `comment_url` |
+| `controller.py` | `COMMIT`; `Controller.transition` plan link; `Controller.record_pr_review` and `Controller.pr_body` issue links | `SHA_PATTERN`; `artifact_url`; `issue_url` |
+| `conversation.py` | `MARKER`; `publish` archive root | Marker re-export; `artifact_url` |
+| `dashboard.py` | `Dashboard.artifact_url`; `Dashboard.action_line` latest-notice and open-request links; `Dashboard.previous_runs` invalidation link | `artifact_url`; `comment_url` |
+| `design_audit.py` | `Snapshot.repo` and `measure` report links; `archived_report` root and commitment capture | `artifact_url`; `DIGEST_PATTERN` |
+| `feedback.py` | `materialize` commitment validation | `DIGEST_PATTERN` |
+| `implementation_bundle.py` | `matches` approved-skill validation | `DIGEST_PATTERN` |
+| `mirror.py` | `SHA`; `Mirror.__init__` default clone and source URLs | `SHA_PATTERN`; `clone_url` |
+| `policy.py` | `IMAGE` digest suffix | `DIGEST_PATTERN` |
+| `report_store.py` | `Store.put` archive-marker check and artifact root; `Store.get` commitment validation; `Store.load` archive-marker check | `EVENT_MARKER`; `artifact_url`; `DIGEST_PATTERN` |
+| `repository.py` | `SHA` | `SHA_PATTERN` |
+| `runner.py` | `checkout` fetch URL | `clone_url` |
+| `snapshot.py` | `inspection` reference validation | `SHA_PATTERN` |
+
+Matching methods and flags are unchanged. `BLOCKED_HEADER` concatenates the fixed marker
+and digest pattern directly, retaining its exact compiled pattern; `re.escape` would
+change that pattern text. `repository.py` moves its script-only search-path bootstrap
+before the new leaf import so `python -I` still works. Importing it in-process still
+leaves the caller's search path unchanged; both paths have regression coverage.
+
+Left inline intentionally:
+
+- PR URLs in `actions.handoff` and `Controller.pr_url`, branch URLs in
+  `Controller.reserve_development_branch`, and review-thread URLs in `reviews.thread_url`: different URL kinds
+  outside this iteration's helpers.
+- REST endpoint paths and report-link parsing: these are API paths and parsers, not public
+  URL construction. Multipart links continue appending numbers to the shared artifact root.
+- UUID, 32-character IDs and the variable 40–64-character Git-history pattern: distinct
+  formats, not the fixed-width digest or SHA patterns.
+- The exchange's runner-token and commit patterns: retained verbatim for its single-file
+  image, with comments naming the mirrored engine constants. Its AST is unchanged.
+
+No magic numbers or requested extraction items were skipped. Literal tests were written
+before the leaf module: four existing-contract tests passed, and the six new-helper tests
+failed only because the module did not yet exist.
+
 ## Done when
 
 - No hand-built artifact, comment or issue URL remains in the engine outside the helpers.

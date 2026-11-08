@@ -1,5 +1,8 @@
 """Actionable comments and Input needed requests; advisory intake notices use the conversation outbox."""
 
+import protocol
+from protocol import COMMENT_URL as COMMENT_URL
+
 import re
 
 from model_config import assigned
@@ -15,7 +18,6 @@ from vocab import TERMINAL_STAGES
 # while GitHub reports the PR mergeable without conflicts.
 POLICY_REASONS = {"autonomous merge is disabled", "autonomous merge is limited to configured low-risk paths"}
 GITHUB_REASON = "GitHub mergeability is not clean"
-COMMENT_URL = "https://github.com/{repository}/issues/{issue}#issuecomment-{comment}"
 BUNDLE_REASON = (
     "Trusted charter, role, skill or schema bundle changed. "
     "A writer must use /concurro invalidate to reassess under the current bundle; "
@@ -35,7 +37,7 @@ RESUMED_STAGES = {
     "gates",
     "merging",
 }
-BLOCKED_HEADER = re.compile(r"<!-- concurro:event:v1:[a-f0-9]{64} -->\n### (?:🛑 )?Blocked\n")
+BLOCKED_HEADER = re.compile(protocol.EVENT_MARKER + protocol.DIGEST_PATTERN + r" -->\n### (?:🛑 )?Blocked\n")
 BLOCKED_RETRY = (
     f"Once the cause is fixed, a writer comments {code('/concurro retry')}; "
     "a reason that asks for reconciliation needs an operator first."
@@ -272,7 +274,7 @@ def answers(state, config, comments, issue_digest, answerer):
             None,
         )
         if reply:
-            url = COMMENT_URL.format(repository=config["repository"], issue=state["issue"], comment=reply["id"])
+            url = protocol.comment_url(config["repository"], state["issue"], reply["id"])
             record.update(state="answered", answer={"comment": reply["id"]})
             edit(record, f"✅ **Answered** by {text(reply['user']['login'])}: {link('reply', url)}")
         elif issue_digest != record["issue_digest"]:

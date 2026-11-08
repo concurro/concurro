@@ -2,6 +2,7 @@
 
 from functools import cached_property
 
+import protocol
 import classification
 import dashboard_runs
 import markup
@@ -287,7 +288,7 @@ class Dashboard:
 
     def artifact_url(self, number):
         """An artifact of this issue on GitHub."""
-        return f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}/artifacts/{number}"
+        return protocol.artifact_url(self.config["repository"], self.state["issue"], number)
 
     def current_step(self):
         """The step the task is on, or the furthest it reached when paused; len(STEPS) only once merged."""
@@ -382,19 +383,12 @@ class Dashboard:
         state = self.state
         journal = state.get("conversation", {})
         latest = journal.get("latest")
-        url = (
-            f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{latest}"
-            if latest
-            else None
-        )
+        url = protocol.comment_url(self.config["repository"], state["issue"], latest) if latest else None
         open_request = next(
             (r for r in reversed(state.get("requests", [])) if r["state"] == "open" and r.get("comment")), None
         )
         if open_request:
-            url = (
-                f"https://github.com/{self.config['repository']}/issues/{state['issue']}"
-                f"#issuecomment-{open_request['comment']}"
-            )
+            url = protocol.comment_url(self.config["repository"], state["issue"], open_request["comment"])
             return f"**Action needed:** {link('answer the questions', url)}."
         needs = {
             "blocked": "a fix and a retry",
@@ -579,7 +573,7 @@ class Dashboard:
                 for r in self.state.get("reports", [])
                 if boundaries[i]["artifact"] < r["artifact"] <= boundaries[i + 1]["artifact"]
             ]
-            command = f"https://github.com/{self.config['repository']}/issues/{self.state['issue']}#issuecomment-{record['comment']}"
+            command = protocol.comment_url(self.config["repository"], self.state["issue"], record["comment"])
             sections.append(
                 f"**Run {i + 1} — invalidated**\n\n"
                 + link("Writer requested reassessment", command)

@@ -9,10 +9,11 @@ import subprocess
 import tempfile
 import time
 
+import protocol
 from policy import Blocked
 from repository import valid_ref
 
-SHA = re.compile(r"[0-9a-f]{40}")
+SHA = re.compile(protocol.SHA_PATTERN)
 SNAPSHOT_REFS = "refs/concurro/snapshots/"
 # Fetched or borrowed objects are pruned at most this often, and never while a snapshot borrows them.
 MAINTENANCE_SECONDS = 86400
@@ -45,10 +46,10 @@ class Mirror:
             raise Blocked("invalid mirror repository")
         self.root = Path(root)
         self.path = self.root / (repository.replace("/", "__") + ".git")
-        self.url = f"https://github.com/{repository}.git" if url is None else url
+        self.url = protocol.clone_url(repository) if url is None else url
         if any(not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source) for source in sources):
             raise Blocked("invalid mirror source")
-        self.sources = tuple(f"https://github.com/{source}.git" for source in sources)
+        self.sources = tuple(protocol.clone_url(source) for source in sources)
 
     def git(self, *args, timeout=60):
         """Run Git against the mirror only."""

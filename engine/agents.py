@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 
+import protocol
 from bundle import Bundle
 from credentials import Credential
 from model_config import resolve
@@ -28,7 +29,7 @@ DEFAULT_TURN_SECONDS = 1200
 QUEUE_SECONDS = 1800
 SUBMIT_ATTEMPTS = 4
 REVIEW_POLL_SECONDS = 5
-SCOPE = re.compile(r"[a-f0-9]{64}")
+SCOPE = re.compile(protocol.DIGEST_PATTERN)
 
 
 class GatewayUnavailable(Transient):

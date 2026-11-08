@@ -1,6 +1,7 @@
 """Validate the immutable repository references sent to a native runner turn."""
 
 import re
+import protocol
 from policy import Blocked
 
 
@@ -12,7 +13,7 @@ def inspection(repository, candidate, stage, base_branch):
     if (
         not isinstance(refs, dict)
         or head not in refs
-        or not all(isinstance(c, str) and re.fullmatch(r"[a-f0-9]{40}", c) for c in refs.values())
+        or not all(isinstance(c, str) and re.fullmatch(protocol.SHA_PATTERN, c) for c in refs.values())
     ):
         raise Blocked("repository inspection requires pinned refs")
     if stage not in ("intake", "plan", "plan_qc", "develop", "review"):

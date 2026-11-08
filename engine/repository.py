@@ -13,6 +13,12 @@ import tempfile
 import threading
 import time
 
+if __name__ == "__main__":
+    # -I excludes the script directory from imports.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import protocol
+
 ROOT = Path("/repository")
 MIRROR = Path("/mirror")
 SOCKET = Path("/run/concurro-tools/repository.sock")
@@ -42,7 +48,7 @@ GIT_CAPTURE = 2_000_000
 # Takes precedence over in-tree .gitattributes: nothing filtered, normalized or hidden from a diff.
 ATTRIBUTES = "* diff -text -filter -ident -working-tree-encoding\n"
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
-SHA = re.compile(r"[0-9a-f]{40}")
+SHA = re.compile(protocol.SHA_PATTERN)
 CANDIDATE_IDENTITY = {
     "GIT_AUTHOR_NAME": "Concurro",
     "GIT_AUTHOR_EMAIL": "concurro@invalid",
@@ -578,8 +584,6 @@ def relay(path=SOCKET, incoming=None, outgoing=None, wait=30):
 def main():
     """Separate credential-free preparation and serving from the agent-side relay."""
     operation = sys.argv[1]
-    # -I excludes the script directory from imports.
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     if operation == "snapshot":
         snapshot(json.load(sys.stdin))
     elif operation == "listen":

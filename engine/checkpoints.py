@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import re
 
+import protocol
 import report_store
 
 from github import Transient
@@ -201,8 +202,7 @@ class Checkpoints:
             payload["plan_artifact"] = self.plan_binding
         links = sorted({n for ref in payload.get("report_data", []) for n in ref["artifacts"]})
         footer = "".join(
-            f"\n[Report data {n}](https://github.com/{self.config['repository']}/issues/{self.issue}/artifacts/{n})"
-            for n in links
+            f"\n[Report data {n}]({protocol.artifact_url(self.config['repository'], self.issue, n)})" for n in links
         )
         return AUDIT_MARKER + STATE_PREFIX + json.dumps(payload, sort_keys=True) + "\n```\n" + footer
 
@@ -304,7 +304,7 @@ class Checkpoints:
                     if (
                         set(pointer) != {"id", "number", "revision", "digest"}
                         or any(type(pointer[k]) is not int or pointer[k] < 1 for k in ("id", "number", "revision"))
-                        or not re.fullmatch(r"[a-f0-9]{64}", pointer["digest"])
+                        or not re.fullmatch(protocol.DIGEST_PATTERN, pointer["digest"])
                     ):
                         raise ValueError()
                 else:
@@ -486,7 +486,7 @@ class Checkpoints:
 
     def links(self):
         """Return the public audit link and hidden recovery reference, using issue-local URLs."""
-        root = f"https://github.com/{self.config['repository']}/issues/{self.issue}/artifacts/"
+        root = protocol.artifact_url(self.config["repository"], self.issue)
         return [
             f"[Automation audit state]({root}{self.audit['number']}) (public).",
             REF_MARKER + json.dumps(self.reference(), sort_keys=True, separators=(",", ":")) + " -->",
