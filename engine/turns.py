@@ -19,6 +19,7 @@ import processes
 
 from policy import KILLED, UNCERTAIN_EXIT, TIMEOUT_EXIT, MODEL_RESPONSE_LIMIT, runner_bound
 from repository import snapshot
+from vocab import TurnOutcome
 import feedback
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
@@ -181,15 +182,15 @@ def outcome(code, stdout):
     that is not one bounded JSON value, are `failed`.
     """
     if code == TIMEOUT_EXIT:
-        return "timed_out", None
+        return TurnOutcome.TIMED_OUT, None
     if code in KILLED or code == UNCERTAIN_EXIT:
-        return "uncertain", None
+        return TurnOutcome.UNCERTAIN, None
     if code or len(stdout.encode()) > MAX_RESPONSE:
-        return "failed", None
+        return TurnOutcome.FAILED, None
     try:
-        return "ok", json.loads(stdout)
+        return TurnOutcome.OK, json.loads(stdout)
     except json.JSONDecodeError:
-        return "failed", None
+        return TurnOutcome.FAILED, None
 
 
 def command():
@@ -268,14 +269,14 @@ def execute(turn, key, mirror, root, stopped=None):
                     raise
         result, response = outcome(code, stdout)
         if runner_bound(request["stage"]) and (code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())):
-            result, response = "terminated", None
+            result, response = TurnOutcome.TERMINATED, None
         reply = {"outcome": result, "response": response, "workspace": None,
                  "retained": pack(root / "retained") if session else None}
-        if result in ("timed_out", "terminated"):
+        if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
             reply["termination_reason"] = ("runner_stopped" if stopped is not None and stopped.is_set()
                 else "turn_timeout" if code == TIMEOUT_EXIT else "process_signal")
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
-        if result == "ok" and request["stage"] == "develop":
+        if result == TurnOutcome.OK and request["stage"] == "develop":
             try:
                 reply["workspace"] = extract(root / "work", root / "pristine.git", root)
             except TurnError as error:

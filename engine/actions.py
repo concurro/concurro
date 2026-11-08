@@ -9,6 +9,7 @@ from markup import block, code, link, text
 from checkpoints import DIAGNOSTICS
 from github import NotFound
 from policy import Blocked, digest
+from vocab import TERMINAL_STAGES
 
 # Gate reasons only a human merge resolves: Concurro's own merge policy, and GitHub's requirements
 # while GitHub reports the PR mergeable without conflicts.
@@ -72,7 +73,7 @@ def blocked_posted(state, comment, body):
 
 def discover_blocked(state, comments, author):
     """Discover older App notices once; skipped edits must never be adopted again."""
-    if state.get("stage") in ("merged", "observed_merged", "closed"):
+    if state.get("stage") in TERMINAL_STAGES:
         return
     cursor = state.get("blocked_notice_cursor", 0)
     for comment in comments:

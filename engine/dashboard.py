@@ -12,6 +12,7 @@ from checkpoints import MARKER
 from markup import code, link, text
 from model_config import assigned
 from policy import approval_binding, design_roster, digest
+from vocab import MERGED_STAGES
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
@@ -214,7 +215,7 @@ class Dashboard:
         """The step the task is on, or the furthest it reached when paused; len(STEPS) only once merged."""
         state = self.state
         stage = state["stage"]
-        if stage in ("merged", "observed_merged"):
+        if stage in MERGED_STAGES:
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]

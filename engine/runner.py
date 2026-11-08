@@ -14,6 +14,7 @@ import urllib.request
 from mirror import Mirror, git_environment
 from relay import ExchangeError, Runner
 from policy import runner_bound
+from vocab import TurnOutcome
 import turns
 
 AUDIENCE = "concurro-gateway"
@@ -92,7 +93,7 @@ class Loop:
                 result = turns.execute(payload, self.key, self.mirror, directory, self.stopped)
             except Exception as error:
                 log(f"turn {identifier} could not run ({type(error).__name__}); details suppressed")
-                result = {"outcome": "failed", "response": None, "workspace": None, "retained": None}
+                result = {"outcome": TurnOutcome.FAILED, "response": None, "workspace": None, "retained": None}
             for attempt in range(5):
                 if self.stopped.is_set():
                     return

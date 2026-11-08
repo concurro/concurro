@@ -3,11 +3,11 @@
 import json
 import subprocess
 from urllib.parse import quote
+from vocab import Stage
 
 STAGE_LABEL_PREFIX = "concurro:stage:"
 ATTENTION_LABEL = "concurro:attention"
-STAGES = {"intake", "clarify", "plan", "plan_qc", "planned", "implement", "publish", "review",
-          "gates", "closed", "merging", "merged", "observed_merged", "blocked", "stopped", "rejected", "escalated"}
+STAGES = {stage.value for stage in Stage}
 # The engine's only GraphQL mutations; the service gateway admits exactly these documents.
 RESOLVE_THREAD = """mutation($input:ResolveReviewThreadInput!) {
           resolveReviewThread(input:$input) { thread { id isResolved } }

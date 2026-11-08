@@ -38,6 +38,7 @@ from bundle import Bundle
 from checkpoints import CheckpointError, Checkpoints, MARKER, STATE_PREFIX as STATE_PREFIX, LIMIT as CHECKPOINT_LIMIT
 from github import Transient
 from identities import Identities
+from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 from policy import (MODEL_RESPONSE_LIMIT, Blocked, RunnerTerminated, SessionFailure, approval_binding, approval_valid,
                     digest, task_branch,
                     consensus_valid, design_roster, path_allowed, selected_model,
@@ -1148,7 +1149,7 @@ class Controller:
                 self.revise_plan("plan", "Design reviewers require a revision.", save_exhausted=False)
             else:
                 self.finish_consensus()
-        if state["stage"] in ("rejected", "escalated"):
+        if state["stage"] in JUDGED_STAGES:
             state["retry_stage"] = self.waiting_revision() or "intake"
             state.pop("approval", None)
 
@@ -1168,7 +1169,7 @@ class Controller:
 
     def suspend(self, stage, reason=None, publish_events=True, outboxes=True):
         """Pause work without replacing an earlier resume target on repeated failures."""
-        if self.state["stage"] not in ("blocked", "stopped"):
+        if self.state["stage"] not in SUSPENDED_STAGES:
             self.state["retry_stage"] = self.state["stage"]
         self.state["stage"] = stage
         if reason is not None:
@@ -1379,9 +1380,9 @@ class Controller:
                 return True
             elif self.state and body == "/concurro retry" and self.state["stage"] == "gates":
                 self.retry_reviewed(comment, comments)
-            elif (self.state and body == "/concurro retry" and self.state["stage"] in ("blocked", "stopped", "rejected", "escalated")
+            elif (self.state and body == "/concurro retry" and self.state["stage"] in SUSPENDED_STAGES | JUDGED_STAGES
                   and self.state.get("retry_stage")):
-                if self.state["stage"] in ("blocked", "stopped") and self.state["retry_stage"] == "implement":
+                if self.state["stage"] in SUSPENDED_STAGES and self.state["retry_stage"] == "implement":
                     self.retry_implementation_bundle(comment, comments)
                 output_repair = ((self.state.get('review_repair') or any(
                     m.get('review_repair') for m in self.state.get('review_batch', {}).get('members', {}).values()))
@@ -1392,7 +1393,7 @@ class Controller:
                 if waiting:
                     self.refuse_revision_command(comment, exhausted=True)
                     continue
-                if self.state["stage"] in ("rejected", "escalated") and not output_repair:
+                if self.state["stage"] in JUDGED_STAGES and not output_repair:
                     self.state["command_id"] = comment["id"]
                     if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment.", save_exhausted=False):
                         self.refuse_revision_command(comment, exhausted=True)
@@ -1894,7 +1895,7 @@ class Controller:
         if not self.state:
             return Outcome("await-human")
         stage = self.state["stage"]
-        if stage in ("merged", "observed_merged", "closed"):
+        if stage in TERMINAL_STAGES:
             return Outcome("terminal", progressed)
         if stage in ("blocked", "stopped", "rejected", "escalated"):
             return Outcome("blocked", progressed)
@@ -1917,7 +1918,7 @@ class Controller:
             self.state = None
             self.foreign = True
             return False
-        if self.state and self.state.get("pr") and self.state["stage"] not in ("merged", "observed_merged"):
+        if self.state and self.state.get("pr") and self.state["stage"] not in MERGED_STAGES:
             pr = self.pulls.repo(f"pulls/{self.state['pr']}")
             if pr.get("merged"):
                 self.observe_merge(pr)
@@ -1933,7 +1934,7 @@ class Controller:
                 self.save(outboxes=False)
                 return True
             return False
-        if self.state and self.state["stage"] in ("merged", "observed_merged", "closed"):
+        if self.state and self.state["stage"] in TERMINAL_STAGES:
             return False
         if self.state:
             actions.discover_blocked(self.state, comments, self.identities.author("conversation"))
