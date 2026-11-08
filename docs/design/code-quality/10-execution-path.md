@@ -215,27 +215,54 @@ refactor(engine): share isolated git environment construction
 
 ## 10d: Agent entry and session lock
 
+Re-checked against `337f042`. Find code by symbol.
+
 **Scope:** `engine/agent_entry.py`, `engine/session_entry.py`, `engine/turns.py`,
-`engine/model_config.py`, tests.
+`engine/model_config.py`, `engine/policy.py`, tests.
 
-1. **One `DEFAULT_EFFORT` mapping** for the "medium for claude, otherwise low" rule
-   (`agent_entry.py:35, 69`, `model_config.py:136`).
-2. **One `KEY_VARIABLE` definition,** replacing `turns.py:24` and `agent_entry.py:13`.
-3. **`SessionTurn` as a context manager:**
-   - Give it `__enter__` / `__exit__`, and use `with` in `agent_entry` instead of manual
-     `close()` on success paths only.
-   - Define the attributes that `load()` creates in `__init__`.
-   - The OS releases the lock at process exit. First confirm that no path relies on the
-     lock staying held after an exception, before the process exits.
+1. **One effort default.** The rule "medium for claude, otherwise low" is written in
+   `agent_entry.command_for` and `model_config`'s legacy resolution. The Claude-only
+   `request.get("effort", "medium")` in `agent_entry.provider_environment` is the same
+   rule.
+   - Add `model_config.default_effort(provider)`; `model_config` is stdlib-only, so
+     `agent_entry` can import it.
+   - Use it at all three sites. Every resolved effort must stay identical.
+2. **One `KEY_VARIABLE`.** `"CONCURRO_GATEWAY_KEY"` is defined in both `turns.py` and
+   `agent_entry.py`. Define it once, in a module both already import (`policy`), and keep
+   both module-level names importable.
+3. **Release the session lock on every path.**
+   - **Today:** `SessionTurn.__init__` takes an exclusive `flock`, and `agent_entry.main`
+     releases it only on the cached-response and success paths. On a provider failure,
+     the lock is held until the agent process exits, which happens immediately after
+     `run()` maps the error to an exit code.
+   - **Change:** give `SessionTurn` `__enter__`/`__exit__`, or use `try`/`finally` in
+     `main`, whichever reads better. A `with` block around the roughly 40-line provider
+     section, plus `contextlib.nullcontext()` for session-less turns, may read worse than
+     `try`/`finally`.
+   - **Hard constraint:** the release path only closes the lock. It must **never write
+     the journal**. A failed turn must leave the `pending` entry exactly as it is today,
+     because that is how recovery detects an interrupted turn.
+   - Optionally initialise the attributes that `load()` sets (`previous`,
+     `request_digest`, `cached`, `identifier`) in `__init__`, if that helps readability or
+     pyright.
 4. **No provider strategy classes.** The `claude`/`codex` branches in `command_for`,
-   `provider_environment` and `main` are small. Leave them as conditionals.
+   `provider_environment` and `main` stay as conditionals.
 
-**Tests first:** a test that the session lock is released after a successful turn and
-after a failed one. Also check that the lock is still held for the whole time the turn
-runs.
+**Tests first**, against the current code:
+
+- **Effort table:** the effort resolved by `command_for`, `provider_environment` and
+  legacy model resolution for `claude` and `codex`, with and without an explicit effort.
+- **Session journal and lock:**
+  - **cached response:** the response is printed and the lock released;
+  - **success:** the journal is `complete` and the lock released;
+  - **provider failure:** the journal stays `pending` with unchanged bytes, and the lock
+    is releasable afterwards;
+  - **lock contention:** while a turn holds the lock, a second `SessionTurn` on the same
+    root fails.
+- Use `tempfile` directories; no host paths.
 
 **Commit message:**
 
 ```text
-refactor(engine): manage the session lock with a context manager
+refactor(engine): share agent defaults and release the session lock on every path
 ```
