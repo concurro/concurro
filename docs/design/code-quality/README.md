@@ -155,7 +155,7 @@ run `pyright --project pyrightconfig.json` for the explicitly scoped engine modu
 | `engine/readiness.py` keep-latest loops | The ID lookup differs (`run["id"]` vs `.get("id", 0)`). |
 | `engine/github.py` `GitHub.pages` vs `service/reconciler.pages` | The engine pages artifacts 10 per page for up to 1,000 pages, and everything else 100 per page for up to 100 pages. The reconciler always uses 100 per page for up to 100 pages. |
 | `gateway/exchange/exchange.py` query parsing | The hand-rolled parser rejects `wait=` and percent-encoded values that `parse_qsl` would accept. Changing accepted requests is a behavioural change. |
-| Exchange and registry lock and transaction scopes | Each operation's transaction and lock boundaries stay exactly as they are. Don't split one transaction, or merge two. |
+| Exchange and registry lock and transaction scopes | Each operation's lock scope (`Exchange.locked()`) and statement order stay exactly as they are. The exchange uses autocommit with no explicit multi-statement transactions; don't add any, and don't reorder its mutations or gateway calls. Don't split or merge registry transactions. |
 
 ## Iterations
 
@@ -190,8 +190,8 @@ Status values:
 | 10d | [Agent entry and session lock](10-execution-path.md#10d-agent-entry-and-session-lock) | Refactor | Low | Done |
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |
-| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
-| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Approved |
+| 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Next (brief refreshed; Codex review first) |
+| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Done |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
 | 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate, prepared |
 
