@@ -4,6 +4,7 @@ import ast
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,13 +58,14 @@ class ExistingProtocolTests(unittest.TestCase):
 
     def test_repository_isolated_script(self):
         """Isolated script execution reaches the existing operation dispatch without site packages."""
-        result = subprocess.run(
-            [sys.executable, "-I", "-S", str(ENGINE / "repository.py"), "unknown"],
-            capture_output=True,
-            text=True,
-            cwd="/private/tmp",
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", str(ENGINE / "repository.py"), "unknown"],
+                capture_output=True,
+                text=True,
+                cwd=directory,
+                check=False,
+            )
         self.assertEqual(result.returncode, 1)
         self.assertIn("ValueError: unknown repository operation", result.stderr)
         self.assertNotIn("ModuleNotFoundError", result.stderr)
@@ -74,13 +76,14 @@ class ExistingProtocolTests(unittest.TestCase):
             "import sys; sys.path.insert(0, sys.argv[1]); before = list(sys.path); "
             "import repository; assert sys.path == before; assert repository.SHA.fullmatch('a' * 40)"
         )
-        result = subprocess.run(
-            [sys.executable, "-I", "-S", "-c", script, str(ENGINE)],
-            capture_output=True,
-            text=True,
-            cwd="/private/tmp",
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", script, str(ENGINE)],
+                capture_output=True,
+                text=True,
+                cwd=directory,
+                check=False,
+            )
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
