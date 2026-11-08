@@ -27,6 +27,7 @@ from relay import ExchangeError, Operator
 from report_store import Cache
 
 from . import failures
+from .admission import RUN_BRANCH_PREFIX
 from .errors import GatewayStop
 from .gateway import LEASE_SECONDS, GatewayGitHub
 from .settings import CHECKOUT
@@ -183,7 +184,7 @@ def runner_termination(reader, fork, config_sha, observation):
         if (
             str(run.get("id")) != run_id
             or run.get("run_attempt") != 1
-            or run.get("head_branch") != "concurro/runs/" + session
+            or run.get("head_branch") != RUN_BRANCH_PREFIX + session
             or run.get("head_sha") != config_sha
             or run.get("event") != "workflow_dispatch"
             or run.get("status") != "completed"
@@ -379,8 +380,10 @@ class Worker:
             try:
                 target = self.registry.binding(key)
                 root = f"repos/{target.fork}/git/"
-                ref = "refs/heads/concurro/runs/" + session
-                refs = self.reader(target.fork).request("GET", root + "matching-refs/heads/concurro/runs/" + session)
+                ref = "refs/heads/" + RUN_BRANCH_PREFIX + session
+                refs = self.reader(target.fork).request(
+                    "GET", root + "matching-refs/heads/" + RUN_BRANCH_PREFIX + session
+                )
                 found = [item for item in refs if item["ref"] == ref]
                 if found:
                     if found[0]["object"]["sha"] != target.config_sha:

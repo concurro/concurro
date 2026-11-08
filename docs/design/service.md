@@ -17,7 +17,9 @@ operator-requested design evaluation. There is no host executor or build workben
 | `service/reconciler.py` | Observe relevant GitHub changes and recover missed events |
 | `service/scheduler.py` | Bound concurrent ticks and distribute work across repositories |
 | `service/worker.py` | Load pinned target configuration and run the engine under ownership |
-| `service/gateway.py` | Fence, authorize, pace and settle all GitHub mutations |
+| `service/gateway.py` | Fence, bind, pace and record all GitHub mutations |
+| `service/admission.py` | Pure request-shape admission for task, publication and runner writes |
+| `service/settlement.py` | Classify write outcomes and log bounded rejection diagnostics |
 | `service/identity.py`, `targets.py` | Mint and verify repository-specific installation tokens |
 | `service/registry.py` | Durable queue, ownership, mutation intents and observations |
 | `service/control.py`, `cutover.py` | Owner-only operator channel and legacy controller migration |

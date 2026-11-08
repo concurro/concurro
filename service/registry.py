@@ -92,6 +92,10 @@ class Ownership:
     lease_until: float
     live: bool
 
+    def owns(self, generation):
+        """Whether this live owner holds the generation, independently of lease expiry."""
+        return self.live and self.generation == generation
+
 
 @dataclass(frozen=True)
 class MutationRecord:

@@ -145,7 +145,7 @@ run `pyright --project pyrightconfig.json` for the explicitly scoped engine modu
 
 | Location | Difference to keep |
 | ---- | ---- |
-| `service/gateway.py:112` vs `150-152` | The PATCH-ref admission check has no OID check; the other one does. |
+| `service/admission.py` (`allowed` vs `allowed_target`) | The PATCH-ref admission check has no OID check; the other one does. |
 | `engine/controller.py:2316-2318` vs `1101-1104` | This PR guard omits the `merged` clause. |
 | `engine/controller.py` `invalidate_task` | A refusal consumes the command but does **not** save; the other refusal paths save. |
 | `engine/agents.py:352` | Polling-error classification treats 3xx differently from `runner.py`'s session-gone set. |
@@ -191,7 +191,7 @@ Status values:
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
-| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Next (brief refreshed; Codex review first) |
+| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Approved |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
 | 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate, prepared |
 
