@@ -1386,7 +1386,17 @@ class Controller:
                     self.resume_with_head(self.requirements(comments))
                     continue
                 if self.state and any(self.state.get(key) for key in ("pr", "head", "pending")):
-                    raise Blocked("existing PR or prepared publication requires manual reconciliation before restarting")
+                    self.state["command_id"] = comment["id"]
+                    notice = (code("/concurro start")
+                              + " cannot restart a task with an open PR or prepared publication. ")
+                    if self.state.get("pending"):
+                        notice += "Use " + code("/concurro retry") + " to finish the pending publication."
+                    else:
+                        notice += ("Use " + code("/concurro retry") + " to resume, or "
+                                   + code("/concurro invalidate") + " to reassess.")
+                    conversation.queue(self.state, "Start command not applied", notice)
+                    self.save()
+                    continue
                 if self.state:
                     self.state["command_id"] = comment["id"]
                     if not self.revise_plan("intake", "Writer requested reassessment.", save_exhausted=False):

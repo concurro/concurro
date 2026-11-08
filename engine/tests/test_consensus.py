@@ -556,9 +556,14 @@ class ConsensusTests(ConsensusFixture, unittest.TestCase):
                 parent = state.get("head", state.get("pending", {}).get("parent"))
                 state.update(stage="blocked", retry_stage=stage)
                 self.persist(state)
+                before = deepcopy(state)
                 self.gh.comment("/concurro start")
-                with self.assertRaisesRegex(Blocked, "prepared publication requires manual reconciliation"):
-                    self.tick()
+                command_id = self.gh.comments[-1]["id"]
+                state = self.tick()
+                self.assertEqual(state["command_id"], command_id)
+                for key in ("stage", "reason", "retry_stage", "calls", "head", "pending"):
+                    self.assertEqual(state.get(key), before.get(key), key)
+                self.assertEqual(sum("### Start command not applied" in c["body"] for c in self.gh.comments), 1)
                 controller = Controller(self.gh, self.agents, self.config)
                 controller.issue = self.gh.issue
                 controller.load(self.gh.comments)

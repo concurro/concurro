@@ -116,7 +116,7 @@ For each cell, record:
   processed, which are consumed, and where processing stops (`return True`).
 - **A refused command, then a later valid one:** for example `retry --plan-revisions 4`
   then `retry --plan-revisions 1`, or a refused `invalidate` then `retry`. The refusal
-  must not leave the later command permanently unprocessable, and nothing is applied twice.
+  must not block the later command, and nothing is applied twice.
   A refusal notice can continue within the same invocation; a raised `Blocked` ends it.
   For the latter, model the caller's blocked-state save before reloading and processing the
   later command. Invalidation refusals consume in memory but do not save themselves.
@@ -136,10 +136,12 @@ unchanged after the refactor.
 line, including save boundaries and visible notice text; only hidden event identities are
 omitted. Separate assertions cover sequences, replay, parser boundaries and restart differences.
 
-One existing behavior needs separate consideration: a manual `/concurro start` on a blocked
-task with an existing PR refuses without consuming the command. After the caller saves the
-blocked state, replay refuses the same command before reaching a later `/concurro retry`.
-The baseline pins this behavior; changing consumption belongs in a separate behavioral fix.
+The recorded manual-start wedge is fixed by the separate behavioral changeset
+`fix(engine): consume refused start commands without blocking recovery` (pending commit).
+A manual start with an existing PR, head or prepared publication is consumed with one
+notice, preserving the current pause and allowing later commands to run. The affected
+matrix cell is updated; stopped tasks, pending publication and lost-save-reply recovery
+have additional regression coverage.
 
 ## Done when
 

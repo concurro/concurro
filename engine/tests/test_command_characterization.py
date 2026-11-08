@@ -181,7 +181,7 @@ class CommandCharacterizationTests(PipelineFixture, unittest.TestCase):
         return results
 
     def test_command_stage_matrix(self):
-        """Pin every recorded outcome against the unchanged controller, without automatic regeneration."""
+        """Pin every reviewed command outcome without automatic fixture regeneration."""
         expected = json.loads(GOLDEN.read_text())
         actual = self.matrix()
         self.assertEqual(actual.keys(), expected.keys())
@@ -448,20 +448,131 @@ class CommandCharacterizationTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(c.state['plan_revision_extra'], 1)
         self.assertEqual(c.state['plan_revision_grant']['added'], 1)
 
-    def test_manual_start_with_existing_pr_remains_unconsumed_on_replay(self):
-        """Known current behavior: this refusal still precedes a later retry after a blocked save."""
-        c = self.restore('manual/blocked_with_pr')
-        prior_id = c.state['command_id']
-        reason = 'existing PR or prepared publication requires manual reconciliation before restarting'
-        first = self.apply(c, ['start', 'retry'])
-        self.assertEqual(first['blocked'], reason)
-        self.assertEqual(first['command_id'], prior_id)
-        self.assertEqual(first['saves'], [])
-        c.suspend('blocked', reason, outboxes=False)
-        restored = self.loaded()
-        replay = self.apply(restored, [])
-        self.assertEqual(replay['blocked'], reason)
-        self.assertEqual(replay['command_id'], prior_id)
-        self.assertEqual(replay['saves'], [])
-        self.assertEqual(restored.state['stage'], 'blocked')
-        self.assertEqual(restored.state['retry_stage'], 'review')
+    def paused_publication(self, stage, kind, mode='manual'):
+        """Suspend a real PR/publication; a head-only variant pins that independent guard."""
+        c = self.restore(mode + ('/publish' if kind == 'pending' else '/review'))
+        if kind == 'head':
+            c.state.pop('pr')
+        c.suspend(stage, 'Original interruption reason.', outboxes=False)
+        return c
+
+    def assert_start_notice(self, notices, pending=False):
+        """Pin the fixed guidance while allowing unrelated notices from a following command."""
+        matching = [n for n in notices if n.startswith('### Start command not applied\n')]
+        self.assertEqual(len(matching), 1)
+        body = matching[0].split('\n\n<sub>', 1)[0]
+        guidance = ('Use `/concurro retry` to finish the pending publication.' if pending else
+                    'Use `/concurro retry` to resume, or `/concurro invalidate` to reassess.')
+        self.assertEqual(body, '### Start command not applied\n\n'
+                         '`/concurro start` cannot restart a task with an open PR or prepared publication. ' + guidance)
+
+    def test_manual_start_refusal_preserves_pause_and_posts_once(self):
+        """A refused start consumes only its command; it cannot replace the original block reason."""
+        for stage in ('blocked', 'stopped'):
+            for kind in ('pr', 'head', 'pending'):
+                with self.subTest(stage=stage, kind=kind):
+                    c = self.paused_publication(stage, kind)
+                    before = deepcopy(c.state)
+                    command_id = self.gh.counter + 1
+                    result = self.apply(c, ['start'])
+                    self.assertIsNone(result['blocked'])
+                    self.assertIsNone(result['return'])
+                    self.assertEqual(result['saves'], [[stage, command_id, before['retry_stage'], None]])
+                    self.assertEqual(c.state['command_id'], command_id)
+                    self.assert_start_notice(result['notices'], kind == 'pending')
+                    for key in ('stage', 'reason', 'retry_stage', 'calls', 'credentials', 'plan_revisions',
+                                'approval', 'plan', 'head', 'pr', 'pending', 'requirements', 'design_generation'):
+                        self.assertEqual(c.state.get(key), before.get(key), key)
+                    self.assertEqual(self.apply(self.loaded(), [])['notices'], [])
+
+    def test_manual_start_refusal_reaches_queued_retry_in_same_tick(self):
+        """Blocked and stopped tasks can resume without deleting the refused start comment."""
+        for stage in ('blocked', 'stopped'):
+            for kind in ('pr', 'head', 'pending'):
+                with self.subTest(stage=stage, kind=kind):
+                    c = self.paused_publication(stage, kind)
+                    before = deepcopy(c.state)
+                    start_id = self.gh.counter + 1
+                    result = self.apply(c, ['start', 'retry'])
+                    target = before['retry_stage']
+                    self.assertIsNone(result['blocked'])
+                    self.assertIsNone(result['return'])
+                    self.assertEqual(result['saves'], [[stage, start_id, target, None],
+                                                       [target, start_id + 1, None, None]])
+                    self.assertEqual(c.state['stage'], target)
+                    self.assertEqual(c.state['command_id'], start_id + 1)
+                    self.assert_start_notice(result['notices'], kind == 'pending')
+                    self.assertEqual(c.state['calls'], before['calls'])
+                    self.assertEqual(c.state['design_generation'], before['design_generation'])
+                    self.assertEqual(c.state.get('pending'), before.get('pending'))
+                    self.assertEqual(self.apply(self.loaded(), [])['saves'], [])
+
+    def test_start_refusal_lost_save_reply_does_not_duplicate_notice_or_retry(self):
+        """Replay skips the saved refusal, runs its queued retry once and leaves budgets untouched."""
+        for stage in ('blocked', 'stopped'):
+            for kind in ('pr', 'head', 'pending'):
+                with self.subTest(stage=stage, kind=kind):
+                    c = self.paused_publication(stage, kind)
+                    before = deepcopy(c.state)
+                    self.gh.comment('/concurro start')
+                    start_id = self.gh.comments[-1]['id']
+                    self.gh.comment('/concurro retry')
+                    retry_id = self.gh.comments[-1]['id']
+                    original = c.save
+
+                    def save_then_crash(*args, **kwargs):
+                        """Lose acknowledgement after the consumed command and notice are durable."""
+                        original(*args, **kwargs)
+                        raise RuntimeError('lost start refusal save reply')
+
+                    with patch.object(c, 'save', side_effect=save_then_crash):
+                        with self.assertRaisesRegex(RuntimeError, '^lost start refusal save reply$'):
+                            c.commands(list(self.gh.comments))
+                    restored = self.loaded()
+                    self.assertEqual(restored.state['command_id'], start_id)
+                    for key in ('stage', 'reason', 'retry_stage', 'calls', 'design_generation'):
+                        self.assertEqual(restored.state.get(key), before.get(key), key)
+                    resumed = self.apply(restored, [])
+                    self.assertEqual(resumed['saves'], [[before['retry_stage'], retry_id, None, None]])
+                    self.assertEqual(resumed['notices'], [])
+                    self.assertIsNone(resumed['blocked'])
+                    notices = [comment['body'].split('\n', 1)[1] for comment in self.gh.comments
+                               if comment['body'].startswith(conversation.MARKER)]
+                    self.assert_start_notice(notices, kind == 'pending')
+                    spent = {k: deepcopy(restored.state.get(k)) for k in ('calls', 'credentials', 'plan_revisions')}
+                    self.assertEqual(spent, {k: before.get(k) for k in spent})
+                    saved_state = deepcopy(restored.state)
+                    comments = deepcopy(self.gh.comments)
+                    replayed = self.apply(restored, [])
+                    self.assertEqual(replayed['saves'], [])
+                    self.assertEqual(restored.state, saved_state)
+                    self.assertEqual(self.gh.comments, comments)
+
+    def test_start_refusal_reaches_queued_invalidation(self):
+        """The alternative reassessment command also remains reachable in the same invocation."""
+        c = self.paused_publication('blocked', 'pr')
+        before = deepcopy(c.state)
+        start_id = self.gh.counter + 1
+        result = self.apply(c, ['start', 'invalidate'])
+        self.assertIsNone(result['blocked'])
+        self.assertTrue(result['return'])
+        self.assertEqual(result['saves'], [['blocked', start_id, 'review', None],
+                                          ['intake', start_id + 1, None, None]])
+        self.assertEqual(c.state['design_generation'], before['design_generation'] + 1)
+        self.assertEqual(len(c.state['invalidations']), 1)
+        self.assertEqual(c.state['calls'], before['calls'])
+        self.assert_start_notice(result['notices'])
+        self.assertEqual(self.apply(self.loaded(), [])['saves'], [])
+
+    def test_autonomous_start_still_ignores_paused_publications(self):
+        """The manual refusal path must not consume autonomous start commands or publish notices."""
+        for stage in ('blocked', 'stopped'):
+            for kind in ('pr', 'head', 'pending'):
+                with self.subTest(stage=stage, kind=kind):
+                    c = self.paused_publication(stage, kind, mode='autonomous')
+                    before = deepcopy(c.state)
+                    result = self.apply(c, ['start'])
+                    self.assertEqual(c.state, before)
+                    self.assertEqual(result['saves'], [])
+                    self.assertEqual(result['notices'], [])
+                    self.assertIsNone(result['blocked'])
