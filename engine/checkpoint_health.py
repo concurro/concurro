@@ -4,6 +4,7 @@ import sys
 
 from checkpoints import CheckpointError
 from identities import Identities
+from storage_helpers import owned
 
 MARKER = "<!-- concurro:checkpoint-health:v1 -->"
 FAILED = (
@@ -28,9 +29,7 @@ def sync_checkpoint_health(gh, config, number, failed, error=None):
     try:
         comments = gh.pages(f"issues/{number}/comments")
         author = Identities(config).author("state")
-        matches = [
-            c for c in comments if c.get("user", {}).get("login") == author and c.get("body", "").startswith(MARKER)
-        ]
+        matches = owned(comments, author, MARKER, "user")
         if len(matches) > 1:
             raise ValueError("duplicate health notices")
         body = FAILED if failed else RECOVERED

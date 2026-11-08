@@ -4,11 +4,13 @@ import json
 import re
 from copy import deepcopy
 
+import markup
 import protocol
 import report_store
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest
+from storage_helpers import graft_slot, owned
 
 MARKER = "<!-- concurro:v1 -->"
 STATE_PREFIX = "\n```json\n"
@@ -68,6 +70,11 @@ def legacy_state(body):
     return json.loads(body.rsplit(STATE_PREFIX, 1)[1].rsplit("\n```", 1)[0])
 
 
+def artifact_metadata(kind):
+    """Select audit metadata for generic artifacts, retaining the plan fallback for every other kind."""
+    return (AUDIT_NAME, AUDIT_MARKER) if kind == "generic" else (PLAN_NAME, PLAN_MARKER)
+
+
 class Checkpoints:
     """Persist one authoritative audit artifact and a derived human-readable plan."""
 
@@ -104,7 +111,7 @@ class Checkpoints:
         try:
             response = self.request(f"issues/{self.issue}/artifacts/{number}")
             artifact, versions = response["artifact"], response["versions"]
-            name, marker = (AUDIT_NAME, AUDIT_MARKER) if kind == "generic" else (PLAN_NAME, PLAN_MARKER)
+            name, marker = artifact_metadata(kind)
             bot = self.author
             latest = versions[0]
             if (
@@ -156,7 +163,7 @@ class Checkpoints:
 
     def discover(self, items, kind):
         """Find a unique App-owned artifact, ignoring unrelated human artifacts."""
-        name, marker = (AUDIT_NAME, AUDIT_MARKER) if kind == "generic" else (PLAN_NAME, PLAN_MARKER)
+        name, marker = artifact_metadata(kind)
         matches = []
         for item in items:
             named = item.get("name") == name or item.get("body", "").startswith(marker)
@@ -234,11 +241,7 @@ class Checkpoints:
                 if any(path[: len(previous)] == previous or previous[: len(path)] == path for previous in seen):
                     raise ValueError()
                 seen.add(path)
-                parent = state
-                for component in path[:-1]:
-                    parent = parent[component]
-                if parent[path[-1]] is not None:
-                    raise ValueError()
+                parent, slot = graft_slot(state, path, ValueError())
                 value = self.reports.get(ref["digest"], ref["artifacts"])
                 for component in ref["select"]:
                     if not (isinstance(component, str) or type(component) is int and component >= 0):
@@ -248,7 +251,7 @@ class Checkpoints:
                     if not isinstance(value, dict) or set(value) & set(ref["annotations"]):
                         raise ValueError()
                     value = {**value, **ref["annotations"]}
-                parent[path[-1]] = value
+                parent[slot] = value
             binding = payload.get("plan_artifact")
             if binding is not None and (
                 not isinstance(binding, dict)
@@ -281,11 +284,7 @@ class Checkpoints:
 
     def load(self, comments):
         """Prefer verified artifact state; use a legacy comment only before migration."""
-        matches = [
-            c
-            for c in comments
-            if c.get("user", {}).get("login") == self.author and c.get("body", "").startswith(MARKER)
-        ]
+        matches = owned(comments, self.author, MARKER, "user")
         if len(matches) > 1:
             raise CheckpointError("duplicate_comments")
         self.comment = matches[0] if matches else None
@@ -376,13 +375,7 @@ class Checkpoints:
         ]
         if state.get("plan_draft"):
             draft = state["plan_draft"]
-            fence = min(
-                (
-                    char * max(3, 1 + max((len(v) for v in re.findall(char + r"+", draft["output"])), default=0))
-                    for char in ("`", "~")
-                ),
-                key=len,
-            )
+            fence = min((markup.fence(draft["output"], char) for char in ("`", "~")), key=len)
             lines += [
                 "## Rejected draft — not approved",
                 "",
@@ -430,7 +423,7 @@ class Checkpoints:
         """Write and read back one version; reject changed snapshots and ambiguous responses."""
         if len(body.encode()) > LIMIT:
             raise CheckpointError("artifact_size")
-        name = AUDIT_NAME if kind == "generic" else PLAN_NAME
+        name, _ = artifact_metadata(kind)
         path = f"issues/{self.issue}/artifacts"
         if existing:
             current = self.read(existing["number"], kind)

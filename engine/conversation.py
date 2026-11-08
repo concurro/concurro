@@ -382,15 +382,9 @@ def archive(event, state):
         if event["kind"] == "intake_rejection"
         else json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
     )
-    fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", record)), default=0) + 1)
+    fence = markup.fence(record)
     if event["kind"] == "intake_rejection":
-        fence = min(
-            (
-                char * max(3, max((len(run) for run in re.findall(char + r"+", record)), default=0) + 1)
-                for char in ("`", "~")
-            ),
-            key=len,
-        )
+        fence = min((markup.fence(record, char) for char in ("`", "~")), key=len)
     lines = [f"{MARKER}{event['id']} -->", f"### {title}", ""]
     if event["kind"] == "intake_rejection":
         lines += [block(value["reason"]), "", "Rejected output — not an accepted intake decision.", ""]

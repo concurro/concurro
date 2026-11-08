@@ -6,9 +6,11 @@ import threading
 from collections import OrderedDict
 from copy import deepcopy
 
+import markup
 import protocol
 from github import NotFound
 from policy import Blocked, digest
+from storage_helpers import graft_slot, owned
 
 MARKER = "<!-- concurro:report-data:v1:"
 CHUNK = 16000
@@ -43,6 +45,18 @@ class ReportDataError(Blocked):
 
 ANNOTATIONS = {"classification", "agent", "head", "model", "input_revision", "sequence", "finding_ids"}
 
+ARCHIVE_JSON = re.compile(r"\n(`{3,})json\n(.*)\n\1$", re.S)
+
+
+def report_content(value):
+    """Copy canonical report evidence without any storage annotations, preserving key order."""
+    return {k: v for k, v in value.items() if k not in ANNOTATIONS}
+
+
+def report_annotations(value):
+    """Copy the storage annotations that accompany a canonical report reference."""
+    return {k: v for k, v in value.items() if k in ANNOTATIONS}
+
 
 def is_report(value):
     """Recognise the engine's complete assessment records."""
@@ -71,7 +85,7 @@ def packed(state):
     def collect(value):
         """Find complete reports before replacing any of their derived fields."""
         if is_report(value):
-            core = {k: v for k, v in value.items() if k not in ANNOTATIONS}
+            core = report_content(value)
             if len(json.dumps(core).encode()) >= 2000:
                 key = digest(core)
                 sources[key] = core
@@ -99,7 +113,7 @@ def packed(state):
             detached.append({"path": path, "digest": digest(value), "value": value, "select": [], "annotations": {}})
             return None
         if is_report(value):
-            core = {k: v for k, v in value.items() if k not in ANNOTATIONS}
+            core = report_content(value)
             key = digest(core)
             if key in sources:
                 detached.append(
@@ -108,7 +122,7 @@ def packed(state):
                         "digest": key,
                         "value": core,
                         "select": [],
-                        "annotations": {k: v for k, v in value.items() if k in ANNOTATIONS},
+                        "annotations": report_annotations(value),
                     }
                 )
                 return None
@@ -234,18 +248,14 @@ class Store:
 
     def matches(self, prefix):
         """Ignore user imitations; duplicate controller markers are conflicts."""
-        return [
-            item
-            for item in self.collection()
-            if item.get("creator", {}).get("login") == self.author and item.get("body", "").startswith(prefix)
-        ]
+        return owned(self.collection(), self.author, prefix, "creator")
 
     def encode(self, value):
         """Replace nested report copies with references to their canonical artifacts."""
         if is_report(value):
-            annotations = {k: v for k, v in value.items() if k in ANNOTATIONS}
+            annotations = report_annotations(value)
             if annotations:
-                core = {k: v for k, v in value.items() if k not in annotations}
+                core = report_content(value)
                 key = self.put(core)
                 return {"report": {"digest": key, "artifacts": self.numbers[key]}, "annotations": annotations}
         refs = []
@@ -276,13 +286,13 @@ class Store:
                 body = item.get("body", "")
                 if item.get("creator", {}).get("login") != self.author or not body.startswith(protocol.EVENT_MARKER):
                     continue
-                match = re.search(r"\n(`{3,})json\n(.*)\n\1$", body, re.S)
+                match = ARCHIVE_JSON.search(body)
                 if match:
                     try:
                         archived = json.loads(match[2])
                         self.archive_index.setdefault(digest(archived), item)
                         if is_report(archived):
-                            core = {k: v for k, v in archived.items() if k not in ANNOTATIONS}
+                            core = report_content(archived)
                             self.archive_index.setdefault(digest(core), item)
                     except ValueError:
                         pass
@@ -314,7 +324,7 @@ class Store:
         numbers = []
         for index, part in enumerate(parts, 1):
             prefix = f"{MARKER}{key}:{index}:"
-            fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", part)), default=0) + 1)
+            fence = markup.fence(part)
             body = (
                 f"{prefix}{len(parts)} -->\n### Report data · part {index} of {len(parts)}\n\n"
                 + fence
@@ -389,10 +399,10 @@ class Store:
                 items.append(item)
             if len(items) == 1 and items[0]["body"].startswith(protocol.EVENT_MARKER):
                 body = items[0]["body"]
-                match = re.search(r"\n(`{3,})json\n(.*)\n\1$", body, re.S)
+                match = ARCHIVE_JSON.search(body)
                 value = json.loads(match[2]) if match else None
                 if digest(value) != key and is_report(value):
-                    value = {k: v for k, v in value.items() if k not in ANNOTATIONS}
+                    value = report_content(value)
                 if digest(value) != key:
                     raise ReportDataError("Stored report failed digest verification.")
                 self.remember(key, numbers, value)
@@ -427,12 +437,8 @@ class Store:
         else:
             value = record["value"]
         for ref in record.get("references", []):
-            parent = value
-            for component in ref["path"][:-1]:
-                parent = parent[component]
-            if parent[ref["path"][-1]] is not None:
-                raise ReportDataError("Overlapping report references.")
-            parent[ref["path"][-1]] = self.get(ref["digest"], ref["artifacts"])
+            parent, slot = graft_slot(value, ref["path"], ReportDataError("Overlapping report references."))
+            parent[slot] = self.get(ref["digest"], ref["artifacts"])
         if digest(value) != key:
             raise ReportDataError("Stored review data failed digest verification.")
         self.remember(key, actual, value)

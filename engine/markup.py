@@ -62,6 +62,12 @@ def text(value, limit=None):
     return NUMBERED.sub(r"\1\\\2", value, count=1) if NUMBERED.match(value) else value
 
 
+def fence(content, char="`"):
+    """A block fence of at least three characters, longer than any matching run in its contents."""
+    longest = max((len(run) for run in re.findall(char + r"+", content)), default=0)
+    return char * max(3, longest + 1)
+
+
 def code(value, cell=False):
     """An inline code span for an engine value; in a table cell, `|` is escaped as GitHub requires."""
     value = one_line(value)
