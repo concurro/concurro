@@ -2,6 +2,9 @@
 
 Part of the [code-quality programme](README.md).
 
+Current increment: **characterisation tests only**. Production extraction follows a separate
+review of this baseline. The line numbers below are historical; locate code by symbol.
+
 ## Goal
 
 Move writer-command handling and the plan-revision budget out of `Controller`.
@@ -113,7 +116,10 @@ For each cell, record:
   processed, which are consumed, and where processing stops (`return True`).
 - **A refused command, then a later valid one:** for example `retry --plan-revisions 4`
   then `retry --plan-revisions 1`, or a refused `invalidate` then `retry`. The refusal
-  must not block the later command, and nothing is applied twice.
+  must not leave the later command permanently unprocessable, and nothing is applied twice.
+  A refusal notice can continue within the same invocation; a raised `Blocked` ends it.
+  For the latter, model the caller's blocked-state save before reloading and processing the
+  later command. Invalidation refusals consume in memory but do not save themselves.
 - **Replay after a failure:** the controller crashes after `save()` but before the reply,
   and the same comments are processed again. Use the existing lost-save-reply test
   pattern. No command is applied twice, and no notice is posted twice.
@@ -122,6 +128,18 @@ Generate the matrix against the old code, review the generated fixture as if it 
 (it can preserve existing bugs), and commit it as a pinned fixture. It is a
 **prerequisite**: land it in its own commit before the refactor if it is large. It must pass
 unchanged after the refactor.
+
+## Characterisation baseline
+
+`engine/tests/test_command_characterization.py` covers 45 lifecycle scenarios × 9 commands
+× writer/non-writer authority. The pinned `goldens/commands.json` records each cell on one
+line, including save boundaries and visible notice text; only hidden event identities are
+omitted. Separate assertions cover sequences, replay, parser boundaries and restart differences.
+
+One existing behavior needs separate consideration: a manual `/concurro start` on a blocked
+task with an existing PR refuses without consuming the command. After the caller saves the
+blocked state, replay refuses the same command before reaching a later `/concurro retry`.
+The baseline pins this behavior; changing consumption belongs in a separate behavioral fix.
 
 ## Done when
 
