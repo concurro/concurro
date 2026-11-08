@@ -12,7 +12,7 @@ from checkpoints import Checkpoints
 import controller as controller_module
 from controller import Controller
 from policy import Blocked, RunnerTerminated, SessionFailure, TIMEOUT_EXIT, UncertainOutcome
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub
 import turns
 
 

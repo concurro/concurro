@@ -14,23 +14,8 @@ from model_config import parse, resolve
 from policy import Blocked, approval_binding, design_roster, digest
 from readiness import review_reasons
 import sessions
-from test_pipeline import FakeAgents, FakeGitHub, FINDING
-from test_turns import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN
-
-
-def named_config():
-    """Two reviewers share OpenAI while triage, planning and implementation have other assignments."""
-    config = deepcopy(CONFIG)
-    for key in ("qc", "qc_model", "planner", "implementer", "reviewers"):
-        config.pop(key)
-    config["models"] = {
-        "opus-high": {"provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},
-        "sol-medium": {"provider": "openai", "model": "gpt-6.1-sol", "effort": "medium"},
-        "sol-high": {"provider": "openai", "model": "gpt-6.1-sol", "effort": "high"},
-        "astra-high": {"provider": "openai", "model": "gpt-6-astra", "effort": "high"}}
-    config["agents"] = {"triage": "sol-medium", "planner": "opus-high", "implementer": "opus-high",
-                        "plan_reviewers": ["sol-high", "astra-high"], "pr_reviewers": ["sol-high", "astra-high"]}
-    return config
+from fakes import FakeAgents, FakeGitHub, FINDING, named_config
+from runner_fixtures import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN
 
 
 class ConfigurationTests(unittest.TestCase):

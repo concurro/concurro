@@ -4,14 +4,11 @@ import unittest
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from controller import OUTCOMES, WAIT_SECONDS, Controller
-import test_pipeline
+from pipeline_fixtures import ManualPipelineFixture
 
 
-class OutcomeTests(unittest.TestCase):
+class OutcomeTests(ManualPipelineFixture, unittest.TestCase):
     """Outcomes derive from durable stage, so schedulers can avoid re-dispatching idle tasks."""
-
-    pipeline = test_pipeline.PipelineTests
-    setUp, tick, ready = pipeline.setUp, pipeline.tick, pipeline.ready
 
     def outcome(self):
         """Run one tick and return its outcome."""

@@ -5,8 +5,8 @@ import json
 import unittest
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_findings import Harness, Reviewers
-from test_pipeline import PLAN
+from review_fixtures import Harness, Reviewers
+from fakes import PLAN
 from controller import DISPATCH_ALLOWANCE
 from policy import Blocked, OutsideScope, validate_edits, validate_plan
 from readiness import review_reasons
@@ -59,7 +59,6 @@ class ContractTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(Blocked):
                 validate_plan({**deepcopy(PLAN), "scope": scope}, CONFIG)
 
-
     def test_out_of_envelope_proposals_are_refused_whole(self):
         plan = {**deepcopy(PLAN), "scope": deepcopy(SCOPE)}
         edits = [{"path": "docs/guide.md", "content": "a"}, {"path": "guides/x.md", "content": "b"}]
@@ -92,7 +91,6 @@ class ImplementationTests(Harness, unittest.TestCase):
         developments = [c for _, stage, c in agents.calls if stage == "develop"]
         self.assertIn("outside the approved scope or of a protected path: .gitignore",
                       developments[1]["implementation_feedback"])
-
 
     def test_repeated_refusals_exhaust_the_local_repair_budget(self):
         with self.assertRaisesRegex(Blocked, "repair allowance exhausted"):

@@ -5,26 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-from controller import Controller
 from policy import Blocked, approval_valid
-import test_consensus
-from test_consensus import decision
+from pipeline_fixtures import ConsensusFixture
+from fakes import decision
 
 
-class RevisionExtensionTests(unittest.TestCase):
+class RevisionExtensionTests(ConsensusFixture, unittest.TestCase):
     """Exercise real checkpoint saves, command replay and planner/reviewer transitions."""
-
-    setUp = test_consensus.ConsensusTests.setUp
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
-    persist = test_consensus.ConsensusTests.persist
-
-    def loaded(self):
-        """Reload the published checkpoint without starting a model turn."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
 
     def exhausted(self, legacy=False):
         """Spend the configured allowance before a genuine reviewer requests another revision."""

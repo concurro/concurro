@@ -13,8 +13,8 @@ from agent_entry import prompt_for
 from agents import Agents
 from controller import Controller, transport_size
 from policy import digest, design_roster
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
-from test_turns import FakeExecutor, MODELS
+from fakes import CONFIG, FakeAgents, FakeGitHub
+from runner_fixtures import FakeExecutor, MODELS
 
 
 class FeedbackTests(unittest.TestCase):

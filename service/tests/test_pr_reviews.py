@@ -4,7 +4,7 @@ import unittest
 
 from fixtures import KEY, ServiceFixture
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_pipeline import FakeAgents
+from fakes import FakeAgents
 from service.gateway import Disallowed
 import reviews
 

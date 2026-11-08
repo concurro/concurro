@@ -5,14 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from pipeline_fixtures import PipelineFixture
 import conversation
-from controller import Controller
 from policy import Blocked, approval_valid
-from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import decision, CONFIG, FakeAgents, FakeGitHub
 
 
-class ConversationTests(unittest.TestCase):
+class ConversationTests(PipelineFixture, unittest.TestCase):
     """Use real controller/checkpoint paths with deterministic model responses."""
 
     def setUp(self):
@@ -20,12 +19,6 @@ class ConversationTests(unittest.TestCase):
         self.config = deepcopy(CONFIG)
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
-
-    def tick(self):
-        """Reload authoritative GitHub state between every provider invocation."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def events(self):
         """Select only append-only conversation entries, excluding the editable summary."""

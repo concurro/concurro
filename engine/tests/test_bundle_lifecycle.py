@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from test_consensus import copy_roots
-from test_pipeline import FakeAgents, FakeGitHub
+from pipeline_fixtures import copy_roots
+from fakes import FakeAgents, FakeGitHub
 from controller import BUNDLE_REASON, LEGACY_BUNDLE_REASON, Controller
 from policy import Blocked, approval_valid
 from github import Transient
@@ -37,14 +37,14 @@ class BundleLifecycleTests(unittest.TestCase):
         return Controller(self.gh, self.agents, self.config, self.root, self.root)
 
     def loaded(self):
-        """Load the durable checkpoint without advancing it."""
+        """Load without advancing, using this fixture's custom bundle roots."""
         controller = self.controller()
         controller.issue = self.gh.issue
         controller.load(self.gh.comments)
         return controller
 
     def tick(self):
-        """Advance one durable tick."""
+        """Advance once using this fixture's custom bundle roots."""
         controller = self.controller()
         controller.advance(7)
         return controller

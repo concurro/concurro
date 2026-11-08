@@ -6,7 +6,7 @@ import yaml
 
 from fixtures import ENGINE, KEY, ServiceFixture
 from support import TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
-from test_model_profiles import named_config
+from fakes import named_config
 from controller import config_digest, validate_config
 from policy import Blocked
 from service.target_config import decode, read_remote

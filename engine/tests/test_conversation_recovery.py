@@ -9,7 +9,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import conversation
 from controller import Controller
 from policy import approval_valid, digest
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub
 
 
 class ConversationSizeTests(unittest.TestCase):

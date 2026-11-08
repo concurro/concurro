@@ -6,48 +6,16 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule
+from pipeline_fixtures import PipelineFixture
 import classification as ratings
 import conversation
 import design
 import reviews
 from bundle import Bundle, ENGINE_RESOURCES
 from checkpoints import Checkpoints, LIMIT
-from controller import Controller
 from model_config import resolve
 from policy import Blocked, MODEL_RESPONSE_LIMIT, approval_binding, consensus_valid, digest, validate_qc, validate_pr_review
-from test_pipeline import FakeAgents, FakeGitHub, APPROVE, design_report
-from test_model_profiles import named_config
-
-
-def assessment(complexity='medium', risk='high', **fields):
-    """Return valid metadata with deliberately high consequence risk and ordinary QC risk."""
-    return {'complexity': complexity, 'change_risk': risk, 'confidence': 'high',
-            'rationale': 'Interacting states; mistakes can lose persistent data.', 'unknowns': [], **fields}
-
-
-def intake(**fields):
-    """Build a valid core without an assessment for compatibility and boundary tests."""
-    return {'decision': 'proceed', 'rationale': 'Clearly specified.', 'risk': 'low', 'questions': [],
-            'concerns': [], 'scope': {'goal_ids': ['G-USABILITY'], 'fit': 'Usability.', 'conflicts': []}, **fields}
-
-
-class ClassifiedAgents(FakeAgents):
-    """Attach independent evidence to the ordinary simple and repair lifecycle fixtures."""
-
-    def __init__(self, fix=False):
-        """Track the first reviewed head to exercise lowering on a complete repair round."""
-        super().__init__(fix)
-        self.first_head = None
-
-    def ask(self, provider, stage, context):
-        """The repaired head receives a lower estimate, without changing its core verdict."""
-        report = super().ask(provider, stage, context)
-        if stage == 'review' and self.first_head is None:
-            self.first_head = context['head']
-        if stage in ratings.STAGES:
-            report['classification'] = assessment('medium' if provider in ('claude', 'sol-high') else 'low',
-                                                   'low' if stage == 'review' and context['head'] != self.first_head else 'high')
-        return report
+from fakes import FakeGitHub, APPROVE, design_report, named_config, assessment, intake, ClassifiedAgents
 
 
 class ContractTests(unittest.TestCase):
@@ -133,7 +101,7 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(complete.provisional)
 
 
-class LifecycleTests(unittest.TestCase):
+class LifecycleTests(PipelineFixture, unittest.TestCase):
     """Exercise report capture, publication, independent contexts and revision bindings."""
 
     def setUp(self):
@@ -142,12 +110,6 @@ class LifecycleTests(unittest.TestCase):
         self.config['autonomous'] = True
         self.gh = FakeGitHub(self.config)
         self.agents = ClassifiedAgents()
-
-    def tick(self):
-        """Restart on durable state, as the actual service does for every tick."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def ready(self):
         """Run a bounded number of normal ticks without changing the task's inputs."""

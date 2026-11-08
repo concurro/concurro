@@ -7,7 +7,7 @@ import unittest
 
 from fixtures import KEY, ServiceFixture
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_pipeline import FakeAgents
+from fakes import FakeAgents
 from controller import ACTIONS, Controller
 from github import NotFound
 from service import control

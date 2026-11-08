@@ -10,7 +10,7 @@ import unittest
 
 from fixtures import ENGINE, KEY, Inline, RestBackend, ServiceFixture, target_files
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_pipeline import FakeAgents, FakeGitHub
+from fakes import FakeAgents, FakeGitHub
 from controller import Controller, Outcome, config_digest
 from github import Transient
 import reviews
@@ -406,7 +406,6 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(runner.task["config_sha"], "b" * 40)
 
 
-
 class FairnessTests(unittest.TestCase):
     """Round-robin across repositories, oldest first within each; limits are never exceeded."""
 
@@ -431,7 +430,7 @@ class LeaseTests(ServiceFixture, unittest.TestCase):
 
     def test_renewal_while_parallel_reviews_wait_preserves_one_owner(self):
         """The real worker lease renews while two independently submitted reviews wait."""
-        from test_parallel_reviews import BatchAgents
+        from fakes import BatchAgents
         self.agents = BatchAgents()
         self.service()
         self.worker.renew_seconds = 0.01

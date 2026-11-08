@@ -9,9 +9,9 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from agents import Agents, RunnerExecutor
 from policy import RunnerTerminated, SessionFailure, approval_binding, digest
 from controller import Controller
-from test_pipeline import CONFIG
-from test_turns import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN, MODELS
-import test_consensus
+from fakes import CONFIG
+from runner_fixtures import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN, MODELS
+from pipeline_fixtures import ConsensusFixture
 import review_timing
 from relay import ExchangeError
 
@@ -80,12 +80,8 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(state, core)
 
 
-class ControllerTimingTests(unittest.TestCase):
+class ControllerTimingTests(ConsensusFixture, unittest.TestCase):
     """Real checkpoints/outboxes preserve receipts without changing consensus or replay."""
-
-    setUp = test_consensus.ConsensusTests.setUp
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
 
     def timed_agents(self):
         """Instrument the fake transport through the same out-of-band field as real Agents."""

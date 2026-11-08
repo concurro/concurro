@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 import format_samples
-from test_findings import FINDING, Harness, Reviewers, report
+from fakes import FINDING
+from review_fixtures import Harness, Reviewers, report
 import conversation
 from controller import SUMMARY_LIMIT
 import markup
@@ -249,7 +250,7 @@ class SizeTests(unittest.TestCase):
         state, source, details = format_samples.review_state()
         state["reviews"]["claude"]["summary"] = "<" * 20000 + "\n````\n</details>"
         conversation.queue(state, None, source=source, kind="review", details=format_samples.v2_details(details))
-        from test_pipeline import FakeGitHub
+        from fakes import FakeGitHub
         from report_store import Store
         gh = FakeGitHub(CONFIG)
         conversation.publish(state, gh, CONFIG)

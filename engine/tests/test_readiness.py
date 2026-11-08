@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from test_pipeline import FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
+from fakes import FakeAgents, FakeGitHub
 from controller import Controller
 from readiness import ci_reasons
 
@@ -72,18 +73,13 @@ class CIEvidenceTests(unittest.TestCase):
                     self.assertIn("CI pending: test", reasons)
 
 
-class ReadinessPipelineTests(unittest.TestCase):
+class ReadinessPipelineTests(PipelineFixture, unittest.TestCase):
     """Real controller lifecycle with deterministic agent/provider substitutes."""
 
     def setUp(self):
         self.config = deepcopy(CONFIG)
         self.config["autonomous"] = False
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
-
-    def tick(self):
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def reviewed(self):
         for _ in range(30):

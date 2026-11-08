@@ -9,7 +9,7 @@ import candidates
 import checks
 from controller import Controller, changes
 from policy import Blocked, OutsideScope, digest, validate_edits, validate_plan
-from test_pipeline import PLAN, FakeAgents, FakeGitHub
+from fakes import PLAN, FakeAgents, FakeGitHub
 
 
 class LineBudgetRemovalTests(unittest.TestCase):

@@ -8,7 +8,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import conversation
 from identities import Identities
 from policy import Blocked
-from test_pipeline import CONFIG, FakeGitHub
+from fakes import CONFIG, FakeGitHub
 
 CLAUDE = "concurro-claude[bot]"
 

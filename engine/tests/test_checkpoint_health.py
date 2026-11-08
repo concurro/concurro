@@ -14,8 +14,7 @@ from checkpoint_health import FAILED, MARKER, RECOVERED, sync_checkpoint_health
 from checkpoints import CheckpointError, DIAGNOSTICS
 from controller import Controller
 from github import ATTENTION_LABEL, GitHub
-from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import decision, CONFIG, FakeAgents, FakeGitHub
 
 
 class CheckpointHealthTests(unittest.TestCase):
@@ -33,7 +32,6 @@ class CheckpointHealthTests(unittest.TestCase):
         """Find only the configured App's separate health comments."""
         return [c for c in self.gh.comments if c['body'].startswith(MARKER)
                 and c['user']['login'] == self.config['bot_login']]
-
 
     def test_health_channels_fail_independently_without_leaking_errors(self):
         """A failure in one display API cannot prevent the other channel or mask checkpoint failure."""
@@ -78,7 +76,6 @@ class CheckpointHealthTests(unittest.TestCase):
             repo.assert_not_called()
             gh.sync_attention(7, False)
         self.assertEqual(repo.call_args.args, ('issues/7/labels/concurro%3Aattention', 'DELETE'))
-
 
     def test_diagnostics_use_fixed_catalog_and_update_the_existing_notice(self):
         """Recognized causes are actionable; arbitrary exception data never reaches the issue."""

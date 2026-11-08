@@ -6,11 +6,12 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+from pipeline_fixtures import PipelineFixture
 from checkpoints import Checkpoints, PLAN_NAME, LIMIT
-from controller import Controller, PLAN_OUTPUT_REPAIRS
+from controller import PLAN_OUTPUT_REPAIRS
 from policy import Blocked, validate_plan
 import checks
-from test_pipeline import PLAN, FakeAgents, FakeGitHub
+from fakes import PLAN, FakeAgents, FakeGitHub
 
 
 class DirectoryScopeTests(unittest.TestCase):
@@ -38,7 +39,7 @@ class DirectoryScopeTests(unittest.TestCase):
                     validate_plan(plan, CONFIG)
 
 
-class PlanRepairTests(unittest.TestCase):
+class PlanRepairTests(PipelineFixture, unittest.TestCase):
     """Use the real controller and artifact recovery with deterministic models."""
 
     def setUp(self):
@@ -48,12 +49,6 @@ class PlanRepairTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         controller = self.tick()
         self.assertEqual(controller.state['stage'], 'plan')
-
-    def tick(self):
-        """Run a fresh controller process against the stored issue state."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def artifact(self):
         """Locate the managed plan and its immutable version history."""

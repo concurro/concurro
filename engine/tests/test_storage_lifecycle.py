@@ -10,8 +10,7 @@ from checkpoints import Checkpoints, CheckpointError, FORMAT, BATCH_FORMAT, AUDI
 from controller import Controller
 from policy import digest, design_roster
 from report_store import Cache, Store, MARKER, ReportDataError
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, APPROVE, design_report
-from test_classification import assessment, intake
+from fakes import CONFIG, FakeAgents, FakeGitHub, APPROVE, design_report, assessment, intake
 import classification
 import conversation
 import design

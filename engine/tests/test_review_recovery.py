@@ -8,24 +8,12 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from pipeline_fixtures import PipelineFixture
 import design
 from controller import Controller
 from policy import Blocked, approval_valid, validate_qc
 from repository import Repository, source_lines
-from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, design_report
-
-
-def sized_report(context, width=300):
-    """Build bounded but realistically wordy evidence for every supplied criterion."""
-    report = design_report(decision('approve'), context)
-    report['rationale'] = 'The source supports the requested design. ' * 25
-    report['scope']['fit'] = 'Documentation supports operator usability. ' * 12
-    for assessment in report['assessments']:
-        assessment['reason'] = 'Source and plan satisfy this requirement. ' * 10
-        assessment['reason'] = assessment['reason'][:400]
-        assessment['counterexample'] = ('An omitted behavior would contradict this criterion. ' * 8)[:width]
-    return report
+from fakes import decision, CONFIG, FakeAgents, FakeGitHub, design_report, sized_report
 
 
 class ReviewEvidenceTests(unittest.TestCase):
@@ -92,7 +80,7 @@ class ReviewEvidenceTests(unittest.TestCase):
         validate_qc(unicode_report, 'plan_qc')
 
 
-class ReviewerRepairTests(unittest.TestCase):
+class ReviewerRepairTests(PipelineFixture, unittest.TestCase):
     """Advance only fake GitHub issues while measuring real checkpoint payloads."""
 
     def setUp(self):
@@ -100,12 +88,6 @@ class ReviewerRepairTests(unittest.TestCase):
         self.config = deepcopy(CONFIG)
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
-
-    def tick(self):
-        """Recover state from artifacts between every provider attempt."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def reach(self, stage, phase=None):
         """Bound fixture setup and require the requested review phase when supplied."""

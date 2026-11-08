@@ -7,7 +7,7 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 import candidates
 from controller import Controller, changes
 from policy import Blocked, OutsideScope, validate_edits
-from test_pipeline import FakeAgents, FakeGitHub, PLAN
+from fakes import FakeAgents, FakeGitHub, PLAN
 
 
 class CandidateTests(unittest.TestCase):

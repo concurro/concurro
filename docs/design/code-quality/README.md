@@ -9,8 +9,8 @@ a read-only audit against idiomatic Python, DRY, SOLID and KISS. The work is spl
 iterations. Each iteration is **one deliverable and one commit**, reviewed before the next
 one starts.
 
-Only the approved iteration in the table is authorised. Iterations 06 and 07 are the intended
-next steps.
+Only the approved iteration in the table is authorised. Iteration 07 is the intended
+next step.
 Everything else is a **candidate**, to be reassessed after the first extractions land.
 Reassessment may reshape, split or drop a candidate.
 
@@ -163,8 +163,8 @@ Status values:
 | ---- | ---- | ---- | ---- | ---- |
 | 01 | [Audit report-link fix](01-report-link-fix.md) | Bug fix | Very low | Done |
 | 02 | [Dead code and naming](02-dead-code-and-naming.md) | Cleanup | Very low | Done |
-| 03 | [Lint gate](03-lint-gate.md) | Tooling | Low | Approved |
-| 06 | [Test fixtures](06-test-fixtures.md) | Tests | Low | Next |
+| 03 | [Lint gate](03-lint-gate.md) | Tooling | Low | Done |
+| 06 | [Test fixtures](06-test-fixtures.md) | Tests | Low | Approved |
 | 07 | [Dashboard extraction](07-dashboard-extraction.md) | Refactor | Low | Next |
 | 04 | [Shared vocabulary](04-shared-vocabulary.md) | Refactor | Low | Candidate |
 | 05 | [Shared constants and URL helpers](05-shared-constants.md) | Refactor | Low | Candidate |

@@ -5,7 +5,6 @@ import base64
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,67 +12,20 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from runner_fixtures import ExecutorFixture, GATEWAY, MODELS, AGENT, Workspace, FakeExecutor, FakeOperator, TASK, TURN, FakeRunner
 import agent_entry
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from credentials import Credential
-from gitfixture import IDENTITY, Upstream, mirror_of
+from gitfixture import IDENTITY
 from mirror import git_environment
 from policy import Blocked, SessionFailure, UncertainOutcome
 from relay import ExchangeError
-import repository
 import runner
 import turns
 
-GATEWAY = {"url": "https://gateway.invalid/concurro", "headers": {"codex": {"x-concurro-plan": "chatgpt"}}}
-IMAGE = "sha256:" + "a" * 64
-MODELS = {**CONFIG["models"], "codex": "gpt-test", "claude": "claude-test"}
-# Stands in for the agent container: reads the request, edits the workspace, answers as the entry point does.
-AGENT = """
-import json, os, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-request = json.load(sys.stdin)
-assert os.environ["CONCURRO_GATEWAY_KEY"] == "sk-agw-test" and "GH_TOKEN" not in os.environ
-assert request["workspace"] == str(root / "work") and request["timeout"] == (None if request["stage"] == "develop" else 1800)
-if request.get("feedback_directory"):
-    feedback = pathlib.Path(request["feedback_directory"])
-    assert feedback.parent == root and feedback.name == "feedback"
-    assert not str(feedback).startswith(str(root / "work"))
-    (root / "scratch/feedback-read.json").write_text(json.dumps(
-        [json.loads(path.read_text()) for path in feedback.glob("*.json")]))
-work = root / "work"
-(work / "docs/guide.md").write_text("Guide\\nEdited\\n")
-(work / "docs/new.md").write_text("New\\n")
-(work / "target").mkdir()
-(work / "target/build.out").write_text("ignored")
-if request.get("session"):
-    (root / "retained/turn.json").write_text(json.dumps({"turn": request["session"]["turn"]}))
-print(json.dumps({"summary": "done", "checks": [], "design_issue": None}))
-"""
 
 
-class Workspace(unittest.TestCase):
-    """A real upstream and mirror, and a turn directory prepared the way `turns.execute` prepares one."""
-
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.tmp = Path(directory.name).resolve()
-        self.upstream = Upstream(self.tmp / "upstream.git")
-        self.base = self.upstream.commit({"docs/guide.md": "Guide\n", "src/lib.rs": "fn main() {}\n",
-                                          ".gitignore": "target/\n"}, branch="main", message="base")
-        self.mirror = mirror_of(self.upstream, self.tmp / "mirrors")
-        self.spec = {"refs": {"main": self.base}, "head": "main", "base_branch": "main", "candidate": None}
-
-    def prepare(self, candidate=None):
-        root = turns.directory(self.tmp / "turns")
-        (root / "work").mkdir()
-        self.mirror.borrow(root.name, "main", [self.base])
-        repository.snapshot({**self.spec, "candidate": candidate}, root=root / "work", mirror=self.mirror.path)
-        shutil.copytree(root / "work/.git", root / "pristine.git", symlinks=True)
-        return root
-
-
-class ExtractionTests(Workspace):
+class ExtractionTests(Workspace, unittest.TestCase):
 
     def test_changes_are_extracted_against_the_snapshot_head(self):
         root = self.prepare(candidate={"files": {"docs/guide.md": "Candidate\n"}})
@@ -158,7 +110,7 @@ class ExtractionTests(Workspace):
             path.unlink()
 
 
-class ExecuteTests(Workspace):
+class ExecuteTests(Workspace, unittest.TestCase):
 
     def execute(self, request, retained=None, feedback_files=None):
         root = turns.directory(self.tmp / "turns")
@@ -281,17 +233,6 @@ class ExecuteTests(Workspace):
                              sorted(kept))
 
 
-class FakeExecutor:
-    gateway = GATEWAY
-
-    def __init__(self, result=None):
-        self.turns, self.result = [], result or {"outcome": "ok", "response": {"ok": True}}
-
-    def run(self, turn, label):
-        self.turns.append((turn, label))
-        return self.result
-
-
 class AgentsTests(unittest.TestCase):
 
     def setUp(self):
@@ -377,52 +318,7 @@ class AgentsTests(unittest.TestCase):
             agents.ask("codex", "review", {"bundle_id": "old"})
 
 
-class FakeOperator:
-
-    def __init__(self, replies=()):
-        self.replies, self.calls = list(replies), []
-
-    def mint(self, *args):
-        self.calls.append(("mint", args))
-        return {"session": "s-1", "key": "sk-agw-host"}
-
-    def end(self, session):
-        self.calls.append(("end", session))
-
-    def submit(self, *args):
-        self.calls.append(("submit", args))
-        reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
-
-    def poll(self, turn, wait=None):
-        self.calls.append(("poll", turn))
-        reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
-
-    def cancel(self, turn):
-        self.calls.append(("cancel", turn))
-
-
-TASK = {"repository": "up/project", "issue": 7, "generation": 1, "config_sha": "b" * 40,
-        "upstream": "up/project", "fork": "owner/project"}
-TURN = {"request": {"model": "claude-test", "provider": "claude", "stage": "plan", "context": {"base": "a" * 40}}, "spec": {}, "retained": None, "timeout": 600}
-
-
-class ExecutorTests(unittest.TestCase):
-
-    def runner(self, replies, dispatch=None, clock=None):
-        operator = FakeOperator(replies)
-        started = []
-        identity = patch("agents.uuid.uuid4", return_value="t")
-        identity.start()
-        self.addCleanup(identity.stop)
-        executor = RunnerExecutor(operator, GATEWAY, {"repository_id": "1"}, ["claude-*"], 5000,
-                                  dispatch or started.append, clock=clock or (lambda: 0), sleep=lambda _: None, task=TASK)
-        return executor, operator, started
+class ExecutorTests(ExecutorFixture, unittest.TestCase):
 
     def test_a_runner_turn_dispatches_a_session_when_needed_and_returns_the_result(self):
         result = {"outcome": "ok", "response": {"a": 1}}
@@ -483,23 +379,6 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, "rejected"):
             executor.run(TURN, "label")
         self.assertEqual(operator.calls[1:], [("cancel", "t"), ("end", "s-3")])
-
-
-class FakeRunner:
-
-    def __init__(self, batches):
-        self.batches, self.completed = list(batches), []
-
-    def next(self, capacity, wait):
-        if capacity == 0:
-            return []
-        if not self.batches:
-            raise ExchangeError(410, "session has ended")
-        batch = self.batches.pop(0)
-        return batch[:capacity]
-
-    def complete(self, turn, result):
-        self.completed.append((turn, result))
 
 
 class RunnerLoopTests(unittest.TestCase):
@@ -563,24 +442,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class RelayEndToEndTests(Workspace):
+class RelayEndToEndTests(Workspace, unittest.TestCase):
     """The controller's agents, the real exchange over HTTP, the runner loop and a real workspace."""
 
     def setUp(self):
         super().setUp()
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
-        import test_exchange  # puts the exchange on the module path
+        import exchange_fixtures  # puts the exchange on the module path
         import exchange as exchange_module
-        self.signer = test_exchange.Signer(str(self.tmp))
-        self.exchange = exchange_module.Exchange(str(self.tmp / "exchange.db"), test_exchange.FakeGateway(),
+        self.signer = exchange_fixtures.Signer(str(self.tmp))
+        self.exchange = exchange_module.Exchange(str(self.tmp / "exchange.db"), exchange_fixtures.FakeGateway(),
                                                  exchange_module.Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
-                                                 test_exchange.AUDIENCE)
+                                                 exchange_fixtures.AUDIENCE)
         self.server = exchange_module.server(self.exchange, "127.0.0.1:0", "operator-secret")
         import threading
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.expected = {**test_exchange.EXPECTED, "actor_id": "3003"}
+        self.expected = {**exchange_fixtures.EXPECTED, "actor_id": "3003"}
 
     def test_same_cli_review_profiles_run_in_distinct_groups_and_cancel_independently(self):
         """Real HTTP exchange staffing separates profiles, while each runner stays serial."""

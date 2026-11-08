@@ -9,7 +9,7 @@ import controller as controller_module
 from controller import ACTIONS, Controller
 import conversation
 from policy import Blocked
-import test_pipeline
+from pipeline_fixtures import ManualPipelineFixture
 
 SERVICE = "service:primary"
 MUTATORS = ("sync_stage", "sync_attention", "create_linked_branch")
@@ -47,11 +47,8 @@ class OwnershipFixture:
         return controller, advanced, writes
 
 
-class OwnershipTests(OwnershipFixture, unittest.TestCase):
+class OwnershipTests(OwnershipFixture, ManualPipelineFixture, unittest.TestCase):
     """Cutover safety: a marker-aware controller leaves foreign-owned tasks untouched."""
-
-    pipeline = test_pipeline.PipelineTests
-    setUp, tick, ready = pipeline.setUp, pipeline.tick, pipeline.ready
 
     def test_new_tasks_record_their_controller(self):
         """Every task created after this change names its owner explicitly."""

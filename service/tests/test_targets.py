@@ -8,7 +8,7 @@ from unittest.mock import patch
 import fixtures  # noqa: F401
 from service.targets import Target, enrollment, permissions
 from service.identity import Identity, IdentityError
-from test_identity import App
+from app_fakes import App
 from fixtures import Clock
 
 

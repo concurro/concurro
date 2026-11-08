@@ -13,8 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from controller import Controller, ESCALATION_REASON, STATE_PREFIX
 from github import GitHub, NotFound
 from policy import Blocked
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
-from test_autonomy import decision
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision
 
 
 class SurfaceTests(unittest.TestCase):

@@ -19,7 +19,8 @@ from policy import Blocked, digest, path_allowed
 import repository
 from repository import Repository, TOOL_NAMES, ToolTimeout, relay, run_git, serve
 from snapshot import inspection
-from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub
+from controller import Controller
 
 
 class RepositoryTests(unittest.TestCase):
@@ -242,7 +243,6 @@ class GitSnapshotTests(unittest.TestCase):
 
 class TransportTests(unittest.TestCase):
     """Snapshot preparation and the refs each stage inspects."""
-
 
     def test_inspection_requires_refs_and_candidates_only_for_candidate_stages(self):
         refs = {"refs": {"main": "a" * 40}, "head": "main"}

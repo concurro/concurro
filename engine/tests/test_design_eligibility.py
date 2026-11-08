@@ -5,9 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-import test_consensus
-from test_model_profiles import named_config
-from test_pipeline import Controller
+from pipeline_fixtures import ConsensusFixture
+from fakes import named_config
+from controller import Controller
 from policy import SessionFailure, approval_valid, digest
 import design_eligibility as eligibility
 import feedback
@@ -96,20 +96,8 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(eligibility.eligible(self.state, self.context, self.session))
 
 
-class LifecycleTests(unittest.TestCase):
+class LifecycleTests(ConsensusFixture, unittest.TestCase):
     """Reconstruct controllers and real checkpoints across corrections and recovery."""
-
-    setUp = test_consensus.ConsensusTests.setUp
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
-    persist = test_consensus.ConsensusTests.persist
-
-    def load(self):
-        """Read persisted state without dispatching another turn."""
-        active = Controller(self.gh, self.agents, self.config)
-        active.issue = self.gh.issue
-        active.load(self.gh.comments)
-        return active
 
     def invalid(self, original):
         """Build a correction requiring evidence, not a forced approve decision."""

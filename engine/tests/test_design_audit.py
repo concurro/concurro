@@ -7,19 +7,15 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
-import test_consensus
+from pipeline_fixtures import ConsensusFixture
 import conversation
 from design_audit import Snapshot, archived_report, measure
 from report_store import Store
-from test_pipeline import Controller
+from controller import Controller
 
 
-class AuditTests(unittest.TestCase):
+class AuditTests(ConsensusFixture, unittest.TestCase):
     """Collect fixture archives offline and reproduce a stable source manifest."""
-
-    setUp = test_consensus.ConsensusTests.setUp
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
 
     def snapshot(self, directory):
         """Export fake API responses, including metadata, to the same offline format."""

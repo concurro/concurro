@@ -5,14 +5,15 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+from pipeline_fixtures import PipelineFixture
 from checkpoints import Checkpoints, LIMIT
-from controller import Controller, INTAKE_OUTPUT_REPAIRS
+from controller import INTAKE_OUTPUT_REPAIRS
 from conversation import PublicationError, ARCHIVE_LIMIT
 from policy import Blocked
-from test_pipeline import FakeAgents, FakeGitHub
+from fakes import FakeAgents, FakeGitHub
 
 
-class IntakeRepairTests(unittest.TestCase):
+class IntakeRepairTests(PipelineFixture, unittest.TestCase):
     """Exercise correction and archive recovery through real controller ticks."""
 
     def setUp(self):
@@ -20,12 +21,6 @@ class IntakeRepairTests(unittest.TestCase):
         self.config = deepcopy(CONFIG)
         self.config['autonomous'] = False
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
-
-    def tick(self):
-        """Restart the controller against its durable checkpoint each tick."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def report(self, **changes):
         """Build valid intake output with optional malformed fields."""

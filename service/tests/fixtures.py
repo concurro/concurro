@@ -25,7 +25,7 @@ from service.scheduler import Scheduler  # noqa: E402
 from service.settings import Limits, Target  # noqa: E402
 from service.worker import Worker  # noqa: E402
 from support import CONFIG, TARGET  # noqa: E402
-from test_pipeline import FakeAgents, FakeGitHub  # noqa: E402
+from fakes import FakeAgents, FakeGitHub
 from checkpoints import Checkpoints  # noqa: E402
 from controller import Controller  # noqa: E402
 

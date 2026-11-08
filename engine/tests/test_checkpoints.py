@@ -15,8 +15,7 @@ from checkpoints import (AUDIT_MARKER, AUDIT_NAME, PLAN_NAME, MARKER,
                          STATE_PREFIX, CheckpointError, Checkpoints, legacy_state)
 from github import GitHub
 from policy import digest
-from test_autonomy import decision
-from test_pipeline import CONFIG, PLAN, FakeAgents, FakeGitHub
+from fakes import decision, CONFIG, PLAN, FakeAgents, FakeGitHub
 
 
 class CheckpointTests(unittest.TestCase):
@@ -363,7 +362,6 @@ class CheckpointTests(unittest.TestCase):
             controller.save()
         self.assertEqual(self.artifact(), before)
 
-
     def test_bound_plan_survives_history_window_and_human_rename(self):
         """Audit-pinned ownership repairs a renamed plan even when version one is no longer returned."""
         for _ in range(10):
@@ -501,7 +499,6 @@ class CheckpointTests(unittest.TestCase):
                     self.controller()
                 self.assertEqual(caught.exception.code, 'checkpoint_format')
 
-
     def test_current_audit_reference_survives_window_but_unverifiable_old_reference_stops(self):
         """Newest checkpoints recover beyond 30 saves; a missing historical proof never resets state."""
         controller = self.start()
@@ -552,7 +549,6 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(self.controller().advance(7))
         self.assertEqual(self.controller().state, state)
         self.assertEqual(self.artifact(PLAN_NAME)['artifact']['body'], controller.checkpoints.plan_body(state))
-
 
     def test_deleted_bound_plan_is_recreated_and_rebound_without_resetting_state(self):
         """Deleting a generated view changes only its audit envelope binding, never task authority."""

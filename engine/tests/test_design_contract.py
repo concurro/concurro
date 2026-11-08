@@ -6,15 +6,14 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
+from pipeline_fixtures import PipelineFixture
 import conversation
 import design
-from controller import Controller
 from policy import Blocked, approval_valid, consensus_valid
-from test_autonomy import decision
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub, design_report
+from fakes import decision, CONFIG, FakeAgents, FakeGitHub, design_report
 
 
-class DesignContractTests(unittest.TestCase):
+class DesignContractTests(PipelineFixture, unittest.TestCase):
     """Reload durable state between provider turns, with merging always disabled."""
 
     def setUp(self):
@@ -23,21 +22,8 @@ class DesignContractTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
 
-    def tick(self):
-        """Use the ordinary controller without replacing authorization or publication logic."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
-
-    def load(self):
-        """Recover the authoritative artifact without advancing work."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
-
     def reach(self, stage):
-        """Bound setup independently of the task's model-call budget."""
+        """Keep this contract fixture's tighter 12-tick setup bound."""
         for _ in range(12):
             controller = self.tick()
             if controller.state['stage'] == stage:
@@ -167,7 +153,6 @@ class DesignContractTests(unittest.TestCase):
             candidate['objection_updates'] = [{**report['objection_updates'][0], 'id': v} for v in identifiers]
             with self.assertRaises(Blocked):
                 design.validate_evidence(candidate, self.gh.issue, own)
-
 
     def test_plan_is_linked_without_an_event_and_an_old_intent_is_dropped(self):
         """The plan is linked from the status comment; an intent saved by an earlier version posts nothing."""

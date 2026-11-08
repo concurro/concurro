@@ -6,15 +6,15 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+from pipeline_fixtures import PipelineFixture
 from checkpoints import LIMIT
-from controller import Controller
 from conversation import PublicationError
 from policy import approval_valid, digest
 from report_store import Store
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub
 
 
-class DiagnosticsTests(unittest.TestCase):
+class DiagnosticsTests(PipelineFixture, unittest.TestCase):
     """Exercise dashboard history and rejected reports through durable controller restarts."""
 
     def setUp(self):
@@ -22,19 +22,6 @@ class DiagnosticsTests(unittest.TestCase):
         self.config = deepcopy(CONFIG)
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
-
-    def tick(self):
-        """Run a tick with no retained controller memory."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
-
-    def load(self):
-        """Read the saved task without advancing it."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
 
     def reach_review(self):
         """Stop immediately before the first design-review call."""
@@ -373,7 +360,7 @@ class DiagnosticsTests(unittest.TestCase):
 
     def test_team_uses_each_roles_actual_model_and_effort(self):
         """Distinct plan/PR reviewer assignments and effort settings are printed faithfully."""
-        from test_model_profiles import named_config
+        from fakes import named_config
         self.config = named_config()
         self.config['agents']['plan_reviewers'] = ['opus-high', 'sol-medium']
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()

@@ -10,7 +10,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from agent_entry import command_for
 from session_entry import SessionTurn
 from sessions import prepare
-from test_pipeline import CONFIG
+from fakes import CONFIG
 
 
 class SessionTests(unittest.TestCase):

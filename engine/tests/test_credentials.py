@@ -5,7 +5,7 @@ import unittest
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
 from credentials import Credential
 from policy import Blocked
-import test_pipeline
+from pipeline_fixtures import ManualPipelineFixture
 
 
 class CredentialIdentityTests(unittest.TestCase):
@@ -21,12 +21,8 @@ class CredentialIdentityTests(unittest.TestCase):
                 Credential.parse(bad)
 
 
-class ControllerCredentialTests(unittest.TestCase):
+class ControllerCredentialTests(ManualPipelineFixture, unittest.TestCase):
     """The controller selects per call and records identities, not secrets, in audit state."""
-
-    # Reuse the pipeline fixture without re-running its tests.
-    pipeline = test_pipeline.PipelineTests
-    setUp, tick, ready = pipeline.setUp, pipeline.tick, pipeline.ready
 
     def test_lifecycle_records_credential_usage(self):
         """Every debited call is attributed to the selected credential identity."""

@@ -5,9 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_autonomy import decision
-from test_findings import Harness, Reviewers
-from test_pipeline import Controller, FakeAgents, FakeGitHub
+from fakes import decision, FakeAgents, FakeGitHub
+from review_fixtures import Harness, Reviewers
+from controller import Controller
 import actions
 import conversation
 from policy import Blocked, digest
@@ -113,6 +113,7 @@ class InputNeededTests(unittest.TestCase):
         self.agents.qc_reports = [decision("clarify", questions=["Which behavior is desired?"])]
 
     def tick(self):
+        """Advance once and return state for input-request assertions."""
         controller = Controller(self.gh, self.agents, self.config)
         controller.advance(7)
         return controller.state

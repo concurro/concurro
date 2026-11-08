@@ -7,10 +7,10 @@ import tempfile
 import unittest
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from controller import Controller
+from pipeline_fixtures import PipelineFixture
 from policy import Blocked, SessionFailure, digest
 from session_entry import SessionTurn
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub
 
 
 class JournalAgents(FakeAgents):
@@ -49,7 +49,7 @@ class JournalAgents(FakeAgents):
                 turn.close()
 
 
-class SessionRecoveryTests(unittest.TestCase):
+class SessionRecoveryTests(PipelineFixture, unittest.TestCase):
     """Recreate controllers from GitHub state and transcripts after every interruption."""
 
     def setUp(self):
@@ -61,15 +61,8 @@ class SessionRecoveryTests(unittest.TestCase):
         self.gh.comments = []
         self.agents = JournalAgents(self.directory.name)
 
-    def load(self, ):
-        """Reload only durable checkpoints, without reusing the previous controller object."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
-
     def reach(self, stage):
-        """Advance a bounded design loop through the ordinary production methods."""
+        """Load before advancing, preserving this recovery fixture's 15-tick bound."""
         for _ in range(15):
             controller = self.load()
             controller.advance(7)

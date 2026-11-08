@@ -10,8 +10,9 @@ import unittest
 from unittest.mock import patch
 
 from support import ROOT, TARGET, setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_pipeline import CONFIG, PLAN, Controller, FakeAgents, FakeGitHub
-from test_autonomy import decision
+from pipeline_fixtures import ConsensusFixture, copy_roots
+from fakes import CONFIG, PLAN, decision, DESIGN_ISSUE
+from controller import Controller
 from agents import Agents
 from agent_entry import prompt_for
 from bundle import Bundle
@@ -19,43 +20,9 @@ from controller import MARKER, STATE_PREFIX
 from policy import (Blocked, approval_valid, consensus_valid, design_roster, digest, path_allowed,
                     instruction_matches, validate_qc)
 
-DESIGN_ISSUE = {"kind": "plan", "explanation": "Acceptance requires another documented example.",
-                "evidence": ["The plan only names the happy-path example; the requirement includes errors."]}
 
-
-class ConsensusTests(unittest.TestCase):
+class ConsensusTests(ConsensusFixture, unittest.TestCase):
     """Advance one durable stage at a time with no synthetic aggregate QC shortcut."""
-
-    def setUp(self):
-        """Create a fresh enrolled task using fake transports only."""
-        self.config = deepcopy(CONFIG)
-        self.gh = FakeGitHub(self.config)
-        self.gh.comments = []
-        self.agents = FakeAgents()
-        self.bundle_root = None
-        self.target_root = None
-
-    def tick(self):
-        """Reconstruct every controller to test durable attempts and vote recovery."""
-        controller = Controller(self.gh, self.agents, self.config, self.bundle_root, self.target_root)
-        controller.advance(7)
-        return controller.state
-
-    def reach(self, stage, limit=30):
-        """Advance within a hard test bound until the requested stage is reached."""
-        for _ in range(limit):
-            state = self.tick()
-            if state["stage"] == stage:
-                return state
-        self.fail("Did not reach " + stage)
-
-    def persist(self, state):
-        """Save intentionally altered evidence as though recovering a damaged state comment."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        controller.state = state
-        controller.save()
 
     def test_repeated_early_failure_preserves_resume_target(self):
         """Repeated wrong-head merge observations cannot clobber review or a stopped resume target."""
@@ -672,7 +639,6 @@ class ConsensusTests(unittest.TestCase):
                 self.assertFalse(approval_valid(state, self.config))
                 self.assertEqual(state["outcomes"][-1]["status"], "escalated")
 
-
     def test_develop_receives_verified_complete_authorization_separate_from_source(self):
         """An approval-aware implementation stand-in can proceed using actual supplied evidence."""
         prior = self.reach("implement")
@@ -749,12 +715,6 @@ class ConsensusTests(unittest.TestCase):
                     archive.assert_not_called()
                 self.assertEqual(len(self.agents.calls), calls)
                 self.assertFalse(self.gh.refs)
-
-
-def copy_roots(root):
-    """Copy the engine bundle and the example target charter into one scratch root."""
-    shutil.copytree(ROOT / "bundle", root / "bundle")
-    shutil.copytree(TARGET / ".concurro", root / ".concurro")
 
 
 class BundleTests(unittest.TestCase):

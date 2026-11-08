@@ -90,8 +90,8 @@ class BundleSplitTests(unittest.TestCase):
 
     def test_goal_ids_remain_validated_with_actionable_feedback(self):
         """Schema bypasses are rejected without silently reinterpreting the submitted ID."""
-        from test_autonomy import decision
-        from test_pipeline import design_report
+        from fakes import decision
+        from fakes import design_report
         charter = Bundle(target=TARGET).charter
         goal = next(iter(charter['goals']))
         for stage, verdict in (('intake', 'proceed'), ('plan_qc', 'approve')):

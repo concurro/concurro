@@ -8,9 +8,9 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 from controller import DISPATCH_ALLOWANCE, transport_size, sha256, changes, diff_preview, DIFF_TRUNCATED, MAX_DIFF
 from policy import Blocked, validate_edits
 from repository import Repository
-from test_findings import Harness
-from test_pipeline import FakeAgents, PLAN
-from test_turns import Workspace
+from review_fixtures import Harness
+from fakes import FakeAgents, PLAN
+from runner_fixtures import Workspace
 import turns
 
 # Above the former extraction/snapshot limit as well as both response-size limits.
@@ -114,7 +114,7 @@ class LifecycleTests(Harness, unittest.TestCase):
         self.assertIsNone(controller.file_manifest(controller.state['base'], ['docs/new.md'])['docs/new.md'])
 
 
-class WorkspaceTests(Workspace):
+class WorkspaceTests(Workspace, unittest.TestCase):
     """Real Git snapshots and extraction retain large text byte-for-byte."""
 
     def test_large_snapshot_extraction_paging_and_deletion(self):

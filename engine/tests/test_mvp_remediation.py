@@ -15,7 +15,7 @@ from github import Transient
 from policy import Blocked
 from readiness import ci_reasons
 from relay import ExchangeError
-from test_pipeline import FakeAgents, FakeGitHub
+from fakes import FakeAgents, FakeGitHub
 import controller
 import runner
 import processes

@@ -6,12 +6,11 @@ import unittest
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+from pipeline_fixtures import PipelineFixture
 from checkpoints import Checkpoints, CheckpointError, legacy_state
-from controller import Controller
 from policy import approval_valid, digest, validate_pr_review
 from report_store import Store, MARKER, ReportDataError
-from test_pipeline import CONFIG, FakeAgents, FakeGitHub
-from test_review_recovery import sized_report
+from fakes import CONFIG, FakeAgents, FakeGitHub, sized_report
 import conversation
 import format_samples
 import reviews
@@ -136,7 +135,7 @@ class StoreTests(unittest.TestCase):
                         self.fresh().get(key, numbers)
 
 
-class CapacityTests(unittest.TestCase):
+class CapacityTests(PipelineFixture, unittest.TestCase):
     """Large valid evidence completes real controller transitions without output repair."""
 
     def setUp(self):
@@ -146,12 +145,6 @@ class CapacityTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), FakeAgents()
         self.gh.comments = []
         self.gh.issue['body'] = '\n\n'.join(f'- Requirement {i}' for i in range(12))
-
-    def tick(self):
-        """Reload persisted artifacts between every transition."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def wordy(self, provider, stage, context):
         """Return meaningful-shaped complete evidence far beyond the old aggregate limit."""

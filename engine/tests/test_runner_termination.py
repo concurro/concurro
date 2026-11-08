@@ -7,6 +7,7 @@ import os
 from types import SimpleNamespace
 import subprocess
 import unittest
+import sys
 from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
@@ -16,20 +17,19 @@ from bundle import Bundle
 from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome
 from relay import ExchangeError
 import turns
-import test_turns
-import test_consensus
+import runner_fixtures
+from pipeline_fixtures import ConsensusFixture
 from controller import Controller
 
 
-class ExecutorTests(unittest.TestCase):
+class ExecutorTests(runner_fixtures.ExecutorFixture, unittest.TestCase):
     """Long execution must not turn into a fresh automatic implementation attempt."""
 
     stage = "develop"
-    runner = test_turns.ExecutorTests.runner
 
     def turn(self):
         """A bound implementation with no internal execution timer."""
-        turn = deepcopy(test_turns.TURN)
+        turn = deepcopy(runner_fixtures.TURN)
         turn['request']['stage'] = self.stage
         turn['timeout'] = None
         return turn
@@ -141,7 +141,7 @@ class ExecutorTests(unittest.TestCase):
 
     def test_other_roles_keep_their_existing_poll_failure_allowance(self):
         executor, operator, _ = self.runner([{'status': 'running'}, *[ExchangeError(503, '') for _ in range(21)]])
-        self.assertEqual(executor.run(test_turns.TURN, 'review')['outcome'], 'uncertain')
+        self.assertEqual(executor.run(runner_fixtures.TURN, 'review')['outcome'], 'uncertain')
         self.assertEqual([c[0] for c in operator.calls].count('poll'), 21)
 
     def test_unknown_admission_keeps_one_id_and_reports_no_confirmed_start(self):
@@ -190,12 +190,12 @@ class ReviewExecutorTests(ExecutorTests):
     stage = "review"
 
 
-class NativeTests(test_turns.Workspace):
+class NativeTests(runner_fixtures.Workspace, unittest.TestCase):
     """Exercise the real subprocess boundary without contacting a provider."""
 
     def test_implementation_wrapper_passes_no_deadline_and_still_extracts_changes(self):
         root = turns.directory(self.tmp / 'turns')
-        script = test_turns.AGENT.replace('request["timeout"] == 1800', 'request["timeout"] is None')
+        script = runner_fixtures.AGENT.replace('request["timeout"] == 1800', 'request["timeout"] is None')
         turn = {'request': {'stage': 'develop', 'session': None}, 'spec': self.spec,
                 'retained': None, 'timeout': None}
         communicate = subprocess.Popen.communicate
@@ -205,7 +205,7 @@ class NativeTests(test_turns.Workspace):
             if args and isinstance(args[0], str) and '"stage": "develop"' in args[0]:
                 timeouts.append(kwargs.get('timeout'))
             return communicate(process, *args, **kwargs)
-        with patch.object(turns, 'command', return_value=[test_turns.sys.executable, '-c', script, str(root)]), \
+        with patch.object(turns, 'command', return_value=[sys.executable, '-c', script, str(root)]), \
              patch.object(subprocess.Popen, 'communicate', capture):
             result = turns.execute(turn, 'sk-agw-test', self.mirror, root)
         self.assertEqual(timeouts, [None])
@@ -217,7 +217,7 @@ class NativeTests(test_turns.Workspace):
         turn = {'request': {'stage': 'develop', 'session': None}, 'spec': self.spec,
                 'retained': None, 'timeout': None}
         script = 'import os, signal; os.kill(os.getpid(), signal.SIGTERM)'
-        with patch.object(turns, 'command', return_value=[test_turns.sys.executable, '-c', script]):
+        with patch.object(turns, 'command', return_value=[sys.executable, '-c', script]):
             result = turns.execute(turn, 'test', self.mirror, root)
         self.assertEqual(result['outcome'], 'terminated')
         self.assertIsNone(result['workspace'])
@@ -231,7 +231,7 @@ class NativeTests(test_turns.Workspace):
                 'retained': None, 'timeout': None}
         stopped = threading.Event()
         stopped.set()
-        with patch.object(turns, 'command', return_value=[test_turns.sys.executable, '-c', 'import time; time.sleep(30)']):
+        with patch.object(turns, 'command', return_value=[sys.executable, '-c', 'import time; time.sleep(30)']):
             result = turns.execute(turn, 'test', self.mirror, root, stopped)
         self.assertEqual(result['outcome'], 'terminated')
         self.assertIsNone(result['workspace'])
@@ -239,7 +239,7 @@ class NativeTests(test_turns.Workspace):
     def test_implementation_job_exits_after_acknowledging_one_turn(self):
         import runner
         turn = {'id': 't1', 'payload': {'request': {'stage': 'develop', 'provider': 'claude'}}}
-        client = test_turns.FakeRunner([[turn], [turn]])
+        client = runner_fixtures.FakeRunner([[turn], [turn]])
         loop = runner.Loop(client, 'test', object(), self.tmp / 'loop')
         with patch.object(turns, 'execute', return_value={'outcome': 'ok', 'response': {}}):
             loop.serve()
@@ -255,7 +255,7 @@ class NativeTests(test_turns.Workspace):
         bundle = Bundle()
         root = self.tmp
         request = {'provider': 'claude', 'model': 'test', 'stage': 'develop', 'session': None,
-                   'gateway': test_turns.GATEWAY, 'charter': bundle.charter_text, 'bundle_id': bundle.identity,
+                   'gateway': runner_fixtures.GATEWAY, 'charter': bundle.charter_text, 'bundle_id': bundle.identity,
                    'workspace': str(root), 'scratch': str(root), 'timeout': None,
                    'instruction_texts': bundle.instruction_texts,
                    'context': {'repository_commit': self.base, 'repository': {'refs': {}, 'head': 'main'}}}
@@ -274,7 +274,7 @@ class NativeTests(test_turns.Workspace):
     def test_goal_tracking_enabled_only_for_implementation(self):
         with patch.dict(os.environ, {'CONCURRO_GATEWAY_KEY': 'test'}):
             for stage in ('develop', 'review'):
-                request = {'provider': 'claude', 'stage': stage, 'gateway': test_turns.GATEWAY, 'model': 'test', 'schema': {}}
+                request = {'provider': 'claude', 'stage': stage, 'gateway': runner_fixtures.GATEWAY, 'model': 'test', 'schema': {}}
                 env = agent_entry.provider_environment(request)
                 self.assertEqual(env.get('CLAUDE_CODE_ENABLE_TODO_TOOLS'), '1' if stage == 'develop' else None)
                 command = agent_entry.command_for({**request, 'provider': 'codex'}, 'schema', 'output')
@@ -284,23 +284,8 @@ class NativeTests(test_turns.Workspace):
         self.assertIn('Do not invent a time or token budget', instructions)
 
 
-class LifecycleTests(unittest.TestCase):
-    """Persist termination without spending another call until a writer explicitly retries."""
-
-    setUp = test_consensus.ConsensusTests.setUp
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
-
-    def test_termination_blocks_once_and_writer_retry_keeps_spent_budget(self):
-        self.assert_writer_recovery(RunnerTerminated('Implementation runner timed out'))
-
-    def test_admission_and_queue_diagnostics_survive_restart_until_writer_retry(self):
-        for outcome in ('admission_unknown', 'queue_expired'):
-            with self.subTest(outcome=outcome):
-                self.setUp()
-                with self.assertRaises(RunnerTerminated) as error:
-                    Agents({}, None).decode_result(None, 'claude', 'develop', {'outcome': outcome})
-                self.assert_writer_recovery(error.exception)
+class WriterRecoveryFixture(ConsensusFixture):
+    """Shared writer-controlled recovery assertions for implementation and review."""
 
     def assert_writer_recovery(self, termination, stage="implement"):
         """A saved stop preserves its diagnosis, consumed budget and writer retry requirement."""
@@ -337,17 +322,26 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(retried['findings'], state['findings'])
 
 
-class ReviewLifecycleTests(unittest.TestCase):
-    """An interrupted PR review keeps the published head and needs a writer retry."""
+class LifecycleTests(WriterRecoveryFixture, unittest.TestCase):
+    """Persist termination without spending another call until a writer explicitly retries."""
 
-    setUp = LifecycleTests.setUp
-    tick = LifecycleTests.tick
-    reach = LifecycleTests.reach
-    assert_writer_recovery = LifecycleTests.assert_writer_recovery
+    def test_termination_blocks_once_and_writer_retry_keeps_spent_budget(self):
+        self.assert_writer_recovery(RunnerTerminated('Implementation runner timed out'))
+
+    def test_admission_and_queue_diagnostics_survive_restart_until_writer_retry(self):
+        for outcome in ('admission_unknown', 'queue_expired'):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                with self.assertRaises(RunnerTerminated) as error:
+                    Agents({}, None).decode_result(None, 'claude', 'develop', {'outcome': outcome})
+                self.assert_writer_recovery(error.exception)
+
+
+class ReviewLifecycleTests(WriterRecoveryFixture, unittest.TestCase):
+    """An interrupted PR review keeps the published head and needs a writer retry."""
 
     def test_pr_review_termination_is_saved_without_automatic_second_call(self):
         self.assert_writer_recovery(RunnerTerminated('PR review runner timed out'), stage='review')
-
 
     def test_retry_keeps_another_reviewers_findings_and_only_repeats_failed_review(self):
         self.reach('review')
@@ -371,7 +365,7 @@ class ReviewLifecycleTests(unittest.TestCase):
         self.assertEqual(resumed['stage'], 'implement', 'the surviving finding must still require repair')
 
 
-class ReviewNativeTests(test_turns.Workspace):
+class ReviewNativeTests(runner_fixtures.Workspace, unittest.TestCase):
     """Actual review child processes retain cleanup, diagnostics and fresh-job semantics."""
 
     def run_review(self, script, stopped=None, timeout=None):
@@ -379,7 +373,7 @@ class ReviewNativeTests(test_turns.Workspace):
         root = turns.directory(self.tmp / 'turns')
         turn = {'request': {'stage': 'review', 'session': None}, 'spec': self.spec,
                 'retained': None, 'timeout': timeout}
-        with patch.object(turns, 'command', return_value=[test_turns.sys.executable, '-c', script]):
+        with patch.object(turns, 'command', return_value=[sys.executable, '-c', script]):
             return turns.execute(turn, 'test', self.mirror, root, stopped)
 
     def test_native_review_has_no_deadline_and_never_extracts_edits(self):
@@ -436,7 +430,7 @@ class ReviewNativeTests(test_turns.Workspace):
     def test_review_job_acknowledges_one_turn_then_exits(self):
         import runner
         turn = {'id': 'r1', 'payload': {'request': {'stage': 'review', 'provider': 'claude'}}}
-        client = test_turns.FakeRunner([[turn], [turn]])
+        client = runner_fixtures.FakeRunner([[turn], [turn]])
         loop = runner.Loop(client, 'test', object(), self.tmp / 'loop')
         with patch.object(turns, 'execute', return_value={'outcome': 'ok', 'response': {}}):
             loop.serve()

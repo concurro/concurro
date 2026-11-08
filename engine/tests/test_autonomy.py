@@ -4,16 +4,10 @@ from copy import deepcopy
 import unittest
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # unittest module fixtures
-from test_pipeline import CONFIG, Controller, FakeAgents, FakeGitHub
+from fakes import CONFIG, FakeAgents, FakeGitHub, decision
+from controller import Controller
 from controller import validate_config
 from policy import Blocked, approval_valid, selected_model, validate_qc
-
-
-def decision(value, **overrides):
-    """Create a valid QC response with explicitly controlled test decisions."""
-    return {"decision": value, "rationale": "Evidence supports this decision.", "risk": "low",
-            "questions": [], "concerns": [], "scope": {"goal_ids": ["G-USABILITY"],
-            "fit": "Explains requested developer guidance.", "conflicts": []}, **overrides}
 
 
 class AutonomousTests(unittest.TestCase):
@@ -27,7 +21,7 @@ class AutonomousTests(unittest.TestCase):
         self.agents = FakeAgents()
 
     def tick(self):
-        """Recreate the controller to exercise persistence between every stage."""
+        """Drain only an already-started design-review stage; return state."""
         controller = Controller(self.gh, self.agents, self.config)
         initial = None
         controller.issue = self.gh.issue

@@ -6,14 +6,15 @@ import unittest
 from unittest.mock import patch
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from test_pipeline import Controller, FakeAgents, FakeGitHub
+from pipeline_fixtures import PipelineFixture
+from fakes import FakeAgents, FakeGitHub
 from github import NotFound, Transient
 from policy import Blocked, digest
 import actions
 import conversation
 
 
-class BlockedNoticeTests(unittest.TestCase):
+class BlockedNoticeTests(PipelineFixture, unittest.TestCase):
     """Exercise real checkpoints, command authorization and comment publication."""
 
     def setUp(self):
@@ -26,12 +27,6 @@ class BlockedNoticeTests(unittest.TestCase):
         controller.suspend('blocked', 'Source could not be read. Retry after the transport recovers.', outboxes=False)
         self.notice = next(c for c in self.gh.comments if '\n### 🛑 Blocked\n' in c['body'])
         self.original = self.notice['body']
-
-    def tick(self):
-        """Reconstruct the controller from its durable checkpoint for each tick."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
 
     def assert_resolved(self):
         """The reason stays quoted; instructions, heading emoji and event footer disappear."""

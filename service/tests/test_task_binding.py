@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from fixtures import ENGINE, KEY, ServiceFixture, RestBackend
-from test_pipeline import FakeGitHub
+from fakes import FakeGitHub
 from policy import Blocked
 from service.registry import TaskBinding
 from service.settings import Target

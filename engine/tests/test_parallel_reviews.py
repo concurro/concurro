@@ -11,110 +11,21 @@ from controller import Controller
 from checkpoints import CheckpointError, legacy_state, BATCH_FORMAT, AUDIT_MARKER, STATE_PREFIX
 from policy import Blocked, SessionFailure, UncertainOutcome, design_roster
 from agents import Agents
-from test_pipeline import FakeAgents
-import test_consensus
+from fakes import BatchAgents, Crash, decision, named_config, FakeGitHub
+from pipeline_fixtures import ConsensusFixture
 import review_batch
 import conversation
-from test_autonomy import decision
-from test_model_profiles import named_config
-from test_pipeline import FakeGitHub
 
 
-class Crash(BaseException):
-    """Simulate process loss outside normal exception handling."""
-
-
-class BatchAgents(FakeAgents):
-    """A controllable lifecycle transport; normal non-review stages stay synchronous."""
-
-    parallel = True
-    generation = 1
-
-    def __init__(self):
-        """Configure controllable delays, failures and ownership for local tests."""
-        super().__init__()
-        self.events = []
-        self.handles = []
-        self.effects = {}
-        self.delay = {}
-        self.fail_submit = None
-        self.owner = True
-        self.clock = 100
-
-    def prepare(self, provider, stage, context):
-        """Freeze the input without consuming a fake response."""
-        return {'provider': provider, 'stage': stage, 'context': deepcopy(context)}
-
-    def submit(self, turn):
-        """Record admission and return before a result is available."""
-        provider = turn['provider']
-        self.events.append(('submit', provider))
-        if self.fail_submit and len(self.handles) == self.fail_submit:
-            raise Crash()
-        handle = SimpleNamespace(turn=turn, status='queued', timing={
-            'turn': f'{len(self.handles):08x}-1234-1234-1234-123456789abc', 'status': 'queued',
-            'created': self.clock, 'started': None, 'finished': None}, polls=0, cancelled=False)
-        self.handles.append(handle)
-        return handle
-
-    def observe(self, handle):
-        """Advance one observation without blocking a sibling."""
-        handle.polls += 1
-        handle.status = 'running'
-        handle.timing.update(status='running', started=handle.timing['started'] or self.clock)
-        self.events.append(('poll', handle.turn['provider']))
-        if handle.polls <= self.delay.get(handle.turn['provider'], 0):
-            return None
-        handle.status = 'done'
-        handle.timing.update(status='done', finished=self.clock)
-        return {'ok': True}
-
-    def decode(self, turn, result):
-        """Return a report or an injected provider failure."""
-        provider = turn['provider']
-        self.events.append(('decode', provider))
-        effects = self.effects.get(provider, [])
-        effect = effects.pop(0) if effects else None
-        if isinstance(effect, BaseException):
-            raise effect
-        report = super().ask(provider, turn['stage'], turn['context'])
-        return effect(report) if effect else report
-
-    def cancel(self, handle):
-        """Record scoped cancellation without touching siblings."""
-        handle.cancelled = True
-        self.events.append(('cancel', handle.turn['provider']))
-
-    def check_owner(self):
-        """Reject every operation after simulated ownership loss."""
-        if not self.owner:
-            raise Blocked('ownership changed')
-
-    def idle(self):
-        """Advance the shared test clock between sweeps."""
-        self.events.append(('idle', None))
-        self.clock += 1
-
-
-class ParallelTests(unittest.TestCase):
+class ParallelTests(ConsensusFixture, unittest.TestCase):
     """Exercise production consensus and checkpoint paths using an asynchronous fake transport."""
-
-    tick = test_consensus.ConsensusTests.tick
-    reach = test_consensus.ConsensusTests.reach
 
     def setUp(self):
         """Start from a persisted plan awaiting independent design reviews."""
-        test_consensus.ConsensusTests.setUp(self)
+        super().setUp()
         self.agents = BatchAgents()
         self.reach('plan_qc')
         self.agents.events.clear()
-
-    def load(self):
-        """Reload durable state as a new controller invocation would."""
-        c = Controller(self.gh, self.agents, self.config)
-        c.issue = self.gh.issue
-        c.load(self.gh.comments)
-        return c
 
     def test_roster_starts_before_results_and_fast_second_is_applied_first(self):
         """Verify roster starts before results and fast second is applied first."""
@@ -379,7 +290,6 @@ class ParallelTests(unittest.TestCase):
         self.assertEqual(state['stage'], 'implement')
         self.assertTrue(all(v['first_pass'] for v in state['design_votes'].values()))
 
-
     def test_revision_waits_for_every_vote_then_reuses_only_own_discussion(self):
         """Ordinary dissent gathers the roster; revised cooperative contexts stay independent."""
         self.agents.qc_reports = [decision('revise', concerns=['Add an error-path regression.']), decision('approve')]
@@ -428,7 +338,6 @@ class ParallelTests(unittest.TestCase):
         state = self.tick()
         self.assertEqual(state['calls'], before + 1)
         self.assertEqual(state['stage'], 'implement')
-
 
     def fresh(self):
         """Start a fresh phase without a cooperative transcript or completed votes."""
@@ -538,7 +447,6 @@ class ParallelTests(unittest.TestCase):
         agents = Agents(self.config, executor)
         agents.idle()
         executor.sleep.assert_called_once_with(5)
-
 
 
 class PRAdapter:

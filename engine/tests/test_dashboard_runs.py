@@ -4,14 +4,13 @@ from copy import deepcopy
 import unittest
 
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
-from controller import Controller
+from pipeline_fixtures import PipelineFixture
 from policy import approval_binding
-from test_pipeline import FakeGitHub
-from test_classification import ClassifiedAgents
+from fakes import FakeGitHub, ClassifiedAgents
 import dashboard_runs
 
 
-class DashboardRunTests(unittest.TestCase):
+class DashboardRunTests(PipelineFixture, unittest.TestCase):
     """Exercise the real invalidation command, persisted boundaries and classified reports."""
 
     def setUp(self):
@@ -21,21 +20,8 @@ class DashboardRunTests(unittest.TestCase):
         self.gh, self.agents = FakeGitHub(self.config), ClassifiedAgents()
         self.gh.comments = []
 
-    def tick(self):
-        """Advance through a newly loaded controller."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.advance(7)
-        return controller
-
-    def load(self):
-        """Reload without issuing another model call."""
-        controller = Controller(self.gh, self.agents, self.config)
-        controller.issue = self.gh.issue
-        controller.load(self.gh.comments)
-        return controller
-
     def reach(self, stage):
-        """Run to the requested stage with a fixed upper bound."""
+        """Keep this dashboard fixture's 25-tick setup bound."""
         for _ in range(25):
             controller = self.tick()
             if controller.state['stage'] == stage:
