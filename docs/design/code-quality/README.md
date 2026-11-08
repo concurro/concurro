@@ -187,11 +187,11 @@ Status values:
 | 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Done |
 | 10a | [Native turn execution and process cleanup](10-execution-path.md#10a-native-turn-execution-and-process-cleanup) | Refactor | Medium | Done |
 | 10c | [Git environment helpers](10-execution-path.md#10c-git-environment-helpers) | Refactor | Low–medium | Done |
-| 10d | [Agent entry and session lock](10-execution-path.md#10d-agent-entry-and-session-lock) | Refactor | Low | Approved |
+| 10d | [Agent entry and session lock](10-execution-path.md#10d-agent-entry-and-session-lock) | Refactor | Low | Done |
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
-| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate, prepared |
+| 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Next (brief refreshed; Codex review first) |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |
 | 15 | [Service worker, registry and dispatch](15-service-worker-registry.md) | Refactor | Medium | Candidate, prepared |
 
