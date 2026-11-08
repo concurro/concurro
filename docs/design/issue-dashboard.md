@@ -4,6 +4,9 @@ Status: implemented. The dashboard is the current task view; full reports and pr
 remain reachable without crowding current progress. [Comment formatting](comment-format.md)
 governs rendering, and [operations](../concurro.md) describes commands.
 
+`engine/dashboard.py` renders the read-only view. The controller creates a fresh view
+on each render and retains responsibility for saving state and publishing the comment.
+
 ## Current run
 
 The dashboard opens with an activity alert, then a progress line and one table. Report

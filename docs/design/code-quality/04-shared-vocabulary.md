@@ -26,13 +26,13 @@ working.
 
 | Type | Members (values) | Current scattered definitions |
 | ---- | ---- | ---- |
-| `Stage` | `intake`, `clarify`, `plan`, `plan_qc`, `planned`, `implement`, `publish`, `review`, `gates`, `merging`, `merged`, `observed_merged`, `closed`, `blocked`, `stopped`, `rejected`, `escalated` | `github.STAGES`, `actions.RESUMED_STAGES`, `controller.STAGE_STEP`, about 30 inline tuples |
+| `Stage` | `intake`, `clarify`, `plan`, `plan_qc`, `planned`, `implement`, `publish`, `review`, `gates`, `merging`, `merged`, `observed_merged`, `closed`, `blocked`, `stopped`, `rejected`, `escalated` | `github.STAGES`, `actions.RESUMED_STAGES`, `dashboard.STAGE_STEP`, about 30 inline tuples |
 | `AgentStage` | `intake`, `plan`, `plan_qc`, `develop`, `review` | `bundle.STAGES`, `snapshot.py:15`, `policy.runner_bound`, `policy.turn_label` |
 | `Outcome` (turn result) | `ok`, `failed`, `uncertain`, `lost`, `timed_out`, `terminated`, `admission_unknown`, `queue_expired` | Literals in `turns.py`, `agents.py`, `runner.py` |
 | `TerminationReason` | `turn_timeout`, `runner_stopped`, `process_signal` | `turns.py:275`, `agents.py:149-150` |
 | `ExchangeStatus` | `queued`, `running`, `done`, `lost`, `cancelled` | `review_timing.STATUSES`, `agents.py` literals |
 | `FindingStatus`, plus a `CLOSED` frozenset | The values used in `reviews.py` / `readiness.py`; `CLOSED = {"fixed", "obsolete"}` | `reviews.py:24/85/433/455`, `readiness.py:29/31` |
-| `Step` (dashboard step labels) | The six labels in `controller.STEPS` | `controller.STEPS`, `conversation.index_entry`, `dashboard_runs`, `design_audit` |
+| `Step` (dashboard step labels) | The six labels in `dashboard.STEPS` | `dashboard.STEPS`, `conversation.index_entry`, `dashboard_runs`, `design_audit` |
 
 `Stage` and `AgentStage` both contain `review` and `intake`. They are deliberately
 separate: controller stage `implement` corresponds to agent stage `develop`. Keep two

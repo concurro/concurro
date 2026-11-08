@@ -1,0 +1,30 @@
+<!-- concurro:v1 -->
+## Concurro
+
+> [!TIP]
+> Ready for your review. A human decides whether to merge.
+
+Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Merge ✅**
+
+| Step | Status | Detail |
+| ---- | ---- | ---- |
+| Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
+| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3) |
+| Design review | ✅ 2 of 2 approve | Round 1 · iterative · 0 open objections |
+| Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
+| Code review | ✅ 2 of 2 approve | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
+| Merge | ✅ Handed off | A human reviews and merges |
+
+| Estimate | Assessment | Evidence |
+| ---- | ---- | ---- |
+| Complexity: medium · Change risk: high | Confidence: high · PR head 0000000 · 2/2 assessed · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
+
+**Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-20)).
+
+<details><summary>Diagnostics</summary>
+
+[Automation audit state](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1) (public).
+
+</details>
+
+<!-- concurro:checkpoint:v1 {"digest":"0000000000000000000000000000000000000000000000000000000000000000","id":1001,"number":1,"revision":41} -->
