@@ -1,0 +1,2187 @@
+{
+  "plan_summary/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:plan_summary-2 -->\n### Plan updated · claude / m\n\nDocument locked builds.\n\n[Implementation plan](https://github.com/o/r/issues/7/artifacts/2) · artifact version 1\n\n<details><summary>Changes and review focus</summary>\n\n**Changes**\n\n- Add a note under step 5.\n\n**Review focus**\n\n- Is \\`--locked\\` accurate?\n\n</details>\n\n<sub>Event 3 · plan `aaaaaaaaaaaa` · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "plan": {
+          "content_digest": "d5408f2a15dad4d760a9e12ecba2fdc854092af0dd355f05b2a78132e0ea54f4",
+          "source_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "plan_summary/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - plan_summary - claude - round 1",
+          "body": "<!-- concurro:event:v1:plan_summary-3 -->\n### Plan updated · claude / m\n\nDocument locked builds.\n\n<sub>Report 3 · plan `aaaaaaaaaaaa` · round 1</sub>\n\n```json\n{\n  \"publication\": {\n    \"changes\": [\n      \"Add a note under step 5.\"\n    ],\n    \"review_focus\": [\n      \"Is `--locked` accurate?\"\n    ]\n  },\n  \"summary\": \"Document locked builds. Add a fragment.\"\n}\n```"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "plan": {
+          "content_digest": "1e8965bc22e31cf6c00ac351388fc6282043593d3a85e3ae76f31ae3e779f3e8",
+          "source_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "plan_summary",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "plan_summary/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 44508674e6cb0fc328ff992d15cb8501 part 1",
+          "body": "<!-- concurro:report-data:v1:44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"references\": [],\n  \"value\": {\n    \"publication\": {\n      \"changes\": [\n        \"Add a note under step 5.\"\n      ],\n      \"review_focus\": [\n        \"Is `--locked` accurate?\"\n      ]\n    },\n    \"summary\": \"Document locked builds. Add a fragment.\"\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - plan_summary - claude - round 1",
+          "body": "<!-- concurro:event:v1:plan_summary-4 -->\n### Plan updated · claude / m\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n\n<sub>Event 3 · plan `aaaaaaaaaaaa` · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "plan": {
+          "content_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "source_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "data": {
+            "digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+            "artifacts": [
+              1
+            ]
+          },
+          "artifact": 2
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "plan_summary",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 2
+      }
+    ]
+  },
+  "plan_summary/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 44508674e6cb0fc328ff992d15cb8501 part 1",
+          "body": "<!-- concurro:report-data:v1:44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c:1:3 -->\n### Report data · part 1 of 3\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"publication\": {\n      \"changes\": [\n        \"Add a note under\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 44508674e6cb0fc328ff992d15cb8501 part 2",
+          "body": "<!-- concurro:report-data:v1:44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c:2:3 -->\n### Report data · part 2 of 3\n\n```text\n step 5.\"\n      ],\n      \"review_focus\": [\n        \"Is `--locked` accurate?\"\n      ]\n    },\n    \"sum\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 44508674e6cb0fc328ff992d15cb8501 part 3",
+          "body": "<!-- concurro:report-data:v1:44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c:3:3 -->\n### Report data · part 3 of 3\n\n```text\nmary\": \"Document locked builds. Add a fragment.\"\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/3",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - plan_summary - claude - round 1",
+          "body": "<!-- concurro:event:v1:plan_summary-4 -->\n### Plan updated · claude / m\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\n<sub>Event 3 · plan `aaaaaaaaaaaa` · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "plan": {
+          "content_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "source_digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+          "data": {
+            "digest": "44508674e6cb0fc328ff992d15cb850189972dcd8c8f46b6163e97cd082f6d3c",
+            "artifacts": [
+              1,
+              2,
+              3
+            ]
+          },
+          "artifact": 4
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "plan_summary",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 4
+      }
+    ]
+  },
+  "plan_summary/compact": [
+    "Plan updated · claude / m",
+    "Document locked builds.\n\n[Implementation plan](https://github.com/o/r/issues/7/artifacts/2) · artifact version 1\n\nFull text omitted: it exceeds the comment limit. It is kept in the automation audit state.",
+    [
+      "plan `aaaaaaaaaaaa`",
+      "round 1"
+    ]
+  ],
+  "qc_design/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:qc_design-2 -->\n### 🛠️ Plan QC · claude · Revise\n\nOne boundary is unspecified.\n\n| Objection | Kind | Status |\n| ---- | ---- | ---- |\n| `O1-bbbbbbbb` | Objection | ✅ Resolved |\n| `O2-bbbbbbbb` | Objection | 📌 Open |\n\n<details><summary>Rationale and objections</summary>\n\nOne boundary is unspecified. The rest of the plan holds.\n\n**O2-bbbbbbbb** · Concern\n\nSpecify the `<limit>` boundary.\n\n**O1-bbbbbbbb** · ✅ Resolved\n\nStep 2 now covers it.\n\n**O2-bbbbbbbb** · 📌 Open\n\nStep 3 is silent.\n\nCounterexample: A request at the limit.\n\nClosure: Step 3 names the limit.\n\n</details>\n\n<sub>Event 3 · m · plan `aaaaaaaaaaaa` · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "67ad7d3bba2513f21a493599714477c0135c4f7d53c8a1a7e2002e9c27992c8d",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "qc_design/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_design - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_design-3 -->\n### 🛠️ Plan QC · claude · Revise\n\nOne boundary is unspecified.\n\n<sub>Report 3 · m · plan `aaaaaaaaaaaa` · round 2 · cooperative</sub>\n\n```json\n{\n  \"concerns\": [\n    \"Specify the `<limit>` boundary.\"\n  ],\n  \"decision\": \"revise\",\n  \"objection_updates\": [\n    {\n      \"closure\": \"\",\n      \"counterexample\": \"\",\n      \"detail\": \"Old.\",\n      \"evidence\": \"Step 2 now covers it.\",\n      \"id\": \"O1\",\n      \"status\": \"resolved\"\n    },\n    {\n      \"closure\": \"Step 3 names the limit.\",\n      \"counterexample\": \"A request at the limit.\",\n      \"detail\": \"Specify the `<limit>` boundary.\",\n      \"evidence\": \"Step 3 is silent.\",\n      \"id\": \"O2\",\n      \"status\": \"open\"\n    }\n  ],\n  \"questions\": [],\n  \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n  \"risk\": \"low\",\n  \"scope\": {}\n}\n```"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "bcd334d45bc9245c0d96d6a210a1b09bd3e8a236a5368678a2181dca0732d546",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_design",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "qc_design/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 1",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [\n      \"Specify the `<limit>` boundary.\"\n    ],\n    \"decision\": \"revise\",\n    \"objection_updates\": [\n      {\n        \"closure\": \"\",\n        \"counterexample\": \"\",\n        \"detail\": \"Old.\",\n        \"evidence\": \"Step 2 now covers it.\",\n        \"id\": \"O1\",\n        \"status\": \"resolved\"\n      },\n      {\n        \"closure\": \"Step 3 names the limit.\",\n        \"counterexample\": \"A request at the limit.\",\n        \"detail\": \"Specify the `<limit>` boundary.\",\n        \"evidence\": \"Step 3 is silent.\",\n        \"id\": \"O2\",\n        \"status\": \"open\"\n      }\n    ],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_design - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_design-4 -->\n### 🛠️ Plan QC · claude · Revise\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n\n<sub>Event 3 · m · plan `aaaaaaaaaaaa` · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "data": {
+            "digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+            "artifacts": [
+              1
+            ]
+          },
+          "artifact": 2
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_design",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 2
+      }
+    ]
+  },
+  "qc_design/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 1",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:1:8 -->\n### Report data · part 1 of 8\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [\n      \"Specify the `<limit>` boundary.\"\n    ],\n\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 2",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:2:8 -->\n### Report data · part 2 of 8\n\n```text\n    \"decision\": \"revise\",\n    \"objection_updates\": [\n      {\n        \"closure\": \"\",\n        \"counter\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 3",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:3:8 -->\n### Report data · part 3 of 8\n\n```text\nexample\": \"\",\n        \"detail\": \"Old.\",\n        \"evidence\": \"Step 2 now covers it.\",\n        \"id\": \"\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/3",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 4",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:4:8 -->\n### Report data · part 4 of 8\n\n```text\nO1\",\n        \"status\": \"resolved\"\n      },\n      {\n        \"closure\": \"Step 3 names the limit.\",\n   \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/4",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 5",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:5:8 -->\n### Report data · part 5 of 8\n\n```text\n     \"counterexample\": \"A request at the limit.\",\n        \"detail\": \"Specify the `<limit>` boundary.\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/5",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 6",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:6:8 -->\n### Report data · part 6 of 8\n\n```text\n\",\n        \"evidence\": \"Step 3 is silent.\",\n        \"id\": \"O2\",\n        \"status\": \"open\"\n      }\n   \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/6",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 7",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:7:8 -->\n### Report data · part 7 of 8\n\n```text\n ],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\"\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/7",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 8",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:8:8 -->\n### Report data · part 8 of 8\n\n```text\n,\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/8",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_design - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_design-4 -->\n### 🛠️ Plan QC · claude · Revise\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Full report part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Full report part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Full report part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Full report part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Full report part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n\n<sub>Event 3 · m · plan `aaaaaaaaaaaa` · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "data": {
+            "digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+            "artifacts": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "artifact": 9
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_design",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 9
+      }
+    ]
+  },
+  "qc_design/compact": [
+    "🛠️ Plan QC · claude · Revise",
+    "One boundary is unspecified.\n\n| Objection | Kind | Status |\n| ---- | ---- | ---- |\n| `O1-bbbbbbbb` | Objection | ✅ Resolved |\n| `O2-bbbbbbbb` | Objection | 📌 Open |\n\nFull text omitted: it exceeds the comment limit. It is kept in the automation audit state.",
+    [
+      "m",
+      "plan `aaaaaaaaaaaa`",
+      "round 2",
+      "cooperative"
+    ]
+  ],
+  "review/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:review-2 -->\n### 🛠️ Code review · claude · Changes requested\n\nTwo defects remain; one earlier finding is fixed.\n\n[Review on PR #9](https://github.com/o/r/pull/9) · 2 new findings (1 ❗ High, 1 ℹ️ Low) · earlier: F1 ✅ Fixed\n\n<details><summary>Full review</summary>\n\nThe guide is close.\n\n&lt;!-- unclosed\n\n</details>\n\n<sub>Event 3 · m · head `ddddddd` · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "reviews/claude": {
+          "content_digest": "25e334593789b3c7199b23f279cc5cc1b897460183b02baac153601f66435455",
+          "source_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "review/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review - claude - round 1",
+          "body": "<!-- concurro:event:v1:review-3 -->\n### 🛠️ Code review · claude · Changes requested\n\nTwo defects remain; one earlier finding is fixed.\n\n<sub>Report 3 · m · head `ddddddd` · round 2</sub>\n\n````json\n{\n  \"design_issue\": null,\n  \"dispositions\": [\n    {\n      \"evidence\": \"Lines 3-4 define it.\",\n      \"id\": \"F1\",\n      \"status\": \"fixed\"\n    }\n  ],\n  \"finding_ids\": [\n    \"F2\",\n    \"F3\"\n  ],\n  \"findings\": [\n    {\n      \"detail\": \"The term is undefined. Define it before use.\",\n      \"line\": 4,\n      \"path\": \"docs/guide.md\",\n      \"severity\": \"low\",\n      \"start_line\": 3,\n      \"title\": \"Wording\"\n    },\n    {\n      \"detail\": \"No fragment.\\n\\n```\\n</details>\",\n      \"line\": null,\n      \"path\": null,\n      \"severity\": \"high\",\n      \"start_line\": null,\n      \"title\": \"Missing *changelog* [fragment](x)\"\n    }\n  ],\n  \"head\": \"dddddddddddddddddddddddddddddddddddddddd\",\n  \"headline\": \"Two defects remain; one earlier finding is fixed.\",\n  \"model\": \"m\",\n  \"sequence\": 2,\n  \"summary\": \"The guide is close.\\n\\n<!-- unclosed\",\n  \"verdict\": \"changes_requested\"\n}\n````"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "reviews/claude": {
+          "content_digest": "7c3412d87c251d0e27ed580a375bfa41df4dcfc7d208e87d92d4ac90ac458b34",
+          "source_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "review/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 1",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:1:1 -->\n### Report data · part 1 of 1\n\n````json\n{\n  \"references\": [],\n  \"value\": {\n    \"design_issue\": null,\n    \"dispositions\": [\n      {\n        \"evidence\": \"Lines 3-4 define it.\",\n        \"id\": \"F1\",\n        \"status\": \"fixed\"\n      }\n    ],\n    \"findings\": [\n      {\n        \"detail\": \"The term is undefined. Define it before use.\",\n        \"line\": 4,\n        \"path\": \"docs/guide.md\",\n        \"severity\": \"low\",\n        \"start_line\": 3,\n        \"title\": \"Wording\"\n      },\n      {\n        \"detail\": \"No fragment.\\n\\n```\\n</details>\",\n        \"line\": null,\n        \"path\": null,\n        \"severity\": \"high\",\n        \"start_line\": null,\n        \"title\": \"Missing *changelog* [fragment](x)\"\n      }\n    ],\n    \"headline\": \"Two defects remain; one earlier finding is fixed.\",\n    \"summary\": \"The guide is close.\\n\\n<!-- unclosed\",\n    \"verdict\": \"changes_requested\"\n  }\n}\n````\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 3dcd54a2ceb57dd5c67a9d811a3752e3 part 1",
+          "body": "<!-- concurro:report-data:v1:3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"annotations\": {\n    \"finding_ids\": [\n      \"F2\",\n      \"F3\"\n    ],\n    \"head\": \"dddddddddddddddddddddddddddddddddddddddd\",\n    \"model\": \"m\",\n    \"sequence\": 2\n  },\n  \"report\": {\n    \"artifacts\": [\n      1\n    ],\n    \"digest\": \"39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f\"\n  }\n}\n```\n\nReferences:\n- [Referenced data 39f3eed4273d, part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review - claude - round 1",
+          "body": "<!-- concurro:event:v1:review-4 -->\n### 🛠️ Code review · claude · Changes requested\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n\n<sub>Event 3 · m · head `ddddddd` · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "reviews/claude": {
+          "content_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "source_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "data": {
+            "digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+            "artifacts": [
+              2
+            ]
+          },
+          "artifact": 3
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 3
+      }
+    ]
+  },
+  "review/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 1",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:1:9 -->\n### Report data · part 1 of 9\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"design_issue\": null,\n    \"dispositions\": [\n      {\n        \"\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 2",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:2:9 -->\n### Report data · part 2 of 9\n\n```text\nevidence\": \"Lines 3-4 define it.\",\n        \"id\": \"F1\",\n        \"status\": \"fixed\"\n      }\n    ],\n    \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 3",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:3:9 -->\n### Report data · part 3 of 9\n\n```text\n\"findings\": [\n      {\n        \"detail\": \"The term is undefined. Define it before use.\",\n        \"lin\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/3",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 4",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:4:9 -->\n### Report data · part 4 of 9\n\n```text\ne\": 4,\n        \"path\": \"docs/guide.md\",\n        \"severity\": \"low\",\n        \"start_line\": 3,\n        \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/4",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 5",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:5:9 -->\n### Report data · part 5 of 9\n\n````text\n\"title\": \"Wording\"\n      },\n      {\n        \"detail\": \"No fragment.\\n\\n```\\n</details>\",\n        \"li\n````\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/5",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 6",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:6:9 -->\n### Report data · part 6 of 9\n\n```text\nne\": null,\n        \"path\": null,\n        \"severity\": \"high\",\n        \"start_line\": null,\n        \"ti\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/6",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 7",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:7:9 -->\n### Report data · part 7 of 9\n\n```text\ntle\": \"Missing *changelog* [fragment](x)\"\n      }\n    ],\n    \"headline\": \"Two defects remain; one ea\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/7",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 8",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:8:9 -->\n### Report data · part 8 of 9\n\n```text\nrlier finding is fixed.\",\n    \"summary\": \"The guide is close.\\n\\n<!-- unclosed\",\n    \"verdict\": \"cha\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/8",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 39f3eed4273dae796a1461ad42287fd3 part 9",
+          "body": "<!-- concurro:report-data:v1:39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f:9:9 -->\n### Report data · part 9 of 9\n\n```text\nnges_requested\"\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/9",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 3dcd54a2ceb57dd5c67a9d811a3752e3 part 1",
+          "body": "<!-- concurro:report-data:v1:3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f:1:4 -->\n### Report data · part 1 of 4\n\n```text\n{\n  \"annotations\": {\n    \"finding_ids\": [\n      \"F2\",\n      \"F3\"\n    ],\n    \"head\": \"ddddddddddddddd\n```\n\nReferences:\n- [Referenced data 39f3eed4273d, part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Referenced data 39f3eed4273d, part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Referenced data 39f3eed4273d, part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Referenced data 39f3eed4273d, part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Referenced data 39f3eed4273d, part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Referenced data 39f3eed4273d, part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Referenced data 39f3eed4273d, part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Referenced data 39f3eed4273d, part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n- [Referenced data 39f3eed4273d, part 9](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9)\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/10",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 3dcd54a2ceb57dd5c67a9d811a3752e3 part 2",
+          "body": "<!-- concurro:report-data:v1:3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f:2:4 -->\n### Report data · part 2 of 4\n\n```text\nddddddddddddddddddddddddd\",\n    \"model\": \"m\",\n    \"sequence\": 2\n  },\n  \"report\": {\n    \"artifacts\": \n```\n\nReferences:\n- [Referenced data 39f3eed4273d, part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Referenced data 39f3eed4273d, part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Referenced data 39f3eed4273d, part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Referenced data 39f3eed4273d, part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Referenced data 39f3eed4273d, part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Referenced data 39f3eed4273d, part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Referenced data 39f3eed4273d, part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Referenced data 39f3eed4273d, part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n- [Referenced data 39f3eed4273d, part 9](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9)\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/11",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 3dcd54a2ceb57dd5c67a9d811a3752e3 part 3",
+          "body": "<!-- concurro:report-data:v1:3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f:3:4 -->\n### Report data · part 3 of 4\n\n```text\n[\n      1,\n      2,\n      3,\n      4,\n      5,\n      6,\n      7,\n      8,\n      9\n    ],\n    \"digest\n```\n\nReferences:\n- [Referenced data 39f3eed4273d, part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Referenced data 39f3eed4273d, part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Referenced data 39f3eed4273d, part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Referenced data 39f3eed4273d, part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Referenced data 39f3eed4273d, part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Referenced data 39f3eed4273d, part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Referenced data 39f3eed4273d, part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Referenced data 39f3eed4273d, part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n- [Referenced data 39f3eed4273d, part 9](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9)\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/12",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 3dcd54a2ceb57dd5c67a9d811a3752e3 part 4",
+          "body": "<!-- concurro:report-data:v1:3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f:4:4 -->\n### Report data · part 4 of 4\n\n```text\n\": \"39f3eed4273dae796a1461ad42287fd385f51d3c2d97a14439ebdfa62d58591f\"\n  }\n}\n```\n\nReferences:\n- [Referenced data 39f3eed4273d, part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Referenced data 39f3eed4273d, part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Referenced data 39f3eed4273d, part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Referenced data 39f3eed4273d, part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Referenced data 39f3eed4273d, part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Referenced data 39f3eed4273d, part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Referenced data 39f3eed4273d, part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Referenced data 39f3eed4273d, part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n- [Referenced data 39f3eed4273d, part 9](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9)\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/13",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review - claude - round 1",
+          "body": "<!-- concurro:event:v1:review-4 -->\n### 🛠️ Code review · claude · Changes requested\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/11)\n- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12)\n- [Full report part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/13)\n\n<sub>Event 3 · m · head `ddddddd` · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "reviews/claude": {
+          "content_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "source_digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+          "data": {
+            "digest": "3dcd54a2ceb57dd5c67a9d811a3752e34aa2d4fa92e987d595971fa3cea4827f",
+            "artifacts": [
+              10,
+              11,
+              12,
+              13
+            ]
+          },
+          "artifact": 14
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 14
+      }
+    ]
+  },
+  "review/compact": [
+    "🛠️ Code review · claude · Changes requested",
+    "Two defects remain; one earlier finding is fixed.\n\n[Review on PR #9](https://github.com/o/r/pull/9) · 2 new findings (1 ❗ High, 1 ℹ️ Low) · earlier: F1 ✅ Fixed\n\nFull text omitted: it exceeds the comment limit. It is kept in the automation audit state.",
+    [
+      "m",
+      "head `ddddddd`",
+      "round 2"
+    ]
+  ],
+  "qc_intake/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:qc_intake-2 -->\n### ✅ Intake QC · claude · Proceed\n\nOne boundary is unspecified.\n\n<details><summary>Rationale and objections</summary>\n\nOne boundary is unspecified. The rest of the plan holds.\n\n</details>\n\n<sub>Event 3 · m · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "4c64b7a1dd7b02daf804c76b4d86eab6192ae451d250a832dc91ec835ce8cedc",
+          "source_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "qc_intake/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_intake - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_intake-3 -->\n### ✅ Intake QC · claude · Proceed\n\nOne boundary is unspecified.\n\n<sub>Report 3 · m · round 2</sub>\n\n```json\n{\n  \"concerns\": [],\n  \"decision\": \"proceed\",\n  \"objection_updates\": [],\n  \"questions\": [],\n  \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n  \"risk\": \"low\",\n  \"scope\": {}\n}\n```"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "08a54c169096335231728780a1b932963d0a3d956b726ac95d17b0f0c629fe65",
+          "source_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_intake",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "qc_intake/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d2537e7470bad77cf37540f653242992 part 1",
+          "body": "<!-- concurro:report-data:v1:d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [],\n    \"decision\": \"proceed\",\n    \"objection_updates\": [],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_intake - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_intake-4 -->\n### ✅ Intake QC · claude · Proceed\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n\n<sub>Event 3 · m · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "source_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "data": {
+            "digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+            "artifacts": [
+              1
+            ]
+          },
+          "artifact": 2
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_intake",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 2
+      }
+    ]
+  },
+  "qc_intake/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d2537e7470bad77cf37540f653242992 part 1",
+          "body": "<!-- concurro:report-data:v1:d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1:1:3 -->\n### Report data · part 1 of 3\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [],\n    \"decision\": \"proceed\",\n    \"objection_upd\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d2537e7470bad77cf37540f653242992 part 2",
+          "body": "<!-- concurro:report-data:v1:d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1:2:3 -->\n### Report data · part 2 of 3\n\n```text\nates\": [],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d2537e7470bad77cf37540f653242992 part 3",
+          "body": "<!-- concurro:report-data:v1:d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1:3:3 -->\n### Report data · part 3 of 3\n\n```text\nholds.\",\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/3",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - qc_intake - claude - round 1",
+          "body": "<!-- concurro:event:v1:qc_intake-4 -->\n### ✅ Intake QC · claude · Proceed\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\n<sub>Event 3 · m · round 2</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "source_digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+          "data": {
+            "digest": "d2537e7470bad77cf37540f6532429925d460ff116fadb3fe690ac1e967b23f1",
+            "artifacts": [
+              1,
+              2,
+              3
+            ]
+          },
+          "artifact": 4
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "qc_intake",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 4
+      }
+    ]
+  },
+  "qc_intake/compact": [
+    "✅ Intake QC · claude · Proceed",
+    "One boundary is unspecified.\n\nFull text omitted: it exceeds the comment limit. It is kept in the automation audit state.",
+    [
+      "m",
+      "",
+      "round 2",
+      ""
+    ]
+  ],
+  "review_rejection/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:review_rejection-2 -->\n### Design review output rejected\n\nMissing \\`sources\\` &lt;field&gt;.\n\n<sub>Event 3 · claude · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "43ed8482e4bdbcdc6e27e5731b48583142cd05baf05490fb3af764d3fd80d63c",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "review_rejection/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review_rejection - claude - round 1",
+          "body": "<!-- concurro:event:v1:review_rejection-3 -->\n### Design review output rejected\n\n<sub>Report 3 · claude · round 2 · cooperative</sub>\n\n```json\n{\n  \"concerns\": [\n    \"Specify the `<limit>` boundary.\"\n  ],\n  \"decision\": \"revise\",\n  \"objection_updates\": [\n    {\n      \"closure\": \"\",\n      \"counterexample\": \"\",\n      \"detail\": \"Old.\",\n      \"evidence\": \"Step 2 now covers it.\",\n      \"id\": \"O1\",\n      \"status\": \"resolved\"\n    },\n    {\n      \"closure\": \"Step 3 names the limit.\",\n      \"counterexample\": \"A request at the limit.\",\n      \"detail\": \"Specify the `<limit>` boundary.\",\n      \"evidence\": \"Step 3 is silent.\",\n      \"id\": \"O2\",\n      \"status\": \"open\"\n    }\n  ],\n  \"questions\": [],\n  \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n  \"risk\": \"low\",\n  \"scope\": {}\n}\n```"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "e0481657fa1760e82f0d06483f8c59f9bec6a1617b3094e71d043049aed2d834",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review_rejection",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "review_rejection/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 1",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [\n      \"Specify the `<limit>` boundary.\"\n    ],\n    \"decision\": \"revise\",\n    \"objection_updates\": [\n      {\n        \"closure\": \"\",\n        \"counterexample\": \"\",\n        \"detail\": \"Old.\",\n        \"evidence\": \"Step 2 now covers it.\",\n        \"id\": \"O1\",\n        \"status\": \"resolved\"\n      },\n      {\n        \"closure\": \"Step 3 names the limit.\",\n        \"counterexample\": \"A request at the limit.\",\n        \"detail\": \"Specify the `<limit>` boundary.\",\n        \"evidence\": \"Step 3 is silent.\",\n        \"id\": \"O2\",\n        \"status\": \"open\"\n      }\n    ],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\",\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review_rejection - claude - round 1",
+          "body": "<!-- concurro:event:v1:review_rejection-4 -->\n### Design review output rejected\n\nMissing \\`sources\\` &lt;field&gt;.\n\nRejected output; not an accepted review.\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n\n<sub>Event 3 · claude · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "data": {
+            "digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+            "artifacts": [
+              1
+            ]
+          },
+          "artifact": 2
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review_rejection",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 2
+      }
+    ]
+  },
+  "review_rejection/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 1",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:1:8 -->\n### Report data · part 1 of 8\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"concerns\": [\n      \"Specify the `<limit>` boundary.\"\n    ],\n\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 2",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:2:8 -->\n### Report data · part 2 of 8\n\n```text\n    \"decision\": \"revise\",\n    \"objection_updates\": [\n      {\n        \"closure\": \"\",\n        \"counter\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 3",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:3:8 -->\n### Report data · part 3 of 8\n\n```text\nexample\": \"\",\n        \"detail\": \"Old.\",\n        \"evidence\": \"Step 2 now covers it.\",\n        \"id\": \"\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/3",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 4",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:4:8 -->\n### Report data · part 4 of 8\n\n```text\nO1\",\n        \"status\": \"resolved\"\n      },\n      {\n        \"closure\": \"Step 3 names the limit.\",\n   \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/4",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 5",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:5:8 -->\n### Report data · part 5 of 8\n\n```text\n     \"counterexample\": \"A request at the limit.\",\n        \"detail\": \"Specify the `<limit>` boundary.\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/5",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 6",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:6:8 -->\n### Report data · part 6 of 8\n\n```text\n\",\n        \"evidence\": \"Step 3 is silent.\",\n        \"id\": \"O2\",\n        \"status\": \"open\"\n      }\n   \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/6",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 7",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:7:8 -->\n### Report data · part 7 of 8\n\n```text\n ],\n    \"questions\": [],\n    \"rationale\": \"One boundary is unspecified. The rest of the plan holds.\"\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/7",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data 11b1fac32e99f12195fa10e7732c5301 part 8",
+          "body": "<!-- concurro:report-data:v1:11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f:8:8 -->\n### Report data · part 8 of 8\n\n```text\n,\n    \"risk\": \"low\",\n    \"scope\": {}\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/8",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - review_rejection - claude - round 1",
+          "body": "<!-- concurro:event:v1:review_rejection-4 -->\n### Design review output rejected\n\nMissing \\`sources\\` &lt;field&gt;.\n\nRejected output; not an accepted review.\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n- [Full report part 3](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n- [Full report part 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4)\n- [Full report part 5](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5)\n- [Full report part 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)\n- [Full report part 7](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/7)\n- [Full report part 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)\n\n<sub>Event 3 · claude · round 2 · cooperative</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "qc/plan_qc": {
+          "content_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "source_digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+          "data": {
+            "digest": "11b1fac32e99f12195fa10e7732c5301edf0a8d18ddcf1b9b7a51d46e9d8d40f",
+            "artifacts": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "artifact": 9
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "review_rejection",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 9
+      }
+    ]
+  },
+  "review_rejection/compact": [
+    "Design review output rejected",
+    "Missing \\`sources\\` &lt;field&gt;.",
+    [
+      "claude",
+      "round 2",
+      "cooperative"
+    ]
+  ],
+  "implementation/v2": {
+    "trace": [
+      [
+        "issues/7/comments",
+        "POST",
+        {
+          "body": "<!-- concurro:event:v1:implementation-2 -->\n### Implementation report\n\nUpdated `read()`.\n\nAgent-reported validation: Two tests passed.\n\n<sub>Event 3 · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "latest": 11,
+      "receipts": {
+        "result": {
+          "content_digest": "4d7395864b5620e1f7f25f7a9074e3a04612cc9f758750115da02aa4d6862c9f",
+          "source_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "comment": 11
+        }
+      }
+    },
+    "reports": []
+  },
+  "implementation/v3": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - implementation - claude - round 1",
+          "body": "<!-- concurro:event:v1:implementation-3 -->\n### Implementation report\n\n<sub>Report 3 · round 1</sub>\n\n```json\n{\n  \"summary\": \"Updated `read()`.\",\n  \"validation\": \"Two tests passed.\"\n}\n```"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "result": {
+          "content_digest": "f7a597c7d061e1ac46e6c455892b1c6427569daee2188d80acd052cccff7c5b4",
+          "source_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "artifact": 1
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "implementation",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 1
+      }
+    ]
+  },
+  "implementation/v4": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d1f000db484579ba42cc15b762001347 part 1",
+          "body": "<!-- concurro:report-data:v1:d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5:1:1 -->\n### Report data · part 1 of 1\n\n```json\n{\n  \"references\": [],\n  \"value\": {\n    \"summary\": \"Updated `read()`.\",\n    \"validation\": \"Two tests passed.\"\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - implementation - claude - round 1",
+          "body": "<!-- concurro:event:v1:implementation-4 -->\n### Implementation report\n\n- [Full report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n\n<sub>Event 3 · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "result": {
+          "content_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "source_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "data": {
+            "digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+            "artifacts": [
+              1
+            ]
+          },
+          "artifact": 2
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "implementation",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 2
+      }
+    ]
+  },
+  "implementation/multipart": {
+    "trace": [
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d1f000db484579ba42cc15b762001347 part 1",
+          "body": "<!-- concurro:report-data:v1:d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5:1:2 -->\n### Report data · part 1 of 2\n\n```text\n{\n  \"references\": [],\n  \"value\": {\n    \"summary\": \"Updated `read()`.\",\n    \"validation\": \"Two tests \n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/1",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro review data d1f000db484579ba42cc15b762001347 part 2",
+          "body": "<!-- concurro:report-data:v1:d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5:2:2 -->\n### Report data · part 2 of 2\n\n```text\npassed.\"\n  }\n}\n```\n"
+        },
+        {}
+      ],
+      [
+        "issues/7/artifacts/2",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "issues/7/artifacts",
+        "POST",
+        {
+          "type": "generic",
+          "name": "Concurro report 3 - implementation - claude - round 1",
+          "body": "<!-- concurro:event:v1:implementation-4 -->\n### Implementation report\n\n- [Full report part 1](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1)\n- [Full report part 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2)\n\n<sub>Event 3 · round 1</sub>"
+        },
+        {}
+      ]
+    ],
+    "journal": {
+      "pending": [],
+      "receipts": {
+        "result": {
+          "content_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "source_digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+          "data": {
+            "digest": "d1f000db484579ba42cc15b762001347118f95e6599083d46b13e728252ef5e5",
+            "artifacts": [
+              1,
+              2
+            ]
+          },
+          "artifact": 3
+        }
+      }
+    },
+    "reports": [
+      {
+        "step": "implementation",
+        "provider": "claude",
+        "round": "1",
+        "artifact": 3
+      }
+    ]
+  },
+  "implementation/compact": [
+    "Implementation report",
+    "Updated `read()`.\n\nAgent-reported validation: Two tests passed.",
+    [
+      "round 1"
+    ]
+  ],
+  "pr": {
+    "trace": [
+      [
+        "pulls/9",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "pulls/9",
+        "GET",
+        null,
+        {}
+      ],
+      [
+        "pulls/9/reviews",
+        "POST",
+        {
+          "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+          "event": "COMMENT",
+          "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:2 -->\n### 🛠️ Concurro review · claude · Changes requested\n\nTwo defects remain; one earlier finding is fixed.\n\n| Severity | Finding | Where |\n| ---- | ---- | ---- |\n| ❗ High | **F3** Missing \\*changelog\\* \\[fragment\\]\\(x\\) | general |\n| ℹ️ Low | **F2** Wording | `docs/guide.md:3-4` |\n| — | **F4** Check the file boundary. | `docs/guide.md:99` |\n\n**Earlier findings:** [F1](https://github.com/cylewitruk/stacks-core-autobot/pull/9#discussion_r101) ✅ Fixed\n\nEvery open finding blocks the merge, whatever its severity.\n\n<details><summary>Full review</summary>\n\nThe guide is close.\n\n&lt;!-- unclosed\n\n</details>\n\n<details><summary>Findings without a file</summary>\n\n**F3 · Missing \\*changelog\\* \\[fragment\\]\\(x\\)**\n\nNo fragment.\n\n```\n</details>\n```\n\n</details>\n\n<sub>claude / m · head `ddddddd` · review 2</sub>",
+          "comments": [
+            {
+              "path": "docs/guide.md",
+              "line": 4,
+              "side": "RIGHT",
+              "body": "<!-- concurro:finding:v1:F2 -->\nℹ️ **Concurro · Low · F2 · Wording**\n\nThe term is undefined. Define it before use.\n\n<sub>Concurro review · claude</sub>",
+              "start_line": 3,
+              "start_side": "RIGHT"
+            }
+          ]
+        },
+        {}
+      ],
+      [
+        "pulls/9/comments",
+        "POST",
+        {
+          "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+          "path": "docs/guide.md",
+          "subject_type": "file",
+          "body": "<!-- concurro:finding:v1:F4 -->\n**Concurro · F4 · Check the file boundary.**\n\nCheck the file boundary.\n\n<sub>Concurro review · claude</sub>"
+        },
+        {}
+      ],
+      [
+        "checkpoint",
+        {
+          "issue": 7,
+          "pr": 9,
+          "plan_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reviews": {
+            "claude": {
+              "verdict": "changes_requested",
+              "headline": "Two defects remain; one earlier finding is fixed.",
+              "summary": "The guide is close.\n\n<!-- unclosed",
+              "findings": [
+                {
+                  "path": "docs/guide.md",
+                  "start_line": 3,
+                  "line": 4,
+                  "detail": "The term is undefined. Define it before use.",
+                  "severity": "low",
+                  "title": "Wording"
+                },
+                {
+                  "path": null,
+                  "start_line": null,
+                  "line": null,
+                  "detail": "No fragment.\n\n```\n</details>",
+                  "severity": "high",
+                  "title": "Missing *changelog* [fragment](x)"
+                },
+                {
+                  "path": "docs/guide.md",
+                  "start_line": null,
+                  "line": 99,
+                  "detail": "Check the file boundary."
+                }
+              ],
+              "dispositions": [
+                {
+                  "id": "F1",
+                  "status": "fixed",
+                  "evidence": "Lines 3-4 define it."
+                }
+              ],
+              "design_issue": null,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "model": "m",
+              "sequence": 2,
+              "finding_ids": [
+                "F2",
+                "F3",
+                "F4"
+              ]
+            }
+          },
+          "findings": [
+            {
+              "id": "F1",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "status": "fixed",
+              "comment": 101,
+              "thread": "T1",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221"
+            },
+            {
+              "id": "F2",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "severity": "low",
+              "title": "Wording",
+              "status": "open",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "format": 3,
+              "opening_digest": "a41ec7eefa31c84164f3bc1dd7549cf28029db6a84946631cbbdad3ab5b44b0f",
+              "resolution": "none",
+              "comment": 12,
+              "thread": "T2"
+            },
+            {
+              "id": "F3",
+              "provider": "claude",
+              "path": null,
+              "start_line": null,
+              "line": null,
+              "detail": "No fragment.\n\n```\n</details>",
+              "severity": "high",
+              "title": "Missing *changelog* [fragment](x)",
+              "status": "open",
+              "text_digest": "4972bdc71bbc65f29f05bd7c03756a5e4423526df3dace15232d6bf8365942ef",
+              "format": 3,
+              "opening_digest": "bd686e1684d53089ad3339563955fd7d6591d4093b991b15f133628cefa2ee72",
+              "resolution": "none",
+              "comment": null,
+              "thread": "body"
+            },
+            {
+              "path": "docs/guide.md",
+              "start_line": null,
+              "line": 99,
+              "detail": "Check the file boundary.",
+              "id": "F4",
+              "provider": "claude",
+              "status": "open",
+              "text_digest": "3b7b6df3613d7720964ceb5c06635f8535e75f918574e56a3ed3db5da9ddb619",
+              "format": 3,
+              "opening_digest": "ce3e970209468ddf6b27ac5aabcdeadf1cbcf8e95919ea650ef2aec6c5203568",
+              "resolution": "none",
+              "comment": 13,
+              "thread": "T3"
+            }
+          ],
+          "pr_outbox": [
+            {
+              "kind": "review",
+              "provider": "claude",
+              "sequence": 2,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "attempts": 0,
+              "inline": true,
+              "format": 3
+            }
+          ]
+        }
+      ],
+      [
+        "pulls/9/comments/101/replies",
+        "POST",
+        {
+          "body": "<!-- concurro:disposition:v1:F1:2 -->\n✅ **Fixed** in `ddddddd`\n\nLines 3-4 define it."
+        },
+        {}
+      ],
+      [
+        "checkpoint",
+        {
+          "issue": 7,
+          "pr": 9,
+          "plan_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reviews": {
+            "claude": {
+              "verdict": "changes_requested",
+              "headline": "Two defects remain; one earlier finding is fixed.",
+              "summary": "The guide is close.\n\n<!-- unclosed",
+              "findings": [
+                {
+                  "path": "docs/guide.md",
+                  "start_line": 3,
+                  "line": 4,
+                  "detail": "The term is undefined. Define it before use.",
+                  "severity": "low",
+                  "title": "Wording"
+                },
+                {
+                  "path": null,
+                  "start_line": null,
+                  "line": null,
+                  "detail": "No fragment.\n\n```\n</details>",
+                  "severity": "high",
+                  "title": "Missing *changelog* [fragment](x)"
+                },
+                {
+                  "path": "docs/guide.md",
+                  "start_line": null,
+                  "line": 99,
+                  "detail": "Check the file boundary."
+                }
+              ],
+              "dispositions": [
+                {
+                  "id": "F1",
+                  "status": "fixed",
+                  "evidence": "Lines 3-4 define it."
+                }
+              ],
+              "design_issue": null,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "model": "m",
+              "sequence": 2,
+              "finding_ids": [
+                "F2",
+                "F3",
+                "F4"
+              ]
+            }
+          },
+          "findings": [
+            {
+              "id": "F1",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "status": "fixed",
+              "comment": 101,
+              "thread": "T1",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "resolution": "intended"
+            },
+            {
+              "id": "F2",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "severity": "low",
+              "title": "Wording",
+              "status": "open",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "format": 3,
+              "opening_digest": "a41ec7eefa31c84164f3bc1dd7549cf28029db6a84946631cbbdad3ab5b44b0f",
+              "resolution": "none",
+              "comment": 12,
+              "thread": "T2"
+            },
+            {
+              "id": "F3",
+              "provider": "claude",
+              "path": null,
+              "start_line": null,
+              "line": null,
+              "detail": "No fragment.\n\n```\n</details>",
+              "severity": "high",
+              "title": "Missing *changelog* [fragment](x)",
+              "status": "open",
+              "text_digest": "4972bdc71bbc65f29f05bd7c03756a5e4423526df3dace15232d6bf8365942ef",
+              "format": 3,
+              "opening_digest": "bd686e1684d53089ad3339563955fd7d6591d4093b991b15f133628cefa2ee72",
+              "resolution": "none",
+              "comment": null,
+              "thread": "body"
+            },
+            {
+              "path": "docs/guide.md",
+              "start_line": null,
+              "line": 99,
+              "detail": "Check the file boundary.",
+              "id": "F4",
+              "provider": "claude",
+              "status": "open",
+              "text_digest": "3b7b6df3613d7720964ceb5c06635f8535e75f918574e56a3ed3db5da9ddb619",
+              "format": 3,
+              "opening_digest": "ce3e970209468ddf6b27ac5aabcdeadf1cbcf8e95919ea650ef2aec6c5203568",
+              "resolution": "none",
+              "comment": 13,
+              "thread": "T3"
+            }
+          ],
+          "pr_outbox": [
+            {
+              "kind": "review",
+              "provider": "claude",
+              "sequence": 2,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "attempts": 0,
+              "inline": true,
+              "format": 3
+            }
+          ]
+        }
+      ],
+      [
+        "checkpoint",
+        {
+          "issue": 7,
+          "pr": 9,
+          "plan_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reviews": {
+            "claude": {
+              "verdict": "changes_requested",
+              "headline": "Two defects remain; one earlier finding is fixed.",
+              "summary": "The guide is close.\n\n<!-- unclosed",
+              "findings": [
+                {
+                  "path": "docs/guide.md",
+                  "start_line": 3,
+                  "line": 4,
+                  "detail": "The term is undefined. Define it before use.",
+                  "severity": "low",
+                  "title": "Wording"
+                },
+                {
+                  "path": null,
+                  "start_line": null,
+                  "line": null,
+                  "detail": "No fragment.\n\n```\n</details>",
+                  "severity": "high",
+                  "title": "Missing *changelog* [fragment](x)"
+                },
+                {
+                  "path": "docs/guide.md",
+                  "start_line": null,
+                  "line": 99,
+                  "detail": "Check the file boundary."
+                }
+              ],
+              "dispositions": [
+                {
+                  "id": "F1",
+                  "status": "fixed",
+                  "evidence": "Lines 3-4 define it."
+                }
+              ],
+              "design_issue": null,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "model": "m",
+              "sequence": 2,
+              "finding_ids": [
+                "F2",
+                "F3",
+                "F4"
+              ]
+            }
+          },
+          "findings": [
+            {
+              "id": "F1",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "status": "fixed",
+              "comment": 101,
+              "thread": "T1",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "resolution": "done"
+            },
+            {
+              "id": "F2",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "severity": "low",
+              "title": "Wording",
+              "status": "open",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "format": 3,
+              "opening_digest": "a41ec7eefa31c84164f3bc1dd7549cf28029db6a84946631cbbdad3ab5b44b0f",
+              "resolution": "none",
+              "comment": 12,
+              "thread": "T2"
+            },
+            {
+              "id": "F3",
+              "provider": "claude",
+              "path": null,
+              "start_line": null,
+              "line": null,
+              "detail": "No fragment.\n\n```\n</details>",
+              "severity": "high",
+              "title": "Missing *changelog* [fragment](x)",
+              "status": "open",
+              "text_digest": "4972bdc71bbc65f29f05bd7c03756a5e4423526df3dace15232d6bf8365942ef",
+              "format": 3,
+              "opening_digest": "bd686e1684d53089ad3339563955fd7d6591d4093b991b15f133628cefa2ee72",
+              "resolution": "none",
+              "comment": null,
+              "thread": "body"
+            },
+            {
+              "path": "docs/guide.md",
+              "start_line": null,
+              "line": 99,
+              "detail": "Check the file boundary.",
+              "id": "F4",
+              "provider": "claude",
+              "status": "open",
+              "text_digest": "3b7b6df3613d7720964ceb5c06635f8535e75f918574e56a3ed3db5da9ddb619",
+              "format": 3,
+              "opening_digest": "ce3e970209468ddf6b27ac5aabcdeadf1cbcf8e95919ea650ef2aec6c5203568",
+              "resolution": "none",
+              "comment": 13,
+              "thread": "T3"
+            }
+          ],
+          "pr_outbox": [
+            {
+              "kind": "review",
+              "provider": "claude",
+              "sequence": 2,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "attempts": 0,
+              "inline": true,
+              "format": 3
+            }
+          ]
+        }
+      ],
+      [
+        "checkpoint",
+        {
+          "issue": 7,
+          "pr": 9,
+          "plan_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reviews": {
+            "claude": {
+              "verdict": "changes_requested",
+              "headline": "Two defects remain; one earlier finding is fixed.",
+              "summary": "The guide is close.\n\n<!-- unclosed",
+              "findings": [
+                {
+                  "path": "docs/guide.md",
+                  "start_line": 3,
+                  "line": 4,
+                  "detail": "The term is undefined. Define it before use.",
+                  "severity": "low",
+                  "title": "Wording"
+                },
+                {
+                  "path": null,
+                  "start_line": null,
+                  "line": null,
+                  "detail": "No fragment.\n\n```\n</details>",
+                  "severity": "high",
+                  "title": "Missing *changelog* [fragment](x)"
+                },
+                {
+                  "path": "docs/guide.md",
+                  "start_line": null,
+                  "line": 99,
+                  "detail": "Check the file boundary."
+                }
+              ],
+              "dispositions": [
+                {
+                  "id": "F1",
+                  "status": "fixed",
+                  "evidence": "Lines 3-4 define it."
+                }
+              ],
+              "design_issue": null,
+              "head": "dddddddddddddddddddddddddddddddddddddddd",
+              "model": "m",
+              "sequence": 2,
+              "finding_ids": [
+                "F2",
+                "F3",
+                "F4"
+              ]
+            }
+          },
+          "findings": [
+            {
+              "id": "F1",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "status": "fixed",
+              "comment": 101,
+              "thread": "T1",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "resolution": "done"
+            },
+            {
+              "id": "F2",
+              "provider": "claude",
+              "path": "docs/guide.md",
+              "start_line": 3,
+              "line": 4,
+              "detail": "The term is undefined. Define it before use.",
+              "severity": "low",
+              "title": "Wording",
+              "status": "open",
+              "text_digest": "75bb57c804c3c2e9287af24c0639b2a01f88cea38c62dca226eed5341ad8c221",
+              "format": 3,
+              "opening_digest": "a41ec7eefa31c84164f3bc1dd7549cf28029db6a84946631cbbdad3ab5b44b0f",
+              "resolution": "none",
+              "comment": 12,
+              "thread": "T2"
+            },
+            {
+              "id": "F3",
+              "provider": "claude",
+              "path": null,
+              "start_line": null,
+              "line": null,
+              "detail": "No fragment.\n\n```\n</details>",
+              "severity": "high",
+              "title": "Missing *changelog* [fragment](x)",
+              "status": "open",
+              "text_digest": "4972bdc71bbc65f29f05bd7c03756a5e4423526df3dace15232d6bf8365942ef",
+              "format": 3,
+              "opening_digest": "bd686e1684d53089ad3339563955fd7d6591d4093b991b15f133628cefa2ee72",
+              "resolution": "none",
+              "comment": null,
+              "thread": "body"
+            },
+            {
+              "path": "docs/guide.md",
+              "start_line": null,
+              "line": 99,
+              "detail": "Check the file boundary.",
+              "id": "F4",
+              "provider": "claude",
+              "status": "open",
+              "text_digest": "3b7b6df3613d7720964ceb5c06635f8535e75f918574e56a3ed3db5da9ddb619",
+              "format": 3,
+              "opening_digest": "ce3e970209468ddf6b27ac5aabcdeadf1cbcf8e95919ea650ef2aec6c5203568",
+              "resolution": "none",
+              "comment": 13,
+              "thread": "T3"
+            }
+          ],
+          "pr_outbox": []
+        }
+      ]
+    ],
+    "comments": [
+      {
+        "id": 101,
+        "path": "docs/guide.md",
+        "body": "<!-- concurro:finding:v1:F1 -->\n**F1** · claude: The term is undefined. Define it before use.",
+        "user": {
+          "login": "concurro[bot]"
+        }
+      },
+      {
+        "id": 12,
+        "user": {
+          "login": "concurro[bot]"
+        },
+        "body": "<!-- concurro:finding:v1:F2 -->\nℹ️ **Concurro · Low · F2 · Wording**\n\nThe term is undefined. Define it before use.\n\n<sub>Concurro review · claude</sub>",
+        "path": "docs/guide.md",
+        "line": 4,
+        "review": 11
+      },
+      {
+        "id": 13,
+        "user": {
+          "login": "concurro[bot]"
+        },
+        "body": "<!-- concurro:finding:v1:F4 -->\n**Concurro · F4 · Check the file boundary.**\n\nCheck the file boundary.\n\n<sub>Concurro review · claude</sub>",
+        "path": "docs/guide.md",
+        "subject_type": "file"
+      },
+      {
+        "id": 14,
+        "user": {
+          "login": "concurro[bot]"
+        },
+        "body": "<!-- concurro:disposition:v1:F1:2 -->\n✅ **Fixed** in `ddddddd`\n\nLines 3-4 define it.",
+        "in_reply_to_id": 101
+      }
+    ],
+    "reviews": [
+      {
+        "id": 11,
+        "user": {
+          "login": "concurro[bot]"
+        },
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:2 -->\n### 🛠️ Concurro review · claude · Changes requested\n\nTwo defects remain; one earlier finding is fixed.\n\n| Severity | Finding | Where |\n| ---- | ---- | ---- |\n| ❗ High | **F3** Missing \\*changelog\\* \\[fragment\\]\\(x\\) | general |\n| ℹ️ Low | **F2** Wording | `docs/guide.md:3-4` |\n| — | **F4** Check the file boundary. | `docs/guide.md:99` |\n\n**Earlier findings:** [F1](https://github.com/cylewitruk/stacks-core-autobot/pull/9#discussion_r101) ✅ Fixed\n\nEvery open finding blocks the merge, whatever its severity.\n\n<details><summary>Full review</summary>\n\nThe guide is close.\n\n&lt;!-- unclosed\n\n</details>\n\n<details><summary>Findings without a file</summary>\n\n**F3 · Missing \\*changelog\\* \\[fragment\\]\\(x\\)**\n\nNo fragment.\n\n```\n</details>\n```\n\n</details>\n\n<sub>claude / m · head `ddddddd` · review 2</sub>",
+        "state": "COMMENTED",
+        "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+        "event": "COMMENT"
+      }
+    ],
+    "conflict": "PR review publication differs from its recorded content; reconcile manually"
+  }
+}

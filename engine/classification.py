@@ -290,26 +290,28 @@ def snapshot(state, config):
     return value
 
 
+def source_ref(report):
+    """The operation/attempt reference attached to an advisory assessment."""
+    return report.get("classification", {}).get("source", {}).get("report")
+
+
 def make_room(state, limit, measure):
     """Release historical advisory metadata without changing current or pending assessments."""
     if measure(state) <= limit:
         return
     archived = {r["assessment"] for r in state.get("reports", []) if r.get("assessment") and r.get("artifact")}
-    current = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
-    current += [vote["report"] for vote in state.get("design_votes", {}).values()]
+    current = review_state.current_reports(state)
     if state.get("review_event"):
         current.append(state["review_event"])
-    frozen = {report.get("classification", {}).get("source", {}).get("report") for report in current}
+    frozen = {source_ref(report) for report in current}
     for event in state.get("conversation", {}).get("pending", []):
-        value = state
-        for key in event.get("source", []):
-            value = value[key]
+        value = review_state.source_value(state, event.get("source", []))
         if event.get("source") and isinstance(value, dict):
-            frozen.add(value.get("classification", {}).get("source", {}).get("report"))
+            frozen.add(source_ref(value))
     for item in state.get("pr_outbox", []):
         if item.get("kind") == "review":
             report = report_for(state, item) or {}
-            frozen.add(report.get("classification", {}).get("source", {}).get("report"))
+            frozen.add(source_ref(report))
     reports, snapshots, seen = [], [], set()
 
     def visit(value):
@@ -319,7 +321,7 @@ def make_room(state, limit, measure):
         seen.add(id(value))
         if isinstance(value, dict):
             if isinstance(value.get("classification"), dict):
-                reference = value["classification"].get("source", {}).get("report")
+                reference = source_ref(value)
                 if reference in archived - frozen:
                     reports.append(value)
             if "classification_snapshot" in value:

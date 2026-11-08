@@ -186,8 +186,8 @@ Status values:
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Done |
 | 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Done |
 | 10 | [Execution path](10-execution-path.md) (10a, 10c, 10d; separate commits) | Refactor | Medium | Candidate (10a next) |
-| 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Approved |
-| 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Next |
+| 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
+| 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Approved |
 | 16 | [Exchange structure](16-exchange-structure.md) | Refactor | High | Candidate, prepared |
 | 14 | [Service gateway](14-service-gateway.md) | Refactor | Medium–high | Candidate, prepared |
 | 11 | [GitHub I/O and storage helpers](11-github-and-storage.md) | Refactor | Low–medium | Candidate, prepared |

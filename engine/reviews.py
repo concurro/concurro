@@ -101,12 +101,20 @@ def compact(state):
             finding["detail"] = finding["detail"][:EXCERPT] + ELIDED
 
 
+def line_suffix(start, line):
+    """An optional single-line or range suffix shared by finding locations."""
+    if line is None:
+        return ""
+    if start not in (None, line):
+        return f":{start}-{line}"
+    return f":{line}"
+
+
 def label(finding_id, item):
     """One finding as published: its ID, location and text; reports predating the ledger have neither IDs nor lines."""
     location = item.get("path") or "general"
     start, line = item.get("start_line"), item.get("line")
-    if line is not None:
-        location += f":{start}-{line}" if start not in (None, line) else f":{line}"
+    location += line_suffix(start, line)
     prefix = f"**{finding_id}** " if finding_id else ""
     return f"{prefix}`{location}`: {item['detail']}"
 
@@ -130,6 +138,7 @@ DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
 WITHDRAWN_MARKER = "<!-- concurro:withdrawn:v1:"
 # Failed attempts of one publication item before the task is blocked; a 422 may be spam prevention.
 MAX_ATTEMPTS = 3
+CONFLICT = "PR review publication differs from its recorded content; reconcile manually"
 # GitHub rejects a review body over 65,536 characters.
 REVIEW_BODY_LIMIT = 60000
 KEPT_TEXT = 1000
@@ -173,9 +182,19 @@ def task_id(state, config):
     return f"{config['repository']}#{state['issue']}"
 
 
+def finding_marker(identifier):
+    """The immutable opening-comment marker for one ledger finding."""
+    return f"{FINDING_MARKER}{identifier} -->"
+
+
+def review_marker(state, config, sequence):
+    """The immutable marker for a task's review publication sequence."""
+    return f"{REVIEW_MARKER}{task_id(state, config)}:{sequence} -->"
+
+
 def finding_prefix(finding):
     """A format 1 opening comment's text before the finding's detail."""
-    return f"{FINDING_MARKER}{finding['id']} -->\n**{finding['id']}** · {finding['provider']}: "
+    return f"{finding_marker(finding['id'])}\n**{finding['id']}** · {finding['provider']}: "
 
 
 def finding_body(finding):
@@ -186,7 +205,7 @@ def finding_body(finding):
     heading = " · ".join(
         ["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)]
     )
-    prefix = f"{FINDING_MARKER}{finding['id']} -->\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
+    prefix = f"{finding_marker(finding['id'])}\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
     suffix = "\n\n" + markup.sub("Concurro review · " + text(finding["provider"]))
     detail = block(finding["detail"])
     if finding.get("format", 1) >= 3:
@@ -223,7 +242,7 @@ def where(finding):
     if finding["path"] is None:
         return "general"
     start, line = finding["start_line"], finding["line"]
-    lines = "" if line is None else f":{start}-{line}" if start not in (None, line) else f":{line}"
+    lines = line_suffix(start, line)
     return code(finding["path"] + lines, cell=True)
 
 
@@ -242,7 +261,7 @@ def review_body_v2(state, config, item, report, findings, placed):
     """Verdict and headline, new findings by severity, answers to earlier ones; the rest collapsed."""
     emoji, outcome = markup.VERDICT[report["verdict"]]
     lines = [
-        f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
+        review_marker(state, config, item["sequence"]),
         f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}",
     ]
     # The summary itself leads when it is one short sentence or has no headline to lead with.
@@ -250,7 +269,13 @@ def review_body_v2(state, config, item, report, findings, placed):
     title = markup.headline(report, "summary")
     collapse = bool(title) and not markup.redundant(report, "summary")
     summary = block(report["summary"])
-    lines += ["", title if collapse else Droppable(summary) if len(summary) > KEPT_TEXT else summary]
+    if collapse:
+        lead = title
+    elif len(summary) > KEPT_TEXT:
+        lead = Droppable(summary)
+    else:
+        lead = summary
+    lines += ["", lead]
     order = list(markup.SEVERITY)
     ordered = sorted(
         findings,
@@ -314,7 +339,7 @@ def review_body_v2(state, config, item, report, findings, placed):
 def review_body_v1(state, config, item, report, findings, placed):
     """The review's own body: verdict, summary, answers to earlier findings, and unthreaded findings."""
     lines = [
-        f"{REVIEW_MARKER}{task_id(state, config)}:{item['sequence']} -->",
+        review_marker(state, config, item["sequence"]),
         f"### {item['provider']} / {report['model']} · {report['verdict'].replace('_', ' ')}",
         "",
         report["summary"],
@@ -434,7 +459,7 @@ class Publisher:
         existing = self.ours(comments, marker)
         if existing:
             if existing["body"] != body:
-                raise Blocked("PR review publication differs from its recorded content; reconcile manually")
+                raise Blocked(CONFLICT)
             return existing
         created = self.gh.repo(path, "POST", data)
         comments.append({"id": created["id"], "user": {"login": self.bot}, "body": body, "path": data.get("path")})
@@ -446,7 +471,7 @@ class Publisher:
         if comment is None:
             raise RuntimeError("finding comment not visible")
         if not opening_matches(finding, comment):
-            raise Blocked("PR review publication differs from its recorded content; reconcile manually")
+            raise Blocked(CONFLICT)
         return comment
 
     def review(self, item):
@@ -467,11 +492,11 @@ class Publisher:
         findings = [find(state, i) for i in report["finding_ids"]]
         placed = {f["id"]: placement(f, patches, item["inline"]) for f in findings}
         comments = self.gh.pages(f"pulls/{self.pr}/comments")
-        marker = f"{REVIEW_MARKER}{task_id(state, self.config)}:{item['sequence']} -->"
+        marker = review_marker(state, self.config, item["sequence"])
         body = review_body(state, self.config, item, report, findings, placed)
         existing = self.ours(self.gh.pages(f"pulls/{self.pr}/reviews"), marker)
         if existing and existing["body"] != body:
-            raise Blocked("PR review publication differs from its recorded content; reconcile manually")
+            raise Blocked(CONFLICT)
         if not existing:
             inline = []
             for f in findings:
@@ -491,7 +516,7 @@ class Publisher:
                 comment_body = finding_body(f)
                 self.comment(
                     comments,
-                    f"{FINDING_MARKER}{f['id']} -->",
+                    finding_marker(f["id"]),
                     f"pulls/{self.pr}/comments",
                     comment_body,
                     {"commit_id": item["head"], "path": f["path"], "subject_type": "file", "body": comment_body},
@@ -520,11 +545,11 @@ class Publisher:
             if placed[finding["id"]] == "body":
                 finding.update(comment=None, thread="body")
                 continue
-            opening = self.ours(comments, f"{FINDING_MARKER}{finding['id']} -->")
+            opening = self.ours(comments, finding_marker(finding["id"]))
             if opening is None or opening["id"] not in threads:
                 raise RuntimeError("finding thread not visible")
             if not opening_matches(finding, opening):
-                raise Blocked("PR review publication differs from its recorded content; reconcile manually")
+                raise Blocked(CONFLICT)
             finding.update(comment=opening["id"], thread=threads[opening["id"]])
 
     def resolve(self, closed):
@@ -575,7 +600,10 @@ class Publisher:
         while outbox:
             item = outbox[0]
             try:
-                self.review(item) if item["kind"] == "review" else self.withdrawn(item)
+                if item["kind"] == "review":
+                    self.review(item)
+                else:
+                    self.withdrawn(item)
             except (Blocked, Transient):
                 raise
             except Exception:

@@ -1,6 +1,21 @@
 """Select canonical per-reviewer records without duplicating them in singleton slots."""
 
 
+def source_value(state, source):
+    """The checkpoint value an event renders from."""
+    value = state
+    for key in source:
+        value = value[key]
+    return value
+
+
+def current_reports(state):
+    """Current intake, PR-review and design-vote reports in checkpoint order."""
+    reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
+    reports += [vote["report"] for vote in state.get("design_votes", {}).values()]
+    return reports
+
+
 def slot(state):
     """The selected batch member, or the legacy serial task record."""
     batch = state.get("review_batch", {})

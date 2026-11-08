@@ -65,31 +65,34 @@ def prepare(state: TaskState, context: Document, session: Session | None, operat
     if same:
         # `same` proves this receipt exists; the checker does not track that boolean alias.
         receipt = cast("EligibilityReceipt", previous)
-        reason = (
-            "session_changed"
-            if receipt.get("session") != bound["session"]
-            else "context_changed"
-            if receipt.get("inputs") != inputs
-            else ""
-        )
+        if receipt.get("session") != bound["session"]:
+            reason = "session_changed"
+        elif receipt.get("inputs") != inputs:
+            reason = "context_changed"
+        else:
+            reason = ""
     else:
-        reason = (
-            "missing_provenance"
-            if operation["status"] != "new"
-            else "prior_session"
-            if session.get("turn") != 0
+        if operation["status"] != "new":
+            reason = "missing_provenance"
+        elif (
+            session.get("turn") != 0
             or session.get("completed")
             or previous is not None
             and previous.get("session") == bound["session"]
-            else ""
-        )
+        ):
+            reason = "prior_session"
+        else:
+            reason = ""
         receipt = records[bound["reviewer"]] = {
             **bound,
             "inputs": inputs,
             "eligible": not bool(reason),
             "reason": reason,
         }
-    reason = "session_restart" if session.get("restarts") != 0 else "discussion" if discussion(context) else reason
+    if session.get("restarts") != 0:
+        reason = "session_restart"
+    elif discussion(context):
+        reason = "discussion"
     if reason and receipt.get("eligible") is True:
         receipt.update(eligible=False, reason=reason)
 

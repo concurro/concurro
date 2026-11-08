@@ -10,6 +10,7 @@ import classification
 import markup
 import protocol
 import report_store
+import review_state
 import review_timing
 import reviews
 from checkpoints import CheckpointError
@@ -18,6 +19,7 @@ from identities import Identities
 from markup import block, code, details as collapsed, link, table, text
 from policy import Blocked, digest
 from protocol import EVENT_MARKER as MARKER
+from review_state import source_value as source_value
 
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.
@@ -51,9 +53,7 @@ class PublicationError(CheckpointError):
 
 def render(state, kind, source, details):
     """Render full public text from one checkpoint-owned source without duplicating it."""
-    value = state
-    for key in source:
-        value = value[key]
+    value = source_value(state, source)
     if kind == "plan_summary":
         publication = value["publication"]
         return "\n".join(
@@ -102,15 +102,11 @@ def render(state, kind, source, details):
             ],
         }
         disposition_ids = details.get("disposition_ids", [])
-        concern_ids = [
-            identifier
-            for identifier, update in zip(disposition_ids, value.get("objection_updates", []))
-            if update["status"] == "open"
-        ]
+        concern_ids = open_concern_ids(disposition_ids, value.get("objection_updates", []))
         body = review_body(minimal, value, details["phase"], {"id": details["reviewer"]}, concern_ids)
         if value.get("objection_updates"):
             body += "\n\nObjection dispositions:\n" + "".join(
-                f"\n- **{disposition_ids[i] if disposition_ids else u['id'] or 'New finding'}**: {u['status']} — {u['evidence']}"
+                f"\n- **{update_label(disposition_ids, i, u)}**: {u['status']} — {u['evidence']}"
                 + (f" Counterexample: {u['counterexample']} Closure: {u['closure']}" if u["status"] == "open" else "")
                 for i, u in enumerate(value["objection_updates"])
             )
@@ -143,20 +139,26 @@ def render(state, kind, source, details):
     raise ValueError("unknown conversation renderer")
 
 
-def source_value(state, source):
-    """The checkpoint value an event renders from."""
-    value = state
-    for key in source:
-        value = value[key]
-    return value
+def objection_prefix(round_number, reviewer_id, phase):
+    """The stable namespace for one reviewer's round and phase."""
+    return f"D{round_number}-{reviewer_id[:8]}-{phase}"
+
+
+def open_concern_ids(disposition_ids, updates):
+    """Identifiers of open dispositions, retaining their report order."""
+    return [identifier for identifier, update in zip(disposition_ids, updates) if update["status"] == "open"]
+
+
+def update_label(ids, index, update):
+    """Use the assigned ID, the reviewer's existing ID, or the new-finding label."""
+    return ids[index] if ids else update["id"] or "New finding"
 
 
 def objections(value, details):
     """A QC report's objection IDs: those its approval resolves, and its concerns and questions."""
-    prefix = f"D{details['round']}-{details['reviewer'][:8]}-{details['phase']}"
+    prefix = objection_prefix(details["round"], details["reviewer"], details["phase"])
     resolved = list(details["resolved"]) if value["decision"] == "approve" else []
-    updates = zip(details.get("disposition_ids", []), value.get("objection_updates", []))
-    concern_ids = [identifier for identifier, update in updates if update["status"] == "open"]
+    concern_ids = open_concern_ids(details.get("disposition_ids", []), value.get("objection_updates", []))
     concerns = [(concern_ids[i] if concern_ids else f"{prefix}-c{i + 1}", t) for i, t in enumerate(value["concerns"])]
     questions = [(f"{prefix}-q{i + 1}", t) for i, t in enumerate(value["questions"])]
     return resolved, concerns, questions
@@ -255,9 +257,7 @@ def parts_v2(state, kind, source, details):
         stage = "Intake QC" if details["phase"] == "intake" else "Plan QC"
         resolved, concerns, questions = objections(value, details)
         ids = details.get("disposition_ids", [])
-        updates = [
-            (ids[i] if ids else u["id"] or "New finding", u) for i, u in enumerate(value.get("objection_updates", []))
-        ]
+        updates = [(update_label(ids, i, u), u) for i, u in enumerate(value.get("objection_updates", []))]
         updated = {i for i, _ in updates}
         rows = [[code(i, cell=True), "Objection", markup.label(markup.STATUS[u["status"]])] for i, u in updates]
         rows += [
@@ -445,6 +445,11 @@ def index_entry(state, kind, source, details):
     }
 
 
+def event_format(kind, details):
+    """Choose embedded archives or canonical report links for newly queued sources."""
+    return 4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT
+
+
 def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=(), request=None):
     """Persist a bounded event descriptor; large reports stay in their existing state fields.
 
@@ -474,18 +479,14 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
             source=list(source),
             kind=kind,
             details=details,
-            format=(
-                4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT
-            ),
+            format=event_format(kind, details),
             index=index_entry(state, kind, source, details),
         )
         timing = review_timing.index_receipt(state, kind, details)
         if timing:
             event["index"]["timing"] = timing
         value = source_value(state, source)
-        assessment = (
-            value.get("classification", {}).get("source", {}).get("report") if kind != "review_rejection" else None
-        )
+        assessment = classification.source_ref(value) if kind != "review_rejection" else None
         if assessment:
             event["index"]["assessment"] = assessment
         if event["format"] == 4:
@@ -547,6 +548,20 @@ def event_body(state, event):
     raise PublicationError("conversation_conflict")
 
 
+def _create_archive(github, issue, event, body):
+    """Publish one named report archive after recovery has ruled out an existing copy."""
+    return github.repo(
+        f"issues/{issue}/artifacts",
+        "POST",
+        {"type": "generic", "name": archive_name(event), "body": body},
+    )
+
+
+def _create_comment(github, issue, body):
+    """Publish one conversation comment after checking its immutable marker."""
+    return github.repo(f"issues/{issue}/comments", "POST", {"body": body})
+
+
 def publish(state, github, config, store=None):
     """Reconcile lost POST responses by exact App-authored marker and content."""
     journal = state.get("conversation", {})
@@ -561,10 +576,12 @@ def publish(state, github, config, store=None):
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
+            data = None
             if event.get("format") == 4:
                 source = source_value(state, event["source"])
                 key = store.put(source)
                 numbers = store.numbers[key]
+                data = {"digest": key, "artifacts": numbers}
                 title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
                 root = protocol.artifact_url(config["repository"], state["issue"])
                 links = "\n".join("- " + report_link(root, i, len(numbers), n) for i, n in enumerate(numbers, 1))
@@ -577,28 +594,32 @@ def publish(state, github, config, store=None):
                         text(diagnostic["detail"]) + "\n\n" + "Rejected output; not an accepted review.\n\n" + links,
                         meta,
                     )
-            if event.get("format", 1) >= 3:
+            is_archive = event.get("format", 1) >= 3
+            if is_archive:
                 # Archives are artifacts, authored like the audit state.
                 if artifacts is None:
                     artifacts = store.collection()
                 author = identities.author("state")
                 published_items = artifacts
-                create = lambda: github.repo(
-                    f"issues/{state['issue']}/artifacts",
-                    "POST",
-                    {"type": "generic", "name": archive_name(event), "body": body},
-                )
-                login = lambda item: item.get("creator", {}).get("login")
+                author_field = "creator"
             else:
                 # Recovery trusts only the one identity expected to author this event.
                 author = identities.author("conversation", event.get("role"))
                 published_items = comments
-                create = lambda: github.repo(f"issues/{state['issue']}/comments", "POST", {"body": body})
-                login = lambda item: item.get("user", {}).get("login")
-            matches = [c for c in published_items if login(c) == author and c.get("body", "").startswith(marker)]
+                author_field = "user"
+            matches = [
+                c
+                for c in published_items
+                if c.get(author_field, {}).get("login") == author and c.get("body", "").startswith(marker)
+            ]
             if len(matches) > 1 or matches and matches[0]["body"] != body:
                 raise PublicationError("conversation_conflict")
-            published = matches[0] if matches else create()
+            if matches:
+                published = matches[0]
+            elif is_archive:
+                published = _create_archive(github, state["issue"], event, body)
+            else:
+                published = _create_comment(github, state["issue"], body)
             if "source" not in event:
                 journal["latest"] = published["id"]
                 actions.blocked_posted(state, published["id"], body)
@@ -607,11 +628,11 @@ def publish(state, github, config, store=None):
                 continue
             source = source_value(state, event["source"])
             receipt = {"content_digest": event["content_digest"], "source_digest": digest(source)}
-            if event.get("format") == 4:
-                receipt["data"] = {"digest": key, "artifacts": numbers}
+            if data is not None:
+                receipt["data"] = data
             if isinstance(source, dict) and "classification" in source:
                 receipt["core_digest"] = digest(classification.core(source))
-            if event.get("format", 1) >= 3:
+            if is_archive:
                 receipt["artifact"] = published["number"]
                 index = state.setdefault("reports", [])
                 index.append({**event["index"], "artifact": published["number"]})
@@ -652,8 +673,7 @@ def compact(state):
     archived = [receipt for receipt in published if "artifact" in receipt]
     if "review_draft" in state and receipt_matches(state["review_draft"], archived):
         state.pop("review_draft")
-    reports = list(state.get("qc", {}).values()) + list(state.get("reviews", {}).values())
-    reports += [v["report"] for v in state.get("design_votes", {}).values()]
+    reports = review_state.current_reports(state)
     notes = {id(r): ARCHIVED if receipt_matches(r, archived) else None for r in reports}
     # Canonical report references cost no checkpoint prose space; keep their complete evidence.
     external = [receipt for receipt in published if "data" in receipt]
@@ -670,7 +690,7 @@ def compact(state):
                 excerpt = report_text[: max(1, len(report_text) * 800 // size)]
                 while len(json.dumps(excerpt).encode()) > 900:
                     excerpt = excerpt[: len(excerpt) // 2]
-                report[key] = excerpt + (notes.get(id(report)) or "… [Full text in the published issue conversation.]")
+                report[key] = excerpt + (notes.get(id(report)) or reviews.ELIDED)
                 if state.get("reason") == report_text:
                     state["reason"] = report[key]
 
@@ -679,7 +699,7 @@ def review_body(state, report, phase, member, concern_ids=()):
     """Render attributed judgments and stable objection identifiers for one plan."""
     plan = state.get("plan_id", "intake")
     round_number = state.get("design_generation", 0) + 1
-    prefix = f"D{round_number}-{member['id'][:8]}-{phase}"
+    prefix = objection_prefix(round_number, member["id"], phase)
     lines = [f"Plan `{plan}` · round {round_number} · {phase}", "", report["rationale"]]
     if report["decision"] == "approve":
         resolved = [v["id"] for v in state.get("objections", []) if v["reviewer"] == member["id"] and not v["resolved"]]

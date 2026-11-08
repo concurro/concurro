@@ -3,6 +3,18 @@
 from model_config import assigned
 from policy import approval_valid, in_scope, path_allowed
 
+PASSING = ("success", "neutral", "skipped")
+
+
+def latest_by(items, key, ident):
+    """Keep the highest-ID item per key, preserving first-key order and first-wins ties."""
+    latest = {}
+    for item in items:
+        name = key(item)
+        if name not in latest or ident(item) > ident(latest[name]):
+            latest[name] = item
+    return latest
+
 
 def review_reasons(state, pr, files, threads, config):
     """Concurro's publication/review conditions, independent of GitHub merge policy."""
@@ -82,11 +94,11 @@ def ci_reasons(observations):
     reasons, success = [], False
     for sha, checks, statuses, *extra in observations:
         suites, runs = extra if extra else ([], [])
-        workflows = {}
-        for run in runs:
-            key = (run.get("workflow_id", run["id"]), run.get("event"), run.get("head_branch"))
-            if key not in workflows or run["id"] > workflows[key]["id"]:
-                workflows[key] = run
+        workflows = latest_by(
+            runs,
+            lambda run: (run.get("workflow_id", run["id"]), run.get("event"), run.get("head_branch")),
+            lambda run: run["id"],
+        )
         active_suites = {r.get("check_suite_id") for r in workflows.values()}
         superseded = {r.get("check_suite_id") for r in runs} - active_suites - {None}
         populated = {(check.get("check_suite") or {}).get("id") for check in checks}
@@ -97,21 +109,19 @@ def ci_reasons(observations):
                 continue
             if suite.get("head_sha") != sha or suite.get("status") != "completed":
                 reasons.append("CI suite pending: " + str(suite.get("id")))
-            elif suite.get("conclusion") not in ("success", "neutral", "skipped"):
+            elif suite.get("conclusion") not in PASSING:
                 reasons.append("CI suite unsuccessful: " + str(suite.get("id")))
         for run in workflows.values():
             name = run.get("name") or str(run["id"])
             if run.get("head_sha") != sha or run.get("status") != "completed":
                 reasons.append("CI workflow pending: " + name)
-            elif run.get("conclusion") not in ("success", "neutral", "skipped"):
+            elif run.get("conclusion") not in PASSING:
                 reasons.append("CI workflow unsuccessful: " + name)
-        latest = {}
-        for check in checks:
-            if (check.get("check_suite") or {}).get("id") in superseded:
-                continue
-            key = (check.get("app", {}).get("id"), (check.get("check_suite") or {}).get("id"), check["name"])
-            if key not in latest or check.get("id", 0) > latest[key].get("id", 0):
-                latest[key] = check
+        latest = latest_by(
+            (check for check in checks if (check.get("check_suite") or {}).get("id") not in superseded),
+            lambda check: (check.get("app", {}).get("id"), (check.get("check_suite") or {}).get("id"), check["name"]),
+            lambda check: check.get("id", 0),
+        )
         for check in latest.values():
             conclusion = check.get("conclusion")
             if check.get("head_sha") != sha or check.get("status") != "completed":
@@ -120,11 +130,7 @@ def ci_reasons(observations):
                 success = True
             elif conclusion not in ("neutral", "skipped"):
                 reasons.append("CI unsuccessful: " + check["name"])
-        latest = {}
-        for status in statuses:
-            key = status["context"]
-            if key not in latest or status.get("id", 0) > latest[key].get("id", 0):
-                latest[key] = status
+        latest = latest_by(statuses, lambda status: status["context"], lambda status: status.get("id", 0))
         for name, status in latest.items():
             if status.get("state") == "success":
                 success = True
