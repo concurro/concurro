@@ -7,6 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def kill_group(pid):
+    """Kill a native turn's process group, allowing it to have already exited."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
 
 def children():
     """Direct children of the runner, including orphaned descendants adopted by its subreaper."""
@@ -25,7 +35,7 @@ def begin():
     """Enable orphan adoption before a native turn; preserve pre-existing helper children."""
     if sys.platform != "linux":
         return None  # Offline development tests; production runs on Linux GitHub runners.
-    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0):
         raise OSError(ctypes.get_errno(), "cannot contain native turn descendants")
     return children()
 

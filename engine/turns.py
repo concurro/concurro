@@ -6,18 +6,18 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 
 import feedback
 import processes
-from policy import KILLED, MODEL_RESPONSE_LIMIT, TIMEOUT_EXIT, UNCERTAIN_EXIT, runner_bound
+from policy import KILLED, MODEL_RESPONSE_LIMIT, SIGNALLED, TIMEOUT_EXIT, UNCERTAIN_EXIT, runner_bound
 from repository import snapshot
 from vocab import TurnOutcome
 
@@ -251,14 +251,72 @@ def command():
     return [sys.executable, str(Path(__file__).with_name("agent_entry.py"))]
 
 
-def execute(turn, key, mirror, root, stopped=None):
-    """Run one native agent process group and return JSON, extracted files and its retained journal."""
-    started = time.monotonic()
-    request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
+def _validated_timeout(request, timeout):
+    """Validate the stage's optional execution limit before preparing a workspace."""
     if not (timeout is None and runner_bound(request.get("stage"))) and (
         type(timeout) is not int or not 60 <= timeout <= 7200
     ):
         raise TurnError("invalid turn timeout")
+    return timeout
+
+
+def _run_agent(payload, root, key, stopped, timeout):
+    """Run and clean up the native process group before extracting or retaining files."""
+    baseline = processes.begin()
+    with subprocess.Popen(
+        command(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=agent_environment(root, key, bool(payload.get("session"))),
+        start_new_session=True,
+    ) as process:
+        timer = None
+        if stopped is not None:
+
+            def cancel():
+                while process.poll() is None:
+                    if stopped.wait(1):
+                        processes.kill_group(process.pid)
+                        return
+
+            timer = threading.Thread(target=cancel, daemon=True)
+            timer.start()
+        try:
+            stdout, _ = process.communicate(json.dumps(payload), timeout=None if timeout is None else timeout + 60)
+            code = process.returncode
+        except subprocess.TimeoutExpired:
+            code, stdout = TIMEOUT_EXIT, ""
+        finally:
+            # Stop descendants before taking the diff or archiving session state.
+            processes.kill_group(process.pid)
+            process.wait()
+            if timer:
+                timer.join(2)
+            try:
+                processes.finish(baseline)
+            except Exception:
+                if stopped is not None:
+                    stopped.set()
+                raise
+    return code, stdout
+
+
+def _termination(code, stopped):
+    """Prefer runner cancellation over the timeout and signal diagnostics."""
+    if stopped is not None and stopped.is_set():
+        return "runner_stopped"
+    if code == TIMEOUT_EXIT:
+        return "turn_timeout"
+    return "process_signal"
+
+
+def execute(turn, key, mirror, root, stopped=None):
+    """Run one native agent process group and return JSON, extracted files and its retained journal."""
+    started = time.monotonic()
+    request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
+    timeout = _validated_timeout(request, timeout)
     root = Path(root).resolve()
     name = root.name
     if not NAME.fullmatch(name):
@@ -269,6 +327,7 @@ def execute(turn, key, mirror, root, stopped=None):
     if request.get("evaluation"):
         if request["stage"] != "plan_qc" or session is not None:
             raise TurnError("evaluation is limited to fresh design review")
+        # Evaluation alone needs the design/mirror/policy fixture dependencies.
         from design_eval import fixture_mirror
 
         mirror, commit = fixture_mirror(root / "evaluation", "concurro/evaluation")
@@ -295,54 +354,10 @@ def execute(turn, key, mirror, root, stopped=None):
         }
         if turn.get("feedback"):
             payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / "feedback")
-        baseline = processes.begin()
-        with subprocess.Popen(
-            command(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            env=agent_environment(root, key, bool(session)),
-            start_new_session=True,
-        ) as process:
-            timer = None
-            if stopped is not None:
-                import threading
-
-                def cancel():
-                    while process.poll() is None:
-                        if stopped.wait(1):
-                            try:
-                                os.killpg(process.pid, signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
-                            return
-
-                timer = threading.Thread(target=cancel, daemon=True)
-                timer.start()
-            try:
-                stdout, _ = process.communicate(json.dumps(payload), timeout=None if timeout is None else timeout + 60)
-                code = process.returncode
-            except subprocess.TimeoutExpired:
-                code, stdout = TIMEOUT_EXIT, ""
-            finally:
-                # Stop descendants before taking the diff or archiving session state.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-                if timer:
-                    timer.join(2)
-                try:
-                    processes.finish(baseline)
-                except Exception:
-                    if stopped is not None:
-                        stopped.set()
-                    raise
+        code, stdout = _run_agent(payload, root, key, stopped, timeout)
         result, response = outcome(code, stdout)
         if runner_bound(request["stage"]) and (
-            code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())
+            code in (*KILLED, *SIGNALLED) or (stopped is not None and stopped.is_set())
         ):
             result, response = TurnOutcome.TERMINATED, None
         reply = {
@@ -352,13 +367,7 @@ def execute(turn, key, mirror, root, stopped=None):
             "retained": pack(root / "retained") if session else None,
         }
         if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
-            reply["termination_reason"] = (
-                "runner_stopped"
-                if stopped is not None and stopped.is_set()
-                else "turn_timeout"
-                if code == TIMEOUT_EXIT
-                else "process_signal"
-            )
+            reply["termination_reason"] = _termination(code, stopped)
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
         if result == TurnOutcome.OK and request["stage"] == "develop":
             try:

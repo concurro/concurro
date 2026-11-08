@@ -185,7 +185,7 @@ Status values:
 | 13 | [Controller method splits and publication](13-controller-splits.md) | Refactor | Medium | Done |
 | 18 | [Typed records and checked annotations](18-typed-state.md) | Types | Low | Done |
 | 10b | [Turn decoding and runner executor](10-execution-path.md#10b-result-decoding-and-the-runner-executor) | Refactor | Medium | Done |
-| 10a | [Native turn execution and process cleanup](10-execution-path.md#10a-native-turn-execution-and-process-cleanup) | Refactor | Medium | Next |
+| 10a | [Native turn execution and process cleanup](10-execution-path.md#10a-native-turn-execution-and-process-cleanup) | Refactor | Medium | Approved |
 | 10 | [Execution path](10-execution-path.md) (10c, 10d; separate commits) | Refactor | Low–medium | Candidate |
 | 09a | [Policy and classification import cycles](09-review-modules.md#09a-refreshed) | Refactor | Low–medium | Done |
 | 09b | [Conversation and review helpers](09-review-modules.md#09b-refreshed) | Refactor | Low–medium | Done |

@@ -40,6 +40,7 @@ class SessionFailure(Blocked):
 UNCERTAIN_EXIT = 75
 TIMEOUT_EXIT = 76
 KILLED = (-9, 137)
+SIGNALLED = (-2, -15, 130, 143)
 
 
 def runner_bound(stage):
