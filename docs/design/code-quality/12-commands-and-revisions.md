@@ -2,8 +2,9 @@
 
 Part of the [code-quality programme](README.md).
 
-Current increment: **characterisation tests only**. Production extraction follows a separate
-review of this baseline. The line numbers below are historical; locate code by symbol.
+Current increment: **command and revision-budget extraction**, following the committed
+characterisation baseline and start-command fix. The line numbers below are historical;
+locate code by symbol.
 
 ## Goal
 
@@ -137,11 +138,25 @@ line, including save boundaries and visible notice text; only hidden event ident
 omitted. Separate assertions cover sequences, replay, parser boundaries and restart differences.
 
 The recorded manual-start wedge is fixed by the separate behavioral changeset
-`fix(engine): consume refused start commands without blocking recovery` (pending commit).
+`0823d35` (`fix(engine): consume refused start commands without blocking recovery`).
 A manual start with an existing PR, head or prepared publication is consumed with one
 notice, preserving the current pause and allowing later commands to run. The affected
 matrix cell is updated; stopped tasks, pending publication and lost-save-reply recovery
 have additional regression coverage.
+
+## Extraction notes
+
+`Controller.commands` retains the ordered filters and delegates to `CommandHandler`.
+The existing controller method names remain delegates for callers and patch targets.
+The handler receives `config_digest` as a callable, keeping its existing public location
+without introducing a circular import. `RevisionBudget` receives invalidation and save
+callbacks; successful revisions still leave saving to their callers.
+
+The optional intake-restart helper is not extracted: the shared requirements/digest
+assignment is small, while base refresh, key cleanup and refusal behavior differ. The
+existing characterization tests continue to pin those differences. The 810-cell golden
+and the revision-extension tests remain unchanged; component tests additionally cover
+parser arguments and revision callback order, flags and invalidation failure.
 
 ## Done when
 

@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import actions
+import commands
+import revisions
 import classification
 import implementation_bundle
 import dashboard_runs
@@ -28,7 +30,7 @@ import design_batch
 import conversation
 import review_timing
 import markup
-from markup import block, code, link, text
+from markup import block, link, text
 import sessions
 import checks
 import design
@@ -745,48 +747,21 @@ class Controller:
 
     def revise_plan(self, stage, reason, invalidate=True, save_exhausted=True):
         """Limit automatic plan revisions across QC feedback and changing inputs."""
-        if invalidate:
-            self.invalidate_design(reason)
-        if self.state["plan_revisions"] >= self.plan_revision_limit():
-            self.state.update(stage="escalated", retry_stage=stage, revision_wait={"stage": stage},
-                              reason="Plan revision budget exhausted: " + reason)
-            if save_exhausted:
-                self.save()
-            return False
-        self.state["plan_revisions"] += 1
-        self.state.pop("revision_wait", None)
-        self.state.update(stage=stage, reason=reason)
-        return True
+        return revisions.RevisionBudget(self.state, self.config).revise(
+            stage, reason, invalidate_design=self.invalidate_design, save=self.save,
+            invalidate=invalidate, save_exhausted=save_exhausted)
 
     def plan_revision_limit(self):
-        """Pinned automatic allowance plus explicit writer grants; spent revisions never reset."""
-        return self.config["max_plan_revisions"] + self.state.get("plan_revision_extra", 0)
+        """Return the pinned automatic allowance plus explicit writer grants."""
+        return revisions.RevisionBudget(self.state, self.config).limit()
 
     def waiting_revision(self):
-        """The already-invalidated revision to resume, including the old design-review stall."""
-        waiting = self.state.get("revision_wait", {}).get("stage")
-        if waiting in ("plan", "intake"):
-            return waiting
-        # Older checkpoints lost the resume target after recording this exact transition.
-        if (self.state.get("reason") == "Plan revision budget exhausted: Design reviewers require a revision."
-                and self.state.get("design_feedback") and self.state.get("plan")
-                and not self.state.get("design_votes") and not self.state.get("approval")):
-            return "plan"
-        return None
+        """Return the already-invalidated revision waiting for capacity."""
+        return revisions.RevisionBudget(self.state, self.config).waiting()
 
     def refuse_revision_command(self, comment, exhausted=False):
         """Consume an inapplicable writer command with one durable notice, without suspending work."""
-        state = self.state
-        body = "No exhausted plan revision is waiting; no capacity was granted."
-        if exhausted:
-            state.setdefault("revision_wait", {"stage": self.waiting_revision()})
-            body = ("The plan revision allowance is exhausted. This command cannot increase it. "
-                    "A writer can grant 1–3 additional revisions, for example "
-                    + code("/concurro retry --plan-revisions 1")
-                    + ". Findings and spent budgets are preserved.")
-        state["command_id"] = comment["id"]
-        conversation.queue(state, "Plan revision command not applied", body)
-        self.save()
+        return self._command_handler().refuse_revision_command(comment, exhausted)
 
     def require_pr_unchanged(self, message):
         """Read the recorded PR once and require the same head, open and not merged."""
@@ -816,41 +791,7 @@ class Controller:
 
     def extend_plan_revisions(self, comment, amount, comments):
         """Atomically grant bounded revision capacity and resume the recorded revision, never waive findings."""
-        state = self.state
-        stage = self.waiting_revision()
-        if (state["stage"] not in ("blocked", "stopped", "escalated") or stage is None
-                or state["plan_revisions"] < self.plan_revision_limit()):
-            self.refuse_revision_command(comment)
-            return False
-        state.setdefault("revision_wait", {"stage": stage})
-        with self.consume_on_refusal(comment):
-            if not 1 <= amount <= 3:
-                raise Blocked("Grant between 1 and 3 additional plan revisions per command.")
-            if state.get("pending"):
-                raise Blocked("Publication is pending; reconcile it before granting revision capacity.")
-            if (state["config_digest"] != config_digest(self.config)
-                    or state["requirements"] != self.requirements(comments)):
-                raise Blocked("Configuration or requirements changed; reassess them before granting revision capacity.")
-            self.require_current_bundle()
-            if state.get("pr"):
-                self.require_pr_unchanged("PR changed outside the controller; cannot resume its plan revision.")
-        previous = self.plan_revision_limit()
-        state["plan_revision_extra"] = state.get("plan_revision_extra", 0) + amount
-        state["plan_revision_grant"] = {"actor": comment["user"]["login"], "comment": comment["id"],
-                                       "added": amount, "limit": self.plan_revision_limit()}
-        state["command_id"] = comment["id"]
-        # The failed revision already archived votes and invalidated approval. Do not do it twice.
-        self.revise_plan(stage, "Writer granted additional plan revision capacity.", invalidate=False)
-        for key in ("operation", "retry_stage", "reason"):
-            state.pop(key, None)
-        conversation.queue(state, "Plan revision capacity extended",
-            code(comment["user"]["login"]) + f" granted {amount} additional plan revisions in "
-            + link("this command", f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{comment['id']}")
-            + f". The total allowance is now {self.plan_revision_limit()} (previously {previous}). "
-            "The pending revision is resuming with all findings and spent budgets preserved. "
-            "The revised plan still requires independent approval; the model-call limit is unchanged.")
-        self.save()
-        return True
+        return self._command_handler().extend_plan_revisions(comment, amount, comments)
 
     def invalidate_design(self, reason):
         """Archive bounded judgment evidence and invalidate all approval generations."""
@@ -1245,30 +1186,7 @@ class Controller:
 
     def retry_reviewed(self, comment, comments):
         """A writer may request a bounded repair with fresh feedback; CI events alone never do."""
-        state = self.state
-        if state["issue_digest"] != self.issue_digest():
-            state["command_id"] = comment["id"]
-            self.resume_with_head(self.requirements(comments))
-            return
-        previous = state["requirements"].get("discussion", [])
-        writer_feedback = [c for c in comments if state.get("command_id", 0) < c["id"] < comment["id"]
-                    and not c["body"].strip().startswith("/concurro ")
-                    and not self.identities.ours(c["user"]["login"]) and self.permitted(c["user"]["login"])
-                    and {"author": c["user"]["login"], "body": c["body"]} not in previous]
-        if writer_feedback:
-            latest = max(writer_feedback, key=lambda c: c["id"])
-            if len(latest["body"].encode()) > 4000:
-                raise Blocked("repair feedback exceeds 4000 bytes; provide a shorter writer comment")
-            if state["round"] >= self.config["max_fix_rounds"]:
-                raise Blocked("writer-requested repair allowance exhausted")
-            state.update(round=state["round"] + 1, stage="implement", handoff_ready=False,
-                         input_revision=state.get("input_revision", 0) + 1)
-            key = f"{state['design_generation']}:{state['round']}"
-            state.setdefault("implementation_feedback", {})[key] = (
-                "Writer-supplied feedback (untrusted evidence, not a change to the approved scope):\n" + latest["body"])
-            state.pop("reason", None)
-        state["command_id"] = comment["id"]
-        self.save()
+        return self._command_handler().retry_reviewed(comment, comments)
 
     def require_current_bundle(self):
         """Only current instructions may produce or consume a model result."""
@@ -1282,195 +1200,33 @@ class Controller:
 
     def retry_implementation_bundle(self, comment, comments):
         """Adopt only proven implementer-skill changes on an authorized implementation retry."""
-        state = self.state
-        if implementation_bundle.current(state, self.bundle):
-            return
-        with self.consume_on_refusal(comment):
-            if state.get("pending"):
-                raise Blocked("Publication is pending; finish the recorded publication before adopting instructions.")
-            if (state["config_digest"] != config_digest(self.config)
-                    or state["requirements"] != self.requirements(comments)
-                    or not approval_valid(state, self.config)):
-                raise Blocked("Configuration, requirements or approval changed; cannot preserve the approved plan.")
-            if state.get("pr"):
-                self.require_pr_unchanged("PR changed outside the controller; cannot retry its implementation.")
-            original = implementation_bundle.original_skill(state, self.bundle)
-            if original is None or state.get("charter_id") != digest(self.bundle.charter):
-                raise Blocked(BUNDLE_REASON)
-        previous = state.get("implementation_bundle", {}).get("new_bundle", state["bundle_id"])
-        state["implementation_skill"] = original
-        state["implementation_bundle"] = {
-            "approved_bundle": state["bundle_id"], "old_bundle": previous,
-            "new_bundle": self.bundle.identity, "actor": comment["user"]["login"],
-            "comment": comment["id"], "plan": state["plan_id"],
-            "old_skill": (state.get("implementation_bundle") or {}).get("new_skill", original),
-            "new_skill": self.bundle.hashes[implementation_bundle.SKILL]}
-        for role, session in list(state.get("sessions", {}).items()):
-            if role.startswith("develop:"):
-                sessions.restart(state, {**session, "role": role})
-        conversation.queue(state, "Implementation instructions updated",
-            "A writer requested an implementation retry. The approved plan and design reviews are unchanged. "
-            "Only the implementer skill changed; implementation starts in a new session. Spent budgets are retained.\n\n"
-            + "Bundle: " + code(previous) + " → " + code(self.bundle.identity) + ".")
+        return self._command_handler().retry_implementation_bundle(comment, comments)
         # The caller saves the receipt, session rotation and consumed command together.
 
     def invalidate_task(self, comment, comments):
         """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
-        state = self.state
-        with self.consume_on_refusal(comment, save=False):
-            if state.get("pending"):
-                raise Blocked("Publication is pending. Use /concurro retry to finish the recorded publication, "
-                              "then /concurro invalidate to reassess it.")
-            if state["config_digest"] != config_digest(self.config):
-                raise Blocked("Controller configuration changed; start a new task with the new configuration.")
-            if state.get("pr"):
-                self.require_pr_unchanged("PR changed outside the controller; cannot invalidate its recorded design")
-                state["changed_files"] = self.reconciled_changed_paths()
-        record = {"actor": comment["user"]["login"], "comment": comment["id"],
-                  "old_bundle": state["bundle_id"], "new_bundle": self.bundle.identity,
-                  "old_charter": state["charter_id"], "new_charter": digest(self.bundle.charter),
-                  "head": state.get("head"), "plan": state.get("plan_id"),
-                  "display_start": dashboard_runs.start(state)}
-        if state.get("operation"):
-            record["operation_digest"] = digest(state["operation"])
-        state.setdefault("invalidations", []).append(record)
-        for request in state.get("requests", []):
-            if request["state"] == "open":
-                request["state"] = "superseded"
-                actions.edit(request, "↪️ **Superseded**: a writer requested a new assessment.")
-        self.invalidate_design(dashboard_runs.INVALIDATED)
-        if state.get("reviews"):
-            state.setdefault("review_history", []).append(state["reviews"])
-        state.update(bundle_id=self.bundle.identity, implementation_skill=self.bundle.hashes[implementation_bundle.SKILL],
-                     charter_id=digest(self.bundle.charter),
-                     charter=deepcopy(self.bundle.charter), stage="intake", command_id=comment["id"],
-                     requirements=self.requirements(comments),
-                     issue_digest=self.issue_digest(),
-                     sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
-                     session_epoch=state.get("session_epoch", 0) + 1)
-        for key in ("revision_wait", "implementation_bundle", "review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
-                    "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot", "design_eligibility"):
-            state.pop(key, None)
-        if state.get("pr"):
-            conversation.queue(state, "Reassessment started",
-                link(f"PR #{state['pr']}", self.pr_url(state['pr'])) +
-                " is being reassessed at a writer's request. Earlier Concurro approvals no longer apply. "
-                "Please do not merge until reassessment is complete. The PR's draft/ready status is unchanged.")
-        self.save()
+        return self._command_handler().invalidate_task(comment, comments)
+
+    def _command_handler(self):
+        """Build a handler using the controller's current state and binding function."""
+        return commands.CommandHandler(self, config_digest)
 
     def commands(self, comments):
         """Apply exact writer commands; return True when a command starts a new assessment step."""
+        handler = self._command_handler()
         for comment in comments:
             if comment["id"] <= (self.state or {}).get("command_id", 0):
                 continue
-            body = comment["body"].strip()
-            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)", body):
+            command = commands.parse(comment["body"])
+            if command is None:
                 continue
             if not self.permitted(comment["user"]["login"]):
                 continue
-            if self.state and body.startswith("/concurro retry --plan-revisions "):
-                if self.extend_plan_revisions(comment, int(body.split()[-1]), comments):
-                    return True
+            action = handler.dispatch(command, comment, comments)
+            if action is commands.LoopAction.CONTINUE:
                 continue
-            if body == "/concurro start":
-                if self.state and self.waiting_revision():
-                    self.refuse_revision_command(comment, exhausted=True)
-                    continue
-                if self.config["autonomous"]:
-                    continue
-                if self.state and self.state["stage"] not in ("clarify", "blocked", "stopped"):
-                    continue
-                if self.state and self.state["stage"] == "clarify" and self.state.get("head") and not self.state.get("pending"):
-                    # A clarification with a PR resumes its open design, as autonomous refresh does.
-                    self.state["command_id"] = comment["id"]
-                    self.resume_with_head(self.requirements(comments))
-                    continue
-                if self.state and any(self.state.get(key) for key in ("pr", "head", "pending")):
-                    self.state["command_id"] = comment["id"]
-                    notice = (code("/concurro start")
-                              + " cannot restart a task with an open PR or prepared publication. ")
-                    if self.state.get("pending"):
-                        notice += "Use " + code("/concurro retry") + " to finish the pending publication."
-                    else:
-                        notice += ("Use " + code("/concurro retry") + " to resume, or "
-                                   + code("/concurro invalidate") + " to reassess.")
-                    conversation.queue(self.state, "Start command not applied", notice)
-                    self.save()
-                    continue
-                if self.state:
-                    self.state["command_id"] = comment["id"]
-                    if not self.revise_plan("intake", "Writer requested reassessment.", save_exhausted=False):
-                        self.refuse_revision_command(comment, exhausted=True)
-                        continue
-                    base = self.pulls.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
-                    self.state.update(base=base, requirements=self.requirements(comments), command_id=comment["id"],
-                        issue_digest=self.issue_digest())
-                    for key in ("plan", "plan_id", "branch", "qc", "design_parent", "approved_accumulated_files"):
-                        self.state.pop(key, None)
-                    self.save()
-                else:
-                    self.initialize([c for c in comments if c["id"] <= comment["id"]], "manual", comment["id"])
-            elif (self.state and body.startswith("/concurro approve ") and self.state["stage"] == "planned"
-                  and self.state.get("mode", "manual") == "manual"):
-                if body.split()[-1] == self.state["plan_id"]:
-                    if not consensus_valid(self.state, self.config):
-                        raise Blocked("writer command cannot waive design consensus")
-                    self.state.update(stage="implement", command_id=comment["id"],
-                                      approval={"kind": "human", "binding": approval_binding(self.state, self.config),
-                                                "plan": self.state["plan_id"],
-                                                "actor": comment["user"]["login"], "comment": comment["id"]})
-                    self.save()
-            elif self.state and body == "/concurro invalidate":
-                self.invalidate_task(comment, comments)
+            if action is commands.LoopAction.RETURN_TRUE:
                 return True
-            elif self.state and body == "/concurro retry" and self.state["stage"] == "gates":
-                self.retry_reviewed(comment, comments)
-            elif (self.state and body == "/concurro retry" and self.state["stage"] in SUSPENDED_STAGES | JUDGED_STAGES
-                  and self.state.get("retry_stage")):
-                if self.state["stage"] in SUSPENDED_STAGES and self.state["retry_stage"] == "implement":
-                    self.retry_implementation_bundle(comment, comments)
-                output_repair = ((self.state.get('review_repair') or any(
-                    m.get('review_repair') for m in self.state.get('review_batch', {}).get('members', {}).values()))
-                    and self.state['retry_stage'] == 'plan_qc'
-                                 or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan'
-                                 or self.state.get('intake_draft') and self.state['retry_stage'] == 'intake')
-                waiting = self.waiting_revision()
-                if waiting:
-                    self.refuse_revision_command(comment, exhausted=True)
-                    continue
-                if self.state["stage"] in JUDGED_STAGES and not output_repair:
-                    self.state["command_id"] = comment["id"]
-                    if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment.", save_exhausted=False):
-                        self.refuse_revision_command(comment, exhausted=True)
-                        continue
-                    # Reassessment reads the issue as it is now, including edits made to answer the escalation.
-                    self.state.update(requirements=self.requirements(comments),
-                                      issue_digest=self.issue_digest())
-                    self.state.pop("retry_stage", None)
-                    self.state["command_id"] = comment["id"]
-                else:
-                    self.state.update(stage=self.state.pop("retry_stage"), command_id=comment["id"])
-                self.state.pop("reason", None)
-                if self.state.get("plan_draft") and self.state["stage"] == "plan":
-                    self.state["plan_draft"]["attempt"] = 0
-                if self.state.get("intake_draft") and self.state["stage"] == "intake":
-                    self.state["intake_draft"]["attempt"] = 0
-                if self.state.get("review_repair"):
-                    self.state["review_repair"].pop("attempts", None)
-                    self.state["review_repair"].pop("signature", None)
-                # A writer renews allowances, never spent budgets or eligibility.
-                for member in self.state.get('review_batch', {}).get('members', {}).values():
-                    repair = member.get('review_repair', {})
-                    repair.pop('attempts', None)
-                    repair.pop('signature', None)
-                    member['failures'] = 0
-                    if member.get('operation', {}).get('status') not in ('completed', 'consumed'):
-                        member.pop('operation', None)
-                self.state.pop("operation", None)
-                self.save()
-            elif self.state and body == "/concurro stop":
-                self.state["command_id"] = comment["id"]
-                self.suspend("stopped")
 
     def rejected_output(self, value, reason, key):
         """Bound a rejected JSON excerpt against the remaining durable checkpoint capacity."""
@@ -2042,11 +1798,4 @@ class Controller:
 
     def check_human_approval(self, comments):
         """Retain revocable writer approval for explicitly configured manual mode."""
-        state = self.state
-        if not self.permitted(state["approval"]["actor"]):
-            raise Blocked("plan approver no longer has write access")
-        if not any(
-                c["id"] == state["approval"]["comment"]
-                and c["user"]["login"] == state["approval"]["actor"]
-                and c["body"].strip() == "/concurro approve " + state["plan_id"] for c in comments):
-            raise Blocked("approval comment changed or was removed")
+        return self._command_handler().check_human_approval(comments)

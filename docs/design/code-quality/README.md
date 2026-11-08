@@ -178,7 +178,7 @@ Status values:
 | 04 | [Stage and turn-outcome vocabulary](04-shared-vocabulary.md) | Refactor | Low | Done |
 | 08a | [Controller authorisation guards](08-guards-and-bookkeeping.md#08a-authorisation-and-recovery-guards) | Refactor | Medium | Done |
 | 08b | [Serial and batch call accounting](08-guards-and-bookkeeping.md#08b-serial-and-batch-call-bookkeeping-narrowed) (narrowed) | Refactor | Low–medium | Done |
-| 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Approved |
+| 12 | [Commands and revision budget](12-commands-and-revisions.md) (characterisation matrix first) | Refactor | Medium | Done |
 | 05 | [URL helpers and protocol markers](05-shared-constants.md) | Refactor | Low | Candidate |
 | 10 | [Execution path](10-execution-path.md) (10a–10d, separate commits) | Refactor | Medium | Candidate |
 | 09 | [Review, conversation and policy modules](09-review-modules.md) (09a, 09b) | Refactor | Low–medium | Candidate |
