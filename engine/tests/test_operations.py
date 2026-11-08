@@ -11,7 +11,7 @@ from agents import Agents
 from checkpoints import Checkpoints
 import controller as controller_module
 from controller import Controller
-from policy import Blocked, SessionFailure, UncertainOutcome
+from policy import Blocked, RunnerTerminated, SessionFailure, TIMEOUT_EXIT, UncertainOutcome
 from test_pipeline import CONFIG, FakeAgents, FakeGitHub
 import turns
 
@@ -328,16 +328,16 @@ class ContainerBoundaryTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         return directory.name
 
-    def test_provider_timeout_is_uncertain_on_the_host(self):
-        """A provider timeout inside the container becomes UncertainOutcome or an uncertain session failure."""
+    def test_provider_timeout_is_identified_and_requires_writer_recovery(self):
+        """A timeout crosses the subprocess boundary without becoming a generic provider failure."""
         completed = self.entry("timeout")
-        self.assertEqual(completed.returncode, 75)
+        self.assertEqual(completed.returncode, TIMEOUT_EXIT)
         self.assertNotIn("sleep", completed.stderr)
-        with self.assertRaises(UncertainOutcome):
-            self.host(completed)
-        with self.assertRaises(SessionFailure) as raised:
-            self.host(completed, session={"scope": "a" * 64, "turn": 0})
-        self.assertTrue(raised.exception.uncertain)
+        for session in (None, {"scope": "a" * 64, "turn": 0}):
+            with self.assertRaisesRegex(RunnerTerminated, "execution time limit") as raised:
+                self.host(completed, session=session)
+            self.assertTrue(raised.exception.result_uncertain)
+            self.assertFalse(getattr(raised.exception, "uncertain", False), 'no automatic repetition')
 
     def test_reported_provider_failure_stays_definite(self):
         """Other entry-point failures remain reported failures on the host."""

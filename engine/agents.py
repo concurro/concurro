@@ -15,7 +15,7 @@ from bundle import Bundle
 from credentials import Credential
 from model_config import resolve
 from github import Transient
-from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest
+from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest, runner_bound, turn_label
 from relay import ExchangeError, Operator
 from snapshot import inspection
 import turns
@@ -24,8 +24,7 @@ import review_timing
 # Providers whose CLIs the gateway serves natively.
 PROVIDERS = ("claude", "codex")
 ADAPTER = "gateway-key"
-# Implementation uses the Actions job limit; read/reason turns remain bounded.
-TURN_SECONDS = {"develop": None}
+# Workspace implementation and PR review use the Actions job limit.
 DEFAULT_TURN_SECONDS = 1200
 # A runner turn may also wait for a runner to be dispatched, to start and finish target setup.
 QUEUE_SECONDS = 1800
@@ -125,7 +124,7 @@ class Agents:
                    "context": context, "session": session, "local_candidate": candidate is not None, "evaluation": evaluation}
         turn = {"request": request, "feedback": feedback, "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
                 "retained": self.retained.load(session) if session else None,
-                "timeout": TURN_SECONDS.get(stage, DEFAULT_TURN_SECONDS)}
+                "timeout": None if runner_bound(stage) else DEFAULT_TURN_SECONDS}
         return turn
 
     def decode(self, turn, result):
@@ -138,19 +137,31 @@ class Agents:
         """Share result validation between serial and batch execution."""
         if session and result.get("retained") is not None:
             self.retained.save(session, result["retained"])
-        if stage == "develop" and result["outcome"] in ("admission_unknown", "queue_expired"):
+        if runner_bound(stage) and result["outcome"] in ("admission_unknown", "queue_expired"):
             message = {
-                "admission_unknown": "Implementation admission outcome is unknown; no start was confirmed.",
-                "queue_expired": "No implementation start was observed within the 30-minute dispatch/setup limit.",
+                "admission_unknown": f"{turn_label(stage)} admission outcome is unknown; no start was confirmed.",
+                "queue_expired": f"No {turn_label(stage).lower()} start was observed within the 30-minute dispatch/setup limit.",
             }[result["outcome"]]
             raise RunnerTerminated(message + " Withdrawal was attempted, but admission or cancellation can race "
                                    "with execution. Inspect the exchange and runner before a writer retries; "
                                    "no automatic restart was attempted.")
-        if stage == "develop" and result["outcome"] in ("terminated", "lost", "uncertain"):
-            raise RunnerTerminated("Implementation runner ended without a saved result; execution may be incomplete. "
+        if runner_bound(stage) and result["outcome"] in ("timed_out", "terminated", "lost", "uncertain"):
+            reasons = {"turn_timeout": "reached Concurro's execution time limit",
+                       "runner_stopped": "was stopped", "process_signal": "was terminated by a signal"}
+            cause = result.get("termination_reason")
+            reason = ("reached Concurro's execution time limit" if result["outcome"] == "timed_out"
+                      else reasons.get(cause if isinstance(cause, str) else None, "ended; the cause is unconfirmed"))
+            seconds = result.get("elapsed_seconds")
+            duration = f" after {seconds:.0f}s of turn time" if type(seconds) in (int, float) and 0 <= seconds <= 86400 else ""
+            raise RunnerTerminated(f"{turn_label(stage)} {reason}{duration}. No result was saved; execution may be incomplete. "
                                    "Inspect the runner before a writer retries; no automatic restart was attempted.")
         if result["outcome"] != "ok":
-            uncertain = result["outcome"] in ("uncertain", "lost")
+            uncertain = result["outcome"] in ("uncertain", "lost", "timed_out")
+            if result["outcome"] == "timed_out":
+                message = "Concurro execution time limit reached; no result was saved."
+                if session:
+                    raise SessionFailure(message, uncertain=True)
+                raise UncertainOutcome(message)
             if session:
                 raise SessionFailure("provider session failed; output suppressed to protect credentials", uncertain=uncertain)
             if uncertain:
@@ -245,8 +256,8 @@ class RunnerExecutor:
         if request.get("agent"):
             # Staffing includes the resolved profile, even for fresh turns on the same CLI.
             phase = digest([phase, request["agent"]])
-        if request.get("stage") == "develop":
-            # Each implementation attempt gets a new job, including its own setup/job clock.
+        if runner_bound(request.get("stage")):
+            # Each long-running attempt gets a fresh setup/job clock.
             phase = digest([phase, identifier])
         binding = {**self.task, "base": base, "role": role, "phase": phase}
         return binding, model
@@ -259,7 +270,7 @@ class RunnerExecutor:
         """
         binding, model = self.binding(turn, identifier)
         # Credentials outlive dispatch/setup plus the job, but still expire and need heartbeats.
-        lease = self.lease + QUEUE_SECONDS + 300 if turn["request"]["stage"] == "develop" else self.lease
+        lease = self.lease + QUEUE_SECONDS + 300 if runner_bound(turn["request"]["stage"]) else self.lease
         for attempt in range(SUBMIT_ATTEMPTS):
             if attempt:
                 self.sleep(15)
@@ -283,7 +294,7 @@ class RunnerExecutor:
             reply = self.admit(handle.identifier, turn, pin)
             if reply is None:
                 self.withdraw(handle.identifier)
-                handle.result = self.lost('admission_unknown' if turn['request']['stage'] == 'develop' else 'uncertain')
+                handle.result = self.lost('admission_unknown' if runner_bound(turn['request']['stage']) else 'uncertain')
             else:
                 self.receive(handle, reply)
             return handle
@@ -303,7 +314,7 @@ class RunnerExecutor:
         if observed and observed['turn'] == handle.identifier:
             handle.timing = observed
         handle.status = reply.get('status', handle.status)
-        if handle.turn['request']['stage'] == 'develop' and handle.status == 'running':
+        if runner_bound(handle.turn['request']['stage']) and handle.status == 'running':
             handle.deadline = None
         session = reply.get('dispatch')
         if session and session not in handle.sessions:
@@ -315,9 +326,9 @@ class RunnerExecutor:
         if reply.get('status') == 'done' and 'result' in reply:
             handle.result = reply['result']
         elif reply.get('status') in ('lost', 'cancelled'):
-            if handle.turn['request']['stage'] == 'develop':
+            if runner_bound(handle.turn['request']['stage']):
                 detail = self.runner_status(reply)
-                raise RunnerTerminated(detail or 'Implementation runner stopped reporting or was ended; no result was saved. '
+                raise RunnerTerminated(detail or f"{turn_label(handle.turn['request']['stage'])} runner stopped reporting or was ended; no result was saved. "
                                        'The cause is unconfirmed. Inspect the runner before a writer retries.')
             handle.result = self.lost('lost')
 
@@ -326,7 +337,7 @@ class RunnerExecutor:
         self.check_owner()
         if handle.result is not None:
             return handle.result
-        if (handle.turn["request"]["stage"] != "develop"
+        if (not runner_bound(handle.turn["request"]["stage"])
                 and handle.deadline is not None and self.clock() > handle.deadline):
             self.withdraw(handle.identifier)
             handle.result = self.lost('uncertain')
@@ -337,22 +348,22 @@ class RunnerExecutor:
             reply = self.operator.poll(handle.identifier, wait=wait)
             handle.failures = 0
         except ExchangeError as error:
-            implementation = handle.turn['request']['stage'] == 'develop'
-            if implementation and not (error.status in (0, 408, 429) or 500 <= error.status <= 599):
-                raise RunnerTerminated(f"Implementation status could not be read: exchange refused polling "
+            job_bound = runner_bound(handle.turn['request']['stage'])
+            if job_bound and not (error.status in (0, 408, 429) or 500 <= error.status <= 599):
+                raise RunnerTerminated(f"{turn_label(handle.turn['request']['stage'])} status could not be read: exchange refused polling "
                                        f"(HTTP {error.status}). Execution status is unknown. Inspect the exchange "
                                        "and runner before a writer retries; no automatic restart was attempted.") from None
             handle.failures += 1
-            delay = min(60, 15 * 2 ** min(handle.failures - 1, 2)) if implementation else 15
+            delay = min(60, 15 * 2 ** min(handle.failures - 1, 2)) if job_bound else 15
             handle.next_poll = self.clock() + delay
             # Controller connectivity is not evidence of runner death. The runner may
             # still be heartbeating and delivering a result through a different path.
-            if not implementation and handle.failures > 20:
+            if not job_bound and handle.failures > 20:
                 handle.result = self.lost('uncertain')
             return handle.result
         self.receive(handle, reply)
-        # Observe first: a queued implementation may have started since our last poll.
-        if (handle.turn['request']['stage'] == 'develop' and handle.result is None
+        # Observe first: a queued turn may have started since our last poll.
+        if (runner_bound(handle.turn['request']['stage']) and handle.result is None
                 and handle.status == 'queued' and handle.deadline is not None and self.clock() > handle.deadline):
             self.withdraw(handle.identifier)
             handle.result = self.lost('queue_expired')
@@ -390,7 +401,8 @@ class RunnerExecutor:
                 result = self.observe(handle, wait=45)
                 self.timing = handle.timing
                 if result is not None:
-                    if turn['request']['stage'] == 'develop' and result.get('outcome') in ('lost', 'uncertain', 'terminated', 'admission_unknown', 'queue_expired'):
+                    if (result.get('outcome') == 'timed_out' or runner_bound(turn['request']['stage'])
+                            and result.get('outcome') in ('lost', 'uncertain', 'terminated', 'admission_unknown', 'queue_expired')):
                         self.cancel_quietly(handle)
                     return result
                 delay = max(0, handle.next_poll - self.clock())

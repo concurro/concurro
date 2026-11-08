@@ -85,24 +85,24 @@ the detached helper. A bound session silent for 180 seconds is retired by reconc
 a job normally exits after ten idle minutes. Compatible turns can reuse the role job
 while it remains live. No runner job is required to wait for CI.
 
-Transcript archiving/restoration includes Codex cache pruning. Replacement jobs restore conversation state, not build directories.
-Provider failure uses the existing fresh-session/full-context fallback and consumes
-the existing attempt allowance. Implementation runner loss is different: it stops for
-writer review rather than automatically repeating the work. Spent calls stay charged;
-a writer retry starts a new provider session and job. Unfinished workspace edits are
-not recovered. Termination is saved before posting its notice, so a controller restart
-cannot silently repeat the attempt. Successful implementation jobs exit after acknowledging their one turn.
+Transcript archiving/restoration includes Codex cache pruning. Replacement jobs restore
+conversation state, not build directories. Provider failure uses the existing session
+fallback and attempt allowance. Implementation and PR-review runner loss stops for writer
+review instead of automatically repeating work. Spent calls stay charged; writer retry
+starts a fresh job (and a new implementation session). Unfinished workspace edits are
+not recovered. Termination is saved before its notice, so a controller restart cannot
+silently repeat the attempt. These jobs exit after acknowledging their one turn.
 
-Implementation has no Concurro execution timer. The reusable Actions job's
+Implementation and PR review have no Concurro execution timer. The reusable Actions job's
 `timeout-minutes: 360` covers setup, builds, benchmarks, validation and result upload.
 The controller retains the 30-minute dispatch/setup queue limit and heartbeat-loss
-checks. Its implementation credential lease includes that queue allowance and five
-minutes beyond the job limit; revocation and heartbeat expiry still apply. Other
-agent stages retain their 20-minute execution limit. Do not increase the workflow's
-job limit without updating the credential lease accordingly.
+checks. Credential leases include that queue allowance and five minutes beyond the job
+limit; revocation and heartbeat expiry still apply. Intake, planning and design review
+retain their 20-minute execution limit. Increasing the workflow's job limit also requires
+updating the credential lease.
 
-Implementation status polling retries connection errors, HTTP 408/429 and 5xx responses
-with 15/30/60-second backoff, capped at 60 seconds, while ownership remains valid.
+Implementation and PR-review status polling retries connection errors and HTTP 408/429/5xx
+responses with 15/30/60-second backoff while ownership remains valid.
 It does not cancel work merely because controller polling failed. Other refusals
 (including authentication errors and missing turn records) stop for writer review;
 raw exchange response text is not published. Backoff checks ownership at least every
@@ -118,9 +118,16 @@ When the exchange recovers after a polling outage, a running turn or saved resul
 over the expired queue deadline; only a turn still observed queued is withdrawn.
 
 `gateway.budget` is a per-session **token** budget, not a duration or dollar budget.
-Check and size it for the model and expected long implementation before deployment;
+Check and size it for the model and expected implementation or review before deployment;
 exhausting it can stop model calls before the six-hour job limit. Removing the timer
 does not raise this budget, and no configured value is changed automatically.
+
+Local execution timeouts carry a distinct fixed result code, elapsed turn time and a
+safe reason; they no longer collapse into generic provider uncertainty. Signal termination
+and a runner stop have separate fixed reasons. A stop event alone does not prove heartbeat
+loss. Implementation and PR-review termination stops for writer review; other stages keep
+their existing retry policy. Legacy uncertain results remain unknown.
+No raw provider errors, commands or transcript text enter these diagnostics.
 
 After runner loss, the service reads the exact OIDC-bound Actions attempt and its
 jobs using a fork read token requesting Actions read. It reports confirmed timeout,

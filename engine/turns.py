@@ -13,10 +13,11 @@ import tempfile
 import uuid
 import signal
 import sys
+import time
 
 import processes
 
-from policy import KILLED, UNCERTAIN_EXIT, MODEL_RESPONSE_LIMIT
+from policy import KILLED, UNCERTAIN_EXIT, TIMEOUT_EXIT, MODEL_RESPONSE_LIMIT, runner_bound
 from repository import snapshot
 import feedback
 
@@ -176,8 +177,11 @@ def outcome(code, stdout):
     """`(outcome, response)` for the agent container's exit and output; only its JSON response is kept.
 
     A kill or the entry point's uncertainty exit may follow upstream completion, so it is
-    `uncertain`; any other failure, or output that is not one bounded JSON value, is `failed`.
+    `uncertain`; an explicit execution timeout stays `timed_out`. Other failures, or output
+    that is not one bounded JSON value, are `failed`.
     """
+    if code == TIMEOUT_EXIT:
+        return "timed_out", None
     if code in KILLED or code == UNCERTAIN_EXIT:
         return "uncertain", None
     if code or len(stdout.encode()) > MAX_RESPONSE:
@@ -195,8 +199,9 @@ def command(root):
 
 def execute(turn, key, mirror, root, stopped=None):
     """Run one native agent process group and return JSON, extracted files and its retained journal."""
+    started = time.monotonic()
     request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
-    if not (timeout is None and request.get("stage") == "develop") and (
+    if not (timeout is None and runner_bound(request.get("stage"))) and (
             type(timeout) is not int or not 60 <= timeout <= 7200):
         raise TurnError("invalid turn timeout")
     root = Path(root).resolve()
@@ -245,7 +250,7 @@ def execute(turn, key, mirror, root, stopped=None):
                 stdout, _ = process.communicate(json.dumps(payload), timeout=None if timeout is None else timeout + 60)
                 code = process.returncode
             except subprocess.TimeoutExpired:
-                code, stdout = KILLED[0], ""
+                code, stdout = TIMEOUT_EXIT, ""
             finally:
                 # Stop descendants before taking the diff or archiving session state.
                 try:
@@ -262,10 +267,14 @@ def execute(turn, key, mirror, root, stopped=None):
                         stopped.set()
                     raise
         result, response = outcome(code, stdout)
-        if request["stage"] == "develop" and (code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())):
+        if runner_bound(request["stage"]) and (code in (*KILLED, -2, -15, 130, 143) or (stopped is not None and stopped.is_set())):
             result, response = "terminated", None
         reply = {"outcome": result, "response": response, "workspace": None,
                  "retained": pack(root / "retained") if session else None}
+        if result in ("timed_out", "terminated"):
+            reply["termination_reason"] = ("runner_stopped" if stopped is not None and stopped.is_set()
+                else "turn_timeout" if code == TIMEOUT_EXIT else "process_signal")
+            reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
         if result == "ok" and request["stage"] == "develop":
             try:
                 reply["workspace"] = extract(root / "work", root / "pristine.git", root)

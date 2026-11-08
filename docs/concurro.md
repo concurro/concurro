@@ -158,6 +158,21 @@ status is unchanged; automatic conversion back to draft is deferred. Refused
 invalidation commands are consumed; retrying invalidation requires a new command.
 Input-needed comments describe the applicable continuation.
 
+When a plan revision exhausts its allowance, a writer can resume that revision with
+`/concurro retry --plan-revisions N` (1–3 additional revisions per command). The grant
+extends the pinned allowance; it never resets spent revisions or model calls. It keeps
+the plan, findings, reviewer sessions and requirements, and reserves the pending
+revision without repeating intake. Reviewers must approve the revised plan, including
+resolving their own objections. The model-call and design-reopen limits remain unchanged.
+
+The command requires unchanged configuration, requirements and bundle, a matching open
+PR head if present, and no pending publication. Each grant records the writer, command
+and new allowance in the audit and issue conversation. Replayed commands cannot grant
+twice. A grant with no exhausted revision waiting posts a notice and leaves normal work
+running. At the revision limit, plain retry or start posts one notice per command pointing
+to the extension command, without invalidating the design again. The older design-review
+budget-exhaustion checkpoint can resume this way too.
+
 The service's owner-only control socket provides `status`, `reconcile-once`, and
 `resolve <intent> applied|not-applied <evidence> --operator <name>`. Check `--help` for
 exact arguments. Resolve only after observing whether the uncertain GitHub write applied.

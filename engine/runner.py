@@ -13,6 +13,7 @@ import urllib.request
 
 from mirror import Mirror, git_environment
 from relay import ExchangeError, Runner
+from policy import runner_bound
 import turns
 
 AUDIENCE = "concurro-gateway"
@@ -70,8 +71,8 @@ class Loop:
                 for turn in taken:
                     if not self.stopped.is_set():
                         self.run(turn)
-                        if turn["payload"]["request"]["stage"] == "develop":
-                            return  # Implementation has its own job; do not idle or reuse its clock.
+                        if runner_bound(turn["payload"]["request"]["stage"]):
+                            return  # Long-running turns have their own job clock.
                     last = time.monotonic()
                 if not taken and time.monotonic() - last > self.idle:
                     return

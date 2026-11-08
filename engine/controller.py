@@ -580,6 +580,8 @@ class Controller:
             return f"**Action needed:** {link('answer the questions', url)}."
         needs = {"blocked": "a fix and a retry", "escalated": "a decision", "rejected": "an edit and a retry",
                  "planned": "plan approval" if state.get("mode") == "manual" else None}.get(state["stage"])
+        if state["stage"] in ("blocked", "stopped", "escalated") and self.waiting_revision():
+            needs = "a writer to grant revision capacity with " + code("/concurro retry --plan-revisions 1")
         if state["stage"] == "blocked" and state.get("reason") == BUNDLE_REASON:
             needs = "a writer to accept reassessment with " + code("/concurro invalidate")
         if not needs and state["stage"] == "gates" and state.get("handoff_ready"):
@@ -1037,13 +1039,89 @@ class Controller:
         """Limit automatic plan revisions across QC feedback and changing inputs."""
         if invalidate:
             self.invalidate_design(reason)
-        if self.state["plan_revisions"] >= self.config["max_plan_revisions"]:
-            self.state.update(stage="escalated", reason="Plan revision budget exhausted: " + reason)
+        if self.state["plan_revisions"] >= self.plan_revision_limit():
+            self.state.update(stage="escalated", retry_stage=stage, revision_wait={"stage": stage},
+                              reason="Plan revision budget exhausted: " + reason)
             if save_exhausted:
                 self.save()
             return False
         self.state["plan_revisions"] += 1
+        self.state.pop("revision_wait", None)
         self.state.update(stage=stage, reason=reason)
+        return True
+
+    def plan_revision_limit(self):
+        """Pinned automatic allowance plus explicit writer grants; spent revisions never reset."""
+        return self.config["max_plan_revisions"] + self.state.get("plan_revision_extra", 0)
+
+    def waiting_revision(self):
+        """The already-invalidated revision to resume, including the old design-review stall."""
+        waiting = self.state.get("revision_wait", {}).get("stage")
+        if waiting in ("plan", "intake"):
+            return waiting
+        # Older checkpoints lost the resume target after recording this exact transition.
+        if (self.state.get("reason") == "Plan revision budget exhausted: Design reviewers require a revision."
+                and self.state.get("design_feedback") and self.state.get("plan")
+                and not self.state.get("design_votes") and not self.state.get("approval")):
+            return "plan"
+        return None
+
+    def refuse_revision_command(self, comment, exhausted=False):
+        """Consume an inapplicable writer command with one durable notice, without suspending work."""
+        state = self.state
+        body = "No exhausted plan revision is waiting; no capacity was granted."
+        if exhausted:
+            state.setdefault("revision_wait", {"stage": self.waiting_revision()})
+            body = ("The plan revision allowance is exhausted. This command cannot increase it. "
+                    "A writer can grant 1–3 additional revisions, for example "
+                    + code("/concurro retry --plan-revisions 1")
+                    + ". Findings and spent budgets are preserved.")
+        state["command_id"] = comment["id"]
+        conversation.queue(state, "Plan revision command not applied", body)
+        self.save()
+
+    def extend_plan_revisions(self, comment, amount, comments):
+        """Atomically grant bounded revision capacity and resume the recorded revision, never waive findings."""
+        state = self.state
+        stage = self.waiting_revision()
+        if (state["stage"] not in ("blocked", "stopped", "escalated") or stage is None
+                or state["plan_revisions"] < self.plan_revision_limit()):
+            self.refuse_revision_command(comment)
+            return False
+        state.setdefault("revision_wait", {"stage": stage})
+        try:
+            if not 1 <= amount <= 3:
+                raise Blocked("Grant between 1 and 3 additional plan revisions per command.")
+            if state.get("pending"):
+                raise Blocked("Publication is pending; reconcile it before granting revision capacity.")
+            if (state["config_digest"] != config_digest(self.config)
+                    or state["requirements"] != self.requirements(comments)):
+                raise Blocked("Configuration or requirements changed; reassess them before granting revision capacity.")
+            self.require_current_bundle()
+            if state.get("pr"):
+                pr = self.pulls.repo(f"pulls/{state['pr']}")
+                if pr["head"]["sha"] != state["head"] or pr["state"] != "open" or pr.get("merged"):
+                    raise Blocked("PR changed outside the controller; cannot resume its plan revision.")
+        except Blocked:
+            state["command_id"] = comment["id"]
+            self.save()
+            raise
+        previous = self.plan_revision_limit()
+        state["plan_revision_extra"] = state.get("plan_revision_extra", 0) + amount
+        state["plan_revision_grant"] = {"actor": comment["user"]["login"], "comment": comment["id"],
+                                       "added": amount, "limit": self.plan_revision_limit()}
+        state["command_id"] = comment["id"]
+        # The failed revision already archived votes and invalidated approval. Do not do it twice.
+        self.revise_plan(stage, "Writer granted additional plan revision capacity.", invalidate=False)
+        for key in ("operation", "retry_stage", "reason"):
+            state.pop(key, None)
+        conversation.queue(state, "Plan revision capacity extended",
+            code(comment["user"]["login"]) + f" granted {amount} additional plan revisions in "
+            + link("this command", f"https://github.com/{self.config['repository']}/issues/{state['issue']}#issuecomment-{comment['id']}")
+            + f". The total allowance is now {self.plan_revision_limit()} (previously {previous}). "
+            "The pending revision is resuming with all findings and spent budgets preserved. "
+            "The revised plan still requires independent approval; the model-call limit is unchanged.")
+        self.save()
         return True
 
     def invalidate_design(self, reason):
@@ -1400,7 +1478,7 @@ class Controller:
             else:
                 self.finish_consensus()
         if state["stage"] in ("rejected", "escalated"):
-            state["retry_stage"] = "intake"
+            state["retry_stage"] = self.waiting_revision() or "intake"
             state.pop("approval", None)
 
     def finish_consensus(self):
@@ -1563,7 +1641,7 @@ class Controller:
                      issue_digest=digest([self.issue["title"], self.issue["body"]]),
                      sessions={}, reviews={}, qc={}, objections=[], handoff_ready=False,
                      session_epoch=state.get("session_epoch", 0) + 1)
-        for key in ("implementation_bundle", "review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
+        for key in ("revision_wait", "implementation_bundle", "review_batch", "plan", "plan_id", "operation", "retry_stage", "reason", "design_feedback", "candidate",
                     "local_status", "approved_accumulated_files", "design_parent", "classification_snapshot", "design_eligibility"):
             state.pop(key, None)
         if state.get("pr"):
@@ -1574,16 +1652,23 @@ class Controller:
         self.save()
 
     def commands(self, comments):
-        """Apply exact writer commands; return True when explicit invalidation starts a new assessment."""
+        """Apply exact writer commands; return True when a command starts a new assessment step."""
         for comment in comments:
             if comment["id"] <= (self.state or {}).get("command_id", 0):
                 continue
             text = comment["body"].strip()
-            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry|invalidate)", text):
+            if not re.fullmatch(r"/concurro (start|approve [a-f0-9]{64}|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)", text):
                 continue
             if not self.permitted(comment["user"]["login"]):
                 continue
+            if self.state and text.startswith("/concurro retry --plan-revisions "):
+                if self.extend_plan_revisions(comment, int(text.split()[-1]), comments):
+                    return True
+                continue
             if text == "/concurro start":
+                if self.state and self.waiting_revision():
+                    self.refuse_revision_command(comment, exhausted=True)
+                    continue
                 if self.config["autonomous"]:
                     continue
                 if self.state and self.state["stage"] not in ("clarify", "blocked", "stopped"):
@@ -1596,7 +1681,9 @@ class Controller:
                 if self.state and any(self.state.get(key) for key in ("pr", "head", "pending")):
                     raise Blocked("existing PR or prepared publication requires manual reconciliation before restarting")
                 if self.state:
-                    if not self.revise_plan("intake", "Writer requested reassessment."):
+                    self.state["command_id"] = comment["id"]
+                    if not self.revise_plan("intake", "Writer requested reassessment.", save_exhausted=False):
+                        self.refuse_revision_command(comment, exhausted=True)
                         continue
                     base = self.pulls.repo("git/ref/heads/" + self.config["base"])["object"]["sha"]
                     self.state.update(base=base, requirements=self.requirements(comments), command_id=comment["id"],
@@ -1630,8 +1717,14 @@ class Controller:
                     and self.state['retry_stage'] == 'plan_qc'
                                  or self.state.get('plan_draft') and self.state['retry_stage'] == 'plan'
                                  or self.state.get('intake_draft') and self.state['retry_stage'] == 'intake')
+                waiting = self.waiting_revision()
+                if waiting:
+                    self.refuse_revision_command(comment, exhausted=True)
+                    continue
                 if self.state["stage"] in ("rejected", "escalated") and not output_repair:
-                    if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment."):
+                    self.state["command_id"] = comment["id"]
+                    if not self.revise_plan("intake", "Writer requested reassessment after terminal judgment.", save_exhausted=False):
+                        self.refuse_revision_command(comment, exhausted=True)
                         continue
                     # Reassessment reads the issue as it is now, including edits made to answer the escalation.
                     self.state.update(requirements=self.requirements(comments),

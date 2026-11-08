@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from bundle import Bundle
-from policy import KILLED, UNCERTAIN_EXIT
+from policy import KILLED, UNCERTAIN_EXIT, TIMEOUT_EXIT
 from session_entry import SessionTurn
 
 KEY_VARIABLE = "CONCURRO_GATEWAY_KEY"
@@ -155,7 +155,10 @@ def run():
     """Map outcomes to exit statuses; only a fixed uncertainty signal crosses the container boundary."""
     try:
         main()
-    except (subprocess.TimeoutExpired, ProviderUncertain):
+    except subprocess.TimeoutExpired:
+        print("agent invocation reached its execution time limit", file=sys.stderr)
+        return TIMEOUT_EXIT
+    except ProviderUncertain:
         print("agent invocation outcome unknown (details suppressed)", file=sys.stderr)
         return UNCERTAIN_EXIT
     except Exception:

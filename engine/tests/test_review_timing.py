@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from support import setUpModule, tearDownModule
 from agents import Agents, RunnerExecutor
-from policy import SessionFailure, UncertainOutcome, approval_binding, digest
+from policy import RunnerTerminated, SessionFailure, UncertainOutcome, approval_binding, digest
 from controller import Controller
 from test_pipeline import CONFIG
 from test_turns import FakeExecutor, FakeOperator, GATEWAY, TASK, TURN, MODELS
@@ -64,7 +64,7 @@ class TimingTests(unittest.TestCase):
         self.assertNotIn('timing', json.dumps(executor.turns))
         executor.result = {'outcome': 'lost', 'response': None}
         executor.timing = {**OBSERVED, 'status': 'lost'}
-        with self.assertRaises(UncertainOutcome):
+        with self.assertRaises(RunnerTerminated):
             agents.ask('codex', 'review', context)
         self.assertEqual(agents.timing['status'], 'lost')
 

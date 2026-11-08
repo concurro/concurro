@@ -14,7 +14,7 @@ from support import setUpModule, tearDownModule
 import agent_entry
 from agents import Agents
 from bundle import Bundle
-from policy import Blocked, RunnerTerminated, SessionFailure
+from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome
 from relay import ExchangeError
 import turns
 import test_turns
@@ -25,12 +25,13 @@ from controller import Controller
 class ExecutorTests(unittest.TestCase):
     """Long execution must not turn into a fresh automatic implementation attempt."""
 
+    stage = "develop"
     runner = test_turns.ExecutorTests.runner
 
     def turn(self):
         """A bound implementation with no internal execution timer."""
         turn = deepcopy(test_turns.TURN)
-        turn['request']['stage'] = 'develop'
+        turn['request']['stage'] = self.stage
         turn['timeout'] = None
         return turn
 
@@ -75,8 +76,8 @@ class ExecutorTests(unittest.TestCase):
         result = executor.observe(handle)
         self.assertEqual(result['outcome'], 'queue_expired')
         self.assertEqual(operator.calls[-1][0], 'cancel')
-        with self.assertRaisesRegex(RunnerTerminated, "No implementation start was observed") as error:
-            Agents({}, executor).decode_result(None, 'claude', 'develop', result)
+        with self.assertRaisesRegex(RunnerTerminated, "No .* start was observed") as error:
+            Agents({}, executor).decode_result(None, 'claude', self.stage, result)
         self.assertIn('race with execution', str(error.exception))
         self.assertNotIn('runner ended', str(error.exception))
 
@@ -153,7 +154,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(len(submits), 4)
         self.assertEqual(len(set(submits)), 1)
         with self.assertRaisesRegex(RunnerTerminated, 'admission outcome is unknown') as error:
-            Agents({}, executor).decode_result(None, 'claude', 'develop', result)
+            Agents({}, executor).decode_result(None, 'claude', self.stage, result)
         self.assertIn('no start was confirmed', str(error.exception))
         self.assertIn('race with execution', str(error.exception))
         self.assertNotIn('private diagnostic', str(error.exception))
@@ -180,8 +181,14 @@ class ExecutorTests(unittest.TestCase):
     def test_unknown_or_killed_implementation_result_stops_even_with_a_transcript(self):
         for outcome in ('lost', 'uncertain', 'terminated'):
             with self.subTest(outcome=outcome), self.assertRaises(RunnerTerminated) as error:
-                Agents({}, None).decode_result({'scope': 'a' * 64}, 'claude', 'develop', {'outcome': outcome})
+                Agents({}, None).decode_result({'scope': 'a' * 64}, 'claude', self.stage, {'outcome': outcome})
             self.assertNotIsInstance(error.exception, SessionFailure)
+
+
+class ReviewExecutorTests(ExecutorTests):
+    """PR review shares lifetime, backoff, ownership and writer-recovery invariants."""
+
+    stage = "review"
 
 
 class NativeTests(test_turns.Workspace):
@@ -241,9 +248,9 @@ class NativeTests(test_turns.Workspace):
         self.assertEqual(len(client.batches), 1)
         self.assertTrue(loop.stopped.is_set())
 
-    def test_unbounded_timeout_is_rejected_for_review(self):
+    def test_unbounded_timeout_is_rejected_for_planning(self):
         with self.assertRaisesRegex(turns.TurnError, 'timeout'):
-            turns.execute({'request': {'stage': 'review'}, 'spec': {}, 'timeout': None}, '', None, self.tmp)
+            turns.execute({'request': {'stage': 'plan'}, 'spec': {}, 'timeout': None}, '', None, self.tmp)
 
     def test_provider_process_receives_none_timeout(self):
         bundle = Bundle()
@@ -296,9 +303,9 @@ class LifecycleTests(unittest.TestCase):
                     Agents({}, None).decode_result(None, 'claude', 'develop', {'outcome': outcome})
                 self.assert_writer_recovery(error.exception)
 
-    def assert_writer_recovery(self, termination):
+    def assert_writer_recovery(self, termination, stage="implement"):
         """A saved stop preserves its diagnosis, consumed budget and writer retry requirement."""
-        state = self.reach('implement')
+        state = self.reach(stage)
         spent = state['calls']
         active = Controller(self.gh, self.agents, self.config)
         with patch.object(self.agents, 'ask', side_effect=termination) as ask:
@@ -324,4 +331,136 @@ class LifecycleTests(unittest.TestCase):
         self.gh.comment('/concurro retry')
         retried = self.tick()
         self.assertEqual(retried['calls'], spent + 2)
-        self.assertEqual(retried['stage'], 'publish')
+        self.assertEqual(retried['stage'], 'publish' if stage == 'implement' else 'review')
+        if stage == 'review':
+            self.assertEqual(retried['head'], state['head'])
+            self.assertEqual(retried['plan_id'], state['plan_id'])
+            self.assertEqual(retried['findings'], state['findings'])
+
+
+class ReviewLifecycleTests(unittest.TestCase):
+    """An interrupted PR review keeps the published head and needs a writer retry."""
+
+    setUp = LifecycleTests.setUp
+    tick = LifecycleTests.tick
+    reach = LifecycleTests.reach
+    assert_writer_recovery = LifecycleTests.assert_writer_recovery
+
+    def test_pr_review_termination_is_saved_without_automatic_second_call(self):
+        self.assert_writer_recovery(RunnerTerminated('PR review runner timed out'), stage='review')
+
+
+    def test_retry_keeps_another_reviewers_findings_and_only_repeats_failed_review(self):
+        self.reach('review')
+        self.agents.fix = True
+        prior = self.tick()
+        self.assertEqual(prior['stage'], 'review')
+        self.assertTrue(prior['findings'])
+        controller = Controller(self.gh, self.agents, self.config)
+        with patch.object(self.agents, 'ask', side_effect=RunnerTerminated('PR review runner stopped')):
+            with self.assertRaises(RunnerTerminated):
+                controller.advance(7)
+        controller.suspend('blocked', 'PR review runner stopped', outboxes=False)
+        self.gh.comment('/concurro retry')
+        count = len(self.agents.calls)
+        resumed = self.tick()
+        self.assertEqual(len(self.agents.calls), count + 1)
+        self.assertEqual(self.agents.calls[-1][:2], ('codex', 'review'))
+        self.assertEqual(resumed['head'], prior['head'])
+        self.assertEqual(resumed['findings'], prior['findings'])
+        self.assertEqual(resumed['calls'], prior['calls'] + 2)
+        self.assertEqual(resumed['stage'], 'implement', 'the surviving finding must still require repair')
+
+
+class ReviewNativeTests(test_turns.Workspace):
+    """Actual review child processes retain cleanup, diagnostics and fresh-job semantics."""
+
+    def run_review(self, script, stopped=None, timeout=None):
+        """Run a tiny local stand-in for the CLI with the real snapshot and cleanup path."""
+        root = turns.directory(self.tmp / 'turns')
+        turn = {'request': {'stage': 'review', 'session': None}, 'spec': self.spec,
+                'retained': None, 'timeout': timeout}
+        with patch.object(turns, 'command', return_value=[test_turns.sys.executable, '-c', script]):
+            return turns.execute(turn, 'test', self.mirror, root, stopped)
+
+    def test_native_review_has_no_deadline_and_never_extracts_edits(self):
+        script = ('import json, sys; from pathlib import Path; r=json.load(sys.stdin); '
+                  'assert r["timeout"] is None; Path(r["workspace"], "scratch.txt").write_text("exploration"); '
+                  'print(json.dumps({"verdict":"approve"}))')
+        result = self.run_review(script)
+        self.assertEqual(result['response'], {'verdict': 'approve'})
+        self.assertIsNone(result['workspace'])
+        self.assertIsNone(result['retained'], 'PR reviews remain fresh contexts')
+        self.assertEqual(self.mirror.git('for-each-ref', 'refs/concurro/snapshots/').stdout, b'')
+
+    def test_signal_and_stop_have_safe_distinct_diagnostics(self):
+        import threading
+        stopped = threading.Event()
+        stopped.set()
+        for script, event, cause in (
+                ('import os, signal; os.kill(os.getpid(), signal.SIGTERM)', None, 'process_signal'),
+                ('import time; time.sleep(30)', stopped, 'runner_stopped')):
+            result = self.run_review(script, event)
+            self.assertEqual(result['outcome'], 'terminated')
+            self.assertEqual(result['termination_reason'], cause)
+            self.assertGreaterEqual(result['elapsed_seconds'], 0)
+            self.assertIsNone(result['response'])
+            with self.assertRaisesRegex(RunnerTerminated, 'PR review'):
+                Agents({}, None).decode_result(None, 'claude', 'review', result)
+
+    def test_internal_timeout_survives_both_subprocess_boundaries(self):
+        from policy import TIMEOUT_EXIT, UNCERTAIN_EXIT
+        with patch.object(agent_entry, 'main', side_effect=subprocess.TimeoutExpired('secret command', 1200)), \
+             patch('sys.stderr', io.StringIO()) as stderr:
+            self.assertEqual(agent_entry.run(), TIMEOUT_EXIT)
+        self.assertNotIn('secret command', stderr.getvalue())
+        result = self.run_review(f'import sys; sys.exit({TIMEOUT_EXIT})', timeout=1200)
+        self.assertEqual(result['outcome'], 'timed_out')
+        self.assertEqual(result['termination_reason'], 'turn_timeout')
+        with self.assertRaisesRegex(RunnerTerminated, 'execution time limit.*turn time'):
+            Agents({}, None).decode_result(None, 'claude', 'review', result)
+        self.assertEqual(turns.outcome(UNCERTAIN_EXIT, ''), ('uncertain', None), 'legacy uncertainty is not relabelled')
+
+    def test_outer_wrapper_timeout_keeps_cause_and_cleans_up(self):
+        communicate = subprocess.Popen.communicate
+        def timeout(process, *args, **kwargs):
+            """Expire only the agent wrapper, leaving snapshot Git processes intact."""
+            if args and isinstance(args[0], str) and '"stage": "review"' in args[0]:
+                raise subprocess.TimeoutExpired('private', 1260)
+            return communicate(process, *args, **kwargs)
+        with patch.object(subprocess.Popen, 'communicate', timeout):
+            result = self.run_review('import time; time.sleep(30)', timeout=1200)
+        self.assertEqual(result['termination_reason'], 'turn_timeout')
+        self.assertEqual(result['outcome'], 'timed_out')
+        self.assertEqual(self.mirror.git('for-each-ref', 'refs/concurro/snapshots/').stdout, b'')
+
+    def test_review_job_acknowledges_one_turn_then_exits(self):
+        import runner
+        turn = {'id': 'r1', 'payload': {'request': {'stage': 'review', 'provider': 'claude'}}}
+        client = test_turns.FakeRunner([[turn], [turn]])
+        loop = runner.Loop(client, 'test', object(), self.tmp / 'loop')
+        with patch.object(turns, 'execute', return_value={'outcome': 'ok', 'response': {}}):
+            loop.serve()
+        self.assertEqual(len(client.completed), 1)
+        self.assertEqual(len(client.batches), 1)
+        self.assertTrue(loop.stopped.is_set())
+
+    def test_unrecognized_diagnostic_text_is_never_published(self):
+        with self.assertRaises(RunnerTerminated) as caught:
+            Agents({}, None).decode_result(None, 'claude', 'review', {
+                'outcome': 'terminated', 'termination_reason': 'private provider diagnostic', 'elapsed_seconds': 'secret'})
+        self.assertIn('cause is unconfirmed', str(caught.exception))
+        self.assertNotIn('private', str(caught.exception))
+        self.assertNotIn('secret', str(caught.exception))
+
+
+class BoundedStageTests(unittest.TestCase):
+    """Timing diagnosis must not alter the independent planning-stage retry policy."""
+
+    def test_other_stage_timeouts_keep_uncertain_recovery_with_a_specific_reason(self):
+        result = {'outcome': 'timed_out'}
+        with self.assertRaisesRegex(UncertainOutcome, 'execution time limit'):
+            Agents({}, None).decode_result(None, 'claude', 'intake', result)
+        with self.assertRaises(SessionFailure) as caught:
+            Agents({}, None).decode_result({'scope': 'a' * 64}, 'claude', 'plan_qc', result)
+        self.assertTrue(caught.exception.uncertain)

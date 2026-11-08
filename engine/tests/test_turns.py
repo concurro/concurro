@@ -323,6 +323,11 @@ class AgentsTests(unittest.TestCase):
         self.assertEqual(turn["spec"]["candidate"], {"files": {"docs/guide.md": "x"}})
         self.assertEqual((turn["timeout"], label), (None, CONFIG["repository"] + ":develop"))
 
+    def test_pr_review_uses_the_job_limit_but_design_review_stays_bounded(self):
+        for stage, expected in (("review", None), ("plan_qc", 1200), ("plan", 1200)):
+            _, executor, _ = self.ask(stage=stage)
+            self.assertEqual(executor.turns[0][0]["timeout"], expected)
+
     def test_develop_returns_the_workspace_edits(self):
         response = {"summary": "s", "checks": ["lint"], "design_issue": None}
         workspace = {"edits": [{"path": "a.md", "content": "x"}], "removed": [], "skipped": []}
@@ -339,7 +344,7 @@ class AgentsTests(unittest.TestCase):
     def test_failures_map_to_the_engines_recovery(self):
         for outcome, expected in (("failed", Blocked), ("uncertain", UncertainOutcome), ("lost", UncertainOutcome)):
             with self.subTest(outcome=outcome), self.assertRaises(expected) as raised:
-                self.ask({"outcome": outcome, "response": None})
+                self.ask({"outcome": outcome, "response": None}, stage="intake")
             self.assertNotIsInstance(raised.exception, SessionFailure)
         session = {"scope": "d" * 64, "turn": 0}
         archive = base64.b64encode(b"kept").decode()

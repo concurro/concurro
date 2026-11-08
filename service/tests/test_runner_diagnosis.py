@@ -1,4 +1,4 @@
-"""GitHub conclusions are diagnostics for the exact OIDC-bound implementation run."""
+"""GitHub conclusions are diagnostics for the exact OIDC-bound runner attempt."""
 
 import unittest
 from fixtures import ENGINE  # initializes the service and engine test paths
@@ -31,6 +31,8 @@ class DiagnosisTests(unittest.TestCase):
         result, calls = self.diagnose(jobs=[{'conclusion': 'timed_out', 'started_at': '2026-11-07T00:00:00Z',
                                            'completed_at': '2026-11-07T06:00:00Z'}])
         self.assertIn('timed out after 360m 0s', result)
+        self.assertTrue(result.startswith('Runner '), 'diagnosis applies to implementation and PR review')
+        self.assertNotIn('Implementation', result)
         self.assertIn('https://github.com/owner/fork/actions/runs/77', result)
         self.assertEqual(calls[0][1], 'repos/owner/fork/actions/runs/77/attempts/1')
         self.assertEqual(calls[1][1], 'repos/owner/fork/actions/runs/77/attempts/1/jobs?per_page=100')

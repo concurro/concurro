@@ -35,9 +35,20 @@ class SessionFailure(Blocked):
 
 
 # Exit statuses meaning a provider call may have completed upstream: the agent entry point's
-# own signal for a provider timeout or kill, and a container killed by a signal.
+# own uncertainty signal and a container killed by a signal. Timeouts remain distinct.
 UNCERTAIN_EXIT = 75
+TIMEOUT_EXIT = 76
 KILLED = (-9, 137)
+
+
+def runner_bound(stage):
+    """Stages whose execution lifetime belongs to a fresh Actions job."""
+    return stage in ("develop", "review")
+
+
+def turn_label(stage):
+    """Fixed public role names, never model-supplied diagnostic text."""
+    return {"develop": "Implementation", "review": "PR review"}.get(stage, "Agent")
 
 
 class UncertainOutcome(Blocked):

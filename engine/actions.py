@@ -38,6 +38,10 @@ def transition(state, config, author, plan_url=None):
     journal["transition"] = signature
     reason = (state.get("reason") or "")[:4000]
     retry = f"Edit the issue if needed, then a writer comments {code('/concurro retry')}."
+    if state.get("revision_wait"):
+        retry = ("A writer can grant 1–3 additional plan revisions, for example "
+                 + code("/concurro retry --plan-revisions 1")
+                 + ". Findings and spent budgets are preserved; plain retry cannot increase the allowance.")
     if stage == "clarify":
         request(state, config, author)
     elif stage == "escalated":
