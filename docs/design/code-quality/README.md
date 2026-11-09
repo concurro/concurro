@@ -195,7 +195,12 @@ Status values:
 | 11a | [GitHub I/O](11-github-and-storage.md#11a-github-io) | Refactor | Low–medium | Done |
 | 11b | [Storage helpers](11-github-and-storage.md#11b-storage-helpers) | Refactor | Low–medium | Done |
 | 15a | [Worker and registry](15-service-worker-registry.md#15a-worker-and-registry) | Refactor | Medium | Done |
-| 15b | [Control dispatch and server handlers](15-service-worker-registry.md#15b-control-dispatch-and-server-handlers) | Refactor | Low–medium | Approved |
+| 15b | [Control dispatch and server handlers](15-service-worker-registry.md#15b-control-dispatch-and-server-handlers) | Refactor | Low–medium | Done |
+| 19a | [Atomic turn admission in `submit`](19-recorded-findings.md#19a-atomic-turn-admission-in-submit) | Bug fix | Medium | Planned |
+| 19b | [Atomic session retirement](19-recorded-findings.md#19b-atomic-session-retirement) | Bug fix | Low–medium | Planned |
+| 19c | [Refuse an empty `threadId`](19-recorded-findings.md#19c-refuse-an-empty-threadid) | Bug fix | Low | Planned |
+| 19d | [Release the registry when recovery fails](19-recorded-findings.md#19d-release-the-registry-when-recovery-fails) | Bug fix | Low | Planned |
+| 19e | [Require string expected claims in `submit`](19-recorded-findings.md#19e-require-string-expected-claims-in-submit) | Bug fix | Very low | Planned |
 
 ### Ordering rationale
 
@@ -220,6 +225,9 @@ Status values:
 
     Higher risk means more preparation, not exclusion.
   - **10c and 10d:** standalone later, or bundled with nearby work.
+
+- **After the refactors: 19a–19e.** The behavioural findings the refactors recorded but
+  deliberately didn't fix, one commit each, in table order.
 
 Numbers are stable identifiers, not the execution order.
 
