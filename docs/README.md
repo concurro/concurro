@@ -33,6 +33,9 @@ Optional status summarization, model routing and sub-issue decomposition remain 
 work in their respective designs. The current MVP does not implement automatic CI repair,
 automatic merge or repair triggered directly by PR-thread replies.
 
+[Proposals](proposals/README.md) holds unimplemented design briefs: per-user provider
+credentials, risk-driven routing and consolidated PR reviews.
+
 ## Documentation scope
 
 These documents describe supported behavior. Completed migration plans, obsolete executor
