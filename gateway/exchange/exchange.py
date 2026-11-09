@@ -578,8 +578,9 @@ class Exchange:
 
     def retire(self, session, record, now):
         """End a session, then delete its key; a failed deletion is retried by reconciliation."""
-        self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
-        self._lose_session_turns(session, now)
+        with self._transaction():
+            self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
+            self._lose_session_turns(session, now)
         key_id = record["key_id"] or (self.gateway.find(record["key"]) if record["key"] else None)
         if key_id and not self.gateway.delete(key_id):
             raise Refused(502, "gateway did not delete the key; reconciliation will retry")
@@ -778,8 +779,9 @@ class Exchange:
             ).fetchall():
                 record = self.row(session)
                 if not self.live(record, now):
-                    self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
-                    self._lose_session_turns(session, now)
+                    with self._transaction():
+                        self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
+                        self._lose_session_turns(session, now)
             self.db.execute(
                 "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (now - FINISHED_RETENTION_SECONDS,)
             )

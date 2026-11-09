@@ -155,7 +155,7 @@ run `pyright --project pyrightconfig.json` for the explicitly scoped engine modu
 | `engine/readiness.py` keep-latest loops | The ID lookup differs (`run["id"]` vs `.get("id", 0)`). |
 | `engine/github.py` `GitHub.pages` vs `service/reconciler.pages` | The engine pages artifacts 10 per page for up to 1,000 pages, and everything else 100 per page for up to 100 pages. The reconciler always uses 100 per page for up to 100 pages. |
 | `gateway/exchange/exchange.py` query parsing | The hand-rolled parser rejects `wait=` and percent-encoded values that `parse_qsl` would accept. Changing accepted requests is a behavioural change. |
-| Exchange and registry lock and transaction scopes | Preserve each operation's lock scope (`Exchange.locked()`) and statement order. Atomic turn admission is the explicit transaction exception introduced by [19a](19-recorded-findings.md#19a-atomic-turn-admission-in-submit); other exchange operations retain autocommit until separately authorised. Don't reorder gateway calls or split or merge registry transactions. |
+| Exchange and registry lock and transaction scopes | Preserve each operation's lock scope (`Exchange.locked()`) and statement order. Explicit transactions cover [turn admission](19-recorded-findings.md#19a-atomic-turn-admission-in-submit) and [session retirement with turn loss](19-recorded-findings.md#19b-atomic-session-retirement), one session at a time; other exchange writes retain autocommit. Gateway calls and key forgetting stay outside transactions. Don't reorder gateway calls or split or merge registry transactions. |
 
 ## Iterations
 
@@ -196,8 +196,8 @@ Status values:
 | 11b | [Storage helpers](11-github-and-storage.md#11b-storage-helpers) | Refactor | Low–medium | Done |
 | 15a | [Worker and registry](15-service-worker-registry.md#15a-worker-and-registry) | Refactor | Medium | Done |
 | 15b | [Control dispatch and server handlers](15-service-worker-registry.md#15b-control-dispatch-and-server-handlers) | Refactor | Low–medium | Done |
-| 19a | [Atomic turn admission in `submit`](19-recorded-findings.md#19a-atomic-turn-admission-in-submit) | Bug fix | Medium | Approved |
-| 19b | [Atomic session retirement](19-recorded-findings.md#19b-atomic-session-retirement) | Bug fix | Low–medium | Planned |
+| 19a | [Atomic turn admission in `submit`](19-recorded-findings.md#19a-atomic-turn-admission-in-submit) | Bug fix | Medium | Done |
+| 19b | [Atomic session retirement](19-recorded-findings.md#19b-atomic-session-retirement) | Bug fix | Low–medium | Approved |
 | 19c | [Refuse an empty `threadId`](19-recorded-findings.md#19c-refuse-an-empty-threadid) | Bug fix | Low | Planned |
 | 19d | [Release the registry when recovery fails](19-recorded-findings.md#19d-release-the-registry-when-recovery-fails) | Bug fix | Low | Planned |
 | 19e | [Require string expected claims in `submit`](19-recorded-findings.md#19e-require-string-expected-claims-in-submit) | Bug fix | Very low | Planned |

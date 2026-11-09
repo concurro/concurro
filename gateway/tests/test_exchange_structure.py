@@ -543,6 +543,8 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         events = []
 
         def record(value):
+            if value == FORGET:
+                self.assertFalse(self.exchange.db.in_transaction)
             events.append(value)
             if fail is not None and len(events) == fail:
                 raise Crash()
@@ -558,11 +560,13 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                 # FakeGateway.activated calls find internally. Record the public
                 # exchange/gateway boundary once, not the fake's implementation.
                 nonlocal depth
+                self.assertFalse(self.exchange.db.in_transaction)
                 depth += 1
                 try:
                     result = _original(*args, **kwargs)
                 finally:
                     depth -= 1
+                self.assertFalse(self.exchange.db.in_transaction)
                 if depth == 0:
                     record("gateway." + _name)
                 return result
@@ -622,30 +626,41 @@ class RecoveryTests(StateFixture, unittest.TestCase):
             self.claim(session)
         self.assertEqual(self.open().key(session, self.token(session), now=NOW)["key"], stored)
 
-    def test_end_order_and_partial_retirement_recovery(self):
-        expected = [ENDED, LOST, "gateway.delete", FORGET]
-        for boundary in range(1, 5):
+    def test_end_order_and_atomic_retirement_recovery(self):
+        """Before commit a live session survives; after commit turn loss is already durable."""
+        expected = ["BEGIN IMMEDIATE", ENDED, LOST, "COMMIT", "gateway.delete", FORGET]
+        for boundary in range(1, len(expected) + 1):
             with self.subTest(boundary=boundary):
                 turn, session, _ = self.running()
                 pinned = self.submit(pin=session)["turn"]
                 with self.trace(boundary) as events, self.assertRaises(Crash):
                     self.exchange.end(session, now=NOW)
-                self.assertEqual(events, expected[:boundary])
+                committed = boundary >= 4
+                self.assertEqual(events, expected[:boundary] + ([] if committed else ["ROLLBACK"]))
+                self.assertFalse(self.exchange.db.in_transaction)
                 restarted = self.open()
+                self.assertEqual(restarted.row(session)["ended"], NOW if committed else None)
+                for identifier, prior in ((turn, "running"), (pinned, "queued")):
+                    status = restarted.db.execute("SELECT status FROM turns WHERE id=?", (identifier,)).fetchone()[0]
+                    self.assertEqual(status, "lost" if committed else prior)
                 restarted.reconcile(now=NOW)
-                # Existing gap: reconcile excludes already-ended sessions from the
-                # turn-loss sweep. A crash after ENDED leaves turns until polled.
-                status = restarted.db.execute("SELECT status FROM turns WHERE id=?", (turn,)).fetchone()[0]
-                self.assertEqual(status, "running" if boundary == 1 else "lost")
+                if not committed:
+                    self.assertTrue(restarted.live(restarted.row(session), NOW))
+                    self.assertEqual(restarted.poll(turn, 0, now=NOW)["status"], "running")
+                    self.assertEqual(restarted.poll(pinned, 0, now=NOW)["status"], "queued")
+                    restarted.end(session, now=NOW)
                 self.assertEqual(restarted.poll(turn, 0, now=NOW)["status"], "lost")
                 self.assertEqual(restarted.poll(pinned, 0, now=NOW)["status"], "lost")
                 self.assertIsNone(restarted.row(session)["key"])
                 self.assertEqual(self.gateway.list(), [])
 
     def test_reconcile_order_and_restart_after_each_boundary(self):
+        """A failed retirement rolls back; a committed retirement needs only key cleanup."""
         expected = [
+            "BEGIN IMMEDIATE",
             "UPDATE sessions SET ended = ? WHERE id = ?",
             LOST,
+            "COMMIT",
             "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?",
             ENDED,
             "gateway.list",
@@ -655,17 +670,98 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         for boundary in range(1, len(expected) + 1):
             with self.subTest(boundary=boundary):
                 turn, session, _ = self.running()
+                pinned = self.submit(pin=session)["turn"]
                 with self.trace(boundary) as events, self.assertRaises(Crash):
                     self.exchange.reconcile(now=NOW + 181)
-                self.assertEqual(events, expected[:boundary])
+                committed = boundary >= 4
+                self.assertEqual(events, expected[:boundary] + ([] if committed else ["ROLLBACK"]))
+                self.assertFalse(self.exchange.db.in_transaction)
                 restarted = self.open()
+                self.assertEqual(restarted.row(session)["ended"], NOW + 181 if committed else None)
+                for identifier, prior in ((turn, "running"), (pinned, "queued")):
+                    status = restarted.db.execute("SELECT status FROM turns WHERE id=?", (identifier,)).fetchone()[0]
+                    self.assertEqual(status, "lost" if committed else prior)
                 restarted.reconcile(now=NOW + 181)
                 self.assertEqual(restarted.poll(turn, 0, now=NOW + 181)["status"], "lost")
+                self.assertEqual(restarted.poll(pinned, 0, now=NOW + 181)["status"], "lost")
                 self.assertIsNone(restarted.row(session)["key"])
                 self.assertEqual(self.gateway.list(), [])
                 # Keep the next trace independent of older ended session rows.
                 self.exchange.db.execute("DELETE FROM sessions")
                 self.exchange.db.execute("DELETE FROM turns")
+
+    def test_end_failed_deletion_keeps_committed_retirement(self):
+        """Gateway refusal cannot revive work; reconciliation retries deletion outside the transaction."""
+        for missing_key_id in (False, True):
+            with self.subTest(missing_key_id=missing_key_id):
+                turn, session, _ = self.running()
+                pinned = self.submit(pin=session)["turn"]
+                if missing_key_id:
+                    self.exchange.db.execute("UPDATE sessions SET key_id=NULL WHERE id=?", (session,))
+                with patch.object(self.gateway, "delete", return_value=False), self.trace() as events:
+                    with self.assertRaisesRegex(
+                        Refused, "gateway did not delete the key; reconciliation will retry"
+                    ) as caught:
+                        self.exchange.end(session, now=NOW)
+                self.assertEqual(caught.exception.status, 502)
+                self.assertEqual(
+                    events,
+                    ["BEGIN IMMEDIATE", ENDED, LOST, "COMMIT"]
+                    + (["gateway.find"] if missing_key_id else [])
+                    + ["gateway.delete"],
+                )
+                self.assertFalse(self.exchange.db.in_transaction)
+                restarted = self.open()
+                self.assertEqual(restarted.row(session)["ended"], NOW)
+                self.assertIsNotNone(restarted.row(session)["key"])
+                for identifier in (turn, pinned):
+                    self.assertEqual(
+                        restarted.db.execute("SELECT status FROM turns WHERE id=?", (identifier,)).fetchone()[0], "lost"
+                    )
+                self.assertEqual(len(self.gateway.list()), 1)
+                with self.trace() as cleanup:
+                    self.exchange.reconcile(now=NOW)
+                self.assertEqual(
+                    cleanup,
+                    [
+                        "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?",
+                        ENDED,
+                        "gateway.list",
+                        "gateway.delete",
+                        FORGET,
+                    ],
+                )
+                self.assertIsNone(restarted.row(session)["key"])
+                self.assertEqual(self.gateway.list(), [])
+
+    def test_reconcile_commits_each_session_separately(self):
+        """A later session's failure cannot undo the retirement of an earlier session."""
+        sessions = [self.exchange.issue(EXPECTED_RUNNER, ["claude-*"], 1000, 3600, binding=BINDING) for _ in range(2)]
+        order = [
+            row[0]
+            for row in self.exchange.db.execute("SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL")
+        ]
+        self.assertCountEqual(order, sessions)
+        with self.trace(6) as events, self.assertRaises(Crash):
+            self.exchange.reconcile(now=NOW + 1200)
+        self.assertEqual(
+            events,
+            [
+                "BEGIN IMMEDIATE",
+                "UPDATE sessions SET ended = ? WHERE id = ?",
+                LOST,
+                "COMMIT",
+                "BEGIN IMMEDIATE",
+                "UPDATE sessions SET ended = ? WHERE id = ?",
+                "ROLLBACK",
+            ],
+        )
+        self.assertFalse(self.exchange.db.in_transaction)
+        restarted = self.open()
+        self.assertEqual(restarted.row(order[0])["ended"], NOW + 1200)
+        self.assertIsNone(restarted.row(order[1])["ended"])
+        restarted.reconcile(now=NOW + 1200)
+        self.assertTrue(all(restarted.row(session)["ended"] == NOW + 1200 for session in sessions))
 
     def test_submit_order_and_atomic_admission_recovery(self):
         expected = ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, STAFF, "COMMIT"]
