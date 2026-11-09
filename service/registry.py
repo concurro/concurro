@@ -265,16 +265,25 @@ class Registry:
                 raise
             raise RegistryError("registry is unreadable") from None
         registry = cls(db, fd, clock)
-        registry.recover()
+        try:
+            registry.recover()
+        except BaseException:
+            try:
+                registry.close()
+            except BaseException:
+                pass
+            raise
         return registry
 
     def close(self):
-        """Release the store and the state directory lock; closing twice is harmless."""
+        """Release the directory lock even if closing the store fails; closing twice is harmless."""
         with self.guard:
             if self.lock_fd is not None:
-                self.db.close()
-                os.close(self.lock_fd)
-                self.lock_fd = None
+                try:
+                    self.db.close()
+                finally:
+                    fd, self.lock_fd = self.lock_fd, None
+                    os.close(fd)
 
     @contextmanager
     def transaction(self):

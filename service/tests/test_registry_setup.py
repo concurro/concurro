@@ -198,30 +198,139 @@ class SetupTests(unittest.TestCase):
             self.open()
         self.assertTrue(self.connections[0].closed)
 
-    def test_recovery_failure_is_outside_setup_cleanup(self):
-        """Known gap: failed recovery retains DB and lock and raises RegistryFailure, not RegistryError."""
+    def test_recovery_failure_releases_store_without_remapping(self):
+        """Failed recovery releases DB and lock while preserving the exact RegistryFailure."""
         Registry.open(self.root, "test", initialize=True).close()
         self.fail = next(i for i, row in enumerate(self.golden["open"]) if row[1].startswith("UPDATE mutations"))
         captured = []
         original = Registry.recover
 
         def recover(registry):
-            captured.append(registry)
+            self.addCleanup(registry.close)
+            try:
+                return original(registry)
+            except BaseException as error:
+                captured.append((registry, error))
+                raise
+
+        with patch.object(Registry, "recover", recover):
+            with self.assertRaisesRegex(RegistryFailure, "registry storage failed") as caught:
+                self.open()
+        fail_index = self.fail
+        del self.fail
+        registry, error = captured[0]
+        self.assertIs(caught.exception, error)
+        self.assertTrue(registry.failed)
+        self.assertTrue(self.connections[0].closed)
+        self.assertIsNone(registry.lock_fd)
+        self.assertEqual(self.trace, self.golden["open"][: fail_index + 1] + [["close"]])
+        with self.assertRaises(sqlite3.ProgrammingError):
+            registry.db.db.execute("SELECT 1")
+        self.assertEqual(len(self.closed_fds), 1)
+        with self.assertRaises(OSError):
+            os.fstat(self.closed_fds[0])
+        registry.close()
+        Registry.open(self.root, "test").close()
+
+    def test_failed_recovery_rolls_back_completed_write(self):
+        """Closing after a later recovery failure rolls back an already-updated mutation."""
+        with closing(Registry.open(self.root, "test", initialize=True, clock=lambda: 1000)) as registry:
+            generation = registry.grant(KEY, "worker", 60)
+            intent = registry.admit(KEY, generation, "POST", "repos/owner/repo/issues", "digest")
+        self.fail = next(
+            i
+            for i, row in enumerate(self.golden["open"])
+            if row[1] == "SELECT repository, issue FROM ownership WHERE live = 1"
+        )
+        original = Registry.recover
+
+        def recover(registry):
+            self.addCleanup(registry.close)
             return original(registry)
 
         with patch.object(Registry, "recover", recover):
             with self.assertRaisesRegex(RegistryFailure, "registry storage failed"):
                 self.open()
-        registry = captured[0]
-        self.addCleanup(registry.close)
-        self.assertTrue(registry.failed)
-        self.assertFalse(self.connections[0].closed)
-        self.assertTrue(registry.db.db.in_transaction)
-        self.assertEqual(self.closed_fds, [])
-        with self.assertRaisesRegex(RegistryError, "in use by another process"):
-            Registry.open(self.root, "test")
-        registry.close()
+        fail_index = self.fail
+        del self.fail
+        self.assertEqual(self.trace, self.golden["open"][: fail_index + 1] + [["close"]])
+        with closing(CONNECT(self.root / DATABASE)) as db:
+            self.assertEqual(
+                db.execute("SELECT status, settled FROM mutations WHERE intent=?", (intent,)).fetchone(),
+                ("in-flight", None),
+            )
+            self.assertEqual(db.execute("SELECT live FROM ownership").fetchall(), [(1,)])
+        with closing(Registry.open(self.root, "test", clock=lambda: 2000)) as registry:
+            self.assertEqual(
+                registry.db.execute("SELECT status, settled FROM mutations WHERE intent=?", (intent,)).fetchone(),
+                ("unknown", 2000),
+            )
+
+    def test_recovery_cleanup_does_not_retry_a_closed_descriptor(self):
+        """A close that releases the fd then raises preserves recovery failure and cannot be retried."""
+        Registry.open(self.root, "test", initialize=True).close()
+        original = RegistryFailure("recovery failed")
+        captured = []
+
+        def recover(registry):
+            captured.append(registry)
+            raise original
+
+        def close_fd(fd):
+            CLOSE(fd)
+            raise OSError("close failed after releasing descriptor")
+
+        with (
+            patch.object(Registry, "recover", recover),
+            patch("service.registry.os.close", side_effect=close_fd) as close,
+        ):
+            with self.assertRaises(RegistryFailure) as caught:
+                Registry.open(self.root, "test")
+            self.assertIs(caught.exception, original)
+            close.assert_called_once()
+            captured[0].close()
+            close.assert_called_once()
+            self.assertIsNone(captured[0].lock_fd)
         Registry.open(self.root, "test").close()
+
+    def test_recovery_error_survives_database_close_failure(self):
+        """Even BaseException during close cannot hide recovery failure or retain the lock."""
+        Registry.open(self.root, "test", initialize=True).close()
+        for close_error in (sqlite3.OperationalError("close failed"), KeyboardInterrupt("close interrupted")):
+            with self.subTest(close_error=type(close_error).__name__):
+                self.trace, self.connections, self.closed_fds = [], [], []
+                original = RegistryFailure("recovery failed")
+                captured = []
+
+                def recover(registry):
+                    captured.append(registry)
+                    self.addCleanup(registry.db.db.close)
+                    self.addCleanup(registry.close)
+                    raise original
+
+                def close_fd(fd):
+                    # Database close was attempted but failed; the lock must still be released.
+                    self.closed_fds.append(fd)
+                    CLOSE(fd)
+
+                with (
+                    patch.object(Registry, "recover", recover),
+                    patch.object(ConnectionTrace, "close", side_effect=close_error) as close_db,
+                    patch.object(self, "close_fd", side_effect=close_fd),
+                ):
+                    with self.assertRaises(RegistryFailure) as caught:
+                        self.open()
+                    self.assertIs(caught.exception, original)
+                    close_db.assert_called_once_with()
+                    self.assertEqual(len(self.closed_fds), 1)
+                    with self.assertRaises(OSError):
+                        os.fstat(self.closed_fds[0])
+                    self.assertIsNone(captured[0].lock_fd)
+                    captured[0].close()
+                    close_db.assert_called_once_with()
+                # The injected close never touched SQLite; dispose of that test resource explicitly.
+                captured[0].db.db.close()
+                Registry.open(self.root, "test").close()
 
 
 class RegistryHelperTests(unittest.TestCase):

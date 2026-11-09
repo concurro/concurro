@@ -82,9 +82,10 @@ is reviewed and approved separately**.
      - **Error mapping:** it applies **only within the setup block**. `RegistryError` passes
        through, and `sqlite3.Error` becomes "registry is unreadable".
      - **Cleanup:** the database and lock file are closed on failure within that block.
-     - **The boundary:** `registry.recover()` runs **after** the setup block, so its
-       failures are neither mapped nor cleaned up there. Preserve that; if it's a cleanup
-       gap, report it separately rather than fixing it here.
+     - **The boundary:** `registry.recover()` runs **after** the setup block. Its failures
+       keep their original type and message. [19d](19-recorded-findings.md#19d-release-the-registry-when-recovery-fails)
+       adds separate cleanup on recovery failure, releasing the lock even if database
+       close raises, without masking the recovery error.
      - **No leaked connection:** the outer handler must still be able to close the
        connection when a pragma fails. Today `db` is assigned before the pragmas run. If
        `_connect()` runs them, it must close the connection itself before re-raising, or
