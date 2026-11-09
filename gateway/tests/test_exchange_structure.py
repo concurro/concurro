@@ -918,19 +918,101 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         self.assertEqual(restarted.db.execute("SELECT id FROM sessions").fetchall(), [(reply["dispatch"],)])
 
     def test_expected_claims_retained_and_overwritten(self):
+        """Both retained and overwritten claims must be strings before any write."""
         for field in ("repository_id", "ref"):
             expected = {**EXPECTED_RUNNER, field: 42}
-            with self.assertRaisesRegex(ValueError, "non-string expected claims"):
-                self.exchange.issue(expected, ["claude-*"], 1000, 3600, binding=BINDING)
-            admitted = self.exchange.submit(
-                str(uuid.uuid4()), expected, ["claude-*"], 1000, 3600, TURN, binding=BINDING, now=NOW
-            )
-            session = admitted["dispatch"]
-            if field == "ref":
-                self.assertTrue(self.claim(session))
-            else:
-                with self.assertRaisesRegex(Refused, "token does not match"):
-                    self.claim(session)
+            with self.subTest(field=field), self.trace() as events:
+                with self.assertRaisesRegex(ValueError, "^unknown, missing or non-string expected claims$"):
+                    self.exchange.issue(expected, ["claude-*"], 1000, 3600, binding=BINDING)
+                with self.assertRaisesRegex(ValueError, "^unknown, missing or non-string expected claims$"):
+                    self.exchange.submit(
+                        str(uuid.uuid4()), expected, ["claude-*"], 1000, 3600, TURN, binding=BINDING, now=NOW
+                    )
+            self.assertEqual(events, [])
+        admitted = self.submit()
+        session = admitted["dispatch"]
+        self.assertEqual(
+            json.loads(self.exchange.row(session)["expected"]),
+            {**EXPECTED_RUNNER, "ref": "refs/heads/concurro/runs/" + session},
+        )
+        self.assertTrue(self.claim(session))
+
+    def test_issue_keeps_optional_actor_and_empty_string_claims(self):
+        """Unbound issue accepts optional actor_id and empty strings without rewriting claims."""
+        for expected in (
+            EXPECTED,
+            EXPECTED_RUNNER,
+            {**EXPECTED, "actor_id": ""},
+            dict.fromkeys(EXPECTED, ""),
+            dict.fromkeys(EXPECTED_RUNNER, ""),
+        ):
+            with self.subTest(expected=expected):
+                session = self.exchange.issue(expected, ["claude-*"], 1000, 3600)
+                self.assertEqual(self.exchange.row(session)["expected"], json.dumps(expected, sort_keys=True))
+
+    def test_submit_actor_claim_validation(self):
+        """Missing/empty actors reach the runner rule; non-string actors fail the shared validator."""
+        rows = [
+            (EXPECTED, "runner turns require workflow_dispatch and the App actor"),
+            ({**EXPECTED, "actor_id": ""}, "runner turns require workflow_dispatch and the App actor"),
+        ]
+        rows += [
+            ({**EXPECTED, "actor_id": value}, "unknown, missing or non-string expected claims")
+            for value in (42, 0, None, True, [], {})
+        ]
+        for expected, message in rows:
+            with self.subTest(expected=expected), self.trace() as events:
+                with self.assertRaises(ValueError) as caught:
+                    self.exchange.submit(
+                        str(uuid.uuid4()), expected, ["claude-*"], 1000, 3600, TURN, binding=BINDING, now=NOW
+                    )
+                self.assertEqual(str(caught.exception), message)
+                if "non-string" in message:
+                    with self.assertRaisesRegex(ValueError, "^unknown, missing or non-string expected claims$"):
+                        self.exchange.issue(expected, ["claude-*"], 1000, 3600)
+            self.assertEqual(events, [])
+
+    def test_submit_validation_precedence(self):
+        """Competing invalid inputs retain the ordered first-error contract and admit nothing."""
+        claims_error = "unknown, missing or non-string expected claims"
+        session_error = "a session needs models, a positive budget and a positive lease"
+        actor_error = "runner turns require workflow_dispatch and the App actor"
+        rows = [
+            ({"turn": "bad", "pin": "bad", "expected": None}, "a turn ID must be a UUID"),
+            ({"pin": "bad", "expected": None}, "a pin must be a session ID"),
+            ({"expected": None, "models": []}, claims_error),
+            ({"expected": {k: v for k, v in EXPECTED_RUNNER.items() if k != "ref"}, "models": []}, claims_error),
+            ({"expected": {**EXPECTED_RUNNER, "extra": "value"}, "models": []}, claims_error),
+            ({"expected": {**EXPECTED_RUNNER, "repository_id": 42}, "models": []}, claims_error),
+            ({"expected": EXPECTED, "models": [], "binding": None}, session_error),
+            ({"budget": 0, "binding": None}, session_error),
+            ({"lease": 0, "binding": None}, session_error),
+            ({"binding": None, "expected": EXPECTED, "payload": {"kind": "bench"}}, "invalid runner task/role binding"),
+            ({"expected": EXPECTED, "payload": {"kind": "bench"}}, actor_error),
+            ({"expected": {**EXPECTED_RUNNER, "event_name": "push"}, "payload": {"kind": "bench"}}, actor_error),
+            (
+                {"payload": {"kind": "bench"}, "binding": {**BINDING, "role": "review:claude"}},
+                "only model turns are supported",
+            ),
+            ({"payload": None, "binding": {**BINDING, "role": "review:claude"}}, "only model turns are supported"),
+            ({"binding": {**BINDING, "role": "review:claude"}}, "turn does not match its role"),
+        ]
+        for changes, message in rows:
+            with self.subTest(changes=changes), self.trace() as events:
+                arguments = {
+                    "turn": str(uuid.uuid4()),
+                    "expected": EXPECTED_RUNNER,
+                    "models": ["claude-*"],
+                    "budget": 1000,
+                    "lease": 3600,
+                    "payload": TURN,
+                    "binding": BINDING,
+                    "now": NOW,
+                }
+                with self.assertRaises(ValueError) as caught:
+                    self.exchange.submit(**(arguments | changes))
+                self.assertEqual(str(caught.exception), message)
+            self.assertEqual(events, [])
 
 
 class DataContractTests(StateFixture, unittest.TestCase):

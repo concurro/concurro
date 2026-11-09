@@ -157,15 +157,13 @@ left it.
 
 ## Findings to report, not fix
 
-- **Expected-claims validation differs.**
-  - `issue` requires the exact expected-claim key set, with every value a string.
-  - `submit` requires the key set, a literal `event_name == "workflow_dispatch"` and a
-    truthy `actor_id`, but doesn't require string values.
-  - **Retained claims:** a non-string retained claim fails later, in `authorize`'s string
-    comparison.
-  - **`ref`:** it is **overwritten** when a bound session is created. So a non-string
-    submitted `ref` never reaches that comparison, and needn't fail.
-  - Keep both behaviours, and report them.
+- **Expected-claims validation:** the difference retained during this refactor is fixed
+  by [19e](19-recorded-findings.md#19e-require-string-expected-claims-in-submit). Both
+  `issue` and `submit` require the `EXPECTED` keys, allow an optional `actor_id`, and
+  require string values. `issue` still accepts omitted actors and empty strings.
+  `submit` separately requires `workflow_dispatch` and a non-empty actor, after checking
+  session parameters and binding. Bound-session creation still overwrites `ref`, but
+  that no longer lets a non-string submitted `ref` bypass validation.
 - **Recovery gaps.** Report any intermediate crash state that the new ordered traces
   show is not recovered automatically. Don't fix it here.
 

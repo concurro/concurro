@@ -199,8 +199,8 @@ Status values:
 | 19a | [Atomic turn admission in `submit`](19-recorded-findings.md#19a-atomic-turn-admission-in-submit) | Bug fix | Medium | Done |
 | 19b | [Atomic session retirement](19-recorded-findings.md#19b-atomic-session-retirement) | Bug fix | Low–medium | Done |
 | 19c | [Refuse an empty `threadId`](19-recorded-findings.md#19c-refuse-an-empty-threadid) | Bug fix | Low | Done |
-| 19d | [Release the registry when recovery fails](19-recorded-findings.md#19d-release-the-registry-when-recovery-fails) | Bug fix | Low | Approved |
-| 19e | [Require string expected claims in `submit`](19-recorded-findings.md#19e-require-string-expected-claims-in-submit) | Bug fix | Very low | Planned |
+| 19d | [Release the registry when recovery fails](19-recorded-findings.md#19d-release-the-registry-when-recovery-fails) | Bug fix | Low | Done |
+| 19e | [Require string expected claims in `submit`](19-recorded-findings.md#19e-require-string-expected-claims-in-submit) | Bug fix | Very low | Approved |
 
 ### Ordering rationale
 

@@ -231,6 +231,17 @@ class Gateway:
         return self.call("DELETE", self.admin + "/api/config/resources/llm.apiKey/" + key_id)[0] in (200, 404)
 
 
+def _expected_claims(expected):
+    """Require known string claims, with actor_id optional and empty strings permitted."""
+    if (
+        not isinstance(expected, dict)
+        or set(expected) - set(EXPECTED) - {"actor_id"}
+        or not set(EXPECTED) <= set(expected)
+        or not all(isinstance(v, str) for v in expected.values())
+    ):
+        raise ValueError("unknown, missing or non-string expected claims")
+
+
 def session_binding(value):
     """Validate the controller-issued task, role and immutable setup/code binding."""
     fields = {"repository", "issue", "role", "generation", "config_sha", "upstream", "fork", "base", "phase"}
@@ -371,13 +382,7 @@ class Exchange:
 
     def issue(self, expected, models, budget, lease, binding=None):
         """Record a runner session the operator authorizes; returns its ID."""
-        if (
-            not isinstance(expected, dict)
-            or set(expected) - set(EXPECTED) - {"actor_id"}
-            or not set(EXPECTED) <= set(expected)
-            or not all(isinstance(v, str) for v in expected.values())
-        ):
-            raise ValueError("unknown, missing or non-string expected claims")
+        _expected_claims(expected)
         self.validate(models, budget, lease)
         with self.locked():
             return self.create(expected, models, budget, lease, binding=binding)
@@ -627,12 +632,7 @@ class Exchange:
             raise ValueError("a turn ID must be a UUID")
         if pin is not None and (not isinstance(pin, str) or not re.fullmatch(UUID, pin)):
             raise ValueError("a pin must be a session ID")
-        if (
-            not isinstance(expected, dict)
-            or set(expected) - set(EXPECTED) - {"actor_id"}
-            or not set(EXPECTED) <= set(expected)
-        ):
-            raise ValueError("unknown or missing expected claims")
+        _expected_claims(expected)
         self.validate(models, budget, lease)
         bound = session_binding(binding)
         if expected.get("event_name") != "workflow_dispatch" or not expected.get("actor_id"):
