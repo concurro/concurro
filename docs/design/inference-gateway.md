@@ -86,6 +86,11 @@ deadline and optional retained transcript. Repeated submission returns the store
 or completed result; it does not queue another model call. A conflicting result is refused.
 Unknown submission outcomes follow bounded recovery, not blind redispatch.
 
+New turn admission commits the turn, any newly created staffing session and its staff
+assignment in one SQLite transaction under the lifecycle lock. Dispatch is returned only
+after commit; a lost reply reuses that committed admission. This does not repair older
+partial admissions, and gateway calls remain outside database transactions.
+
 Each job serves one turn at a time. The runner prepares real Git history, runs the native
 CLI, stops descendant processes, extracts implementation edits and returns the report.
 The role job is the execution boundary: environment filtering and a pristine Git copy

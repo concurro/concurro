@@ -2,12 +2,13 @@
 
 import http.client
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -494,17 +495,17 @@ class ConcurrencyTests(StateFixture, unittest.TestCase):
 
 
 class Crash(BaseException):
-    """Simulate process loss without running ordinary exception recovery."""
+    """Interrupt a boundary, including paths that bypass ordinary Exception handling."""
 
 
 class TracedDatabase:
-    """Record successful mutations verbatim, then fail at a selected durable boundary."""
+    """Record successful statements; inside a transaction only COMMIT makes writes durable."""
 
     def __init__(self, db, record):
         self.db, self.record = db, record
 
     def execute(self, sql, parameters=()):
-        """Delegate unchanged SQL and report mutations only after they commit."""
+        """Record mutations and transaction control after execution, before returning."""
         result = self.db.execute(sql, parameters)
         if not sql.startswith(("SELECT", "PRAGMA")):
             self.record(sql)
@@ -534,11 +535,11 @@ KEY_TRACE = [
 
 
 class RecoveryTests(StateFixture, unittest.TestCase):
-    """Failure injection after committed statements, followed by fresh-connection recovery."""
+    """Failure injection after successful statements, followed by fresh-connection recovery."""
 
     @contextmanager
     def trace(self, fail=None):
-        """Trace mutations and gateway calls without wrapping them in a transaction."""
+        """Count every mutation, BEGIN/COMMIT/ROLLBACK and gateway call after it succeeds."""
         events = []
 
         def record(value):
@@ -666,33 +667,159 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                 self.exchange.db.execute("DELETE FROM sessions")
                 self.exchange.db.execute("DELETE FROM turns")
 
-    def test_submit_order_and_unrecorded_dispatch_recovery_gap(self):
-        expected = [TURN_INSERT, SESSION_INSERT, STAFF]
-        for boundary in range(1, 4):
+    def test_submit_order_and_atomic_admission_recovery(self):
+        expected = ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, STAFF, "COMMIT"]
+        for boundary in range(1, len(expected) + 1):
             with self.subTest(boundary=boundary):
                 turn = str(uuid.uuid4())
                 with self.trace(boundary) as events, self.assertRaises(Crash):
                     self.submit(turn=turn)
-                self.assertEqual(events, expected[:boundary])
+                committed = boundary == len(expected)
+                self.assertEqual(events, expected[:boundary] + ([] if committed else ["ROLLBACK"]))
+                self.assertFalse(self.exchange.db.in_transaction)
                 restarted = self.open()
+                sessions = restarted.db.execute("SELECT id FROM sessions").fetchall()
+                turns = restarted.db.execute("SELECT id FROM turns").fetchall()
+                self.assertEqual(len(sessions), int(committed))
+                self.assertEqual(turns, [(turn,)] if committed else [])
                 replay = self.submit(restarted, turn=turn)
                 self.assertEqual(replay["status"], "queued")
-                self.assertEqual(replay["dispatch"] is None, boundary < 3)
-                polled = restarted.poll(turn, 0, now=NOW)
-                if boundary == 1:
-                    self.assertIsNotNone(polled["dispatch"])
-                elif boundary == 2:
-                    # The session exists but the turn's staff assignment was never
-                    # committed. Poll sees it as live, so cannot redispatch it yet.
-                    self.assertIsNone(polled["dispatch"])
-                    self.assertIsNotNone(restarted.poll(turn, 0, now=NOW + 1200)["dispatch"])
-                else:
-                    self.assertEqual(
-                        replay["dispatch"],
-                        restarted.db.execute("SELECT staff FROM turns WHERE id=?", (turn,)).fetchone()[0],
-                    )
+                self.assertIsNotNone(replay["dispatch"])
+                self.assertEqual(restarted.db.execute("SELECT id FROM sessions").fetchall(), [(replay["dispatch"],)])
+                self.assertEqual(
+                    restarted.db.execute("SELECT staff FROM turns WHERE id=?", (turn,)).fetchone()[0],
+                    replay["dispatch"],
+                )
+                if committed:
+                    self.assertEqual(replay["dispatch"], sessions[0][0])
+                with self.trace() as replay_events:
+                    self.assertEqual(self.submit(turn=turn), replay)
+                self.assertEqual(replay_events, [])
                 self.exchange.db.execute("DELETE FROM sessions")
                 self.exchange.db.execute("DELETE FROM turns")
+
+    def test_submit_staffing_outcomes_are_transactional(self):
+        for kind in ("new", "pinned", "live"):
+            with self.subTest(kind=kind):
+                session = self.submit()["dispatch"] if kind != "new" else None
+                staffed, observation = self.exchange.staffed, self.exchange.observation
+
+                def staff(*args):
+                    self.assertTrue(self.exchange.db.in_transaction)
+                    return staffed(*args)
+
+                def observe(*args):
+                    self.assertFalse(self.exchange.db.in_transaction)
+                    return observation(*args)
+
+                with (
+                    patch.object(self.exchange, "staffed", side_effect=staff),
+                    patch.object(self.exchange, "observation", side_effect=observe),
+                    self.trace() as events,
+                ):
+                    reply = self.submit(pin=session if kind == "pinned" else None)
+                self.assertEqual(
+                    events,
+                    ["BEGIN IMMEDIATE", TURN_INSERT] + ([SESSION_INSERT] if kind == "new" else []) + [STAFF, "COMMIT"],
+                )
+                self.assertEqual(reply["dispatch"] is None, kind != "new")
+                self.assertEqual(
+                    self.exchange.db.execute("SELECT id FROM sessions").fetchall(), [(session or reply["dispatch"],)]
+                )
+                self.exchange.db.execute("DELETE FROM turns")
+                self.exchange.db.execute("DELETE FROM sessions")
+
+    def test_submit_failed_begin_preserves_error(self):
+        original = sqlite3.OperationalError("begin refused")
+        with self.trace() as events:
+            execute = self.exchange.db.execute
+
+            def fail_begin(sql, parameters=()):
+                if sql == "BEGIN IMMEDIATE":
+                    raise original
+                return execute(sql, parameters)
+
+            with patch.object(self.exchange.db, "execute", side_effect=fail_begin):
+                with self.assertRaises(sqlite3.OperationalError) as caught:
+                    self.submit()
+        self.assertIs(caught.exception, original)
+        self.assertEqual(events, [])
+        self.assertFalse(self.exchange.db.in_transaction)
+        self.assertIsNotNone(self.submit(self.open())["dispatch"])
+
+    def test_submit_refusal_rolls_back(self):
+        original = Refused(409, "staffing refused")
+        with self.trace() as events, patch.object(self.exchange, "staffed", side_effect=original):
+            with self.assertRaises(Refused) as caught:
+                self.submit()
+        self.assertIs(caught.exception, original)
+        self.assertEqual(events, ["BEGIN IMMEDIATE", TURN_INSERT, "ROLLBACK"])
+        self.assertFalse(self.exchange.db.in_transaction)
+        restarted = self.open()
+        self.assertEqual(restarted.db.execute("SELECT id FROM turns").fetchall(), [])
+        self.assertIsNotNone(self.submit(restarted)["dispatch"])
+
+    def test_submit_rollback_failure_preserves_original_error(self):
+        original = Crash()
+        db = self.exchange.db
+        try:
+            with self.trace() as events:
+                execute = self.exchange.db.execute
+
+                def fail_rollback(sql, parameters=()):
+                    if sql == "ROLLBACK":
+                        raise sqlite3.OperationalError("rollback failed")
+                    return execute(sql, parameters)
+
+                with (
+                    patch.object(self.exchange.db, "execute", side_effect=fail_rollback) as calls,
+                    patch.object(self.exchange, "staffed", side_effect=original),
+                    self.assertRaises(Crash) as caught,
+                ):
+                    self.submit()
+                self.assertIs(caught.exception, original)
+                self.assertEqual(calls.call_args.args[0], "ROLLBACK")
+                self.assertEqual(events, ["BEGIN IMMEDIATE", TURN_INSERT])
+                self.assertTrue(db.in_transaction)
+        finally:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+
+    def test_transaction_refuses_nesting_without_rolling_back_outer_work(self):
+        db = self.exchange.db
+        with self.exchange.locked():
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                with self.assertRaisesRegex(RuntimeError, "must not nest"), self.exchange._transaction():
+                    self.fail("nested transaction entered")
+                self.assertTrue(db.in_transaction)
+            finally:
+                db.execute("ROLLBACK")
+
+    def test_submit_failed_commit_with_unlocked_reader(self):
+        db = self.exchange.db
+        self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
+        # Only shorten this test's wait; production retains Python sqlite3's default 5-second timeout.
+        db.execute("PRAGMA busy_timeout=0")
+        self.addCleanup(db.execute, "PRAGMA busy_timeout=5000")
+        turn = str(uuid.uuid4())
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as reader:
+            self.assertEqual(reader.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+            reader.execute("BEGIN")
+            reader.execute("SELECT id FROM turns").fetchall()
+            with self.trace() as events, self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                self.submit(turn=turn)
+            # COMMIT failed before the harness could record it; rollback succeeded.
+            self.assertEqual(events, ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, STAFF, "ROLLBACK"])
+            self.assertFalse(db.in_transaction)
+            self.assertEqual(reader.execute("SELECT id FROM turns").fetchall(), [])
+            self.assertEqual(reader.execute("SELECT id FROM sessions").fetchall(), [])
+            reader.execute("ROLLBACK")
+        restarted = self.open()
+        reply = self.submit(restarted, turn=turn)
+        self.assertEqual(self.submit(restarted, turn=turn), reply)
+        self.assertEqual(restarted.db.execute("SELECT id FROM turns").fetchall(), [(turn,)])
+        self.assertEqual(restarted.db.execute("SELECT id FROM sessions").fetchall(), [(reply["dispatch"],)])
 
     def test_expected_claims_retained_and_overwritten(self):
         for field in ("repository_id", "ref"):

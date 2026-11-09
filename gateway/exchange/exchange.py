@@ -339,6 +339,23 @@ class Exchange:
             fcntl.flock(handle, fcntl.LOCK_EX)
             yield
 
+    @contextmanager
+    def _transaction(self):
+        """Commit local writes atomically; the caller holds locked(), with no nesting or gateway I/O."""
+        if self.db.in_transaction:
+            raise RuntimeError("exchange transactions must not nest")
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            yield
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                try:
+                    self.db.execute("ROLLBACK")
+                except BaseException:
+                    pass
+            raise
+
     @staticmethod
     def validate(models, budget, lease):
         if (
@@ -645,25 +662,26 @@ class Exchange:
                 record = self.row(pin)
                 if record["kind"] != "runner" or record["staffing"] != group:
                     raise Refused(409, "the pinned session serves another target")
-            self.db.execute(
-                "INSERT INTO turns (id, expected, models, budget, lease, payload, status, created, digest, pin, binding, staffing) "
-                "VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?)",
-                (
-                    turn,
-                    json.dumps(expected, sort_keys=True),
-                    json.dumps(models),
-                    budget,
-                    lease,
-                    json.dumps(payload),
-                    now,
-                    digest,
-                    pin,
-                    bound,
-                    group,
-                ),
-            )
-            staff = self.staffed(turn, now)
-            self.db.execute("UPDATE turns SET staff = ? WHERE id = ?", (staff, turn))
+            with self._transaction():
+                self.db.execute(
+                    "INSERT INTO turns (id, expected, models, budget, lease, payload, status, created, digest, pin, binding, staffing) "
+                    "VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?)",
+                    (
+                        turn,
+                        json.dumps(expected, sort_keys=True),
+                        json.dumps(models),
+                        budget,
+                        lease,
+                        json.dumps(payload),
+                        now,
+                        digest,
+                        pin,
+                        bound,
+                        group,
+                    ),
+                )
+                staff = self.staffed(turn, now)
+                self.db.execute("UPDATE turns SET staff = ? WHERE id = ?", (staff, turn))
             return {**self.observation(turn), "dispatch": staff}
 
     def staffed(self, turn, now):
