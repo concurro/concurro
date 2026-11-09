@@ -194,7 +194,7 @@ def resolved_thread(body):
     thread = variables.get("input") if isinstance(variables, dict) and set(variables) == {"input"} else None
     if not isinstance(thread, dict) or set(thread) != {"threadId"} or not isinstance(thread["threadId"], str):
         return None
-    return thread["threadId"]
+    return thread["threadId"] or None
 
 
 def _create_ref_body(body, branch):

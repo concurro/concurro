@@ -48,15 +48,13 @@ implementation, **without changing a single admission or settlement decision**.
      for example as `RUN_BRANCH_PREFIX` and `EXECUTOR_WORKFLOW`. They're used in
      `runner_write` (three times), `MutationGateway.dispatch_runner` and `service/worker.py`.
      The exchange keeps its own copy, since it ships as one file.
-2. **The two GraphQL parsers are not equivalent; keep them distinct in behaviour.**
-   `ready_pull` returns `None` for an **empty** `pullRequestId`, but `resolved_thread`
-   returns `""` for an empty `threadId`, which **shape admission** (`allowed`,
-   `allowed_target`) treats as present. `bound()`'s GitHub lookup and the eventual mutation
-   may still refuse it.
-   - A shared parser is allowed only with an explicit `allow_empty` parameter, which
-     `resolved_thread` passes as `True`.
-   - Whether an empty `threadId` *should* be admitted is a behavioural question. **Report it
-     as a finding; don't fix it here.**
+2. **Both GraphQL parsers require non-empty IDs.** The empty-thread finding retained
+   during this refactor is fixed by [19c](19-recorded-findings.md#19c-refuse-an-empty-threadid).
+   `ready_pull` and `resolved_thread` now return `None` for empty `pullRequestId` and
+   `threadId` values, so shape admission refuses both. `bound()` makes no GitHub lookup
+   for either and retains its unmatched-path fallback; it is not a second shape validator.
+   Keep each parser's exact query and variable checks, and the distinct settlement
+   confirmation rules.
 3. **Settlement module.** Move `settle`, `missing_tree` and `rejection` into
    `service/settlement.py`, together with the exceptions `settle` raises: `Rejected` and
    `TreeUnavailable`.
@@ -107,7 +105,6 @@ implementation, **without changing a single admission or settlement decision**.
 - **Ownership:** ownership and stop semantics, and their messages.
 - **The documented differences:**
   - the PATCH-ref check;
-  - empty `threadId` vs `pullRequestId`;
   - readiness vs thread settlement confirmation;
   - `type(...) is int` vs `isinstance(..., int)` in `bound()`.
 - **GraphQL:** the exact match against the engine's `MARK_READY` and `RESOLVE_THREAD`
@@ -135,8 +132,7 @@ Cover every `WRITES` entry, and at least these refusals and acceptances:
 - a PR creation that isn't a draft, or where `maintainer_can_modify` is missing or not
   exactly `False`, or where `head`/`head_repo`/`base` are wrong;
 - a GraphQL query that isn't one of the two documents;
-- an empty `pullRequestId` (refused by shape admission), and an empty `threadId`
-  (admitted by shape admission today);
+- empty `pullRequestId` and `threadId` values (both refused by shape admission);
 - each runner-write shape, including a wrong session, a wrong ref and extra inputs.
 
 ### Stateful admission (`MutationGateway.runner_allowed` and `mutate`'s routing)

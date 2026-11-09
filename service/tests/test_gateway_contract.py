@@ -178,9 +178,9 @@ class ShapeAdmissionTests(unittest.TestCase):
 
     def test_graphql_shapes(self):
         for ready in (True, False):
-            for identifier, accepted in (("node", True), ("", not ready), (None, False), (1, False)):
+            for identifier, accepted in (("node", True), (" ", True), ("", False), (None, False), (1, False)):
                 body = mutation(ready, identifier)
-                for method in ("POST", "GET"):
+                for method in ("POST", "GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
                     with self.subTest(ready=ready, identifier=identifier, method=method):
                         expected = accepted and method == "POST"
                         self.assertEqual(module.allowed(KEY, method, "graphql", body), expected)
@@ -222,6 +222,18 @@ class ShapeAdmissionTests(unittest.TestCase):
 
 class StatefulAdmissionTests(unittest.TestCase):
     """Registry authority and the runner/target/issue routing order remain separate."""
+
+    def test_empty_thread_refused_before_binding_or_write(self):
+        """Empty IDs fail shape admission before binding reads or mutation recording."""
+        gateway, registry, reader, writer = harness()
+        reader.request.return_value = {"data": {"node": {}}}
+        with patch.object(gateway, "bound", wraps=gateway.bound) as bound:
+            with self.assertRaisesRegex(Disallowed, "^write is not on the gateway allow-list$"):
+                gateway.mutate(KEY, 3, "POST", "graphql", mutation(False, ""))
+        bound.assert_not_called()
+        reader.request.assert_not_called()
+        registry.admit.assert_not_called()
+        writer.send.assert_not_called()
 
     def test_runner_records(self):
         record = {"repository": KEY[0], "issue": KEY[1], "generation": 3, "config_sha": "a" * 40, "removed": 0}
@@ -289,6 +301,13 @@ class StatefulAdmissionTests(unittest.TestCase):
 
 class BindingTests(unittest.TestCase):
     """Pin each binding predicate and the complete ordered GitHub read requests."""
+
+    def test_empty_thread_uses_unmatched_path_fallback(self):
+        """Binding does not duplicate shape validation or look up an empty thread."""
+        gateway, _, reader, _ = harness()
+        reader.request.return_value = {"data": {"node": {}}}
+        self.assertTrue(gateway.bound(KEY, "graphql", mutation(False, "")))
+        reader.request.assert_not_called()
 
     def test_binding_table(self):
         rows = [
@@ -490,6 +509,16 @@ class OwnershipTests(unittest.TestCase):
 
 class SettlementTests(unittest.TestCase):
     """Exact status, payload, exception and warning contracts for both APIs."""
+
+    def test_thread_confirmation_requires_nonempty_request_id(self):
+        """A valid thread needs only isResolved=True, while an empty request stays unknown."""
+        for identifier in ("", "node"):
+            for thread in ({"isResolved": True}, {"id": "different", "isResolved": True}):
+                with self.subTest(identifier=identifier, thread=thread):
+                    payload = {"data": {"resolveReviewThread": {"thread": thread}}}
+                    response = Response(True, 200, {}, json.dumps(payload).encode())
+                    result = module.settle("graphql", response, 100, mutation(False, identifier))
+                    self.assertEqual(result, ("done", payload, None) if identifier else ("unknown", None, None))
 
     def test_rest_settlement_table(self):
         path = f"repos/{FORK}/git/commits"
