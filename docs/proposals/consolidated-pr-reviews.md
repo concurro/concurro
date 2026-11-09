@@ -74,8 +74,17 @@ This phase is deterministic and needs no model.
 - **Finalization is a separate, replayable step.** Once every assigned reviewer has an
   accepted report for the head, a finalizer runs, **including on restart when no reviewer
   call happens**.
-  - **The round's identity:** `(head, input_revision, round)`. It stays the same while
-    the round's reports arrive.
+  - **The round's identity:** `(head, input_revision, round, assignment revision)`. It
+    stays the same while the round's reports arrive. The assignment revision freezes
+    which seats and profiles the round expects; without
+    [risk-driven routing](risk-driven-routing.md#resolved-assignments) it never changes.
+  - **An assignment change starts a new review generation:** a new round identity with
+    the new assignment revision. It doesn't increment `state["round"]`, which
+    `Controller.review` counts against `max_fix_rounds`. Segments already sealed under
+    the old revision stay immutable and publishable, and resumed work uses its own
+    generation's frozen assignments. A new generation doesn't by itself permit a
+    publication-mode switch: unfinished publication from earlier generations still
+    counts against the clean boundary.
   - **What it persists:** the segment's immutable inputs (references to the reports) and
     a publication intent, **before** any GitHub write or stage advance.
   - **What it queues:** one `{kind: "round", ...}` outbox item per segment (normally one
@@ -85,12 +94,13 @@ This phase is deterministic and needs no model.
   report sequences it covers) is sealed when it is created and never changes.
   - **A `reopen`, escalation or stop** that interrupts a round finalizes the reports
     accepted so far as a segment, so their findings aren't lost.
-  - **Resumed work:** if the same logical round later continues, only the reviewers
-    without an accepted report are called; accepted reports are never requested again.
+  - **Resumed work:** if the same logical round later continues, only the seats without
+    an accepted report for the round's assignment revision are called; accepted reports
+    are never requested again.
     Their reports form the **next segment** of that round, not a new round and not an
     amendment.
   - **Notifications:** each segment gets its own issue notification, which names the
-    round and the segment.
+    round, its generation (when there is more than one) and the segment.
 - **Terminal PRs:** closure saves with `outboxes=False` and returns before any outbox is
   flushed (`Controller._reconcile_external`), and that stays as it is. Closure never
   waits on PR publication, and **no new PR write starts once closure is observed**. A
@@ -197,7 +207,9 @@ This phase is deterministic and needs no model.
     alone never resolves it.
   - **Body-only clusters:** clusters without a code location stay in the body, with no
     thread.
-- **Ownership is unchanged:** each reviewer dispositions its own member IDs.
+- **Ownership is unchanged:** each reviewer seat dispositions its own member IDs. Under
+  [risk-driven routing](risk-driven-routing.md#seats-own-findings) the owner is the seat
+  and the originating profile is attribution; cluster records keep both.
 
 ### Phase 4: contradictions
 

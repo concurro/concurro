@@ -18,9 +18,11 @@ it is implemented (its design notes go to `docs/design/`) or abandoned (it is de
 
 These apply wherever the proposals meet:
 
-- **One frozen admission record per admitted attempt.** The routing and profile identity,
-  the sponsor and credential version, and the attempt are fixed when the attempt is
-  admitted (`RunnerExecutor.binding`, `sessions.prepare`, `design_batch.Design.reserve`).
+- **One frozen admission record per admitted attempt.** The routing and profile identity
+  with its assignment revision, the sponsor and credential version, and the attempt are
+  fixed when the attempt is admitted (`RunnerExecutor.binding`, `sessions.prepare`,
+  `design_batch.Design.reserve`). A later assignment or sponsor change never rebinds an
+  admitted attempt.
   - **Replay** of that attempt preserves the record; it is never recomputed from current
     state.
   - **A new, charged retry** is a new attempt and gets a new record.
@@ -28,10 +30,13 @@ These apply wherever the proposals meet:
     current recovery deliberately avoids (`Design.open`).
 - **Approval identity and payment identity are separate.** The approval describes what was
   reviewed; the sponsor describes who paid for it.
-- **Finding ownership is authoritative.** Neither routing nor consolidation may remove an
-  owner, or transfer a finding, while the finding is open or withdrawn. This holds at
-  every assignment point, including after a design reopen, and for every effective
-  roster.
+- **Finding ownership is authoritative.** The owner is the reviewer **seat**: today a
+  seat is a reviewer profile name; routing makes it a configured seat whose profile can
+  change ([risk-driven routing](risk-driven-routing.md#seats-own-findings)). The
+  originating profile stays recorded as immutable attribution. Neither routing nor
+  consolidation may unseat an owner, or transfer a finding, while the finding is open or
+  withdrawn. This holds at every assignment point, including after a design reopen, and
+  for every effective panel.
 - **Budget admission is central.** Every attempted model call, including consolidation
   and credential retries, passes budget admission (batch reservation or the
   next-attempt check against `max_model_calls`) and is charged
