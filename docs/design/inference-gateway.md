@@ -93,6 +93,12 @@ the session's ended state and loss of its running and pinned queued turns togeth
 session per transaction. Gateway calls and key forgetting occur afterwards, outside the
 transaction, so failed key deletion cannot revive work. These transactions do not repair
 older partial admissions or retirements; older retirement gaps still recover through polling.
+Other exchange writes use autocommit, so their statement order remains significant.
+
+The lifecycle lock is non-reentrant and spans threads and processes. Long polls release
+it between observations; schema setup and CLI listing reads run outside it. Gateway I/O
+remains under the lifecycle lock but outside SQLite transactions. The service registry
+separately uses its own explicit transactions and exclusive state-directory writer lock.
 
 Each job serves one turn at a time. The runner prepares real Git history, runs the native
 CLI, stops descendant processes, extracts implementation edits and returns the report.

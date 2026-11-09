@@ -896,6 +896,7 @@ class Handler(BaseHTTPRequestHandler):
         return {}
 
     def operator(self, method, path, query, body):
+        # Deliberately reject empty/percent-encoded wait values; URL-decoding would widen admission.
         wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
         if method == "POST" and path == "turns":
             return self.server.exchange.submit(

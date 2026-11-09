@@ -94,6 +94,7 @@ def ci_reasons(observations):
     reasons, success = [], False
     for sha, checks, statuses, *extra in observations:
         suites, runs = extra if extra else ([], [])
+        # Workflow IDs are required; checks and statuses deliberately accept missing IDs as zero.
         workflows = latest_by(
             runs,
             lambda run: (run.get("workflow_id", run["id"]), run.get("event"), run.get("head_branch")),

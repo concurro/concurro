@@ -421,6 +421,7 @@ class CommandHandler:
         """Explicitly adopt current governance and restart assessment without resetting spent budgets."""
         controller = self.controller
         state: TaskState = controller.state
+        # Unlike other command refusals, invalidation leaves persistence to the outer failure handler.
         with controller.consume_on_refusal(comment, save=False):
             if state.get("pending"):
                 raise Blocked(

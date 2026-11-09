@@ -186,6 +186,7 @@ class Transport:
             try:
                 token = self.credential.get()
             except Exception:
+                # Credential failures of any kind happen before sending; suppress their details.
                 return Response(sent=False)
             request_headers["Authorization"] = "Bearer " + token
         body = None

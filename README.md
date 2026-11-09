@@ -116,8 +116,6 @@ Configure Git once per clone to omit the formatting commit from blame:
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
-After committing the one-time format, add its full commit SHA to `.git-blame-ignore-revs`.
-
 Tests use fake GitHub/provider transports and local Git/HTTP fixtures. They do not call
 live models or Docker.
 

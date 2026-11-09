@@ -81,7 +81,8 @@ def allowed(key, method, path, body):
                 return text_blob(body)
             if relative == "git/refs":
                 return _create_ref_body(body, task_branch(*key))
-            # Branch updates are fast-forward only.
+            # Legacy ref updates deliberately check only shape/fast-forward;
+            # allowed_target additionally requires the exact task branch and a valid OID.
             if relative.startswith("git/refs/"):
                 return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
             for shape, fields in PR_BODIES:

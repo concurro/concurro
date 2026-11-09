@@ -266,6 +266,7 @@ def review_body_v2(state, config, item, report, findings, placed):
     ]
     # The summary itself leads when it is one short sentence or has no headline to lead with.
     # Long model text is `Droppable`: it goes, for one note, when the body would exceed GitHub's limit.
+    # This format deliberately counts characters, unlike conversation events' byte limits.
     title = markup.headline(report, "summary")
     collapse = bool(title) and not markup.redundant(report, "summary")
     summary = block(report["summary"])

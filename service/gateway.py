@@ -334,6 +334,7 @@ class MutationGateway:
                     body,
                 )
             except Exception:
+                # Any unclassified send failure may have applied the write; never assume rejection.
                 result, payload, error = "unknown", None, None
             self.registry.settle(intent, result)
         finally:

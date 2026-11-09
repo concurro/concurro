@@ -1,4 +1,4 @@
-"""Event precedence and publication request boundaries pinned before iteration 13."""
+"""Event precedence and publication request boundaries."""
 
 import json
 import unittest

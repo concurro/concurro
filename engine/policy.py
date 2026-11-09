@@ -421,6 +421,7 @@ def validate_review(review, manifests=()):
     _check_review_design_issue(review)
     if (review["verdict"] == "approve") != (not review["findings"]):
         raise Blocked("review verdict contradicts findings")
+    # Local reopen verdicts deliberately bypass this size check; PR finding counts do not.
     if len(json.dumps(review)) > 16000:
         raise Blocked("review too large")
     for finding in review["findings"]:

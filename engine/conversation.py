@@ -184,6 +184,7 @@ class Text(NamedTuple):
 
 def droppable(part):
     """Whether a part goes when its event would exceed the limit."""
+    # Event compaction deliberately counts UTF-8 bytes; PR review compaction counts characters.
     return isinstance(part, Hidden) or isinstance(part, Text) and len(part.body.encode()) > KEPT_TEXT
 
 

@@ -142,6 +142,7 @@ class GitHub:
 
     def pages(self, path, key=None):
         """Read all pages or fail if the bounded traversal cannot finish."""
+        # Artifact reads deliberately use smaller pages; reconciler scans always use 100.
         page_size = 10 if path.endswith("/artifacts") else 100
         return paginate(self.repo, path, key=key, page_size=page_size, max_pages=10000 // page_size)
 

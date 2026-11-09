@@ -427,6 +427,7 @@ class RunnerExecutor:
             reply = self.operator.poll(handle.identifier, wait=wait)
             handle.failures = 0
         except ExchangeError as error:
+            # Poll refusal includes 3xx; relay.SESSION_GONE is a separate, narrower runner-session rule.
             if handle.job_bound and not (error.status in (0, 408, 429) or 500 <= error.status <= 599):
                 raise RunnerTerminated(
                     f"{turn_label(handle.turn['request']['stage'])} status could not be read: exchange refused polling "

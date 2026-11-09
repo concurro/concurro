@@ -473,6 +473,7 @@ class Checkpoints:
                     self.plan_binding = binding
                     self.audit = self.write(self.audit, "generic", self.audit_body(state))
         except Exception:
+            # Any failure here may follow a successful remote write; retain uncertainty for recovery.
             self.uncertain = True
             raise
 
