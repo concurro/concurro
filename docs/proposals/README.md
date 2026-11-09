@@ -5,7 +5,10 @@ intended behaviour, not current behaviour; for how Concurro works today, see
 [`docs/design/`](../design/) and the code.
 
 Each proposal records the current state it builds on, the proposed design, the invariants
-it must keep, the phasing and open questions. A proposal moves out of this directory once
+it must keep, the phasing and open questions. Implementation detail that isn't needed to
+understand the design is staged per phase in a directory named after the proposal: input
+for that phase's implementation brief, re-checked against the code when the brief is
+written. A proposal moves out of this directory once
 it is implemented (its design notes go to `docs/design/`) or abandoned (it is deleted).
 
 | Proposal | Kind | Summary |
