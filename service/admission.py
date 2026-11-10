@@ -2,6 +2,7 @@
 
 import re
 
+import review_api
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
@@ -211,4 +212,6 @@ def _create_ref_body(body, branch):
 
 def _graphql_write(method, body):
     """Admit only exact engine mutations, checking thread resolution first."""
-    return method == "POST" and (resolved_thread(body) is not None or ready_pull(body) is not None)
+    return method == "POST" and (
+        resolved_thread(body) is not None or ready_pull(body) is not None or review_api.identify(body) is not None
+    )

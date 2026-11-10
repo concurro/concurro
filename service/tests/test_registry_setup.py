@@ -26,19 +26,19 @@ class ConnectionTrace:
     """Record exact SQL and parameters, optionally failing before one statement."""
 
     def __init__(self, db, trace, fail=None):
-        self.db, self.trace, self.fail = db, trace, fail
+        self.db, self.trace, self.failure_index = db, trace, fail
         self.closed = False
 
     def execute(self, sql, parameters=()):
         self.trace.append(["execute", sql, list(parameters)])
-        if len(self.trace) - 1 == self.fail:
+        if len(self.trace) - 1 == self.failure_index:
             raise sqlite3.OperationalError("injected")
         return self.db.execute(sql, parameters)
 
     def executemany(self, sql, parameters):
         values = list(parameters)
         self.trace.append(["executemany", sql, [list(value) for value in values]])
-        if len(self.trace) - 1 == self.fail:
+        if len(self.trace) - 1 == self.failure_index:
             raise sqlite3.OperationalError("injected")
         return self.db.executemany(sql, values)
 
@@ -57,7 +57,7 @@ def legacy(root, fresh):
     """Construct a v2 database from the pinned fixture, with representative preserved rows."""
     with closing(CONNECT(Path(root) / DATABASE)) as db, db:
         for name, sql in fresh.items():
-            if name not in {"bindings", "runner_sessions", "pulls"}:
+            if name not in {"bindings", "runner_sessions", "pulls", "review_intents"}:
                 db.execute(sql)
         db.execute(
             "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
@@ -81,7 +81,7 @@ class SetupTests(unittest.TestCase):
     def connect(self, *args, **kwargs):
         """Wrap a real connection while pinning its autocommit and threading options."""
         self.assertEqual(kwargs, {"isolation_level": None, "check_same_thread": False})
-        connection = ConnectionTrace(CONNECT(*args, **kwargs), self.trace, getattr(self, "fail", None))
+        connection = ConnectionTrace(CONNECT(*args, **kwargs), self.trace, getattr(self, "failure_index", None))
         self.connections.append(connection)
         return connection
 
@@ -102,7 +102,7 @@ class SetupTests(unittest.TestCase):
         self.addCleanup(registry.close)
         self.assertEqual(self.trace, self.golden["initialize"])
         self.assertEqual(schema(registry.db.db), self.golden["fresh"])
-        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "3")])
+        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "4")])
         self.assertIn("\n", self.golden["fresh"]["pulls"])
 
     def test_migrated_schema_rows_and_order(self):
@@ -114,7 +114,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(schema(registry.db.db), self.golden["migrated"])
         self.assertEqual(list(registry.db.db.execute("SELECT * FROM pulls")), [("owner/repo", 7, "owner/repo", 9)])
         self.assertEqual(list(registry.db.db.execute("SELECT * FROM deliveries")), [("delivery", 123)])
-        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "3")])
+        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "4")])
         self.assertNotIn("\n", self.golden["migrated"]["pulls"])
 
     def test_existing_open_order(self):
@@ -138,7 +138,7 @@ class SetupTests(unittest.TestCase):
                     elif mode == "open":
                         Registry.open(self.root, "test", initialize=True).close()
                     self.trace, self.connections, self.closed_fds = [], [], []
-                    self.fail = index
+                    self.failure_index = index
                     with self.assertRaisesRegex(RegistryError, "^registry is unreadable$") as error:
                         self.open(initialize=mode == "initialize")
                     self.assertIsNone(error.exception.__cause__)
@@ -201,7 +201,9 @@ class SetupTests(unittest.TestCase):
     def test_recovery_failure_releases_store_without_remapping(self):
         """Failed recovery releases DB and lock while preserving the exact RegistryFailure."""
         Registry.open(self.root, "test", initialize=True).close()
-        self.fail = next(i for i, row in enumerate(self.golden["open"]) if row[1].startswith("UPDATE mutations"))
+        self.failure_index = next(
+            i for i, row in enumerate(self.golden["open"]) if row[1].startswith("UPDATE mutations")
+        )
         captured = []
         original = Registry.recover
 
@@ -216,8 +218,8 @@ class SetupTests(unittest.TestCase):
         with patch.object(Registry, "recover", recover):
             with self.assertRaisesRegex(RegistryFailure, "registry storage failed") as caught:
                 self.open()
-        fail_index = self.fail
-        del self.fail
+        fail_index = self.failure_index
+        del self.failure_index
         registry, error = captured[0]
         self.assertIs(caught.exception, error)
         self.assertTrue(registry.failed)
@@ -237,7 +239,7 @@ class SetupTests(unittest.TestCase):
         with closing(Registry.open(self.root, "test", initialize=True, clock=lambda: 1000)) as registry:
             generation = registry.grant(KEY, "worker", 60)
             intent = registry.admit(KEY, generation, "POST", "repos/owner/repo/issues", "digest")
-        self.fail = next(
+        self.failure_index = next(
             i
             for i, row in enumerate(self.golden["open"])
             if row[1] == "SELECT repository, issue FROM ownership WHERE live = 1"
@@ -251,8 +253,8 @@ class SetupTests(unittest.TestCase):
         with patch.object(Registry, "recover", recover):
             with self.assertRaisesRegex(RegistryFailure, "registry storage failed"):
                 self.open()
-        fail_index = self.fail
-        del self.fail
+        fail_index = self.failure_index
+        del self.failure_index
         self.assertEqual(self.trace, self.golden["open"][: fail_index + 1] + [["close"]])
         with closing(CONNECT(self.root / DATABASE)) as db:
             self.assertEqual(

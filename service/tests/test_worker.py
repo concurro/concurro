@@ -238,6 +238,7 @@ class FailureTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.registry.outcome(KEY).kind, "blocked")
         self.assertEqual(self.reconciler.poll(), [])
 
+    @patch("reviews.PUBLICATION", "rest")
     def test_exhausted_pr_publication_stays_blocked(self):
         """Persistent review rejections block after the attempt limit, and nothing retries them until a writer acts."""
         for _ in range(12):

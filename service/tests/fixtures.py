@@ -20,6 +20,7 @@ import service  # noqa: E402, F401 -- initializes the engine module path before 
 # isort: split
 from support import CONFIG, TARGET  # noqa: E402
 
+import review_api
 from checkpoints import Checkpoints  # noqa: E402
 from controller import Controller  # noqa: E402
 from fakes import FakeAgents, FakeGitHub
@@ -194,6 +195,8 @@ class RestBackend:
     def query(self, data):
         """Answer the engine's two GraphQL read queries."""
         variables = data["variables"]
+        if data["query"] in (review_api.NODE, review_api.LIST):
+            return self.fake.api("graphql", "POST", data)
         if "defaultBranchRef" in data["query"]:
             ref = {"name": "main", "target": {"oid": self.fake.base}}
             return {"data": {"repository": {"defaultBranchRef": ref}}}
@@ -205,7 +208,15 @@ class RestBackend:
             page = {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
             return {"data": {"repository": {"issue": {"linkedBranches": page}}}}
         if "node(id:" in data["query"] and variables["id"] == "PR_9":
-            return {"data": {"node": {"number": 9, "repository": {"nameWithOwner": self.fake.config["repository"]}}}}
+            return {
+                "data": {
+                    "node": {
+                        "number": 9,
+                        "state": "OPEN",
+                        "repository": {"nameWithOwner": self.fake.config["repository"]},
+                    }
+                }
+            }
         if "node(id:" in data["query"]:
             return {"data": {"node": self.thread_node(variables["id"])}}
         if "reviewThreads" in data["query"]:
@@ -263,6 +274,8 @@ class RestBackend:
     def apply(self, method, relative, body):
         """Mutate the fake's state as GitHub would."""
         issue = self.fake.issue
+        if relative == "graphql" and review_api.identify(body):
+            return self.fake.api("graphql", "POST", body)
         if relative == "graphql" and "markPullRequestReadyForReview" in body["query"]:
             self.fake.mark_ready(body["variables"]["input"]["pullRequestId"])
             return {

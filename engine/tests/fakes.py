@@ -12,6 +12,7 @@ import classification as ratings
 from controller import MARKER
 from credentials import Credential
 from github import GitHub, NotFound
+from pending_fake import PendingReviews
 from policy import Blocked, digest
 
 PLAN = {
@@ -154,7 +155,7 @@ RULES = [
 ]
 
 
-class FakeGitHub:
+class FakeGitHub(PendingReviews):
     """Model GitHub's durable state, Git objects and compare-and-swap merge guard."""
 
     create_tree = GitHub.create_tree
@@ -162,6 +163,7 @@ class FakeGitHub:
     def __init__(self, config):
         """Seed one opted-in issue and a writer's start command."""
         self.config = config
+        self.repository = config.get("upstream", config["repository"])
         self.base = "a" * 40
         self.issue = {
             "number": 7,

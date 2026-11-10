@@ -57,9 +57,18 @@ Historical excerpts never replace the canonical evidence used for recovery.
 ## Publication and placement
 
 The report, ledger changes and outbox items are saved before any PR writes. The App
-publishes the review, then any file-level comments and disposition replies. Marker,
-author, exact body and bindings recover a lost response without posting twice.
-Multiple or conflicting matches block publication.
+builds one pending GraphQL review per report, adding inline/file threads and disposition
+replies before submitting it as `COMMENT`. Pending comments are not publicly visible.
+Design withdrawals likewise use one review with a summary and their thread replies.
+Previously queued REST items finish using their original protocol.
+
+The outbox records `building`, `submitting` and `submitted` progress. Placements, reply
+bodies and the final body are frozen before submission. Submission is not completion:
+thread mapping, reply verification and resolution receipts must finish before removal.
+An identified abandoned build is deleted before rebuilding. Unknown pending reviews,
+conflicting identity/body and uncertain submissions stop for an operator. A submitting
+review is never deleted or rebuilt. Same-ID resubmission remains disabled pending live
+validation; recovery can recognize a confirmed submission without writing again.
 
 The engine checks the PR head before and after listing changed files. Both must match
 the reviewed head. Placement is based on the returned patch, not just hunk-header counts:
@@ -70,7 +79,7 @@ the reviewed head. Placement is based on the returned patch, not just hunk-heade
 | File changed, but no usable line range or complete patch | File-level comment on that commit |
 | No changed file attributable | Review body |
 
-Each native review includes `commit_id` and `event: COMMENT`. Finding roots, dispositions
+Each native review binds the reviewed commit and uses `event: COMMENT`. Finding roots, dispositions
 and withdrawals have distinct recovery markers. Full summaries and finding text may be
 excerpted for GitHub's display capacity, with a link to the immutable report; the repair
 agent still receives the complete selected feedback.

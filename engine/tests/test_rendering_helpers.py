@@ -135,7 +135,7 @@ def review_case():
     }
     gh.review_comments.append(opening)
     gh.thread(opening)
-    with patch.object(reviews, "FORMAT", 3):
+    with patch.object(reviews, "FORMAT", 3), patch.object(reviews, "PUBLICATION", "rest"):
         reviews.queue_review(state, "claude", report)
 
     def checkpoint():

@@ -7,10 +7,12 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 
+import review_api
 from github import GitHub
 from policy import task_branch
 from reviews import FINDING_MARKER
 
+from . import review_writes
 from .admission import (
     BRANCH as BRANCH,
     DISPATCH as DISPATCH,
@@ -132,6 +134,8 @@ class MutationGateway:
         issue comment edits only on the App's own marked comments on the task's issue."""
         binding = self.binding(key)
         repository = destination(key, binding, path)
+        if path == "graphql" and review_api.identify(body):
+            return review_writes.binding(self, key, repository, body) is not None
         ready = ready_pull(body) if path == "graphql" else None
         if ready is not None:
             query = "query($id:ID!) { node(id:$id) { ... on PullRequest { number repository { nameWithOwner } } } }"
@@ -292,7 +296,7 @@ class MutationGateway:
             key, method, path, body
         )
 
-    def mutate(self, key, generation, method, path, body=None):
+    def mutate(self, key, generation, method, path, body=None, *, recovery_of=None):
         """Send one allow-listed write as a new occurrence under the current generation; never resend.
 
         A task's writes are sent one at a time: a later write waits for the earlier one to
@@ -308,11 +312,26 @@ class MutationGateway:
             if delay > 0:
                 self.write_sleep(delay)
             try:
-                return self._send(key, generation, method, path, body, binding)
+                return self._send(key, generation, method, path, body, binding, recovery_of)
             finally:
                 self.next_write = self.write_clock() + WRITE_INTERVAL
 
-    def _send(self, key, generation, method, path, body, binding):
+    def check_review_recovery(self, key, intent, body, unresolved):
+        """Permit only deletion compensating the one unresolved thread/reply operation."""
+        context = self.registry.review_intent(intent)
+        identified = review_api.identify(body)
+        if (
+            len(unresolved) != 1
+            or unresolved[0].intent != intent
+            or unresolved[0].key != key
+            or not context
+            or context["kind"] not in ("addPullRequestReviewThread", "addPullRequestReviewThreadReply")
+            or context.get("recovery")
+            or identified != ("deletePullRequestReview", {"pullRequestReviewId": context["review"]})
+        ):
+            raise Disallowed("not the authorized review compensation")
+
+    def _send(self, key, generation, method, path, body, binding, recovery_of=None):
         """Recheck ownership, admit and settle one write while holding the shared write slot."""
         with self.section(key) as condition:
             condition.wait_for(lambda: key not in self.sending)
@@ -321,9 +340,28 @@ class MutationGateway:
             if not current or not current.owns(generation):
                 self.halt(key, generation, OwnershipLost(f"generation {generation} no longer owns {key[0]}#{key[1]}"))
             # An in-flight record with no sender was abandoned mid-send: its outcome is unknown.
-            if self.registry.unresolved(key) or self.registry.in_flight(key):
+            unresolved = self.registry.unresolved(key)
+            if recovery_of is not None:
+                self.check_review_recovery(key, recovery_of, body, unresolved)
+            if (unresolved and recovery_of is None) or self.registry.in_flight(key):
                 self.halt(key, generation, Unresolved(f"{key[0]}#{key[1]} has an unresolved write"))
-            intent = self.registry.admit(key, generation, method, path, request_digest(method, path, body))
+            review = (
+                review_writes.binding(self, key, destination(key, binding, path), body)
+                if path == "graphql" and review_api.identify(body)
+                else None
+            )
+            if path == "graphql" and review_api.identify(body) and review is None:
+                raise Disallowed("review ownership changed before admission")
+            if recovery_of is not None:
+                original = self.registry.review_intent(recovery_of)
+                if any(
+                    review.get(k) != original.get(k)
+                    for k in ("review", "report", "head", "pull", "repository", "pending_body")
+                ):
+                    raise Disallowed("review identity changed before compensation")
+            intent = self.registry.admit(
+                key, generation, method, path, request_digest(method, path, body), review, recovery_of
+            )
             self.sending.add(key)
         try:
             try:
@@ -336,7 +374,10 @@ class MutationGateway:
             except Exception:
                 # Any unclassified send failure may have applied the write; never assume rejection.
                 result, payload, error = "unknown", None, None
-            self.registry.settle(intent, result)
+            if result == "done" and review and review["kind"] == "addPullRequestReview":
+                self.registry.settle(intent, result, payload["data"]["addPullRequestReview"]["pullRequestReview"]["id"])
+            else:
+                self.registry.settle(intent, result)
         finally:
             with self.section(key) as condition:
                 self.sending.discard(key)

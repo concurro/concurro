@@ -1,9 +1,11 @@
 """PR findings, model responses and manual publication lifecycle helpers."""
 
 from copy import deepcopy
+from unittest.mock import patch
 
 from support import CONFIG
 
+import reviews
 from checkpoints import Checkpoints
 from controller import Controller
 from fakes import FINDING, FakeAgents, FakeGitHub
@@ -68,6 +70,10 @@ class Harness:
     """The real controller over the fake GitHub, ticked as the Actions path does."""
 
     def setUp(self):
+        """Retain REST-protocol regression coverage for historical outbox items."""
+        publication = patch.object(reviews, "PUBLICATION", "rest")
+        publication.start()
+        self.addCleanup(publication.stop)
         self.config = deepcopy(CONFIG)
         self.config["autonomous"] = False
         self.gh = FakeGitHub(self.config)

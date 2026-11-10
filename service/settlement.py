@@ -3,6 +3,7 @@
 import logging
 import re
 
+import review_api
 from github import NotFound, Transient
 
 from .admission import OID, ready_pull, resolved_thread
@@ -46,6 +47,13 @@ def settle(path, response, now, body=None):
             return "unknown", None, None
         data = payload.get("data") if isinstance(payload, dict) and "errors" not in payload else None
         if status == 200 and isinstance(data, dict):
+            review = review_api.identify(body)
+            if review is not None:
+                try:
+                    review_api.result(*review, payload)
+                    return "done", payload, None
+                except ValueError:
+                    return "unknown", None, None
             ready = ready_pull(body)
             if ready is not None:
                 pr = (data.get("markPullRequestReadyForReview") or {}).get("pullRequest") or {}

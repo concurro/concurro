@@ -9,6 +9,7 @@ from pathlib import Path
 
 from policy import Blocked
 
+from . import review_recovery
 from .cutover import CutoverError
 from .errors import GatewayStop
 from .identity import IdentityError
@@ -23,9 +24,10 @@ log = logging.getLogger("concurro.service")
 class Control:
     """Serve `status`, `resolve`, `reconcile-once`, `adopt` and `release` against the daemon's own registry."""
 
-    def __init__(self, registry, reconciler, cutover, evaluate=None):
+    def __init__(self, registry, reconciler, cutover, evaluate=None, gateway=None):
         self.registry, self.reconciler, self.cutover = registry, reconciler, cutover
         self.evaluate = evaluate
+        self.gateway = gateway
 
     def handle(self, request):
         """One command's JSON reply; refusals carry a short reason and change nothing."""
@@ -40,6 +42,7 @@ class Control:
         handlers = {
             "status": self._status,
             "resolve": self._resolve_request,
+            "recover-review": self._recover_review,
             "reconcile-once": self._reconcile,
             "adopt": self._adopt,
             "release": self._release,
@@ -49,6 +52,12 @@ class Control:
         if handler is None or (command == "evaluate" and self.evaluate is None):
             raise ValueError("unknown command")
         return handler(request)
+
+    def _recover_review(self, request):
+        """Reconcile one review write using the daemon's fenced gateway."""
+        if self.gateway is None:
+            raise ValueError("review recovery is unavailable")
+        return review_recovery.reconcile(self.gateway, request["intent"], request["operator"])
 
     def _status(self, request):
         """Return the registry's task status."""

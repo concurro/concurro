@@ -245,6 +245,7 @@ class StateTests(ServiceFixture, unittest.TestCase):
             db.execute("DROP TABLE pulls")
             db.execute("DROP TABLE bindings")
             db.execute("DROP TABLE runner_sessions")
+            db.execute("DROP TABLE review_intents")
             db.execute(
                 "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, "
                 "pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (repository, pull))"

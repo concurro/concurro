@@ -33,6 +33,7 @@ DISPATCH_SECONDS = 1
 LISTEN = "127.0.0.1:8787"
 REQUEST_FIELDS = {
     "resolve": ("intent", "disposition", "evidence", "operator"),
+    "recover-review": ("intent", "operator"),
     "evaluate": ("repository", "issue", "provider"),
     "adopt": ("repository", "issues"),
     "release": ("repository", "issue"),
@@ -97,7 +98,7 @@ class Daemon:
             *self.listen,
         )
         self.control = control.server(
-            control.Control(self.registry, self.reconciler, cutover, worker.evaluate), settings.state_dir
+            control.Control(self.registry, self.reconciler, cutover, worker.evaluate, gateway), settings.state_dir
         )
         for name, target in (("ingress", self.http.serve_forever), ("control", self.control.serve_forever)):
             threading.Thread(target=target, name=name, daemon=True).start()
@@ -173,6 +174,11 @@ def parser():
     resolve.add_argument("disposition", choices=("applied", "not-applied"))
     resolve.add_argument("evidence")
     resolve.add_argument("--operator", default=pwd.getpwuid(os.getuid()).pw_name)
+    recovery = commands.add_parser(
+        "recover-review", help="reconcile an uncertain pending-review edit or confirmed submission"
+    )
+    recovery.add_argument("intent")
+    recovery.add_argument("--operator", default=pwd.getpwuid(os.getuid()).pw_name)
     return root
 
 

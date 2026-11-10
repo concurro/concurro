@@ -5,6 +5,7 @@ import re
 import sys
 
 import markup
+import pending_reviews
 from github import Transient
 from markup import block, code, link, table, text
 from policy import Blocked, digest
@@ -132,6 +133,7 @@ def report_lines(report):
 
 # Findings and outbox items created from now on publish in this format; one without `format` is format 1 forever.
 FORMAT = 4
+PUBLICATION = "pending-v1"
 REVIEW_MARKER = "<!-- concurro:review:v1:"
 FINDING_MARKER = "<!-- concurro:finding:v1:"
 DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
@@ -414,6 +416,8 @@ def queue_review(state, provider, report):
         "inline": True,
         "format": FORMAT,
     }
+    if PUBLICATION == "pending-v1":
+        item["publication"] = PUBLICATION
     if report["verdict"] == "reopen":
         item["report"] = report
     state.setdefault("pr_outbox", []).append(item)
@@ -432,6 +436,9 @@ def queue_withdrawal(state, identifiers):
                 "format": FORMAT,
             }
         )
+
+        if PUBLICATION == "pending-v1":
+            state["pr_outbox"][-1]["publication"] = PUBLICATION
 
 
 def find(state, identifier):
@@ -613,7 +620,9 @@ class Publisher:
         while outbox:
             item = outbox[0]
             try:
-                if item["kind"] == "review":
+                if item.get("publication") == "pending-v1":
+                    pending_reviews.Publication(self, item).run()
+                elif item["kind"] == "review":
                     self.review(item)
                 else:
                     self.withdrawn(item)

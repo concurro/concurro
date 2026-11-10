@@ -16,11 +16,12 @@ from policy import digest
 from .errors import RegistryError, RegistryFailure
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
-DISPOSITIONS = {"applied": "done", "not-applied": "failed"}
+DISPOSITIONS = {"applied": "done", "not-applied": "failed", "discarded": "failed"}
+REVIEW_INTENTS = "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)"
 BINDINGS = """CREATE TABLE bindings (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,
     config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
@@ -28,7 +29,9 @@ RUNNER_SESSIONS = """CREATE TABLE runner_sessions (
     id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,
     config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)"""
 SCHEMA = (
-    BINDINGS
+    REVIEW_INTENTS
+    + ";"
+    + BINDINGS
     + ";"
     + RUNNER_SESSIONS
     + ";"
@@ -163,6 +166,15 @@ def _migrate_v2(db):
     db.execute("DROP TABLE pulls_v2")
     db.execute(BINDINGS)
     db.execute(RUNNER_SESSIONS)
+    db.execute(REVIEW_INTENTS)
+    db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
+    db.execute("COMMIT")
+
+
+def _migrate_v3(db):
+    """Add review recovery records without changing existing write outcomes."""
+    db.execute("BEGIN IMMEDIATE")
+    db.execute(REVIEW_INTENTS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -255,6 +267,8 @@ class Registry:
                 raise RegistryError("registry identity or schema version mismatch")
             if meta["schema"] == "2":
                 _migrate_v2(db)
+            elif meta["schema"] == "3":
+                _migrate_v3(db)
             elif meta["schema"] != str(SCHEMA_VERSION):
                 raise RegistryError("registry identity or schema version mismatch")
         except (RegistryError, sqlite3.Error) as error:
@@ -410,7 +424,7 @@ class Registry:
                     queue(db, key, "wait-until", now + (outcome.retry_after or 0))
             return True
 
-    def admit(self, key, generation, method, path, request_digest):
+    def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None):
         """Record a new occurrence as in flight before it is sent; return its intent ID."""
         with self.transaction() as db:
             sequence = db.execute(
@@ -423,10 +437,20 @@ class Registry:
                 "INSERT INTO mutations VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-flight', ?, NULL, NULL)",
                 (intent, *key, generation, sequence, method, path, request_digest, self.clock()),
             )
+            if review is not None:
+                db.execute("INSERT INTO review_intents VALUES (?, ?, NULL)", (intent, json.dumps(review)))
+            if recovery_of is not None:
+                db.execute("UPDATE review_intents SET recovery = ? WHERE intent = ?", (intent, recovery_of))
         return intent
 
-    def settle(self, intent, status):
-        """Settle an in-flight occurrence as done, failed or unknown."""
+    def review_intent(self, intent):
+        """Read immutable review context and the linked compensating write, if any."""
+        with self.transaction() as db:
+            row = db.execute("SELECT context, recovery FROM review_intents WHERE intent = ?", (intent,)).fetchone()
+        return {**json.loads(row[0]), "recovery": row[1]} if row else None
+
+    def settle(self, intent, status, review_id=None):
+        """Settle an occurrence, atomically retaining a successfully created review's ID."""
         if status not in STATUSES[1:]:
             raise ValueError("invalid mutation status")
         with self.transaction() as db:
@@ -438,6 +462,18 @@ class Registry:
                 != 1
             ):
                 raise ValueError("mutation is not in flight")
+            if review_id is not None:
+                row = db.execute("SELECT context FROM review_intents WHERE intent = ?", (intent,)).fetchone()
+                context = json.loads(row[0]) if row else {}
+                if (
+                    status != "done"
+                    or context.get("kind") != "addPullRequestReview"
+                    or not isinstance(review_id, str)
+                    or not review_id
+                ):
+                    raise ValueError("invalid created review identity")
+                context["review"] = review_id
+                db.execute("UPDATE review_intents SET context = ? WHERE intent = ?", (json.dumps(context), intent))
 
     def mutations(self, key, status):
         """The task's occurrences with one status, in admission order."""

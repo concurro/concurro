@@ -115,6 +115,7 @@ class StepPrecedenceTests(ConsensusFixture, unittest.TestCase):
 class PublicationSequenceTests(ConsensusFixture, unittest.TestCase):
     """Freeze publication requests, payloads and save boundaries through the first review."""
 
+    @patch("reviews.PUBLICATION", "rest")
     def trace(self, crash=None, blobs=False):
         """Exercise real checkpoint replay; only non-publication storage traffic is omitted."""
         self.reach("implement")

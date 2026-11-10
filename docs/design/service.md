@@ -155,6 +155,27 @@ Unknown writes require `resolve` with an observed applied/not-applied dispositio
 operator evidence. Resolving the last unknown write makes the task schedulable; the engine
 then reconstructs the result. Do not clear intents or blindly redispatch jobs.
 
+For an uncertain pending-review thread/reply or a confirmed submission, use:
+
+```sh
+python3 -m service --settings /path/to/settings.json recover-review INTENT --operator NAME
+```
+
+The command requires no live task owner and no unrelated unresolved write. It verifies
+the task, App, PR, commit, review ID and body. For a pending edit it journals a compensating
+delete and resolves the original as `discarded` only after confirmed deletion. A crash
+between deletion and resolution resumes from that durable receipt. Unknown compensating
+deletes remain stopped for manual `resolve`; uncertain create/delete operations also
+stay manual. For submission, only the exact confirmed `COMMENTED` review settles the
+intent; pending or missing reviews remain stopped. Same-ID retry is not enabled.
+
+A confirmed create stores the returned review ID atomically with its successful receipt.
+Registry schema 4 adds durable review identity and compensation progress, migrated
+transactionally from schema 3. Back up the stopped registry before upgrading; older code
+cannot open schema 4. Recovery timing is an operator decision, not evidence that a lost
+request has finished. All compensating writes retain normal ownership and pacing checks.
+
+
 Transient reads, unsent writes and recognized throttling preserve the stage and schedule
 GitHub's requested delay, or local exponential backoff from 60 seconds capped at an hour.
 The cap applies only to local backoff. Uncertain model attempts use their existing bounded
