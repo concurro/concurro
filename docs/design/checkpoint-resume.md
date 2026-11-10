@@ -15,6 +15,11 @@ Resume uses current edit policy, configured limits, model assignments, CI requir
 setup and role instructions. Increasing a configured allowance preserves prior spending.
 It does not invent answers to questions, mark findings resolved or reset spent counters.
 Normal execution still enforces budgets, publication recovery and review readiness.
+An authorized reply to the unfinished planner's outstanding question continues planning
+without repeating accepted intake or spending a plan revision. This includes operational
+answers after resume adopts a new edit policy. The answer enters the planner and review
+context; it does not approve the draft. Issue edits or other changed discussion still
+trigger reassessment. Manual tasks require `/concurro start` after the reply.
 Rejected or escalated judgments go through intake reassessment, rereading the issue and
 spending a plan revision as retry does. Output corrections retain their assessment stage;
 an exhausted revision stays waiting for explicit capacity. Finished tasks ignore resume.

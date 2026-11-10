@@ -1130,6 +1130,46 @@ class Controller:
         lessons.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [lesson for _, _, lesson in lessons[: self.config["max_outcome_lessons"]]]
 
+    def continue_planner_clarification(self, comments, command_id=None):
+        """Continue an unfinished plan when only its recorded question has been answered."""
+        state = self.state
+        if (
+            not state
+            or state["stage"] != "clarify"
+            or not state.get("plan", {}).get("questions")
+            or state.get("qc", {}).get("intake", {}).get("decision") != "proceed"
+            or state.get("approval")
+            or state.get("design_votes")
+            or state.get("pending")
+            or state["issue_digest"] != self.issue_digest()
+        ):
+            return False
+        requests = state.get("requests", [])
+        if not requests:
+            return False
+        request = requests[-1]
+        answer = request.get("answer", {}).get("comment")
+        if (
+            request["state"] != "answered"
+            or not answer
+            or request["issue_digest"] != state["issue_digest"]
+            or [item["question"] for item in request["questions"]] != state["plan"]["questions"]
+            or not any(c["id"] == answer and self.answerer(c["user"]["login"]) for c in comments)
+        ):
+            return False
+        # Other changed discussion or an issue edit still takes the reassessment path.
+        if self.requirements([c for c in comments if c["id"] != answer]) != state["requirements"]:
+            return False
+        requirements = self.requirements(comments)
+        if requirements == state["requirements"]:
+            return False
+        state.update(stage="plan", requirements=requirements)
+        state.pop("reason", None)
+        if command_id is not None:
+            state["command_id"] = command_id
+        self.save()
+        return True
+
     def refresh_autonomous(self, comments):
         """Resume clarification or invalidate stale inputs without resetting any budget."""
         state = self.state
@@ -1139,6 +1179,8 @@ class Controller:
         changed = requirements != state["requirements"]
         if not changed:
             return state["stage"] != "clarify"
+        if self.continue_planner_clarification(comments):
+            return True
         if state.get("head") or state.get("pending"):
             if state.get("pending"):
                 raise Blocked(reason_guidance.CHANGED_PUBLICATION)

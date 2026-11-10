@@ -117,6 +117,8 @@ class CommandHandler:
             return LoopAction.CONTINUE
         if controller.state and controller.state["stage"] not in ("clarify", "blocked", "stopped"):
             return LoopAction.CONTINUE
+        if controller.continue_planner_clarification(comments, comment["id"]):
+            return LoopAction.CONTINUE
         if (
             controller.state
             and controller.state["stage"] == "clarify"
