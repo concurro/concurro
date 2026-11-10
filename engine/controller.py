@@ -54,6 +54,7 @@ from policy import (
     digest,
     instruction_matches,
     path_allowed,
+    plan_output_contract,
     selected_model,
     task_branch,
     validate_design_issue,
@@ -1588,6 +1589,7 @@ class Controller:
         """Triage and attach a structured plan without making code changes."""
         context = self.context()
         context["design_feedback"] = self.state.get("design_feedback")
+        context["plan_output_contract"] = plan_output_contract(self.config)
         if self.state.get("plan_draft"):
             context["plan_validation_feedback"] = self.state["plan_draft"]
         context["open_objections"] = [v for v in self.state.get("objections", []) if not v["resolved"]]

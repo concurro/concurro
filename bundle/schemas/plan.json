@@ -17,7 +17,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "When questions is empty, name 1\u20138 distinct primary editable files. Related follow-on edits belong in scope; files is not the exhaustive changed-file list."
     },
     "scope": {
       "type": "object",
@@ -26,10 +27,12 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "When questions is empty, 1\u20138 distinct repository-relative paths, directories or globs, at most 200 characters each. Cover the design without bypassing target edit_policy."
         },
         "max_files": {
-          "type": "integer"
+          "type": "integer",
+          "description": "When questions is empty, an integer covering the number of primary files and all anticipated changed files, at most 32."
         }
       },
       "required": [
@@ -75,14 +78,24 @@
         "changes": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "minItems": 1,
+          "maxItems": 5,
+          "description": "1\u20135 short publication bullets, each 1\u2013300 characters. Put the full design and evidence in summary, steps and tests."
         },
         "review_focus": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "minItems": 1,
+          "maxItems": 5,
+          "description": "1\u20135 short publication bullets, each 1\u2013300 characters. Put the full design and evidence in summary, steps and tests."
         }
       },
       "required": [

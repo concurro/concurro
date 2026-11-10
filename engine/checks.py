@@ -5,6 +5,7 @@ from functools import lru_cache
 
 SCOPE_KEYS = {"paths", "max_files"}
 MAX_SCOPE_PATHS, MAX_SCOPE_FILES = 8, 32
+MAX_SCOPE_PATH_CHARACTERS = 200
 MAX_PLAN_FILES = 8
 MAX_OVERLAY_FILES = MAX_SCOPE_FILES + MAX_PLAN_FILES
 
@@ -29,7 +30,7 @@ def glob_matches(path, pattern):
     return match(0, 0)
 
 
-def _strings(value, minimum, maximum, length=200):
+def _strings(value, minimum, maximum, length=MAX_SCOPE_PATH_CHARACTERS):
     """Return whether a value is a bounded list of distinct non-empty strings."""
     return (
         isinstance(value, list)
@@ -82,7 +83,10 @@ def scope_errors(plan):
     if not isinstance(scope, dict) or set(scope) - {"max_changed_lines"} != SCOPE_KEYS:
         return "plan scope needs paths and max_files"
     if not _strings(scope["paths"], 1, MAX_SCOPE_PATHS):
-        return "plan scope paths must contain 1–8 distinct non-empty strings (at most 200 characters each)"
+        return (
+            "plan scope paths must contain 1–8 distinct non-empty strings "
+            f"(at most {MAX_SCOPE_PATH_CHARACTERS} characters each)"
+        )
     if not all(_relative(scope_pattern(v)) for v in scope["paths"]):
         return "plan scope paths must be relative paths, directories or globs without empty, . or .. components"
     if type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES:

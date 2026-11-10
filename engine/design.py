@@ -168,16 +168,24 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
             or not isinstance(source["id"], str)
             or not source["id"]
             or source["id"] in source_ids
-            or not isinstance(source["path"], str)
-            or source["path"].startswith("/")
-            or any(p in ("", ".", "..", ".git") for p in source["path"].split("/"))
-            or "\\" in source["path"]
             or type(source["line"]) is not int
             or source["line"] < 1
             or not isinstance(source["quote"], str)
             or not source["quote"]
         ):
             raise Blocked("invalid design evidence source")
+        if (
+            not isinstance(source["path"], str)
+            or source["path"].startswith("/")
+            or any(p in ("", ".", "..", ".git") for p in source["path"].split("/"))
+            or "\\" in source["path"]
+        ):
+            raise ReviewError(
+                "review_evidence",
+                f"sources[{source_index}].path",
+                "Use a repository-relative file path from the pinned checkout, not a URL, absolute path, "
+                "or path with empty, . or .. components. Put the line number in line and literal source text in quote.",
+            )
         source_ids.add(source["id"])
         if files is not None:
             content = files.get(source["path"])
@@ -190,20 +198,27 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
     if not 1 <= len(sources) <= 12:
         raise Blocked("design review needs bounded repository evidence")
     seen = set()
-    for item in assessments:
+    for assessment_index, item in enumerate(assessments):
         if (
             not isinstance(item, dict)
             or set(item) != {"criterion", "status", "sources", "reason", "counterexample"}
             or not isinstance(item["criterion"], str)
             or item["criterion"] in seen
             or item["status"] not in ("satisfied", "defect", "uncertain")
-            or not isinstance(item["sources"], list)
-            or not item["sources"]
-            or not all(isinstance(v, str) for v in item["sources"])
-            or not set(item["sources"]).issubset(source_ids)
             or not all(isinstance(item[k], str) and item[k].strip() for k in ("reason", "counterexample"))
         ):
             raise Blocked("invalid criterion assessment")
+        field = f"assessments[{assessment_index}].sources"
+        detail = (
+            'Use exact IDs declared in sources[].id (for example, ["S1"] when a source has id "S1"). '
+            "Do not use file paths, path:line strings, URLs or prose here. Declare repository citations in sources, "
+            "then reference their IDs; do not invent evidence or change the verdict merely to pass validation."
+        )
+        if not isinstance(item["sources"], list) or not item["sources"]:
+            raise ReviewError("review_evidence", field, "Provide at least one source reference. " + detail)
+        for reference_index, reference in enumerate(item["sources"]):
+            if not isinstance(reference, str) or reference not in source_ids:
+                raise ReviewError("review_evidence", f"{field}[{reference_index}]", detail)
         seen.add(item["criterion"])
     if seen != expected:
         raise Blocked("design review must assess every supplied criterion exactly once")

@@ -114,6 +114,12 @@ revisions and restarted reviewer sessions still require fresh review. Retry rene
 correction allowance, not review independence or the total model-call budget. See the
 [eligibility contract](design/design-review-corrections.md).
 
+Design-review citations declare a unique `sources[].id`, a repository-relative file
+path, a line and a literal quote. `assessments[].sources` references those IDs, not
+paths or URLs. Invalid references and paths receive indexed field feedback in the
+next correction and archived diagnostics. Evidence and verdict checks remain strict;
+repeated invalid output can still escalate before the correction allowance is spent.
+
 Reports are archived before
 compaction. Findings have stable IDs and native threads. Only their raising reviewer profile can
 retire them; ambiguous or reopened thread resolutions remain manual. PR-thread replies

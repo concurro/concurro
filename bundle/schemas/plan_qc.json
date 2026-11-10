@@ -76,17 +76,21 @@
         "properties": {
           "id": {
             "type": "string",
-            "maxLength": 80
+            "maxLength": 80,
+            "description": "A unique source ID used verbatim by assessments[].sources, for example S1."
           },
           "path": {
             "type": "string",
-            "maxLength": 4096
+            "maxLength": 4096,
+            "description": "A repository-relative file path in the pinned checkout, not a URL or path:line string."
           },
           "line": {
-            "type": "integer"
+            "type": "integer",
+            "description": "The 1-based line on which the literal quote starts."
           },
           "quote": {
-            "type": "string"
+            "type": "string",
+            "description": "Literal text from the pinned file, not a paraphrase, command output or web page."
           }
         },
         "required": [
@@ -122,7 +126,8 @@
               "type": "string",
               "maxLength": 600
             },
-            "maxItems": 12
+            "maxItems": 12,
+            "description": "Non-empty list of exact IDs declared in sources[].id, for example [\"S1\"]. Never put paths, path:line strings, URLs or explanations here."
           },
           "reason": {
             "type": "string"

@@ -7,10 +7,22 @@ from pathlib import PurePosixPath
 
 import model_config
 import protocol
-from checks import MAX_PLAN_FILES, glob_matches as instruction_matches, in_scope, scope_errors, scope_of
+from checks import (
+    MAX_PLAN_FILES,
+    MAX_SCOPE_FILES,
+    MAX_SCOPE_PATH_CHARACTERS,
+    MAX_SCOPE_PATHS,
+    glob_matches as instruction_matches,
+    in_scope,
+    scope_errors,
+    scope_of,
+)
 from report_core import core as report_core
 
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:" + protocol.DIGEST_PATTERN)
+
+
+PLAN_PUBLICATION_ITEMS, PLAN_PUBLICATION_CHARACTERS, PLAN_JSON_CHARACTERS = 5, 300, 20000
 
 
 PROTECTED_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"})
@@ -284,48 +296,89 @@ def path_allowed(path, config):
     )
 
 
+def plan_output_contract(config):
+    """Expose enforced plan limits and target policy before the first planner attempt."""
+    return {
+        "primary_files_max": MAX_PLAN_FILES,
+        "scope_paths_max": MAX_SCOPE_PATHS,
+        "scope_path_characters_max": MAX_SCOPE_PATH_CHARACTERS,
+        "scope_files_max": MAX_SCOPE_FILES,
+        "publication_items_min": 1,
+        "publication_items_max": PLAN_PUBLICATION_ITEMS,
+        "publication_item_characters_max": PLAN_PUBLICATION_CHARACTERS,
+        "plan_json_characters_max": PLAN_JSON_CHARACTERS,
+        "edit_policy": {
+            "paths": config["paths"],
+            "policy_documents": config["policy_documents"],
+            "protected_instruction_names": sorted(PROTECTED_NAMES),
+        },
+        "instruction": (
+            "files names primary files, not every anticipated edit. scope.paths may use narrow directories/globs "
+            "to include related tests and follow-on edits; scope.max_files covers all changed files. "
+            "Paths must be repository-relative, without hidden, empty, . or .. components. "
+            "Neither scope nor an issue reply overrides edit_policy. If required work is forbidden, ask for a "
+            "target-policy decision in questions; do not omit required work or claim that a reply grants permission. "
+            "Check all limits together, including the short publication lists; the full design belongs in summary, "
+            "steps and tests. Genuine questions may leave files/scope incomplete and stop implementation."
+        ),
+    }
+
+
 def validate_plan(plan, config):
-    """Require a bounded, reviewable plan or explicit clarification questions."""
+    """Report independent plan violations together, retaining the clarification escape hatch."""
     fields = {"summary", "questions", "files", "steps", "tests", "responses", "publication"}
     if not isinstance(plan, dict) or set(plan) - {"scope"} != presentation(plan, fields, {"headline"}):
         raise Blocked("invalid plan fields")
+    problems = []
     publication = plan["publication"]
-    if (
-        not isinstance(publication, dict)
-        or set(publication) != {"changes", "review_focus"}
-        or any(
-            not isinstance(publication[k], list)
-            or not 1 <= len(publication[k]) <= 5
-            or not all(isinstance(t, str) and 0 < len(t) <= 300 for t in publication[k])
-            for k in publication
-        )
-    ):
-        raise Blocked("plan publication needs bounded changes and review focus")
+    if not isinstance(publication, dict) or set(publication) != {"changes", "review_focus"}:
+        problems.append("plan publication needs changes and review_focus arrays")
+    else:
+        for key in ("changes", "review_focus"):
+            values = publication[key]
+            if not isinstance(values, list) or not 1 <= len(values) <= PLAN_PUBLICATION_ITEMS:
+                problems.append(f"publication.{key} must contain 1–{PLAN_PUBLICATION_ITEMS} strings")
+            if isinstance(values, list):
+                for index, value in enumerate(values):
+                    if not isinstance(value, str) or not 0 < len(value) <= PLAN_PUBLICATION_CHARACTERS:
+                        problems.append(
+                            f"publication.{key}[{index}] must be a non-empty string of at most "
+                            f"{PLAN_PUBLICATION_CHARACTERS} characters; put the full detail in steps/tests"
+                        )
+                        break
     if not isinstance(plan["responses"], list) or any(
         not isinstance(v, dict)
         or set(v) != {"id", "response"}
         or not all(isinstance(t, str) and t.strip() for t in v.values())
         for v in plan["responses"]
     ):
-        raise Blocked("invalid planner objection responses")
+        problems.append("invalid planner objection responses")
+    lists_valid = True
     for key in ("questions", "files", "steps", "tests"):
         if not isinstance(plan[key], list) or not all(isinstance(v, str) for v in plan[key]):
-            raise Blocked("invalid plan list")
+            problems.append(f"plan {key} must be an array of strings")
+            lists_valid = False
     if not isinstance(plan["summary"], str) or not plan["summary"].strip():
-        raise Blocked("plan summary missing")
-    if len(json.dumps(plan)) > 20000:
-        raise Blocked("plan too large")
-    if plan["questions"]:
-        return
-    if not 1 <= len(plan["files"]) <= MAX_PLAN_FILES or len(set(plan["files"])) != len(plan["files"]):
-        raise Blocked("plan must name 1–8 distinct files")
-    if not all(path_allowed(p, config) for p in plan["files"]):
-        raise Blocked("plan includes protected or unsupported files")
-    problem = scope_errors(plan)
-    if problem:
-        raise Blocked(problem)
-    if not plan["steps"] or not plan["tests"]:
-        raise Blocked("plan needs steps and validation criteria")
+        problems.append("plan summary missing")
+    if len(json.dumps(plan)) > PLAN_JSON_CHARACTERS:
+        problems.append(f"plan too large: at most {PLAN_JSON_CHARACTERS} JSON characters")
+    if lists_valid and not plan["questions"]:
+        if not 1 <= len(plan["files"]) <= MAX_PLAN_FILES or len(set(plan["files"])) != len(plan["files"]):
+            problems.append("plan must name 1–8 distinct files; put related follow-on edits in scope")
+        for index, path in enumerate(plan["files"]):
+            if not path_allowed(path, config):
+                problems.append(
+                    f"files[{index}] is protected or unsupported by the target edit_policy; "
+                    "a scope or issue reply cannot override it"
+                )
+                break
+        problem = scope_errors(plan)
+        if problem:
+            problems.append(problem)
+        if not plan["steps"] or not plan["tests"]:
+            problems.append("plan needs steps and validation criteria")
+    if problems:
+        raise Blocked("; ".join(problems))
 
 
 def validate_edits(result, plan, originals, config):
