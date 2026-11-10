@@ -21,6 +21,7 @@ class Config(TypedDict, total=False):
     fork: str
     base: str
     bot_login: str
+    pr_template_sections: dict[str, list[str]]
     conventional_commits: bool
     autonomous: bool
     max_plan_revisions: int
@@ -256,6 +257,7 @@ class TaskState(TypedDict, total=False):
     issue: int
     pr: int
     pr_description: Document
+    pr_template: Document
     base: str
     branch: str
     head: str

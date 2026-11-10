@@ -26,6 +26,7 @@ import feedback
 import implementation_bundle
 import markup
 import pr_description
+import pr_template
 import protocol
 import readiness
 import review_state
@@ -111,6 +112,7 @@ def _bounded_int(value, low, high, message):
 
 def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
+    pr_template.validate(config.get("pr_template_sections"))
     if type(config.get("conventional_commits", False)) is not bool:
         raise Blocked("conventional_commits must be a boolean")
     removed = {
@@ -1683,6 +1685,8 @@ class Controller:
             if report["design_issue"] is not None:
                 self.reopen_design(report["design_issue"], "implementation")
                 return None
+            if report.get("description"):
+                pr_template.pin(state, self.config, self.files, self.save)
             proposal = {"summary": report["summary"], "edits": report["edits"]}
             names = (
                 [e.get("path") for e in report["edits"] if isinstance(e, dict)]
@@ -1739,7 +1743,9 @@ class Controller:
                 self.state["plan"].get("publication", {}).get("review_focus", []),
             )
             for _, context in contexts:
-                context["published_pr_body"] = pr_description.layout(parts) + " " * 1024
+                context["published_pr_body"] = (
+                    pr_template.render(parts, self.state.get("pr_template"), self.state["base"]) + " " * 1024
+                )
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [
             f"{name} ({size} of {limit} bytes)"

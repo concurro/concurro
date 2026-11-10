@@ -9,6 +9,7 @@ import candidates
 import conversation
 import markup
 import pr_description
+import pr_template
 import protocol
 from dashboard import dependency_summary
 from github import Transient
@@ -249,7 +250,11 @@ class Publication:
             self.state["plan"].get("publication", {}).get("review_focus", []),
             self.config.get("fork", self.config["repository"]),
         )
-        lines = [pr_description.layout(parts), "", "---", ""] if parts else [block(self.state["plan"]["summary"]), ""]
+        lines = (
+            [pr_template.render(parts, self.state.get("pr_template"), self.state.get("base")), "", "---", ""]
+            if parts
+            else [block(self.state["plan"]["summary"]), ""]
+        )
         if plan:
             lines += [
                 link(

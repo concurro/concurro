@@ -158,3 +158,32 @@ Deploy during an idle window after active tasks finish. Otherwise arrange explic
 recovery with `/concurro invalidate`; the implementer-only `/concurro retry` exception does
 not apply to this bundle change. Do not rewrite existing approval bindings. Already-retained
 legacy implementation results remain readable, but that does not bypass bundle authorization.
+
+### Repository PR templates
+
+Opt in with `pr_template_sections` in the target configuration. Keys are exact ATX
+heading lines from `.github/PULL_REQUEST_TEMPLATE.md`; values list structured fields
+in their desired order. For example:
+
+```json
+{
+  "pr_template_sections": {
+    "## Why": ["problem"],
+    "## What changed": ["changes", "compatibility"],
+    "## Checks": ["testing"]
+  }
+}
+```
+
+Supported fields are `lead`, `problem`, `changes`, `compatibility`, `testing` and
+`review_focus`. Each field may appear only once. Missing or duplicated mapped headings
+and malformed mappings stop publication; headings are never guessed. Unmapped generated
+fields retain their default sections, and an unmapped lead stays first. The footer remains
+controller-owned.
+
+The template is a regular UTF-8 file, at most 16,000 bytes, read from the approved base and
+saved with that base and mapping. Repairs reuse this snapshot. No template or no mapping
+uses the default layout. Template sections and ordinary text are preserved; HTML comments
+are omitted and other HTML is escaped. Existing checked boxes are rendered unchecked.
+There is no automatic checklist attestation: a maintainer may check items with evidence,
+which then counts as a human body edit and stops automatic refresh.
