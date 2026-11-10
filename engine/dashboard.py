@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 # GitHub rejects a comment over 65,536 characters.
 SUMMARY_LIMIT = 60000
-STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Merge")
+STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Handoff")
 STAGE_STEP = {
     "intake": 0,
     "plan": 1,
@@ -125,6 +125,8 @@ class Dashboard:
             "",
             self.activity_line(),
             "",
+            markup.BLOCKING_NOTE,
+            "",
             progress,
             "",
             markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact, current)),
@@ -168,11 +170,13 @@ class Dashboard:
         }
         message = paused[stage] if stage in paused else handlers.get(stage, self._default_activity)()
         alert = (
-            "IMPORTANT"
-            if stage in ("planned", "clarify")
+            "CAUTION"
+            if stage == "blocked"
             else "WARNING"
-            if stage in ("blocked", "escalated", "rejected")
+            if stage in ("planned", "clarify", "escalated", "rejected")
             else "TIP"
+            if stage == "gates" and self.state.get("handoff_ready")
+            else "NOTE"
         )
         return f"> [!{alert}]\n> " + message.replace("\n", "\n> ")
 
@@ -182,9 +186,7 @@ class Dashboard:
         return (
             "Ready for your review. A human decides whether to merge."
             if state.get("handoff_ready")
-            else "PR readiness is waiting on: " + text(state["reason"], 240)
-            if state.get("reason")
-            else "Checking reviews and CI before marking the pull request ready."
+            else "Checking reviews and CI before marking the pull request ready. No action needed."
         )
 
     def _design_activity(self) -> str:
@@ -265,26 +267,11 @@ class Dashboard:
         estimate = result.estimate
         scope = estimate.binding
         label = {"intake": "Intake", "plan_qc": "Design", "review": "PR"}[scope["stage"]]
-        revision = (
-            "head " + str(scope.get("head", ""))[:7]
-            if scope["stage"] == "review"
-            else "plan " + str(scope.get("plan", ""))[:8] + " · " + markup.review_phase(scope.get("phase", ""))
-            if scope["stage"] == "plan_qc"
-            else "current issue"
-        )
-        detail = f"{label} {revision} · {result.assessed}/{result.expected} assessed"
+        detail = label + " assessment"
         if result.provisional:
-            detail += " · provisional"
+            detail += " · Assessment incomplete"
         if result.previous_binding and result.previous_binding != scope:
-            prior = result.previous_binding
-            detail += (
-                " · retains earlier "
-                + str(prior["stage"])
-                + " "
-                + str(prior.get("head") or prior.get("plan") or "")[:8]
-            )
-            if prior.get("phase"):
-                detail += " " + markup.review_phase(prior["phase"])
+            detail += " · Based on the previous revision"
         if result.disagreement:
             detail += " · reviewers disagree"
         sources = classification.resolve_sources(estimate.sources, self.state)
@@ -386,10 +373,10 @@ class Dashboard:
             if current == len(STEPS):
                 status, detail = "✅ Merged", ""
             elif stage == "gates" and state.get("handoff_ready"):
-                status, detail = "✅ Handed off", "A human reviews and merges"
+                status, detail = "Ready for human review", "A human reviews and merges"
             else:
                 status = f"{markup.GATE} Blocked" if state.get("reason") and stage == "gates" else "▶️ Checking gates"
-                detail = text(state.get("reason", ""), 300) if stage == "gates" else ""
+                detail = "Readiness checks are pending; see diagnostics" if stage == "gates" else ""
         if not done and index == current and stage in paused:
             status = markup.label(paused[stage])
         return name, status, detail
@@ -576,6 +563,8 @@ class Dashboard:
                 "Observed turn timing (includes setup/tools; missing durations are unknown).\n\n"
                 + markup.table(["Agent", "Round", "Admission to claim", "Execution", "Evidence"], timings)
             )
+        if self.state.get("reason") and self.state["stage"] == "gates":
+            sections.append("Readiness: " + text(self.state["reason"], 300))
         previous = self.previous_runs()
         if previous:
             sections.append(markup.details("Previous runs", previous))

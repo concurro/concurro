@@ -237,7 +237,7 @@ class BlockedNoticeTests(PipelineFixture, unittest.TestCase):
         self.tick()
         rendered = MarkdownIt("commonmark", {"html": True}).render(self.notice["body"])
         self.assertIn("<blockquote>\n<del>\n<h3>Blocked</h3>", rendered)
-        self.assertIn("<details><summary>Full reason</summary>", rendered)
+        self.assertIn("<details><summary>Further detail</summary>", rendered)
         self.assertNotIn("<code>/concurro retry</code>", rendered)
         self.assertNotIn("<sub>", rendered)
         self.assertIn("</del>\n</blockquote>\n<p><strong>This blocker has been resolved.</strong></p>", rendered)

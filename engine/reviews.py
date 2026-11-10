@@ -131,7 +131,7 @@ def report_lines(report):
 # its marker and author before anything is sent again.
 
 # Findings and outbox items created from now on publish in this format; one without `format` is format 1 forever.
-FORMAT = 3
+FORMAT = 4
 REVIEW_MARKER = "<!-- concurro:review:v1:"
 FINDING_MARKER = "<!-- concurro:finding:v1:"
 DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
@@ -203,7 +203,12 @@ def finding_body(finding):
         return finding_prefix(finding) + finding["detail"]
     severity = markup.SEVERITY.get(finding.get("severity"))
     heading = " · ".join(
-        ["Concurro"] + ([severity[1]] if severity else []) + [finding["id"], markup.finding_title(finding)]
+        ["Concurro"]
+        + ([severity[1]] if severity else [])
+        + [
+            finding["id"],
+            (markup.finding_title_v2(finding) if finding.get("format", 1) >= 4 else markup.finding_title(finding)),
+        ]
     )
     prefix = f"{finding_marker(finding['id'])}\n{severity[0] + ' ' if severity else ''}**{heading}**\n\n"
     suffix = "\n\n" + markup.sub("Concurro review · " + text(finding["provider"]))
@@ -260,6 +265,7 @@ def review_body(state, config, item, report, findings, placed):
 def review_body_v2(state, config, item, report, findings, placed):
     """Verdict and headline, new findings by severity, answers to earlier ones; the rest collapsed."""
     emoji, outcome = markup.VERDICT[report["verdict"]]
+    title_renderer = markup.finding_title_v2 if item.get("format", 1) >= 4 else markup.finding_title
     lines = [
         review_marker(state, config, item["sequence"]),
         f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}",
@@ -283,9 +289,7 @@ def review_body_v2(state, config, item, report, findings, placed):
         key=lambda f: (order.index(f["severity"]) if f.get("severity") in order else len(order), int(f["id"][1:])),
     )
     if ordered:
-        rows = [
-            [markup.severity(f) or "—", f"**{text(f['id'])}** {markup.finding_title(f)}", where(f)] for f in ordered
-        ]
+        rows = [[markup.severity(f) or "—", f"**{text(f['id'])}** {title_renderer(f)}", where(f)] for f in ordered]
         lines += ["", table(["Severity", "Finding", "Where"], rows)]
     if report["dispositions"]:
         answers = []
@@ -298,7 +302,7 @@ def review_body_v2(state, config, item, report, findings, placed):
             )
             answers.append(f"{name} {markup.label(markup.STATUS[disposition['status']])}")
         lines += ["", "**Earlier findings:** " + " · ".join(answers)]
-    if ordered or any(d["status"] == "open" for d in report["dispositions"]):
+    if item.get("format", 1) < 4 and (ordered or any(d["status"] == "open" for d in report["dispositions"])):
         lines += ["", markup.BLOCKING_NOTE]
     if report["design_issue"]:
         issue = report["design_issue"]
@@ -317,7 +321,7 @@ def review_body_v2(state, config, item, report, findings, placed):
                 markup.details(
                     "Findings without a file",
                     "\n\n".join(
-                        f"**{text(f['id'])} · {markup.finding_title(f)}**\n\n{block(f['detail'])}" for f in unthreaded
+                        f"**{text(f['id'])} · {title_renderer(f)}**\n\n{block(f['detail'])}" for f in unthreaded
                     ),
                 )
             ),
@@ -331,6 +335,12 @@ def review_body_v2(state, config, item, report, findings, placed):
             f"review {item['sequence']}",
         ),
     ]
+    if item.get("format", 1) >= 4:
+        lines[-1] = (
+            markup.sub(text(f"{item['provider']} / {report['model']}" + effort))
+            + "\n\n"
+            + markup.details("Diagnostics", "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}")
+        )
     body = "\n".join(str(line) for line in lines)
     if len(body) > REVIEW_BODY_LIMIT:
         body = "\n".join(OMITTED if isinstance(line, Droppable) else line for line in lines)
@@ -379,6 +389,8 @@ def disposition_body(state, item, disposition):
             if finding.get("report_url"):
                 note = link(note, finding["report_url"])
             evidence = markup.excerpt(disposition["evidence"], REVIEW_BODY_LIMIT - 1000, note)
+        if item.get("format", 1) >= 4:
+            return f"{marker}\n{emoji} **{status}**\n\n{evidence}\n\n" + markup.details("Diagnostics", location)
         return f"{marker}\n{emoji} **{status}** {location}\n\n{evidence}"
     answer = {
         "fixed": f"Fixed in `{item['head']}`",

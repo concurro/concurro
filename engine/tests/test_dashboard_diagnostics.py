@@ -292,7 +292,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         controller.state.update(stage="escalated", retry_stage="plan_qc")
         self.assertIn("> [!WARNING]\n> Paused", controller.activity_line())
         controller.state.update(stage="gates", reason="CI pending", handoff_ready=False)
-        self.assertIn("waiting on: CI pending", controller.activity_line())
+        self.assertIn("No action needed", controller.activity_line())
         controller.state["handoff_ready"] = True
         self.assertIn("Ready for your review", controller.activity_line())
         self.assertNotIn("CI pending", controller.activity_line())
@@ -305,7 +305,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
 
         controller = self.reach_review()
         roster = design_roster(self.config)
-        self.assertTrue(controller.activity_line().startswith("> [!TIP]\n> "))
+        self.assertTrue(controller.activity_line().startswith("> [!NOTE]\n> "))
         for member in roster:
             self.assertIn("`" + member["provider"] + "`", controller.activity_line())
         controller.state["design_votes"][roster[0]["id"]] = {"report": {"decision": "approve"}}
@@ -324,9 +324,10 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         """Human decisions are important; blocked or refused work is a warning."""
         controller = self.reach_review()
         for alert, stages in (
-            ("IMPORTANT", ("planned", "clarify")),
-            ("WARNING", ("blocked", "escalated", "rejected")),
-            ("TIP", ("intake", "plan", "implement", "gates")),
+            ("WARNING", ("planned", "clarify")),
+            ("CAUTION", ("blocked",)),
+            ("WARNING", ("escalated", "rejected")),
+            ("NOTE", ("intake", "plan", "implement", "gates")),
         ):
             for stage in stages:
                 with self.subTest(stage=stage):

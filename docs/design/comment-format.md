@@ -35,8 +35,9 @@ Use `engine/markup.py` rather than interpolating untrusted prose into structural
 - Blocks preserve Markdown, inline code and fenced code. Outside code, `<` is escaped so
   model text cannot close a surrounding section or introduce HTML comments. An unfinished
   fence is closed before the surrounding content resumes.
-- Headlines and titles collapse whitespace, escape Markdown/HTML syntax and shorten to
-  their display limits. A model identifier or path uses the inline-code serializer.
+- Headlines collapse whitespace, escape Markdown/HTML syntax and shorten to
+  their display limits. New finding titles preserve complete inline code spans; old formats
+  retain their original bytes. A model identifier or path uses the inline-code serializer.
 - Table cells escape pipes and keep model text on one line. The renderer may insert its
   own `<br>` between reviewers; model HTML is not accepted. Nested tables are not used.
 - Links use controller-constructed destinations and escaped labels. Collapsed sections
@@ -60,8 +61,7 @@ threads according to [the review contract](pr-reviews.md#publication-and-placeme
 Findings without a changed file stay in the review body. An approval with no findings
 omits empty tables and blocker explanations.
 
-The PR title comes from the plan headline (or legacy summary fallback), with the issue
-number. Its body describes the planned change and links the plan and originating issue;
+The PR title comes from the plan headline (or legacy summary fallback), without an issue-number suffix. Its body describes the planned change and links the plan and originating issue;
 it does not invent CI results or human approvals. Cross-repository issue references must
 identify the issue repository rather than using an ambiguous local `#N`.
 
@@ -77,3 +77,8 @@ with a report link; full reviews are stored through [report storage](issue-dashb
 within the model-response transport bound. Historical publication receipts retain both
 full and core-report digests where needed, so advisory-rating trimming cannot prevent
 later text compaction. Full-body identity still governs publication recovery.
+
+New action notices omit event counters and separate the outcome, evidence links and action.
+Intake concerns are collapsed and explicitly require no human action. Plans omit empty
+sections, number their steps, and collapse hashes, validation JSON and rejected output.
+Review format 4 moves publication metadata into diagnostics; formats 1–3 remain replayable.

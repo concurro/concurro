@@ -4,7 +4,9 @@
 > [!TIP]
 > Ready for your review. A human decides whether to merge.
 
-Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Merge ✅**
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff Ready**
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -13,15 +15,17 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 | Design review | ✅ 2 of 2 approve | Round 1 · iterative · 0 open objections |
 | Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
 | Code review | ✅ 2 of 2 approve | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
-| Merge | ✅ Handed off | A human reviews and merges |
+| Handoff | Ready for human review | A human reviews and merges |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR head 0000000 · 2/2 assessed · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
 
 **Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-20)).
 
 <details><summary>Diagnostics</summary>
+
+Output corrections and previous runs are recorded in the linked automation audit state.
 
 [Automation audit state](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/1) (public).
 

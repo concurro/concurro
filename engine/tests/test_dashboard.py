@@ -41,7 +41,7 @@ class HappyPathTests(Harness, unittest.TestCase):
         plan_ready = next(c["body"] for c in self.gh.comments if "Plan ready for approval" in c["body"])
         self.assertIn(f"`/concurro approve {controller.state['plan_id']}`", plan_ready)
         summary = self.gh.summary()["body"]
-        self.assertIn("| Merge | ✅ Handed off | A human reviews and merges |", summary)
+        self.assertIn("| Handoff | Ready for human review | A human reviews and merges |", summary)
         self.assertIn("**Action needed:** a human review and merge", summary)
         steps = [a.split("\n")[1] for a in self.gh.archives()]
         self.assertEqual(len(steps), 6, "intake, two design votes, local review and two code reviews")
@@ -53,16 +53,16 @@ class HappyPathTests(Harness, unittest.TestCase):
         """Pass, fail, pass on one head: the status shows each result; the hand-off is posted once."""
         for _ in range(3):
             self.run_to(Reviewers(set()), "gates")
-        self.assertIn("| Merge | ✅ Handed off |", self.gh.summary()["body"])
+        self.assertIn("| Handoff | Ready for human review |", self.gh.summary()["body"])
         self.gh.checks_green = False
         self.run_to(Reviewers(set()), "gates")
         summary = self.gh.summary()["body"]
-        self.assertIn("| Merge | 🚧 Blocked |", summary)
+        self.assertIn("| Handoff | 🚧 Blocked |", summary)
         self.assertIn("CI unsuccessful", summary)
         self.assertNotIn("a human review and merge", summary)
         self.gh.checks_green = True
         self.run_to(Reviewers(set()), "gates")
-        self.assertIn("| Merge | ✅ Handed off |", self.gh.summary()["body"])
+        self.assertIn("| Handoff | Ready for human review |", self.gh.summary()["body"])
         self.assertEqual(actionable(self.gh).count("### Ready for review"), 1)
 
     def test_hand_off_waits_for_concurros_own_gates(self):
@@ -105,18 +105,18 @@ class TerminalStatusTests(Harness, unittest.TestCase):
                 for body in bodies:
                     self.assertIn("The pull request was closed without merging.", body)
                     if starting_stage == "gates":
-                        self.assertIn("Merge ⏹️", body)
-                        self.assertIn("| Merge | ⏹️ Closed without merge |  |", body)
+                        self.assertIn("Handoff ⏹️", body)
+                        self.assertIn("| Handoff | ⏹️ Closed without merge |  |", body)
                         self.assertIn("Code review ✅", body)
                         self.assertIn("| Code review | ✅ 2 of 2 approve |", body)
                     else:
                         self.assertIn("Code review ⏹️", body)
                         self.assertIn("| Code review | ⏹️ Closed without merge |", body)
-                        self.assertIn("| Merge | Pending |  |", body)
+                        self.assertIn("| Handoff | Pending |  |", body)
                         self.assertNotIn("Code review ✅", body)
                         self.assertNotIn("✅ 0 of 2 approve", body)
                         self.assertNotIn("✅ 1 of 2 approve", body)
-                    self.assertNotIn("Merge ✅", body)
+                    self.assertNotIn("Handoff ✅", body)
                     self.assertNotIn("✅ Merged", body)
                     self.assertNotIn("Handed off", body)
                     self.assertNotIn("a human review and merge", body)
@@ -140,8 +140,8 @@ class TerminalStatusTests(Harness, unittest.TestCase):
         self.assertEqual(controller.state["stage"], "observed_merged")
         for body in (self.gh.summary()["body"], controller.summary_lines(compact=True)):
             self.assertIn("The pull request has been merged.", body)
-            self.assertIn("Merge ✅", body)
-            self.assertIn("| Merge | ✅ Merged |  |", body)
+            self.assertIn("Handoff ✅", body)
+            self.assertIn("| Handoff | ✅ Merged |  |", body)
             self.assertNotIn("Closed without merge", body)
 
 
@@ -150,7 +150,7 @@ class PullRequestTests(Harness, unittest.TestCase):
 
     def test_title_and_description(self):
         self.run_to(Reviewers(set()), "review")
-        self.assertEqual(self.gh.pr["title"], "Clarify the guide (#7)", "the plan summary, without a headline")
+        self.assertEqual(self.gh.pr["title"], "Clarify the guide", "the plan summary, without a headline")
         self.assertIn("[Implementation plan](", self.gh.pr["body"])
         self.assertTrue(self.gh.pr["body"].endswith("Closes #7"))
         self.assertNotIn("pending", self.gh.pr["body"])
@@ -159,13 +159,13 @@ class PullRequestTests(Harness, unittest.TestCase):
         controller = self.run_to(Reviewers(set()), "review")
         controller.state["plan"]["headline"] = "Word " * 40
         self.assertLessEqual(len(controller.pr_title()), 72)
-        self.assertTrue(controller.pr_title().endswith("Word… (#7)"), "cut at a word boundary")
+        self.assertTrue(controller.pr_title().endswith("Word…"), "cut at a word boundary")
         controller.state["plan"]["headline"] = (
             "README section 3 recommends plain `cargo build` for everyday development work"
         )
-        self.assertEqual(controller.pr_title(), "README section 3 recommends plain `cargo build` for everyday… (#7)")
+        self.assertEqual(controller.pr_title(), "README section 3 recommends plain `cargo build` for everyday…")
         controller.state["plan"]["headline"] = "x" * 100
-        self.assertEqual(controller.pr_title(), "x" * 66 + "… (#7)", "one long word is cut where it must be")
+        self.assertEqual(controller.pr_title(), "x" * 71 + "…", "one long word is cut where it must be")
 
 
 class CompactionTests(unittest.TestCase):

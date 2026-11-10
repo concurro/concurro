@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > Iterative design review — `claude`: waiting; `codex`: waiting.
 
-Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code review → Merge
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code review → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -15,11 +17,11 @@ Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code revi
 | ↳ Round 1 iterative | Current | claude: Waiting<br>codex: Waiting |
 | Implement | Pending |  |
 | Code review | Pending |  |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: low · Change risk: high | Confidence: high · Design plan fbfb3a2f · iterative · 0/2 assessed · provisional · retains earlier intake | [Report 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
+| Complexity: low · Change risk: high | Confidence: high · Design assessment · Assessment incomplete · Based on the previous revision | [Report 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
 
 <details><summary>Diagnostics</summary>
 

@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > Waiting for `codex` to implement the approved plan.
 
-Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code review → Merge
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code review → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -15,11 +17,11 @@ Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code 
 | ↳ Round 1 iterative |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 | Implement | ▶️ In progress |  |
 | Code review | Pending |  |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · Design plan fbfb3a2f · iterative · 2/2 assessed · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · Design assessment · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 
 <details><summary>Diagnostics</summary>
 

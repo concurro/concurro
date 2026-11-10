@@ -379,42 +379,42 @@ class Checkpoints:
             lines += [
                 "## Rejected draft — not approved",
                 "",
-                draft["reason"],
+                markup.block(draft["reason"]),
                 "",
-                "The planner is asked to correct this output; it does not authorize implementation.",
+                "The planner must correct this output before implementation.",
                 "",
-                fence + "json",
-                draft["output"],
-                fence,
+                markup.details("Rejected output", fence + "json\n" + draft["output"] + "\n" + fence),
                 "",
             ]
             if draft.get("truncated"):
                 lines += ["Output excerpted to fit the checkpoint; the rejection reason is complete.", ""]
         elif state.get("plan"):
-            lines += [
-                "Plan: `" + state["plan_id"] + "`",
-                "Base: `" + state["base"] + "`",
-                "",
-                state["plan"]["summary"],
-                "",
-            ]
+            plan = state["plan"]
+            lines += [markup.block(plan["summary"]), ""]
             for key in ("questions", "files", "steps", "tests"):
-                lines += ["## " + key.capitalize(), ""] + ["- " + item for item in state["plan"][key]] + [""]
-            if state["plan"].get("responses"):
+                if plan[key]:
+                    entries = [
+                        (f"{i}. " if key == "steps" else "- ") + markup.text(item, 24000)
+                        for i, item in enumerate(plan[key], 1)
+                    ]
+                    lines += ["## " + key.capitalize(), "", *entries, ""]
+            if plan.get("responses"):
                 lines += (
                     ["## Review responses", ""]
-                    + [f"- **{item['id']}**: {item['response']}" for item in state["plan"]["responses"]]
+                    + [
+                        f"- **{markup.text(item['id'])}**: {markup.text(item['response'], 4000)}"
+                        for item in plan["responses"]
+                    ]
                     + [""]
                 )
-            if state["plan"].get("validation"):
-                lines += [
-                    "## Executable validation",
-                    "",
-                    "```json",
-                    json.dumps(state["plan"]["validation"], indent=2, sort_keys=True),
-                    "```",
-                    "",
-                ]
+            diagnostics = "Plan: " + markup.code(state["plan_id"]) + "\n\nBase: " + markup.code(state["base"])
+            if plan.get("validation"):
+                diagnostics += (
+                    "\n\nExecutable validation\n\n```json\n"
+                    + json.dumps(plan["validation"], indent=2, sort_keys=True)
+                    + "\n```"
+                )
+            lines += [markup.details("Diagnostics", diagnostics), ""]
         else:
             lines += ["The previous plan is superseded. A new plan is required before implementation.", ""]
         return "\n".join(lines)

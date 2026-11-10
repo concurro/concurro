@@ -364,8 +364,9 @@ class StorageContractTests(unittest.TestCase):
                     PLAN_HEADER
                     + (
                         "## Rejected draft — not approved\n\nInvalid shape\n\n"
-                        "The planner is asked to correct this output; it does not authorize implementation.\n\n"
-                        f"{fence}json\n{output}\n{fence}\n"
+                        "The planner must correct this output before implementation.\n\n"
+                        "<details><summary>Rejected output</summary>\n\n"
+                        f"{fence}json\n{output}\n{fence}\n\n</details>\n"
                     ),
                 )
                 event = {

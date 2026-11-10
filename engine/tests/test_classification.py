@@ -244,7 +244,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(len(self.agents.calls), 7)
         self.assertNotIn("classification_snapshot", controller.state)
         self.assertTrue(ratings.view(controller.state, self.config).provisional)
-        self.assertIn("0/2 assessed", controller.summary_body())
+        self.assertIn("Assessment incomplete", controller.summary_body())
         for report in controller.state["reviews"].values():
             self.assertIn("diagnostic", report["classification"])
         old = ratings.without_hints(controller.state)
@@ -438,7 +438,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(view.estimate.binding["stage"], "plan_qc")
         self.assertEqual(view.assessed, 1)
         self.assertTrue(view.provisional)
-        self.assertIn("Design plan", controller.summary_body())
+        self.assertIn("Design assessment", controller.summary_body())
 
     def test_compacting_feedback_does_not_change_operation_identity_or_source_files(self):
         controller = self.tick()

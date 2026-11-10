@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!IMPORTANT]
+> [!WARNING]
 > The plan is ready; waiting for your approval.
 
-Intake ✅ → Plan ✅ → **Design review Awaiting** → Implement → Code review → Merge
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → **Design review Awaiting** → Implement → Code review → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -15,11 +17,11 @@ Intake ✅ → Plan ✅ → **Design review Awaiting** → Implement → Code re
 | ↳ Round 1 iterative | Current | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 | Implement | Pending |  |
 | Code review | Pending |  |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · Design plan fbfb3a2f · iterative · 2/2 assessed · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · Design assessment · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 
 **Action needed:** plan approval ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-13)).
 

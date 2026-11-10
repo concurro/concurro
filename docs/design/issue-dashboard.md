@@ -18,7 +18,7 @@ the step reached. Unfinished reviewers stay “Paused” and later steps stay Pe
 Only a confirmed merge shows “Merged” with a success indicator.
 
 ```markdown
-> [!TIP]
+> [!NOTE]
 > We're waiting for `opus55-high` and `sol61-high` to review the pull request.
 
 | Step | Status | Detail |
@@ -28,8 +28,9 @@ Only a confirmed merge shows “Merged” with a success indicator.
 | ↳ Round 1 | Current | opus55-high: Reviewing<br>sol61-high: Waiting |
 ```
 
-Normal progress uses `TIP`; clarification and manual plan approval use `IMPORTANT`;
-blocked, rejected and escalated states use `WARNING`. A paused stage never says merely
+Normal progress uses `NOTE`; ready handoff uses `TIP`; human decisions use `WARNING`;
+blocked tasks use `CAUTION`. The final stage is Handoff, and only confirmed merges say
+Merged. Transient readiness reasons appear in diagnostics. A paused stage never says merely
 “Waiting” as though work were proceeding. Output correction is named in the activity
 message without repeating the reviewer twice.
 

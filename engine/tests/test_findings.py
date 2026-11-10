@@ -361,7 +361,7 @@ class PublicationTests(Harness, unittest.TestCase):
         self.assertEqual((opening["line"], opening["review"]), (1, first["id"]))
         [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
         self.assertEqual(reply["in_reply_to_id"], opening["id"])
-        self.assertIn("✅ **Fixed** in `", reply["body"])
+        self.assertIn("✅ **Fixed**", reply["body"])
         finding = state["findings"][0]
         self.assertEqual((finding["thread"], finding["comment"], finding["resolution"]), ("T1", opening["id"], "done"))
         self.assertNotIn("review publication incomplete", self.reasons(state))
@@ -475,7 +475,7 @@ class PublicationTests(Harness, unittest.TestCase):
         [notice] = self.comments(f"{reviews.WITHDRAWN_MARKER}F1:")
         self.assertIn("design was reopened", notice["body"])
         [reply] = self.comments(f"{reviews.DISPOSITION_MARKER}F1:")
-        self.assertIn("🗃️ **Obsolete** under plan", reply["body"])
+        self.assertIn("🗃️ **Obsolete**", reply["body"])
         self.assertEqual((state["findings"][0]["status"], state["findings"][0]["resolution"]), ("obsolete", "done"))
 
     def test_review_remains_full_after_publication(self):

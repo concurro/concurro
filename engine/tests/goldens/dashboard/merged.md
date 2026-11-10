@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > The pull request has been merged.
 
-Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → Merge ✅
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → Handoff ✅
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -17,11 +19,11 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 | ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
 | Code review | ✅ 2 of 2 approve | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
 | ↳ Round 1 |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
-| Merge | ✅ Merged |  |
+| Handoff | ✅ Merged |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR head 0000000 · 2/2 assessed · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
 
 <details><summary>Diagnostics</summary>
 

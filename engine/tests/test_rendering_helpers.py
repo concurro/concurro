@@ -135,7 +135,8 @@ def review_case():
     }
     gh.review_comments.append(opening)
     gh.thread(opening)
-    reviews.queue_review(state, "claude", report)
+    with patch.object(reviews, "FORMAT", 3):
+        reviews.queue_review(state, "claude", report)
 
     def checkpoint():
         """Pin the state visible at every durable publication boundary."""

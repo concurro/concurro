@@ -211,3 +211,51 @@ def excerpt(value, max_bytes, note):
 def review_phase(value):
     """Name retained-context reviews without changing persisted protocol identifiers."""
     return "iterative" if value == "cooperative" else str(value)
+
+
+def inline(value, limit=TITLE_LIMIT):
+    """Bound inline prose while retaining complete code spans, including in table cells."""
+    raw = one_line(value)
+    if len(raw) > limit:
+        raw = raw[: limit - 1].rstrip() + "…"
+    parts, plain, i = [], [], 0
+    while i < len(raw):
+        if raw[i] == "\\" and i + 1 < len(raw):
+            plain.extend(raw[i : i + 2])
+            i += 2
+            continue
+        if raw[i] == "`":
+            run = re.match(r"`+", raw[i:])[0]
+            close = re.search(r"(?<!`)" + run + r"(?!`)", raw[i + len(run) :])
+            if close:
+                start = i + len(run)
+                segment = "".join(plain)
+                parts.extend(
+                    (
+                        segment
+                        if not segment.strip()
+                        else (
+                            (" " if segment.startswith(" ") else "")
+                            + text(segment)
+                            + (" " if segment.endswith(" ") else "")
+                        ),
+                        code(raw[start : start + close.start()], cell=True),
+                    )
+                )
+                plain = []
+                i = start + close.end()
+                continue
+            plain.append(run)
+            i += len(run)
+            continue
+        plain.append(raw[i])
+        i += 1
+    segment = "".join(plain)
+    parts.append((" " if segment.startswith(" ") else "") + text(segment))
+    return "".join(parts)
+
+
+def finding_title_v2(finding):
+    """A bounded finding title with inert prose and well-formed inline code."""
+    raw = one_line(finding.get("title") or "") or first_sentence(finding["detail"]) or one_line(finding["detail"])
+    return inline(raw)

@@ -377,7 +377,7 @@ class StatusSizeTests(Harness, unittest.TestCase):
         body = controller.summary_body()
         self.assertLess(len(body.encode()), 8000)
         self.assertNotIn("<" * 400, body)
-        self.assertIn("| Merge |", body)
+        self.assertIn("| Handoff |", body)
 
     def test_oversized_status_comment_drops_historical_rows(self):
         controller = self.run_to(Reviewers(set()), "gates")
@@ -394,7 +394,7 @@ class StatusSizeTests(Harness, unittest.TestCase):
         body = controller.summary_body()
         self.assertLessEqual(len(body.encode()), SUMMARY_LIMIT)
         self.assertNotIn("↳ Round", body)
-        self.assertIn("| Merge |", body)
+        self.assertIn("| Handoff |", body)
 
 
 class UpgradeTests(Harness, unittest.TestCase):
@@ -434,7 +434,7 @@ class UpgradeTests(Harness, unittest.TestCase):
         [opening] = [c for c in self.gh.review_comments if c["body"].startswith(f"{reviews.FINDING_MARKER}F1 -->")]
         self.assertTrue(opening["body"].startswith(reviews.finding_prefix(state["findings"][0])))
         [reply] = [c for c in self.gh.review_comments if c["body"].startswith(f"{reviews.DISPOSITION_MARKER}F1:")]
-        self.assertIn("✅ **Fixed** in `", reply["body"], "the format 2 review answers a format 1 finding")
+        self.assertIn("✅ **Fixed**", reply["body"], "the current review answers a format 1 finding")
         self.assertEqual(state["findings"][0]["resolution"], "done")
 
 

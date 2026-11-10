@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > We're waiting for `claude` and `codex` to review the pull request.
 
-Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → **Code review ▶️** → Merge
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → **Code review ▶️** → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -17,11 +19,11 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → **Code revie
 | ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
 | Code review | ▶️ 0 of 2 reviewed | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
 | ↳ Round 1 | Current | claude: Waiting<br>codex: Waiting |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR head 0000000 · 0/2 assessed · provisional · retains earlier plan\_qc fbfb3a2f iterative | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · Assessment incomplete · Based on the previous revision | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 
 <details><summary>Diagnostics</summary>
 

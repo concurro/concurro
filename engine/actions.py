@@ -7,7 +7,7 @@ import markup
 import protocol
 from checkpoints import DIAGNOSTICS
 from github import NotFound
-from markup import block, code, link, text
+from markup import code, link, text
 from model_config import assigned
 from policy import Blocked, digest
 from protocol import COMMENT_URL as COMMENT_URL
@@ -66,12 +66,12 @@ def transition(state, config, author, plan_url=None):
     if stage == "clarify":
         request(state, config, author)
     elif stage == "escalated":
-        conversation.queue(state, f"{markup.ESCALATED} Escalated", explain(reason, retry))
+        conversation.queue(state, f"{markup.ESCALATED} Escalated", explain(reason, retry, state, config))
     elif stage == "rejected":
-        conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry))
+        conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry, state, config))
     elif stage == "blocked" and reason not in PUBLICATION_REASONS:
         continuation = BLOCKED_INVALIDATE if reason == BUNDLE_REASON else BLOCKED_RETRY
-        conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation))
+        conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation, state, config))
     elif stage == "planned" and state.get("mode") == "manual":
         plan = link("Implementation plan", plan_url) if plan_url else "The implementation plan"
         conversation.queue(
@@ -117,6 +117,7 @@ def blocked_resolution(body):
         if reason.endswith("\n\n" + continuation):
             reason = reason.removesuffix("\n\n" + continuation)
             break
+    reason = reason.removesuffix("\n\n**What you can do:**").rstrip()
     history = "<del>\n\n### Blocked" + ("\n\n" + reason if reason else "") + "\n\n</del>"
     quoted = "\n".join("> " + line if line else ">" for line in history.split("\n"))
     return marker + "\n" + quoted + "\n\n**This blocker has been resolved.**"
@@ -142,18 +143,47 @@ def publish_blocked(state, github, checkpoint):
         checkpoint()
 
 
-def explain(reason, continuation):
-    """A reason's first sentence, the rest collapsed, then how to continue."""
+def explain(reason, continuation, state=None, config=None):
+    """Describe the blocker, link its evidence, and give the applicable human action."""
+    state, config = state or {}, config or {}
     first = markup.first_sentence(reason)
-    if not reason:
-        body = ""
-    elif first and first != markup.one_line(reason):
-        body = text(first) + "\n\n" + markup.details("Full reason", block(reason))
+    operator = any(term in reason.lower() for term in ("reconcile manually", "operator", "manual reconciliation"))
+    if operator:
+        summary = "Concurro paused because its recorded state needs operator reconciliation."
+        remainder = reason
+        continuation = "An operator must reconcile the recorded state before work can continue."
     else:
-        body = block(reason)
-    if len(body.encode()) > 16000:
-        body = markup.excerpt(reason, 16000, "Full reason in the report archive linked from the dashboard.")
-    return (body + "\n\n" if body else "") + continuation
+        summary = first or markup.one_line(reason)[:1000]
+        normalized = markup.one_line(reason)
+        remainder = normalized[len(first) :].lstrip() if first else ""
+    lines = ["**What happened:** " + text(summary)] if summary else []
+    evidence = []
+    if config.get("repository"):
+        for finding in state.get("findings", []):
+            if finding["status"] in ("open", "withdrawn") and finding.get("comment") and state.get("pr"):
+                repository = config.get("upstream", config["repository"])
+                url = f"https://github.com/{repository}/pull/{state['pr']}#discussion_r{finding['comment']}"
+                evidence.append(link(finding["id"], url))
+        objections = [o["id"] for o in state.get("objections", []) if not o["resolved"]]
+        if objections:
+            reports = [r for r in state.get("reports", []) if r["step"] == "Design review" and r.get("artifact")]
+            evidence += [
+                link("Design review", protocol.artifact_url(config["repository"], state["issue"], r["artifact"]))
+                for r in reports[-4:]
+            ]
+            evidence.append("Open objections: " + ", ".join(text(i) for i in objections))
+    if evidence:
+        lines += ["**Why:** " + " · ".join(evidence)]
+    if remainder:
+        lines += [
+            markup.details(
+                "Operator note" if operator else "Further detail",
+                markup.excerpt(remainder, 12000, "Full reason in the audit state."),
+            )
+        ]
+    if continuation:
+        lines += ["**What you can do:**\n\n" + continuation]
+    return "\n\n".join(lines)
 
 
 def ready(reasons, pr):

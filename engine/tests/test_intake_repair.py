@@ -399,7 +399,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.state["stage"], "plan")
         self.assertEqual(controller.context()["intake_concerns"], concerns)
         body = self.advisory_comments()[0]["body"]
-        self.assertNotIn("<details>", body)
+        self.assertEqual(body.count("<details>"), 1)
         self.assertIn("&lt;", body)
         self.assertIn("Some text is shortened.", body)
         self.assertLessEqual(len(body.encode()), EVENT_LIMIT)

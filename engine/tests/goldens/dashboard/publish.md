@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > Publishing the implementation and preparing its pull request.
 
-Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code review → Merge
+Every open finding blocks the merge, whatever its severity.
+
+Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code review → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -16,11 +18,11 @@ Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code 
 | Implement | ▶️ In progress | Agent-reported validation; independent reviews and CI follow |
 | ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
 | Code review | Pending |  |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · Design plan fbfb3a2f · iterative · 2/2 assessed · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · Design assessment · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
 
 <details><summary>Diagnostics</summary>
 

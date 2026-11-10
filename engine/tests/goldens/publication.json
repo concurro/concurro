@@ -167,7 +167,7 @@
       "pulls",
       "POST",
       {
-        "title": "Clarify the guide (#7)",
+        "title": "Clarify the guide",
         "head": "cylewitruk:concurro/issue-7-36b026fd7001",
         "head_repo": "stacks-core-autobot",
         "base": "main",
@@ -271,7 +271,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -533,7 +533,7 @@
       "pulls",
       "POST",
       {
-        "title": "Clarify the guide (#7)",
+        "title": "Clarify the guide",
         "head": "cylewitruk:concurro/issue-7-36b026fd7001",
         "head_repo": "stacks-core-autobot",
         "base": "main",
@@ -637,7 +637,7 @@
       {
         "commit_id": "0000000000000000000000000000000000000010",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `0000000000000000000000000000000000000010` · review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -819,7 +819,7 @@
       "pulls",
       "POST",
       {
-        "title": "Clarify the guide (#7)",
+        "title": "Clarify the guide",
         "head": "cylewitruk:concurro/issue-7-36b026fd7001",
         "head_repo": "stacks-core-autobot",
         "base": "main",
@@ -938,7 +938,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -1129,7 +1129,7 @@
       "pulls",
       "POST",
       {
-        "title": "Clarify the guide (#7)",
+        "title": "Clarify the guide",
         "head": "cylewitruk:concurro/issue-7-36b026fd7001",
         "head_repo": "stacks-core-autobot",
         "base": "main",
@@ -1233,7 +1233,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5 · head `0000000` · review 1</sub>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
         "comments": []
       }
     ],

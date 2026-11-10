@@ -216,7 +216,7 @@ class Publication:
 
     def pr_title(self) -> str:
         """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
-        plan, suffix = self.state["plan"], f" (#{self.state['issue']})"
+        plan, suffix = self.state["plan"], ""
         title = (
             markup.one_line(plan.get("headline") or "")
             or markup.first_sentence(plan["summary"])

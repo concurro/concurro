@@ -465,7 +465,11 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     identifier = digest([state["issue"], sequence, title, body, timestamp])
     event = {"id": identifier, "title": title, "sequence": sequence, "at": timestamp}
     if source is None:
-        rendered, limit = content_v2(event, title, body, meta), EVENT_LIMIT
+        heading = f"### {title}\n\n" if title else ""
+        rendered = f"{MARKER}{event['id']} -->\n{heading}{body}"
+        if meta:
+            rendered += "\n\n" + markup.details("Diagnostics", markup.sub(*meta))
+        limit = EVENT_LIMIT
         event = {"id": identifier, "body": rendered}
         if request is not None:
             event["request"] = request
@@ -518,7 +522,11 @@ def queue_intake_concerns(state, concerns):
         ("Some text is shortened. " if shortened else "")
         + "The full concerns are in the intake report linked from the dashboard.",
     ]
-    queue(state, "Intake approved with concerns", "\n".join(lines))
+    queue(
+        state,
+        "Intake approved with concerns",
+        "Planning will continue. No action needed.\n\n" + markup.details("Planning concerns", "\n".join(lines)),
+    )
 
 
 def event_body(state, event):

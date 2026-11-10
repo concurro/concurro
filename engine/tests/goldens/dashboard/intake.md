@@ -1,10 +1,12 @@
 <!-- concurro:v1 -->
 ## Concurro
 
-> [!TIP]
+> [!NOTE]
 > Waiting for `codex` to assess the issue.
 
-**Intake ▶️** → Plan → Design review → Implement → Code review → Merge
+Every open finding blocks the merge, whatever its severity.
+
+**Intake ▶️** → Plan → Design review → Implement → Code review → Handoff
 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
@@ -13,7 +15,7 @@
 | Design review | Pending |  |
 | Implement | Pending |  |
 | Code review | Pending |  |
-| Merge | Pending |  |
+| Handoff | Pending |  |
 
 **Estimate:** Not assessed yet.
 
