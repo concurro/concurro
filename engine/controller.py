@@ -25,6 +25,7 @@ import design_eligibility
 import feedback
 import implementation_bundle
 import markup
+import pr_description
 import protocol
 import readiness
 import review_state
@@ -110,6 +111,8 @@ def _bounded_int(value, low, high, message):
 
 def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
+    if type(config.get("conventional_commits", False)) is not bool:
+        raise Blocked("conventional_commits must be a boolean")
     removed = {
         "execution_profiles",
         "required_checks",
@@ -1671,6 +1674,7 @@ class Controller:
                 review_findings=review_rules.open_findings(state),
                 implementation_feedback=repair_feedback,
                 design_authorization=self.design_authorization(),
+                conventional_commits=self.config.get("conventional_commits", False),
             )
             report = self.ask(assigned(self.config, "implementer"), "develop", context)
             extraction_error = report.get("workspace_error")
@@ -1697,7 +1701,7 @@ class Controller:
                 after = {**self.files(parent, all_paths, inspection=True), **{e["path"]: e["content"] for e in edits}}
                 changed = candidates.validate(before, after, state["plan"], self.config)
                 before, after = ({p: values[p] for p in changed} for values in (before, after))
-                over = self.oversized(None, before, after)
+                over = self.oversized(None, before, after, description=report)
                 if over:
                     raise Blocked(over)
             except Blocked as error:
@@ -1708,11 +1712,16 @@ class Controller:
             return proposal, {
                 "changed_files": changed,
                 "validation": report["validation"],
+                **(
+                    {"description": report["description"], "commit": report["commit"]}
+                    if "description" in report
+                    else {}
+                ),
                 "edits_digest": digest(edits),
             }
         raise Blocked("implementation exceeds the approved scope or capacity; repair allowance exhausted")
 
-    def oversized(self, local_context, before, after, dependencies=None):
+    def oversized(self, local_context, before, after, dependencies=None, description=None):
         """Why a review of this candidate would not fit, or None.
 
         Measures the local review and each reviewer's prospective PR review as they would be sent,
@@ -1723,6 +1732,14 @@ class Controller:
             (provider + " PR review", self.pr_review_context(provider, before, after, "0" * 40, dependencies))
             for provider in assigned(self.config, "pr_reviewers")
         ]
+        if description and description.get("description"):
+            parts = pr_description.sections(
+                {**description, "head": "0" * 40},
+                "0" * 40,
+                self.state["plan"].get("publication", {}).get("review_focus", []),
+            )
+            for _, context in contexts:
+                context["published_pr_body"] = pr_description.layout(parts) + " " * 1024
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [
             f"{name} ({size} of {limit} bytes)"
@@ -1740,6 +1757,14 @@ class Controller:
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
         context.update(changes=changes(before, after), head=head)
+        context["published_pr_body"] = (
+            (self.pulls.repo(f"pulls/{self.state['pr']}").get("body") or "")
+            if self.state.get("pr") and head != "0" * 40
+            else ""
+        )
+        context["pr_description_criterion"] = (
+            "The published PR description accurately describes the whole base-to-head change and its validation."
+        )
         context["own_findings"] = review_rules.context(self.state, provider)
         context["review_output_budget"] = self.review_output_budget()
         context["prior_outcomes_untrusted"] = classification.without_hints(context["prior_outcomes_untrusted"])
@@ -1787,7 +1812,7 @@ class Controller:
             self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
             self.config,
         )
-        commit = self._publication().build_commit(parent, edits, self.tree, INLINE_BLOB_LIMIT)
+        commit = self._publication().build_commit(parent, edits, self.tree, INLINE_BLOB_LIMIT, evidence.get("commit"))
         state["pending"] = {
             "head": commit["sha"],
             "parent": parent,

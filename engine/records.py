@@ -21,6 +21,7 @@ class Config(TypedDict, total=False):
     fork: str
     base: str
     bot_login: str
+    conventional_commits: bool
     autonomous: bool
     max_plan_revisions: int
     max_review_repairs: int
@@ -225,6 +226,8 @@ class Candidate(TypedDict, total=False):
     edits_digest: str
     changed_files: list[str]
     dependencies: dict[str, DependencyDelta] | None
+    description: Document
+    validation: str
 
 
 class ImplementationBundle(TypedDict, total=False):
@@ -252,6 +255,7 @@ class TaskState(TypedDict, total=False):
     mode: str
     issue: int
     pr: int
+    pr_description: Document
     base: str
     branch: str
     head: str

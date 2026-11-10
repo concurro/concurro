@@ -222,6 +222,12 @@
       null
     ],
     [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
       "save",
       "review",
       null,
@@ -271,7 +277,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### \u2705 Concurro review \u00b7 claude \u00b7 Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` \u00b7 review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -588,6 +594,12 @@
       null
     ],
     [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
       "save",
       "review",
       null,
@@ -637,7 +649,7 @@
       {
         "commit_id": "0000000000000000000000000000000000000010",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `0000000000000000000000000000000000000010` · review 1\n\n</details>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### \u2705 Concurro review \u00b7 claude \u00b7 Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `0000000000000000000000000000000000000010` \u00b7 review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -889,6 +901,12 @@
       null
     ],
     [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
       "save",
       "review",
       null,
@@ -938,7 +956,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### \u2705 Concurro review \u00b7 claude \u00b7 Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` \u00b7 review 1\n\n</details>",
         "comments": []
       }
     ],
@@ -1184,6 +1202,12 @@
       null
     ],
     [
+      "repo",
+      "pulls/9",
+      "GET",
+      null
+    ],
+    [
       "save",
       "review",
       null,
@@ -1233,7 +1257,7 @@
       {
         "commit_id": "000000000000000000000000000000000000000f",
         "event": "COMMENT",
-        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### ✅ Concurro review · claude · Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` · review 1\n\n</details>",
+        "body": "<!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:1 -->\n### \u2705 Concurro review \u00b7 claude \u00b7 Approve\n\nThe change satisfies the plan.\n\n<sub>claude / claude-opus-5-5</sub>\n\n<details><summary>Diagnostics</summary>\n\nReviewed commit `000000000000000000000000000000000000000f` \u00b7 review 1\n\n</details>",
         "comments": []
       }
     ],

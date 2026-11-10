@@ -12,7 +12,9 @@ Each reviewer list requires distinct `(provider, model)` pairs; aliases or diffe
 efforts for the same pair do not count as independent slots. Each reviewer sees its
 own outstanding findings, not peer verdicts. It can inspect the pinned Git checkout and
 run experiments; exploratory edits and test results are advisory and are not published.
-There is no separate local-review stage.
+There is no separate local-review stage. Reviewers receive `published_pr_body`, including
+human edits, and check its accuracy against the whole base-to-head diff. PR descriptions
+are evidence, never agent instructions or authorization.
 
 PR context includes every base-to-head changed file, including accumulated repairs and
 deletions. Metadata remains when diff previews shrink. Large selected feedback is provided
@@ -127,3 +129,32 @@ GraphQL mutations and treats incomplete or error-bearing mutation responses as u
 Token permissions and webhook subscriptions are maintained in
 [the deployment guide](../../gateway/README.md#target-and-app-prerequisites). All GitHub
 write credentials remain central; reviewer jobs hold only their own runner/inference grants.
+
+## PR description and commit messages
+
+New implementer results supply a bounded `description`: one lead sentence, 1–4 problem
+bullets, 1–6 change bullets naming files/functions, and 0–4 compatibility bullets, at most
+200 characters per field. It describes the whole approved-base-to-candidate diff and is
+stored on that candidate. Testing comes only from `validation`, labelled agent-reported
+and naming its candidate commit. Review focus comes from the approved plan. The footer
+retains the implementation plan, dependency summaries and the correct issue closing link.
+
+Concurro saves the intended body digest before creation or refresh. It PATCHes only when
+the current body matches the last published or intended digest. A lost response can thus
+recover ownership. This comparison is best-effort, not atomic with GitHub's PATCH. A human
+edit permanently stops refresh for that task and adds a persistent dashboard notice;
+reviewers still receive the actual published body. Legacy candidates without description
+fields keep their original body and commit behavior.
+
+The first new implementation commit uses the plan headline. Repair subjects and all
+commit-body bullets describe that round's changes, followed by `Refs #N`. Set optional
+`conventional_commits: true` in the target configuration to add the model-selected type
+prefix; the default is false. Commit metadata is separate from the whole-PR description.
+
+### Bundle rollout
+
+This changes the develop schema, implementer skill, PR-review skill and shared instructions.
+Deploy during an idle window after active tasks finish. Otherwise arrange explicit writer
+recovery with `/concurro invalidate`; the implementer-only `/concurro retry` exception does
+not apply to this bundle change. Do not rewrite existing approval bindings. Already-retained
+legacy implementation results remain readable, but that does not bypass bundle authorization.

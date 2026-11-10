@@ -507,6 +507,8 @@ class FakeGitHub(PendingReviews):
             }
             return deepcopy(self.pr)
         if path == "pulls/9":
+            if method == "PATCH":
+                self.pr.update(data)
             return deepcopy(self.pr)
         if path == "branches/main/protection":
             if self.protection is None:

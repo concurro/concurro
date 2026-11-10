@@ -26,6 +26,7 @@ WRITES = (
     ("POST", r"git/commits"),
     ("PATCH", r"git/refs/heads/[A-Za-z0-9._/-]{1,100}"),
     ("POST", r"pulls"),
+    ("PATCH", rf"pulls/{NUMBER}"),
     ("POST", rf"pulls/{NUMBER}/reviews"),
     ("POST", rf"pulls/{NUMBER}/comments"),
     ("POST", rf"pulls/{NUMBER}/comments/{NUMBER}/replies"),
@@ -86,6 +87,13 @@ def allowed(key, method, path, body):
             # allowed_target additionally requires the exact task branch and a valid OID.
             if relative.startswith("git/refs/"):
                 return isinstance(body, dict) and set(body) == {"sha", "force"} and body["force"] is False
+            if method == "PATCH" and re.fullmatch(rf"pulls/{NUMBER}", relative):
+                return (
+                    isinstance(body, dict)
+                    and set(body) == {"body"}
+                    and isinstance(body["body"], str)
+                    and len(body["body"].encode()) <= 60000
+                )
             for shape, fields in PR_BODIES:
                 if shape.fullmatch(relative):
                     return (
@@ -146,7 +154,11 @@ def allowed_target(key, binding, method, path, body):
             and all(isinstance(body[k], str) for k in ("base", "title", "body"))
             and BRANCH.fullmatch(body["base"]) is not None
         )
-    return relative.startswith("pulls/") and method == "POST" and allowed((repository, key[1]), method, path, body)
+    return (
+        relative.startswith("pulls/")
+        and method in ("POST", "PATCH")
+        and allowed((repository, key[1]), method, path, body)
+    )
 
 
 def runner_write(path, method, body):

@@ -1,0 +1,3 @@
+{
+  "body": "Define the guide's boundary behavior.\n\n### Problem\n\n- The guide leaves the boundary undefined.\n\n### Changes\n\n- docs/guide.md explains the boundary.\n\n### Testing\n\nAgent-reported validation for [candidate commit](https://github.com/cylewitruk/stacks-core-autobot/commit/dddddddddddddddddddddddddddddddddddddddd):\n\nRead the guide. Tests not run.\n\n### Review focus\n\n- Check the boundary.\n\n---\n\n[Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3)\n\nCloses https://github.com/cylewitruk/stacks-core-autobot/issues/7"
+}

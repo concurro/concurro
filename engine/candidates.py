@@ -5,6 +5,7 @@ from collections import Counter
 DIFF_WORK_LIMIT = 200_000
 
 import checks
+import pr_description
 from policy import Blocked, OutsideScope, path_allowed
 
 
@@ -32,13 +33,18 @@ def development(report):
     """Require an explanation, agent-reported validation and either edits or a design-reopen request."""
     if (
         not isinstance(report, dict)
-        or set(report) != {"summary", "validation", "edits", "design_issue"}
+        or set(report)
+        not in (
+            {"summary", "validation", "edits", "design_issue"},
+            {"summary", "validation", "edits", "design_issue", "description", "commit"},
+        )
         or not isinstance(report["summary"], str)
         or not report["summary"].strip()
         or not isinstance(report["validation"], str)
         or len(report["validation"].encode()) > 4000
     ):
         raise Blocked("invalid implementation response")
+    pr_description.validate(report)
     if report["design_issue"] is not None and report["edits"]:
         raise Blocked("design reopening cannot include candidate edits")
 

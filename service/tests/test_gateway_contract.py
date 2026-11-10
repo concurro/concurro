@@ -94,6 +94,7 @@ class ShapeAdmissionTests(unittest.TestCase):
             ("POST", "git/commits", {}, FORK),
             ("PATCH", "git/refs/heads/" + BRANCH, {"sha": "a" * 40, "force": False}, FORK),
             ("POST", "pulls", draft(), UPSTREAM),
+            ("PATCH", "pulls/9", {"body": "Updated description"}, UPSTREAM),
             (
                 "POST",
                 "pulls/9/reviews",

@@ -23,7 +23,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) · [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) · [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) |
 
 📦 Dependencies \(Cargo.lock\): one updated, two updated, three updated and 1 more; 1 added; 2 removed
 

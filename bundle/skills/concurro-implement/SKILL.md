@@ -36,3 +36,15 @@ inside the envelope.
 
 Return the supplied [response contract](../../schemas/develop.json). The runner extracts
 your workspace changes; do not return a separate list of edits in the model response.
+
+Write `description` for the entire current PR diff against the approved base, including
+previous repair rounds. Use one lead sentence, 1–4 problem bullets, 1–6 change bullets
+naming files or functions, and 0–4 compatibility bullets. Each field is at most 200
+characters, with no headings or line breaks. Do not duplicate testing claims there;
+`validation` remains their only source.
+
+Write `commit` for this round alone: a subject of at most 72 characters, a conventional
+commit type, and 1–6 change bullets (at most 200 characters each). Do not put a prefix
+in the subject. Concurro uses the plan headline for the first commit, your subject for
+repairs, and a type prefix only when `conventional_commits` is enabled. If requesting a
+design reopen without edits, return null for `description` and `commit`.

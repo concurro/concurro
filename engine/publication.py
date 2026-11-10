@@ -8,6 +8,7 @@ from urllib.parse import quote
 import candidates
 import conversation
 import markup
+import pr_description
 import protocol
 from dashboard import dependency_summary
 from github import Transient
@@ -85,6 +86,7 @@ class Publication:
         edits: list[Edit],
         tree_reader: Callable[[str], dict[str, TreeEntry]],
         inline_blob_limit: int = INLINE_BLOB_LIMIT,
+        metadata: Document | None = None,
     ) -> Document:
         """Create blobs, a tree and a commit in order, without advancing the task checkpoint."""
         state = self.state
@@ -113,7 +115,7 @@ class Publication:
             "git/commits",
             "POST",
             {
-                "message": f"fix(concurro): address issue #{state['issue']} (round {state['round']})",
+                "message": pr_description.commit_message(state, self.config, metadata),
                 "tree": tree["sha"],
                 "parents": [parent],
             },
@@ -139,7 +141,7 @@ class Publication:
         ):
             raise Blocked("candidate does not match its recorded approval and publication intent")
         self._advance_branch(pending)
-        pr = self._find_or_open_pr(pending)
+        pr = self._find_or_open_pr(pending, save)
         published_files = candidates.changed_paths(self.pulls.pages(f"pulls/{pr['number']}/files"))
         if set(published_files) != set(candidate["changed_files"]):
             raise Transient("unavailable", 30)
@@ -172,7 +174,7 @@ class Publication:
         else:
             raise Blocked("implementation branch disappeared")
 
-    def _find_or_open_pr(self, pending: PendingPublication) -> Document:
+    def _find_or_open_pr(self, pending: PendingPublication, save: Callable[[], None]) -> Document:
         """Recover an existing matching PR before attempting a new draft PR write."""
         state = self.state
         fork = self.config.get("fork", self.config["repository"])
@@ -197,6 +199,8 @@ class Publication:
         else:
             if state.get("pr"):
                 raise Blocked("recorded PR disappeared; reconcile manually")
+            if state.get("candidate", {}).get("description"):
+                pr_description.prepare_create(state, self.pr_body(), save)
             pr = self.pulls.repo(
                 "pulls",
                 "POST",
@@ -212,6 +216,8 @@ class Publication:
             )
         if pr.get("user", {}).get("login") != self.config["bot_login"]:
             raise Blocked("PR is not authored by the controller App")
+        if state.get("candidate", {}).get("description"):
+            pr_description.refresh(state, self.pulls, pr, self.pr_body(), save)
         return pr
 
     def pr_title(self) -> str:
@@ -235,7 +241,15 @@ class Publication:
     def pr_body(self) -> str:
         """The plan's summary, its artifact, any dependency change, and the issue it closes."""
         plan = self.plan_artifact
-        lines = [block(self.state["plan"]["summary"]), ""]
+        candidate = self.state.get("candidate", {})
+        head = self.state.get("pending", {}).get("head", self.state.get("head"))
+        parts = pr_description.sections(
+            candidate,
+            head,
+            self.state["plan"].get("publication", {}).get("review_focus", []),
+            self.config.get("fork", self.config["repository"]),
+        )
+        lines = [pr_description.layout(parts), "", "---", ""] if parts else [block(self.state["plan"]["summary"]), ""]
         if plan:
             lines += [
                 link(

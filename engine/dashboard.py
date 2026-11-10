@@ -132,6 +132,8 @@ class Dashboard:
             markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact, current)),
             "",
         ]
+        if state.get("pr_description", {}).get("human_edited"):
+            lines += ["PR description refresh stopped after a human edit. Please keep the description current.", ""]
         classification_row = self.classification_row()
         if classification_row:
             lines += [classification_row, ""]
