@@ -34,8 +34,11 @@ changes need no documentation unless they make existing guidance inaccurate.
 - Check bundle changes against active tasks. A bundle change requires an idle deployment
   window or explicit writer recovery. A blocked implementation may use `/concurro retry`
   for a proven change only to the engine implementer skill, preserving design approvals.
-  Other bundle changes require `/concurro invalidate`. Legacy tasks need local Git history
-  to prove the narrow exception; never assume compatibility or rewrite approval bindings.
+  `/concurro resume` explicitly adopts current configuration and instructions while
+  preserving completed work, original approval bindings and spent budgets. It requires
+  no release compatibility certificate. Legacy implementer-only retry needs local Git
+  history. Resume receipts require checkpoint format 6; include that rollback boundary
+  in release instructions.
 - Verify CI for the exact release and provide the full-SHA deployment command. For this
   installation, use `bash /Users/cylwit/Documents/Codex/concurro-deploy/deploy.sh FULL_SHA`
   with an outer `||` failure message; never put `set -e` in the user's interactive shell.

@@ -53,12 +53,13 @@ See `service/settings.py` and the deployment example for the exact schema.
 
 Each task pins the fork configuration commit independently from its upstream source base.
 The worker supplies the same bundle to the controller and runner transport. Setup and
-instructions come from that configuration commit; new default-branch configuration
-applies to new tasks. Bundle drift blocks model work, not closure or readiness observation.
-A writer retry may adopt a proven engine-implementer-skill-only update for a blocked
-implementation, preserving its plan and approvals. Other instruction changes require
-explicit `/concurro invalidate`, which adopts the current bundle and restarts assessment without
-resetting spent budgets or silently changing the pinned target configuration.
+instructions come from that configuration commit. A writer's
+[`/concurro resume`](checkpoint-resume.md) adopts the current default-branch configuration
+and bundle, preserving completed work and recording separate execution authority.
+The checkpoint is saved before the registry pin changes; a later tick recovers a lost
+pin update before dispatching. Bundle drift blocks model work, not closure or readiness
+observation. Explicit `/concurro invalidate` restarts assessment without resetting spent
+budgets. Implementer-skill-only retry remains available for its narrower case.
 
 Installation tokens are narrowed to one repository and checked against the exact requested
 permissions (excluding implicit metadata). A mismatch revokes the token and fails admission.
@@ -200,7 +201,8 @@ Exact endpoint bounds live in `service/transport.py`.
 
 Report storage is described in [the dashboard contract](issue-dashboard.md#report-archive).
 Report detachment uses checkpoint format 3, parallel review batches require format 4,
-and large Git-backed file inventories require format 5. Older engines reject unknown
+large Git-backed file inventories require format 5, and writer-directed resume receipts
+require format 6. Older engines reject unknown
 formats. Rollback must preserve
 consumed calls and publication progress and use a compatible engine, not an older audit.
 Legacy `adopt`/`release` commands support old controller markers; they are not a supported

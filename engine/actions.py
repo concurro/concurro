@@ -20,9 +20,10 @@ POLICY_REASONS = {"autonomous merge is disabled", "autonomous merge is limited t
 GITHUB_REASON = "GitHub mergeability is not clean"
 BUNDLE_REASON = (
     "Trusted charter, role, skill or schema bundle changed. "
-    "A writer must use /concurro invalidate to reassess under the current bundle; "
-    "/concurro retry does not change the task's bundle."
+    "A writer may use /concurro resume to adopt current settings and continue saved work, "
+    "or /concurro invalidate to start a new assessment."
 )
+
 # Blocks already reported by the checkpoint health notice.
 PUBLICATION_REASONS = {DIAGNOSTICS["conversation_publish"], DIAGNOSTICS["conversation_conflict"]}
 RESUMED_STAGES = {
@@ -72,6 +73,8 @@ def transition(state, config, author, plan_url=None):
         conversation.queue(state, f"{markup.BLOCKED} Rejected", explain(reason, retry, state, config))
     elif stage == "blocked" and reason not in PUBLICATION_REASONS:
         continuation = BLOCKED_INVALIDATE if reason == BUNDLE_REASON else BLOCKED_RETRY
+        if reason == BUNDLE_REASON:
+            continuation = "A writer can continue saved work with " + code("/concurro resume") + "."
         conversation.queue(state, f"{markup.BLOCKED} Blocked", explain(reason, continuation, state, config))
     elif stage == "planned" and state.get("mode") == "manual":
         plan = link("Implementation plan", plan_url) if plan_url else "The implementation plan"

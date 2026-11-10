@@ -424,7 +424,12 @@ class Dashboard:
         if state["stage"] in ("blocked", "stopped", "escalated") and self.waiting_revision():
             needs = "a writer to grant revision capacity with " + code("/concurro retry --plan-revisions 1")
         if state["stage"] == "blocked" and state.get("reason") == BUNDLE_REASON:
-            needs = "a writer to accept reassessment with " + code("/concurro invalidate")
+            needs = (
+                "a writer to continue with "
+                + code("/concurro resume")
+                + " or reassess with "
+                + code("/concurro invalidate")
+            )
         if state["stage"] == "blocked" and reason_guidance.operator_summary(state.get("reason", "")):
             needs = "operator reconciliation"
         if state["stage"] == "gates":

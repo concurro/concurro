@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
 import actions
+import bundle_resume
 import candidates
 import change_attention
 import checks
@@ -51,6 +52,7 @@ from policy import (
     SessionFailure,
     approval_binding,
     approval_valid,
+    bound_design_roster,
     consensus_valid,
     design_roster,
     digest,
@@ -320,6 +322,8 @@ class Controller:
         pulls=None,
         enroll=None,
         report_cache=None,
+        resume_target=None,
+        resume_config=None,
     ):
         """Inject transports so complete lifecycles can be tested without credentials.
 
@@ -330,6 +334,8 @@ class Controller:
         self.controller_id = controller_id
         self.enroll = enroll or (lambda: None)
         self.report_cache = report_cache
+        self.resume_target = resume_target
+        self.resume_config = resume_config or (lambda state: None)
         self.comment_id = None
         self.checkpoints = None
         self.state = None
@@ -753,6 +759,15 @@ class Controller:
         }
         identifier = digest([self.state["issue"], provider, stage, digest(work)])
         current = review_state.operation(self.state)
+        if (
+            current.get("resume_rebind") == self.bundle.identity
+            and current.get("stage") == stage
+            and current.get("provider") == provider
+        ):
+            current.pop("resume_rebind")
+            if current.get("status") == "completed":
+                return current  # Apply the saved answer under its original response contract and attribution.
+            current.update(id=identifier, contract={k: context[k] for k in VOLATILE_REQUEST if k in context})
         if not current or current["id"] != identifier or current["status"] == "consumed":
             current = review_state.slot(self.state)["operation"] = {
                 "id": identifier,
@@ -1518,9 +1533,9 @@ class Controller:
 
     def require_current_bundle(self):
         """Only current instructions may produce or consume a model result."""
-        if not implementation_bundle.current(self.state, self.bundle) or self.state.get("charter_id") != digest(
-            self.bundle.charter
-        ):
+        if not implementation_bundle.current(self.state, self.bundle) or self.state.get("bundle_resume", {}).get(
+            "charter_id", self.state.get("charter_id")
+        ) != digest(self.bundle.charter):
             if (
                 self.state.get("stage") == "implement"
                 and self.state.get("charter_id") == digest(self.bundle.charter)
@@ -1643,6 +1658,16 @@ class Controller:
         except (KeyError, TypeError, ValueError):
             self.repair_plan(plan, "invalid plan field types; return the structured plan schema")
             return
+        if self.state.get("bundle_resume"):
+            # New assessments bind current governance; completed old approvals retain their original inputs.
+            self.state.update(
+                bundle_id=self.bundle.identity,
+                config_digest=config_digest(self.config),
+                charter=deepcopy(self.bundle.charter),
+                charter_id=digest(self.bundle.charter),
+                implementation_skill=self.bundle.hashes[implementation_bundle.SKILL],
+            )
+            self.state["bundle_resume"].pop("approval_roster", None)
         self.state["plan"] = plan
         self.state.pop("reason", None)
         self.state.pop("design_feedback", None)
@@ -1667,7 +1692,7 @@ class Controller:
         state = self.state
         if not approval_valid(state, self.config):
             raise Blocked("implementation authorization requires complete current design approval")
-        roster = design_roster(self.config)
+        roster = bound_design_roster(state, self.config)
         return {
             "verified_by": "controller",
             "approval_kind": state["approval"]["kind"],
@@ -1682,6 +1707,7 @@ class Controller:
                 if state.get("implementation_bundle")
                 else {}
             ),
+            **({"bundle_resume": deepcopy(state["bundle_resume"])} if state.get("bundle_resume") else {}),
             "requirements_digest": digest(state["requirements"]),
             "generation": state["design_generation"],
             "required_identities": roster,
@@ -2153,7 +2179,7 @@ class Controller:
         state = self.state
         if state["stage"] == "merging":
             state["stage"] = "gates"
-        if state["config_digest"] != config_digest(self.config):
+        if not bundle_resume.config_current(state, config_digest(self.config)):
             raise Blocked("controller configuration changed; re-plan required")
         if state.get("mode") == "autonomous":
             if not self.refresh_autonomous(comments):
@@ -2187,6 +2213,13 @@ class Controller:
             self.state = None
             self.foreign = True
             return False
+        if (
+            self.state
+            and self.state.get("bundle_resume")
+            and self.state.get("config_sha") != self.config.get("config_sha")
+        ):
+            self.resume_config(self.state)
+            return True
         reconciled = self._reconcile_external()
         if reconciled is not None:
             return reconciled
@@ -2194,10 +2227,7 @@ class Controller:
             return False
         if self.state:
             actions.discover_blocked(self.state, comments, self.identities.author("conversation"))
-        if self.state and (
-            digest(self.state.get("charter")) != self.state.get("charter_id")
-            or self.state.get("execution") != self.config["paths"]
-        ):
+        if self.state and digest(self.state.get("charter")) != self.state.get("charter_id"):
             raise Blocked(
                 "Recorded charter or path policy is inconsistent; start a new task rather than adopting unverified state."
             )
@@ -2213,6 +2243,8 @@ class Controller:
             self.save()
         if self.commands(comments):
             return True
+        if self.state and self.state.get("execution") != self.config["paths"]:
+            raise Blocked("Recorded path policy differs from current settings; a writer can use /concurro resume.")
         if not self.state or self.state["stage"] in (
             "planned",
             "blocked",

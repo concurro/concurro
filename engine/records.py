@@ -79,6 +79,7 @@ class Operation(TypedDict, total=False):
     provider: str
     attempt: int
     timing: Timing
+    resume_rebind: str
 
 
 class Session(TypedDict, total=False):
@@ -89,6 +90,7 @@ class Session(TypedDict, total=False):
     turn: int
     restarts: int
     completed: Document
+    execution_bundle: str
 
 
 class Reviewer(TypedDict, total=False):
@@ -290,6 +292,7 @@ class TaskState(TypedDict, total=False):
     charter: Document
     implementation_skill: str
     implementation_bundle: ImplementationBundle
+    bundle_resume: Document
     implementation_feedback: dict[str, str]
     session_epoch: int
     sessions: dict[str, Session]

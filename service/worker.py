@@ -10,7 +10,7 @@ import private
 from agents import Agents, RunnerExecutor
 from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
-from controller import Controller
+from controller import Controller, config_digest
 from conversation import PublicationError
 from github import Transient
 from model_config import resolve
@@ -219,7 +219,8 @@ class Worker:
                 )
                 found = [item for item in refs if item["ref"] == ref]
                 if found:
-                    if found[0]["object"]["sha"] != target.config_sha:
+                    recorded = self.registry.runner_session(session)
+                    if found[0]["object"]["sha"] != recorded["config_sha"]:
                         log.warning("session ref %s moved; left for operator reconciliation", session)
                         continue
                     self.gateway.mutate(key, grant, "DELETE", root + ref)
@@ -229,7 +230,7 @@ class Worker:
             finally:
                 self.gateway.release(key, grant, None)
 
-    def load(self, repository, issue=None, pin=False):
+    def load(self, repository, issue=None, pin=False, *, latest=False, config_sha=None):
         """Read the fork configuration pinned for this task; new tasks use its current head."""
         target = self.targets[repository]
         key = (repository, issue)
@@ -242,7 +243,7 @@ class Worker:
             self.settings.engine,
             self.bot_login,
             self.engine_root,
-            binding.config_sha if binding else None,
+            config_sha or (binding.config_sha if binding and not latest else None),
         )
         if issue is not None and pin:
             bound = self.registry.bind(key, target.upstream, target.fork, loaded.config_sha)
@@ -263,6 +264,18 @@ class Worker:
             "config_sha": loaded.config_sha,
         }
         return Target(config, loaded.bundle, loaded.config_sha)
+
+    def resume_config(self, key, generation, state):
+        """Recover the execution pin from the durable checkpoint before any new runner dispatch."""
+        receipt = state.get("bundle_resume", {})
+        sha = receipt.get("config_sha")
+        if not sha:
+            return
+        self.gateway.check_owner(key, generation)
+        target = self.load(*key, config_sha=sha)
+        if config_digest(target.config) != receipt["config_digest"] or state.get("config_sha") != sha:
+            raise Blocked("saved execution configuration does not match its pinned commit")
+        self.registry.adopt_config(key, generation, receipt.get("old_config_sha"), sha)
 
     @contextmanager
     def renewing(self, key, generation):
@@ -302,6 +315,12 @@ class Worker:
                     bundle=target.bundle,
                     retained=self.settings.state_dir / "sessions" / key[0].replace("/", "__"),
                 )
+
+                def latest_settings():
+                    """Freeze the default-branch configuration only for an authorized resume command."""
+                    latest = self.load(*key, latest=True)
+                    return latest.config, latest.bundle
+
                 controller = Controller(
                     facade,
                     agents,
@@ -311,6 +330,8 @@ class Worker:
                     code=code,
                     pulls=pulls,
                     report_cache=self.report_cache,
+                    resume_target=latest_settings,
+                    resume_config=lambda state: self.resume_config(key, generation, state),
                     enroll=lambda: self.registry.bind(
                         key, target.config["upstream"], target.config["fork"], target.config_sha
                     ),

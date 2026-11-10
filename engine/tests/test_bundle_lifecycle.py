@@ -160,7 +160,7 @@ class BundleLifecycleTests(unittest.TestCase):
         controller.suspend("blocked", BUNDLE_REASON, outboxes=False)
         self.assertIn("/concurro invalidate", controller.action_line())
         self.assertNotIn("a fix and a retry", controller.action_line())
-        self.assertTrue(any("Otherwise restore the previous bundle" in c["body"] for c in self.gh.comments))
+        self.assertTrue(any("/concurro resume" in c["body"] for c in self.gh.comments))
         self.gh.comment("/concurro retry")
         calls = len(self.agents.calls)
         with self.assertRaisesRegex(Blocked, "/concurro invalidate"):

@@ -4,6 +4,7 @@ import json
 import re
 from copy import deepcopy
 
+import bundle_resume
 import file_inventory
 import markup
 import protocol
@@ -198,7 +199,9 @@ class Checkpoints:
             "repository": self.config["repository"],
             "state": {
                 **compact,
-                "version": file_inventory.FORMAT
+                "version": bundle_resume.FORMAT
+                if state.get("bundle_resume")
+                else file_inventory.FORMAT
                 if inventories or state.get("candidate", {}).get("file_inventory")
                 else BATCH_FORMAT
                 if state.get("review_batch_version")
@@ -234,7 +237,7 @@ class Checkpoints:
                 raise ValueError()
             self.validate_state(state)
             refs = payload.get("report_data", [])
-            if refs and state["version"] not in (FORMAT, BATCH_FORMAT, file_inventory.FORMAT):
+            if refs and state["version"] not in (FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT):
                 raise ValueError()
             if not isinstance(refs, list):
                 raise ValueError()
@@ -266,9 +269,10 @@ class Checkpoints:
                     value = {**value, **ref["annotations"]}
                 parent[slot] = value
             inventories = payload.get("file_inventories", [])
-            if (inventories or state.get("candidate", {}).get("file_inventory")) and state[
-                "version"
-            ] != file_inventory.FORMAT:
+            if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
+                file_inventory.FORMAT,
+                bundle_resume.FORMAT,
+            ):
                 raise ValueError()
             file_inventory.restore(state, inventories, self.reader)
             binding = payload.get("plan_artifact")
@@ -289,10 +293,12 @@ class Checkpoints:
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""
         if (
-            state["version"] not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT)
+            state["version"] not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT)
+            or state.get("bundle_resume")
+            and state["version"] != bundle_resume.FORMAT
             or state["issue"] != self.issue
             or (state.get("review_batch_version") or state.get("review_batch"))
-            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT)
+            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT)
             or state.get("review_batch_version", 1) != 1
         ):
             raise CheckpointError("state_identity")

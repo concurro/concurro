@@ -9,6 +9,7 @@ from enum import Enum, StrEnum, auto
 from typing import TYPE_CHECKING
 
 import actions
+import bundle_resume
 import conversation
 import dashboard_runs
 import implementation_bundle
@@ -17,7 +18,7 @@ import sessions
 from actions import BUNDLE_REASON
 from markup import code, link
 from policy import Blocked, approval_binding, approval_valid, consensus_valid, digest
-from vocab import JUDGED_STAGES, SUSPENDED_STAGES
+from vocab import JUDGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -33,6 +34,7 @@ class CommandKind(StrEnum):
     APPROVE = "approve"
     STOP = "stop"
     RETRY = "retry"
+    RESUME = "resume"
     EXTEND = "extend"
     INVALIDATE = "invalidate"
 
@@ -59,7 +61,7 @@ def parse(body: str) -> Command | None:
     if not re.fullmatch(
         r"/concurro (start|approve "
         + protocol.DIGEST_PATTERN
-        + r"|stop|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
+        + r"|stop|resume|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
         body,
     ):
         return None
@@ -99,6 +101,7 @@ class CommandHandler:
             CommandKind.APPROVE: self.approve,
             CommandKind.STOP: self.stop,
             CommandKind.RETRY: self.retry,
+            CommandKind.RESUME: self.resume,
             CommandKind.EXTEND: self.extend,
             CommandKind.INVALIDATE: self.invalidate,
         }
@@ -200,6 +203,46 @@ class CommandHandler:
             return LoopAction.RETURN_TRUE
         return LoopAction.FALL_THROUGH
 
+    def resume(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
+        """Adopt current settings and continue saved work; execution handles its normal recovery."""
+        controller = self.controller
+        if not controller.state or controller.state["stage"] in TERMINAL_STAGES:
+            return LoopAction.CONTINUE
+        config, bundle = (
+            controller.resume_target() if controller.resume_target else (controller.config, controller.bundle)
+        )
+        orphaned = bundle_resume.orphaned_reviews(controller.state, controller.config, config)
+        if orphaned:
+            controller.state["command_id"] = comment["id"]
+            conversation.queue(
+                controller.state,
+                "Resume not applied",
+                "The proposed review team cannot answer these unresolved reviews: "
+                + ", ".join(code(identifier) + " (" + code(owner) + ")" for identifier, owner in orphaned)
+                + ". Retain their reviewer identities in the configuration, or resolve them with the current team "
+                "before resuming. Current settings and the pause reason are unchanged.",
+            )
+            controller.save()
+            return LoopAction.CONTINUE
+        reassess = controller.state["stage"] in JUDGED_STAGES and not output_repair_pending(controller.state)
+        bundle_resume.adopt(controller, comment, config, bundle, self.config_digest(config), reassess=reassess)
+        if reassess and not self.reassess_judgment(comment, comments, settings_adopted=True):
+            controller.resume_config(controller.state)
+            return LoopAction.RETURN_TRUE
+        conversation.queue(
+            controller.state,
+            "Task resumed",
+            (
+                "Using the current configuration and instructions to reassess the updated issue through intake. "
+                if reassess
+                else "Using the current configuration and instructions, continuing from saved progress. "
+            )
+            + "Completed work, findings and spent budgets are retained.",
+        )
+        controller.save()
+        controller.resume_config(controller.state)
+        return LoopAction.RETURN_TRUE
+
     def retry(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Resume the applicable paused stage or request a bounded reviewed repair."""
         controller = self.controller
@@ -218,18 +261,8 @@ class CommandHandler:
                 controller.refuse_revision_command(comment, exhausted=True)
                 return LoopAction.CONTINUE
             if controller.state["stage"] in JUDGED_STAGES and not output_repair:
-                controller.state["command_id"] = comment["id"]
-                if not controller.revise_plan(
-                    "intake", "Writer requested reassessment after terminal judgment.", save_exhausted=False
-                ):
-                    controller.refuse_revision_command(comment, exhausted=True)
+                if not self.reassess_judgment(comment, comments):
                     return LoopAction.CONTINUE
-                # Reassessment reads the issue as it is now, including edits made to answer the escalation.
-                controller.state.update(
-                    requirements=controller.requirements(comments), issue_digest=controller.issue_digest()
-                )
-                controller.state.pop("retry_stage", None)
-                controller.state["command_id"] = comment["id"]
             else:
                 controller.state.update(stage=controller.state.pop("retry_stage"), command_id=comment["id"])
             controller.state.pop("reason", None)
@@ -252,6 +285,20 @@ class CommandHandler:
             controller.save()
         return LoopAction.FALL_THROUGH
 
+    def reassess_judgment(self, comment: Comment, comments: list[Comment], *, settings_adopted: bool = False) -> bool:
+        """Spend a revision and reread requirements; retain an exhausted transition for writer recovery."""
+        controller = self.controller
+        controller.state["command_id"] = comment["id"]
+        if controller.waiting_revision() or not controller.revise_plan(
+            "intake", "Writer requested reassessment after terminal judgment.", save_exhausted=False
+        ):
+            self.refuse_revision_command(comment, exhausted=True, settings_adopted=settings_adopted)
+            return False
+        controller.state.update(requirements=controller.requirements(comments), issue_digest=controller.issue_digest())
+        controller.state.pop("retry_stage", None)
+        controller.state.pop("reason", None)
+        return True
+
     def extend(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Grant revision capacity before processing any later command."""
         controller = self.controller
@@ -269,7 +316,9 @@ class CommandHandler:
             controller.suspend("stopped")
         return LoopAction.FALL_THROUGH
 
-    def refuse_revision_command(self, comment: Comment, exhausted: bool = False) -> None:
+    def refuse_revision_command(
+        self, comment: Comment, exhausted: bool = False, *, settings_adopted: bool = False
+    ) -> None:
         """Consume an inapplicable writer command with one durable notice, without suspending work."""
         controller = self.controller
         state: TaskState = controller.state
@@ -283,7 +332,16 @@ class CommandHandler:
                 + ". Findings and spent budgets are preserved."
             )
         state["command_id"] = comment["id"]
-        conversation.queue(state, "Plan revision command not applied", body)
+        title = "Plan revision command not applied"
+        if exhausted and settings_adopted:
+            title = "Settings adopted; reassessment waiting"
+            body = (
+                "The current configuration and instructions were adopted, but reassessment needs more plan revisions. "
+                "A writer can grant capacity with "
+                + code("/concurro retry --plan-revisions 1")
+                + ". Findings and spent budgets are preserved."
+            )
+        conversation.queue(state, title, body)
         controller.save()
 
     def extend_plan_revisions(self, comment: Comment, amount: int, comments: list[Comment]) -> bool:
@@ -304,7 +362,7 @@ class CommandHandler:
                 raise Blocked("Grant between 1 and 3 additional plan revisions per command.")
             if state.get("pending"):
                 raise Blocked("Publication is pending; reconcile it before granting revision capacity.")
-            if state["config_digest"] != self.config_digest(controller.config) or state[
+            if not bundle_resume.config_current(state, self.config_digest(controller.config)) or state[
                 "requirements"
             ] != controller.requirements(comments):
                 raise Blocked("Configuration or requirements changed; reassess them before granting revision capacity.")
@@ -388,7 +446,7 @@ class CommandHandler:
             if state.get("pending"):
                 raise Blocked("Publication is pending; finish the recorded publication before adopting instructions.")
             if (
-                state["config_digest"] != self.config_digest(controller.config)
+                not bundle_resume.config_current(state, self.config_digest(controller.config))
                 or state["requirements"] != controller.requirements(comments)
                 or not approval_valid(state, controller.config)
             ):
@@ -436,7 +494,7 @@ class CommandHandler:
                     "Publication is pending. Use /concurro retry to finish the recorded publication, "
                     "then /concurro invalidate to reassess it."
                 )
-            if state["config_digest"] != self.config_digest(controller.config):
+            if not bundle_resume.config_current(state, self.config_digest(controller.config)):
                 raise Blocked("Controller configuration changed; start a new task with the new configuration.")
             if state.get("pr"):
                 controller.require_pr_unchanged(
@@ -466,6 +524,7 @@ class CommandHandler:
             state.setdefault("review_history", []).append(state["reviews"])
         state.update(
             bundle_id=controller.bundle.identity,
+            config_digest=self.config_digest(controller.config),
             implementation_skill=controller.bundle.hashes[implementation_bundle.SKILL],
             charter_id=digest(controller.bundle.charter),
             charter=deepcopy(controller.bundle.charter),
@@ -483,6 +542,7 @@ class CommandHandler:
         for key in (
             "revision_wait",
             "implementation_bundle",
+            "bundle_resume",
             "review_batch",
             "plan",
             "plan_id",

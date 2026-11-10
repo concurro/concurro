@@ -7,6 +7,7 @@ import re
 import subprocess
 from typing import TYPE_CHECKING
 
+import bundle_resume
 import protocol
 from policy import digest
 
@@ -43,6 +44,8 @@ def accepted(state: TaskState, bundle: BundleView) -> bool:
 
 def current(state: TaskState, bundle: BundleView) -> bool:
     """Require the adopted execution identity, including after a rollback."""
+    if state.get("bundle_resume"):
+        return bundle_resume.accepted(state, bundle)
     if state.get("implementation_bundle"):
         return accepted(state, bundle)
     return state.get("bundle_id") == bundle.identity

@@ -32,6 +32,7 @@ FIELDS = {
     "outcomes",
     "prior_outcomes",
     "reopen_history",
+    "resume_history",
     "invalidations",
     "requests",
     "review_draft",

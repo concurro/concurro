@@ -21,9 +21,9 @@ Intake ✅ → Plan ✅ → **Design review 🛑** → Implement → Code review
 | ---- | ---- | ---- |
 | Complexity: low · Change risk: high | Confidence: high · Design assessment · Assessment incomplete · Based on the previous revision | [Report 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
 
-🛑 **Blocked:** Trusted charter, role, skill or schema bundle changed. A writer must use /concurro invalidate to reassess under the current bundle; /concurro retry does not change the task's bundle.
+🛑 **Blocked:** Trusted charter, role, skill or schema bundle changed. A writer may use /concurro resume to adopt current settings and continue saved work, or /concurro invalidate to start a new assessment.
 
-**Action needed:** a writer to accept reassessment with `/concurro invalidate` ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-11)).
+**Action needed:** a writer to continue with `/concurro resume` or reassess with `/concurro invalidate` ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-11)).
 
 <details><summary>Diagnostics</summary>
 

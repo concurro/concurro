@@ -63,7 +63,7 @@ CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,
 
 @dataclass(frozen=True)
 class TaskBinding:
-    """The immutable publication destinations and configuration commit for a task."""
+    """The immutable destinations and current execution configuration commit for a task."""
 
     upstream: str
     fork: str
@@ -627,6 +627,19 @@ class Registry:
                 return TaskBinding(*row)
             db.execute("INSERT INTO bindings VALUES (?, ?, ?, ?, ?)", (*key, upstream, fork, config_sha))
             return TaskBinding(upstream, fork, config_sha)
+
+    def adopt_config(self, key, generation, previous, current):
+        """Apply a checkpointed writer resume once under the current owner generation."""
+        with self.transaction() as db:
+            owner = db.execute(
+                "SELECT generation, live, lease_until FROM ownership WHERE repository = ? AND issue = ?", key
+            ).fetchone()
+            if not owner or owner[0] != generation or not owner[1] or owner[2] <= self.clock():
+                raise RegistryError("configuration adoption lost task ownership")
+            binding = db.execute(BINDING_QUERY, key).fetchone()
+            if not binding or binding[2] not in (previous, current):
+                raise RegistryError("configuration adoption no longer matches the task binding")
+            db.execute("UPDATE bindings SET config_sha = ? WHERE repository = ? AND issue = ?", (current, *key))
 
     def link(self, key, pull, repository=None):
         """Record one PR identity; a different task cannot take over the association.

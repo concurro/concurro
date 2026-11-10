@@ -34,10 +34,11 @@ optional workload limits as described below. See the [scope envelope](design/sco
 for approved paths, cumulative limits and large-file handling.
 
 A task records the fork configuration commit separately from the approved upstream
-source commit. Setup, instructions and caller workflow changes apply to new tasks;
-configuration changes require a new task. `/concurro invalidate` adopts the current
-bundle/charter but preserves the task’s configuration pin. An optional target `engine` pin must
-match the served commit. Omit it when the same operator controls service and target.
+source commit. Setup, instructions and caller workflow changes apply to new tasks or
+existing tasks after a writer's `/concurro resume`. Resume adopts the current configuration
+pin; `/concurro invalidate` restarts assessment with the already selected configuration.
+An optional target `engine` pin must match the served commit. Omit it when the same
+operator controls service and target.
 
 ## Edit policy and workload limits
 
@@ -89,7 +90,7 @@ plans retain any `scope.max_files` allowance; new plan schemas omit that field.
 Existing `editable_extensions` configurations remain supported with their original
 allow-list, hidden-path, governance and policy-document protections. Do not combine
 `editable_extensions` with `protected_extensions`; the engine refuses mixed policies.
-Switching formats or limits changes the config digest and requires a new task. Deploy
+Switching formats or limits changes the config digest; existing tasks adopt it with `/concurro resume`. Deploy
 support before merging a new-format target configuration; older engines cannot read it.
 
 ### Large changes and resource bounds
@@ -176,7 +177,7 @@ in other CLI versions. To migrate, replace
 those assignments and the model map together with `models` and `agents` above; do
 not mix the two formats. Keep repository, policy and budget settings unchanged.
 A JSON-to-YAML-only conversion has the same configuration digest; changing profiles
-is a configuration change for new tasks. Evaluation uses
+is a configuration change adopted by new tasks or explicit resume. Evaluation uses
 a configured profile name (legacy configurations still use `claude` or `codex`).
 
 ## Contribution loop
@@ -237,6 +238,7 @@ respected. Closed or merged PRs stop the watcher. Only humans merge.
 Issue commands require the existing writer permissions. `/concurro start` starts or
 resumes manual planning; `/concurro approve <plan-id>` authorizes the recorded plan;
 `/concurro retry` retries blocked work with current requirements/feedback;
+`/concurro resume` continues validated work without renewing allowances;
 `/concurro stop` suspends it. `/concurro invalidate` is a separate writer-authorized
 operation: it accepts the current bundle/charter and restarts intake and planning,
 retaining the PR, published head, base and spent budgets. Old approvals, votes and
@@ -274,6 +276,18 @@ model results. They do not prevent observing PR/issue closure, CI or readiness u
 the task's recorded approvals. `/concurro invalidate` explicitly starts assessment under
 the current bundle.
 
+A writer's `/concurro resume` adopts the current configuration and instructions and
+continues saved work, without a release compatibility certificate. It preserves the
+plan, original design approvals, findings, pending results/publication and spent budgets.
+Changed unfinished sessions restart as needed; completed work remains recorded. Current
+model assignments, edit policy, limits, CI requirements and setup apply to subsequent
+work. Questions still need answers, findings still need resolution and normal execution
+still accounts for prior spending. Rejected or escalated judgments return through intake
+and spend a plan revision; finished tasks ignore resume. A team change that would orphan
+an unresolved review is refused with the affected IDs, without adopting settings.
+See [checkpoint-preserving resume](design/checkpoint-resume.md)
+for configuration-pin recovery and the format-6 rollback boundary.
+
 For blocked or stopped implementation work, a writer's `/concurro retry` can adopt changes
 **only** to `bundle/skills/concurro-implement/SKILL.md`. The controller proves that every
 other resource still matches the approved bundle; schemas, shared instructions, other
@@ -293,7 +307,7 @@ task blocked; restore the matching release or explicitly invalidate. Refused ado
 commands are consumed, so another attempt requires a new writer command.
 
 A prepared publication finishes under its recorded approval before invalidation:
-retry it first, then invalidate. Configuration changes still require a new task.
+retry it first, then invalidate. Use resume to adopt configuration changes.
 
 An explicitly requested `evaluate <issue-repository> <issue> <profile>` runs four
 fresh design fixtures on ordinary runner sessions. It uses model budget and temporarily

@@ -13,7 +13,7 @@ policies. Target-specific permission and contribution instructions live in the f
 
 ## Demo CI
 
-`Concurro Demo CI` runs one `Demo Rust` job on an `ubuntu-24.04` runner, including
+In `concurro-demo-upstream/stacks-core`, `Concurro Demo CI` runs one `Demo Rust` job on an `ubuntu-24.04` runner, including
 on draft pull requests. It tests GitHub's proposed merge commit with a 30-minute
 job timeout, four build jobs and four test threads. Incremental compilation is disabled.
 

@@ -10,6 +10,7 @@ authoritative for exact limits and behavior.
 | [Deployment](../gateway/README.md) | Host installation, App permissions and coordinated releases |
 | [MVP architecture](design/mvp.md) | Scope, trust boundaries and deferred capabilities |
 | [Execution and publication](design/mvp-execution.md) | Runner identity, setup, extraction, publication and readiness |
+| [Checkpoint resume](design/checkpoint-resume.md) | Adopt current settings while preserving checkpointed work |
 | [Service](design/service.md) | Scheduling, ownership, GitHub writes and recovery |
 | [Inference gateway](design/inference-gateway.md) | Central credentials, session authorization and limits |
 | [Scope envelope](design/scope-envelope.md) | Approved paths, cumulative file limits and large files |

@@ -187,6 +187,19 @@ def design_roster(config):
     return list(roster.values())
 
 
+def bound_design_roster(state, config):
+    """Keep completed design approval attributed to its original reviewers after resume."""
+    receipt = state.get("bundle_resume", {})
+    if (
+        receipt.get("approval_roster")
+        and receipt.get("plan") == state.get("plan_id")
+        and receipt.get("generation") == state.get("design_generation")
+        and receipt.get("phase") == state.get("design_phase")
+    ):
+        return receipt["approval_roster"]
+    return design_roster(config)
+
+
 def approval_binding(state, config):
     """Bind every vote to the exact design generation, governance and participating identities."""
     return digest(
@@ -200,7 +213,7 @@ def approval_binding(state, config):
             "charter": state.get("charter_id"),
             "generation": state.get("design_generation"),
             "phase": state.get("design_phase"),
-            "roster": design_roster(config),
+            "roster": bound_design_roster(state, config),
             "parent": state.get("design_parent"),
             "changed_files": state.get("approved_accumulated_files", []),
         }
@@ -209,7 +222,7 @@ def approval_binding(state, config):
 
 def consensus_valid(state, config, require_final=True):
     """Require bound unanimity, with first-pass or separate fresh approval for implementation."""
-    roster = design_roster(config)
+    roster = bound_design_roster(state, config)
     votes = state.get("design_votes", {})
     if not state.get("bundle_id") or not state.get("charter_id") or set(votes) != {r["id"] for r in roster}:
         return False

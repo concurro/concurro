@@ -1,5 +1,6 @@
 """Scope provider transcripts to one role and one cooperative loop."""
 
+import design_eligibility
 from model_config import resolve
 from policy import Blocked, digest, selected_model
 
@@ -32,8 +33,18 @@ def prepare(state, config, provider, stage, context):
         scope = digest([scope, identity])
     sessions = state.setdefault("sessions", {})
     current = sessions.get(role, {})
-    if current.get("binding", current.get("scope")) != scope:
+    new_scope = current.get("binding", current.get("scope")) != scope
+    if new_scope:
         sessions[role] = {"binding": scope, "scope": scope, "turn": 0, "restarts": 0}
+    receipt = state.get("bundle_resume", {})
+    if stage in receipt.get("roles", []):
+        current = sessions[role]
+        if current.get("execution_bundle") != receipt["session_identity"]:
+            if not new_scope:
+                session = {**current, "role": role}
+                design_eligibility.restart(state, session)
+                restart(state, session)
+            sessions[role]["execution_bundle"] = receipt["session_identity"]
     return {**sessions[role], "role": role}
 
 
@@ -50,6 +61,7 @@ def restart(state, session):
         "turn": 0,
         "restarts": count,
         "previous": {"scope": current["scope"], "turn": current["turn"]},
+        **({"execution_bundle": current["execution_bundle"]} if current.get("execution_bundle") else {}),
     }
 
 

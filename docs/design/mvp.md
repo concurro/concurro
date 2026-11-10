@@ -84,15 +84,13 @@ Record two independent commits when enrolling a task:
 - `config_sha`: the fork commit supplying `.concurro/` and the runner caller workflow.
 
 The fork's configuration files do not enter the candidate tree or upstream PR. Read
-configuration and setup from `config_sha` for the task's lifetime. New default-branch
-configuration applies to new tasks; changing an existing task's configuration requires
-a new task, not a silent mid-turn switch; `/concurro invalidate` does not replace its pinned configuration. Preserve engine/bundle
-identity checks when deploying new engine code. Bundle drift blocks model work, not
-closure or CI/readiness observation. A writer uses `/concurro invalidate` to adopt
-the current bundle and restart assessment. For a blocked implementation, retry may adopt
-a proven engine-implementer-skill-only update while preserving the original design binding
-and approvals; see [recovery](../concurro.md#commands-and-recovery). Invalidation preserves
-the PR and spent budgets and records the change.
+configuration and setup from `config_sha` until a writer explicitly adopts current
+settings with [`/concurro resume`](checkpoint-resume.md). Resume retains completed work,
+original approval bindings and spending while changing execution settings. Bundle drift
+blocks model work, not closure or CI/readiness observation. `/concurro invalidate` starts
+a new assessment with the selected configuration; it preserves the PR and spent budgets.
+The narrower implementer-skill-only retry also remains available; see
+[recovery](../concurro.md#commands-and-recovery).
 
 Upstream advancing alone does not restart a task. The approved base stays pinned.
 Automatic rebasing is not implemented; a contribution needing a different base requires
