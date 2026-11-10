@@ -1,12 +1,36 @@
 """Version-five human report views over immutable canonical report data."""
 
+import re
+
 import markup
 import protocol
+
+VIEW_MARKER = "<!-- concurro:report-view:v5 -->"
+RAW_OPEN = "<details><summary>Raw data</summary>\n\n"
+RAW_CLOSE = "\n\n</details>"
+
+
+def data_links(body):
+    """Read only the controller's terminal data section in version-five archives."""
+    prefix, separator, tail = body.rpartition(RAW_OPEN)
+    if not separator or not prefix or not tail.endswith(RAW_CLOSE):
+        raise ValueError("Missing report Raw data section")
+    return tail.removesuffix(RAW_CLOSE)
+
+
+def explanation(report, field, lead):
+    """Remove an actually repeated headline while preserving the remaining Markdown."""
+    raw = report[field]
+    if len(markup.one_line(lead)) > 240:
+        return raw
+    prefix = r"\s*" + r"\s+".join(re.escape(word) for word in lead.split()) + r"(?=\s|$)"
+    match = re.match(prefix, raw)
+    return raw[match.end() :].lstrip() if match else raw
 
 
 def bullets(values, limit):
     """Render bounded model list entries without allowing them to introduce headings."""
-    return "\n".join("- " + markup.text(value, limit) for value in values)
+    return "\n".join("- " + markup.inline(value, limit) for value in values)
 
 
 def render(event, value, links, limit=60000):
@@ -22,7 +46,7 @@ def render(event, value, links, limit=60000):
         title = event.get("title") or (
             markup.label((markup.VERDICT | markup.DECISION)[verdict]) if verdict else "Implementation report"
         )
-    heading = f"{protocol.EVENT_MARKER}{event['id']} -->\n### {title}"
+    heading = f"{protocol.EVENT_MARKER}{event['id']} -->\n{VIEW_MARKER}\n### {title}"
     footer = markup.details("Raw data", links)
     agent = details.get("agent") or (report.get("agent") if not rejected else None) or {}
     identity = [agent.get(k) for k in ("profile", "provider", "model")]
@@ -37,9 +61,7 @@ def render(event, value, links, limit=60000):
     for allowance in (2000, 500, 120, 40):
         sections = []
         if rejected:
-            reason = value.get("reason") or details.get("diagnostic", {}).get(
-                "detail", "Output did not satisfy the response contract."
-            )
+            reason = details.get("diagnostic", {}).get("detail", "Output did not satisfy the response contract.")
             sections += [
                 markup.text(reason, allowance),
                 "Rejected output; not an accepted review. Concurro will report any required action on the dashboard.",
@@ -49,12 +71,14 @@ def render(event, value, links, limit=60000):
         else:
             field = "rationale" if "rationale" in report else "summary"
             if report.get(field):
-                sections.append(markup.headline(report, field) or markup.text(report[field], 240))
-                if not markup.redundant(report, field):
+                lead = report.get("headline") or markup.first_sentence(report[field]) or report[field]
+                sections.append(markup.inline(lead, 240))
+                remainder = explanation(report, field, lead)
+                if remainder:
                     sections.append(
                         markup.details(
                             "Explanation",
-                            markup.excerpt(report[field], allowance + 200, "Full explanation in Raw data."),
+                            markup.excerpt(remainder, allowance + 200, "Full explanation in Raw data."),
                         )
                     )
             identifiers = report.get("finding_ids", [])
@@ -66,7 +90,7 @@ def render(event, value, links, limit=60000):
                     location = markup.code(finding["path"]) if finding.get("path") else "General"
                     entries.append(
                         f"- **{markup.text(identifier)}** {title} · {location}\n  "
-                        + markup.text(finding["detail"], allowance)
+                        + markup.inline(finding["detail"], allowance)
                     )
                 sections += ["#### Findings\n\n" + "\n".join(entries)]
             updates = report.get("objection_updates", [])
@@ -77,7 +101,7 @@ def render(event, value, links, limit=60000):
                     identifier = identifiers[i] if i < len(identifiers) else entry.get("id") or "New objection"
                     entries.append(
                         f"- **{markup.text(identifier)}** · {markup.text(entry['status'])}: "
-                        + markup.text(entry.get("detail") or entry.get("evidence", ""), allowance)
+                        + markup.inline(entry.get("detail") or entry.get("evidence", ""), allowance)
                     )
                 sections += ["#### Objections\n\n" + "\n".join(entries)]
             elif report.get("concerns"):
@@ -89,7 +113,7 @@ def render(event, value, links, limit=60000):
                 sections += [
                     "#### Earlier findings\n\n"
                     + "\n".join(
-                        f"- **{markup.text(d['id'])}** · {markup.text(d['status'])}: {markup.text(d['evidence'], allowance)}"
+                        f"- **{markup.text(d['id'])}** · {markup.text(d['status'])}: {markup.inline(d['evidence'], allowance)}"
                         for d in report["dispositions"]
                     )
                 ]
@@ -97,15 +121,15 @@ def render(event, value, links, limit=60000):
                 labels = details.get("criterion_labels", {})
                 rows = [
                     [
-                        markup.text(labels.get(a["criterion"], "Review criterion"), 200),
+                        markup.inline(labels.get(a["criterion"], "Review criterion"), 200, cell=True),
                         markup.text(a["status"]),
-                        markup.text(a["reason"], allowance),
+                        markup.inline(a["reason"], allowance, cell=True),
                     ]
                     for a in report["assessments"]
                 ]
                 sections += ["#### Assessments\n\n" + markup.table(["Criterion", "Result", "Reason"], rows)]
             if report.get("design_issue"):
-                sections += ["#### Design issue\n\n" + markup.text(report["design_issue"]["explanation"], allowance)]
+                sections += ["#### Design issue\n\n" + markup.inline(report["design_issue"]["explanation"], allowance)]
             if report.get("validation"):
                 sections += [
                     "#### Testing (agent-reported)\n\n"

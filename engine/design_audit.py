@@ -11,6 +11,7 @@ from pathlib import Path
 
 import dashboard_runs
 import protocol
+import report_view
 import review_timing
 from conversation import MARKER, REPORT_LINK
 from policy import digest
@@ -91,7 +92,12 @@ def archived_report(snapshot, store, number):
     if not item["body"].startswith(MARKER):
         raise ValueError("Not a report archive")
     root = protocol.artifact_url(snapshot.repository, snapshot.issue)
-    parts = [match["number"] for match in REPORT_LINK.finditer(item["body"]) if match["root"] == root]
+    body = item["body"]
+    readable = body.split("\n", 2)[1:2] == [report_view.VIEW_MARKER]
+    links = report_view.data_links(body) if readable else body
+    parts = [match["number"] for match in REPORT_LINK.finditer(links) if match["root"] == root]
+    if readable and not parts:
+        raise ValueError("Missing report data links")
     if not parts:
         return json_block(item["body"])
     numbers = list(map(int, parts))

@@ -29,6 +29,7 @@ import pr_description
 import pr_template
 import protocol
 import readiness
+import reason_guidance
 import review_state
 import review_timing
 import reviews as review_rules
@@ -69,16 +70,14 @@ from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGE
 PLAN_OUTPUT_REPAIRS = 2
 INTAKE_OUTPUT_REPAIRS = 2
 MAX_UNCERTAIN = 2
-UNCERTAIN_MESSAGE = "model call outcome was uncertain twice; operator reconciliation required"
+UNCERTAIN_MESSAGE = reason_guidance.UNCERTAIN_MODEL
 # Context bytes `ask()` adds at dispatch (the repository commit and refs, and the operation contract).
 DISPATCH_ALLOWANCE = 2000
 # A review context's diff of one file; the reviewer reads the rest in the repository.
 MAX_DIFF = 64000
 DIFF_TRUNCATED = "[diff truncated; inspect the pinned repository]\n"
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
-LEGACY_BUNDLE_REASON = (
-    "trusted charter, role, skill, schema or profile bundle changed; operator reconciliation required"
-)
+LEGACY_BUNDLE_REASON = reason_guidance.LEGACY_BUNDLE
 PROVIDERS = {"claude", "codex", "copilot"}
 PATH_POLICY = {
     "editable_extensions",
@@ -930,7 +929,7 @@ class Controller:
         """Read accumulated PR paths once and require a nonempty, policy-allowed set."""
         changed = candidates.changed_paths(self.pulls.pages(f"pulls/{self.state['pr']}/files"))
         if not changed or not all(path_allowed(path, self.config) for path in changed):
-            raise Blocked("cannot reconcile accumulated PR changes")
+            raise Blocked(reason_guidance.ACCUMULATED_CHANGES)
         return changed
 
     def extend_plan_revisions(self, comment, amount, comments):
@@ -940,6 +939,7 @@ class Controller:
     def invalidate_design(self, reason):
         """Archive bounded judgment evidence and invalidate all approval generations."""
         state = self.state
+        self.remember_legacy_pr_body()
         if state.get("plan_id"):
             state["design_history"].append(
                 {
@@ -988,7 +988,7 @@ class Controller:
         validate_design_issue(issue)
         state = self.state
         if state.get("pending"):
-            raise Blocked("prepared publication must be reconciled before reopening design")
+            raise Blocked(reason_guidance.PREPARED_PUBLICATION)
         state.setdefault("reopen_history", []).append(
             {"source": source, "issue": issue, "head": state.get("head"), "plan": state["plan_id"]}
         )
@@ -1098,7 +1098,7 @@ class Controller:
             return state["stage"] != "clarify"
         if state.get("head") or state.get("pending"):
             if state.get("pending"):
-                raise Blocked("approved base or prepared publication changed; reconcile manually")
+                raise Blocked(reason_guidance.CHANGED_PUBLICATION)
             return self.resume_with_head(requirements)
         if not self.revise_plan("intake", "Requirements or base changed; QC is reassessing."):
             return False
@@ -1665,6 +1665,7 @@ class Controller:
         """Ask the implementer for a native-workspace change, then validate its bytes centrally."""
         state = self.state
         self.design_authorization()
+        pr_template.pin(state, self.config, self.files, self.save)
         round_key = f"{state['design_generation']}:{state['round']}"
         attempts = state.setdefault("implementation_attempts", {})
         feedbacks = state.setdefault("implementation_feedback", {})
@@ -1681,12 +1682,16 @@ class Controller:
             report = self.ask(assigned(self.config, "implementer"), "develop", context)
             extraction_error = report.get("workspace_error")
             report = {key: value for key, value in report.items() if key != "workspace_error"}
-            candidates.development(report)
+            try:
+                candidates.development(report)
+            except Blocked as error:
+                repair_feedback = str(error) + ". Return a corrected implementation response; nothing was applied."
+                feedbacks[round_key], attempts[round_key] = repair_feedback, attempt + 1
+                self.save()
+                continue
             if report["design_issue"] is not None:
                 self.reopen_design(report["design_issue"], "implementation")
                 return None
-            if report.get("description"):
-                pr_template.pin(state, self.config, self.files, self.save)
             proposal = {"summary": report["summary"], "edits": report["edits"]}
             names = (
                 [e.get("path") for e in report["edits"] if isinstance(e, dict)]
@@ -1802,9 +1807,18 @@ class Controller:
         """Reserve a fork branch and publish its issue link with recoverable intent."""
         return self._publication().reserve_development_branch(self.save)
 
+    def remember_legacy_pr_body(self):
+        """Adopt only an exact legacy body before its original plan or candidate is replaced."""
+        state = self.state
+        if state.get("pr") and state.get("plan") and not state.get("pr_description"):
+            expected = self._publication().pr_body(legacy=True)
+            if self.pulls.repo(f"pulls/{state['pr']}").get("body") == expected:
+                state["pr_description"] = {"last": digest(expected)}
+
     def implement(self):
         """Reserve the fork branch; publish candidate objects only after local acceptance."""
         self.design_authorization()
+        self.remember_legacy_pr_body()
         self.reserve_development_branch()
         state = self.state
         parent = state.get("head", state["base"])
@@ -1957,7 +1971,7 @@ class Controller:
             state["ready_seen"] = True
         # Never reverse a human's later conversion back to draft, even on a new head.
         if pr["draft"] and state.get("ready_seen"):
-            reasons.append("PR returned to draft; a human must mark it ready")
+            reasons.append(reason_guidance.RETURNED_TO_DRAFT)
         if not reasons and pr["draft"]:
             # The response can be lost; the next tick reconstructs completion from isDraft.
             state["ready_intent"] = state["head"]
@@ -2118,7 +2132,7 @@ class Controller:
         if state.get("head") and state["stage"] != "publish":
             pr = self.pulls.repo(f"pulls/{state['pr']}")
             if pr["state"] != "open" or pr["head"]["sha"] != state["head"]:
-                raise Blocked("PR closed or head changed outside the controller")
+                raise Blocked(reason_guidance.CLOSED_OR_CHANGED_HEAD)
         return True
 
     def step(self, number):

@@ -56,7 +56,7 @@ class TemplateTests(unittest.TestCase):
         self.assertNotIn("Repository guidance", body)
         self.assertIn("Keep the migration note here.", body)
         self.assertEqual(body.count("Read the guide."), 1)
-        self.assertIn("### Review focus", body)
+        self.assertIn("\n## Review focus\n", body)
 
     def test_missing_ambiguous_or_fenced_heading_is_rejected(self):
         for text in (
@@ -81,7 +81,7 @@ class TemplateTests(unittest.TestCase):
             with self.subTest(mapping=mapping), self.assertRaises(Blocked):
                 validate_config({**CONFIG, "pr_template_sections": mapping})
 
-    def test_pin_reuses_approved_base_snapshot_and_missing_template_defaults(self):
+    def test_pin_reuses_approved_base_snapshot_and_missing_template_blocks(self):
         state, config = {"base": "a" * 40}, {**CONFIG, "pr_template_sections": MAPPING}
         read, save = Mock(return_value={pr_template.PATH: TEMPLATE}), Mock()
         pr_template.pin(state, config, read, save)
@@ -91,7 +91,12 @@ class TemplateTests(unittest.TestCase):
         pr_template.pin(state, config, read, save)
         self.assertEqual(save.call_count, 1)
         missing = {**self.snapshot(), "text": None}
-        self.assertEqual(pr_template.render(self.parts(), missing, "a" * 40), pr_description.layout(self.parts()))
+        with self.assertRaisesRegex(Blocked, "Configured PR template is missing"):
+            pr_template.render(self.parts(), missing, "a" * 40)
+        with self.assertRaisesRegex(Blocked, "Configured PR template is missing"):
+            pr_template.pin({"base": "b" * 40}, config, Mock(return_value={pr_template.PATH: None}), save)
+        with self.assertRaisesRegex(Blocked, "Configured PR template is missing"):
+            pr_template.pin({"base": "a" * 40, "pr_template": missing}, config, read, save)
         with self.assertRaisesRegex(Blocked, "16000"):
             pr_template.pin({"base": "b" * 40}, config, Mock(return_value={pr_template.PATH: "x" * 16001}), save)
 
@@ -110,3 +115,26 @@ class TemplateTests(unittest.TestCase):
         self.assertNotIn("[x]", gh.pr["body"])
         self.assertEqual(controller.state["candidate"]["commit"], COMMIT)
         self.assertIn("Implementation plan", gh.pr["body"])
+
+    def test_19_20_missing_or_invalid_templates_block_before_develop(self):
+        for template in (None, "## Wrong heading", TEMPLATE + "\n## Why\n"):
+            with self.subTest(template=template):
+                config = {**deepcopy(CONFIG), "autonomous": True, "pr_template_sections": MAPPING}
+                gh, agents = FakeGitHub(config), DescribedAgents()
+                if template is not None:
+                    gh.trees[gh.base][pr_template.PATH] = template
+                else:
+                    gh.trees[gh.base]["docs/pull_request_template.md"] = TEMPLATE
+                with self.assertRaisesRegex(Blocked, "[Tt]emplate"):
+                    for _ in range(25):
+                        controller = Controller(gh, agents, config)
+                        controller.advance(7)
+                self.assertFalse(any(stage == "develop" for _, stage, _ in agents.calls))
+                self.assertFalse(gh.pr)
+
+    def test_24_unmapped_sections_are_siblings_even_with_nested_headings(self):
+        source = "## Summary\n### Why\n## Maintainer notes\n### Sign-off\n- [ ] Approved"
+        snapshot = {"base": "a", "text": source, "sections": {"### Why": ["problem"]}}
+        body = pr_template.render(self.parts(), snapshot, "a")
+        self.assertIn("\n## Review focus\n", body)
+        self.assertNotIn("### Review focus", body)

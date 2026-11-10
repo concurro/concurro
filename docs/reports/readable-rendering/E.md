@@ -1,6 +1,8 @@
 # Repository template preview
 
-Rendered from the recorded `TemplateTests` task with a template pinned at its approved base.
+Generated offline from current code and simulated fixtures. No live GitHub evidence.
+
+Regenerate with `python engine/tests/render_readable_previews.py`; add `--check` to detect stale previews.
 
 ## Issue dashboard
 
@@ -9,8 +11,6 @@ Rendered from the recorded `TemplateTests` task with a template pinned at its ap
 
 > [!TIP]
 > Ready for your review. A human decides whether to merge.
-
-Every open finding blocks the merge, whatever its severity.
 
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff Ready**
 
@@ -29,7 +29,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: unknown · Change risk: unknown | Confidence: low · PR assessment · Assessment incomplete | [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) · [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) |
+| Complexity: unknown · Change risk: unknown | Confidence: low · PR assessment · Assessment incomplete | [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) · [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) |
 
 **Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-18)).
 
@@ -41,8 +41,12 @@ Readiness: CI passed and all Concurro reviewers approved. Ready for human review
 
 </details>
 
-<!-- concurro:checkpoint:v1 {"digest":"bb6c107dd08992e3d2519b1ffcc19b523929fc7600de3262c06e028c9e091a55","id":1001,"number":1,"revision":51} -->
+<!-- concurro:checkpoint:v1 {"digest":"0000000000000000000000000000000000000000000000000000000000000000","id":1001,"number":1,"revision":51} -->
 
+
+## PR title
+
+Clarify the guide
 
 ## PR description
 
@@ -74,7 +78,7 @@ Read the edited documentation.
 Keep the migration note here.
 &lt;script>unsafe()&lt;/script>
 
-### Review focus
+## Review focus
 
 - Verify wording and links.
 
@@ -98,6 +102,16 @@ The change satisfies the plan.
 Reviewed commit `000000000000000000000000000000000000000f` · review 2
 
 </details>
+
+## Commit messages
+
+```text
+Clarify the guide.
+
+- Explain the boundary in docs/guide.md.
+
+Refs #7
+```
 
 ## Report archive
 

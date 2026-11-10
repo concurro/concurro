@@ -4,8 +4,6 @@
 > [!WARNING]
 > The plan is ready; waiting for your approval.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → **Design review Awaiting** → Implement → Code review → Handoff
 
 | Step | Status | Detail |

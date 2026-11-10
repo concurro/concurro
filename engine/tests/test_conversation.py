@@ -69,7 +69,13 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
         )
         archives = self.gh.archives()
         self.assertIn("Define the error behavior.", "\n".join(archives))
-        self.assertEqual(sum(a.split("\n")[1].startswith("### ✅ Plan QC · ") for a in archives), 6)
+        self.assertEqual(
+            sum(
+                next(line for line in a.splitlines() if line.startswith("### ")).startswith("### ✅ Plan QC · ")
+                for a in archives
+            ),
+            6,
+        )
         summary = self.gh.summary()["body"]
         self.assertIn("| Design review | ✅ 2 of 2 approve |", summary)
         self.assertIn("| ↳ Round 3 fresh |  | [claude: ✅ Approve]", summary)

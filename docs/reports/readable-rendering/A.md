@@ -1,15 +1,18 @@
 # Readable report preview
 
-Fixed report inputs from `test_rendering_helpers.samples`.
+Generated offline from current code and simulated fixtures. No live GitHub evidence.
+
+Regenerate with `python engine/tests/render_readable_previews.py`; add `--check` to detect stale previews.
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### Plan updated · claude / m
 
 Document locked builds.
 
 <details><summary>Explanation</summary>
 
-Document locked builds. Add a fragment.
+Add a fragment.
 
 </details>
 
@@ -22,20 +25,21 @@ Document locked builds. Add a fragment.
 </details>
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### 🛠️ Plan QC · claude · Revise
 
 One boundary is unspecified.
 
 <details><summary>Explanation</summary>
 
-One boundary is unspecified. The rest of the plan holds.
+The rest of the plan holds.
 
 </details>
 
 #### Objections
 
 - **O1-bbbbbbbb** · resolved: Old.
-- **O2-bbbbbbbb** · open: Specify the \`&lt;limit&gt;\` boundary.
+- **O2-bbbbbbbb** · open: Specify the `<limit>` boundary.
 
 <sub>claude · m</sub>
 
@@ -46,6 +50,7 @@ One boundary is unspecified. The rest of the plan holds.
 </details>
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### 🛠️ Code review · claude · Changes requested
 
 Two defects remain; one earlier finding is fixed.
@@ -78,13 +83,14 @@ The guide is close.
 </details>
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### ✅ Intake QC · claude · Proceed
 
 One boundary is unspecified.
 
 <details><summary>Explanation</summary>
 
-One boundary is unspecified. The rest of the plan holds.
+The rest of the plan holds.
 
 </details>
 
@@ -97,6 +103,7 @@ One boundary is unspecified. The rest of the plan holds.
 </details>
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### Design review output rejected
 
 Missing \`sources\` &lt;field&gt;.
@@ -112,19 +119,55 @@ Rejected output; not an accepted review. Concurro will report any required actio
 </details>
 
 <!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
 ### Implementation report
 
-Updated \`read\(\)\`.
-
-<details><summary>Explanation</summary>
-
 Updated `read()`.
-
-</details>
 
 #### Testing (agent-reported)
 
 Two tests passed.
+
+<sub>claude</sub>
+
+<details><summary>Raw data</summary>
+
+- [Full report](https://github.com/o/r/issues/7/artifacts/2)
+
+</details>
+
+<!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
+### Intake output rejected
+
+Missing required intake fields.
+
+Rejected output; not an accepted review. Concurro will report any required action on the dashboard.
+
+<sub>Concurro</sub>
+
+<details><summary>Raw data</summary>
+
+- [Full report](https://github.com/o/r/issues/7/artifacts/2)
+
+</details>
+
+<!-- concurro:event:v1:sample -->
+<!-- concurro:report-view:v5 -->
+### 🛠️ Changes requested
+
+The local review found a boundary issue.
+
+<details><summary>Explanation</summary>
+
+Keep `read()` within the limit.
+
+</details>
+
+#### Findings
+
+- **Finding** Bound `read()` · `src/read.rs`
+  Handle `<limit>` first.
 
 <sub>claude</sub>
 

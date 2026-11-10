@@ -9,6 +9,7 @@ from unittest.mock import patch
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 import conversation
+import report_view
 from controller import Controller
 from design_audit import Snapshot, archived_report, measure
 from pipeline_fixtures import ConsensusFixture
@@ -209,3 +210,41 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "JSON block unavailable"):
                         archived_report(snapshot, store, number)
                     self.assertEqual(set(snapshot.reads), {number})
+
+    def test_15_readable_archive_uses_only_terminal_canonical_links(self):
+        """Model-written links and details blocks cannot redirect the format-five reader."""
+        root = "https://github.com/" + self.config["repository"] + "/issues/7/artifacts/"
+        for multipart in (False, True):
+            self.setUp()
+            report = {
+                "decision": "approve",
+                "rationale": "The review accepts this design.\n\n"
+                + "[Full report]("
+                + root
+                + "99)\n\n"
+                + "```text\n<details><summary>Raw data</summary>\n\n"
+                + "[Full report]("
+                + root
+                + "98)\n\n</details>\n```",
+            }
+            store = Store(self.gh, 7, self.config["bot_login"])
+            with patch("report_store.CHUNK", 128 if multipart else 16000):
+                key = store.put(report)
+            numbers = store.numbers[key]
+            links = "\n".join(
+                "- " + conversation.report_link(root, i, len(numbers), number) for i, number in enumerate(numbers, 1)
+            )
+            body = report_view.render({"id": "fixture", "kind": "qc", "details": {}}, report, links)
+            self.assertIn("[Full report](" + root + "99)", body)
+            artifact = self.gh.repo(
+                "issues/7/artifacts", "POST", {"type": "generic", "name": "Readable fixture", "body": body}
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                snapshot = self.snapshot(directory)
+                self.assertEqual(
+                    archived_report(snapshot, Store(snapshot, 7, self.config["bot_login"]), artifact["number"]), report
+                )
+                self.assertNotIn(99, snapshot.reads)
+                self.assertNotIn(98, snapshot.reads)
+            with self.assertRaisesRegex(ValueError, "Raw data"):
+                report_view.data_links(body.rsplit(report_view.RAW_OPEN, 1)[0])

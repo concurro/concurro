@@ -47,4 +47,5 @@ Write `commit` for this round alone: a subject of at most 72 characters, a conve
 commit type, and 1–6 change bullets (at most 200 characters each). Do not put a prefix
 in the subject. Concurro uses the plan headline for the first commit, your subject for
 repairs, and a type prefix only when `conventional_commits` is enabled. If requesting a
-design reopen without edits, return null for `description` and `commit`.
+design reopen without edits, keep these objects structurally valid; Concurro does not
+publish their contents for a reopen request. Fields must contain non-whitespace text.

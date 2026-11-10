@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
+import markup
 from actions import BUNDLE_REASON
 from controller import Controller
 from fakes import ClassifiedAgents
@@ -31,6 +32,10 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
         with patch.object(controller.checkpoints, "reference", return_value=reference):
             result = controller.summary_body()
         self.assertEqual(controller.state, before, "rendering must not mutate durable state")
+        self.assertEqual(
+            markup.BLOCKING_NOTE in result,
+            any(f["status"] in ("open", "withdrawn") for f in controller.state.get("findings", [])),
+        )
         return result
 
     def scenarios(self):
@@ -165,3 +170,15 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
         self.assertIn("Not assessed yet", main)
         self.assertIn("Run 1 — invalidated", diagnostics)
         self.assertIn("Earlier approvals no longer apply", diagnostics)
+
+    def test_22_blocking_note_only_appears_for_unfinished_findings(self):
+        """Open and withdrawn findings explain the merge gate; completed findings do not."""
+        controller = Controller(self.gh, self.agents, self.config)
+        controller.issue = self.gh.issue
+        controller.load(self.gh.comments)
+        controller.initialize(self.gh.comments, "manual")
+        for status in ("open", "withdrawn", "fixed", "obsolete", "resolved"):
+            with self.subTest(status=status):
+                controller.state["findings"] = [{"status": status}]
+                body = self.render(controller)
+                self.assertEqual(markup.BLOCKING_NOTE in body, status in ("open", "withdrawn"))

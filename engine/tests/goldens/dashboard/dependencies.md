@@ -4,8 +4,6 @@
 > [!TIP]
 > Ready for your review. A human decides whether to merge.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff Ready**
 
 | Step | Status | Detail |

@@ -1,6 +1,7 @@
 """Recoverable publication of one report and its comments as a single pending review."""
 
 import markup
+import reason_guidance
 import review_api
 import reviews
 from policy import Blocked
@@ -19,7 +20,7 @@ class Publication:
         """Require exact review ownership, task, commit, marker and frozen body."""
         pr = node.get("pullRequest") or {}
         return (
-            node.get("author", {}).get("login") in (self.publisher.bot, self.publisher.bot.removesuffix("[bot]"))
+            (node.get("author") or {}).get("login") in (self.publisher.bot, self.publisher.bot.removesuffix("[bot]"))
             and pr.get("number") == self.publisher.pr
             and pr.get("repository", {}).get("nameWithOwner", "").lower()
             == self.config.get("upstream", self.config["repository"]).lower()
@@ -36,7 +37,7 @@ class Publication:
             return
         pr = self.gh.repo(f"pulls/{p.pr}")
         if pr.get("state", "open") != "open":
-            raise Blocked("PR closed before review publication; operator reconciliation required")
+            raise Blocked(reason_guidance.CLOSED_BEFORE_REVIEW)
         sequence = f"withdrawn:{item['generation']}" if withdrawn else item["sequence"]
         marker = reviews.review_marker(self.state, self.config, sequence)
         if "head" not in progress:
@@ -47,14 +48,14 @@ class Publication:
         if progress["phase"] == "building":
             existing_reviews = list(review_api.reviews(self.gh, p.pr))
             if sum((node.get("body") or "").startswith(marker) for node in existing_reviews) > 1:
-                raise Blocked("duplicate PR review publication; reconcile manually")
+                raise Blocked(reason_guidance.DUPLICATE_REVIEW)
             for node in existing_reviews:
                 if (
-                    node.get("author", {}).get("login") in (p.bot, p.bot.removesuffix("[bot]"))
+                    (node.get("author") or {}).get("login") in (p.bot, p.bot.removesuffix("[bot]"))
                     and node.get("state") == "PENDING"
                     and not (node.get("body") or "").startswith(marker)
                 ):
-                    raise Blocked("Unidentified pending review; operator reconciliation required")
+                    raise Blocked(reason_guidance.UNIDENTIFIED_REVIEW)
             for existing in existing_reviews:
                 same = (existing.get("body") or "").startswith(marker)
                 if same:
@@ -76,7 +77,7 @@ class Publication:
                 )
                 current = self.gh.repo(f"pulls/{p.pr}")
                 if current.get("state", "open") != "open":
-                    raise Blocked("PR closed before review publication")
+                    raise Blocked(reason_guidance.CLOSED_BEFORE_REVIEW_BUILD)
                 if not withdrawn and report["verdict"] != "reopen" and current["head"]["sha"] != progress["head"]:
                     return
                 node = review_api.mutate(
@@ -157,10 +158,12 @@ class Publication:
                 p.checkpoint()
         if progress["phase"] == "submitting":
             node = review_api.node(self.gh, progress["review"])
+            if node and node.get("state") == "PENDING" and self.verify(node, progress["marker"]):
+                resume = getattr(self.gh, "resume_review_submission", None)
+                if resume is not None:
+                    node = resume(progress["review"], progress["body"])
             if not node or node.get("state") != "COMMENTED" or not self.verify(node, progress["body"]):
-                raise Blocked(
-                    "Review submission is unconfirmed; operator reconciliation required. Same-ID retry is not enabled."
-                )
+                raise Blocked(reason_guidance.UNCONFIRMED_REVIEW)
             progress["phase"] = "submitted"
             p.checkpoint()
         node = review_api.node(self.gh, progress["review"])

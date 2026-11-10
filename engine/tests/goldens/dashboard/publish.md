@@ -4,8 +4,6 @@
 > [!NOTE]
 > Publishing the implementation and preparing its pull request.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code review → Handoff
 
 | Step | Status | Detail |

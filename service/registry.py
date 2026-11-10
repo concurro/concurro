@@ -449,6 +449,21 @@ class Registry:
             row = db.execute("SELECT context, recovery FROM review_intents WHERE intent = ?", (intent,)).fetchone()
         return {**json.loads(row[0]), "recovery": row[1]} if row else None
 
+    def review_submissions(self, key, review_id):
+        """Read every journaled submit for this review, including manually resolved attempts."""
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT m.*, r.context FROM mutations m JOIN review_intents r ON m.intent = r.intent "
+                "WHERE m.repository = ? AND m.issue = ? ORDER BY m.generation, m.sequence",
+                key,
+            ).fetchall()
+        return [
+            _mutation_record(row[:-1])
+            for row in rows
+            if (context := json.loads(row[-1])).get("kind") == "submitPullRequestReview"
+            and context.get("review") == review_id
+        ]
+
     def settle(self, intent, status, review_id=None):
         """Settle an occurrence, atomically retaining a successfully created review's ID."""
         if status not in STATUSES[1:]:

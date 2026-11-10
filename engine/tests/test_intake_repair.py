@@ -255,7 +255,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.state["calls"], 7)
         self.assertNotIn("intake_draft", controller.state)
         self.assertEqual(len(self.advisory_comments()), 1)
-        self.assertIn("not a request for human action", self.advisory_comments()[0]["body"])
+        self.assertIn("Planning will continue. No action needed.", self.advisory_comments()[0]["body"])
         for concern in concerns:
             self.assertIn(concern, self.advisory_comments()[0]["body"])
         downstream = [(stage, context) for _, stage, context in self.agents.calls if stage != "intake"]

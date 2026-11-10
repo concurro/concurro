@@ -212,7 +212,7 @@ class RestBackend:
                 "data": {
                     "node": {
                         "number": 9,
-                        "state": "OPEN",
+                        "state": self.fake.pr.get("state", "open").upper(),
                         "repository": {"nameWithOwner": self.fake.config["repository"]},
                     }
                 }

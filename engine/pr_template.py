@@ -44,9 +44,12 @@ def pin(state, config, read, save):
     validate(mapping)
     previous = state.get("pr_template")
     if previous and previous["base"] == state["base"] and previous["sections"] == mapping:
+        render({field: "" for field in FIELDS}, previous, state["base"])
         return
     template = read(state["base"], [PATH], inspection=True)[PATH]
-    if template is not None and len(template.encode()) > MAX_BYTES:
+    if template is None:
+        raise Blocked(f"Configured PR template is missing at {PATH}")
+    if len(template.encode()) > MAX_BYTES:
         raise Blocked("PR template exceeds the 16000-byte limit")
     snapshot = {"base": state["base"], "sections": deepcopy(mapping), "text": template}
     # Validate headings now, before creating candidate Git objects.
@@ -57,14 +60,17 @@ def pin(state, config, read, save):
 
 def render(parts, snapshot, base):
     """Insert fields only under exact headings and retain unchecked template checklists."""
-    if not snapshot or snapshot["text"] is None:
+    if not snapshot:
         return pr_description.layout(parts)
+    if snapshot["text"] is None:
+        raise Blocked(f"Configured PR template is missing at {PATH}")
     if snapshot["base"] != base:
         raise Blocked("PR template does not match the approved base")
     mapping = snapshot["sections"]
     validate(mapping)
     source = re.sub(r"<!--.*?-->", "", snapshot["text"], flags=re.S)
     lines, fence, found = [], None, set()
+    heading_level = 6
     used = {field for fields in mapping.values() for field in fields}
     if "lead" not in used and parts["lead"]:
         lines += [parts["lead"], ""]
@@ -81,6 +87,8 @@ def render(parts, snapshot, base):
             continue
         heading = HEADING.fullmatch(line)
         name = heading[1] if heading else None
+        if name:
+            heading_level = min(heading_level, len(name.split(" ", 1)[0]))
         lines.append(markup.inline_html(CHECKED.sub(r"\1[ ]", line)))
         if name in mapping:
             if name in found:
@@ -92,7 +100,7 @@ def render(parts, snapshot, base):
     if fence or found != set(mapping):
         raise Blocked("PR template has an unclosed fence or a missing mapped heading")
     remaining = {key: value if key not in used and key != "lead" else "" for key, value in parts.items()}
-    tail = pr_description.layout(remaining).strip()
+    tail = pr_description.layout(remaining, heading_level=heading_level).strip()
     if tail:
         lines += ["", tail]
     return "\n".join(lines).strip()

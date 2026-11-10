@@ -26,6 +26,32 @@ def views():
             conversation.source_value(state, source),
             "- [Full report](https://github.com/o/r/issues/7/artifacts/2)",
         )
+    for kind, value, details in (
+        (
+            "intake_rejection",
+            {"reason": "All good, output accepted."},
+            {"diagnostic": {"detail": "Missing required intake fields."}},
+        ),
+        (
+            "local",
+            {
+                "attempt": 0,
+                "review": {
+                    "verdict": "changes_requested",
+                    "summary": "The local review found a boundary issue. Keep `read()` within the limit.",
+                    "findings": [
+                        {"title": "Bound `read()`", "path": "src/read.rs", "detail": "Handle `<limit>` first."}
+                    ],
+                },
+            },
+            {"reviewer": "claude"},
+        ),
+    ):
+        bodies[kind] = report_view.render(
+            {"id": "sample", "kind": kind, "details": details},
+            value,
+            "- [Full report](https://github.com/o/r/issues/7/artifacts/2)",
+        )
     return bodies
 
 

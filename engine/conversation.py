@@ -459,12 +459,11 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
     if len(journal["pending"]) >= 8:
         raise Blocked("conversation event exceeds publication bounds")
-    journal["sequence"] += 1
-    sequence = journal["sequence"]
+    sequence = journal["sequence"] + 1
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if source is not None:
         details = dict(details)
-        if state.get("requirements"):
+        if kind == "qc" and details.get("phase") != "intake" and state.get("requirements"):
             details["criterion_labels"] = {c["id"]: c["text"] for c in design.criteria(state["requirements"])}
         title, _, _ = render_v2(state, kind, source, details)
         body = json.dumps(source_value(state, source), sort_keys=True)
@@ -501,15 +500,15 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
             rendered, limit = archive(event, state), ARCHIVE_LIMIT
             event["content_digest"] = digest(rendered)
     if len(rendered.encode()) > limit:
-        journal["sequence"] -= 1
         raise Blocked("conversation event exceeds publication bounds")
+    journal["sequence"] = sequence
     journal["pending"].append(event)
 
 
 def queue_intake_concerns(state, concerns):
     """Notify humans of advisory intake concerns through the recoverable comment outbox."""
-    lines = ["Intake approved moving forward to planning with these concerns:", ""]
-    used = len("\n".join(lines).encode())
+    lines = []
+    used = 0
     shortened = False
     for concern in concerns:
         preview = concern if len(concern) <= 1000 else concern[:999].rstrip() + "…"
@@ -522,8 +521,6 @@ def queue_intake_concerns(state, concerns):
         lines.append(line)
         used += len(line.encode()) + 1
     lines += [
-        "",
-        "These are planning and review considerations, not a request for human action.",
         "",
         ("Some text is shortened. " if shortened else "")
         + "The full concerns are in the intake report linked from the dashboard.",

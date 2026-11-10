@@ -4,8 +4,6 @@
 > [!NOTE]
 > The pull request was closed without merging.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff ⏹️**
 
 | Step | Status | Detail |

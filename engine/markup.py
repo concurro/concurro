@@ -51,6 +51,14 @@ def one_line(value):
     return " ".join(str(value).split())
 
 
+def short_title(value, limit):
+    """Truncate a title at a word boundary and make omitted content explicit."""
+    if len(value) <= limit:
+        return value
+    cut = value[: limit - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-") + "…"
+
+
 def text(value, limit=None):
     """Plain inline text: one line, cut to `limit`, with every Markdown and HTML metacharacter escaped."""
     value = one_line(value)
@@ -213,7 +221,7 @@ def review_phase(value):
     return "iterative" if value == "cooperative" else str(value)
 
 
-def inline(value, limit=TITLE_LIMIT):
+def inline(value, limit=TITLE_LIMIT, *, cell=False):
     """Bound inline prose while retaining complete code spans, including in table cells."""
     raw = one_line(value)
     if len(raw) > limit:
@@ -239,7 +247,11 @@ def inline(value, limit=TITLE_LIMIT):
                             + text(segment)
                             + (" " if segment.endswith(" ") else "")
                         ),
-                        code(raw[start : start + close.start()], cell=True),
+                        (
+                            code(raw[start : start + close.start()], cell=cell)
+                            if raw[start : start + close.start()].strip()
+                            else text(raw[i : start + close.end()])
+                        ),
                     )
                 )
                 plain = []
@@ -255,7 +267,7 @@ def inline(value, limit=TITLE_LIMIT):
     return "".join(parts)
 
 
-def finding_title_v2(finding):
+def finding_title_v2(finding, *, cell=False):
     """A bounded finding title with inert prose and well-formed inline code."""
     raw = one_line(finding.get("title") or "") or first_sentence(finding["detail"]) or one_line(finding["detail"])
-    return inline(raw)
+    return inline(raw, cell=cell)

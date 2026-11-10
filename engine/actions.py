@@ -5,6 +5,7 @@ import re
 import conversation
 import markup
 import protocol
+import reason_guidance
 from checkpoints import DIAGNOSTICS
 from github import NotFound
 from markup import code, link, text
@@ -147,15 +148,17 @@ def explain(reason, continuation, state=None, config=None):
     """Describe the blocker, link its evidence, and give the applicable human action."""
     state, config = state or {}, config or {}
     first = markup.first_sentence(reason)
-    operator = any(term in reason.lower() for term in ("reconcile manually", "operator", "manual reconciliation"))
+    operator = reason_guidance.operator_summary(reason, state.get("stage", "blocked"))
     if operator:
-        summary = "Concurro paused because its recorded state needs operator reconciliation."
+        summary = operator
         remainder = reason
-        continuation = "An operator must reconcile the recorded state before work can continue."
+        continuation = reason_guidance.OPERATOR_ACTION
     else:
         summary = first or markup.one_line(reason)[:1000]
         normalized = markup.one_line(reason)
-        remainder = normalized[len(first) :].lstrip() if first else ""
+        remainder = normalized[len(first) :].lstrip() if first else normalized[len(summary) :].lstrip()
+        if not first and remainder:
+            summary += "…"
     lines = ["**What happened:** " + text(summary)] if summary else []
     evidence = []
     if config.get("repository"):
@@ -323,7 +326,7 @@ def publish(state, github, checkpoint):
             continue
         current = github.repo(f"issues/comments/{record['comment']}")["body"]
         if current not in (intended["body"], record["body"]):
-            raise Blocked("Concurro request comment differs from its recorded content; reconcile manually")
+            raise Blocked(reason_guidance.REQUEST_CONFLICT)
         if current != intended["body"]:
             github.repo(f"issues/comments/{record['comment']}", "PATCH", {"body": intended["body"]})
         intended["state"] = "done"

@@ -14,7 +14,10 @@ class PendingReviews:
         if not hasattr(self, "pending_nodes"):
             self.pending_nodes = {}
         if data["query"] == review_api.NODE:
-            return {"data": {"node": deepcopy(self.pending_nodes.get(data["variables"]["id"]))}}
+            node = deepcopy(self.pending_nodes.get(data["variables"]["id"]))
+            if node:
+                node["pullRequest"]["state"] = self.pr.get("state", "open").upper()
+            return {"data": {"node": node}}
         if data["query"] == review_api.LIST:
             return {
                 "data": {

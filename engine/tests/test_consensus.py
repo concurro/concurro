@@ -423,8 +423,10 @@ class ConsensusTests(ConsensusFixture, unittest.TestCase):
             return report
 
         with patch.object(self.agents, "ask", side_effect=mixed):
-            with self.assertRaisesRegex(Blocked, "cannot include candidate edits"):
+            with self.assertRaisesRegex(Blocked, "repair allowance exhausted"):
                 self.tick()
+        development = [context for _, stage, context in self.agents.calls if stage == "develop"]
+        self.assertIn("cannot include candidate edits", development[-1]["implementation_feedback"])
         self.assertEqual(set(self.gh.refs.values()), {self.gh.base})
         self.assertEqual(len(self.gh.commits), 1)
 

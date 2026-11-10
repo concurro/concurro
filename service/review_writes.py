@@ -3,8 +3,6 @@
 import review_api
 from reviews import REVIEW_MARKER
 
-from .admission import resolved_thread
-
 PULL_NODE = "query($id:ID!) { node(id:$id) { ... on PullRequest { number state repository { nameWithOwner } } } }"
 
 
@@ -35,18 +33,16 @@ def binding(gateway, key, repository, body):
     if not creating and (
         node.get("id") != values["pullRequestReviewId"]
         or node.get("state") != "PENDING"
-        or node.get("author", {}).get("login")
+        or (node.get("author") or {}).get("login")
         not in (gateway.bot_login, (gateway.bot_login or "").removesuffix("[bot]"))
     ):
         return None
     if name == "submitPullRequestReview" and values["body"].split("\n", 1)[0] != marker:
         return None
-    if name == "addPullRequestReviewThreadReply":
-        from github import RESOLVE_THREAD
-
-        check = {"query": RESOLVE_THREAD, "variables": {"input": {"threadId": values["pullRequestReviewThreadId"]}}}
-        if not resolved_thread(check) or not gateway.bound(key, "graphql", check):
-            return None
+    if name == "addPullRequestReviewThreadReply" and not gateway.finding_thread(
+        key, repository, values["pullRequestReviewThreadId"], pr["number"]
+    ):
+        return None
     return {
         "kind": name,
         "request": body,
@@ -57,3 +53,8 @@ def binding(gateway, key, repository, body):
         "head": values["commitOID"] if creating else node.get("commit", {}).get("oid"),
         "pending_body": marker,
     }
+
+
+def definitely_failed(record):
+    """Only a definite failure, not an operator-cleared unknown, permits another send."""
+    return record is not None and record.status == "failed" and record.resolution is None

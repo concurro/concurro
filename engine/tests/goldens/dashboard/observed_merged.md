@@ -4,8 +4,6 @@
 > [!NOTE]
 > The pull request has been merged.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → Handoff ✅
 
 | Step | Status | Detail |

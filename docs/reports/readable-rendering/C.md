@@ -1,16 +1,16 @@
 # Single-review publication preview
 
-Recorded fixture: `format_samples.review_state`, published through the pending-review simulator.
+Generated offline from current code and simulated fixtures. No live GitHub evidence.
 
-## Issue dashboard
+Regenerate with `python engine/tests/render_readable_previews.py`; add `--check` to detect stale previews.
+
+## Completed task dashboard
 
 <!-- concurro:v1 -->
 ## Concurro
 
 > [!TIP]
 > Ready for your review. A human decides whether to merge.
-
-Every open finding blocks the merge, whatever its severity.
 
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff Ready**
 
@@ -29,9 +29,9 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) · [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) |
+| Complexity: unknown · Change risk: unknown | Confidence: low · PR assessment · Assessment incomplete | [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) · [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) |
 
-**Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-20)).
+**Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-18)).
 
 <details><summary>Diagnostics</summary>
 
@@ -41,10 +41,10 @@ Readiness: CI passed and all Concurro reviewers approved. Ready for human review
 
 </details>
 
-<!-- concurro:checkpoint:v1 {"digest":"0000000000000000000000000000000000000000000000000000000000000000","id":1001,"number":1,"revision":49} -->
+<!-- concurro:checkpoint:v1 {"digest":"0000000000000000000000000000000000000000000000000000000000000000","id":1001,"number":1,"revision":50} -->
 
 
-## Submitted review
+## Separate finding-publication fixture
 
 <!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:2 -->
 ### 🛠️ Concurro review · claude · Changes requested
@@ -123,4 +123,4 @@ See [readable archive previews](A.md).
 
 ## Validation boundary
 
-Same-ID submission retry is disabled until the proposal’s live test is authorized and completed. All uncertain service writes stop for an operator.
+Uncertain same-ID resubmission stays disabled pending authorized live validation. All uncertain service writes stop for an operator.

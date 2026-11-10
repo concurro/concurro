@@ -3,6 +3,8 @@
 import review_api
 from controller import Outcome
 
+from .review_writes import definitely_failed
+
 
 def reconcile(gateway, intent, operator):
     """Confirm publication or compensate a pending edit without clearing uncertainty first."""
@@ -26,14 +28,14 @@ def reconcile(gateway, intent, operator):
         generation = registry.grant(key, "review-recovery:" + operator, 900, consume=False)
     try:
         child = registry.mutation(context["recovery"]) if context.get("recovery") else None
-        if child:
-            if child.status != "done":
-                raise ValueError("compensating write requires manual resolution")
+        if child and child.status == "done":
             registry.resolve(intent, "discarded", "confirmed review deletion: " + child.intent, operator)
             return {"intent": intent, "disposition": "discarded"}
+        if child and not definitely_failed(child):
+            raise ValueError("compensating write requires manual resolution")
         node = gateway._graphql_node(context["repository"], review_api.NODE, context["review"])
         pr = node.get("pullRequest") or {}
-        author = node.get("author", {}).get("login")
+        author = (node.get("author") or {}).get("login")
         if (
             node.get("id") != context["review"]
             or author not in (gateway.bot_login, (gateway.bot_login or "").removesuffix("[bot]"))

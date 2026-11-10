@@ -69,8 +69,13 @@ bodies and the final body are frozen before submission. Submission is not comple
 thread mapping, reply verification and resolution receipts must finish before removal.
 An identified abandoned build is deleted before rebuilding. Unknown pending reviews,
 conflicting identity/body and uncertain submissions stop for an operator. A submitting
-review is never deleted or rebuilt. Same-ID resubmission remains disabled pending live
-validation; recovery can recognize a confirmed submission without writing again.
+review is never deleted or rebuilt. The service may resume a first send when its durable
+journal contains no submit intent, or only definite failed attempts for that review ID.
+The gateway checks this again under its write lock. An unknown, in-flight, successful or
+operator-resolved attempt prevents another send, even if GitHub still says `PENDING`.
+Uncertain same-ID resubmission remains disabled pending live validation; recovery can
+recognize a confirmed submission without writing again. Clients without a durable write
+journal cannot infer that a pending submission is safe to send.
 
 The engine checks the PR head before and after listing changed files. Both must match
 the reviewed head. Placement is based on the returned patch, not just hunk-header counts:
@@ -147,7 +152,9 @@ reviewers still receive the actual published body. Legacy candidates without des
 fields keep their original body and commit behavior.
 
 The first new implementation commit uses the plan headline. Repair subjects and all
-commit-body bullets describe that round's changes, followed by `Refs #N`. Set optional
+commit-body bullets describe that round's changes, followed by `Refs #N` (or the full issue
+URL across repositories). Subjects fit 72 characters including any conventional prefix;
+long subjects end at a word boundary with an ellipsis. Set optional
 `conventional_commits: true` in the target configuration to add the model-selected type
 prefix; the default is false. Commit metadata is separate from the whole-PR description.
 
@@ -178,12 +185,34 @@ in their desired order. For example:
 Supported fields are `lead`, `problem`, `changes`, `compatibility`, `testing` and
 `review_focus`. Each field may appear only once. Missing or duplicated mapped headings
 and malformed mappings stop publication; headings are never guessed. Unmapped generated
-fields retain their default sections, and an unmapped lead stays first. The footer remains
+fields use sibling sections at the shallowest template heading level, and an unmapped lead stays first. The footer remains
 controller-owned.
 
 The template is a regular UTF-8 file, at most 16,000 bytes, read from the approved base and
-saved with that base and mapping. Repairs reuse this snapshot. No template or no mapping
-uses the default layout. Template sections and ordinary text are preserved; HTML comments
+saved with that base and mapping before asking the implementer. Repairs reuse this snapshot.
+Without a mapping, the default layout is used. A configured mapping requires the template
+at that exact path; a missing file blocks the task before implementation. Template sections and ordinary text are preserved; HTML comments
 are omitted and other HTML is escaped. Existing checked boxes are rendered unchecked.
 There is no automatic checklist attestation: a maintainer may check items with evidence,
 which then counts as a human body edit and stops automatic refresh.
+
+### Rendering and recovery corrections
+
+Format-4 finding titles and format-5 report views preserve complete inline code spans;
+whitespace-only spans are escaped literally. Pipes inside code are escaped only in tables.
+Earlier posted formats retain their original renderers.
+
+PR description fields, review focus, PR titles and commit prose neutralize issue-reference tokens
+(`#123`, `owner/repo#123`, `GH-123`, issue/PR URLs) and mentions with zero-width separators.
+Ordinary words remain unchanged. Markdown descriptions preserve complete code spans;
+plain-text PR titles and commit messages neutralize references inside backticks too. Controller-generated issue
+links and `Closes`/`Refs` lines remain active. Validation is labelled agent-reported and
+rendered as inert prose; it cannot create headings or checked template task-list items.
+Cross-repository commit references use the issue's full URL.
+
+Before replacing a legacy plan or candidate, Concurro adopts the old description only if
+the live PR body exactly matches its legacy renderer. That digest survives invalidation,
+so a later structured candidate can refresh it. A mismatched body remains human-owned.
+Malformed implementation descriptions receive bounded model repair feedback. New response
+schemas require nonempty description and commit objects, including on design reopens
+(where those fields are not published).

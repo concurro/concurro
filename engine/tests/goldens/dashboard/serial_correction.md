@@ -4,8 +4,6 @@
 > [!NOTE]
 > We're waiting for `claude` to correct its iterative design review — correction 1 of 4; and `codex` to complete its iterative design review.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code review → Handoff
 
 | Step | Status | Detail |

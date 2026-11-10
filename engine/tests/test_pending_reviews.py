@@ -184,3 +184,25 @@ class PendingReviewTests(unittest.TestCase):
         finding = reviews.find(self.state, "F2")
         self.assertEqual(finding["thread"], "body")
         self.assertIn("F2", self.gh.app_reviews[0]["body"])
+
+    def test_null_author_on_unrelated_review_is_ignored(self):
+        self.gh.pending_nodes = {
+            "deleted-author": {"id": "deleted-author", "author": None, "state": "COMMENTED", "body": "Human review"}
+        }
+        self.assertTrue(self.publish())
+
+    def test_null_author_with_our_marker_is_a_conflict(self):
+        marker = reviews.review_marker(self.state, CONFIG, 2)
+        node = review_api.mutate(self.gh, "addPullRequestReview", pullRequestId="PR_9", commitOID="d" * 40, body=marker)
+        self.gh.pending_nodes[node["id"]]["author"] = None
+        with self.assertRaises(Blocked):
+            self.publish()
+
+    def test_mixed_rest_then_pending_outbox_preserves_protocol(self):
+        self.state["pr_outbox"][0].pop("publication")
+        self.state["design_generation"] = 2
+        reviews.queue_withdrawal(self.state, ["F1"])
+        self.assertTrue(self.publish())
+        self.assertEqual(len(self.gh.app_reviews), 2)
+        self.assertTrue(any(c["body"].startswith(reviews.WITHDRAWN_MARKER) for c in self.gh.review_comments))
+        self.assertFalse(self.state["pr_outbox"])

@@ -4,8 +4,6 @@
 > [!NOTE]
 > Work on this issue has stopped.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → **Plan ⏹️** → Design review → Implement → Code review → Handoff
 
 | Step | Status | Detail |

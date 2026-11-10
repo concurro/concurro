@@ -1,5 +1,6 @@
 """Current-head review and CI eligibility for marking a draft PR ready."""
 
+import reason_guidance
 from model_config import assigned
 from policy import approval_valid, in_scope, path_allowed
 
@@ -20,18 +21,18 @@ def review_reasons(state, pr, files, threads, config):
     """Concurro's publication/review conditions, independent of GitHub merge policy."""
     reasons = []
     if pr.get("state") != "open":
-        reasons.append("PR is closed")
+        reasons.append(reason_guidance.CLOSED_PR)
     if pr.get("user", {}).get("login") != config["bot_login"] or pr.get("number") != state.get("pr"):
-        reasons.append("PR identity differs from the controller publication")
+        reasons.append(reason_guidance.CHANGED_PR_IDENTITY)
     head = pr.get("head", {})
     if (
         head.get("sha") != state.get("head")
         or head.get("ref") != state["branch"]
         or head.get("repo", {}).get("full_name", "").lower() != config.get("fork", config["repository"]).lower()
     ):
-        reasons.append("head changed outside the controller")
+        reasons.append(reason_guidance.CHANGED_HEAD)
     if pr.get("base", {}).get("ref") != config["base"]:
-        reasons.append("PR targets a different base branch")
+        reasons.append(reason_guidance.CHANGED_BASE_BRANCH)
     if not approval_valid(state, config):
         reasons.append("approved plan missing or stale")
     for provider in assigned(config, "pr_reviewers"):
@@ -50,11 +51,11 @@ def review_reasons(state, pr, files, threads, config):
     if any(f["status"] == "withdrawn" for f in state.get("findings", [])):
         reasons.append("withdrawn findings awaiting retirement")
     if any(not t["isResolved"] for t in threads):
-        reasons.append("unresolved review threads")
+        reasons.append(reason_guidance.UNRESOLVED_THREADS)
     if not files or set(files) != set(state.get("changed_files", [])):
-        reasons.append("PR file set differs from controller evidence")
+        reasons.append(reason_guidance.CHANGED_FILES)
     if not all(path_allowed(p, config) and in_scope(p, state["plan"]) for p in files):
-        reasons.append("unapproved path")
+        reasons.append(reason_guidance.UNAPPROVED_PATH)
     return reasons
 
 

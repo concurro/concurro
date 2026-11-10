@@ -6,6 +6,7 @@ import sys
 
 import markup
 import pending_reviews
+import reason_guidance
 from github import Transient
 from markup import block, code, link, table, text
 from policy import Blocked, digest
@@ -140,7 +141,7 @@ DISPOSITION_MARKER = "<!-- concurro:disposition:v1:"
 WITHDRAWN_MARKER = "<!-- concurro:withdrawn:v1:"
 # Failed attempts of one publication item before the task is blocked; a 422 may be spam prevention.
 MAX_ATTEMPTS = 3
-CONFLICT = "PR review publication differs from its recorded content; reconcile manually"
+CONFLICT = reason_guidance.REVIEW_CONFLICT
 # GitHub rejects a review body over 65,536 characters.
 REVIEW_BODY_LIMIT = 60000
 KEPT_TEXT = 1000
@@ -267,7 +268,11 @@ def review_body(state, config, item, report, findings, placed):
 def review_body_v2(state, config, item, report, findings, placed):
     """Verdict and headline, new findings by severity, answers to earlier ones; the rest collapsed."""
     emoji, outcome = markup.VERDICT[report["verdict"]]
-    title_renderer = markup.finding_title_v2 if item.get("format", 1) >= 4 else markup.finding_title
+    title_renderer = (
+        (lambda finding: markup.finding_title_v2(finding, cell=True))
+        if item.get("format", 1) >= 4
+        else markup.finding_title
+    )
     lines = [
         review_marker(state, config, item["sequence"]),
         f"### {emoji} Concurro review · {text(item['provider'])} · {outcome}",
@@ -471,7 +476,7 @@ class Publisher:
             i for i in items if i.get("user", {}).get("login") == self.bot and i.get("body", "").startswith(marker)
         ]
         if len(found) > 1:
-            raise Blocked("duplicate PR review publication; reconcile manually")
+            raise Blocked(reason_guidance.DUPLICATE_REVIEW)
         return found[0] if found else None
 
     def comment(self, comments, marker, path, body, data):
@@ -633,7 +638,7 @@ class Publisher:
                 item["inline"] = False
                 self.checkpoint()
                 if item["attempts"] >= MAX_ATTEMPTS:
-                    raise Blocked("PR review publication failed repeatedly; inspect the PR and its review threads")
+                    raise Blocked(reason_guidance.REVIEW_PUBLICATION_FAILED)
                 print("Concurro PR review publication failed; retained for retry.", file=sys.stderr)
                 return False
             outbox.pop(0)

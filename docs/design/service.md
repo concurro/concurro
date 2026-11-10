@@ -167,7 +167,14 @@ delete and resolves the original as `discarded` only after confirmed deletion. A
 between deletion and resolution resumes from that durable receipt. Unknown compensating
 deletes remain stopped for manual `resolve`; uncertain create/delete operations also
 stay manual. For submission, only the exact confirmed `COMMENTED` review settles the
-intent; pending or missing reviews remain stopped. Same-ID retry is not enabled.
+intent; pending or missing reviews remain stopped when the submit is uncertain.
+A failed compensating delete can be attempted again after ownership is rechecked; the new
+child receipt replaces the recovery pointer atomically, and the old failed receipt stays
+in the journal. In-flight or unknown deletes still require manual resolution.
+
+Normal publication can resume a first submit after a checkpoint crash or definite failure.
+The gateway admits it only if every prior submit for that review ID definitely failed,
+with no manual resolution. Uncertain same-ID retry is not enabled.
 
 A confirmed create stores the returned review ID atomically with its successful receipt.
 Registry schema 4 adds durable review identity and compensation progress, migrated

@@ -116,6 +116,8 @@ cannot guarantee that a compacted report remains retrievable.
   index is built once when a new write needs discovery.
 - **Publication:** new format-5 reports render verdicts, findings, objections, assessments
   and agent-reported validation as Markdown. Canonical data links remain under Raw data;
+  format-5 archives carry a view marker and audit readers parse only that terminal section.
+  Rejected views use the controller diagnostic, never the rejected draft's own reason;
   formats 2–4 remain readable and replay byte-for-byte. Criterion labels are frozen when
   the report is queued. Excerpts shrink to fit without altering canonical evidence. Each artifact stays below GitHub's 60,000-byte limit. Lost
   responses are recovered by marker and exact body; artifacts are never edited.
@@ -152,3 +154,11 @@ authorization, consume budget or trigger model calls.
 An optional configurable summarizer remains future work: `agents.summarizer` is not a
 supported role today. If added, it should summarize meaningful changes under a separate
 bounded budget, fall back to the factual display and never delay progress or decide readiness.
+
+Readiness failures requiring a maintainer (failed CI, unresolved threads, a closed PR or a
+return to draft) use a WARNING with the corresponding action. Transient CI/mergeability
+observations remain NOTE diagnostics. Operator-only failures use an explicit mapping of
+controller reasons; model prose mentioning an operator does not change the action.
+
+The merge-blocking explanation appears only while findings are open or withdrawn.
+Operator and readiness reasons share constants with their producers.

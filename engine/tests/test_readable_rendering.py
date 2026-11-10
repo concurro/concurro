@@ -50,7 +50,7 @@ class ReadableRenderingTests(unittest.TestCase):
     def test_inline_code_is_bounded_and_table_safe(self):
         for raw, expected in (
             ("Use `.clone()` now", "Use `.clone()` now"),
-            ("`a|b`", "`a\\|b`"),
+            ("`a|b`", "`a|b`"),
             ("``a`b``", "``a`b``"),
             ("<script> *bold*", "&lt;script&gt; \\*bold\\*"),
             ("Use `unfinished", "Use \\`unfinished"),
@@ -61,7 +61,7 @@ class ReadableRenderingTests(unittest.TestCase):
         self.assertEqual(markup.inline("`abcdef`", 5), "\\`abc…")
 
     def test_operator_failure_does_not_offer_retry(self):
-        body = actions.explain("Stored state conflicts; reconcile manually", actions.BLOCKED_RETRY)
+        body = actions.explain("cannot reconcile accumulated PR changes", actions.BLOCKED_RETRY)
         self.assertNotIn("/concurro retry", body)
         self.assertIn("An operator must", body)
 

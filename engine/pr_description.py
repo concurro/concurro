@@ -1,6 +1,9 @@
 """Bounded implementer descriptions and conservative ownership of published PR bodies."""
 
+import re
+
 import markup
+import protocol
 from policy import Blocked, digest
 
 TYPES = ("feat", "fix", "docs", "refactor", "perf", "test", "build", "ci", "chore", "revert")
@@ -43,6 +46,51 @@ def validate(report):
         raise Blocked("invalid implementation description or commit metadata")
 
 
+REFERENCE = re.compile(
+    r"(?P<url>https?://[^\s/<>]+/[^\s/<>]+/[^\s/<>]+/(?:issues|pull)/)(?=\d)"
+    r"|(?P<issue>(?<![\w/])(?:[\w.-]+/[\w.-]+)?#)(?=\d)"
+    r"|(?P<gh>(?<![\w-])GH-)(?=\d)"
+    r"|(?P<mention>(?<![\w@])@)(?=[a-z0-9])",
+    re.I,
+)
+
+
+def inert(value, *, preserve_code=True):
+    """Break GitHub references, preserving code only in Markdown-rendered content."""
+    value = str(value)
+    if not preserve_code:
+        return REFERENCE.sub(lambda m: m[0] + "\u200b", value)
+    result, start, i = [], 0, 0
+    while i < len(value):
+        if value[i] == "\\" and i + 1 < len(value):
+            i += 2
+            continue
+        if value[i] == "`":
+            run = re.match(r"`+", value[i:])[0]
+            close = re.search(r"(?<!`)" + run + r"(?!`)", value[i + len(run) :])
+            if close:
+                end = i + len(run) + close.end()
+                result += [REFERENCE.sub(lambda m: m[0] + "\u200b", value[start:i]), value[i:end]]
+                start = i = end
+                continue
+            i += len(run)
+            continue
+        i += 1
+    result.append(REFERENCE.sub(lambda m: m[0] + "\u200b", value[start:]))
+    return "".join(result)
+
+
+def inline(value):
+    """Keep code spans and neutralize references without truncating bounded fields."""
+    value = inert(value)
+    return markup.inline(value, max(1, len(value)))
+
+
+def validation_text(value):
+    """Render validation as inert prose lines, never headings or checklist attestations."""
+    return "\n".join(inline(line) for line in str(value).splitlines())
+
+
 def sections(candidate, head, focus, repository=None):
     """Render fields in controller-owned sections with one source of testing claims."""
     description = candidate.get("description")
@@ -50,8 +98,8 @@ def sections(candidate, head, focus, repository=None):
         return None
     if candidate.get("head") != head:
         raise Blocked("PR description does not match the candidate head")
-    rendered = {"lead": markup.text(description["lead"])}
-    rendered.update({key: "\n".join("- " + markup.text(v) for v in description[key]) for key in FIELDS})
+    rendered = {"lead": inline(description["lead"])}
+    rendered.update({key: "\n".join("- " + inline(v) for v in description[key]) for key in FIELDS})
     commit = (
         markup.link("candidate commit", f"https://github.com/{repository}/commit/{head}")
         if repository
@@ -61,13 +109,13 @@ def sections(candidate, head, focus, repository=None):
         "Agent-reported validation for "
         + commit
         + ":\n\n"
-        + markup.block(candidate.get("validation") or "No validation reported.")
+        + validation_text(candidate.get("validation") or "No validation reported.")
     )
-    rendered["review_focus"] = "\n".join("- " + markup.text(v) for v in focus)
+    rendered["review_focus"] = "\n".join("- " + inline(v) for v in focus)
     return rendered
 
 
-def layout(parts):
+def layout(parts, heading_level=3):
     """The default readable layout, omitting empty optional sections."""
     lines = [parts["lead"]]
     for key, title in (
@@ -78,7 +126,7 @@ def layout(parts):
         ("review_focus", "Review focus"),
     ):
         if parts[key]:
-            lines.append(f"### {title}\n\n{parts[key]}")
+            lines.append(f"{'#' * heading_level} {title}\n\n{parts[key]}")
     return "\n\n".join(lines)
 
 
@@ -88,11 +136,17 @@ def commit_message(state, config, metadata):
         # Already-retained results predate the new response contract.
         return f"fix(concurro): address issue #{state['issue']} (round {state['round']})"
     subject = metadata["subject"] if state.get("head") else state["plan"].get("headline") or state["plan"]["summary"]
-    subject = markup.one_line(subject).strip()[:72]
-    if config.get("conventional_commits", False):
-        subject = metadata["type"] + ": " + subject
-    changes = "\n".join("- " + v for v in metadata["changes"])
-    return f"{subject}\n\n{changes}\n\nRefs #{state['issue']}"
+    prefix = metadata["type"] + ": " if config.get("conventional_commits", False) else ""
+    subject = prefix + markup.short_title(
+        inert(markup.one_line(subject).strip(), preserve_code=False), 72 - len(prefix)
+    )
+    changes = "\n".join("- " + inert(v, preserve_code=False) for v in metadata["changes"])
+    issue = (
+        f"#{state['issue']}"
+        if config.get("upstream", config.get("repository")) == config.get("repository")
+        else protocol.issue_url(config["repository"], state["issue"])
+    )
+    return f"{subject}\n\n{changes}\n\nRefs {issue}"
 
 
 def prepare_create(state, body, save):
@@ -101,8 +155,11 @@ def prepare_create(state, body, save):
     save()
 
 
-def refresh(state, github, pr, body, save):
+def refresh(state, github, pr, body, save, legacy_body=None):
     """Refresh an unchanged owned body, retaining intended evidence across lost responses."""
+    if not state.get("pr_description") and legacy_body is not None and pr.get("body") == legacy_body:
+        state["pr_description"] = {"last": digest(legacy_body)}
+        save()
     receipt = state.setdefault("pr_description", {})
     if receipt.get("human_edited"):
         return

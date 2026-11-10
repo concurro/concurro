@@ -1,6 +1,8 @@
 # Structured description preview
 
-Rendered from the recorded `DescribedAgents` task with one repair round. Validation is simulated fixture evidence.
+Generated offline from current code and simulated fixtures. No live GitHub evidence.
+
+Regenerate with `python engine/tests/render_readable_previews.py`; add `--check` to detect stale previews.
 
 ## Issue dashboard
 
@@ -9,8 +11,6 @@ Rendered from the recorded `DescribedAgents` task with one repair round. Validat
 
 > [!TIP]
 > Ready for your review. A human decides whether to merge.
-
-Every open finding blocks the merge, whatever its severity.
 
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff Ready**
 
@@ -31,7 +31,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: unknown · Change risk: unknown | Confidence: low · PR assessment · Assessment incomplete | [Report 23](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/23) · [Report 25](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/25) |
+| Complexity: unknown · Change risk: unknown | Confidence: low · PR assessment · Assessment incomplete | [Report 25](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/25) · [Report 23](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/23) |
 
 **Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-24)).
 
@@ -43,8 +43,12 @@ Readiness: CI passed and all Concurro reviewers approved. Ready for human review
 
 </details>
 
-<!-- concurro:checkpoint:v1 {"digest":"43d1a7f0966a8ef35e3cff8a37be727295ccb56d698974c63f97de5cb3d5f841","id":1001,"number":1,"revision":81} -->
+<!-- concurro:checkpoint:v1 {"digest":"0000000000000000000000000000000000000000000000000000000000000000","id":1001,"number":1,"revision":81} -->
 
+
+## PR title
+
+Clarify the guide
 
 ## PR description
 
@@ -79,7 +83,7 @@ Closes #7
 <!-- concurro:review:v1:cylewitruk/stacks-core-autobot#7:4 -->
 ### ✅ Concurro review · codex · Approve
 
-The change satisfies the plan.
+Reviewed.
 
 <sub>codex / gpt-6.1-sol</sub>
 
@@ -89,6 +93,24 @@ Reviewed commit `0000000000000000000000000000000000000014` · review 4
 
 </details>
 
+## Commit messages
+
+```text
+Clarify the guide.
+
+- Explain the boundary in docs/guide.md.
+
+Refs #7
+```
+
+```text
+Clarify the boundary example
+
+- Explain the boundary in docs/guide.md.
+
+Refs #7
+```
+
 ## Rollout
 
-This changes the trusted bundle. Use an idle window or explicit writer `/concurro invalidate` recovery before deployment.
+Use an idle window or explicit writer `/concurro invalidate` recovery for the trusted bundle changes.

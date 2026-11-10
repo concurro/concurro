@@ -201,7 +201,11 @@ class LifecycleTests(Harness, unittest.TestCase):
         )
         self.assertNotIn("claude approval missing or stale", self.reasons(state))
         self.assertNotIn("codex approval missing or stale", self.reasons(state))
-        archives = [a for a in self.gh.archives() if "Code review ·" in a.split("\n")[1]]
+        archives = [
+            a
+            for a in self.gh.archives()
+            if "Code review ·" in next(line for line in a.splitlines() if line.startswith("### "))
+        ]
         self.assertEqual(len(archives), 4, "each review is archived; none is copied to the issue")
         self.assertIn('"finding_ids": [\n    "F1"\n  ]', "\n".join(archives))
         self.assertEqual([r["event"] for r in self.gh.app_reviews], ["COMMENT"] * 4)

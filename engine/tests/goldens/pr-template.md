@@ -26,6 +26,6 @@ Read the guide.
 Keep the migration note here.
 &lt;script>unsafe()&lt;/script>
 
-### Review focus
+## Review focus
 
 - Check the boundary.

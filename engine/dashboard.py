@@ -9,6 +9,7 @@ import classification
 import dashboard_runs
 import markup
 import protocol
+import reason_guidance
 import review_state
 import review_timing
 from actions import BUNDLE_REASON
@@ -125,8 +126,11 @@ class Dashboard:
             "",
             self.activity_line(),
             "",
-            markup.BLOCKING_NOTE,
-            "",
+            *(
+                [markup.BLOCKING_NOTE, ""]
+                if any(f["status"] in ("open", "withdrawn") for f in state.get("findings", []))
+                else []
+            ),
             progress,
             "",
             markup.table(["Step", "Status", "Detail"], self.progress_rows(rows, compact, current)),
@@ -176,6 +180,8 @@ class Dashboard:
             if stage == "blocked"
             else "WARNING"
             if stage in ("planned", "clarify", "escalated", "rejected")
+            or stage == "gates"
+            and reason_guidance.gate_action(self.state.get("reason", ""))
             else "TIP"
             if stage == "gates" and self.state.get("handoff_ready")
             else "NOTE"
@@ -185,6 +191,9 @@ class Dashboard:
     def _gate_activity(self) -> str:
         """Describe readiness checks or the completed human hand-off."""
         state = self.state
+        action = reason_guidance.gate_action(state.get("reason", ""))
+        if action:
+            return "The pull request needs attention. " + action
         return (
             "Ready for your review. A human decides whether to merge."
             if state.get("handoff_ready")
@@ -405,6 +414,10 @@ class Dashboard:
             needs = "a writer to grant revision capacity with " + code("/concurro retry --plan-revisions 1")
         if state["stage"] == "blocked" and state.get("reason") == BUNDLE_REASON:
             needs = "a writer to accept reassessment with " + code("/concurro invalidate")
+        if state["stage"] == "blocked" and reason_guidance.operator_summary(state.get("reason", "")):
+            needs = "operator reconciliation"
+        if state["stage"] == "gates":
+            needs = reason_guidance.gate_action(state.get("reason", ""))
         if not needs and state["stage"] == "gates" and state.get("handoff_ready"):
             needs = "a human review and merge"
         if not needs:

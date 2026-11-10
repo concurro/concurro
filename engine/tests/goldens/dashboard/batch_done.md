@@ -4,8 +4,6 @@
 > [!NOTE]
 > Iterative design review — `claude`: result received; `codex`: result received.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code review → Handoff
 
 | Step | Status | Detail |

@@ -4,8 +4,6 @@
 > [!WARNING]
 > Paused — the task needs attention before it can continue.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → **Design review 📣** → Implement → Code review → Handoff
 
 | Step | Status | Detail |

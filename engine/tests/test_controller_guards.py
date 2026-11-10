@@ -180,7 +180,7 @@ class GuardContractTests(ConsensusFixture, unittest.TestCase):
                         self.invoke(controller, kind)
                     self.assertIs(type(caught.exception), Blocked)
                     self.assertEqual(str(caught.exception), "cannot reconcile accumulated PR changes")
-                    expected = [("repo", "pulls/9", "GET", None)] if kind == "invalidate" else []
+                    expected = [("repo", "pulls/9", "GET", None)]
                     self.assertEqual(events, expected + [("pages", "pulls/9/files", None)])
                     self.assertEqual(
                         controller.state["command_id"], self.command["id"] if kind == "invalidate" else before
@@ -199,9 +199,11 @@ class GuardContractTests(ConsensusFixture, unittest.TestCase):
                 with self.trace(controller, files=files) as events:
                     self.invoke(controller, kind)
                 consumed = self.command["id"] if kind in ("revision", "invalidate") else before
-                expected = [] if kind == "reopen" else [("repo", "pulls/9", "GET", None)]
+                expected = [("repo", "pulls/9", "GET", None)]
                 if kind in ("invalidate", "reopen"):
                     expected.append(("pages", "pulls/9/files", None))
+                    if kind == "invalidate":
+                        expected.append(("repo", "pulls/9", "GET", None))
                     self.assertEqual(controller.state["changed_files"], ["docs/a.md", "docs/guide.md", "docs/z.md"])
                 if kind != "bundle":
                     expected.append(("save", consumed, (), {}))

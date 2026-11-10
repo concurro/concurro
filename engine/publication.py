@@ -11,6 +11,7 @@ import markup
 import pr_description
 import pr_template
 import protocol
+import reason_guidance
 from dashboard import dependency_summary
 from github import Transient
 from markup import block, link, text
@@ -66,10 +67,10 @@ class Publication:
             raise Blocked("development branch reservation base changed")
         if refs:
             if refs[0]["object"]["sha"] != base:
-                raise Blocked("implementation branch moved outside the controller")
+                raise Blocked(reason_guidance.CHANGED_IMPLEMENTATION_BRANCH)
         else:
             if reservation["created"]:
-                raise Blocked("implementation branch disappeared")
+                raise Blocked(reason_guidance.MISSING_IMPLEMENTATION_BRANCH)
             self.code.repo("git/refs", "POST", {"ref": "refs/heads/" + branch, "sha": base})
         if not reservation["created"]:
             reservation["created"] = True
@@ -170,10 +171,10 @@ class Publication:
                 if current != pending["parent"] or (
                     pending["initial"] and (reservation != {"base": pending["parent"], "created": True})
                 ):
-                    raise Blocked("branch moved outside the controller")
+                    raise Blocked(reason_guidance.CHANGED_BRANCH)
                 self.code.repo("git/refs/heads/" + state["branch"], "PATCH", {"sha": pending["head"], "force": False})
         else:
-            raise Blocked("implementation branch disappeared")
+            raise Blocked(reason_guidance.MISSING_IMPLEMENTATION_BRANCH)
 
     def _find_or_open_pr(self, pending: PendingPublication, save: Callable[[], None]) -> Document:
         """Recover an existing matching PR before attempting a new draft PR write."""
@@ -184,7 +185,7 @@ class Publication:
             "pulls?state=all&head=" + quote(owner + ":" + state["branch"]) + "&base=" + self.config["base"]
         )
         if len(prs) > 1 or (prs and prs[0]["state"] != "open"):
-            raise Blocked("PR was closed or duplicated; reconcile manually")
+            raise Blocked(reason_guidance.CLOSED_OR_DUPLICATE_PR)
         if prs:
             pr = prs[0]
             if (
@@ -199,7 +200,7 @@ class Publication:
                 raise Transient("unavailable", 30)
         else:
             if state.get("pr"):
-                raise Blocked("recorded PR disappeared; reconcile manually")
+                raise Blocked(reason_guidance.MISSING_PR)
             if state.get("candidate", {}).get("description"):
                 pr_description.prepare_create(state, self.pr_body(), save)
             pr = self.pulls.repo(
@@ -216,9 +217,9 @@ class Publication:
                 },
             )
         if pr.get("user", {}).get("login") != self.config["bot_login"]:
-            raise Blocked("PR is not authored by the controller App")
+            raise Blocked(reason_guidance.FOREIGN_PR_AUTHOR)
         if state.get("candidate", {}).get("description"):
-            pr_description.refresh(state, self.pulls, pr, self.pr_body(), save)
+            pr_description.refresh(state, self.pulls, pr, self.pr_body(), save, self.pr_body(legacy=True))
         return pr
 
     def pr_title(self) -> str:
@@ -232,17 +233,14 @@ class Publication:
         title = title.rstrip(".")
         if not title:
             return f"Address issue #{self.state['issue']}"
-        limit = PR_TITLE_LIMIT - len(suffix)
-        if len(title) > limit:
-            cut = title[: limit - 1]
-            # Cut at a word boundary unless the first word alone is too long.
-            title = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-") + "…"
-        return title + suffix
+        return (
+            markup.short_title(pr_description.inert(title, preserve_code=False), PR_TITLE_LIMIT - len(suffix)) + suffix
+        )
 
-    def pr_body(self) -> str:
+    def pr_body(self, legacy: bool = False) -> str:
         """The plan's summary, its artifact, any dependency change, and the issue it closes."""
         plan = self.plan_artifact
-        candidate = self.state.get("candidate", {})
+        candidate = {} if legacy else self.state.get("candidate", {})
         head = self.state.get("pending", {}).get("head", self.state.get("head"))
         parts = pr_description.sections(
             candidate,
@@ -253,7 +251,10 @@ class Publication:
         lines = (
             [pr_template.render(parts, self.state.get("pr_template"), self.state.get("base")), "", "---", ""]
             if parts
-            else [block(self.state["plan"]["summary"]), ""]
+            else [
+                block(self.state["plan"]["summary"] if legacy else pr_description.inert(self.state["plan"]["summary"])),
+                "",
+            ]
         )
         if plan:
             lines += [

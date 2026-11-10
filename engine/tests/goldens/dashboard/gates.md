@@ -4,8 +4,6 @@
 > [!NOTE]
 > Checking reviews and CI before marking the pull request ready. No action needed.
 
-Every open finding blocks the merge, whatever its severity.
-
 Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review ✅ → **Handoff ▶️**
 
 | Step | Status | Detail |

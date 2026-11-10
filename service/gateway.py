@@ -147,20 +147,7 @@ class MutationGateway:
             )
         thread = resolved_thread(body) if path == "graphql" else None
         if thread is not None:
-            query = (
-                "query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
-                "pullRequest { number repository { nameWithOwner } } "
-                "comments(first:1) { nodes { author { login } body } } } } }"
-            )
-            node = self._graphql_node(repository, query, thread)
-            pr = node.get("pullRequest") or {}
-            first = (node.get("comments") or {}).get("nodes") or [{}]
-            return (
-                (pr.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
-                and isinstance(pr.get("number"), int)
-                and self.owned_pull(key, pr["number"])
-                and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body"))
-            )
+            return self.finding_thread(key, repository, thread)
         prefix = f"repos/{key[0]}/"
         edit = ISSUE_COMMENT.fullmatch(path[len(prefix) :]) if path.startswith(prefix) else None
         if edit:
@@ -183,6 +170,24 @@ class MutationGateway:
         return self.ours((comment.get("user") or {}).get("login"), comment.get("body")) and str(
             comment.get("pull_request_url", "")
         ).endswith(f"/pulls/{match['pull']}")
+
+    def finding_thread(self, key, repository, thread, pull=None):
+        """Verify a finding root on this task, optionally restricted to one exact PR."""
+        query = (
+            "query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
+            "pullRequest { number repository { nameWithOwner } } "
+            "comments(first:1) { nodes { author { login } body } } } } }"
+        )
+        node = self._graphql_node(repository, query, thread)
+        pr = node.get("pullRequest") or {}
+        first = (node.get("comments") or {}).get("nodes") or [{}]
+        return (
+            (pr.get("repository") or {}).get("nameWithOwner", "").lower() == repository.lower()
+            and isinstance(pr.get("number"), int)
+            and (pull is None or pr["number"] == pull)
+            and self.owned_pull(key, pr["number"])
+            and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body"))
+        )
 
     def _replay_stop(self, key, generation):
         """Repeat the first stop recorded for this ownership generation."""
@@ -326,7 +331,10 @@ class MutationGateway:
             or unresolved[0].key != key
             or not context
             or context["kind"] not in ("addPullRequestReviewThread", "addPullRequestReviewThreadReply")
-            or context.get("recovery")
+            or (
+                context.get("recovery")
+                and not review_writes.definitely_failed(self.registry.mutation(context["recovery"]))
+            )
             or identified != ("deletePullRequestReview", {"pullRequestReviewId": context["review"]})
         ):
             raise Disallowed("not the authorized review compensation")
@@ -359,6 +367,12 @@ class MutationGateway:
                     for k in ("review", "report", "head", "pull", "repository", "pending_body")
                 ):
                     raise Disallowed("review identity changed before compensation")
+            if review and review["kind"] == "submitPullRequestReview":
+                if any(
+                    not review_writes.definitely_failed(record)
+                    for record in self.registry.review_submissions(key, review["review"])
+                ):
+                    raise Disallowed("review submission may already have applied; same-ID retry is disabled")
             intent = self.registry.admit(
                 key, generation, method, path, request_digest(method, path, body), review, recovery_of
             )
@@ -405,6 +419,12 @@ class GatewayGitHub(GitHub):
         if method == "GET" or path == "graphql" and isinstance(data, dict) and QUERY.match(data.get("query") or ""):
             return self.reader.request(method, path, data)
         return self.write(path, method, data)
+
+    def resume_review_submission(self, review_id, body):
+        """Send only when the durable gateway journal proves no submit may have applied."""
+        values = {"pullRequestReviewId": review_id, "event": "COMMENT", "body": body}
+        response = self.write("graphql", "POST", review_api.request("submitPullRequestReview", values))
+        return review_api.result("submitPullRequestReview", values, response)
 
     def create_tree(self, base_tree, entries, uploaded_blobs=()):
         """Retry definite 422s only for trees referencing blobs uploaded by this publication."""
