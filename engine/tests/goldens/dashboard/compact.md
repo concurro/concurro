@@ -11,7 +11,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
 | Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
-| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3) |
+| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5) |
 | Design review | ✅ 2 of 2 approve | Round 1 · iterative · 0 open objections |
 | Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
 | Code review | ✅ 2 of 2 approve | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
@@ -19,7 +19,7 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → Code review 
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) · [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · reviewers disagree | [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) · [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) |
 
 **Action needed:** a human review and merge ([details](https://github.com/cylewitruk/stacks-core-autobot/issues/7#issuecomment-20)).
 

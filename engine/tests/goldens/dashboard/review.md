@@ -11,19 +11,19 @@ Intake ✅ → Plan ✅ → Design review ✅ → Implement ✅ → **Code revie
 | Step | Status | Detail |
 | ---- | ---- | ---- |
 | Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
-| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
-| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3) |
+| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
+| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5) |
 | Design review | ✅ 2 of 2 approve | Round 1 · iterative · 0 open objections |
-| ↳ Round 1 iterative |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| ↳ Round 1 iterative |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10) |
 | Implement | ✅ Candidate published | Agent-reported validation; independent reviews and CI follow |
-| ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
+| ↳ Round 0 |  | [codex: 📝 Agent report](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) |
 | Code review | ▶️ 0 of 2 reviewed | [PR #9](https://github.com/cylewitruk/stacks-core-autobot/pull/9) · 0 open findings |
 | ↳ Round 1 | Current | claude: Waiting<br>codex: Waiting |
 | Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · PR assessment · Assessment incomplete · Based on the previous revision | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · PR assessment · Assessment incomplete · Based on the previous revision | [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) · [Report 10](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10) |
 
 <details><summary>Diagnostics</summary>
 

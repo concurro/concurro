@@ -11,7 +11,7 @@ Intake ✅ → **Plan ▶️** → Design review → Implement → Code review �
 | Step | Status | Detail |
 | ---- | ---- | ---- |
 | Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
-| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
+| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
 | Plan | ▶️ In progress |  |
 | Design review | Pending |  |
 | Implement | Pending |  |
@@ -20,7 +20,7 @@ Intake ✅ → **Plan ▶️** → Design review → Implement → Code review �
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: low · Change risk: high | Confidence: high · Intake assessment · Assessment incomplete | [Report 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
+| Complexity: low · Change risk: high | Confidence: high · Intake assessment · Assessment incomplete | [Report 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
 
 <details><summary>Diagnostics</summary>
 

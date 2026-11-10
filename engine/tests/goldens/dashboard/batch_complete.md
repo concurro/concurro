@@ -11,8 +11,8 @@ Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code revi
 | Step | Status | Detail |
 | ---- | ---- | ---- |
 | Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
-| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
-| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3) |
+| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
+| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5) |
 | Design review | ▶️ 0 of 2 approve | Round 1 · iterative · 0 open objections |
 | ↳ Round 1 iterative | Current | claude: Result received<br>codex: Result received |
 | Implement | Pending |  |
@@ -21,7 +21,7 @@ Intake ✅ → Plan ✅ → **Design review ▶️** → Implement → Code revi
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: low · Change risk: high | Confidence: high · Design assessment · Assessment incomplete · Based on the previous revision | [Report 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
+| Complexity: low · Change risk: high | Confidence: high · Design assessment · Assessment incomplete · Based on the previous revision | [Report 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
 
 <details><summary>Diagnostics</summary>
 

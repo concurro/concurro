@@ -11,17 +11,17 @@ Intake ✅ → Plan ✅ → Design review ✅ → **Implement ▶️** → Code 
 | Step | Status | Detail |
 | ---- | ---- | ---- |
 | Intake | ✅ Proceed | Scope and acceptance criteria are sufficient. |
-| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
-| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/3) |
+| ↳ Round 1 |  | [codex: ✅ Proceed](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
+| Plan | ✅ Version 1 | [Implementation plan](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/5) |
 | Design review | ✅ 2 of 2 approve | Round 1 · iterative · 0 open objections |
-| ↳ Round 1 iterative |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| ↳ Round 1 iterative |  | [claude: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8)<br>[codex: ✅ Approve](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10) |
 | Implement | ▶️ In progress |  |
 | Code review | Pending |  |
 | Handoff | Pending |  |
 
 | Estimate | Assessment | Evidence |
 | ---- | ---- | ---- |
-| Complexity: medium · Change risk: high | Confidence: high · Design assessment · reviewers disagree | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) · [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Complexity: medium · Change risk: high | Confidence: high · Design assessment · reviewers disagree | [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) · [Report 10](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10) |
 
 <details><summary>Diagnostics</summary>
 

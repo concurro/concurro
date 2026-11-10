@@ -7,9 +7,11 @@ from typing import NamedTuple
 
 import actions
 import classification
+import design
 import markup
 import protocol
 import report_store
+import report_view
 import review_state
 import review_timing
 import reviews
@@ -23,6 +25,7 @@ from review_state import source_value as source_value
 
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.
+# Format 5 adds a bounded human view over the same canonical data.
 FORMAT = 3
 ARCHIVE_LIMIT = 60000
 ARCHIVED = "… [Full text in its report archive.]"
@@ -442,7 +445,7 @@ def index_entry(state, kind, source, details):
 
 def event_format(kind, details):
     """Choose embedded archives or canonical report links for newly queued sources."""
-    return 4 if kind in ("review", "review_rejection") or kind == "qc" and details["phase"] != "intake" else FORMAT
+    return 5
 
 
 def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=(), request=None):
@@ -460,6 +463,9 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     sequence = journal["sequence"]
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if source is not None:
+        details = dict(details)
+        if state.get("requirements"):
+            details["criterion_labels"] = {c["id"]: c["text"] for c in design.criteria(state["requirements"])}
         title, _, _ = render_v2(state, kind, source, details)
         body = json.dumps(source_value(state, source), sort_keys=True)
     identifier = digest([state["issue"], sequence, title, body, timestamp])
@@ -488,7 +494,7 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
         assessment = classification.source_ref(value) if kind != "review_rejection" else None
         if assessment:
             event["index"]["assessment"] = assessment
-        if event["format"] == 4:
+        if event["format"] >= 4:
             rendered, limit = "", ARCHIVE_LIMIT
             event["content_digest"] = digest(source_value(state, source))
         else:
@@ -534,7 +540,7 @@ def event_body(state, event):
     if "body" in event:
         return event["body"]
     try:
-        if event.get("format") == 4:
+        if event.get("format", 1) >= 4:
             if digest(source_value(state, event["source"])) == event["content_digest"]:
                 return ""
             raise PublicationError("conversation_conflict")
@@ -580,7 +586,7 @@ def publish(state, github, config, store=None):
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
             data = None
-            if event.get("format") == 4:
+            if event.get("format", 1) >= 4:
                 source = source_value(state, event["source"])
                 key = store.put(source)
                 numbers = store.numbers[key]
@@ -597,6 +603,8 @@ def publish(state, github, config, store=None):
                         text(diagnostic["detail"]) + "\n\n" + "Rejected output; not an accepted review.\n\n" + links,
                         meta,
                     )
+                if event.get("format") == 5:
+                    body = report_view.render(event, source, links, ARCHIVE_LIMIT)
             is_archive = event.get("format", 1) >= 3
             if is_archive:
                 # Archives are artifacts, authored like the audit state.

@@ -29,12 +29,12 @@ Every open finding blocks the merge, whatever its severity.
 
 | Step | Round | Agent | Outcome | Evidence |
 | ---- | ---- | ---- | ---- | ---- |
-| Intake | 1 | codex | proceed | [Report 2](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/2) |
-| Design review | 1 iterative | claude | approve | [Report 6](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/6) |
-| Design review | 1 iterative | codex | approve | [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
-| Implement | 0 | codex | candidate published | [Report 9](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/9) |
-| Code review | 1 | claude | approve | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) |
-| Code review | 1 | codex | approve | [Report 14](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/14) |
+| Intake | 1 | codex | proceed | [Report 4](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/4) |
+| Design review | 1 iterative | claude | approve | [Report 8](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/8) |
+| Design review | 1 iterative | codex | approve | [Report 10](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/10) |
+| Implement | 0 | codex | candidate published | [Report 12](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/12) |
+| Code review | 1 | claude | approve | [Report 15](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/15) |
+| Code review | 1 | codex | approve | [Report 17](https://github.com/cylewitruk/stacks-core-autobot/issues/7/artifacts/17) |
 
 </details>
 

@@ -114,8 +114,10 @@ cannot guarantee that a compacted report remains retrievable.
   Eviction or restart re-verifies remotely and detects such changes. Mutable audit
   and plan artifacts are never trusted through this cache. The archive digest
   index is built once when a new write needs discovery.
-- **Publication:** format-4 rounds entries link to the canonical data, split into
-  parts when necessary. Each artifact stays below GitHub's 60,000-byte limit. Lost
+- **Publication:** new format-5 reports render verdicts, findings, objections, assessments
+  and agent-reported validation as Markdown. Canonical data links remain under Raw data;
+  formats 2–4 remain readable and replay byte-for-byte. Criterion labels are frozen when
+  the report is queued. Excerpts shrink to fit without altering canonical evidence. Each artifact stays below GitHub's 60,000-byte limit. Lost
   responses are recovered by marker and exact body; artifacts are never edited.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.

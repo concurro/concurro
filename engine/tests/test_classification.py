@@ -290,7 +290,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
         with patch.object(self.agents, "ask", side_effect=ask):
             controller = self.tick()
         report = controller.state["qc"]["intake"]
-        self.assertIn(conversation.ARCHIVED, report["rationale"])
+        self.assertEqual(report["rationale"], "Explained. " * 150)
         metadata = deepcopy(report["classification"])
         conversation.compact(controller.state)
         self.assertEqual(report["classification"], metadata)
@@ -499,6 +499,9 @@ class CompactionReceiptTests(unittest.TestCase):
                 "reviewer": "reviewer",
             },
         )
+        queued = state["conversation"]["pending"][0]
+        queued["format"] = 3
+        queued["content_digest"] = digest(conversation.archive(queued, state))
         event = deepcopy(state["conversation"]["pending"][0])
         conversation.publish(state, gh, CONFIG)
         receipt = state["conversation"]["receipts"]["qc/intake"]

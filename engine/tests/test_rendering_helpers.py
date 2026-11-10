@@ -261,6 +261,11 @@ class RenderingContractTests(unittest.TestCase):
             conversation.queue(state, "Notice", "First comment.")
             conversation.queue(state, None, source=source, kind="qc", details=details)
             conversation.queue(state, "Notice", "Last comment.")
+        for event, version in zip(state["conversation"]["pending"], [3, None, 4, None]):
+            if version is not None:
+                event["format"] = version
+                if version == 3:
+                    event["content_digest"] = digest(conversation.archive(event, state))
         self.assertEqual([e.get("format") for e in state["conversation"]["pending"]], [3, None, 4, None])
         gh = TracedGitHub(state)
         conversation.publish(state, gh, CONFIG)
