@@ -6,6 +6,7 @@ authoritative for exact limits and behavior.
 | Document | Purpose |
 | ---- | ---- |
 | [Operating Concurro](concurro.md) | Target configuration, contribution flow and recovery commands |
+| [Demo repositories](concurro-demo.md) | Demo CI coverage, cache warming and pilot enrollment |
 | [Deployment](../gateway/README.md) | Host installation, App permissions and coordinated releases |
 | [MVP architecture](design/mvp.md) | Scope, trust boundaries and deferred capabilities |
 | [Execution and publication](design/mvp-execution.md) | Runner identity, setup, extraction, publication and readiness |
