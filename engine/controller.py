@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 
 import actions
 import candidates
+import change_attention
 import checks
 import classification
 import commands
@@ -23,6 +24,7 @@ import design
 import design_batch
 import design_eligibility
 import feedback
+import file_inventory
 import implementation_bundle
 import markup
 import pr_description
@@ -99,8 +101,8 @@ def strings(value, limit=32):
     return (
         isinstance(value, list)
         and len(value) <= limit
-        and len(set(value)) == len(value)
         and all(isinstance(v, str) and v.strip() and len(v) <= 240 for v in value)
+        and len(set(value)) == len(value)
     )
 
 
@@ -174,16 +176,30 @@ def validate_config(config):
     ):
         raise Blocked("policy documents must be relative repository paths")
     paths = config["paths"]
+    if not isinstance(paths, dict):
+        raise Blocked("invalid editable path policy")
+    legacy = "editable_extensions" in paths
+    allowed = PATH_POLICY if legacy else (PATH_POLICY - {"editable_extensions"}) | {"protected_extensions"}
     if (
-        not isinstance(paths, dict)
-        or set(paths) != PATH_POLICY
-        or not all(strings(v) for v in paths.values())
-        or not paths["editable_extensions"]
-        or not all(e.startswith(".") for e in paths["editable_extensions"])
-        or not all(p.endswith("/") for p in paths["protected_prefixes"])
-        or not all(checks.relative_path(p) for p in paths["protected"] + paths["generated"])
+        (set(paths) != allowed if legacy else not {"protected_extensions"} <= set(paths) <= allowed)
+        or not all(strings(v, 32) for v in paths.values())
+        or legacy
+        and not paths["editable_extensions"]
+        or not all(
+            e.startswith(".") and len(e) > 1
+            for e in paths.get("editable_extensions", paths.get("protected_extensions", []))
+        )
+        or not all(p.endswith("/") for p in paths.get("protected_prefixes", []))
+        or not all(checks.relative_path(p) for p in paths.get("protected", []) + paths.get("generated", []))
     ):
         raise Blocked("invalid editable path policy")
+    bounds = config.get("limits", {})
+    if (
+        not isinstance(bounds, dict)
+        or not set(bounds) <= checks.DEFAULT_LIMITS.keys()
+        or any(value is not None and (type(value) is not int or value < 1) for value in bounds.values())
+    ):
+        raise Blocked("limits must contain known keys with positive integers or null")
     if not 0 <= config["max_fix_rounds"] <= 3 or not 1 <= config["max_model_calls"] <= 64:
         raise Blocked("invalid budget")
     _bounded_int(config["max_design_reopens"], 0, 3, "invalid design reopen budget")
@@ -417,9 +433,17 @@ class Controller:
             login == self.issue.get("user", {}).get("login") or self.permitted(login)
         )
 
+    def attention_paths(self):
+        """Read the current candidate inventory without retaining another derived list."""
+        if self.state.get("candidate"):
+            return file_inventory.candidate_paths(self.state, self.reader)
+        return self.state.get("changed_files", [])
+
     def _dashboard(self):
         """Create a fresh view so render-only caches never cross controller transitions."""
-        return Dashboard(self.state, self.config, self.checkpoints, self.pr_url, self.waiting_revision)
+        return Dashboard(
+            self.state, self.config, self.checkpoints, self.pr_url, self.waiting_revision, self.attention_paths
+        )
 
     def summary_body(self):
         """Render from the current task through its read-only dashboard view."""
@@ -516,7 +540,7 @@ class Controller:
 
     def load(self, comments):
         """Load verified artifacts or an unmigrated legacy checkpoint from the configured App."""
-        self.checkpoints = Checkpoints(self.gh, self.config, self.issue["number"], self.report_cache)
+        self.checkpoints = Checkpoints(self.gh, self.config, self.issue["number"], self.report_cache, self.reader)
         self.state = self.checkpoints.load(comments)
         if self.state:
             dashboard_runs.retain_boundaries(self.state)
@@ -576,6 +600,8 @@ class Controller:
         return {
             "issue": self.state["requirements"],
             "policy": selected,
+            "edit_policy": plan_output_contract(self.config)["edit_policy"],
+            "limits": checks.limits(self.config),
             **({"intake_concerns": deepcopy(concerns)} if concerns else {}),
             "plan": self.state.get("plan"),
             "base": self.state["base"],
@@ -928,7 +954,7 @@ class Controller:
 
     def reconciled_changed_paths(self):
         """Read accumulated PR paths once and require a nonempty, policy-allowed set."""
-        changed = candidates.changed_paths(self.pulls.pages(f"pulls/{self.state['pr']}/files"))
+        changed = self.reader.pr_paths(self.state, self.state["pr"])
         if not changed or not all(path_allowed(path, self.config) for path in changed):
             raise Blocked(reason_guidance.ACCUMULATED_CHANGES)
         return changed
@@ -1002,6 +1028,7 @@ class Controller:
         state["design_reopens"] += 1
         if not self.revise_plan("plan", issue["explanation"], invalidate=False):
             return
+        file_inventory.retain_approval_parent(state)
         state["design_parent"] = state.get("head")
         if state.get("pr"):
             state["changed_files"] = self.reconciled_changed_paths()
@@ -1058,7 +1085,7 @@ class Controller:
             if issue == state["issue"]:
                 continue
             try:
-                prior = Checkpoints(self.gh, self.config, issue, self.report_cache).load(comments[:10])
+                prior = Checkpoints(self.gh, self.config, issue, self.report_cache, self.reader).load(comments[:10])
                 if prior is None:
                     continue
                 outcome = prior.get("outcomes", [])[-1]
@@ -1629,6 +1656,7 @@ class Controller:
             self.state["branch"] = task_branch(self.config["repository"], self.issue["number"])
         self.state["design_votes"] = {}
         self.state["design_phase"] = "cooperative"
+        self.state.pop("approved_inventory_parent", None)
         self.state["approved_accumulated_files"] = self.state.get("changed_files", [])
         self.state["design_parent"] = self.state.get("head")
         self.state["stage"] = "clarify" if plan["questions"] else "plan_qc"
@@ -1770,6 +1798,13 @@ class Controller:
         """One reviewer's PR review context for a candidate's changed files."""
         context = self.context(sorted(after))
         context.update(changes=changes(before, after), head=head)
+        attention = change_attention.paths([change["path"] for change in context["changes"]], self.config)
+        if attention:
+            context["workflow_and_policy_changes"] = attention
+            context["workflow_and_policy_review"] = (
+                "Review changes to CI, workflows and policy documents explicitly, including whether the required "
+                "checks still validate the contribution. These paths are editable under the target policy."
+            )
         context["published_pr_body"] = (
             (self.pulls.repo(f"pulls/{self.state['pr']}").get("body") or "")
             if self.state.get("pr") and head != "0" * 40
@@ -1803,6 +1838,7 @@ class Controller:
             self.config,
             self.state,
             self.checkpoints.plan if self.checkpoints else None,
+            self.reader,
         )
 
     def reserve_development_branch(self):
@@ -1849,6 +1885,7 @@ class Controller:
             "base": state["base"],
             "plan": state["plan_id"],
         }
+        file_inventory.compact_candidate(state["candidate"])
         state["stage"] = "publish"
         conversation.queue(
             state,
@@ -1865,7 +1902,7 @@ class Controller:
 
     def publish(self):
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
-        return self._publication().publish(self.save)
+        return self._publication().publish(self.save, self.checkpoints.preflight)
 
     def pr_title(self):
         """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
@@ -1963,7 +2000,7 @@ class Controller:
         """Observe current reviews and CI; mark ready once, never merge or rerun CI."""
         state = self.state
         pr = self.pulls.repo(f"pulls/{state['pr']}")
-        files = candidates.changed_paths(self.pulls.pages(f"pulls/{state['pr']}/files"))
+        files = self.reader.pr_paths(state, state["pr"])
         threads = self.pulls.threads(state["pr"])
         reasons = readiness.review_reasons(state, pr, files, threads, self.config)
         latest = self._observe_ci(pr, files, threads, reasons)

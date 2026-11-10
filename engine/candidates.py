@@ -23,9 +23,9 @@ def validate(before, after, plan, config):
     outside = [path for path in paths if not path_allowed(path, config) or not checks.in_scope(path, plan)]
     if outside:
         raise OutsideScope(outside)
-    scope = checks.scope_of(plan)
-    if len(paths) > scope["max_files"]:
-        raise Blocked(f"candidate changes {len(paths)} files, over the approved budget of {scope['max_files']}")
+    problem = checks.file_count_error(len(paths), plan, config)
+    if problem:
+        raise Blocked(problem)
     return paths
 
 

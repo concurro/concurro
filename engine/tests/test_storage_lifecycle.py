@@ -12,7 +12,6 @@ import conversation
 import design
 from checkpoints import (
     AUDIT_MARKER,
-    BATCH_FORMAT,
     FORMAT,
     LIMIT,
     STATE_PREFIX,
@@ -369,7 +368,7 @@ class StorageLifecycleTests(unittest.TestCase):
         # This is the deployed v2 reader's admission predicate.
         self.assertNotEqual(raw["state"]["version"], 2)
         self.assertEqual(self.controller().state, state)
-        raw["state"]["version"] = BATCH_FORMAT + 1
+        raw["state"]["version"] = 6
         body = AUDIT_MARKER + STATE_PREFIX + json.dumps(raw) + "\n```\n"
         with self.assertRaises(CheckpointError):
             checkpoints.decode({"body": body})

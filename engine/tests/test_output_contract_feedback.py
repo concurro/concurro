@@ -70,6 +70,11 @@ class EvidenceFeedbackTests(unittest.TestCase):
 class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
     """Surface simultaneous plan failures within the existing correction allowance."""
 
+    def setUp(self):
+        """Pin opt-in limits for the historical pilot-shaped correction fixtures."""
+        super().setUp()
+        self.config["limits"] = {"primary_files": 8, "scope_paths": 8, "changed_files": 32}
+
     def invalid_plan(self):
         """Reproduce the independent violations discovered across #33's three outputs."""
         plan = deepcopy(PLAN)
@@ -81,15 +86,15 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
     def test_simultaneous_limits_are_reported_together(self):
         """One correction can address summary, file, path-policy and envelope failures."""
         with self.assertRaises(Blocked) as caught:
-            validate_plan(self.invalid_plan(), CONFIG)
+            validate_plan(self.invalid_plan(), self.config)
         reason = str(caught.exception)
-        for part in ("publication.changes[0]", "300", "1–8 distinct files", "files[9]", "scope paths"):
+        for part in ("publication.changes[0]", "300", "limits.primary_files", "files[9]", "scope paths"):
             self.assertIn(part, reason)
         self.assertNotIn("x" * 301, reason)
 
     def test_scope_path_contract_matches_validation_boundary(self):
         """The advertised path length and enforced boundary must stay aligned."""
-        limit = plan_output_contract(CONFIG)["scope_path_characters_max"]
+        limit = plan_output_contract(CONFIG)["limits"]["scope_path_characters"]
         self.assertEqual(limit, 200)
         report = deepcopy(PLAN)
         report["scope"] = {"paths": ["docs/**", "x" * limit], "max_files": 1}
@@ -131,9 +136,9 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
         contexts = [c for _, stage, c in self.agents.calls if stage == "plan"]
         self.assertEqual(len(contexts), 2)
         contract = contexts[0]["plan_output_contract"]
-        self.assertEqual(contract["primary_files_max"], 8)
-        self.assertEqual(contract["scope_paths_max"], 8)
-        self.assertEqual(contract["scope_files_max"], 32)
+        self.assertEqual(contract["limits"]["primary_files"], 8)
+        self.assertEqual(contract["limits"]["scope_paths"], 8)
+        self.assertEqual(contract["limits"]["changed_files"], 32)
         self.assertEqual(contract["publication_item_characters_max"], 300)
         self.assertEqual(contract["edit_policy"]["paths"], self.config["paths"])
         self.assertEqual(contract, contexts[1]["plan_output_contract"])

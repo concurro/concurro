@@ -217,6 +217,14 @@ class DependencyDelta(TypedDict):
     changed: list[DependencyChange]
 
 
+class FileInventory(TypedDict):
+    """Exact changed-path commitment between two immutable Git commits."""
+
+    base: str
+    head: str
+    digest: str
+
+
 class Candidate(TypedDict, total=False):
     """Publication proof and dependency summaries, excluding opaque validation evidence."""
 
@@ -226,6 +234,7 @@ class Candidate(TypedDict, total=False):
     plan: str
     edits_digest: str
     changed_files: list[str]
+    file_inventory: FileInventory
     dependencies: dict[str, DependencyDelta] | None
     description: Document
     validation: str
@@ -301,6 +310,7 @@ class TaskState(TypedDict, total=False):
     pending: PendingPublication
     candidate: Candidate
     development_branches: dict[str, BranchReservation]
+    approved_inventory_parent: str
     changed_files: list[str]
     handoff_ready: bool
     reports: list[ReportIndex]

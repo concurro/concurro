@@ -152,7 +152,15 @@ class CommandHandler:
                 command_id=comment["id"],
                 issue_digest=controller.issue_digest(),
             )
-            for key in ("plan", "plan_id", "branch", "qc", "design_parent", "approved_accumulated_files"):
+            for key in (
+                "plan",
+                "plan_id",
+                "branch",
+                "qc",
+                "design_parent",
+                "approved_accumulated_files",
+                "approved_inventory_parent",
+            ):
                 controller.state.pop(key, None)
             controller.save()
         else:
@@ -485,6 +493,7 @@ class CommandHandler:
             "candidate",
             "local_status",
             "approved_accumulated_files",
+            "approved_inventory_parent",
             "design_parent",
             "classification_snapshot",
             "design_eligibility",

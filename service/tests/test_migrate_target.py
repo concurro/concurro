@@ -30,3 +30,5 @@ class MigrationTests(unittest.TestCase):
 
     def test_native_target_is_unchanged(self):
         self.assertEqual(migrate(CONFIG), CONFIG)
+        config = {**deepcopy(CONFIG), "paths": {"protected_extensions": []}, "limits": {"changed_files": None}}
+        self.assertEqual(migrate(config), config)

@@ -1,27 +1,27 @@
 # Scope envelope
 
-Status: implemented; audited 2026-11-07. The envelope authorizes paths and a cumulative
-file count. It does not prescribe builds or impose a changed-line budget.
+The envelope authorizes paths. Optional target limits bound contribution size; it does
+not prescribe builds or impose a changed-line budget.
 
 ## Plan contract
 
-A plan names 1–8 distinct primary files and may define a wider envelope:
+A plan names distinct primary files and may define a wider envelope:
 
 ```json
 {
   "files": ["stacks-common/src/util/example.rs"],
   "scope": {
-    "paths": ["stacks-common/src/util/**", "changelog.d/"],
-    "max_files": 12
+    "paths": ["stacks-common/src/util/**", "changelog.d/"]
   }
 }
 ```
 
-`scope.paths` contains 1–8 distinct relative patterns of at most 200 characters each.
+`scope.paths` contains distinct relative patterns. `limits.scope_paths` and
+`limits.scope_path_characters` bound their count and length when configured.
 `*` matches within a path segment; `**` spans zero or more segments. A trailing slash
 is normalized to a recursive directory pattern. Empty components, absolute roots,
 backslashes and `.`/`..` components are refused. Every primary file must match the
-envelope. `max_files` is an integer at least the primary-file count and at most 32.
+envelope. New plans do not choose a file-count budget.
 Without `scope`, the primary files remain the exact allowed file set.
 
 The planner receives `plan_output_contract` on every attempt: these limits, the
@@ -31,6 +31,10 @@ reports independent violations together where the report shape permits it, so on
 correction can address publication, primary-file and scope problems. Questions may
 leave the envelope incomplete; they stop implementation rather than grant permission.
 
+Older approved plans may contain `scope.max_files`. That allowance remains enforced,
+without rewriting the plan or its approval digest. New schemas omit it. A configured
+`limits.changed_files` applies in addition; neither limit overrides the other.
+
 Older plans may contain `max_changed_lines`. It is ignored without mutating the stored
 plan or approval digest, even if a new response supplies the obsolete key. New schemas
 omit it. Added/removed line counts remain review evidence, never authorization limits.
@@ -39,12 +43,14 @@ omit it. Added/removed line counts remain review evidence, never authorization l
 
 `engine/checks.py` defines matching; `policy.validate_edits` checks each proposal and
 `candidates.validate` checks the complete approved-base-to-candidate change. Path policy
-and protected files apply inside the envelope too. All dot-prefixed path components are
-refused, including `.github` and `.concurro`; an approved glob does not override that.
+and protected files apply inside the envelope too. The default-open policy allows
+dotfiles, workflows and governance documents; `.concurro` and Git metadata remain
+reserved. Legacy allow-list configs retain their previous hidden-path and governance
+protections. See [configuration](../concurro.md#edit-policy-and-workload-limits).
 
 Originals for an edit come from its parent (the last published head during repair).
 Cumulative changed paths are judged against the approved base. Previous repair edits
-therefore continue to count. An out-of-scope proposal is refused as a whole before
+therefore continue to count toward any configured or legacy approved allowance. An out-of-scope proposal is refused as a whole before
 publication and returned as feedback; no permitted subset is silently applied.
 A revised plan against an open PR must cover the accumulated changed paths.
 
@@ -69,7 +75,7 @@ being duplicated inside a prompt or checkpoint.
 
 Large replacements are uploaded as Git blobs before tree creation; deletions use explicit
 `sha: null` entries with a base tree. Aggregate exchange, model-response, tool-output and
-HTTP bounds still protect resources. The file-count and context limits remain independent
+HTTP bounds still protect resources. Optional file-count limits and context limits remain independent
 of source size. See [execution](mvp-execution.md) and [report storage](issue-dashboard.md#report-archive).
 
 The engine does not certify behavior by inspecting a diff. Agent validation is advisory;

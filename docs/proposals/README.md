@@ -13,7 +13,7 @@ it is implemented (its design notes go to `docs/design/`) or abandoned (it is de
 
 | Proposal | Kind | Summary |
 | ---- | ---- | ---- |
-| [Demo target policy](demo-target-policy.md) | Policy | Permit required RPC documentation and simplify incidental file restrictions without weakening governance or publication checks. |
+| [Demo target policy](demo-target-policy.md) | Approved direction | Default-open text edits, explicit protections and configurable workload limits; rollout requires engine support and replacement tasks. |
 | [Per-user provider credentials](per-user-credentials.md) | Epic | Each person's own provider credentials pay for the work they trigger. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |

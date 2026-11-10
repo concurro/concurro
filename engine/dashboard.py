@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+import change_attention
 import classification
 import dashboard_runs
 import markup
@@ -70,6 +71,7 @@ class Dashboard:
         checkpoints: CheckpointView,
         pr_url: Callable[[int], str],
         waiting_revision: Callable[[], str | None],
+        changed_paths: Callable[[], list[str]] | None = None,
     ) -> None:
         """Accept display data and two narrow controller queries, never its write interface."""
         self.state = state
@@ -77,6 +79,7 @@ class Dashboard:
         self.checkpoints = checkpoints
         self.pr_url = pr_url
         self.waiting_revision = waiting_revision
+        self.changed_paths = changed_paths
 
     @cached_property
     def run_boundaries(self) -> list[Boundary]:
@@ -143,6 +146,14 @@ class Dashboard:
             lines += [classification_row, ""]
         for path, delta in sorted((state.get("candidate", {}).get("dependencies") or {}).items()):
             lines += ["📦 " + text(dependency_summary(path, delta)), ""]
+        attention = change_attention.notice(
+            self.changed_paths() if self.changed_paths else state.get("changed_files", []),
+            self.config,
+            state.get("base"),
+            state.get("pending", {}).get("head", state.get("head")),
+        )
+        if attention:
+            lines += [attention, ""]
         action = self.action_line()
         if action:
             lines += [action, ""]

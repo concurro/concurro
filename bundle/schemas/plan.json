@@ -18,7 +18,7 @@
       "items": {
         "type": "string"
       },
-      "description": "When questions is empty, name 1\u20138 distinct primary editable files. Related follow-on edits belong in scope; files is not the exhaustive changed-file list."
+      "description": "Name distinct primary editable files. Related follow-on edits belong in scope; files is not the exhaustive changed-file list. Obey configured limits supplied in plan_output_contract."
     },
     "scope": {
       "type": "object",
@@ -28,16 +28,11 @@
           "items": {
             "type": "string"
           },
-          "description": "When questions is empty, 1\u20138 distinct repository-relative paths, directories or globs, at most 200 characters each. Cover the design without bypassing target edit_policy."
-        },
-        "max_files": {
-          "type": "integer",
-          "description": "When questions is empty, an integer covering the number of primary files and all anticipated changed files, at most 32."
+          "description": "Distinct repository-relative paths, directories or globs covering the design. Obey the supplied limits.scope_paths and limits.scope_path_characters when non-null."
         }
       },
       "required": [
-        "paths",
-        "max_files"
+        "paths"
       ],
       "additionalProperties": false
     },

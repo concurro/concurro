@@ -31,6 +31,10 @@ from vocab import TurnOutcome
 
 MAX_RESPONSE = MODEL_RESPONSE_LIMIT
 MAX_RETAINED = 24 * 1024 * 1024
+# Transport/memory bounds, independent of operator file-count policy. Together with the
+# base64 retained archive these leave room inside the exchange's 48 MiB result envelope.
+MAX_EXTRACT_BYTES = 8 * 1024 * 1024
+MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
 # Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),
 # relative to the retained root; resuming needs only its transcript and thread state.
 RETAINED_CACHES = (
@@ -42,7 +46,6 @@ RETAINED_CACHES = (
     "codex/logs_*.sqlite*",
     "codex/models_cache*.json",
 )
-MAX_WORKSPACE_CHANGES = 500
 # A turn's workspace name, also its mirror borrow name.
 NAME = re.compile(r"turn-[0-9a-f]{32}")
 
@@ -85,18 +88,21 @@ def git_environment(work, git_dir, index):
     }
 
 
-def extract(work, pristine, root):
+def extract(work, pristine, root, maximum=None):
     """The files the agent changed in its workspace, against the snapshot's head.
 
     Git runs with the repository copied before the agent started, so nothing the agent wrote
     under `.git` (configuration, hooks, filters) takes part; the work tree's ignore rules do.
     Returns `{"edits": [{path, content}], "removed": [path], "skipped": [path]}`.
     """
+    if maximum is not None and (type(maximum) is not int or maximum < 1):
+        raise TurnError("invalid limits.workspace_files")
     index = Path(root) / "extract.index"
     environment = git_environment(work, pristine, index)
 
     def git(*args):
-        result = subprocess.run(
+        """Bound stdout while it is produced, and reap Git on overflow or timeout."""
+        with subprocess.Popen(
             [
                 "git",
                 "-c",
@@ -107,13 +113,25 @@ def extract(work, pristine, root):
                 "core.hooksPath=" + os.devnull,
                 *args,
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             env=environment,
-            timeout=600,
-        )
-        if result.returncode:
-            raise TurnError("workspace extraction failed: git " + args[0])
-        return result.stdout
+        ) as process:
+            timer = threading.Timer(600, process.kill)
+            timer.start()
+            try:
+                data = process.stdout.read(MAX_GIT_OUTPUT_BYTES + 1)
+                if len(data) > MAX_GIT_OUTPUT_BYTES:
+                    raise TurnError("workspace extraction Git output exceeds bounded bytes")
+                if process.wait():
+                    raise TurnError("workspace extraction failed: git " + args[0])
+                return data
+            finally:
+                timer.cancel()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                timer.join()
 
     def unchanged(path, data):
         result = subprocess.run(
@@ -137,14 +155,24 @@ def extract(work, pristine, root):
     gitlinks = {path for path, mode in tree.items() if mode == "160000"}
     listed = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
     edits, removed, skipped = [], [], []
+    used = len(json.dumps({"edits": [], "removed": [], "skipped": []}).encode())
+
+    def append(target, value):
+        """Charge JSON escaping, UTF-8 and separators before retaining each extracted value."""
+        nonlocal used
+        used += len(json.dumps(value).encode()) + (2 if target else 0)
+        if used > MAX_EXTRACT_BYTES:
+            raise TurnError("workspace extraction exceeds bounded JSON bytes")
+        target.append(value)
+
     entries = [e for e in listed.decode("utf-8", errors="surrogateescape").split("\0") if e]
-    if len(entries) > MAX_WORKSPACE_CHANGES:
-        raise TurnError(f"the workspace changes more than {MAX_WORKSPACE_CHANGES} files")
+    if maximum is not None and len(entries) > maximum:
+        raise TurnError(f"workspace exceeds limits.workspace_files ({maximum})")
     for entry in entries:
         code, path = entry[:2], entry[3:]
         if path.endswith("/") or any(path == link or path.startswith(link + "/") for link in gitlinks):
             # A nested repository or submodule: not part of the candidate.
-            skipped.append(path)
+            append(skipped, path)
             continue
         # Policy is the controller's; only a path no candidate can carry is refused here.
         if not path or path.startswith("/") or ".." in path.split("/") or len(path) > 4096:
@@ -156,7 +184,7 @@ def extract(work, pristine, root):
         if "D" in code:
             if tree.get(path) not in ("100644", "100755"):
                 raise TurnError("deletion requires an existing regular file: " + path)
-            removed.append(path)
+            append(removed, path)
             continue
         file = Path(work, path)
         if file.is_symlink() or not file.is_file():
@@ -164,13 +192,19 @@ def extract(work, pristine, root):
         mode = "100755" if file.stat().st_mode & 0o111 else "100644"
         if mode != tree.get(path, "100644"):
             raise TurnError("mode changes are not supported: " + path)
-        data = file.read_bytes()
+        remaining = MAX_EXTRACT_BYTES - used
+        if file.stat().st_size > remaining:
+            raise TurnError("workspace extraction exceeds bounded content bytes")
+        with file.open("rb") as source:
+            data = source.read(remaining + 1)
+        if len(data) > remaining:
+            raise TurnError("workspace extraction exceeds bounded content bytes")
         if "?" not in code and unchanged(path, data):
             raise TurnError("mode-only changes are not supported: " + path)
         if b"\0" in data:
             raise TurnError("the workspace changes a binary file: " + path)
         try:
-            edits.append({"path": path, "content": data.decode("utf-8")})
+            append(edits, {"path": path, "content": data.decode("utf-8")})
         except UnicodeDecodeError:
             raise TurnError("the workspace changes a file that is not UTF-8 text: " + path) from None
     return {"edits": sorted(edits, key=lambda e: e["path"]), "removed": sorted(removed), "skipped": sorted(skipped)}
@@ -337,7 +371,14 @@ def execute(turn, key, mirror, root, stopped=None):
         request = {**request, "context": context}
     mirror.borrow(name, spec["base_branch"], sorted(set(spec["refs"].values())))
     try:
-        snapshot({k: spec[k] for k in ("refs", "head", "candidate")}, root=root / "work", mirror=mirror.path)
+        snapshot(
+            {
+                **{k: spec[k] for k in ("refs", "head", "candidate")},
+                "overlay_files_limit": spec.get("overlay_files_limit"),
+            },
+            root=root / "work",
+            mirror=mirror.path,
+        )
         shutil.copytree(root / "work" / ".git", root / "pristine.git", symlinks=True)
         if session:
             unpack(turn.get("retained"), root / "retained")
@@ -367,7 +408,9 @@ def execute(turn, key, mirror, root, stopped=None):
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
         if result == TurnOutcome.OK and request["stage"] == "develop":
             try:
-                reply["workspace"] = extract(root / "work", root / "pristine.git", root)
+                reply["workspace"] = extract(
+                    root / "work", root / "pristine.git", root, spec.get("workspace_files_limit")
+                )
             except TurnError as error:
                 reply["workspace"] = {"error": str(error)}
         return reply

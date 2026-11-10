@@ -8,14 +8,11 @@ from pathlib import PurePosixPath
 import model_config
 import protocol
 from checks import (
-    MAX_PLAN_FILES,
-    MAX_SCOPE_FILES,
-    MAX_SCOPE_PATH_CHARACTERS,
-    MAX_SCOPE_PATHS,
+    file_count_error,
     glob_matches as instruction_matches,
     in_scope,
+    limits,
     scope_errors,
-    scope_of,
 )
 from report_core import core as report_core
 
@@ -266,32 +263,55 @@ def validate_design_issue(issue):
 
 
 def path_safe(path):
-    """Engine invariants: a short, relative, visible path outside agent governance files."""
+    """Keep candidate paths relative and outside Git and pinned Concurro metadata."""
     if not isinstance(path, str) or not path or len(path) > 240:
         return False
     parts = path.split("/")
     return (
         not PurePosixPath(path).is_absolute()
-        and all(p not in ("", ".", "..") and not p.startswith(".") for p in parts)
-        and not any(p in PROTECTED_NAMES for p in parts)
+        and all(p not in ("", ".", "..") and p.casefold() not in (".git", ".concurro") for p in parts)
         and "\\" not in path
         and all(c.isalnum() or c in "/_.-" for c in path)
     )
 
 
-def path_allowed(path, config):
-    """Apply the target's editable-path policy and profile protections on top of engine invariants."""
-    if not path_safe(path) or any(instruction_matches(path, g) for g in config["paths"].get("protected", [])):
-        return False
+def path_rules(config):
+    """Resolve default-open policy while preserving the meaning of legacy pinned policies."""
     policy = config["paths"]
+    if "editable_extensions" in policy:
+        return policy
+    return {
+        "protected_extensions": [],
+        "protected_names": [],
+        "protected_name_prefixes": [],
+        "protected_prefixes": [".concurro/"],
+        "protected_files": [],
+        "protected": [],
+        "generated": [],
+        **policy,
+    }
+
+
+def path_allowed(path, config):
+    """Apply operator policy after structural path validation; legacy policies retain their denials."""
+    policy = path_rules(config)
+    if not path_safe(path) or any(instruction_matches(path, g) for g in policy.get("protected", [])):
+        return False
+    if "editable_extensions" in policy:
+        if (
+            not path.endswith(tuple(policy["editable_extensions"]))
+            or any(p.startswith(".") or p in PROTECTED_NAMES for p in path.split("/"))
+            or path in config["policy_documents"]
+        ):
+            return False
+    elif path.endswith(tuple(policy["protected_extensions"])):
+        return False
     return (
-        path.endswith(tuple(policy["editable_extensions"]))
-        and not any(
+        not any(
             p in policy["protected_names"] or p.startswith(tuple(policy["protected_name_prefixes"]))
             for p in path.split("/")
         )
         and path not in policy["protected_files"]
-        and path not in config["policy_documents"]
         and not path.startswith(tuple(policy["protected_prefixes"]))
     )
 
@@ -299,23 +319,21 @@ def path_allowed(path, config):
 def plan_output_contract(config):
     """Expose enforced plan limits and target policy before the first planner attempt."""
     return {
-        "primary_files_max": MAX_PLAN_FILES,
-        "scope_paths_max": MAX_SCOPE_PATHS,
-        "scope_path_characters_max": MAX_SCOPE_PATH_CHARACTERS,
-        "scope_files_max": MAX_SCOPE_FILES,
+        "limits": limits(config),
         "publication_items_min": 1,
         "publication_items_max": PLAN_PUBLICATION_ITEMS,
         "publication_item_characters_max": PLAN_PUBLICATION_CHARACTERS,
         "plan_json_characters_max": PLAN_JSON_CHARACTERS,
         "edit_policy": {
-            "paths": config["paths"],
+            "paths": path_rules(config),
             "policy_documents": config["policy_documents"],
-            "protected_instruction_names": sorted(PROTECTED_NAMES),
+            "protected_instruction_names": sorted(PROTECTED_NAMES) if "editable_extensions" in config["paths"] else [],
+            "reserved_components": [".git", ".concurro"],
         },
         "instruction": (
             "files names primary files, not every anticipated edit. scope.paths may use narrow directories/globs "
-            "to include related tests and follow-on edits; scope.max_files covers all changed files. "
-            "Paths must be repository-relative, without hidden, empty, . or .. components. "
+            "to include related tests and follow-on edits. Null limits mean no configured cap. "
+            "Paths must be repository-relative, without empty, . or .. components. "
             "Neither scope nor an issue reply overrides edit_policy. If required work is forbidden, ask for a "
             "target-policy decision in questions; do not omit required work or claim that a reply grants permission. "
             "Check all limits together, including the short publication lists; the full design belongs in summary, "
@@ -363,8 +381,11 @@ def validate_plan(plan, config):
     if len(json.dumps(plan)) > PLAN_JSON_CHARACTERS:
         problems.append(f"plan too large: at most {PLAN_JSON_CHARACTERS} JSON characters")
     if lists_valid and not plan["questions"]:
-        if not 1 <= len(plan["files"]) <= MAX_PLAN_FILES or len(set(plan["files"])) != len(plan["files"]):
-            problems.append("plan must name 1–8 distinct files; put related follow-on edits in scope")
+        if not plan["files"] or len(set(plan["files"])) != len(plan["files"]):
+            problems.append("plan must name distinct primary files; put related follow-on edits in scope")
+        maximum = limits(config)["primary_files"]
+        if maximum is not None and len(plan["files"]) > maximum:
+            problems.append(f"plan files exceed limits.primary_files ({maximum})")
         for index, path in enumerate(plan["files"]):
             if not path_allowed(path, config):
                 problems.append(
@@ -372,7 +393,7 @@ def validate_plan(plan, config):
                     "a scope or issue reply cannot override it"
                 )
                 break
-        problem = scope_errors(plan)
+        problem = scope_errors(plan, config)
         if problem:
             problems.append(problem)
         if not plan["steps"] or not plan["tests"]:
@@ -386,9 +407,11 @@ def validate_edits(result, plan, originals, config):
     if set(result) != {"summary", "edits"} or not isinstance(result["summary"], str):
         raise Blocked("invalid implementation response")
     edits = result["edits"]
-    limit = scope_of(plan)["max_files"]
-    if not isinstance(edits, list) or not 1 <= len(edits) <= limit:
-        raise Blocked(f"implementation must contain 1–{limit} edits")
+    if not isinstance(edits, list) or not edits:
+        raise Blocked("implementation must contain edits")
+    problem = file_count_error(len(edits), plan, config)
+    if problem:
+        raise Blocked(problem)
     if not all(isinstance(edit, dict) and set(edit) == {"path", "content"} for edit in edits):
         raise Blocked("invalid edit fields")
     # A proposal reaching outside the envelope, or touching a path no edit may change, is refused

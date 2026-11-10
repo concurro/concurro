@@ -134,7 +134,6 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
     Runs during credential-free, offline preparation. `spec` is `{"refs": {name: sha}, "head": name,
     "candidate": {"files": {path: text or None}} or None}`; a candidate is committed on the head ref.
     """
-    from checks import MAX_OVERLAY_FILES
     from policy import path_safe
 
     refs, head, candidate = spec["refs"], spec["head"], spec.get("candidate")
@@ -145,12 +144,17 @@ def snapshot(spec, root=ROOT, mirror=MIRROR):
         or not all(valid_ref(n) and isinstance(c, str) and SHA.fullmatch(c) for n, c in refs.items())
     ):
         raise ValueError("invalid snapshot refs")
+    maximum = spec.get("overlay_files_limit")
+    if maximum is not None and (type(maximum) is not int or maximum < 1):
+        raise ValueError("invalid limits.overlay_files")
     if candidate is not None:
         files = candidate.get("files") if isinstance(candidate, dict) else None
         if (
             set(candidate) != {"files"}
             or not isinstance(files, dict)
-            or not 1 <= len(files) <= MAX_OVERLAY_FILES
+            or not files
+            or maximum is not None
+            and len(files) > maximum
             or not all(
                 path_safe(path) and (text is None or isinstance(text, str) and "\x00" not in text)
                 for path, text in files.items()

@@ -188,13 +188,13 @@ omitting an entry preserves the original file ([Git Trees API](https://docs.gith
 Before any push, the controller validates the returned bytes against its recorded parent:
 
 - safe unique paths, protected-path policy and the approved scope;
-- aggregate transport bounds, and cumulative path scope and file-count limits already in the plan;
+- aggregate transport bounds, and cumulative path scope, configured count limits and any legacy approved file allowance;
 - the complete proposed change across repair rounds, not just this turn's additions;
 - sufficient bounded context to review every changed file, with no silent omissions.
 
 These are pure checks in `policy.py` and `candidates.py`; the controller does not execute
 repository code. There are no build-specific assertions, profile triggers or mandatory
-primary-file completion checks. Generated files still count toward the file limit;
+primary-file completion checks. Generated files still count toward any configured or legacy approved file limit;
 [scope rules](scope-envelope.md) apply to all candidate paths.
 
 The controller constructs Git objects from validated bytes and updates only the recorded

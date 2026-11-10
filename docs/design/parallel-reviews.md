@@ -303,8 +303,8 @@ Finish or reconcile legacy singleton operations before batching remaining review
 completed votes, allowances, eligibility receipts and spent budgets; do not repeat reviews
 just to obtain parallelism. Missing legacy exchange IDs remain unavailable.
 
-A task saves checkpoint format 4 once it starts a batch, and keeps that format after the
-batch ends. Versions 2 and 3 remain readable. Older engines reject format 4 rather than
+A task saves checkpoint format 4 or later once it starts a batch, including after the
+batch ends; large Git-backed inventories use format 5. Versions 2 and 3 remain readable. Older engines reject format 4 rather than
 ignoring active members and dispatching duplicate serial calls. Rollback after a batch-format
 save requires a compatible reader, not an assumed downgrade. The timing-only change should remain additive
 and must not require the batch format or a recovery upgrade.

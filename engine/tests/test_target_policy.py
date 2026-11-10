@@ -72,7 +72,7 @@ class PathPolicyTests(unittest.TestCase):
             "SECURITY.md",
         ):
             with self.subTest(path=path):
-                self.assertFalse(path_safe(path))
+                self.assertEqual(path_safe(path), path not in ("../x.md", "docs/.git/x.md"))
                 self.assertFalse(path_allowed(path, permissive))
         self.assertTrue(path_allowed("docs/guide.md", permissive))
 

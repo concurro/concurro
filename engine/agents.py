@@ -155,7 +155,7 @@ class Agents:
         turn = {
             "request": request,
             "feedback": feedback,
-            "spec": inspection(context.get("repository"), candidate, stage, self.config["base"]),
+            "spec": inspection(context.get("repository"), candidate, stage, self.config["base"], self.config),
             "retained": self.retained.load(session) if session else None,
             "timeout": None if runner_bound(stage) else DEFAULT_TURN_SECONDS,
         }

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-import candidates
+import change_attention
 import conversation
+import file_inventory
 import markup
 import pr_description
 import pr_template
@@ -16,6 +18,7 @@ from dashboard import dependency_summary
 from github import Transient
 from markup import block, link, text
 from policy import Blocked, approval_valid
+from repository_reader import RepositoryReader
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,10 +41,12 @@ class Publication:
         config: Config,
         state: TaskState,
         plan_artifact: PlanArtifact | None = None,
+        reader: RepositoryReader | None = None,
     ) -> None:
         """Bind publication to its task state and optional plan artifact."""
         self.code, self.pulls, self.config, self.state = code, pulls, config, state
         self.plan_artifact = plan_artifact
+        self.reader = reader or RepositoryReader(code, pulls)
 
     def _branch_refs(self, branch: str) -> list[Document]:
         """Select only the exact branch from GitHub's prefix-matching endpoint."""
@@ -124,9 +129,9 @@ class Publication:
         )
         return commit
 
-    def publish(self, save: Callable[[], None]) -> None:
+    def publish(self, save: Callable[[], None], preflight: Callable[[list[TaskState]], None]) -> None:
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
-        state, pending = self.state, self.state["pending"]
+        state, pending, reader = self.state, self.state["pending"], self.reader
         candidate = state.get("candidate", {})
         if (
             not approval_valid(state, self.config)
@@ -142,10 +147,29 @@ class Publication:
             )
         ):
             raise Blocked("candidate does not match its recorded approval and publication intent")
+        try:
+            expected_files = file_inventory.candidate_paths(state, reader)
+        except ValueError:
+            raise Blocked("candidate file inventory cannot be verified") from None
+        # Account for the largest durable publication state before advancing a ref or writing a PR.
+        projected = deepcopy(state)
+        if projected["reviews"]:
+            projected.setdefault("review_history", []).append(projected["reviews"])
+        projected.update(
+            head=pending["head"],
+            pr=state.get("pr", 2**63 - 1),
+            reviews={},
+            stage="review",
+            input_revision=state.get("input_revision", 0) + 1,
+            changed_files=expected_files,
+        )
+        projected["pr_description"] = {"last": "f" * 64, "intended": "f" * 64, "human_edited": True}
+        # Keep pending as well: the saved intent and all bounded receipts must fit together.
+        preflight([state, projected])
         self._advance_branch(pending)
         pr = self._find_or_open_pr(pending, save)
-        published_files = candidates.changed_paths(self.pulls.pages(f"pulls/{pr['number']}/files"))
-        if set(published_files) != set(candidate["changed_files"]):
+        published_files = reader.pr_paths(state, pr["number"], pending["head"])
+        if set(published_files) != set(expected_files):
             raise Transient("unavailable", 30)
         if state["reviews"]:
             state.setdefault("review_history", []).append(state["reviews"])
@@ -248,6 +272,13 @@ class Publication:
             self.state["plan"].get("publication", {}).get("review_focus", []),
             self.config.get("fork", self.config["repository"]),
         )
+        attention = ""
+        if candidate:
+            attention = change_attention.notice(
+                file_inventory.candidate_paths(self.state, self.reader), self.config, self.state.get("base"), head
+            )
+        if parts and attention:
+            parts["review_focus"] = "\n\n".join(filter(None, (parts["review_focus"], attention)))
         lines = (
             [pr_template.render(parts, self.state.get("pr_template"), self.state.get("base")), "", "---", ""]
             if parts
@@ -256,6 +287,8 @@ class Publication:
                 "",
             ]
         )
+        if attention and not parts:
+            lines += ["### Review focus", "", attention, ""]
         if plan:
             lines += [
                 link(

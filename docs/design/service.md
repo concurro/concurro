@@ -199,7 +199,9 @@ read allowance for complete source files; they do not enlarge unrelated JSON end
 Exact endpoint bounds live in `service/transport.py`.
 
 Report storage is described in [the dashboard contract](issue-dashboard.md#report-archive).
-New checkpoints use format 3; an older engine cannot read them. Rollback must preserve
+Report detachment uses checkpoint format 3, parallel review batches require format 4,
+and large Git-backed file inventories require format 5. Older engines reject unknown
+formats. Rollback must preserve
 consumed calls and publication progress and use a compatible engine, not an older audit.
 Legacy `adopt`/`release` commands support old controller markers; they are not a supported
 host-execution fallback. Deployment requires the served engine and `deployed` workflow

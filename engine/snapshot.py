@@ -3,10 +3,11 @@
 import re
 
 import protocol
+from checks import limits
 from policy import Blocked
 
 
-def inspection(repository, candidate, stage, base_branch):
+def inspection(repository, candidate, stage, base_branch, config=None):
     """The snapshot a call reads: controller-supplied refs, and the candidate for develop and local review."""
     if not isinstance(repository, dict) or set(repository) != {"refs", "head"}:
         raise Blocked("repository inspection requires pinned refs")
@@ -21,7 +22,12 @@ def inspection(repository, candidate, stage, base_branch):
         raise Blocked("unknown native runner role")
     if candidate is not None and stage != "develop":
         raise Blocked("only implementation may overlay a candidate")
+    maximum = limits(config or {})["overlay_files"]
+    if candidate is not None and maximum is not None and len(candidate) > maximum:
+        raise Blocked(f"candidate overlay exceeds limits.overlay_files ({maximum})")
     return {
+        "overlay_files_limit": maximum,
+        "workspace_files_limit": limits(config or {})["workspace_files"],
         "refs": refs,
         "head": head,
         "base_branch": base_branch,

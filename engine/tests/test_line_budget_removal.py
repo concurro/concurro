@@ -23,8 +23,8 @@ class LineBudgetRemovalTests(unittest.TestCase):
     def test_current_schema_and_validator_do_not_require_a_line_budget(self):
         """The provider contract and controller agree on the new scope shape."""
         scope = json.loads((ROOT / "bundle/schemas/plan.json").read_text())["properties"]["scope"]
-        self.assertEqual(set(scope["required"]), {"paths", "max_files"})
-        self.assertEqual(set(scope["properties"]), {"paths", "max_files"})
+        self.assertEqual(set(scope["required"]), {"paths"})
+        self.assertEqual(set(scope["properties"]), {"paths"})
         self.assertFalse(scope["additionalProperties"])
         validate_plan(self.plan, CONFIG)
 

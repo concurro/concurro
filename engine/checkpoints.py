@@ -4,12 +4,14 @@ import json
 import re
 from copy import deepcopy
 
+import file_inventory
 import markup
 import protocol
 import report_store
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest
+from repository_reader import RepositoryReader
 from storage_helpers import graft_slot, owned
 
 MARKER = "<!-- concurro:v1 -->"
@@ -78,9 +80,10 @@ def artifact_metadata(kind):
 class Checkpoints:
     """Persist one authoritative audit artifact and a derived human-readable plan."""
 
-    def __init__(self, github, config, issue, report_cache=None):
+    def __init__(self, github, config, issue, report_cache=None, reader=None):
         """Bind storage to one repository, issue and configured App identity."""
         self.gh, self.config, self.issue = github, config, issue
+        self.reader = reader or RepositoryReader(github, github)
         self.author = Identities(config).author("state")
         self.audit = self.plan = self.comment = self.legacy = None
         self.plan_binding = None
@@ -188,14 +191,24 @@ class Checkpoints:
 
     def audit_body(self, state, bind_plan=True, external=True):
         """Encode repository-bound state in a public Markdown artifact."""
-        compact, detached = report_store.packed(state) if external else (state, [])
+        compact, inventories = file_inventory.pack(state) if external else (state, [])
+        compact, detached = report_store.packed(compact) if external else (compact, [])
         # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
         payload = {
             "repository": self.config["repository"],
-            "state": {**compact, "version": BATCH_FORMAT if state.get("review_batch_version") else FORMAT}
+            "state": {
+                **compact,
+                "version": file_inventory.FORMAT
+                if inventories or state.get("candidate", {}).get("file_inventory")
+                else BATCH_FORMAT
+                if state.get("review_batch_version")
+                else FORMAT,
+            }
             if external
             else compact,
         }
+        if inventories:
+            payload["file_inventories"] = inventories
         if detached:
             payload["report_data"] = [
                 {
@@ -221,7 +234,7 @@ class Checkpoints:
                 raise ValueError()
             self.validate_state(state)
             refs = payload.get("report_data", [])
-            if refs and state["version"] not in (FORMAT, BATCH_FORMAT):
+            if refs and state["version"] not in (FORMAT, BATCH_FORMAT, file_inventory.FORMAT):
                 raise ValueError()
             if not isinstance(refs, list):
                 raise ValueError()
@@ -252,6 +265,12 @@ class Checkpoints:
                         raise ValueError()
                     value = {**value, **ref["annotations"]}
                 parent[slot] = value
+            inventories = payload.get("file_inventories", [])
+            if (inventories or state.get("candidate", {}).get("file_inventory")) and state[
+                "version"
+            ] != file_inventory.FORMAT:
+                raise ValueError()
+            file_inventory.restore(state, inventories, self.reader)
             binding = payload.get("plan_artifact")
             if binding is not None and (
                 not isinstance(binding, dict)
@@ -270,10 +289,10 @@ class Checkpoints:
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""
         if (
-            state["version"] not in (2, FORMAT, BATCH_FORMAT)
+            state["version"] not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT)
             or state["issue"] != self.issue
             or (state.get("review_batch_version") or state.get("review_batch"))
-            and state["version"] != BATCH_FORMAT
+            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT)
             or state.get("review_batch_version", 1) != 1
         ):
             raise CheckpointError("state_identity")
@@ -452,12 +471,26 @@ class Checkpoints:
         except (KeyError, TypeError, ValueError):
             raise CheckpointError("write_unconfirmed") from None
 
+    def preflight(self, states, reserve=4096):
+        """Prove publication states fit, reserving space for bounded receipts and failure diagnostics."""
+        for state in states:
+            compact, refs = file_inventory.pack(state)
+            file_inventory.restore(deepcopy(compact), refs, self.reader)
+            _, detached = report_store.packed(compact)
+            for item in detached:
+                self.reports.put(item["value"])
+            if len(self.audit_body(state).encode()) > LIMIT - reserve:
+                raise Blocked("publication checkpoint exceeds available capacity; split the change before publishing")
+
     def save(self, state):
         """Preserve a legacy snapshot first, then persist audit state before updating its views."""
         if self.uncertain:
             raise CheckpointError("write_uncertain")
+        compact, refs = file_inventory.pack(state)
+        # This proof only reads Git; failure cannot make a checkpoint write uncertain.
+        file_inventory.restore(deepcopy(compact), refs, self.reader)
+        _, detached = report_store.packed(compact)
         try:
-            _, detached = report_store.packed(state)
             for item in detached:
                 self.reports.put(item["value"])
             if self.audit is None and self.legacy is not None:

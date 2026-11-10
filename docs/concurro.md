@@ -29,15 +29,98 @@ In the fork's default branch, install:
 
 The [stacks-core example](../examples/stacks-core/) installs the base's Rust toolchain
 and suggests validation commands. Other projects can install Node, .NET or combinations.
-There is no execution profile or mandatory command catalog. Configure protected and
-generated globs under `paths`; existing extension and path restrictions still apply.
-See the [scope envelope](design/scope-envelope.md) for cumulative file limits and large-file handling.
+There is no execution profile or mandatory command catalog. Configure edit policy and
+optional workload limits as described below. See the [scope envelope](design/scope-envelope.md)
+for approved paths, cumulative limits and large-file handling.
 
 A task records the fork configuration commit separately from the approved upstream
 source commit. Setup, instructions and caller workflow changes apply to new tasks;
 configuration changes require a new task. `/concurro invalidate` adopts the current
 bundle/charter but preserves the task’s configuration pin. An optional target `engine` pin must
 match the served commit. Omit it when the same operator controls service and target.
+
+## Edit policy and workload limits
+
+New targets use an extension deny-list. An explicit empty list allows all supported
+regular UTF-8 text files, including extensionless files, dotfiles, workflows, scripts
+and policy documents. Binary, symlink and mode-only edits remain unsupported.
+
+```yaml
+paths:
+  protected_extensions: []
+  protected_names: []
+  protected_name_prefixes: []
+  protected_prefixes: [.concurro/]
+  protected_files: []
+  protected: []
+  generated: ['**/Cargo.lock']
+limits:
+  primary_files: null
+  scope_paths: null
+  scope_path_characters: 200
+  changed_files: null
+  overlay_files: null
+  workspace_files: null
+```
+
+Only `paths.protected_extensions` is required in the new policy. Other protection lists
+are optional and default to empty, except `protected_prefixes`, which defaults to
+`.concurro/`. Extensions use suffix matching (for example `.yaml`); files name exact
+paths, prefixes name directories ending in `/`, and `protected` accepts globs.
+`policy_documents` supplies reference guidance; it does not independently forbid edits
+under this policy. Add any desired protection explicitly. `.concurro` and `.git` path
+components remain reserved regardless of configuration, and traversal is never allowed.
+
+| Limit | Meaning | Default |
+| ---- | ---- | ---- |
+| `primary_files` | Entries in the plan's primary-file list | No cap |
+| `scope_paths` | Entries in the approved path envelope | No cap |
+| `scope_path_characters` | Characters in each scope pattern | 200 |
+| `changed_files` | Cumulative changed paths from approved base to candidate, including repairs | No cap |
+| `overlay_files` | Candidate entries materialized in a runner snapshot | No cap |
+| `workspace_files` | Git-status entries extracted from one implementation workspace, before filtering skipped entries | No cap |
+
+Each limit accepts a positive integer or `null` (unlimited). Missing keys use the table's
+defaults. Unknown keys, booleans and malformed values are rejected. Every agent receives
+the effective policy and limits, and refusals name the relevant `limits.*` setting.
+Aggregate transport, response, context and checkpoint bounds still apply. Older approved
+plans retain any `scope.max_files` allowance; new plan schemas omit that field.
+
+Existing `editable_extensions` configurations remain supported with their original
+allow-list, hidden-path, governance and policy-document protections. Do not combine
+`editable_extensions` with `protected_extensions`; the engine refuses mixed policies.
+Switching formats or limits changes the config digest and requires a new task. Deploy
+support before merging a new-format target configuration; older engines cannot read it.
+
+### Large changes and resource bounds
+
+Unlimited counts do not remove transport or memory bounds. Workspace extraction permits
+up to 8 MiB of JSON (including escaped content, paths, deletions and skipped entries),
+with bounded reads before loading files. Git extraction output is limited to 64 MiB;
+Git is stopped and reaped on overflow. These resource guards are separate from file-count policy.
+
+Large changed-path inventories are commitments to pinned base/head trees, not repeated
+lists in the audit or candidate report. Approval-bound inventories use the original design
+parent, retained across a reopen, and must reconstruct the exact list and approval digest.
+These checkpoints use wire format 5; older engines refuse them. Missing, truncated or
+mismatched Git evidence stops recovery without replacing approvals.
+
+A PR file list reaching GitHub's 3,000-file ceiling is replaced with a complete pinned-tree
+comparison only after verifying that the PR's merge base is the approved base. The compare
+API's 300-file list is never used as an inventory. GitHub limits recursive tree responses
+to [100,000 entries or 7 MB](https://docs.github.com/en/rest/git/trees#get-a-tree), covering
+the repository tree rather than only changed files. Concurro refuses truncated trees;
+it does not currently walk subtrees separately, so a repository exceeding this ceiling
+can block work even with unlimited file counts. Before advancing a candidate branch or
+creating/updating its PR, the controller checks both the publication intent and the
+projected completion checkpoint, including archived reviews,
+real report-artifact links and space for publication receipts and failure diagnostics.
+
+Review contexts retain every changed-file identity, finding and criterion. Diff previews
+may shrink with an explicit instruction to inspect the pinned checkout; if mandatory
+context still cannot fit, implementation is refused before publication. Workflow and
+policy-document paths are added deterministically to review context, PR review focus and
+the dashboard. Display previews are bounded and link the complete pinned change when shortened.
 
 ## Models and agents
 

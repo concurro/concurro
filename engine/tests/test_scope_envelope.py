@@ -77,7 +77,6 @@ class ContractTests(unittest.TestCase):
             "traversal": {**SCOPE, "paths": ["docs/../src/**"]},
             "outside the files": {**SCOPE, "paths": ["src/**"]},
             "fewer files than planned": {**SCOPE, "max_files": 0},
-            "over the file cap": {**SCOPE, "max_files": 33},
             "extra key": {**SCOPE, "x": 1},
         }.items():
             with self.subTest(name=name), self.assertRaises(Blocked):

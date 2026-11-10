@@ -3,11 +3,31 @@
 from fnmatch import fnmatchcase
 from functools import lru_cache
 
-SCOPE_KEYS = {"paths", "max_files"}
-MAX_SCOPE_PATHS, MAX_SCOPE_FILES = 8, 32
 MAX_SCOPE_PATH_CHARACTERS = 200
-MAX_PLAN_FILES = 8
-MAX_OVERLAY_FILES = MAX_SCOPE_FILES + MAX_PLAN_FILES
+DEFAULT_LIMITS = {
+    "primary_files": None,
+    "scope_paths": None,
+    "scope_path_characters": MAX_SCOPE_PATH_CHARACTERS,
+    "changed_files": None,
+    "overlay_files": None,
+    "workspace_files": None,
+}
+
+
+def limits(config):
+    """Return effective operator limits without modifying the pinned configuration."""
+    return {**DEFAULT_LIMITS, **config.get("limits", {})}
+
+
+def file_count_error(count, plan, config):
+    """Identify the authority that refuses an over-limit cumulative candidate."""
+    configured = limits(config)["changed_files"]
+    if configured is not None and count > configured:
+        return f"candidate changes {count} files, over limits.changed_files ({configured})"
+    approved = scope_of(plan)["max_files"]
+    if approved is not None and count > approved:
+        return f"candidate changes {count} files, over the approved budget of {approved}"
+    return None
 
 
 def glob_matches(path, pattern):
@@ -30,12 +50,12 @@ def glob_matches(path, pattern):
     return match(0, 0)
 
 
-def _strings(value, minimum, maximum, length=MAX_SCOPE_PATH_CHARACTERS):
-    """Return whether a value is a bounded list of distinct non-empty strings."""
+def _strings(value):
+    """Return whether a value is a non-empty list of distinct non-empty strings."""
     return (
         isinstance(value, list)
-        and minimum <= len(value) <= maximum
-        and all(isinstance(v, str) and v.strip() and len(v) <= length for v in value)
+        and bool(value)
+        and all(isinstance(v, str) and v.strip() for v in value)
         and len(set(value)) == len(value)
     )
 
@@ -65,7 +85,7 @@ def scope_of(plan):
     """Return path and file limits, ignoring legacy line budgets without mutating the plan."""
     scope = plan.get("scope")
     if scope is not None:
-        return {"paths": [scope_pattern(path) for path in scope["paths"]], "max_files": scope["max_files"]}
+        return {"paths": [scope_pattern(path) for path in scope["paths"]], "max_files": scope.get("max_files")}
     return {"paths": list(plan["files"]), "max_files": len(plan["files"])}
 
 
@@ -74,23 +94,27 @@ def in_scope(path, plan):
     return any(glob_matches(path, pattern) for pattern in scope_of(plan)["paths"])
 
 
-def scope_errors(plan):
+def scope_errors(plan, config=None):
     """Why a plan's `scope` is invalid, or None."""
+    bounds = limits(config or {})
     scope = plan.get("scope")
     if scope is None:
         return None
-    # Ignore the obsolete field even if a new response includes it; it grants no authority.
-    if not isinstance(scope, dict) or set(scope) - {"max_changed_lines"} != SCOPE_KEYS:
-        return "plan scope needs paths and max_files"
-    if not _strings(scope["paths"], 1, MAX_SCOPE_PATHS):
-        return (
-            "plan scope paths must contain 1–8 distinct non-empty strings "
-            f"(at most {MAX_SCOPE_PATH_CHARACTERS} characters each)"
-        )
+    # Legacy allowances stay bound to existing approvals; new schemas omit them.
+    if not isinstance(scope, dict) or set(scope) - {"max_changed_lines", "max_files"} != {"paths"}:
+        return "plan scope needs paths"
+    if not _strings(scope["paths"]):
+        return "plan scope paths must contain distinct non-empty strings"
+    maximum = bounds["scope_paths"]
+    if maximum is not None and len(scope["paths"]) > maximum:
+        return f"plan scope paths exceed limits.scope_paths ({maximum})"
+    length = bounds["scope_path_characters"]
+    if length is not None and any(len(v) > length for v in scope["paths"]):
+        return f"plan scope paths exceed limits.scope_path_characters (at most {length} characters each)"
     if not all(_relative(scope_pattern(v)) for v in scope["paths"]):
         return "plan scope paths must be relative paths, directories or globs without empty, . or .. components"
-    if type(scope["max_files"]) is not int or not len(plan["files"]) <= scope["max_files"] <= MAX_SCOPE_FILES:
-        return "plan scope max_files must cover its primary files and be at most 32"
+    if "max_files" in scope and (type(scope["max_files"]) is not int or scope["max_files"] < len(plan["files"])):
+        return "plan scope max_files must cover its primary files"
     if not all(in_scope(path, plan) for path in plan["files"]):
         return "plan files must lie inside the plan scope"
     return None

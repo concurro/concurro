@@ -22,28 +22,22 @@ policy_documents:
 - .github/copilot-instructions.md
 - .agents/skills/stacks-pr-review/SKILL.md
 paths:
-  editable_extensions:
-  - .rs
-  - .md
-  - .toml
-  - .lock
-  - .added
-  - .changed
-  - .fixed
-  - .removed
+  protected_extensions: []
   protected_names: []
   protected_name_prefixes: []
   protected_prefixes:
-  - tools/
-  - contrib/
-  - scripts/
-  protected_files:
-  - docs/concurro.md
-  protected:
-  - '**/rust-toolchain*'
-  - '**/rustfmt.toml'
+  - .concurro/
+  protected_files: []
+  protected: []
   generated:
   - '**/Cargo.lock'
+limits:
+  primary_files: null
+  scope_paths: null
+  scope_path_characters: 200
+  changed_files: null
+  overlay_files: null
+  workspace_files: null
 max_fix_rounds: 2
 max_model_calls: 48
 max_context_bytes: 350000

@@ -17,7 +17,6 @@ from support import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import repository
-from checks import MAX_OVERLAY_FILES
 from controller import MAX_DIFF, Controller, changes, transport_size
 from fakes import CONFIG, FakeAgents, FakeGitHub
 from gitfixture import Upstream, build, mirror_of
@@ -220,8 +219,7 @@ class GitSnapshotTests(unittest.TestCase):
             ({"bad..name": self.base}, "bad..name", None),
             ({"main": self.base, "x.lock": self.head}, "main", None),
             ({**self.refs}, "concurro/issue-1", {"files": {"../escape": "x"}}),
-            ({**self.refs}, "concurro/issue-1", {"files": {"CONTRIBUTING.md": "x"}}),
-            ({**self.refs}, "concurro/issue-1", {"files": {f"docs/{i}.md": "x" for i in range(MAX_OVERLAY_FILES + 1)}}),
+            ({**self.refs}, "concurro/issue-1", {"files": {".concurro/config.yaml": "x"}}),
         ):
             with (
                 self.subTest(refs=refs, head=head, candidate=candidate is not None),
