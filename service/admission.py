@@ -3,6 +3,7 @@
 import re
 
 import review_api
+import run_display
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
@@ -181,7 +182,8 @@ def runner_write(path, method, body):
         and isinstance(body, dict)
         and set(body) == {"ref", "inputs"}
         and isinstance(body["inputs"], dict)
-        and set(body["inputs"]) == {"session"}
+        and {"session"} <= body["inputs"].keys() <= {"session"} | run_display.INPUTS
+        and all(isinstance(value, str) for value in body["inputs"].values())
     ):
         session = body["inputs"]["session"]
         if isinstance(session, str) and DISPATCH.fullmatch(session) and body["ref"] == RUN_BRANCH_PREFIX + session:

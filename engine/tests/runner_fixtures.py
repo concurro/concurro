@@ -166,7 +166,7 @@ class ExecutorFixture:
             {"repository_id": "1"},
             ["claude-*"],
             5000,
-            dispatch or started.append,
+            dispatch or (lambda session, labels: started.append(session)),
             clock=clock or (lambda: 0),
             sleep=lambda _: None,
             task=TASK,

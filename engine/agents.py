@@ -11,6 +11,7 @@ from pathlib import Path
 
 import protocol
 import review_timing
+import run_display
 from bundle import Bundle
 from credentials import Credential
 from github import Transient
@@ -303,7 +304,7 @@ class RunnerExecutor:
         check_owner=None,
         runner_status=None,
     ):
-        """`expected` are the OIDC claims a runner of this target must present; `dispatch(session)` starts one."""
+        """`expected` holds OIDC claims; `dispatch(session, labels)` starts a labeled runner."""
         self.operator, self.gateway, self.expected = operator, gateway, expected
         self.models, self.budget, self.dispatch, self.lease = models, budget, dispatch, lease
         self.clock, self.sleep, self.task = clock, sleep, task
@@ -397,7 +398,7 @@ class RunnerExecutor:
         if session and session not in handle.sessions:
             handle.sessions.add(session)
             self.groups.setdefault(handle.group, set()).add(session)
-            self.start(session)
+            self.start(session, handle.turn)
         if reply.get("refusal"):
             raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
         if reply.get("status") == "done" and "result" in reply:
@@ -517,10 +518,10 @@ class RunnerExecutor:
         finally:
             self.timing = handle.timing
 
-    def start(self, session):
+    def start(self, session, turn):
         """Dispatch the runner issued for this turn."""
         self.sessions.add(session)
-        self.dispatch(session)
+        self.dispatch(session, run_display.labels(turn["request"], self.task))
 
     def withdraw(self, identifier):
         """Best-effort withdrawal for an uncertain serial admission."""

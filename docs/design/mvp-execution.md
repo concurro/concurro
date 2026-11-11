@@ -35,7 +35,8 @@ and operation records.
 
 The exchange records a session before dispatch. The service creates
 `refs/heads/concurro/runs/<session-id>` in the fork at the recorded `config_sha`, then
-dispatches the caller workflow at that ref with only the session ID. An existing ref
+dispatches the caller workflow at that ref with the session ID and display-only
+`task-label`, `operation-label` and `agent-label` inputs. An existing ref
 must match the recorded SHA; never force-update it to recover a conflict.
 
 Validate GitHub signature, issuer, audience, timestamps and one-time token identity,
@@ -65,6 +66,20 @@ on the fork's default branch ([workflow_dispatch](https://docs.github.com/en/act
 Use the existing reusable workflow, with `ubuntu-24.04` as the pilot default. The target
 may select another supported GitHub-hosted Linux label. No execution images are built.
 
+Actions run titles show the operation, task/PR reference and resolved profile, model and
+effort. Caller and reusable job names identify the operation and agent; the execution
+step names the operation and target. Labels describe the first dispatched turn and do not
+change during a session. Session refs and authorization still use the issued UUID.
+
+The final summary lists each observed turn's task/PR links, source commit, model/effort,
+execution outcome, result-delivery acknowledgement, reported decision, finding count and
+elapsed time where available. Decisions precede controller validation; a successful job
+does not imply task approval. Summaries omit raw prompts, transcripts and report prose.
+Setup failures and turns without a recorded result are identified explicitly. The final
+summary step runs after cleanup, including on failure; a lost runner cannot publish it.
+Unreadable or malformed receipts produce a short notice; summary I/O failures do not
+fail execution or cleanup. Clickable task/PR links use plain GitHub issue/PR URLs.
+
 1. Fetch Concurro at the workflow's verified engine commit under `$RUNNER_TEMP/concurro`.
 2. Claim the session. Store the grant in an owner-only temporary file and start the
    heartbeat immediately, including through long toolchain installation.
@@ -79,6 +94,7 @@ may select another supported GitHub-hosted Linux label. No execution images are 
    their sessions. Workspaces hold the exact base or published candidate for the turn.
 6. On exit, end the session and stop its heartbeat. An `if: always()` cleanup step handles
    setup failures; exchange expiry handles a lost runner or cleanup that never executes.
+7. Publish the result summary from local turn receipts, without requiring a live session.
 
 The setup heartbeat survives step boundaries. `serve` renews successfully before stopping
 the detached helper. A bound session silent for 180 seconds is retired by reconciliation;

@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 import protocol
+import run_display
 import turns
 from mirror import Mirror, git_environment
 from policy import runner_bound
@@ -54,9 +55,11 @@ def heartbeat(client, stopped, interval=HEARTBEAT):
 class Loop:
     """Run sequential turns in a stable workspace, with a separate heartbeat during long turns."""
 
-    def __init__(self, runner, key, mirror, root, idle=600):
+    def __init__(self, runner, key, mirror, root, idle=600, task=None):
+        """Keep display receipts beside turn workspaces using the claimed task binding."""
         self.runner, self.key, self.mirror, self.root = runner, key, mirror, Path(root)
         self.idle, self.stopped = idle, threading.Event()
+        self.task = task or {}
 
     def serve(self):
         """Serve only this bound role until idle, revoked or expired."""
@@ -90,7 +93,9 @@ class Loop:
         # Stable across turns and replacement jobs: Claude's transcript lookup includes the cwd.
         directory = self.root / ("turn-" + "0" * 32)
         directory.mkdir(parents=True, mode=0o700)
-        log(f"turn {identifier}: {payload['request']['stage']} ({payload['request']['provider']})")
+        record = run_display.start(self.root, identifier, payload["request"], self.task)
+        log(f"turn {identifier}: {record['operation-label']} · {record['task-label']} · {record['agent-label']}")
+        started, result, acknowledged = time.monotonic(), None, False
         try:
             try:
                 result = turns.execute(payload, self.key, self.mirror, directory, self.stopped)
@@ -102,6 +107,7 @@ class Loop:
                     return
                 try:
                     self.runner.complete(identifier, result)
+                    acknowledged = True
                     return
                 except ExchangeError as error:
                     if error.status in SESSION_GONE:
@@ -111,6 +117,10 @@ class Loop:
             # Do not accept more work when the result's acknowledgment is uncertain.
             self.stopped.set()
         finally:
+            run_display.finish(self.root, identifier, record, result, time.monotonic() - started, acknowledged)
+            log(
+                f"turn {identifier}: {record['outcome']} · {record['elapsed']} · delivery {'acknowledged' if acknowledged else 'unconfirmed'}"
+            )
             turns.remove(directory)
 
 
@@ -188,7 +198,7 @@ def renew_before_serve(client):
 def main():
     """Workflow entry points; claim starts the setup heartbeat before tool installation."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("claim", "heartbeat", "prepare", "serve", "end"))
+    parser.add_argument("command", choices=("claim", "heartbeat", "prepare", "serve", "end", "summary"))
     parser.add_argument("--session", required=True)
     parser.add_argument("--gateway", required=True)
     parser.add_argument("--root", required=True)
@@ -197,6 +207,9 @@ def main():
     parser.add_argument("--idle", type=int, default=600)
     args = parser.parse_args()
     root, client = Path(args.root).resolve(), Runner(args.gateway, args.session)
+    if args.command == "summary":
+        run_display.summary(root / "turns")
+        return
     if args.command == "claim":
         grant = client.key(oidc_token())
         if not grant.get("binding"):
@@ -240,7 +253,7 @@ def main():
         binding = grant["binding"]
         mirror = Mirror(root / "mirrors", binding["upstream"], sources=(binding["fork"],))
         try:
-            Loop(client, grant["key"], mirror, root / "turns", args.idle).serve()
+            Loop(client, grant["key"], mirror, root / "turns", args.idle, binding).serve()
         finally:
             try:
                 end_session(root, client)

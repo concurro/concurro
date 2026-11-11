@@ -11,6 +11,18 @@ on:
         description: GitHub-hosted Linux runner label
         type: string
         default: ubuntu-24.04
+      task-label:
+        description: Task or PR reference for display only
+        type: string
+        default: ''
+      operation-label:
+        description: Agent operation for display only
+        type: string
+        default: ''
+      agent-label:
+        description: Model profile, model and effort for display only
+        type: string
+        default: ''
 
     secrets:
       CONCURRO_GATEWAY_URL:
@@ -21,6 +33,7 @@ permissions: {}
 
 jobs:
   role:
+    name: ${{ inputs.agent-label || 'Agent' }}
     runs-on: ${{ inputs.runs-on }}
     cache-mode: read
     timeout-minutes: 360
@@ -32,7 +45,7 @@ jobs:
       CODEX_VERSION: 0.163.0
       CLAUDE_VERSION: 2.1.301
     steps:
-      - name: Fetch the workflow's engine commit
+      - name: Load Concurro runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -53,13 +66,13 @@ jobs:
           git -C "$RUNNER_TEMP/concurro" fetch -q --depth 1 "https://github.com/$repository.git" "$sha"
           git -C "$RUNNER_TEMP/concurro" checkout -q --detach FETCH_HEAD
 
-      - name: Claim role and start setup heartbeat
+      - name: Claim agent session
         shell: bash
         run: |
           python3 "$RUNNER_TEMP/concurro/engine/runner.py" claim --session "$SESSION" \
             --gateway "$GATEWAY" --root "$RUNNER_TEMP/concurro-session"
 
-      - name: Materialize pinned target setup and upstream base
+      - name: Prepare source and target configuration
         id: target
         shell: bash
         run: |
@@ -67,30 +80,46 @@ jobs:
             --gateway "$GATEWAY" --root "$RUNNER_TEMP/concurro-session" \
             --config "$GITHUB_WORKSPACE/.concurro-config" --base "$RUNNER_TEMP/concurro-base"
 
-      - name: Target-owned setup
+      - name: Set up target toolchain
         if: steps.target.outputs.setup == 'true'
         uses: ./.concurro-config/.concurro/setup
         with:
           base: ${{ steps.target.outputs.base }}
 
-      - name: Install provider clients
+      - name: Install agent clients
         shell: bash
         run: |
           npm install --prefix "$RUNNER_TEMP/concurro-clients" \
             "@openai/codex@$CODEX_VERSION" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           echo "$RUNNER_TEMP/concurro-clients/node_modules/.bin" >> "$GITHUB_PATH"
 
-      - name: Serve native turns
+      - name: ${{ format('{0} · {1}', inputs.operation-label || 'Run agent', inputs.task-label || inputs.session) }}
         shell: bash
         run: |
           python3 "$RUNNER_TEMP/concurro/engine/runner.py" serve --session "$SESSION" \
             --gateway "$GATEWAY" --root "$RUNNER_TEMP/concurro-session"
 
-      - name: End session
+      - name: Close agent session
         if: always()
         shell: bash
         run: |
           if [[ -f "$RUNNER_TEMP/concurro/engine/runner.py" ]]; then
             python3 "$RUNNER_TEMP/concurro/engine/runner.py" end --session "$SESSION" \
               --gateway "$GATEWAY" --root "$RUNNER_TEMP/concurro-session"
+          fi
+
+      - name: Summarize agent results
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUN_TASK: ${{ inputs.task-label }}
+          RUN_OPERATION: ${{ inputs.operation-label }}
+          RUN_AGENT: ${{ inputs.agent-label }}
+        run: |
+          if [[ -f "$RUNNER_TEMP/concurro/engine/runner.py" ]]; then
+            python3 "$RUNNER_TEMP/concurro/engine/runner.py" summary --session "$SESSION" \
+              --gateway "$GATEWAY" --root "$RUNNER_TEMP/concurro-session"
+          else
+            printf '## Concurro result\n\nRuntime setup did not complete; no agent result was recorded.\n' >> "$GITHUB_STEP_SUMMARY"
           fi

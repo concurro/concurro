@@ -54,6 +54,18 @@ class RunnerDispatchTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.registry.runner_session(self.session)["generation"], self.generation)
         self.assertTrue(all(repository == FORK for repository, *_ in self.sent))
 
+    def test_display_labels_are_forwarded_without_changing_session_binding(self):
+        """Labels describe the run while its recorded ref and configuration remain authoritative."""
+        labels = {
+            "task-label": "source/project#25",
+            "operation-label": "PR review",
+            "agent-label": "Opus-high (claude-test · high effort)",
+        }
+        self.gateway.dispatch_runner(KEY, self.generation, self.session, labels)
+        self.assertEqual(self.sent[-1][-1]["inputs"], {"session": self.session, **labels})
+        self.assertEqual(self.sent[-1][-1]["ref"], "concurro/runs/" + self.session)
+        self.assertEqual(self.registry.runner_session(self.session)["config_sha"], SHA)
+
     def test_unrecorded_wrong_repo_sha_role_input_or_generation_is_refused(self):
         root = f"repos/{FORK}/"
         ref = "concurro/runs/" + self.session

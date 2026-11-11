@@ -161,7 +161,7 @@ class Worker:
             claims,
             list(gateway.models),
             gateway.budget,
-            lambda session: self.gateway.dispatch_runner(github.key, github.generation, session),
+            lambda session, labels: self.gateway.dispatch_runner(github.key, github.generation, session, labels),
             task=task,
             check_owner=lambda: self.gateway.check_owner(github.key, github.generation),
             runner_status=lambda observation: runner_termination(

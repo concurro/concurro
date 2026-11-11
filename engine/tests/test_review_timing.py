@@ -41,7 +41,7 @@ class TimingTests(unittest.TestCase):
         result = {"outcome": "ok", "response": {"ok": True}}
         operator = FakeOperator([ExchangeError(502, ""), {**OBSERVED, "result": result}])
         runner = RunnerExecutor(
-            operator, GATEWAY, {}, ["claude-*"], 100, lambda _: None, task=TASK, sleep=lambda _: None
+            operator, GATEWAY, {}, ["claude-*"], 100, lambda session, labels: None, task=TASK, sleep=lambda _: None
         )
         original = deepcopy(TURN)
         with patch("agents.uuid.uuid4", return_value=TURN_ID):

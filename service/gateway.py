@@ -204,7 +204,7 @@ class MutationGateway:
             if self.registry.unresolved(key):
                 self.halt(key, generation, Unresolved("runner task has an unresolved mutation"))
 
-    def dispatch_runner(self, key, generation, session):
+    def dispatch_runner(self, key, generation, session, labels=None):
         """Reserve the config-pinned fork ref, then dispatch its exact caller workflow."""
         if not isinstance(session, str) or not DISPATCH.fullmatch(session):
             raise Disallowed("invalid runner session")
@@ -231,7 +231,7 @@ class MutationGateway:
             generation,
             "POST",
             root + f"actions/workflows/{EXECUTOR_WORKFLOW}/dispatches",
-            {"ref": ref, "inputs": {"session": session}},
+            {"ref": ref, "inputs": {"session": session, **(labels or {})}},
         )
 
     def runner_allowed(self, key, generation, method, path, body):

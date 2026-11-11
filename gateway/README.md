@@ -39,7 +39,9 @@ on its default branch, calling `agent.yml@deployed`, and the current `.concurro/
 and charter. The upstream and fork must be public and in the same fork network. No new
 fork is created. Optional setup is a composite action at `.concurro/setup/action.yml`.
 The caller passes the repository secret `CONCURRO_GATEWAY_URL` explicitly to the reusable
-workflow and may set `runs-on`; the service dispatch input is only the issued session ID.
+workflow and may set `runs-on`. Dispatch passes the issued session ID plus display-only
+`task-label`, `operation-label` and `agent-label` strings. The labels populate run, job and
+step names; the final job summary reports actual turn outcomes.
 Both jobs use `cache-mode: read`. Store the deployment URL as a secret, not a workflow
 input, variable or source default, so GitHub masks it from the start of the job:
 
@@ -51,6 +53,21 @@ Enter the URL at the prompt. It must match `gateway.url` in the service settings
 workflow uses the secret for the exchange, while turn payloads use the service setting
 for inference. Never pass provider keys or the exchange operator token to runner workflows,
 and do not use `secrets: inherit`.
+
+When upgrading from a session-only caller:
+
+1. Pause dispatch and finish active runner jobs before moving `deployed`. The service's
+   expected OIDC workflow SHA must match that ref; moving it while the old service still
+   dispatches can prevent new runners from claiming their sessions.
+2. While dispatch remains paused, update `deployed`, the fork caller and the service to
+   the matching release. Old callers reject the new inputs; the updated caller needs a
+   reusable workflow that declares the labels.
+3. Verify the service and `deployed` match, then explicitly resume affected tasks against
+   the updated configuration before allowing further dispatch. Updating the default
+   branch alone does not change a task's pinned caller commit.
+
+Optional label defaults still support session-only manual dispatch. No additional App
+permissions are required for these display fields.
 
 For the secret-interface migration, finish active tasks and runner jobs, then stop the
 service before landing the updated fork caller. Keep dispatch stopped while deploying the

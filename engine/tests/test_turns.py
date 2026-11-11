@@ -495,7 +495,7 @@ class ExecutorTests(ExecutorFixture, unittest.TestCase):
         self.assertEqual(operator.calls[-1], ("cancel", "t"))
 
     def test_a_failed_dispatch_ends_its_session_and_withdraws_the_turn(self):
-        def refuse(session):
+        def refuse(session, labels):
             raise Blocked("GitHub rejected the write")
 
         executor, operator, _ = self.runner([{"turn": "t", "dispatch": "s-3"}], dispatch=refuse)
@@ -597,7 +597,13 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
 
         dispatched = []
         executor = RunnerExecutor(
-            Operator(self.url, "operator-secret"), GATEWAY, self.expected, ["gpt-*"], 1000, dispatched.append, task=TASK
+            Operator(self.url, "operator-secret"),
+            GATEWAY,
+            self.expected,
+            ["gpt-*"],
+            1000,
+            lambda session, labels: dispatched.append(session),
+            task=TASK,
         )
 
         def turn(profile):
@@ -658,7 +664,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
 
         loops = []
 
-        def dispatch(session):
+        def dispatch(session, labels):
             def serve():
                 client = Runner(self.url, session)
                 grant = client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session))
@@ -786,7 +792,7 @@ class SetupLifecycleTests(unittest.TestCase):
                 raise OwnershipLost("new owner")
 
         executor = RunnerExecutor(
-            operator, GATEWAY, {}, ["claude-*"], 1000, lambda _: None, task=TASK, check_owner=owner
+            operator, GATEWAY, {}, ["claude-*"], 1000, lambda session, labels: None, task=TASK, check_owner=owner
         )
         with self.assertRaises(OwnershipLost):
             executor.run(TURN, "test")

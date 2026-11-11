@@ -172,7 +172,7 @@ class InvocationTests(unittest.TestCase):
 
     def test_fresh_runner_staffing_binds_profile_and_effort(self):
         operator = FakeOperator([{}, {}, {}])
-        runner = RunnerExecutor(operator, GATEWAY, {}, ["*"], 5, lambda _: None, task=TASK)
+        runner = RunnerExecutor(operator, GATEWAY, {}, ["*"], 5, lambda session, labels: None, task=TASK)
         config = named_config()
         for name in ("sol-high", "sol-medium", "sol-high"):
             turn = deepcopy(TURN)

@@ -209,10 +209,24 @@ class ShapeAdmissionTests(unittest.TestCase):
             ("DELETE", "git/refs/heads/concurro/runs/bad", None, None),
             ("POST", "actions/workflows/other.yml/dispatches", dispatch, None),
         ]
+        for labels in (
+            {"task-label": "upstream/project#25", "operation-label": "PR review", "agent-label": "model · high effort"},
+            {"task-label": ""},
+        ):
+            rows.append(
+                (
+                    "POST",
+                    "actions/workflows/concurro-executor.yml/dispatches",
+                    {**dispatch, "inputs": {"session": SESSION, **labels}},
+                    SESSION,
+                )
+            )
         for change in (
             {"ref": "other"},
             {"inputs": {"session": SESSION, "extra": 1}},
             {"inputs": {"session": "bad"}},
+            {"inputs": {"session": SESSION, "agent-label": {"model": "unexpected"}}},
+            {"inputs": {"task-label": "missing session"}},
             {"extra": 1},
         ):
             rows.append(("POST", "actions/workflows/concurro-executor.yml/dispatches", {**dispatch, **change}, None))

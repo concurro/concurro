@@ -642,6 +642,8 @@ class Controller:
             "repository_commit": self.state.get("head", self.state["base"]),
             "repository": self.repository_refs("controller_candidate" in context),
         }
+        if stage in ("develop", "review") and self.state.get("pr"):
+            context["pull_request"] = self.state["pr"]
         if "agents" in self.config:
             context["agent"] = resolve(self.config, provider, stage).record()
         if transport_size(context) > self.config["max_context_bytes"]:

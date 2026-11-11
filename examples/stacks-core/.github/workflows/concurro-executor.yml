@@ -1,4 +1,5 @@
 name: Concurro executor
+run-name: ${{ format('{0} · {1} · {2}', inputs.operation-label || 'Agent task', inputs.task-label || inputs.session, inputs.agent-label || 'Concurro') }}
 
 on:
   workflow_dispatch:
@@ -7,11 +8,24 @@ on:
         description: Session issued by Concurro
         type: string
         required: true
+      task-label:
+        description: Task or PR reference for display
+        type: string
+        default: ''
+      operation-label:
+        description: Agent operation for display
+        type: string
+        default: ''
+      agent-label:
+        description: Model profile, model and effort for display
+        type: string
+        default: ''
 
 permissions: {}
 
 jobs:
   role:
+    name: ${{ inputs.operation-label || 'Agent task' }}
     permissions:
       id-token: write
     cache-mode: read
@@ -20,4 +34,7 @@ jobs:
       CONCURRO_GATEWAY_URL: ${{ secrets.CONCURRO_GATEWAY_URL }}
     with:
       session: ${{ inputs.session }}
+      task-label: ${{ inputs.task-label }}
+      operation-label: ${{ inputs.operation-label }}
+      agent-label: ${{ inputs.agent-label }}
       runs-on: ubuntu-24.04

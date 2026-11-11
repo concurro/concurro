@@ -6,11 +6,33 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowSecretsTests(unittest.TestCase):
     """Exercise the caller contract and the missing-secret startup boundary."""
+
+    def test_display_inputs_reach_names_and_final_summary_without_shell_interpolation(self):
+        """Display metadata is optional and reaches both workflow layers as data."""
+        caller = yaml.load(
+            (ROOT / "examples/stacks-core/.github/workflows/concurro-executor.yml").read_text(), Loader=yaml.BaseLoader
+        )
+        workflow = yaml.load((ROOT / ".github/workflows/agent.yml").read_text(), Loader=yaml.BaseLoader)
+        for name in ("task-label", "operation-label", "agent-label"):
+            self.assertEqual(caller["on"]["workflow_dispatch"]["inputs"][name]["default"], "")
+            self.assertEqual(workflow["on"]["workflow_call"]["inputs"][name]["default"], "")
+            self.assertEqual(caller["jobs"]["role"]["with"][name], "${{ inputs." + name + " }}")
+            self.assertIn("inputs." + name, caller["run-name"])
+        self.assertIn("inputs.operation-label", caller["jobs"]["role"]["name"])
+        self.assertIn("inputs.agent-label", workflow["jobs"]["role"]["name"])
+        steps = workflow["jobs"]["role"]["steps"]
+        self.assertTrue(any("inputs.task-label" in step["name"] for step in steps))
+        self.assertEqual(steps[-1]["if"], "always()")
+        self.assertEqual(steps[-1]["env"]["JOB_STATUS"], "${{ job.status }}")
+        for step in steps:
+            self.assertNotIn("${{ inputs.", step.get("run", ""))
 
     def test_gateway_is_required_secret_not_public_input(self):
         """No caller can accidentally expose the address through a normal input or default."""
