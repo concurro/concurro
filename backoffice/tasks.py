@@ -72,21 +72,7 @@ class Tasks:
     def target_record(self, target, fork: dict) -> dict:
         config, branch = self.config(target.fork)
         owner, repo = target.upstream.split("/")
-        agents = config.get("agents") or {}
-        models = config.get("models") or {}
-        roster = []
-        for role, key in (
-            ("triage", "triage"),
-            ("planner", "planner"),
-            ("plan_reviewer", "plan_reviewers"),
-            ("implementer", "implementer"),
-            ("pr_reviewer", "pr_reviewers"),
-        ):
-            names = agents.get(key) or []
-            for name in [names] if isinstance(names, str) else names:
-                model = models.get(name, {})
-                profile = " · ".join(filter(None, (model.get("model"), model.get("effort"))))
-                roster.append({"role": role, "agent": name, "profile": profile or name})
+        roster, profiles = roster_and_profiles(config)
         limits = {k: config.get(k, v) for k, v in DEFAULT_LIMITS.items()}
         return {
             "owner": owner,
@@ -96,6 +82,7 @@ class Tasks:
             "mode": "autonomous" if config.get("autonomous") else "manual",
             "defaultBranch": branch,
             "roster": roster,
+            "profiles": profiles,
             "config": "\n".join(f"{k}: {v}" for k, v in limits.items()),
             "writer": bool((fork.get("permissions") or {}).get("push")),
         }
@@ -159,7 +146,8 @@ class Tasks:
         if state:
             task |= project(state, config, repository, issue)
             if state.get("pr"):
-                task["pr"] = self.pull(target.upstream, state)
+                # PRs open where the engine publishes: `upstream` when configured, else the target repository.
+                task["pr"] = self.pull(config.get("upstream") or config.get("repository") or target.fork, state)
         return {"task": task, "target": record}
 
     def pull(self, upstream: str, state: dict) -> dict:
@@ -188,6 +176,39 @@ class Tasks:
         except (NotFound, KeyError, TypeError):
             pass
         return result
+
+
+HARNESS_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
+ROLE_KEYS = (
+    ("triage", "triage", None),
+    ("planner", "planner", "planner"),
+    ("plan_reviewer", "plan_reviewers", "qc"),
+    ("implementer", "implementer", "implementer"),
+    ("pr_reviewer", "pr_reviewers", "reviewers"),
+)
+
+
+def roster_and_profiles(config: dict) -> tuple[list[dict], list[dict]]:
+    """Roles and their model profiles, from named `agents` or the legacy per-role harness keys."""
+    models = config.get("models") or {}
+    agents = config.get("agents")
+    roster, profiles = [], {}
+    for role, key, legacy in ROLE_KEYS:
+        names = (agents.get(key) if isinstance(agents, dict) else config.get(legacy) if legacy else None) or []
+        for name in [names] if isinstance(names, str) else names:
+            model = models.get(name)
+            if isinstance(model, dict):  # Named profile: {provider, model, effort}.
+                provider = model.get("provider") or "anthropic"
+                profiles[name] = {
+                    "name": name,
+                    "provider": provider,
+                    **{k: model.get(k) or "" for k in ("model", "effort")},
+                }
+            else:  # Legacy: the name is a harness and `models` maps it to a model ID.
+                provider = HARNESS_PROVIDERS.get(name, "openai")
+                profiles[name] = {"name": name, "provider": provider, "model": model or name, "effort": ""}
+            roster.append({"role": role, "agent": name, "profile": name})
+    return roster, list(profiles.values())
 
 
 def stage_label(issue: dict) -> str | None:
@@ -351,26 +372,23 @@ def plan_versions(state: dict, at: str) -> list[dict]:
 
 
 def member_label(identity: dict) -> tuple[str, str]:
+    """A design reviewer's profile name (legacy identities name only a provider) and model."""
     agent = identity.get("agent")
-    name = agent.get("profile") if isinstance(agent, dict) else identity.get("id", "")
+    name = agent.get("profile") if isinstance(agent, dict) else identity.get("provider")
     profile = " · ".join(filter(None, (identity.get("model"), identity.get("effort"))))
-    return name or identity.get("id", ""), profile
+    return name or identity.get("id", "")[:12], profile
 
 
 def design_reviews(state: dict) -> list[dict]:
     generations = []
     for entry in state.get("design_history") or []:
-        reviews = [
-            {
-                "agent": v.get("identity", {}).get("id", "")
-                if isinstance(v.get("identity"), dict)
-                else str(v.get("identity", "")),
-                "profile": "",
-                "verdict": v.get("decision") or "pending",
-                "objections": [],
-            }
-            for v in entry.get("votes") or []
-        ]
+        reviews = []
+        for vote in entry.get("votes") or []:
+            identity = vote.get("identity")
+            name, profile = member_label(identity) if isinstance(identity, dict) else (str(identity or ""), "")
+            reviews.append(
+                {"agent": name, "profile": profile, "verdict": vote.get("decision") or "pending", "objections": []}
+            )
         generations.append(
             {
                 "generation": entry.get("generation", len(generations) + 1),

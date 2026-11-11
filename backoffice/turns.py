@@ -71,7 +71,8 @@ class Diagnostics:
             "stage": STAGES.get(row["stage"], row["stage"]),
             "role": ROLES.get(row["stage"], row["stage"]),
             "agent": agent.get("profile") or row["provider"] or "",
-            "profile": " · ".join(filter(None, (row["model"], row["effort"]))),
+            # A profile name the frontend resolves against the target's profiles.
+            "profile": agent.get("profile") or row["provider"] or "",
             "outcome": outcome,
             "startedAt": iso(started or created or row["submitted"]),
             "queuedMs": round((started - created) * 1000) if started and created else 0,

@@ -149,7 +149,8 @@ def create_app(
     @app.get("/api/tasks/{owner}/{repo}/{issue}/turns")
     def turns(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         view = reader.task_view(f"{owner}/{repo}", issue)
-        return {"task": view["task"], "turns": diagnostics.turns(f"{owner}/{repo}", issue)}
+        turns = diagnostics.turns(f"{owner}/{repo}", issue)
+        return {"task": view["task"], "turns": turns, "profiles": view["target"]["profiles"]}
 
     @app.post("/api/tasks/{owner}/{repo}/{issue}/commands")
     def command(

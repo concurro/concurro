@@ -236,6 +236,37 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(normalize(b"not an archive")[0]["kind"], "assistant")
 
 
+class RosterTests(unittest.TestCase):
+    def test_named_and_legacy_configurations(self):
+        named = {
+            "models": {"opus": {"provider": "anthropic", "model": "claude-opus", "effort": "high"}},
+            "agents": {
+                "triage": "opus",
+                "planner": "opus",
+                "plan_reviewers": ["opus"],
+                "implementer": "opus",
+                "pr_reviewers": ["opus"],
+            },
+        }
+        roster, profiles = tasks_module.roster_and_profiles(named)
+        self.assertEqual(len(roster), 5)
+        self.assertEqual(
+            profiles, [{"name": "opus", "provider": "anthropic", "model": "claude-opus", "effort": "high"}]
+        )
+        legacy = {
+            "planner": "claude",
+            "implementer": "codex",
+            "qc": "codex",
+            "reviewers": ["claude", "codex"],
+            "models": {"claude": "claude-opus", "codex": "gpt-sol"},
+        }
+        roster, profiles = tasks_module.roster_and_profiles(legacy)
+        self.assertEqual(
+            [r["role"] for r in roster], ["planner", "plan_reviewer", "implementer", "pr_reviewer", "pr_reviewer"]
+        )
+        self.assertEqual({p["name"]: p["provider"] for p in profiles}, {"claude": "anthropic", "codex": "openai"})
+
+
 class ProjectionTests(unittest.TestCase):
     ISSUE = {
         "number": 7,
