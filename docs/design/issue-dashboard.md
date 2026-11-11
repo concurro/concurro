@@ -187,7 +187,7 @@ model calls. Missing audit history without a witness remains a verification fail
   annotation receipts. Version-3 attempt-tagged parts require this reader even though the
   checkpoint stays at 7.
   Formats 2–6 remain readable and migrate on save without changing approvals or budgets.
-  Rollback requires this phase's reader, not merely an earlier format-7 build. Never restore
+  Rollback requires the phase-4b reader for version-3 parts, not merely an earlier format-7 build. Never restore
   an old audit snapshot to roll back: that loses spent calls and publication progress.
 - **Archive compatibility:** queued formats 1–3 retain their exact rendering and
   receipt-gated compaction. Referenced format-4 reports keep full evidence after

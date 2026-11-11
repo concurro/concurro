@@ -381,9 +381,11 @@ immutable, digest-verified artifact storage on GitHub. New parts are sized from 
 `protocol.ARTIFACT_RESPONSE_BYTES` transport setting (16,000,000 bytes), including JSON
 escaping, response metadata and rendered-view allowance. There is no separate part-size knob.
 Every body must also fit GitHub's 16,777,215-byte ceiling. Records can span parts; only the
-readable presentation may be shortened. Discovery reads one artifact per page. Frozen
+readable presentation may be shortened. Discovery reads one artifact per page. Legacy
 interrupted layouts are retained; reducing the budget can require restoring the old allowance
-to finish them. Legacy queued publications keep their original encoding. Comments and human-readable
+to finish them. New partial uploads are abandoned; replacements use a fresh nonce. Complete
+attempt-tagged uploads can restore a paid response before any replacement-call admission.
+Legacy queued publications keep their original encoding. Comments and human-readable
 artifact views retain separate 60,000-byte allowances. Plan and PR views may be excerpted with
 links to complete evidence. Canonical content is preserved across save/load and retries.
 The mutable audit retains a 60,000-byte operating target, not a GitHub artifact limit. Its
@@ -394,9 +396,11 @@ not invalidate those references. Excess packed metadata moves to immutable data 
 verified audit pointer.
 History directories and unfinished tails stay in the audit; completed eight-entry blocks are
 stored once unless their contents change. No past artifacts are deleted or repacked.
-These layouts use the unreleased checkpoint format 7; rolling back requires an engine that
-understands all format-7 records, including comment-encoded audits, dashboard witnesses and
-the current shared-part renderers. An earlier format-7 engine is insufficient.
+Every new checkpoint save uses format 7. Rollback requires support for comment-encoded audits
+and dashboard witnesses for every task that saves; version-3 shared parts additionally require
+the phase-4b reader. An earlier format-7 engine is insufficient. Ordinary new uploads use no
+collection scans; bootstrap, legacy discovery and abandoned-attempt recovery still can.
+See the [closeout evidence and recovery costs](reports/limits-cleanup/README.md#artifact-consolidation-closeout).
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities

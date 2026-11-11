@@ -230,8 +230,10 @@ Artifact consolidation phase 1 writes **format 7 on every checkpoint save**. Aft
 this applies to every task that saves, not only tasks with large reports or new storage layouts.
 Rollback must therefore use an engine supporting phase 1's comment-encoded audits and
 publication receipts for all such tasks; an earlier format-7 reader is insufficient. Tasks
-writing shared artifacts additionally need phases 2–3's readers, including compact renderer 2
-and one-item discovery pages. The checkpoint number remains 7 while this release is unreleased.
+writing shared artifacts additionally need the final phase-4b reader, including version-3
+nonce/attempt-tagged parts and their completion records. Ship phases 3, 4a and 4b together;
+their combined request-volume criteria passed. The checkpoint number remains 7 for this
+unreleased package. See the [closeout evidence](../docs/reports/limits-cleanup/README.md#artifact-consolidation-closeout).
 Do not restore older task checkpoints to bypass this requirement: that loses spent budgets
 and publication progress.
 

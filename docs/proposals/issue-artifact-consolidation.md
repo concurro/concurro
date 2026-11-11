@@ -1,9 +1,11 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: phases 1–4a committed; phase 4b implemented with passing traffic criteria, awaiting review.
-Phase 5 remains a final release review. No deployment authorized.** Builds on
-the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
-artifact deletion or diagnostic writes are authorized by this document.
+**Status: complete.** Phases 1–4b are committed and reviewed through `c1af384`; phase 5
+reconciles the evidence and operator guidance. This closeout remains uncommitted for review.
+See the [closeout measurements](../reports/limits-cleanup/README.md#artifact-consolidation-closeout)
+and [current storage contract](../design/issue-dashboard.md). The deployed engine has not
+changed. No deployment, pilot commands, artifact deletion or diagnostic writes are authorized
+by this document.
 
 Make a report's first durable artifact serve both recovery and human reading, and avoid
 routine collection scans. Store canonical data inside an HTML comment; derive multipart
@@ -511,13 +513,15 @@ remain separate; review the results before releasing phases 3–4 together.
    - **4a, reference reuse (committed):** direct known-reference reads and no
      cold-save whole-list scan for verified block directories. Keep its regression tests
      and [measurements](../reports/limits-cleanup/README.md#phase-4-reference-based-ordinary-operations).
-   - **4b, attempt-tagged uploads (implemented for review):** versioned readers and serial/batch attempt
+   - **4b, attempt-tagged uploads (committed and reviewed):** versioned readers and serial/batch attempt
      recovery first, then scan-free new-encoding writers. Cover retention, publication,
      nested reports, history blocks, preflight and overflow. Compare cold new-output saves
      and complete per-call storage against phase 2 on small and 150+-artifact issues;
      include completion records and report recovery scan costs separately.
 
-5. **Measure complete lifecycles:** compare all artifacts and traffic, then update operator docs.
+5. **Closeout (complete):** reconcile the same-instrument lifecycle comparison, cold per-call
+   results and recovery costs; update operator and rollback guidance. See the
+   [final evidence](../reports/limits-cleanup/README.md#artifact-consolidation-closeout).
 
 **Release phase 3 only with both 4a and 4b and their measurements.** Phase 4a removes
 redundant known-reference scans but does not satisfy the request-volume condition for new
@@ -543,7 +547,8 @@ authorization and must not use a pilot issue.
 - Latest-only audit reads, older dashboard pointers, legacy history and plan provenance;
   multiple pages, unavailable revisions, concurrent changes and both old/new body encodings.
 - Inline and detached retention produce the same core; accepted and rejected reports reuse
-  it. Crash before validation never drops a response or spends another model call.
+  it. Complete attempt-tagged uploads recover without another model call; inline responses,
+  partial uploads and reused cores retain the documented pre-checkpoint retry window.
 - Lost replies at each continuation and entry write; distinguish complete new attempt
   recovery, unused new partial sets and legacy continuation recovery. Cover changed budgets,
   missing local receipts and unchanged saves.
@@ -573,6 +578,8 @@ bytes, peak audit size and unused artifacts after interruption. Compare frozen i
 inputs across the pending code, audit-only change and complete consolidation; run repository
 validation when implementing. Separate measured outcomes from estimates.
 
-A 48-report case could move from 48 data + 48 readable + six history + one audit artifacts
-to 48 combined + six history + one audit: **103 → 55**. This is a structural estimate, not a
-measured lifecycle result; plans, annotations, corrections and multipart output can add more.
+The measured 48-report lifecycle moves from **146 → 56 artifacts**: 48 canonical reports,
+48 annotation wrappers, 48 readable views, audit and plan become 48 combined reports, six
+history/index blocks, audit and plan. This replaces the earlier 103 → 55 structural estimate.
+The [same-instrument comparison](../reports/limits-cleanup/closeout-traffic.json) includes all
+request types; the cold-call release comparisons and recovery costs remain separate.

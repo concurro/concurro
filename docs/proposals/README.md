@@ -1,6 +1,6 @@
 # Proposals
 
-**Not implemented.** These are design briefs for possible future work. They describe
+**The active proposals below are not implemented.** They are design briefs for possible future work. They describe
 intended behaviour, not current behaviour; for how Concurro works today, see
 [`docs/design/`](../design/) and the code.
 
@@ -10,6 +10,8 @@ understand the design is staged per phase in a directory named after the proposa
 for that phase's implementation brief, re-checked against the code when the brief is
 written. A proposal moves out of this directory once
 it is implemented (its design notes go to `docs/design/`) or abandoned (it is deleted).
+Completed briefs may remain linked separately during release closeout; current behavior belongs
+in the design and operator docs.
 
 | Proposal | Kind | Summary |
 | ---- | ---- | ---- |
@@ -17,7 +19,13 @@ it is implemented (its design notes go to `docs/design/`) or abandoned (it is de
 | [Per-user provider credentials](per-user-credentials.md) | Epic | Each person's own provider credentials pay for the work they trigger. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
-| [Issue artifact consolidation](issue-artifact-consolidation.md) | Feature | Share canonical data and readable views, pack against the response budget and avoid routine artifact scans. |
+
+## Completed, awaiting release
+
+[Issue artifact consolidation](issue-artifact-consolidation.md) is complete through phase 5.
+See the [current storage contract](../design/issue-dashboard.md) and
+[closeout evidence](../reports/limits-cleanup/README.md#artifact-consolidation-closeout).
+The completed brief is retained here for release review.
 
 ## Cross-cutting rules
 

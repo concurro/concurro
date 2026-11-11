@@ -9,16 +9,87 @@ Large plans, candidate descriptions, target authority and queued events reuse ve
 report artifacts. Views shorten raw text before rendering, preserving engine-generated disclosures, fences
 and headings. Compact PR bodies retain controller-written workflow/policy notices and
 dependency summaries. Canonical evidence survives reload, including full rejected drafts and
-design, quality and outcome history. Large outcome collections also use report artifacts. This requires
-checkpoint wire format 7 when these additional fields are detached. Older engines must not
-resume those checkpoints. Comment/PR bodies and human-readable artifact views use separate
-60,000 UTF-8 byte allowances; immutable data parts now use 256 KiB (see consolidation below).
+design, quality and outcome history. Large outcome collections also use report artifacts.
+Every new checkpoint save writes format 7; version-3 attempt-tagged parts additionally
+require the final phase-4b reader. Earlier format-7 builds are not rollback targets.
+Comment/PR bodies and human-readable artifact views use separate 60,000 UTF-8 byte allowances;
+immutable parts are packed against the artifact response budget and GitHub body ceiling,
+not a fixed part size (see [closeout](#artifact-consolidation-closeout)).
 PR titles use 256 characters. These are publication capacities, not limits on accepted model prose. Existing model-response, extraction and transport bounds remain.
 
 `turn_timeout_seconds` accepts a positive integer or `null`, defaulting to 1200 seconds for
 intake, planning and design review. `max_retained_bytes` similarly controls uncompressed
 transcripts, defaulting to 64 MiB. Compressed archive and exchange capacities are independent.
 No new per-file or list-count settings are introduced. See [configuration](../../concurro.md).
+
+## Artifact consolidation closeout
+
+Phases 1–4b are committed and Claude-approved through `c1af384`. Phase 5 is this documentation
+and measurement closeout, left uncommitted for review. No push, deployment or pilot recovery
+has been performed. Earlier sections below retain their staged measurements and review
+history; their temporary sizes and pending statuses are not current operator guidance.
+
+The [same-instrument replay](closeout-traffic.json) compares audit-only phase 1 (`4401e17`)
+with completed consolidation (`c1af384`): 48 retained, annotated and published reports,
+then ten cold idle loads. Both use identical instruments, including comment-list GETs.
+
+| Metric | Phase 1 | Completed consolidation |
+| ---- | ---- | ---- |
+| Canonical reports / annotation wrappers / separate readable views | 48 / 48 / 48 | 48 / 0 / 0 |
+| History/index blocks / audit / plan | 0 / 1 / 1 | 6 / 1 / 1 |
+| Total artifacts | 146 | 56 |
+| GETs / artifact collection GETs | 997 / 3 | 1,015 / 3 |
+| POSTs / PATCHes | 147 / 193 | 57 / 193 |
+| Total requests | 1,337 | 1,265 |
+| Uploaded JSON bytes | 2,886,179 | 3,166,622 |
+| Modeled response bytes | 28,546,091 | 29,517,369 |
+| Peak audit body bytes | 27,411 | 27,927 |
+
+To reproduce this comparison, copy `shared_report_traffic.py`, `discovery_traffic.py` and
+`audit_traffic.py` from `c1af384` into each commit's `engine/tests/` in temporary checkouts,
+then run from that directory with the repository's development dependencies installed:
+
+```sh
+python3 - <<'PYTHON'
+import json
+from unittest.mock import patch
+import shared_report_traffic
+from discovery_traffic import OperationTraffic
+with patch.object(shared_report_traffic, "Traffic", OperationTraffic):
+    print(json.dumps(shared_report_traffic.measure(48), indent=2))
+PYTHON
+```
+
+This is **90 fewer artifacts and 72 fewer requests**, with modestly higher byte totals.
+The earlier phase-1/2 lifecycle tables omitted 48 comment-list GETs; their raw evidence is
+preserved. Do not compare those GET totals directly with the later instruments. The
+[audit-only comparison](audit-phase1-traffic.json) is a different history workload and is
+not an additional stage of this 48-report table.
+
+The release condition uses the [cold per-call fixture](#traffic-and-release-condition),
+not this warm aggregate: at 10 and 155 existing artifacts, complete storage cycles fall
+from **20 and 34 requests to 18**, with **zero collection GETs** on uninterrupted writes.
+Recovery costs remain separate: a complete abandoned attempt takes **19 or 164 GETs plus
+one PATCH**, restoring its paid response without another model call. Partial uploads and
+lost derived writes can leave unused artifacts; no garbage collection is included. Inline
+responses and reused cores retain the documented pre-checkpoint retry window.
+
+All measurements use fake GitHub transport and no model harness. Request counts are observed;
+response bytes are modeled, not live telemetry. The lifecycle injects no interruptions;
+the [attempt-recovery fixtures](attempt-upload-traffic.json) record unused copies and
+interruption traffic separately. No new live probes were required for closeout.
+
+Operator guidance is reconciled in [configuration](../../concurro.md#large-report-recovery),
+the [storage contract](../../design/issue-dashboard.md) and
+[deployment instructions](../../../gateway/README.md). Ship phases 3, 4a and 4b together.
+Every task that saves crosses the format-7 boundary; tasks with version-3 parts require the
+phase-4b reader. Preserve current checkpoints, budgets and receipts on rollback.
+
+Implementation validation recorded at `c1af384`: **1,126 engine tests** (one Linux-only skip
+on macOS), **350 service**, **58 gateway**; Ruff check/format, Pyright, compileall, bundle
+comparison and whitespace checks passed. This docs-only closeout replays the lifecycle and
+checks documentation links, evidence consistency and whitespace; it does not claim a new
+full-suite run.
 
 ## Context measurement before changing accounting
 
@@ -614,8 +685,8 @@ Baseline counts were 1,078 / 348 / 58. The dashboard goldens and command matrix 
 ### Phase 4: reference-based ordinary operations
 
 Reference reuse is implemented on phase 3 (`54aa2bf`) and reviewed for correctness.
-**It is not release-ready:** new-output writes still scan. The proposed phase-4b attempt-tagged upload
-extension and cold-per-call evidence below must close that gap before shipping phase 3.
+**At this intermediate phase it was not release-ready:** new-output writes still scanned.
+Phase 4b below closes that gap and passes the cold-per-call release condition.
 Known canonical references in report-index entries and conversation receipts now feed the
 existing verified reader, including small reports still inline in the audit. A cold cache
 miss reads those artifact IDs directly. Missing, edited or mismatched referenced artifacts
@@ -647,7 +718,7 @@ collection GETs**; total GETs also include comment pages.
 | Recover creation with no surviving receipt | 18 / 16 | 159 / 157 | 159 / 157 |
 
 The last three cases deliberately retain discovery. No reference cannot distinguish a new
-value from an earlier successful write whose reply was lost. The proposed phase-4b
+value from an earlier successful write whose reply was lost. The completed phase-4b
 attempt-tagged uploads address that separately; phase 4a does not promise scan-free first publication. One-item pages
 still make these exceptional paths more expensive than phase 2. The only new artifact in
 this table is the first publication of unreferenced data; recovery creates no duplicate.
@@ -832,5 +903,6 @@ Validation: **1,102 → 1,126 engine tests** (one Linux-only skip on macOS), **3
 **58 gateway** tests pass. The 24 new tests also pass independently. Ruff check and format,
 Pyright, compileall, bundle comparison and `git diff --check` pass. Bundle identity remains
 `837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
-All requested behavior is implemented; no items were deferred. Changes remain uncommitted;
-no deployment, live API writes, model invocations or pilot commands occurred.
+All requested behavior is implemented; no items were deferred. Claude signed off and phase
+4b is committed in `c1af384`. No deployment, live API writes, model invocations or pilot
+commands occurred during implementation.

@@ -1,0 +1,63 @@
+{
+  "methodology": {
+    "fixture": "48 retained, annotated and published reports, followed by ten cold idle loads; identical current instruments on both commits",
+    "requests": "Includes comment collection GETs as well as artifact collections and direct requests",
+    "bytes": "Modeled JSON/CommonMark responses, not live network telemetry",
+    "source_sha256": {
+      "shared_report_traffic.py": "9433c9ac9620ae11df53ebdd0c9fe715450d9a91b6ad464b9f94c04521051d63",
+      "discovery_traffic.py": "b75215b4fa93ffc55c462938e657819eca073523a23a88403a635111274dcb13",
+      "audit_traffic.py": "3379c98f359fd8026951e3a912e0628e6ff5e8c42fe4cbe89011367b10e5677c"
+    },
+    "live_requests": 0,
+    "harness_invocations": 0
+  },
+  "runs": {
+    "phase_1": {
+      "commit": "4401e1717e9ce503221c54e7a209cab8eb3b969d",
+      "result": {
+        "reports": 48,
+        "artifacts": {
+          "audit": 1,
+          "plan": 1,
+          "canonical_report": 48,
+          "annotation_wrapper": 48,
+          "separate_readable_view": 48
+        },
+        "artifact_total": 146,
+        "requests": {
+          "GET": 997,
+          "collection_GET": 3,
+          "POST": 147,
+          "PATCH": 193
+        },
+        "uploaded_json_bytes": 2886179,
+        "modeled_response_bytes": 28546091,
+        "peak_audit_body_bytes": 27411,
+        "interruption_injected": false
+      }
+    },
+    "phase_4b": {
+      "commit": "c1af38478743708fa58739461a58c11ac978a7e8",
+      "result": {
+        "reports": 48,
+        "artifacts": {
+          "audit": 1,
+          "plan": 1,
+          "canonical_report": 48,
+          "history_or_index_block": 6
+        },
+        "artifact_total": 56,
+        "requests": {
+          "GET": 1015,
+          "collection_GET": 3,
+          "POST": 57,
+          "PATCH": 193
+        },
+        "uploaded_json_bytes": 3166622,
+        "modeled_response_bytes": 29517369,
+        "peak_audit_body_bytes": 27927,
+        "interruption_injected": false
+      }
+    }
+  }
+}
