@@ -1,7 +1,14 @@
 """Dependency-free GitHub URL and protocol vocabulary shared by engine modules."""
 
-# Conservative UTF-8 capacity for GitHub publication bodies, below the character ceiling.
-PUBLICATION_BODY_BYTES = 60000
+# Comment and PR bodies retain their existing allowance.
+COMMENT_BODY_BYTES = 60000
+PUBLICATION_BODY_BYTES = COMMENT_BODY_BYTES  # Existing publication callers.
+# Human-readable artifact views remain compact independently of data-part sizing.
+ARTIFACT_VIEW_BYTES = 60000
+# Storage granularity, not a limit on total evidence; immutable records may span parts.
+ARTIFACT_BODY_BYTES = 256 * 1024
+# Mutable audit versions repeat in GitHub responses; spill excess metadata into immutable data.
+AUDIT_TARGET_BYTES = 60000
 
 EVENT_MARKER = "<!-- concurro:event:v1:"
 DIGEST_PATTERN = r"[a-f0-9]{64}"

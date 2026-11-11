@@ -9,7 +9,7 @@ from markdown_it import MarkdownIt
 from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
 
 import reviews
-from checkpoints import Checkpoints
+from checkpoints import Checkpoints, legacy_state
 from fakes import PLAN, FakeGitHub, intake
 from pipeline_fixtures import PipelineFixture
 from policy import digest
@@ -132,6 +132,40 @@ class RenderTests(unittest.TestCase):
 
 class HistoryTests(PipelineFixture, unittest.TestCase):
     """Histories retain complete evidence through artifact storage and restart."""
+
+    def test_complete_index_survives_dashboard_shortening(self):
+        """Only the rendered view shrinks; the full report index survives save and reload."""
+        controller = self.reach("planned")
+        entry = controller.state["reports"][0]
+        controller.state["reports"] = [
+            {**deepcopy(entry), "artifact": i + 1000, "round": str(i + 1)} for i in range(600)
+        ]
+        before = deepcopy(controller.state["reports"])
+        controller.checkpoints.save(controller.state)
+        body = controller.summary_body()
+        self.assertLess(len(body.encode()), PUBLICATION_BODY_BYTES)
+        self.assertNotIn("↳ Round 600", body)
+        self.assertEqual(controller.state["reports"], before)
+        self.assertEqual(self.loaded().state["reports"], before)
+
+    def test_many_short_history_records_round_trip_by_reference(self):
+        """Small records in long collections cannot crowd completed responses out of the audit."""
+        controller = self.reach("planned")
+        fields = ("qc_history", "design_history", "review_history", "reports")
+        histories = {
+            field: [{"round": i, "provider": "codex", "summary": "Saved evidence " * 20} for i in range(250)]
+            for field in fields
+        }
+        controller.state.update(deepcopy(histories))
+        controller.checkpoints.save(controller.state)
+        recovered = self.loaded().state
+        for field in fields:
+            self.assertEqual(recovered[field], histories[field])
+        body = controller.checkpoints.audit["body"]
+        self.assertLess(len(body.encode()), PUBLICATION_BODY_BYTES)
+        paths = [ref["path"] for ref in legacy_state(body)["report_data"]]
+        for field in fields:
+            self.assertIn([field], paths)
 
     def test_history_text_and_repeated_outcomes_are_not_silently_cut(self):
         controller = self.reach("planned")

@@ -394,13 +394,23 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(len(gh.pages("issues/7/artifacts")), 10)
         self.assertEqual(request.call_args.args[0], "issues/7/artifacts?per_page=10&page=2")
 
-    def test_oversized_state_does_not_replace_last_checkpoint(self):
-        """Validate size before mutation, preserving the last recoverable state."""
+    def test_oversized_metadata_keeps_audit_compact_and_state_complete(self):
+        """Metadata above the audit target is retained in immutable storage, not rejected."""
+        controller = self.start()
+        controller.state["unexpected_padding"] = "x" * 60000
+        controller.save()
+        self.assertIn("audit_data", legacy_state(controller.checkpoints.audit["body"]))
+        self.assertEqual(self.controller().state, controller.state)
+        self.assertLess(len(controller.checkpoints.audit["body"].encode()), 60000)
+
+    def test_metadata_write_failure_preserves_last_checkpoint(self):
+        """The audit pointer cannot advance until its immutable metadata has been confirmed."""
         controller = self.start()
         before = deepcopy(self.artifact())
         controller.state["unexpected_padding"] = "x" * 60000
-        with self.assertRaisesRegex(CheckpointError, "size limit"):
-            controller.save()
+        with patch.object(controller.checkpoints.reports, "put", side_effect=RuntimeError("write failed")):
+            with self.assertRaises(RuntimeError):
+                controller.save()
         self.assertEqual(self.artifact(), before)
 
     def test_bound_plan_survives_history_window_and_human_rename(self):

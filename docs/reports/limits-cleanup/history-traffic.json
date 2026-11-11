@@ -1,0 +1,35 @@
+{
+  "workload": "engine/tests/storage_traffic.py; four equal collections, one append save per entry, cold reload and unchanged save",
+  "whole_snapshots": [
+    {
+      "entries_per_collection": 48,
+      "data_artifacts": 135,
+      "data_body_bytes": 1504421,
+      "data_gets": 186,
+      "peak_audit_bytes": 46655
+    },
+    {
+      "entries_per_collection": 192,
+      "data_artifacts": 1299,
+      "data_body_bytes": 25340710,
+      "data_gets": 1502,
+      "peak_audit_bytes": 46655
+    }
+  ],
+  "blocks": [
+    {
+      "entries_per_collection": 48,
+      "data_artifacts": 133,
+      "data_body_bytes": 432461,
+      "data_gets": 188,
+      "peak_audit_bytes": 46561
+    },
+    {
+      "entries_per_collection": 192,
+      "data_artifacts": 565,
+      "data_body_bytes": 2232542,
+      "data_gets": 782,
+      "peak_audit_bytes": 46561
+    }
+  ]
+}

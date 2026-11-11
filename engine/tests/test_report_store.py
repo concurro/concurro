@@ -14,6 +14,7 @@ from checkpoints import CheckpointError, Checkpoints, legacy_state
 from fakes import CONFIG, FakeAgents, FakeGitHub, sized_report
 from pipeline_fixtures import PipelineFixture
 from policy import approval_valid, digest, validate_pr_review
+from protocol import ARTIFACT_BODY_BYTES
 from report_store import MARKER, ReportDataError, Store
 
 
@@ -37,7 +38,7 @@ class StoreTests(unittest.TestCase):
         self.assertGreater(len(numbers), 1)
         self.assertEqual(self.fresh().get(key, numbers), report)
         for number in numbers:
-            self.assertLessEqual(len(self.gh.artifacts[7][number]["artifact"]["body"].encode()), 60000)
+            self.assertLessEqual(len(self.gh.artifacts[7][number]["artifact"]["body"].encode()), ARTIFACT_BODY_BYTES)
         self.assertEqual(len(self.gh.artifacts[7]), len(numbers))
         self.fresh().put(report)
         self.assertEqual(len(self.gh.artifacts[7]), len(numbers))
@@ -195,7 +196,7 @@ class CapacityTests(PipelineFixture, unittest.TestCase):
             self.assertEqual(len(vote["report"]["assessments"]), 13)
             self.assertEqual(vote["report"]["assessments"][0]["reason"], "Detailed source evidence. " * 300)
         for item in self.gh.artifacts[7].values():
-            self.assertLessEqual(len(item["artifact"]["body"].encode()), 60000)
+            self.assertLessEqual(len(item["artifact"]["body"].encode()), ARTIFACT_BODY_BYTES)
 
     def test_retained_large_result_replays_after_crash_without_another_call(self):
         """The completed response itself is durable before the vote is recorded."""

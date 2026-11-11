@@ -326,16 +326,16 @@ class AttentionTests(unittest.TestCase):
 
 
 class PublicationCapacityTests(PipelineFixture, unittest.TestCase):
-    """A durable candidate is refused before any ref or PR mutation if recovery will not fit."""
+    """Publication requires durable recovery data before any ref or PR mutation."""
 
     def setUp(self):
         super().setUp()
         self.config["autonomous"] = True
 
-    def test_capacity_refusal_precedes_branch_and_pr_writes(self):
+    def test_storage_failure_precedes_branch_and_pr_writes(self):
         self.assert_capacity_refusal(self.reach("publish"))
 
-    def test_capacity_refusal_precedes_existing_pr_update(self):
+    def test_storage_failure_precedes_existing_pr_update(self):
         controller = self.reach("gates")
         controller.state["pending"] = {
             "head": controller.state["head"],
@@ -356,6 +356,9 @@ class PublicationCapacityTests(PipelineFixture, unittest.TestCase):
         controller.checkpoint()
         with (
             patch.object(self.gh, "repo", wraps=self.gh.repo) as repo,
+            patch.object(
+                controller.checkpoints.reports, "put", side_effect=Blocked("publication checkpoint storage unavailable")
+            ),
             self.assertRaisesRegex(Blocked, "publication checkpoint"),
         ):
             controller.publish()
@@ -370,6 +373,16 @@ class PublicationCapacityTests(PipelineFixture, unittest.TestCase):
         loaded = self.loaded()
         self.assertEqual(loaded.state["stage"], "publish")
         self.assertEqual(loaded.state["pending"], controller.state["pending"])
+
+    def test_publication_proceeds_with_oversized_metadata_retained(self):
+        """The compact audit target is no longer a reason to reject a publishable candidate."""
+        controller = self.reach("publish")
+        controller.state["capacity_probe"] = "x" * 100000
+        controller.checkpoint()
+        controller.publish()
+        self.assertIsNotNone(self.gh.pr)
+        self.assertEqual(self.loaded().state["capacity_probe"], "x" * 100000)
+        self.assertLessEqual(len(controller.checkpoints.audit["body"].encode()), checkpoints.LIMIT)
 
     def test_review_context_retains_all_identities_and_explains_omitted_previews(self):
 

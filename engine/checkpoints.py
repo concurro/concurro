@@ -12,9 +12,9 @@ import report_store
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest
-from protocol import PUBLICATION_BODY_BYTES as LIMIT
+from protocol import AUDIT_TARGET_BYTES as LIMIT
 from repository_reader import RepositoryReader
-from storage_helpers import graft_slot, owned
+from storage_helpers import owned
 
 MARKER = "<!-- concurro:v1 -->"
 STATE_PREFIX = "\n```json\n"
@@ -191,8 +191,8 @@ class Checkpoints:
         """Select the immutable identity of a plan already verified as App-owned."""
         return {key: artifact[key] for key in ("id", "number")}
 
-    def audit_body(self, state, bind_plan=True, external=True):
-        """Encode repository-bound state in a public Markdown artifact."""
+    def audit_payload(self, state, bind_plan=True, external=True):
+        """Build the repository-bound envelope with commitments to detached evidence."""
         compact, inventories = file_inventory.pack(state) if external else (state, [])
         compact, detached = report_store.packed(compact) if external else (compact, [])
         # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
@@ -201,7 +201,10 @@ class Checkpoints:
             "state": {
                 **compact,
                 "version": report_store.FORMAT
-                if any(item["path"][0] in report_store.EXTENDED_FIELDS for item in detached)
+                if any(
+                    item["path"][0] in report_store.EXTENDED_FIELDS or isinstance(item["value"], list)
+                    for item in detached
+                )
                 else bundle_resume.FORMAT
                 if state.get("bundle_resume")
                 else file_inventory.FORMAT
@@ -216,25 +219,50 @@ class Checkpoints:
         if inventories:
             payload["file_inventories"] = inventories
         if detached:
-            payload["report_data"] = [
-                {
-                    **{k: item[k] for k in ("path", "digest", "select", "annotations")},
-                    "artifacts": self.reports.numbers.get(item["digest"], []),
-                }
-                for item in detached
-            ]
+            payload["report_data"] = [self.reports.checkpoint_reference(item) for item in detached]
         if bind_plan and self.plan_binding:
             payload["plan_artifact"] = self.plan_binding
-        links = sorted({n for ref in payload.get("report_data", []) for n in ref["artifacts"]})
+        return payload
+
+    def render_audit(self, payload):
+        """Render a compact mutable audit and links to its immutable evidence."""
+        refs = payload.get("report_data", []) + ([payload["audit_data"]] if "audit_data" in payload else [])
+        links = set()
+        for ref in refs:
+            links.update(ref.get("artifacts", []))
+            history = ref.get("history", {})
+            for child in history.get("blocks", []) + history.get("tail", {}).get("references", []):
+                links.update(child["artifacts"])
+        links = sorted(links)
         footer = "".join(
             f"\n[Report data {n}]({protocol.artifact_url(self.config['repository'], self.issue, n)})" for n in links
         )
         return AUDIT_MARKER + STATE_PREFIX + json.dumps(payload, sort_keys=True) + "\n```\n" + footer
 
+    def audit_body(self, state, bind_plan=True, external=True, *, prepare=False, target=LIMIT):
+        """Keep mutable versions compact; optionally persist overflow metadata before writing."""
+        payload = self.audit_payload(state, bind_plan, external)
+        body = self.render_audit(payload)
+        if external and len(body.encode()) > target:
+            payload["state"]["version"] = report_store.FORMAT
+            key = digest(payload)
+            if prepare:
+                self.reports.put(payload)
+            body = self.render_audit(
+                {
+                    "repository": self.config["repository"],
+                    "state": {"version": report_store.FORMAT, "issue": self.issue},
+                    "audit_data": {"digest": key, "artifacts": self.reports.numbers.get(key, [])},
+                }
+            )
+        return body
+
     def decode(self, artifact):
         """Validate the checkpoint's repository, issue and schema identities."""
         try:
-            payload = legacy_state(artifact["body"])
+            payload = report_store.audit_envelope(
+                legacy_state(artifact["body"]), self.reports, self.config["repository"], self.issue
+            )
             state = payload["state"]
             if payload["repository"] != self.config["repository"]:
                 raise ValueError()
@@ -248,35 +276,7 @@ class Checkpoints:
                 report_store.FORMAT,
             ):
                 raise ValueError()
-            if not isinstance(refs, list):
-                raise ValueError()
-            seen = set()
-            for ref in refs:
-                if (
-                    not isinstance(ref, dict)
-                    or set(ref) != {"path", "digest", "artifacts", "select", "annotations"}
-                    or not report_store.allowed_path(ref["path"])
-                    or not isinstance(ref["select"], list)
-                    or len(ref["select"]) > 32
-                    or not isinstance(ref["annotations"], dict)
-                    or not set(ref["annotations"]) <= report_store.ANNOTATIONS
-                ):
-                    raise ValueError()
-                path = tuple(ref["path"])
-                if any(path[: len(previous)] == previous or previous[: len(path)] == path for previous in seen):
-                    raise ValueError()
-                seen.add(path)
-                parent, slot = graft_slot(state, path, ValueError())
-                value = self.reports.get(ref["digest"], ref["artifacts"])
-                for component in ref["select"]:
-                    if not (isinstance(component, str) or type(component) is int and component >= 0):
-                        raise ValueError()
-                    value = value[component]
-                if ref["annotations"]:
-                    if not isinstance(value, dict) or set(value) & set(ref["annotations"]):
-                        raise ValueError()
-                    value = {**value, **ref["annotations"]}
-                parent[slot] = value
+            report_store.restore(state, refs, self.reports)
             inventories = payload.get("file_inventories", [])
             if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
                 file_inventory.FORMAT,
@@ -327,7 +327,7 @@ class Checkpoints:
         pointer = None
         if self.comment:
             body = self.comment["body"]
-            if len(body.encode()) > LIMIT:
+            if len(body.encode()) > protocol.PUBLICATION_BODY_BYTES:
                 raise CheckpointError("comment_size")
             try:
                 if REF_MARKER in body:
@@ -454,7 +454,7 @@ class Checkpoints:
         else:
             lines += ["The previous plan is superseded. A new plan is required before implementation.", ""]
         body = "\n".join(lines)
-        if len(body.encode()) <= LIMIT:
+        if len(body.encode()) <= protocol.ARTIFACT_VIEW_BYTES:
             return body
         draft = state.get("plan_draft")
         key = digest(draft or state["plan"])
@@ -469,7 +469,12 @@ class Checkpoints:
         if draft:
             prefix += "## Rejected draft — not approved\n\n"
             prefix += (
-                markup.excerpt(draft["reason"], LIMIT // 4, "Full rejection reason in the data artifacts.") + "\n\n"
+                markup.excerpt(
+                    draft["reason"],
+                    protocol.ARTIFACT_VIEW_BYTES // 4,
+                    "Full rejection reason in the data artifacts.",
+                )
+                + "\n\n"
             )
 
             def render_output(value):
@@ -479,7 +484,7 @@ class Checkpoints:
 
             excerpt = markup.excerpt(
                 draft["output"],
-                LIMIT - len((prefix + footer).encode()),
+                protocol.ARTIFACT_VIEW_BYTES - len((prefix + footer).encode()),
                 "Full rejected output in the data artifacts.",
                 render=render_output,
             )
@@ -488,13 +493,15 @@ class Checkpoints:
                 "Diagnostics", "Plan: " + markup.code(state["plan_id"]) + "\n\nBase: " + markup.code(state["base"])
             )
             excerpt = markup.excerpt(
-                state["plan"]["summary"], LIMIT - len((prefix + footer).encode()), "Full plan in the data artifacts."
+                state["plan"]["summary"],
+                protocol.ARTIFACT_VIEW_BYTES - len((prefix + footer).encode()),
+                "Full plan in the data artifacts.",
             )
         return prefix + excerpt + footer
 
     def write(self, existing, kind, body):
         """Write and read back one version; reject changed snapshots and ambiguous responses."""
-        if len(body.encode()) > LIMIT:
+        if len(body.encode()) > (LIMIT if kind == "generic" else protocol.ARTIFACT_BODY_BYTES):
             raise CheckpointError("artifact_size")
         name, _ = artifact_metadata(kind)
         path = f"issues/{self.issue}/artifacts"
@@ -532,8 +539,8 @@ class Checkpoints:
             file_inventory.restore(deepcopy(compact), refs, self.reader)
             _, detached = report_store.packed(compact)
             for item in detached:
-                self.reports.put(item["value"])
-            if len(self.audit_body(state).encode()) > LIMIT - reserve:
+                self.reports.checkpoint_reference(item, prepare=True)
+            if len(self.audit_body(state, prepare=True, target=LIMIT - reserve).encode()) > LIMIT - reserve:
                 raise Blocked("publication checkpoint exceeds available capacity; split the change before publishing")
 
     def save(self, state):
@@ -546,10 +553,10 @@ class Checkpoints:
         _, detached = report_store.packed(compact)
         try:
             for item in detached:
-                self.reports.put(item["value"])
+                self.reports.checkpoint_reference(item, prepare=True)
             if self.audit is None and self.legacy is not None:
                 self.audit = self.write(None, "generic", self.audit_body(self.legacy, bind_plan=False, external=False))
-            self.audit = self.write(self.audit, "generic", self.audit_body(state))
+            self.audit = self.write(self.audit, "generic", self.audit_body(state, prepare=True))
             if self.plan or state.get("plan") or state.get("plan_draft"):
                 body = self.plan_body(state)
                 # A derived view is verified on load; unchanged views need no further reads this invocation.
@@ -558,7 +565,7 @@ class Checkpoints:
                 binding = self.plan_identity(self.plan)
                 if self.plan_binding != binding:
                     self.plan_binding = binding
-                    self.audit = self.write(self.audit, "generic", self.audit_body(state))
+                    self.audit = self.write(self.audit, "generic", self.audit_body(state, prepare=True))
         except Exception:
             # Any failure here may follow a successful remote write; retain uncertainty for recovery.
             self.uncertain = True

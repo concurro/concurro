@@ -10,11 +10,15 @@ import markup
 import protocol
 from github import NotFound
 from policy import Blocked, digest
+from review_state import source_value
 from storage_helpers import graft_slot, owned
 
 MARKER = "<!-- concurro:report-data:v1:"
-CHUNK = 16000
+CHUNK = protocol.ARTIFACT_BODY_BYTES
+LEGACY_CHUNK = 16000
 INLINE = 12000
+# Fixed entry positions keep later blocks reusable when older metadata grows.
+BLOCK_ENTRIES = 8
 FORMAT = 7
 EXTENDED_FIELDS = {
     "plan",
@@ -28,27 +32,30 @@ EXTENDED_FIELDS = {
     "candidate",
     "outcomes",
     "prior_outcomes",
+    "reports",
 }
-FIELDS = EXTENDED_FIELDS | {
-    "qc",
-    "qc_history",
-    "design_votes",
-    "design_history",
-    "design_feedback",
-    "objections",
-    "reviews",
-    "review_history",
-    "review_event",
-    "findings",
-    "pr_outbox",
-    "reason",
-    "reopen_history",
-    "resume_history",
-    "invalidations",
-    "requests",
-    "review_draft",
-    "review_batch",
-}
+HISTORY_FIELDS = {"qc_history", "design_history", "review_history"}
+FIELDS = (
+    EXTENDED_FIELDS
+    | HISTORY_FIELDS
+    | {
+        "qc",
+        "design_votes",
+        "design_feedback",
+        "objections",
+        "reviews",
+        "review_event",
+        "findings",
+        "pr_outbox",
+        "reason",
+        "reopen_history",
+        "resume_history",
+        "invalidations",
+        "requests",
+        "review_draft",
+        "review_batch",
+    }
+)
 
 
 class ReportDataError(Blocked):
@@ -78,7 +85,7 @@ def is_report(value):
 
 
 def packed(state):
-    """Reference evidence, keeping changing collections and report annotations inline."""
+    """Reference evidence and oversized collections, leaving small metadata inline."""
     if len(json.dumps(state).encode()) <= INLINE:
         return state, []
     sources, fragments = {}, {}
@@ -152,7 +159,15 @@ def packed(state):
         if isinstance(value, dict):
             return {k: visit(v, path + [k]) for k, v in value.items()}
         if isinstance(value, list):
-            return [visit(v, path + [i]) for i, v in enumerate(value)]
+            start = len(detached)
+            compact = [visit(v, path + [i]) for i, v in enumerate(value)]
+            if len(path) == 1 and path[0] in HISTORY_FIELDS and len(json.dumps(compact).encode()) > INLINE:
+                del detached[start:]
+                detached.append(
+                    {"path": path, "digest": digest(value), "value": value, "select": [], "annotations": {}}
+                )
+                return None
+            return compact
         return value
 
     compact = deepcopy(state)
@@ -178,6 +193,76 @@ def allowed_path(path):
             and (path[3] == "review_draft" or path[3:5] == ["operation", "response"])
         )
     )
+
+
+def inline_fields(state, names):
+    """Locate original metadata fields retained in the audit or its reference annotations."""
+    compact, refs = packed(state)
+    result = set()
+
+    def visit(original, view):
+        """Pair the packed layout with original holders, skipping detached subtrees."""
+        if isinstance(view, dict):
+            for key, child in view.items():
+                if key in names and child is not None:
+                    result.add((id(original), key))
+                visit(original[key], child)
+        elif isinstance(view, list):
+            for original_child, child in zip(original, view):
+                visit(original_child, child)
+
+    visit(state, compact)
+    for ref in refs:
+        visit(source_value(state, ref["path"]), ref["annotations"])
+    return result
+
+
+def record_json(value):
+    """Serialize immutable record JSON identically for publication and encoding detection."""
+    return json.dumps(value, sort_keys=True, indent=2)
+
+
+def restore(state, refs, store):
+    """Hydrate verified state references without changing slot or overlap validation."""
+    if not isinstance(refs, list):
+        raise ValueError()
+    seen = set()
+    for ref in refs:
+        if (
+            not isinstance(ref, dict)
+            or set(ref)
+            not in (
+                {"path", "digest", "artifacts", "select", "annotations"},
+                {"path", "digest", "history", "select", "annotations"},
+            )
+            or "history" in ref
+            and (state.get("version") != FORMAT or ref.get("select") or ref.get("annotations"))
+            or not allowed_path(ref["path"])
+            or not isinstance(ref["select"], list)
+            or len(ref["select"]) > 32
+            or not isinstance(ref["annotations"], dict)
+            or not set(ref["annotations"]) <= ANNOTATIONS
+        ):
+            raise ValueError()
+        path = tuple(ref["path"])
+        if any(path[: len(previous)] == previous or previous[: len(path)] == path for previous in seen):
+            raise ValueError()
+        seen.add(path)
+        parent, slot = graft_slot(state, path, ValueError())
+        value = (
+            store.restore_history(ref["digest"], ref["history"])
+            if "history" in ref
+            else store.get(ref["digest"], ref["artifacts"])
+        )
+        for component in ref["select"]:
+            if not (isinstance(component, str) or type(component) is int and component >= 0):
+                raise ValueError()
+            value = value[component]
+        if ref["annotations"]:
+            if not isinstance(value, dict) or set(value) & set(ref["annotations"]):
+                raise ValueError()
+            value = {**value, **ref["annotations"]}
+        parent[slot] = value
 
 
 class Cache:
@@ -213,6 +298,74 @@ class Cache:
             while self.size > self.limit:
                 _, (_, removed) = self.entries.popitem(last=False)
                 self.size -= removed
+
+
+def part_body(key, index, count, part, footer, language):
+    """Render a complete immutable part, including its verification marker and links."""
+    fence = markup.fence(part)
+    return (
+        f"{MARKER}{key}:{index}:{count} -->\n### Report data · part {index} of {count}\n\n"
+        f"{fence}{language}\n{part}\n{fence}\n{footer}"
+    )
+
+
+def parse_part(body, key):
+    """Read the existing part layout for decoding and exact interrupted-write recovery."""
+    match = re.fullmatch(
+        re.escape(MARKER + key + ":")
+        + r"(\d+):(\d+) -->\n### Report data · part \d+ of \d+\n\n(`{3,})(json|text)\n(.*?)\n\3\n(?:\nReferences:\n.*)?",
+        body,
+        re.S,
+    )
+    if not match:
+        raise ReportDataError("Malformed review data part.")
+    return int(match[1]), int(match[2]), match[5], match[4]
+
+
+def part_bodies(key, encoded, footer, first=None):
+    """Fit new parts by complete UTF-8 size; preserve an existing write's exact layout."""
+    if first and (first[0] != 1 or first[1] < 1 or not first[2]):
+        raise ReportDataError("Invalid first review data part.")
+    width = len(first[2]) if first else CHUNK
+    while True:
+        parts = [encoded[i : i + width] for i in range(0, len(encoded), width)]
+        language = first[3] if first else "json" if len(parts) == 1 and len(encoded) <= LEGACY_CHUNK else "text"
+        bodies = [part_body(key, i, len(parts), part, footer, language) for i, part in enumerate(parts, 1)]
+        if first:
+            if first[0] != 1 or first[1] != len(parts) or first[2] != parts[0]:
+                raise ReportDataError("Stored review data conflicts with the pending write.")
+            return bodies
+        largest = max(len(body.encode()) for body in bodies)
+        if largest <= protocol.ARTIFACT_BODY_BYTES:
+            return bodies
+        width = max(1, width * (protocol.ARTIFACT_BODY_BYTES - 1024) // largest)
+
+
+def audit_envelope(payload, store, repository, issue):
+    """Hydrate optional immutable audit metadata after checking the outer task identity."""
+    if payload["repository"] != repository or payload["state"]["issue"] != issue:
+        raise ValueError("Audit identity mismatch")
+    if "audit_data" not in payload:
+        return payload
+    ref = payload["audit_data"]
+    if (
+        set(payload) != {"repository", "state", "audit_data"}
+        or payload["state"] != {"version": FORMAT, "issue": issue}
+        or not isinstance(ref, dict)
+        or set(ref) != {"digest", "artifacts"}
+    ):
+        raise ValueError("Invalid audit metadata reference")
+    restored = store.get(ref["digest"], ref["artifacts"])
+    if (
+        not isinstance(restored, dict)
+        or "audit_data" in restored
+        or restored.get("repository") != repository
+        or not isinstance(restored.get("state"), dict)
+        or restored["state"].get("issue") != issue
+        or restored["state"].get("version") != FORMAT
+    ):
+        raise ValueError("Invalid audit metadata identity")
+    return restored
 
 
 class Store:
@@ -267,21 +420,92 @@ class Store:
         """Ignore user imitations; duplicate controller markers are conflicts."""
         return owned(self.collection(), self.author, prefix, "creator")
 
-    def encode(self, value):
-        """Replace nested report copies with references to their canonical artifacts."""
+    def reference(self, value, *, prepare):
+        """Describe immutable evidence, optionally confirming it before a checkpoint write."""
+        key = self.put(value) if prepare else digest(value)
+        return {"digest": key, "artifacts": self.numbers.get(key, [])}
+
+    def checkpoint_reference(self, item, *, prepare=False):
+        """Keep a growing list's directory and unfinished tail in the mutable checkpoint."""
+        ref = {k: item[k] for k in ("path", "digest", "select", "annotations")}
+        value = item["value"]
+        if prepare and not self.numbers.get(item["digest"]) and self.matches(f"{MARKER}{item['digest']}:"):
+            self.put(value)
+        if isinstance(value, list) and not self.numbers.get(item["digest"]):
+            end = len(value) // BLOCK_ENTRIES * BLOCK_ENTRIES
+            blocks = [
+                self.reference(value[i : i + BLOCK_ENTRIES], prepare=prepare) | {"count": BLOCK_ENTRIES}
+                for i in range(0, end, BLOCK_ENTRIES)
+            ]
+            return ref | {
+                "history": {
+                    "blocks": blocks,
+                    "length": end,
+                    "size": BLOCK_ENTRIES,
+                    "tail": self.encode(value[end:], blocks=False, prepare=prepare),
+                }
+            }
+        return ref | self.reference(value, prepare=prepare)
+
+    def restore_history(self, key, record):
+        """Verify the closed block directory, short inline tail and complete history digest."""
+        invalid = ReportDataError("Malformed checkpoint history.")
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"blocks", "length", "size", "tail"}
+            or type(record["size"]) is not int
+            or record["size"] <= 0
+            or type(record["length"]) is not int
+            or record["length"] < 0
+            or record["length"] % record["size"]
+            or not record["length"]
+            and record["blocks"] != []
+            or not isinstance(record["tail"], dict)
+            or set(record["tail"]) != {"value", "references"}
+            or not isinstance(record["tail"]["value"], list)
+            or len(record["tail"]["value"]) >= record["size"]
+            or not isinstance(record["tail"]["references"], list)
+        ):
+            raise invalid
+        # Validate tail slots before fetching any closed blocks or report evidence.
+        tail = record["tail"]
+        slots = set()
+        for ref in tail["references"]:
+            if not isinstance(ref, dict) or set(ref) != {"path", "digest", "artifacts"}:
+                raise invalid
+            path = tuple(ref["path"])
+            if any(path[: len(old)] == old or old[: len(path)] == path for old in slots):
+                raise invalid
+            slots.add(path)
+            try:
+                graft_slot(tail["value"], ref["path"], invalid)
+            except (KeyError, IndexError, TypeError):
+                raise invalid from None
+        value = self.restore_blocks({k: record[k] for k in ("blocks", "length", "size")}) if record["length"] else []
+        value.extend(self.decode_record(deepcopy(tail)))
+        if digest(value) != key:
+            raise ReportDataError("Checkpoint history failed digest verification.")
+        return value
+
+    def encode(self, value, *, blocks=True, prepare=True):
+        """Reference canonical reports and fixed-position blocks of detached collections."""
+        if blocks and isinstance(value, list) and len(value) > BLOCK_ENTRIES:
+            refs = []
+            for start in range(0, len(value), BLOCK_ENTRIES):
+                block = value[start : start + BLOCK_ENTRIES]
+                refs.append(self.reference(block, prepare=prepare) | {"count": len(block)})
+            return {"blocks": refs, "length": len(value), "size": BLOCK_ENTRIES}
         if is_report(value):
             annotations = report_annotations(value)
             if annotations:
                 core = report_content(value)
-                key = self.put(core)
-                return {"report": {"digest": key, "artifacts": self.numbers[key]}, "annotations": annotations}
+                return {"report": self.reference(core, prepare=prepare), "annotations": annotations}
         refs = []
 
         def visit(child, path):
             """Keep containers inline, extracting whole nested reports once."""
             if path and is_report(child):
-                key = self.put(child)
-                refs.append({"path": path, "digest": key, "artifacts": self.numbers[key]})
+                refs.append({"path": path} | self.reference(child, prepare=prepare))
                 return None
             if isinstance(child, dict):
                 return {k: visit(v, path + [k]) for k, v in child.items()}
@@ -317,8 +541,19 @@ class Store:
             item = self.read(self.archive_index[key])
             self.remember(key, [item["number"]], value)
             return key
-        record = self.encode(value)
-        refs = record.get("references", []) + ([record["report"]] if "report" in record else [])
+        # A pre-upgrade write may already have its first part, even after a lost reply.
+        # Finish that exact encoding rather than replacing the immutable digest marker.
+        first = self.matches(f"{MARKER}{key}:1:")
+        if len(first) > 1:
+            raise ReportDataError("Duplicate review data parts.")
+        if not first and self.matches(f"{MARKER}{key}:"):
+            raise ReportDataError("Stored review data is missing its first part.")
+        layout = parse_part(self.read(first[0])["body"], key) if first else None
+        block_prefix = record_json({"blocks": []}).partition("]")[0]
+        blocks = not first or "\n" + block_prefix in first[0]["body"]
+        record = self.encode(value, blocks=blocks)
+        refs = record.get("references", []) + record.get("blocks", [])
+        refs += [record["report"]] if "report" in record else []
         links = []
         if self.repository:
             root = protocol.artifact_url(self.repository, self.issue)
@@ -334,23 +569,11 @@ class Store:
                 break
             footer += line + "\n"
         footer = "\nReferences:\n" + footer if footer else ""
-        encoded = json.dumps(record, sort_keys=True, indent=2)
-        parts = [encoded[i : i + CHUNK] for i in range(0, len(encoded), CHUNK)]
+        encoded = record_json(record)
+        bodies = part_bodies(key, encoded, footer, layout)
         numbers = []
-        for index, part in enumerate(parts, 1):
+        for index, body in enumerate(bodies, 1):
             prefix = f"{MARKER}{key}:{index}:"
-            fence = markup.fence(part)
-            body = (
-                f"{prefix}{len(parts)} -->\n### Report data · part {index} of {len(parts)}\n\n"
-                + fence
-                + ("json" if len(parts) == 1 else "text")
-                + "\n"
-                + part
-                + "\n"
-                + fence
-                + "\n"
-                + footer
-            )
             name = f"Concurro review data {key[:32]} part {index}"
             matches = self.matches(prefix)
             if len(matches) > 1 or matches and (matches[0]["body"] != body or matches[0]["name"] != name):
@@ -425,25 +648,27 @@ class Store:
         chunks, identities, count = {}, {}, None
         for item in items if items is not None else self.matches(MARKER + key + ":"):
             body = item["body"] if items is not None else self.read(item)["body"]
-            match = re.fullmatch(
-                re.escape(MARKER + key + ":")
-                + r"(\d+):(\d+) -->\n### Report data · part \d+ of \d+\n\n(`{3,})(?:json|text)\n(.*?)\n\3\n(?:\nReferences:\n.*)?",
-                body,
-                re.S,
-            )
-            if not match:
-                raise ReportDataError("Malformed review data part.")
-            index, total = int(match[1]), int(match[2])
+            index, total, part, _ = parse_part(body, key)
             if not 1 <= index <= total or count not in (None, total) or index in chunks:
                 raise ReportDataError("Duplicate or inconsistent review data parts.")
-            count, chunks[index], identities[index] = total, match[4], item["number"]
+            count, chunks[index], identities[index] = total, part, item["number"]
         if count is None or set(chunks) != set(range(1, count + 1)):
             raise ReportDataError("Stored review data is missing; restore it before continuing.")
         actual = [identities[i] for i in range(1, count + 1)]
         if numbers is not None and actual != numbers:
             raise ReportDataError("Review artifact identities changed.")
         record = json.loads("".join(chunks[i] for i in range(1, count + 1)))
-        if "report" in record:
+        value = self.decode_record(record)
+        if digest(value) != key:
+            raise ReportDataError("Stored review data failed digest verification.")
+        self.remember(key, actual, value)
+        return value
+
+    def decode_record(self, record):
+        """Restore the shared nested-report encoding used by artifacts and inline history tails."""
+        if "blocks" in record:
+            value = self.restore_blocks(record)
+        elif "report" in record:
             ref = record["report"]
             value = self.get(ref["digest"], ref["artifacts"])
             if not isinstance(value, dict) or set(value) & set(record["annotations"]):
@@ -454,7 +679,33 @@ class Store:
         for ref in record.get("references", []):
             parent, slot = graft_slot(value, ref["path"], ReportDataError("Overlapping report references."))
             parent[slot] = self.get(ref["digest"], ref["artifacts"])
-        if digest(value) != key:
-            raise ReportDataError("Stored review data failed digest verification.")
-        self.remember(key, actual, value)
+        return value
+
+    def restore_blocks(self, record):
+        """Validate the whole layout before fetching and concatenating verified blocks."""
+        invalid = ReportDataError("Malformed review data blocks.")
+        if (
+            set(record) != {"blocks", "length", "size"}
+            or type(record["size"]) is not int
+            or record["size"] <= 0
+            or type(record["length"]) is not int
+            or record["length"] <= 0
+            or not isinstance(record["blocks"], list)
+            or len(record["blocks"]) != (record["length"] + record["size"] - 1) // record["size"]
+        ):
+            raise invalid
+        for index, ref in enumerate(record["blocks"]):
+            if (
+                not isinstance(ref, dict)
+                or set(ref) != {"digest", "artifacts", "count"}
+                or type(ref["count"]) is not int
+                or ref["count"] != min(record["size"], record["length"] - index * record["size"])
+            ):
+                raise invalid
+        value = []
+        for ref in record["blocks"]:
+            block = self.get(ref["digest"], ref["artifacts"])
+            if not isinstance(block, list) or len(block) != ref["count"]:
+                raise invalid
+            value.extend(block)
         return value

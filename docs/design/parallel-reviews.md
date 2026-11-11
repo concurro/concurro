@@ -70,9 +70,10 @@ attempt history during normal processing.
 Attach one small receipt to the current operation and its existing report-index entry,
 linking the attempt to the reviewer, run/phase and report artifact. There is no independent
 attempt-history list today, and this change adds none. The current operation keeps only
-its latest attempt; the report index keeps at most 40 reports. Failed attempts without
+its latest attempt; the complete report index is retained in artifact-backed blocks when large. Failed attempts without
 reports can lose timing when their operation is replaced. Checkpoint pressure may discard
-older timing receipts, then pending/current telemetry, before it can block core state.
+older inline timing receipts, then inline pending/current telemetry, before it can block core state.
+Receipts already detached into artifact storage remain intact.
 
 Do not copy report bodies or reconstruct missing observations after a crash. No recovery
 backfill service, extra model calls or historical scanning is required. The timing receipt

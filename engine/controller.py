@@ -372,17 +372,6 @@ class Controller:
                 CHECKPOINT_LIMIT - RESULT_MARGIN,
                 lambda value: len(self.checkpoints.audit_body(value).encode()),
             )
-        if (
-            operation
-            and "response" in operation
-            and len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN
-        ):
-            response = operation["response"]
-            if operation.get("stage") in classification.STAGES and isinstance(response, dict):
-                response.pop("classification", None)
-            if len(self.checkpoints.audit_body(self.state).encode()) > CHECKPOINT_LIMIT - RESULT_MARGIN:
-                # Too large to retain: recovery treats the completion as lost, within the allowance.
-                del operation["response"]
         self.classification_room(self.state, CHECKPOINT_LIMIT - 1000)
         review_timing.make_room(
             self.state, CHECKPOINT_LIMIT - 1000, lambda value: len(self.checkpoints.audit_body(value).encode())

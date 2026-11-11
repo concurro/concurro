@@ -377,11 +377,17 @@ configuration. A live pilot requires explicit enrollment and deployment authoriz
 ### Large report recovery
 
 Oversized plans, target authority, templates and queued conversation data use the existing
-immutable, digest-verified artifact storage. Individual artifacts retain their publication
-limit; records can span as many parts as needed. Plan and PR views may be excerpted with
+immutable, digest-verified artifact storage on GitHub. New data parts fit within 256 KiB
+including their Markdown envelope; records can span as many parts as needed. This is storage
+granularity, not a GitHub maximum or a report-size limit. Comments and human-readable
+artifact views retain separate 60,000-byte allowances. Plan and PR views may be excerpted with
 links to complete evidence. Canonical content is preserved across save/load and retries.
-Checkpoints using these additional referenced fields use wire format 7; older engines
-refuse them. Rolling back after such a checkpoint requires a format-7-capable engine.
+The mutable audit targets 60,000 bytes because GitHub returns its version history, including
+rendered HTML. Excess packed metadata moves to immutable data behind a verified audit pointer.
+History directories and unfinished tails stay in the audit; completed eight-entry blocks are
+stored once unless their contents change. No past artifacts are deleted or repacked.
+These layouts use the unreleased checkpoint format 7; rolling back requires an engine that
+understands all format-7 records.
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities

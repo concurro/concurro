@@ -11,9 +11,9 @@ and headings. Compact PR bodies retain controller-written workflow/policy notice
 dependency summaries. Canonical evidence survives reload, including full rejected drafts and
 design, quality and outcome history. Large outcome collections also use report artifacts. This requires
 checkpoint wire format 7 when these additional fields are detached. Older engines must not
-resume those checkpoints. Publication bodies consistently use a conservative 60,000 UTF-8
-byte allowance; PR titles use 256 characters. These are publication capacities, not limits
-on accepted model prose. Existing model-response, extraction and transport bounds remain.
+resume those checkpoints. Comment/PR bodies and human-readable artifact views use separate
+60,000 UTF-8 byte allowances; immutable data parts now use 256 KiB (see consolidation below).
+PR titles use 256 characters. These are publication capacities, not limits on accepted model prose. Existing model-response, extraction and transport bounds remain.
 
 `turn_timeout_seconds` accepts a positive integer or `null`, defaulting to 1200 seconds for
 intake, planning and design review. `max_retained_bytes` similarly controls uncompressed
@@ -160,3 +160,218 @@ Review rendering format 5 applies consistent byte accounting to new records. Pre
 queued formats retain their original rendering so retries can match already-published
 Unicode bodies exactly. This is independent of checkpoint wire format 7, which permits
 the additional artifact-backed state fields.
+
+## Completed-response retention follow-up
+
+Issue #35's audit revision 127 and completed Sol call 23 were replayed offline through
+`Controller.complete`, with GitHub writes disabled. The response digest matched its
+session completion receipt (`48cbd46560a847a17731cf08145f3791796620f9d949efa1616ebc88d33b3e4c`).
+With the active reviewer selected, the pre-cleanup checkpoint measured 56,409 bytes and
+discarded the response; `ff8339a` measured 43,429 bytes and retained it (44,094 bytes
+after completion). The cleanup's detached plan already removes #35's immediate size pressure.
+This checks retention, not acceptance of the review or live recovery.
+
+A longer synthetic history still reproduced the same false "uncertain twice" block
+on `ff8339a`. Completed responses now survive the former 56,000-byte reserve, and large
+quality/design/review histories and report indexes reuse format-7 artifact storage.
+Existing report references remain reusable inside those collections. Regression tests
+cover serial reload, parallel completion, a crash before applying votes, unchanged spent
+calls and complete history round trips. Legacy checkpoints already missing a response
+still follow the existing uncertain-outcome recovery path.
+
+Retention-only validation: engine 1,009 tests (one skipped), service 347 and gateway 58 passed;
+Ruff lint/format, Pyright, compileall and whitespace checks passed. The bundle identity
+is unchanged. The three new regression tests fail against the pre-fix implementation.
+The 48-call capacity tests now retain all timing receipts through the detached report
+index; the existing metadata-only no-rewrite and legacy-format tests pass unchanged.
+No pilot state was changed, resumed or deployed.
+
+
+## Fixed-position history blocks
+
+Large detached lists now use eight-entry blocks and an ordered manifest of their digests,
+artifact numbers and entry counts. Eight is storage granularity, not a task limit.
+Appending rewrites the tail block and manifest; updating old timing, classification or
+other metadata rewrites its block and manifest. Canonical report bodies remain shared.
+A separate metadata index was avoided because existing records can change without a
+stable entry ID; it would introduce a second growing structure and synchronization.
+
+`REPORT_INDEX` and its trimming are removed. Publication/reload tests retain every entry
+through 48 calls, including all new timing receipts. A 600-entry test proves the dashboard
+can shorten its view without removing index entries. The read-only design audit now uses
+the checkpoint reference-restoration helper, so it can read detached indexes and histories.
+Older checkpoints may already have lost index entries; this does not reconstruct them.
+
+Block records use the already-unreleased checkpoint format 7, with no format 8.
+Existing whole-list artifacts remain readable and reusable. If their creation was
+interrupted, recovery finishes the original encoding under its existing digest marker.
+New tests cover unchanged saves, stable block boundaries after old metadata grows,
+missing/reordered blocks, malformed layouts before child fetches, cold reload, and lost
+block or multipart-manifest replies. Existing response-retention, spent-call, approval,
+current-rating and crash-before-application tests remain in place.
+
+### Measured artifact traffic
+
+[Raw results](history-traffic.json) compare the same workload with block encoding enabled
+and disabled. Four collections share identical synthetic entries, exercising cross-field
+and canonical-report reuse. Each entry carries short metadata, timing and a unique report.
+There is one real checkpoint save per append, one cold reload and one unchanged save,
+using fake GitHub only. The disabled-block results reproduce the pre-block implementation's
+artifact counts and bytes exactly. These are synthetic storage measurements, not pilot
+traffic predictions.
+
+| Entries per collection | Encoding | New data artifacts | Data-body bytes | Data GETs | Peak audit bytes |
+| ---- | ---- | ---- | ---- | ---- | ---- |
+| 48 | Whole snapshots | 135 | 1,504,421 | 186 | 46,655 |
+| 48 | Blocks | 133 | 432,461 | 188 | 46,561 |
+| 192 | Whole snapshots | 1,299 | 25,340,710 | 1,502 | 46,655 |
+| 192 | Blocks | 565 | 2,232,542 | 782 | 46,561 |
+
+Bytes count complete immutable artifact bodies, including canonical evidence, manifests,
+fences and links; mutable audit versions are excluded. GETs include write confirmation
+and the cold reload. Neither encoding writes new data on the final unchanged save.
+Blocks can increase cold-read counts slightly on shorter histories; the existing verified
+cache still avoids repeated data reads across warm ticks. Manifests contain references,
+but grow and are rewritten: this reduces history duplication without eliminating all
+quadratic growth in reference metadata. No old immutable artifacts are deleted.
+
+Reproduce from the repository root:
+
+```sh
+python3 engine/tests/storage_traffic.py --entries 48 192 --whole-snapshots --snapshot-manifests --chunk-characters 16000
+python3 engine/tests/storage_traffic.py --entries 48 192 --snapshot-manifests --chunk-characters 16000
+```
+
+Final validation: engine 1,021 tests (one platform skip), service 347 and gateway 58
+passed. Ruff check/format, Pyright, compileall, bundle comparison and `git diff --check`
+passed. The bundle remains `837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
+The offline #35 completion replay still retains the response (43,429 bytes before,
+44,094 after). The initial block tests demonstrated the missing layout/traffic behavior
+before implementation; the audit-reader test also failed before its hydration fix.
+All changes remain uncommitted; no deployment, pilot command or live task mutation occurred.
+
+### Review follow-up: inline-only pressure relief
+
+Timing and classification relief now use the actual packed layout. Detached timings,
+ratings, snapshots and assessment links remain intact; classifications carried inline
+beside individual report references remain eligible under the existing protection rules.
+A 59,500-byte checkpoint regression verifies completed-response retention, unchanged
+external metadata, no new data artifacts, and an exact reload. Inline relief is also
+covered, including a shared classification value whose detached copy must not change.
+Block detection and publication use one record encoder, with an alternate-indentation
+replay test. Existing artifact bytes and measured traffic remain unchanged.
+
+Follow-up validation: engine 1,025 tests (one platform skip), service 347 and gateway 58
+passed, together with Ruff check/format, Pyright, compileall, bundle comparison and
+`git diff --check`. The four new tests cover the pressure and encoding cases above;
+the pre-fix run reproduced both detached-metadata failures. The traffic workload's
+artifacts, bytes, reads and audit peaks match the recorded results exactly.
+
+
+## Artifact consolidation
+
+New immutable data parts use a 256 KiB **complete-body** allowance, independent of comment
+and view sizes. Larger values span parts. This is an operating choice tested against the
+service's existing 16 MB artifact-response allowance, not a claimed GitHub maximum.
+Large parts use plain-text fences, avoiding JSON syntax-highlighting expansion. Tests cover
+a ten-artifact page with HTML escaping and an immutable artifact's version response without
+raising transport limits. This is offline validation, not a new live GitHub size probe.
+
+The mutable audit retains its 60,000-byte target because GitHub returns repeated versions
+with rendered HTML. If packed metadata exceeds that target, a verified immutable envelope
+holds it and the audit stores a small pointer. Completed responses, findings, approvals and
+spent budgets survive a cold reload. Publication still prepares recovery data before branch
+or PR writes; metadata above the audit target no longer causes a capacity refusal by itself.
+
+Growing lists now keep their directory and unfinished tail in the mutable audit. Only full
+eight-entry blocks become immutable artifacts; report bodies in the tail remain references.
+There is no new manifest or partial-block artifact per append. An older entry changing
+rewrites its block. Existing whole-list and manifest encodings remain readable and reusable;
+interrupted writes retain their original part boundaries and exact bodies. These layouts
+share the unreleased format-7 boundary; no format 8 or bundle change is introduced.
+
+### Traffic comparison
+
+[Raw results](artifact-consolidation-traffic.json) use the same synthetic four-collection
+workload as above, including cross-collection reuse. Before means 16,000-character parts
+and immutable manifests; after means larger parts and the mutable directory/tail. GETs
+include write confirmation and one cold reload. Unchanged saves create no new artifacts.
+
+| Reports per collection | Report size | Encoding | Data artifacts | Data-body bytes | Data GETs | Peak audit bytes |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| 48 | About 3 KB | Before | 133 | 432,461 | 188 | 46,561 |
+| 48 | About 3 KB | After | 54 | 213,727 | 108 | 49,124 |
+| 192 | About 3 KB | Before | 565 | 2,232,542 | 782 | 46,561 |
+| 192 | About 3 KB | After | 216 | 855,789 | 432 | 49,124 |
+| 48 | About 96 KiB | Before | 424 | 5,211,767 | 767 | 58,432 |
+| 48 | About 96 KiB | After | 54 | 4,778,719 | 108 | 49,124 |
+
+The 54 artifacts are **48 canonical reports plus six history blocks**, all on GitHub.
+The workload also has one mutable audit artifact. It does not publish the additional
+human-readable report archives that a live issue would have; these counts are not total
+pilot artifact counts. Existing artifacts are neither deleted nor retrospectively consolidated.
+
+The tradeoff is larger individual reads and slightly larger mutable versions because the
+short tail and directory live there. The directory still grows; if it eventually needs the
+overflow envelope, changing that envelope writes a new immutable metadata snapshot. Canonical
+reports and closed blocks are still reused. Preflight can leave unused immutable data after
+an abandoned publication, as before. This reduces unnecessary artifacts without promising
+constant storage or a single artifact for a whole task.
+
+Reproduce:
+
+```sh
+python3 engine/tests/storage_traffic.py --entries 48 192 --snapshot-manifests --chunk-characters 16000
+python3 engine/tests/storage_traffic.py --entries 48 192
+python3 engine/tests/storage_traffic.py --entries 48 --report-characters 98304 --snapshot-manifests --chunk-characters 16000
+python3 engine/tests/storage_traffic.py --entries 48 --report-characters 98304
+```
+
+Validation: engine 1,025 → 1,041 (one platform skip), service 347 → 348, gateway 58 → 58;
+all passed. The initial regressions reproduced multipart proliferation and oversized-metadata
+refusal; the directory test separately reproduced per-append artifact churn before its fix.
+Coverage includes exact legacy and lost-response recovery, Unicode/fence byte accounting,
+compact overflow with plan binding, malformed/tampered/missing metadata, directory and tail
+integrity, publication ordering, cold reload and unchanged saves. The full-call-budget tests
+retain complete responses, active ratings and timing. The offline #35 replay remains
+43,429 bytes before and 44,094 after, with the response retained and one save.
+
+Ruff check/format, Pyright, compileall, bundle verification and whitespace checks pass.
+The bundle is still `837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
+Changes remain uncommitted. No deployment, pilot resume/retry or live artifact mutation occurred.
+
+### Baseline acceptance review
+
+Reviewed the pending implementation after proposal commit `f56d635`, against Claude's
+reviews supplied in the conversation. No blocking correctness defect found.
+
+| Scope | Review status |
+| ---- | ---- |
+| Completed-response retention, history blocks and removal of `REPORT_INDEX` | Claude signed off, including the subsequent inline-only metadata relief and shared record encoder. Those fixes remain present. |
+| 256 KiB complete-body parts, mutable history directories/tails and immutable audit overflow | Requested implementation, reviewed here with full validation. The supplied conversation does not contain an explicit Claude sign-off on this later code; approval of the proposal is separate. |
+| Comment encoding, response-budget packing, combined readable/canonical artifacts, dashboard witnesses and legacy-plan replacement | Proposal only; none is implemented by this baseline. |
+
+Validation rerun on the pending baseline:
+
+| Check | Result |
+| ---- | ---- |
+| Engine | 1,041 tests, passed; one Linux orphan-adoption test skipped on macOS |
+| Service | 348 tests, passed |
+| Gateway | 58 tests, passed |
+| Ruff check / format check | Passed; 233 Python files formatted |
+| Pyright | Zero errors or warnings |
+| Compileall / whitespace | Passed |
+| Bundle | Every resource hash matches HEAD; bundle identity unchanged |
+| Traffic reproduction | All six before/after cases match the recorded artifact counts, bytes, GETs and audit peaks exactly |
+| Offline #35 replay | Completed response retained; 43,429 → 44,094 audit bytes, one save invocation |
+
+The #35 replay uses captured inputs and a mocked save; the regression suites separately
+exercise real checkpoint saves against fake GitHub, cold reloads and lost-write recovery.
+No live provider, GitHub mutation, deployment or pilot command was used. Linux CI remains
+the check for the platform-specific skip. The interrupted lodestone search returned no
+results; this review used the source, diffs and tests directly.
+
+Remaining tradeoffs are unchanged: separate readable archives still exist, discovery can
+scan collections, and overflow-envelope changes create immutable snapshots. The newer
+format-7 layouts require readers from this baseline; an earlier format-7 implementation
+is not a sufficient rollback target merely because its version number matches.

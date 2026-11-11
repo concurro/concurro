@@ -3,6 +3,7 @@
 import json
 from dataclasses import asdict, dataclass
 
+import report_store
 import review_state
 from model_config import assigned
 from policy import approval_binding, design_roster, digest
@@ -294,6 +295,7 @@ def make_room(state, limit, measure):
     """Release historical advisory metadata without changing current or pending assessments."""
     if measure(state) <= limit:
         return
+    inline = report_store.inline_fields(state, {"classification", "classification_snapshot", "assessment"})
     archived = {r["assessment"] for r in state.get("reports", []) if r.get("assessment") and r.get("artifact")}
     current = review_state.current_reports(state)
     if state.get("review_event"):
@@ -315,11 +317,11 @@ def make_room(state, limit, measure):
             return
         seen.add(id(value))
         if isinstance(value, dict):
-            if isinstance(value.get("classification"), dict):
+            if isinstance(value.get("classification"), dict) and (id(value), "classification") in inline:
                 reference = source_ref(value)
                 if reference in archived - frozen:
                     reports.append(value)
-            if "classification_snapshot" in value:
+            if (id(value), "classification_snapshot") in inline:
                 snapshots.append(value)
             for key, child in value.items():
                 if key not in ("classification", "classification_snapshot", "operation", "pr_outbox"):
@@ -331,7 +333,7 @@ def make_room(state, limit, measure):
     visit(state)
     for report in reports:
         value = report["classification"]
-        value.update(rationale="", unknowns=[])
+        report["classification"] = {**value, "rationale": "", "unknowns": []}
         if measure(state) <= limit:
             return
     for report in reports:
@@ -344,7 +346,7 @@ def make_room(state, limit, measure):
         if measure(state) <= limit:
             return
     for entry in state.get("reports", []):
-        if entry.get("assessment") not in frozen:
+        if (id(entry), "assessment") in inline and entry.get("assessment") not in frozen:
             entry.pop("assessment", None)
         if measure(state) <= limit:
             return

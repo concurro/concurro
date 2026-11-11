@@ -15,6 +15,8 @@ from support import (
 )
 
 from github import NotFound, Transient
+from protocol import ARTIFACT_BODY_BYTES
+from report_store import part_body
 from service import transport
 from service.errors import Unresolved
 from service.gateway import MutationGateway
@@ -148,6 +150,28 @@ class ReadTests(unittest.TestCase):
         self.net.route("GET", self.root + "ok", reply(200, {"number": 7}))
         self.assertEqual(self.reader.request("GET", self.root + "ok"), {"number": 7})
         self.assertEqual(self.net.seen()[-1][2]["Authorization"], "Bearer read-token")
+
+    def test_consolidated_artifact_page_and_immutable_history_fit_transport(self):
+        """Ten large text parts fit the existing artifact response allowance, including escaped HTML."""
+        # Ampersands expand fivefold in rendered HTML; large data parts avoid JSON highlighting.
+        from html import escape
+
+        body = part_body("a" * 64, 1, 1, "&" * (ARTIFACT_BODY_BYTES - 1000), "", "text")
+        artifact = {
+            "number": 1,
+            "name": "Concurro review data",
+            "body": body,
+            "body_html": "<pre><code>" + escape(body) + "</code></pre>",
+        }
+        responses = {
+            "issues/7/artifacts?per_page=10&page=1": [artifact] * 10,
+            "issues/7/artifacts/1": {"artifact": artifact, "versions": [artifact | {"version": 1}]},
+        }
+        for path, payload in responses.items():
+            with self.subTest(path=path):
+                self.assertLess(len(json.dumps(payload).encode()), 16 * transport.MB)
+                self.net.route("GET", self.root + path, reply(200, payload))
+                self.assertEqual(self.reader.request("GET", self.root + path), payload)
 
     def test_throttled_delay_is_not_shortened(self):
         """A server-requested delay longer than the local backoff cap is kept."""

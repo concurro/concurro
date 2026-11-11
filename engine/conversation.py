@@ -20,7 +20,7 @@ from github import Transient
 from identities import Identities
 from markup import block, code, details as collapsed, link, table, text
 from policy import Blocked, digest
-from protocol import EVENT_MARKER as MARKER, PUBLICATION_BODY_BYTES as ARCHIVE_LIMIT
+from protocol import ARTIFACT_VIEW_BYTES as ARCHIVE_LIMIT, EVENT_MARKER as MARKER
 from review_state import source_value as source_value
 
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
@@ -33,8 +33,6 @@ ARCHIVED = "… [Full text in its report archive.]"
 # ending with a letter or number; 255 characters were measured as accepted.
 NAME_UNSAFE = re.compile(r"[^A-Za-z0-9 ._-]")
 ARTIFACT_NAME_LIMIT = 100
-# The status comment's rounds table keeps this many archived reports.
-REPORT_INDEX = 40
 EVENT_LIMIT = 24000
 # Room for an event's heading, marker and metadata line.
 EVENT_RESERVE = 1000
@@ -642,7 +640,6 @@ def publish(state, github, config, store=None):
                 receipt["artifact"] = published["number"]
                 index = state.setdefault("reports", [])
                 index.append({**event["index"], "artifact": published["number"]})
-                del index[:-REPORT_INDEX]
             else:
                 receipt["comment"] = published["id"]
                 journal["latest"] = published["id"]

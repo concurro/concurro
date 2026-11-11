@@ -1,0 +1,66 @@
+{
+  "workload": "Four identical history collections, append/save per entry, one cold reload and unchanged save; fake GitHub only.",
+  "counts": "Cumulative immutable data artifacts only; excludes mutable audit versions and human-readable report archives.",
+  "before": {
+    "chunk_characters": 16000,
+    "directory": "immutable manifest and partial block per update"
+  },
+  "after": {
+    "part_body_bytes": 262144,
+    "directory": "mutable audit with inline unfinished tail; immutable completed blocks"
+  },
+  "small_reports": {
+    "before": [
+      {
+        "entries_per_collection": 48,
+        "data_artifacts": 133,
+        "data_body_bytes": 432461,
+        "data_gets": 188,
+        "peak_audit_bytes": 46561
+      },
+      {
+        "entries_per_collection": 192,
+        "data_artifacts": 565,
+        "data_body_bytes": 2232542,
+        "data_gets": 782,
+        "peak_audit_bytes": 46561
+      }
+    ],
+    "after": [
+      {
+        "entries_per_collection": 48,
+        "data_artifacts": 54,
+        "data_body_bytes": 213727,
+        "data_gets": 108,
+        "peak_audit_bytes": 49124
+      },
+      {
+        "entries_per_collection": 192,
+        "data_artifacts": 216,
+        "data_body_bytes": 855789,
+        "data_gets": 432,
+        "peak_audit_bytes": 49124
+      }
+    ]
+  },
+  "reports_with_98304_character_summary": {
+    "before": [
+      {
+        "entries_per_collection": 48,
+        "data_artifacts": 424,
+        "data_body_bytes": 5211767,
+        "data_gets": 767,
+        "peak_audit_bytes": 58432
+      }
+    ],
+    "after": [
+      {
+        "entries_per_collection": 48,
+        "data_artifacts": 54,
+        "data_body_bytes": 4778719,
+        "data_gets": 108,
+        "peak_audit_bytes": 49124
+      }
+    ]
+  }
+}

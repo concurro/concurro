@@ -6,6 +6,7 @@ import math
 import re
 from typing import TYPE_CHECKING
 
+import report_store
 import review_state
 
 if TYPE_CHECKING:
@@ -74,12 +75,15 @@ def index_receipt(state: TaskState, kind: str, details: Document) -> Timing | No
 
 
 def make_room(state: TaskState, limit: int, size: Callable[[TaskState], int]) -> None:
-    """Drop optional observations before they could make a checkpoint fail to save."""
+    """Drop inline observations before they could make a checkpoint fail to save."""
+    if size(state) <= limit:
+        return
+    inline = report_store.inline_fields(state, {"timing"})
     holders: list[ReportIndex | Operation] = list(state.get("reports", []))
     holders += [e.get("index", {}) for e in state.get("conversation", {}).get("pending", [])]
     holders.extend(review_state.operations(state))
     for holder in holders:
-        if "timing" in holder:
+        if (id(holder), "timing") in inline:
             if size(state) <= limit:
                 return
             holder.pop("timing", None)

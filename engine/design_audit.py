@@ -15,7 +15,7 @@ import report_view
 import review_timing
 from conversation import MARKER, REPORT_LINK
 from policy import digest
-from report_store import Store
+from report_store import Store, audit_envelope, restore
 
 
 class Snapshot:
@@ -121,10 +121,10 @@ def measure(snapshot, author="concurro[bot]"):
     ):
         raise ValueError("Audit authorship or latest version invalid")
     envelope = json_block(audit["body"])
-    state = envelope["state"]
-    if envelope["repository"] != snapshot.repository or state["issue"] != snapshot.issue:
-        raise ValueError("Audit identity mismatch")
     store = Store(snapshot, snapshot.issue, author, snapshot.repository)
+    envelope = audit_envelope(envelope, store, snapshot.repository, snapshot.issue)
+    state = envelope["state"]
+    restore(state, envelope.get("report_data", []), store)
     seen, records, counts = set(), [], {}
     boundaries = dashboard_runs.boundaries(state)
     for entry in state.get("reports", []):
@@ -181,7 +181,7 @@ def measure(snapshot, author="concurro[bot]"):
         "reports": records,
         "sources": [snapshot.reads[n] for n in sorted(snapshot.reads)],
         "limitations": [
-            "Coverage is the frozen audit report index, not all historical artifacts; the index is capped at 40 entries.",
+            "Coverage is the frozen audit report index, not all historical artifacts; older checkpoints may have a trimmed index.",
             "Archived outputs are not exact model-call counts: failed provider attempts may have no report.",
             "Rejected outputs are not automatically correction calls; retry cause is not fully recorded here.",
             "Objection dispositions are observations, not counts of unique defects. New-versus-repeated fresh findings require semantic inspection.",

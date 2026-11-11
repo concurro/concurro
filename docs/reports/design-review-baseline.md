@@ -78,7 +78,8 @@ responses remain in the local snapshot, outside the repository.
 ## Timing in new captures
 
 The timing-only change adds optional exchange observations to the current operation and
-existing report-index entries; the index still retains at most 40 reports. It adds no
+existing report-index entries. The original 40-report index cap has since been removed;
+large indexes use artifact-backed blocks. It adds no
 independent timing history. Failed attempts without reports, legacy responses and receipts
 dropped under checkpoint pressure may have no measurements. Their durations remain unknown.
 

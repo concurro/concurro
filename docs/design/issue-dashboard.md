@@ -97,16 +97,27 @@ cannot guarantee that a compacted report remains retrievable.
   vote, review history and rounds archive share the same report data. Controller
   annotations and advisory ratings reference its core instead of duplicating it.
   Existing format-3 archives are reused when their complete report matches.
-- **Audit references:** mutable history, statuses and annotations stay in the audit;
-  bulky reports are referenced by digest and artifact numbers. Derived finding text
+- **Audit references:** statuses and small collections stay in the audit;
+  bulky reports, history collections and report indexes are referenced by digest and artifact numbers. Derived finding text
   uses a path into its source report rather than a second stored copy. References
   are hydrated before policy checks. Known audit, plan and report identities are
   read directly; marker discovery is for initial creation or lost-write recovery.
-  Current, unarchived and pending-publication ratings remain intact; only archived
-  historical ratings may be shortened or dropped from the checkpoint. The full
+  Completed responses remain available until their results are consumed. Checkpoint
+  pressure never discards a response or turns it into an uncertain model call.
+  Current, unarchived and pending-publication ratings remain intact; only inline archived
+  historical ratings may be shortened or dropped from the checkpoint. Detached timing,
+  ratings, snapshots and assessment links are not deleted to relieve audit pressure. The full
   archived report remains unchanged. Historical trimming is covered through the 48-call budget in regression tests.
   An unrelated duplicate cannot replace an already bound artifact. Ambiguous
   discovery, missing data and invalid provenance or digests stop recovery.
+- **History blocks:** oversized lists store completed eight-entry blocks as immutable data.
+  Their ordered directory and unfinished tail remain in the mutable audit. Report bodies
+  within the tail still use canonical references. Appends create a history artifact only
+  when a block fills; changing older metadata replaces its affected block. Eight is storage
+  granularity, not a history limit. The full report index is retained; only its dashboard view
+  shortens. If packed metadata exceeds the audit's 60,000-byte target, a verified immutable
+  envelope holds it behind a compact audit pointer. Both layouts use checkpoint format 7.
+  Existing whole-list and block-manifest artifacts remain reusable, including interrupted writes.
 - **Cache:** the service shares an LRU holding up to 32 MiB of encoded, verified report content across ticks,
   scoped by repository, issue, author, digest and artifact numbers. Returned values
   are copies. A warm cache uses the originally verified immutable bytes, even if
@@ -119,7 +130,9 @@ cannot guarantee that a compacted report remains retrievable.
   format-5 archives carry a view marker and audit readers parse only that terminal section.
   Rejected views use the controller diagnostic, never the rejected draft's own reason;
   formats 2–4 remain readable and replay byte-for-byte. Criterion labels are frozen when
-  the report is queued. Excerpts shrink to fit without altering canonical evidence. Each artifact stays within the conservative 60,000-byte publication allowance. Lost
+  the report is queued. Excerpts shrink to fit without altering canonical evidence. Human
+  views retain a 60,000-byte allowance; new immutable data parts have a separate 256 KiB
+  operating size. Large parts use plain-text fences to avoid JSON syntax-highlighting expansion. Lost
   responses are recovered by marker and exact body; artifacts are never edited.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.

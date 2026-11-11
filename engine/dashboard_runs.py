@@ -68,7 +68,7 @@ def boundaries(state):
 
 
 def retain_boundaries(state):
-    """Freeze inferred legacy boundaries before report-index retention removes their evidence."""
+    """Freeze inferred legacy boundaries so later reports cannot change earlier display runs."""
     for record, boundary in zip(state.get("invalidations", []), boundaries(state)[1:]):
         record.setdefault("display_start", boundary)
 

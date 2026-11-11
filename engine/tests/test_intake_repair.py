@@ -13,6 +13,7 @@ from conversation import ARCHIVE_LIMIT, PublicationError
 from fakes import FakeAgents, FakeGitHub
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked
+from protocol import ARTIFACT_BODY_BYTES
 
 
 class IntakeRepairTests(PipelineFixture, unittest.TestCase):
@@ -151,7 +152,9 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
                 archive = self.gh.archives()[0]
                 self.assertIn("Intake output rejected", archive)
                 for item in self.gh.artifacts[7].values():
-                    self.assertLessEqual(len(item["artifact"]["body"].encode()), ARCHIVE_LIMIT)
+                    if item["artifact"]["name"].startswith("Concurro report "):
+                        self.assertLessEqual(len(item["artifact"]["body"].encode()), ARCHIVE_LIMIT)
+                    self.assertLessEqual(len(item["artifact"]["body"].encode()), ARTIFACT_BODY_BYTES)
                 draft = controller.state["intake_draft"]
                 self.assertFalse(draft["truncated"])
                 self.assertEqual(json.loads(draft["output"]), report)

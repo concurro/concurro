@@ -10,6 +10,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 import conversation
 import report_view
+from checkpoints import Checkpoints, legacy_state
 from controller import Controller
 from design_audit import Snapshot, archived_report, measure
 from pipeline_fixtures import ConsensusFixture
@@ -52,6 +53,40 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
             self.assertTrue(all(r["verification"] == "verified" for r in result["reports"]))
             self.assertTrue(all("body_sha256" in s for s in result["sources"]))
             self.assertIsNone(result["engine_commit"])
+
+    def test_blocked_report_index_retains_offline_audit_coverage(self):
+        """The audit reader follows the same verified index and history references as recovery."""
+        state = self.reach("implement")
+        with tempfile.TemporaryDirectory() as directory:
+            expected = measure(self.snapshot(directory), self.config["bot_login"])
+        state["reports"] *= 100
+        state["design_history"] = [{"reason": "Prior evidence. " * 40} for _ in range(48)]
+        cp = Checkpoints(self.gh, self.config, 7)
+        cp.load(self.gh.comments)
+        cp.save(state)
+        self.assertIsNone(legacy_state(cp.audit["body"])["state"]["reports"])
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = self.snapshot(directory)
+            with patch("design_audit.subprocess.run", side_effect=AssertionError("network")):
+                actual = measure(snapshot, self.config["bot_login"])
+        self.assertEqual(actual["reports"], expected["reports"])
+        self.assertEqual(actual["by_round"], expected["by_round"])
+        self.assertGreater(len(actual["sources"]), len(expected["sources"]))
+
+    def test_overflow_audit_metadata_retains_offline_coverage(self):
+        """A compact audit pointer hydrates through the same verifier as checkpoint recovery."""
+        state = self.reach("implement")
+        with tempfile.TemporaryDirectory() as directory:
+            expected = measure(self.snapshot(directory), self.config["bot_login"])
+        state["sessions"]["large_receipt"] = {"data": "x" * 100000}
+        cp = Checkpoints(self.gh, self.config, 7)
+        cp.load(self.gh.comments)
+        cp.save(state)
+        self.assertIn("audit_data", legacy_state(cp.audit["body"]))
+        with tempfile.TemporaryDirectory() as directory:
+            actual = measure(self.snapshot(directory), self.config["bot_login"])
+        self.assertEqual(actual["reports"], expected["reports"])
+        self.assertEqual(actual["by_round"], expected["by_round"])
 
     def test_missing_or_tampered_data_is_reported_not_treated_as_clean(self):
         """An unavailable report contributes no invented objection counts or verification."""

@@ -132,6 +132,37 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         self.assertEqual(state["calls"], before + 2)
         self.assertEqual(state["stage"], "implement")
 
+    def test_history_pressure_retains_results_through_application_and_crash(self):
+        """A full history never turns successful reviewers into uncertain replacement calls."""
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                self.setUp()
+                c = self.load()
+                history = deepcopy(c.state["qc_history"][0])
+                history.pop("classification", None)
+                while len(json.dumps(c.state["qc_history"]).encode()) < 48000:
+                    c.state["qc_history"].append(deepcopy(history))
+                before = c.state["calls"]
+                expected_history = deepcopy(c.state["qc_history"])
+                if crash:
+                    with patch.object(Controller, "apply_quality_report", side_effect=Crash):
+                        with self.assertRaises(Crash):
+                            c.quality_control("plan_qc")
+                    c = self.load()
+                    members = c.state["review_batch"]["members"].values()
+                    self.assertTrue(all("response" in m["operation"] for m in members))
+                    with patch.object(self.agents, "submit", side_effect=AssertionError("repeated call")):
+                        c.quality_control("plan_qc")
+                else:
+                    c.quality_control("plan_qc")
+                state = self.load().state
+                self.assertEqual(state["calls"], before + 2)
+                self.assertEqual(state["stage"], "implement")
+                self.assertEqual(len(state["design_votes"]), 2)
+                self.assertEqual(state["qc_history"][: len(expected_history)], expected_history)
+                self.assertEqual(len(state["qc_history"]), len(expected_history) + 2)
+                self.assertEqual(sum(event == "submit" for event, _ in self.agents.events), 2)
+
     def test_terminal_result_cancels_running_sibling_and_cannot_be_overridden(self):
         """Verify terminal result cancels running sibling and cannot be overridden."""
         first, second = [m["provider"] for m in design_roster(self.config)]

@@ -67,13 +67,14 @@ class StorageLifecycleTests(unittest.TestCase):
         self.run_capacity(parallel=False)
 
     def test_full_call_budget_with_large_pending_parallel_results(self):
-        """Protect both sibling results and ratings even when their optional timing is dropped."""
+        """Protect both sibling results and ratings while the report index is stored by reference."""
         self.run_capacity(parallel=True)
 
     def run_capacity(self, parallel):
         """Exercise full history with optional concurrently retained model-sized reports."""
         controller = self.seed(0)
         state = controller.state
+        initial_reports = deepcopy(state.get("reports", []))
         bundle_receipt = {
             "approved_bundle": state["bundle_id"],
             "old_bundle": "b" * 64,
@@ -253,13 +254,13 @@ class StorageLifecycleTests(unittest.TestCase):
 
         self.assertEqual(state["calls"], budget)
         self.assertEqual(len(archives), budget)
-        self.assertEqual(len(state["reports"]), conversation.REPORT_INDEX)
+        self.assertEqual(len(state["reports"]), len(initial_reports) + budget)
+        self.assertEqual(state["reports"][: len(initial_reports)], initial_reports)
         if not parallel:
             self.assertTrue(any("timing" in report for report in state["reports"]))
-        self.assertTrue(
-            any("timing" not in report for report in state["reports"]),
-            "pressure must drop optional old receipts before it blocks a checkpoint",
-        )
+        self.assertTrue(all("timing" in report for report in state["reports"][len(initial_reports) :]))
+        refs = controller.checkpoints.audit_payload(state)["report_data"]
+        self.assertIn(["reports"], [ref["path"] for ref in refs])
         if not parallel:
             self.assertEqual(state["reports"][-1]["timing"]["attempt"], f"{budget - 1:032x}")
         self.assertNotIn("timings", state, "no independently growing timing history")

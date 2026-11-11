@@ -377,21 +377,24 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         self.assertIn("/artifacts/22)", summary)
         self.assertNotIn("/artifacts/21) · [", summary)
 
-    def test_rejection_history_stays_bounded_through_the_call_budget(self):
+    def test_rejection_history_is_retained_through_the_call_budget(self):
         """Repeated invalid reviews retain links rather than copying raw output into the audit."""
         controller = self.reach_review()
         from design import ReviewError
         from policy import design_roster
 
         member = design_roster(self.config)[0]
+        initial_count = len(controller.state.get("reports", []))
         for i in range(48):
             controller.state["calls"] = i + 1
             controller.repair_review({"invalid": "x" * 3000, "attempt": i}, ReviewError("review_shape"), member)
             self.assertLess(len(controller.checkpoints.audit["body"].encode()), LIMIT)
             self.assertNotIn("review_draft", controller.state)
-        self.assertLessEqual(len(controller.state["reports"]), 40)
+        self.assertEqual(len(controller.state["reports"]), initial_count + 48)
         self.assertLess(len(controller.summary_body().encode()), 60000)
-        self.assertEqual(self.load().state["calls"], 48)
+        saved = self.load().state
+        self.assertEqual(saved["calls"], 48)
+        self.assertEqual(saved["reports"], controller.state["reports"])
 
     def test_team_uses_each_roles_actual_model_and_effort(self):
         """Distinct plan/PR reviewer assignments and effort settings are printed faithfully."""

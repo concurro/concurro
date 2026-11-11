@@ -12,7 +12,6 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
-import controller as controller_module
 import turns
 from agents import Agents
 from checkpoints import Checkpoints
@@ -187,21 +186,23 @@ class OperationTests(unittest.TestCase):
         self.assertNotEqual(state["stage"], "intake")
         self.assertEqual((state["operation"]["status"], "response" in state["operation"]), ("consumed", False))
 
-    def test_unretained_results_count_as_uncertain(self):
-        """A completion too large to retain is recovered by redispatch within the same allowance."""
+    def test_legacy_unretained_results_count_as_uncertain(self):
+        """Old checkpoints missing a completed response still use the existing recovery allowance."""
         original_save = Checkpoints.save
 
         def crash_after_completion(checkpoints, state):
-            """Lose every stage save after a completion checkpoint."""
+            """Simulate the old dropped-response checkpoint, then lose every stage save."""
             if (state.get("operation") or {}).get("status") == "consumed":
                 raise Interrupted()
-            return original_save(checkpoints, state)
+            legacy = deepcopy(state)
+            if legacy.get("operation", {}).get("status") == "completed":
+                legacy["operation"].pop("response", None)
+            return original_save(checkpoints, legacy)
 
         seen, patched = self.dispatches("intake", lambda *a: FakeAgents.ask(self.agents, *a))
         with (
             patched,
             patch.object(Checkpoints, "save", crash_after_completion),
-            patch.object(controller_module, "RESULT_MARGIN", controller_module.CHECKPOINT_LIMIT),
         ):
             self.advance()
             self.assertNotIn("response", self.stored()["operation"])
@@ -209,6 +210,27 @@ class OperationTests(unittest.TestCase):
             with self.assertRaisesRegex(Blocked, "uncertain twice"):
                 Controller(self.gh, self.agents, self.config).advance(7)
         self.assertEqual(len(seen), 2)
+
+    def test_history_pressure_retains_serial_response_for_recovery(self):
+        """A response above the old reserve survives a real save and reload intact."""
+        c = self.advance()
+        # Several individually small collections stay inline, together crossing the old reserve.
+        for field in ("qc_history", "design_history", "review_history", "reports", "outcomes"):
+            c.state[field] = [{"note": "Prior evidence. " * 30} for _ in range(21)]
+        self.assertGreater(len(c.checkpoints.audit_body(c.state).encode()), 56000)
+        response = {"output": "Complete planner response. " * 200}
+        operation = c.operation("claude", "plan", {})
+        c.begin_attempt(operation, {})
+        calls = c.state["calls"]
+        c.complete(operation, response)
+        stored = self.stored()
+        self.assertEqual(stored["operation"]["status"], "completed")
+        self.assertEqual(stored["operation"].get("response"), response)
+        self.assertEqual(stored["calls"], calls)
+        self.assertGreater(len(c.checkpoints.audit["body"].encode()), 56000)
+        c.state = stored
+        c.release_result()
+        self.assertEqual(c.recover(stored["operation"]), response)
 
     def test_timeouts_share_the_uncertain_allowance(self):
         """An interruption then a timeout-like session failure blocks before a third dispatch."""
