@@ -6,6 +6,7 @@ import socket
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 from fixtures import KEY, ServiceFixture
 
@@ -14,9 +15,13 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+import artifact_capacity
+import protocol
+import report_artifact
 from github import NotFound, Transient
+from policy import digest
 from protocol import ARTIFACT_BODY_BYTES
-from report_store import part_body
+from report_store import part_body, record_json
 from service import transport
 from service.errors import Unresolved
 from service.gateway import MutationGateway
@@ -172,6 +177,60 @@ class ReadTests(unittest.TestCase):
                 self.assertLess(len(json.dumps(payload).encode()), 16 * transport.MB)
                 self.net.route("GET", self.root + path, reply(200, payload))
                 self.assertEqual(self.reader.request("GET", self.root + path), payload)
+
+    def test_shared_packing_budget_and_transport_shapes(self):
+        """POST, detail and one-item listing use the same budget as the actual part writer."""
+        from markdown_it import MarkdownIt
+
+        value = {"evidence": '"雪 --> \\u003e ' * 5000}
+        encoded = record_json({"value": value, "references": []})
+        key = digest(value)
+        with patch.object(protocol, "ARTIFACT_RESPONSE_BYTES", 160_000):
+            layout = report_artifact.pack(key, encoded, report_artifact.submitted(value), True, "owner/repo", 7)
+            view = report_artifact.view_for(value, layout)
+            bodies = report_artifact.packing_bodies(key, encoded, layout, view, "owner/repo", 7)
+            self.assertGreater(len(bodies), 1)
+            for body, visible in bodies:
+                artifact = {
+                    "number": 1,
+                    "body": body,
+                    "body_html": MarkdownIt("commonmark", {"html": True}).render(visible),
+                }
+                responses = {
+                    "post": ("POST", "issues/7/artifacts", artifact),
+                    "listing": ("GET", "issues/7/artifacts?per_page=1&page=1", [artifact]),
+                    "detail": (
+                        "GET",
+                        "issues/7/artifacts/1?per_page=1&page=1",
+                        {"artifact": artifact, "versions": [artifact | {"version": 1}]},
+                    ),
+                }
+                for shape, (method, path, payload) in responses.items():
+                    with self.subTest(shape=shape):
+                        wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+                        self.assertLessEqual(len(wire), artifact_capacity.response_sizes(body, visible)[shape])
+                        self.assertLessEqual(len(wire), protocol.ARTIFACT_RESPONSE_BYTES)
+                        self.net.route(method, self.root + path, reply(200, wire))
+                        if method == "POST":
+                            self.assertEqual(self.reader.send(method, self.root + path, {"body": body}).json(), payload)
+                        else:
+                            self.assertEqual(self.reader.request(method, self.root + path), payload)
+            self.assertEqual(self.reader.limit(self.root + "issues/7/artifacts"), 160_000)
+            self.assertEqual(self.reader.limit(self.root + "issues/7"), 4_000_000)
+            self.assertEqual(self.reader.limit(self.root + "git/trees/head?recursive=1"), 16_000_000)
+
+    def test_changed_artifact_budget_is_enforced_at_the_wire(self):
+        """Changing the shared setting changes exact-byte acceptance without touching generic endpoints."""
+        limit = 40_000
+        path = self.root + "issues/7/artifacts/1?per_page=1&page=1"
+        exact = b'{"p":"' + b"x" * (limit - 8) + b'"}'
+        self.assertEqual(len(exact), limit)
+        with patch.object(protocol, "ARTIFACT_RESPONSE_BYTES", limit):
+            self.net.route("GET", path, reply(200, exact))
+            self.assertEqual(self.reader.request("GET", path), json.loads(exact))
+            self.net.route("GET", path, reply(200, exact[:-2] + b'x"}'))
+            with self.assertRaisesRegex(RuntimeError, "response exceeds limit"):
+                self.reader.request("GET", path)
 
     def test_throttled_delay_is_not_shortened(self):
         """A server-requested delay longer than the local backoff cap is kept."""

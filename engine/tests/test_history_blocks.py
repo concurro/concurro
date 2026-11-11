@@ -9,6 +9,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 import report_artifact
 import report_store
+from artifact_fixtures import fixed_parts
 from checkpoints import AUDIT_MARKER, STATE_PREFIX, CheckpointError, Checkpoints, legacy_state
 from fakes import CONFIG, FakeGitHub
 from policy import digest
@@ -175,7 +176,7 @@ class HistoryBlockTests(unittest.TestCase):
                 raise RuntimeError("lost manifest part")
             return result
 
-        with patch.object(report_store, "CHUNK", 16000):
+        with fixed_parts(16000):
             with patch.object(self.gh, "repo", side_effect=write), self.assertRaises(RuntimeError):
                 self.store().put(values)
         before = deepcopy(self.gh.artifacts[7])

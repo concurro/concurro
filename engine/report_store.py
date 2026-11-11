@@ -6,6 +6,7 @@ import threading
 from collections import OrderedDict
 from copy import deepcopy
 
+import artifact_capacity
 import markup
 import protocol
 import report_artifact
@@ -733,12 +734,21 @@ class Store:
                     parts[1][0]["body"], layout, parts[1][1]["continuations"], self.repository, self.issue
                 )
                 if 1 in parts
-                else report_artifact.submitted(value)
+                else report_artifact.view_for(value, layout)
             )
             if layout is None:
-                layout = report_artifact.pack(key, encoded, view, True, CHUNK, self.repository, self.issue)
+                layout = report_artifact.pack(key, encoded, view, True, self.repository, self.issue)
+                if layout["renderer"] == 2:
+                    view = report_artifact.COMPACT_VIEW
             if digest(view) != layout["view"]:
                 raise ReportDataError("Shared report renderer changed.")
+            if not all(
+                artifact_capacity.fits(b, v)
+                for b, v in report_artifact.packing_bodies(key, encoded, layout, view, self.repository, self.issue)
+            ):
+                raise artifact_capacity.CapacityError(
+                    "Frozen artifact layout exceeds the current response budget; restore its original allowance."
+                )
             slices = report_artifact.slices(encoded, layout)
             numbers = [None] * len(slices)
             if 1 in parts:
@@ -753,8 +763,9 @@ class Store:
                 body = report_artifact.body(
                     key, index, layout, slices[index - 1], view, numbers[1:], self.repository, self.issue
                 )
-                if len(body.encode()) > protocol.ARTIFACT_BODY_BYTES and index not in parts:
-                    raise ReportDataError("Shared report part exceeds artifact capacity.")
+                visible = report_artifact.readable(index, len(slices), view, numbers[1:], self.repository, self.issue)
+                if not artifact_capacity.fits(body, visible):
+                    raise artifact_capacity.CapacityError("Shared report part exceeds the artifact response budget.")
                 name = f"Concurro review data {key[:32]} part {index}"
                 if index in parts:
                     item = parts[index][0]
@@ -769,6 +780,8 @@ class Store:
                 numbers[index - 1] = item["number"]
             self.remember(key, numbers, value)
             return key
+        except artifact_capacity.CapacityError as error:
+            raise ReportDataError(str(error)) from None
         except (KeyError, IndexError, TypeError, ValueError):
             raise ReportDataError("Malformed or conflicting shared report data.") from None
 

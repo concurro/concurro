@@ -5,7 +5,11 @@ COMMENT_BODY_BYTES = 60000
 PUBLICATION_BODY_BYTES = COMMENT_BODY_BYTES  # Existing publication callers.
 # Human-readable artifact views remain compact independently of data-part sizing.
 ARTIFACT_VIEW_BYTES = 60000
-# Storage granularity, not a limit on total evidence; immutable records may span parts.
+# Shared by new immutable packing and the service transport; not a workload limit.
+ARTIFACT_RESPONSE_BYTES = 16_000_000
+GITHUB_ARTIFACT_BODY_BYTES = 16 * 1024 * 1024 - 1
+ARTIFACT_PAGE_SIZE = 1
+# Frozen allowance for queued legacy publications only; new data uses response accounting.
 ARTIFACT_BODY_BYTES = 256 * 1024
 # Mutable audit versions repeat in GitHub responses; spill excess metadata into immutable data.
 AUDIT_TARGET_BYTES = 60000

@@ -229,7 +229,9 @@ Resume receipts require at least checkpoint format 6; large inventories require 
 Artifact consolidation phase 1 writes **format 7 on every checkpoint save**. After deployment,
 this applies to every task that saves, not only tasks with large reports or new storage layouts.
 Rollback must therefore use an engine supporting phase 1's comment-encoded audits and
-publication receipts for all such tasks; an earlier format-7 reader is insufficient.
+publication receipts for all such tasks; an earlier format-7 reader is insufficient. Tasks
+writing shared artifacts additionally need phases 2–3's readers, including compact renderer 2
+and one-item discovery pages. The checkpoint number remains 7 while this release is unreleased.
 Do not restore older task checkpoints to bypass this requirement: that loses spent budgets
 and publication progress.
 

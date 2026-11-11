@@ -18,6 +18,7 @@ import report_artifact
 import report_store
 import report_view
 import review_timing
+from artifact_fixtures import fixed_parts
 from checkpoints import Checkpoints
 from controller import Controller
 from design_audit import Snapshot, measure
@@ -125,14 +126,14 @@ class SharedReportTests(unittest.TestCase):
                 raise RuntimeError("lost reply")
             return result
 
-        with patch("report_store.CHUNK", 700), patch.object(self.gh, "repo", side_effect=fail):
+        with fixed_parts(700), patch.object(self.gh, "repo", side_effect=fail):
             with self.assertRaises(RuntimeError):
                 self.cp.reports.put(value)
         body = self.data()[0]["artifact"]["body"]
         self.assertNotIn(f"{digest(value)}:1:", body)
         saved = deepcopy(self.gh.artifacts)
         store = Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"])
-        with patch("report_store.CHUNK", 10000):
+        with fixed_parts(10000):
             key = store.put(value)
         self.assertEqual(self.gh.artifacts[7][lost[0]], saved[7][lost[0]])
         self.assertGreater(len(store.numbers[key]), 2)
@@ -224,7 +225,7 @@ class SharedReportTests(unittest.TestCase):
     def test_every_lost_part_reply_recovers_without_new_artifacts(self):
         """Lose each continuation and the entry in turn, then finish the original layout."""
         value = {"summary": "evidence --> \\u003e " * 100}
-        with patch("report_store.CHUNK", 900):
+        with fixed_parts(900):
             key = self.cp.reports.put(value)
         count = len(self.cp.reports.numbers[key])
         for failed in range(count):
@@ -241,12 +242,12 @@ class SharedReportTests(unittest.TestCase):
                             raise RuntimeError("lost reply")
                     return result
 
-                with patch("report_store.CHUNK", 900), patch.object(self.gh, "repo", side_effect=write):
+                with fixed_parts(900), patch.object(self.gh, "repo", side_effect=write):
                     with self.assertRaises(RuntimeError):
                         self.cp.reports.put(value)
                 before = deepcopy(self.gh.artifacts[7])
                 store = Store(self.gh, 7, CONFIG["bot_login"])
-                with patch("report_store.CHUNK", 20000):
+                with fixed_parts(20000):
                     store.put(value)
                 self.assertEqual(len(self.gh.artifacts[7]), count)
                 for number, item in before.items():
@@ -275,7 +276,7 @@ class SharedReportTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.setUp()
                 value = {"summary": "source " * 500}
-                with patch("report_store.CHUNK", 1000):
+                with fixed_parts(1000):
                     key = self.cp.reports.put(value)
                 numbers = self.cp.reports.numbers[key][:]
                 item = self.gh.artifacts[7][numbers[-1]]
@@ -340,7 +341,7 @@ class SharedReportTests(unittest.TestCase):
             with self.subTest(width=width):
                 self.setUp()
                 value = {"summary": "Evidence `code` <tag>. " * 100}
-                with patch("report_store.CHUNK", width):
+                with fixed_parts(width):
                     key = self.cp.reports.put(value)
                 numbers = self.cp.reports.numbers[key]
                 before = deepcopy(self.gh.artifacts)
@@ -363,7 +364,7 @@ class SharedReportTests(unittest.TestCase):
                 raise RuntimeError("lost continuation")
             return result
 
-        with patch("report_store.CHUNK", 900), patch.object(self.gh, "repo", side_effect=write):
+        with fixed_parts(900), patch.object(self.gh, "repo", side_effect=write):
             with self.assertRaises(RuntimeError):
                 self.cp.reports.put(value)
         frozen = report_artifact.submitted(value)
@@ -383,7 +384,7 @@ class SharedReportTests(unittest.TestCase):
         for corruption in ("view", "link", "missing link", "extra text"):
             with self.subTest(corruption=corruption):
                 self.setUp()
-                with patch("report_store.CHUNK", 900):
+                with fixed_parts(900):
                     key = self.cp.reports.put({"summary": "Evidence. " * 200})
                 numbers = self.cp.reports.numbers[key]
                 item = self.gh.artifacts[7][numbers[0]]

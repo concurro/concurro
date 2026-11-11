@@ -3,12 +3,15 @@
 import json
 import re
 
+import artifact_capacity
 import protocol
 from policy import digest
 from report_artifact_view_v1 import submitted as submitted
 
 MARKER = "<!-- concurro:report-data:v1:"
 DATA = "\n<!-- concurro:report-part:v2\n"
+# Renderer 2 is a frozen neutral fallback; keep these bytes stable for continuation recovery.
+COMPACT_VIEW = "### Submitted model output\n\nCanonical data is available in the raw API body and any linked parts."
 
 
 def body(key, index, layout, part, view, numbers, repository, issue):
@@ -17,10 +20,7 @@ def body(key, index, layout, part, view, numbers, repository, issue):
     record = {"layout": layout, "index": index, "part": part, "continuations": numbers if index == 1 else []}
     encoded = json.dumps(record, sort_keys=True).replace(">", "\\u003e")
     prefix = f"{MARKER}{key}:{index}:{count}:{digest(layout)} -->"
-    readable = view if index == 1 else f"### Stored task data · part {index} of {count}"
-    if index == 1:
-        readable += continuation_links(numbers, repository, issue)
-    return prefix + DATA + encoded + "\n-->\n" + readable + "\n"
+    return prefix + DATA + encoded + "\n-->\n" + readable(index, count, view, numbers, repository, issue)
 
 
 def continuation_links(numbers, repository, issue):
@@ -58,7 +58,7 @@ def parse(text, key):
         set(record) != {"layout", "index", "part", "continuations"}
         or set(layout) != {"version", "renderer", "ends", "record", "view", "blocks"}
         or layout["version"] != 2
-        or layout["renderer"] != 1
+        or layout["renderer"] not in (1, 2)
         or type(layout["version"]) is not int
         or type(layout["renderer"]) is not int
         or type(layout["blocks"]) is not bool
@@ -93,26 +93,73 @@ def slices(encoded, layout):
     return [encoded[start:end] for start, end in zip([0, *layout["ends"][:-1]], layout["ends"])]
 
 
-def pack(key, encoded, view, blocks, width, repository, issue):
-    """Choose a complete-body layout under the existing allowance; phase three replaces this packing policy."""
+def view_for(value, layout):
+    """Reproduce the frozen view when only continuation parts survived."""
+    return COMPACT_VIEW if layout and layout["renderer"] == 2 else submitted(value)
+
+
+def readable(index, count, view, numbers, repository, issue):
+    """Return only visible Markdown, including continuation links and the final newline."""
+    if index == 1:
+        return view + continuation_links(numbers, repository, issue) + "\n"
+    return f"### Stored task data · part {index} of {count}\n"
+
+
+def packing_bodies(key, encoded, layout, view, repository, issue):
+    """Account for complete parts with 19-digit continuation IDs before uploading anything."""
+    numbers = [9223372036854775807] * (len(layout["ends"]) - 1)
+    return [
+        (
+            body(key, i, layout, part, view, numbers, repository, issue),
+            readable(i, len(numbers) + 1, view, numbers, repository, issue),
+        )
+        for i, part in enumerate(slices(encoded, layout), 1)
+    ]
+
+
+def pack(key, encoded, view, blocks, repository, issue):
+    """Fit complete encoded responses, shortening only presentation before splitting canonical data."""
+    layout = {
+        "version": 2,
+        "renderer": 1,
+        "ends": [len(encoded)],
+        "record": digest(encoded),
+        "view": digest(view),
+        "blocks": blocks,
+    }
+    if all(artifact_capacity.fits(b, v) for b, v in packing_bodies(key, encoded, layout, view, repository, issue)):
+        return layout
+    view = COMPACT_VIEW
+    layout.update(renderer=2, view=digest(view))
+    count = 1
     while True:
-        ends = list(range(width, len(encoded), width)) + [len(encoded)]
-        layout = {
-            "version": 2,
-            "renderer": 1,
-            "ends": ends,
-            "record": digest(encoded),
-            "view": digest(view),
-            "blocks": blocks,
-        }
-        # Reserve 19 decimal places per link; actual completed bodies are checked again before posting.
-        numbers = [9223372036854775807] * (len(ends) - 1)
-        bodies = [
-            body(key, i, layout, part, view, numbers, repository, issue)
-            for i, part in enumerate(slices(encoded, layout), 1)
-        ]
-        if max(len(b.encode()) for b in bodies) <= protocol.ARTIFACT_BODY_BYTES:
-            return layout
-        if width == 1:
-            raise ValueError("Shared report layout exceeds artifact capacity")
-        width = max(1, width // 2)
+        # Use maximum-width offsets/IDs while choosing boundaries. The real descriptor
+        # is no larger; repeat if its part count needs more room than this reservation.
+        layout["ends"] = [len(encoded)] * count
+        numbers = [9223372036854775807] * (count - 1)
+        ends, start = [], 0
+        while start < len(encoded):
+            index = len(ends) + 1
+            visible = readable(index, count, view, numbers, repository, issue)
+
+            def fits_end(end):
+                """Test the exact encoded slice with the reserved descriptor and links."""
+                text = body(key, index, layout, encoded[start:end], view, numbers, repository, issue)
+                return artifact_capacity.fits(text, visible)
+
+            low, high = start, len(encoded)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if fits_end(middle):
+                    low = middle
+                else:
+                    high = middle - 1
+            if low == start:
+                raise artifact_capacity.CapacityError("Artifact response budget cannot hold its layout")
+            ends.append(low)
+            start = low
+        if len(ends) > count:
+            count = len(ends)
+            continue
+        layout["ends"] = ends
+        return layout

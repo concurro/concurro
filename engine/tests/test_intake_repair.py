@@ -14,7 +14,7 @@ from fakes import FakeAgents, FakeGitHub
 from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked
-from protocol import ARTIFACT_BODY_BYTES
+from protocol import GITHUB_ARTIFACT_BODY_BYTES
 
 
 class IntakeRepairTests(PipelineFixture, unittest.TestCase):
@@ -159,7 +159,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
                 for item in self.gh.artifacts[7].values():
                     if item["artifact"]["name"].startswith("Concurro report "):
                         self.assertLessEqual(len(item["artifact"]["body"].encode()), ARCHIVE_LIMIT)
-                    self.assertLessEqual(len(item["artifact"]["body"].encode()), ARTIFACT_BODY_BYTES)
+                    self.assertLessEqual(len(item["artifact"]["body"].encode()), GITHUB_ARTIFACT_BODY_BYTES)
                 draft = controller.state["intake_draft"]
                 self.assertFalse(draft["truncated"])
                 self.assertEqual(json.loads(draft["output"]), report)

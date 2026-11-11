@@ -88,32 +88,35 @@ class GitHubIOContractTests(unittest.TestCase):
     def test_rest_pagination_edges(self):
         """Literal artifact suffix, existing queries and keyed responses retain their URLs."""
         for path, size, key in [
-            ("issues/7/artifacts", 10, None),
+            ("issues/7/artifacts", 1, None),
             ("issues", 100, None),
             ("issues/7/artifacts?x=y", 100, None),
             ("actions/runs?x=y", 100, "runs"),
             ("issues", 100, ""),
         ]:
             with self.subTest(path=path, key=key):
-                batches = [list(range(size)), ["last"]]
+                batches = [list(range(size)), ["last"], []]
                 self.gh.api.reset_mock()
                 self.gh.api.side_effect = [{key: b} if key else b for b in batches]
                 self.assertEqual(self.gh.pages(path, key), batches[0] + batches[1])
                 sep = "&" if "?" in path else "?"
                 self.assertEqual(
                     self.gh.api.call_args_list,
-                    [((f"repos/owner/repo/{path}{sep}per_page={size}&page={p}", "GET", None),) for p in (1, 2)],
+                    [
+                        ((f"repos/owner/repo/{path}{sep}per_page={size}&page={p}", "GET", None),)
+                        for p in range(1, 4 if size == 1 else 3)
+                    ],
                 )
 
     def test_rest_pagination_past_old_bounds(self):
         """A complete listing traverses beyond the old 10,000-entry ceiling."""
-        for path, size, pages in [("issues/7/artifacts", 10, 1001), ("issues", 100, 101)]:
+        for path, size, pages in [("issues/7/artifacts", 1, 10001), ("issues", 100, 101)]:
             self.gh.api.reset_mock()
-            self.gh.api.side_effect = [[0] * size for _ in range(pages)] + [["last"]]
+            self.gh.api.side_effect = [[0] * size for _ in range(pages)] + [["last"], []]
             result = self.gh.pages(path)
             self.assertEqual(len(result), size * pages + 1)
             self.assertEqual(result[-1], "last")
-            self.assertEqual(self.gh.api.call_count, pages + 1)
+            self.assertEqual(self.gh.api.call_count, pages + (2 if size == 1 else 1))
 
     def test_thread_requests_and_mapping(self):
         """Both documents and cursor bodies stay exact; only review_threads maps comments."""

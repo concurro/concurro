@@ -7,6 +7,7 @@ import ssl
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import protocol
 from github import NotFound, Transient
 
 API = "api.github.com"
@@ -20,7 +21,6 @@ ARCHIVE_LIMIT = 100 * MB
 # https://docs.github.com/en/rest/git/blobs#get-a-blob
 LIMITS = (
     (re.compile(r"git/blobs/[0-9a-f]{40}"), 144 * MB),
-    (re.compile(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?"), 16 * MB),
     (re.compile(r"git/trees/[^/?#]+\?recursive=1"), 16 * MB),
 )
 # Headers kept for settlement and redirects; nothing else leaves the transport.
@@ -176,6 +176,8 @@ class Transport:
     def limit(self, path):
         """The response bound for one endpoint."""
         relative = path.removeprefix(f"repos/{self.repository}/")
+        if re.fullmatch(r"issues/[1-9][0-9]*/artifacts(?:/[1-9][0-9]*)?(?:\?.*)?", relative):
+            return protocol.ARTIFACT_RESPONSE_BYTES
         return next((size for pattern, size in LIMITS if pattern.fullmatch(relative)), JSON_LIMIT)
 
     def call(self, method, path, data, host=API, limit=None, timeout=TIMEOUT, authorize=True):

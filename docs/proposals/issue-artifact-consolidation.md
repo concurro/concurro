@@ -1,6 +1,6 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: phase 1 committed; phase 2 implemented, awaiting review; phases 3–5 remain proposed.** Builds on
+**Status: phases 1–3 committed; phases 4–5 remain proposed.** Builds on
 the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
 artifact deletion or diagnostic writes are authorized by this document.
 
@@ -307,12 +307,22 @@ Existing artifacts remain; no deletion, repacking or mutable bulk archive is pro
 1. **Compact audit encoding and reads (committed):** comment-encode new audit data, preserve old readers
    and migration proofs, use latest-only reads plus history on demand. Implement the two
    pointer records and legacy-plan replacement above; pagination cannot restore expired history.
-2. **Shared report representation (implemented, awaiting review):** comment-encoded core, readable view, annotation receipts,
+2. **Shared report representation (committed):** comment-encoded core, readable view, annotation receipts,
    event identity and readers. Define frozen multipart descriptors and continuation recovery.
-3. **Budget-based packing:** share the artifact transport setting, implement measured response
-   accounting and the separate hard body check. Validate every response shape.
-4. **Avoid ordinary scans:** separate durable-reference lookup from recovery/legacy discovery.
+3. **Budget-based packing (committed):** share the artifact transport setting, implement measured response
+   accounting and the separate hard body check. Validate every response shape. Release with phase 4.
+4. **Avoid ordinary scans:** eliminate ordinary collection scans, including the cold-save
+   whole-list check in `Store.checkpoint_reference`, while retaining recovery/legacy discovery.
+   Completion requires total and collection GET counts for cold load, save and publish on
+   identical issues with at least 150 existing artifacts, compared with phase 2 (`795a639`).
+   Report each operation separately and distinguish necessary recovery/legacy scans from
+   the ordinary path. Missing-reference ambiguity still requires discovery until durable
+   write intent resolves it, as specified above.
 5. **Measure complete lifecycles:** compare all artifacts and traffic, then update operator docs.
+
+**Release phases 3 and 4 together.** One-item pages raised collection GETs from 63 to 576
+on the 48-report workload. Request volume risks installation rate limits on artifact-heavy
+issues; free network traffic does not remove that constraint. Phase 3 must not ship alone.
 
 Land readers before writers. New records may join checkpoint format 7 only while it remains
 unreleased; otherwise use a new incompatible wire version that old engines reject. Check

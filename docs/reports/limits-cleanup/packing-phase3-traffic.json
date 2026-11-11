@@ -1,0 +1,152 @@
+{
+  "baseline": "795a639",
+  "response_budget_bytes": 16000000,
+  "github_body_ceiling_bytes": 16777215,
+  "method": "Identical offline fake-GitHub inputs on each revision, same traffic instrument; CommonMark response bytes are modeled, not live GitHub measurements. No model calls or remote writes.",
+  "before": [
+    {
+      "case": "3 MB plain record",
+      "logical_json_bytes": 3000016,
+      "artifacts": 23,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 133874,
+      "data_body_bytes": 3018416,
+      "requests": {
+        "GET": 118,
+        "collection_GET": 4,
+        "POST": 23
+      },
+      "uploaded_json_bytes": 3021558,
+      "modeled_response_bytes": 36063191,
+      "interruption_injected": false,
+      "harness_calls": 0
+    },
+    {
+      "case": "escaped Unicode record",
+      "logical_json_bytes": 2500016,
+      "artifacts": 20,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 201697,
+      "data_body_bytes": 3815470,
+      "requests": {
+        "GET": 103,
+        "collection_GET": 4,
+        "POST": 20
+      },
+      "uploaded_json_bytes": 5518204,
+      "modeled_response_bytes": 65699506,
+      "interruption_injected": false,
+      "harness_calls": 0
+    },
+    {
+      "case": "9 MB interrupted record",
+      "logical_json_bytes": 9000016,
+      "artifacts": 69,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 138612,
+      "data_body_bytes": 9083874,
+      "requests": {
+        "GET": 141,
+        "collection_GET": 2,
+        "POST": 69
+      },
+      "uploaded_json_bytes": 9093272,
+      "modeled_response_bytes": 45961970,
+      "interruption_injected": true,
+      "harness_calls": 0
+    }
+  ],
+  "after": [
+    {
+      "case": "3 MB plain record",
+      "logical_json_bytes": 3000016,
+      "artifacts": 1,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 3000631,
+      "data_body_bytes": 3000631,
+      "requests": {
+        "GET": 7,
+        "collection_GET": 3,
+        "POST": 1
+      },
+      "uploaded_json_bytes": 3000788,
+      "modeled_response_bytes": 30010189,
+      "interruption_injected": false,
+      "harness_calls": 0
+    },
+    {
+      "case": "escaped Unicode record",
+      "logical_json_bytes": 2500016,
+      "artifacts": 1,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 3800631,
+      "data_body_bytes": 3800631,
+      "requests": {
+        "GET": 7,
+        "collection_GET": 3,
+        "POST": 1
+      },
+      "uploaded_json_bytes": 5500788,
+      "modeled_response_bytes": 55010189,
+      "interruption_injected": false,
+      "harness_calls": 0
+    },
+    {
+      "case": "9 MB interrupted record",
+      "logical_json_bytes": 9000016,
+      "artifacts": 2,
+      "unused_artifacts": 0,
+      "largest_body_bytes": 7993094,
+      "data_body_bytes": 9001266,
+      "requests": {
+        "GET": 8,
+        "collection_GET": 3,
+        "POST": 2
+      },
+      "uploaded_json_bytes": 9001559,
+      "modeled_response_bytes": 48035966,
+      "interruption_injected": true,
+      "harness_calls": 0
+    }
+  ],
+  "lifecycle_before": {
+    "reports": 48,
+    "artifacts": {
+      "audit": 1,
+      "plan": 1,
+      "canonical_report": 48,
+      "history_or_index_block": 6
+    },
+    "artifact_total": 56,
+    "requests": {
+      "GET": 1027,
+      "collection_GET": 63,
+      "POST": 57,
+      "PATCH": 193
+    },
+    "uploaded_json_bytes": 3161060,
+    "modeled_response_bytes": 35204563,
+    "peak_audit_body_bytes": 27927,
+    "interruption_injected": false
+  },
+  "lifecycle_after": {
+    "reports": 48,
+    "artifacts": {
+      "audit": 1,
+      "plan": 1,
+      "canonical_report": 48,
+      "history_or_index_block": 6
+    },
+    "artifact_total": 56,
+    "requests": {
+      "GET": 1540,
+      "collection_GET": 576,
+      "POST": 57,
+      "PATCH": 193
+    },
+    "uploaded_json_bytes": 3161060,
+    "modeled_response_bytes": 35212282,
+    "peak_audit_body_bytes": 27927,
+    "interruption_injected": false
+  }
+}

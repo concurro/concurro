@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import math
 import re
 from collections import Counter
 from copy import deepcopy
@@ -14,6 +13,7 @@ import support  # noqa: F401 -- initializes the engine import path
 
 from checkpoints import AUDIT_MARKER, MARKER, PLAN_NAME, Checkpoints
 from fakes import CONFIG, PLAN, FakeGitHub
+from github import GitHub
 from policy import digest
 from report_store import MARKER as DATA_MARKER
 from storage_traffic import history_entry
@@ -66,14 +66,19 @@ class Traffic(FakeGitHub):
         return result
 
     def pages(self, path):
-        """Count artifact collection requests in ten-item pages without changing discovery results."""
+        """Count the checkout's real artifact page width, including its final empty page."""
         result = super().pages(path)
         if path.endswith("/artifacts"):
-            requests = max(1, math.ceil(len(result) / 10))
+            client = GitHub(CONFIG["repository"])
+            paths = []
+            client.repo = lambda path: paths.append(path) or []
+            client.pages(path)
+            size = int(parse_qs(paths[0].partition("?")[2])["per_page"][0])
+            requests = len(result) // size + 1
             self.counts["GET"] += requests
             self.counts["collection_GET"] += requests
-            for offset in range(0, max(1, len(result)), 10):
-                self.downloaded += self.response_bytes({"artifacts": result[offset : offset + 10]})
+            for offset in range(0, len(result) + 1, size):
+                self.downloaded += self.response_bytes({"artifacts": result[offset : offset + size]})
         return result
 
 

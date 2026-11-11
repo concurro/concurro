@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
+import artifact_capacity
 import markup
 import protocol
 import report_store
@@ -44,11 +45,16 @@ class ConsolidationTests(unittest.TestCase):
     def test_unicode_and_long_fences_fit_complete_body_budget(self):
         """The byte allowance includes escaping, headings, fences and references."""
         value = {"summary": "😀é" * 60000 + "`" * 150000}
-        key = self.cp.reports.put(value)
+        with patch.object(protocol, "ARTIFACT_RESPONSE_BYTES", 500_000):
+            key = self.cp.reports.put(value)
         numbers = self.cp.reports.numbers[key]
         self.assertGreater(len(numbers), 1)
         for number in numbers:
-            self.assertLessEqual(len(self.gh.artifacts[7][number]["artifact"]["body"].encode()), 256 * 1024)
+            body = self.gh.artifacts[7][number]["artifact"]["body"]
+            self.assertLessEqual(len(body.encode()), protocol.GITHUB_ARTIFACT_BODY_BYTES)
+            self.assertLessEqual(
+                max(artifact_capacity.response_sizes(body, body.split("\n-->\n", 1)[1]).values()), 500_000
+            )
         self.assertEqual(self.fresh_store().get(key, numbers), value)
 
     def test_legacy_layout_reused_after_complete_or_interrupted_write(self):

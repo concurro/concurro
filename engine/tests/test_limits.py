@@ -13,6 +13,7 @@ import conversation
 import design
 import pr_description
 import reviews
+from artifact_fixtures import fixed_parts
 from bundle import Bundle
 from controller import validate_config
 from fakes import PLAN, FakeGitHub, named_config
@@ -106,7 +107,7 @@ class OutputTests(PipelineFixture, unittest.TestCase):
         gh = FakeGitHub(deepcopy(CONFIG))
         store = Store(gh, 7, CONFIG["bot_login"], CONFIG["repository"])
         # Small chunks exercise the same part index without a multi-megabyte fixture.
-        with patch("report_store.CHUNK", 100):
+        with fixed_parts(100):
             report = {"evidence": "é" * 20000}
             key = store.put(report)
         self.assertGreater(len(store.numbers[key]), 128)

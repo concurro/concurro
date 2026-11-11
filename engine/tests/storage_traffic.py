@@ -9,6 +9,7 @@ from unittest.mock import patch
 import support  # noqa: F401 -- initializes the engine import path
 
 import report_store
+from artifact_fixtures import fixed_parts
 from checkpoints import LIMIT, Checkpoints
 from fakes import CONFIG, FakeGitHub
 
@@ -56,7 +57,7 @@ def measure(count, whole_snapshots=False, *, report_characters=None, chunk_chara
         if whole_snapshots:
             context.enter_context(patch.object(report_store, "BLOCK_ENTRIES", count + 1))
         if chunk_characters is not None:
-            context.enter_context(patch.object(report_store, "CHUNK", chunk_characters))
+            context.enter_context(fixed_parts(chunk_characters))
         context.enter_context(patch.object(gh, "repo", side_effect=request))
         for index in range(count):
             entry = history_entry(index)

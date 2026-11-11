@@ -532,3 +532,80 @@ Four regression cases cover renderer-free cold reads/reuse, continuation-only re
 live UI changes, view/trailer tampering, and frozen view bytes. The two behavioral cases
 failed before the fix; tamper checks and goldens already passed. Full validation passes with
 the counts above. The 48-report traffic measurements and bundle identity are unchanged.
+
+### Phase 3: response-budget packing
+
+Implemented on phase 2 (`795a639`) and signed off for correctness.
+**Release together with phase 4, not independently.** No deployment, pilot commands,
+model calls or remote writes. New parts use `protocol.ARTIFACT_RESPONSE_BYTES` (still
+16,000,000), shared with service transport, rather than a separate part-size setting.
+GitHub's independent body ceiling remains 16,777,215 UTF-8 bytes. Legacy queued writers
+retain their original 256 KiB/16,000-character layouts.
+
+**Accounting:** the [trimmed evidence](artifact-packing-evidence.json) verifies compact JSON
+serialization against all six saved pagination responses. Their body-string tokens match
+exactly; the latest-only envelope contributes 730 bytes. These captures contain ASCII;
+Unicode, literal escapes and hostile text have independent synthetic and HTTP tests.
+Packing reserves 8 KiB for metadata and estimates each rendered view as eight times its
+JSON-escaped Markdown bytes plus 1,024 bytes. The live 4.70× fence-rendering observation
+motivates this headroom; it is not a universal HTML bound. POST and one-item listing count
+one body/view; detail counts two. History accounting can use a different older body/view.
+Actual transport still enforces the byte limit, including when an estimate is insufficient.
+
+Packing includes markers, layout descriptors, escapes and continuation links. It first tries
+the frozen full view, then a frozen compact view (renderer 2) before splitting canonical data.
+Greedy boundaries fit complete responses; no evidence is truncated. The renderer choice and
+boundaries are recorded in every part. A lost continuation or entry reply finishes that exact
+layout after a budget increase. A lower incompatible allowance is reported before further
+part uploads, without repacking. All phase-2 readers/goldens and old queued writers remain.
+Rollback after writing renderer 2 requires this phase's reader, despite the unchanged
+checkpoint number 7. One-item discovery pages are also required for larger artifacts.
+
+[Traffic results](packing-phase3-traffic.json) use identical inputs and the same instrument
+on the committed phase-2 checkout and this implementation. Both cold recovery and a final
+reference-based read are included. Response bytes are CommonMark/JSON estimates, not live
+GitHub measurements. These are individual synthetic records, not counts for a pilot issue.
+
+| Record | Artifacts before → after | GETs before → after | Uploaded JSON bytes before → after | Modeled response bytes before → after |
+| ---- | ---- | ---- | ---- | ---- |
+| 3 MB plain | 23 → 1 | 118 → 7 | 3,021,558 → 3,000,788 | 36,063,191 → 30,010,189 |
+| Escaped Unicode | 20 → 1 | 103 → 7 | 5,518,204 → 5,500,788 | 65,699,506 → 55,010,189 |
+| 9 MB, first write reply lost | 69 → 2 | 141 → 8 | 9,093,272 → 9,001,559 | 45,961,970 → 48,035,966 |
+
+All three retain exact evidence with zero unused artifacts and zero harness calls. Bigger
+parts can increase bytes reread during recovery; they do not promise lower network traffic.
+The 48-report lifecycle still uses 56 artifacts (48 reports, six history blocks, audit and
+plan), 57 POSTs, 193 PATCHes and a 27,927-byte peak audit. One-item pages increase collection
+GETs from 63 to 576 and total GETs from 1,027 to 1,540; modeled responses change from
+35,204,563 to 35,212,282 bytes. No extra model invocations result. Downloaded bytes remain
+informational, but the roughly ninefold collection-request increase risks installation rate
+limits, especially on issues holding 150 or more artifacts. This is why phases 3 and 4 must
+ship together.
+
+Phase 4 must eliminate ordinary collection scans, including the cold-save whole-list check
+in `Store.checkpoint_reference`, while preserving required recovery and legacy discovery.
+Its completion evidence must compare total and collection GETs with phase 2 (`795a639`) on
+identical issues containing at least 150 existing artifacts, reporting cold load, save and
+publish separately. Distinguish ordinary operations from ambiguous-write recovery and
+legacy discovery; those exceptions must not conceal scans on the ordinary path.
+
+Reproduce with these scripts in each checkout (copy the updated traffic instrument into
+the baseline too; it detects that checkout's pagination width):
+
+```sh
+python3 engine/tests/packing_traffic.py
+python3 engine/tests/shared_report_traffic.py --reports 48
+```
+
+Four initial regressions failed against phase 2, demonstrating the fixed part ceiling,
+ignored response budget, full-view overhead and missing budget-driven continuation case.
+The final 14 packing/accounting tests cover exact boundaries, all lost-write points,
+layout recovery under changed budgets, hostile/Unicode data, descriptor/link overhead,
+rendered-view allowance and the independent GitHub ceiling. Two added HTTP tests exercise
+POST, listing, detail, the shared setting and exact-byte transport refusal. Existing phase-2
+multipart tests inject historical boundaries rather than relying on the removed setting;
+their recovery and frozen-rendering assertions remain intact.
+
+Validation: engine 1,092 tests (one Linux-only skip on macOS), service 350 and gateway 58;
+Ruff check/format, Pyright, compileall, unchanged instruction-bundle identity and whitespace.
+Baseline counts were 1,078 / 348 / 58. The dashboard goldens and command matrix are unchanged.

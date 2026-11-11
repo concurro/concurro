@@ -5,6 +5,7 @@ import subprocess
 from itertools import count
 from urllib.parse import quote
 
+import protocol
 from vocab import Stage
 
 STAGE_LABEL_PREFIX = "concurro:stage:"
@@ -145,7 +146,7 @@ class GitHub:
     def pages(self, path, key=None):
         """Read every page of the requested collection."""
         # Artifact reads deliberately use smaller pages; reconciler scans always use 100.
-        page_size = 10 if path.endswith("/artifacts") else 100
+        page_size = protocol.ARTIFACT_PAGE_SIZE if path.endswith("/artifacts") else 100
         return paginate(
             self.repo,
             path,

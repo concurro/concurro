@@ -1,0 +1,72 @@
+{
+  "source": "Read-only captures summarized in audit-pagination-evidence.json; no bodies retained here.",
+  "caveat": "Captured strings are ASCII. UTF-8 Unicode and adversarial escaping are separately covered by synthetic serialization and HTTP tests. Rendered HTML remains an estimate, not a proved GitHub bound.",
+  "observations": [
+    {
+      "capture": "0",
+      "sha256": "3436365a42e0b1ff74d7571024e24bc0d34841aa50d2d2c7e5b6c66be6b299f0",
+      "response_bytes": 5864881,
+      "versions": 30,
+      "body_string_json_bytes": 5859743,
+      "remaining_envelope_bytes": 5138,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    },
+    {
+      "capture": "1",
+      "sha256": "15b6336469b355309036be3fe62bff34324dda87aacaaa9c722384f60837d035",
+      "response_bytes": 392292,
+      "versions": 1,
+      "body_string_json_bytes": 391562,
+      "remaining_envelope_bytes": 730,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    },
+    {
+      "capture": "2",
+      "sha256": "666319cb792c02d67eeb3115c8717723ced26f48ee1f9b3cb606a51621cafe42",
+      "response_bytes": 394482,
+      "versions": 1,
+      "body_string_json_bytes": 393752,
+      "remaining_envelope_bytes": 730,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    },
+    {
+      "capture": "100",
+      "sha256": "0927602c1ed64509c64f0a97625d2d0310e7ce600ba5e00b0bebb1adb94dc7d5",
+      "response_bytes": 318244,
+      "versions": 1,
+      "body_string_json_bytes": 317514,
+      "remaining_envelope_bytes": 730,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    },
+    {
+      "capture": "101",
+      "sha256": "d5fd105b9898a0aad9000af2cbd5a1176147d5bb7d63065cc71fce9eaf0cbb8e",
+      "response_bytes": 196361,
+      "versions": 0,
+      "body_string_json_bytes": 195781,
+      "remaining_envelope_bytes": 580,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    },
+    {
+      "capture": "engine-api",
+      "sha256": "15b6336469b355309036be3fe62bff34324dda87aacaaa9c722384f60837d035",
+      "response_bytes": 392292,
+      "versions": 1,
+      "body_string_json_bytes": 391562,
+      "remaining_envelope_bytes": 730,
+      "each_string_matches_captured_json": true,
+      "compact_reserialization_matches": true,
+      "non_ascii_characters": 0
+    }
+  ]
+}

@@ -395,9 +395,9 @@ class CheckpointTests(unittest.TestCase):
     def test_issue_artifact_list_uses_bounded_bare_array_pagination(self):
         """The artifact API has no Link header; full pages still require another request."""
         gh = GitHub(self.config["repository"])
-        with patch.object(gh, "repo", side_effect=[[{"number": i} for i in range(10)], []]) as request:
+        with patch.object(gh, "repo", side_effect=[[{"number": i}] for i in range(10)] + [[]]) as request:
             self.assertEqual(len(gh.pages("issues/7/artifacts")), 10)
-        self.assertEqual(request.call_args.args[0], "issues/7/artifacts?per_page=10&page=2")
+        self.assertEqual(request.call_args.args[0], "issues/7/artifacts?per_page=1&page=11")
 
     def test_oversized_metadata_keeps_audit_compact_and_state_complete(self):
         """Metadata above the audit target is retained in immutable storage, not rejected."""

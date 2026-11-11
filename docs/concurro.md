@@ -377,9 +377,13 @@ configuration. A live pilot requires explicit enrollment and deployment authoriz
 ### Large report recovery
 
 Oversized plans, target authority, templates and queued conversation data use the existing
-immutable, digest-verified artifact storage on GitHub. New data parts fit within 256 KiB
-including their Markdown envelope; records can span as many parts as needed. This is storage
-granularity, not a GitHub maximum or a report-size limit. Comments and human-readable
+immutable, digest-verified artifact storage on GitHub. New parts are sized from the shared
+`protocol.ARTIFACT_RESPONSE_BYTES` transport setting (16,000,000 bytes), including JSON
+escaping, response metadata and rendered-view allowance. There is no separate part-size knob.
+Every body must also fit GitHub's 16,777,215-byte ceiling. Records can span parts; only the
+readable presentation may be shortened. Discovery reads one artifact per page. Frozen
+interrupted layouts are retained; reducing the budget can require restoring the old allowance
+to finish them. Legacy queued publications keep their original encoding. Comments and human-readable
 artifact views retain separate 60,000-byte allowances. Plan and PR views may be excerpted with
 links to complete evidence. Canonical content is preserved across save/load and retries.
 The mutable audit retains a 60,000-byte operating target, not a GitHub artifact limit. Its
@@ -391,7 +395,8 @@ verified audit pointer.
 History directories and unfinished tails stay in the audit; completed eight-entry blocks are
 stored once unless their contents change. No past artifacts are deleted or repacked.
 These layouts use the unreleased checkpoint format 7; rolling back requires an engine that
-understands all format-7 records, including comment-encoded audits and dashboard witnesses.
+understands all format-7 records, including comment-encoded audits, dashboard witnesses and
+the current shared-part renderers. An earlier format-7 engine is insufficient.
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities

@@ -149,8 +149,13 @@ model calls. Missing audit history without a witness remains a verification fail
   their verified IDs. Readers verify stored view text against its digest without rendering.
   Renderer 1 freezes its own formatting helpers for interrupted writes; new presentation needs
   a new renderer version. Any surviving part fixes recovery boundaries despite changed packing
-  settings. Views retain a 60,000-byte allowance and complete data parts the existing 256 KiB
-  allowance; response-budget packing is a separate proposal phase.
+  settings. New parts fit the shared 16,000,000-byte artifact response budget and GitHub's
+  independent 16,777,215-byte body ceiling. Packing counts JSON escaping, descriptor/link
+  overhead and an allowance for rendered HTML. A frozen compact renderer (version 2) replaces
+  the readable view before splitting canonical data; no evidence is shortened. The original
+  renderer remains available for interrupted writes. A lower response budget refuses an
+  incompatible frozen layout rather than repacking it. Legacy queued writers retain their
+  old allowances. Comments and full readable views keep separate 60,000-byte allowances.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.
 - **Runner feedback:** lengthy selected feedback is delivered as digest-checked
@@ -170,8 +175,8 @@ model calls. Missing audit history without a witness remains a verification fail
 - **Archive compatibility:** queued formats 1–3 retain their exact rendering and
   receipt-gated compaction. Referenced format-4 reports keep full evidence after
   publication. Oversized PR thread text is excerpted with a dashboard link; repair
-  files retain the complete finding. Artifact discovery uses ten entries per page
-  to stay within the existing read bound. Legacy whole-list detection can still scan the
+  files retain the complete finding. Artifact discovery uses one entry per page
+  so large bodies fit the same response budget. Legacy whole-list detection can still scan the
   collection on cold saves; eliminating those scans is a later consolidation phase.
 
 
