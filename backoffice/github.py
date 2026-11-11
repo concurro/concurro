@@ -7,7 +7,6 @@ import time
 from github import GitHub, NotFound
 from service.github_reads import content, default_branch
 from service.target_config import read_remote
-from service.target_loader import CONFIG_LIMIT
 from service.transport import StaticCredential, Transport
 
 # Repository metadata (visibility and permissions) per user token, briefly.
@@ -76,7 +75,7 @@ class UserAccess:
         """The target configuration at the fork's default-branch head, and that branch's name."""
         reader = self.transport(fork)
         branch, sha = default_branch(reader, fork)
-        return read_remote(lambda path: content(reader, fork, path, sha, CONFIG_LIMIT)), branch
+        return read_remote(lambda path: content(reader, fork, path, sha)), branch
 
     def comment(self, repository: str, issue: int, body: str) -> dict:
         """Post an issue comment as the user; returns the created comment."""
