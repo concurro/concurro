@@ -29,6 +29,7 @@ import file_inventory
 import implementation_bundle
 import markup
 import pr_template
+import prompts
 import protocol
 import readiness
 import reason_guidance
@@ -243,11 +244,6 @@ class Outcome:
     def __bool__(self):
         """Keep `if controller.advance(...)` meaning "this tick changed the task"."""
         return self.progressed
-
-
-def transport_size(context):
-    """Bytes a model receives; controller-only keys never reach it."""
-    return len(json.dumps({k: v for k, v in context.items() if not k.startswith("controller_")}).encode())
 
 
 def diff_preview(value, limit):
@@ -651,14 +647,14 @@ class Controller:
             context["pull_request"] = self.state["pr"]
         if "agents" in self.config:
             context["agent"] = resolve(self.config, provider, stage).record()
-        if transport_size(context) > self.config["max_context_bytes"]:
+        if prompts.size(stage, context, self.bundle) > self.config["max_context_bytes"]:
             context = classification.context_core(context)
         context = feedback.prepare(context)
-        size = transport_size(context)
+        size = prompts.size(stage, context, self.bundle)
         if size > self.config["max_context_bytes"]:
             raise Blocked(
-                f"{stage} context exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
-                "narrow the change"
+                f"{stage} prompt (context, instructions and schema) exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
+                "reduce the supplied context or raise max_context_bytes"
             )
         return context
 
@@ -1868,7 +1864,7 @@ class Controller:
         over = [
             f"{name} ({size} of {limit} bytes)"
             for name, context in contexts
-            if (size := transport_size(context)) > limit
+            if (size := prompts.size("review", context, self.bundle)) > limit
         ]
         if not over:
             return None
@@ -1903,7 +1899,7 @@ class Controller:
         # Diff previews are optional; file identities, findings and review criteria are not.
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         preview = MAX_DIFF
-        while transport_size(context) > limit and preview:
+        while prompts.size("review", context, self.bundle) > limit and preview:
             preview //= 2
             if preview < 256:
                 preview = 0

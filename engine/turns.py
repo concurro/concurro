@@ -17,6 +17,7 @@ from pathlib import Path
 import feedback
 import git_env
 import processes
+import runner_layout
 from policy import (
     KEY_VARIABLE as KEY_VARIABLE,
     KILLED,
@@ -350,7 +351,7 @@ def execute(turn, key, mirror, root, stopped=None):
     if not NAME.fullmatch(name):
         raise TurnError("invalid turn directory")
     session = request.get("session")
-    for directory in ("work", "scratch", "retained"):
+    for directory in (runner_layout.WORKSPACE, "scratch", "retained"):
         (root / directory).mkdir(parents=True)
     if request.get("evaluation"):
         if request["stage"] != "plan_qc" or session is not None:
@@ -374,21 +375,21 @@ def execute(turn, key, mirror, root, stopped=None):
                 **{k: spec[k] for k in ("refs", "head", "candidate")},
                 "overlay_files_limit": spec.get("overlay_files_limit"),
             },
-            root=root / "work",
+            root=root / runner_layout.WORKSPACE,
             mirror=mirror.path,
         )
-        shutil.copytree(root / "work" / ".git", root / "pristine.git", symlinks=True)
+        shutil.copytree(root / runner_layout.WORKSPACE / ".git", root / "pristine.git", symlinks=True)
         if session:
             unpack(turn.get("retained"), root / "retained")
         payload = {
             **request,
-            "workspace": str(root / "work"),
+            "workspace": str(root / runner_layout.WORKSPACE),
             "scratch": str(root / "scratch"),
             "retained_root": str(root / "retained"),
             "timeout": timeout,
         }
         if turn.get("feedback"):
-            payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / "feedback")
+            payload["feedback_directory"] = feedback.materialize(turn["feedback"], root / runner_layout.FEEDBACK)
         code, stdout = _run_agent(payload, root, key, stopped, timeout)
         result, response = outcome(code, stdout)
         if runner_bound(request["stage"]) and (
@@ -407,7 +408,7 @@ def execute(turn, key, mirror, root, stopped=None):
         if result == TurnOutcome.OK and request["stage"] == "develop":
             try:
                 reply["workspace"] = extract(
-                    root / "work", root / "pristine.git", root, spec.get("workspace_files_limit")
+                    root / runner_layout.WORKSPACE, root / "pristine.git", root, spec.get("workspace_files_limit")
                 )
             except TurnError as error:
                 reply["workspace"] = {"error": str(error)}

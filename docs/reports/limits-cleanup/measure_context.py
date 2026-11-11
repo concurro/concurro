@@ -12,7 +12,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'engine'), str(ROOT / 'engine/tests')]
 
 from agent_entry import prompt_for
 from bundle import Bundle
-from controller import Controller, transport_size
+from controller import Controller
+from support import transport_size
 from fakes import FINDING, FakeAgents, FakeGitHub
 from model_config import resolve
 from service.target_config import read_local

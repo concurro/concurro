@@ -13,7 +13,9 @@ from support import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from controller import MAX_DIFF, Controller, changes, transport_size
+from support import transport_size
+
+from controller import MAX_DIFF, Controller, changes
 from fakes import CONFIG, FakeAgents, FakeGitHub
 from gitfixture import Upstream, build, mirror_of
 from policy import Blocked, digest
@@ -152,7 +154,7 @@ class TransportTests(unittest.TestCase):
                 agents.calls[-1][2]["repository"],
                 {"refs": {"main": "a" * 40, "concurro/issue-7": "b" * 40}, "head": "concurro/issue-7"},
             )
-            controller.ask("claude", "local_review", {"controller_candidate": {}})
+            controller.ask("claude", "review", {"controller_candidate": {}})
             self.assertEqual(agents.calls[-1][2]["repository"]["refs"]["concurro/published"], "b" * 40)
             self.assertEqual(agents.calls[-1][2]["repository_commit"], "b" * 40)
 

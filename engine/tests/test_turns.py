@@ -21,10 +21,11 @@ import agent_entry
 import runner
 import turns
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
+from bundle import Bundle
 from credentials import Credential
 from gitfixture import IDENTITY
 from mirror import git_environment
-from policy import Blocked, SessionFailure, UncertainOutcome
+from policy import Blocked, SessionFailure, UncertainOutcome, digest
 from relay import ExchangeError
 from runner_fixtures import (
     AGENT,
@@ -176,14 +177,40 @@ class ExecuteTests(Workspace, unittest.TestCase):
 
     def test_native_turn_reads_full_feedback_outside_checkout_and_retained_home(self):
         """The actual agent subprocess receives files before it starts; extraction excludes them."""
-        from policy import digest
-
         evidence = {"id": "F1", "detail": "complete feedback " * 20000}
         result, root = self.execute({"stage": "develop", "session": None}, feedback_files={digest(evidence): evidence})
         self.assertEqual(result["outcome"], "ok")
         self.assertEqual(json.loads((root / "scratch/feedback-read.json").read_text()), [evidence])
         self.assertFalse(any("feedback" in edit["path"] for edit in result["workspace"]["edits"]))
         self.assertFalse(list((root / "retained").rglob("*.json")))
+
+    def test_runner_and_prompt_follow_the_same_relocated_directories(self):
+        """Changing the layout moves real feedback and the prompt reference together."""
+        evidence = {"detail": "complete feedback"}
+        script = AGENT.replace('"work"', '"checkout"').replace('"feedback"', '"evidence"')
+        with (
+            patch("runner_layout.WORKSPACE", "checkout"),
+            patch("runner_layout.FEEDBACK", "evidence"),
+            patch(__name__ + ".AGENT", script),
+        ):
+            result, root = self.execute(
+                {"stage": "develop", "session": None}, feedback_files={digest(evidence): evidence}
+            )
+            self.assertEqual(result["outcome"], "ok")
+            request = {
+                "stage": "develop",
+                "workspace": str(root / "checkout"),
+                "feedback_directory": str(root / "evidence"),
+                "context": {
+                    "repository_commit": self.base,
+                    "repository": {"refs": {"main": self.base}, "head": "main"},
+                },
+            }
+            prompt = json.loads(agent_entry.prompt_for(request, Bundle()))
+            directory = (Path(request["workspace"]) / prompt["feedback_files"]["directory"]).resolve()
+            self.assertEqual(json.loads((directory / (digest(evidence) + ".json")).read_text()), evidence)
+            self.assertFalse((root / "work").exists())
+            self.assertEqual(json.loads((root / "scratch/feedback-read.json").read_text()), [evidence])
 
     def test_a_review_turn_carries_no_workspace(self):
         result, _ = self.execute({"stage": "review", "session": None})

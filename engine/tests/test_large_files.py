@@ -4,10 +4,11 @@ import json
 import unittest
 from copy import deepcopy
 
-from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule
+from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDownModule, transport_size
 
+import prompts
 import turns
-from controller import DIFF_TRUNCATED, DISPATCH_ALLOWANCE, MAX_DIFF, changes, diff_preview, sha256, transport_size
+from controller import DIFF_TRUNCATED, DISPATCH_ALLOWANCE, MAX_DIFF, changes, diff_preview, sha256
 from fakes import PLAN, FakeAgents
 from policy import Blocked, validate_edits
 from repository import source_lines
@@ -70,11 +71,11 @@ class LifecycleTests(Harness, unittest.TestCase):
 
     def test_large_diffs_shrink_previews_without_omitting_files_or_findings(self):
         controller = self.run_to(FakeAgents(), "gates")
-        controller.config["max_context_bytes"] = 14000
+        controller.config["max_context_bytes"] = 30000
         before = {f"docs/{i}.md": "old\n" for i in range(4)}
         after = {p: "".join(f"new line {j}\n" for j in range(6000)) for p in before}
         context = controller.pr_review_context("claude", before, after, "e" * 40)
-        self.assertLessEqual(transport_size(context), 14000 - DISPATCH_ALLOWANCE)
+        self.assertLessEqual(prompts.size("review", context, controller.bundle), 30000 - DISPATCH_ALLOWANCE)
         self.assertEqual([v["path"] for v in context["changes"]], sorted(after))
         self.assertTrue(all(v["truncated"] for v in context["changes"]))
         self.assertTrue(all(v["diff"].count("[diff truncated") == 1 for v in context["changes"]))

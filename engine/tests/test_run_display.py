@@ -13,6 +13,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import run_display
 import runner
 import turns
+from bundle import Bundle
 from controller import Controller
 from relay import ExchangeError
 from runner_fixtures import TASK, TURN, ExecutorFixture, FakeRunner
@@ -64,9 +65,10 @@ class DisplayTests(ExecutorFixture, unittest.TestCase):
         """The PR number comes from controller state, not the issue requirements."""
         controller = object.__new__(Controller)
         controller.state = {"pr": 25, "base": "a" * 40, "head": "c" * 40}
-        controller.config = {"max_context_bytes": 10000}
+        controller.config = {"max_context_bytes": 20000}
+        controller.bundle = Bundle()
         controller.require_current_bundle = Mock()
-        controller.repository_refs = Mock(return_value={})
+        controller.repository_refs = Mock(return_value={"refs": {}, "head": "main"})
         context = controller.prepare_context("claude", "review", {"pull_request": 999})
         self.assertEqual(context["pull_request"], 25)
         self.assertEqual(context["repository_commit"], "c" * 40)

@@ -26,3 +26,8 @@ def setUpModule():
 def tearDownModule():
     """Restore the caller's working directory."""
     os.chdir(_previous.pop())
+
+
+def transport_size(context):
+    """Measure the former context-only representation for regression comparisons."""
+    return len(json.dumps({k: v for k, v in context.items() if not k.startswith("controller_")}).encode())

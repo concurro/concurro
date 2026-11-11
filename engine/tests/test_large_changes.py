@@ -11,8 +11,9 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 import change_attention
 import checkpoints
 import file_inventory
+import prompts
 import turns
-from controller import DISPATCH_ALLOWANCE, Controller, transport_size
+from controller import DISPATCH_ALLOWANCE, Controller
 from fakes import DESIGN_ISSUE, FakeAgents, FakeGitHub
 from github import Transient
 from pipeline_fixtures import PipelineFixture
@@ -375,12 +376,12 @@ class PublicationCapacityTests(PipelineFixture, unittest.TestCase):
         controller = self.reach("implement")
         before = {f"docs/{i}.txt": "old\n" for i in range(12)}
         after = {path: "new content\n" * 3000 for path in before}
-        controller.config["max_context_bytes"] = 18000
+        controller.config["max_context_bytes"] = 34000
         context = controller.pr_review_context("claude", before, after, "e" * 40)
         self.assertEqual([v["path"] for v in context["changes"]], sorted(after))
         self.assertTrue(all(v["truncated"] for v in context["changes"]))
         self.assertTrue(all("inspect the pinned repository" in v["diff"] for v in context["changes"]))
-        self.assertLessEqual(transport_size(context), 18000 - DISPATCH_ALLOWANCE)
+        self.assertLessEqual(prompts.size("review", context, controller.bundle), 34000 - DISPATCH_ALLOWANCE)
         controller.config["max_context_bytes"] = 2000
         self.assertIsNotNone(controller.oversized(None, before, after))
 

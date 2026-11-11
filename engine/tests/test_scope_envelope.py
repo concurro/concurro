@@ -10,6 +10,7 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+import prompts
 from controller import DISPATCH_ALLOWANCE
 from fakes import PLAN
 from policy import Blocked, OutsideScope, validate_edits, validate_plan
@@ -140,9 +141,9 @@ class CapacityTests(Harness, unittest.TestCase):
         after = {"docs/guide.md": "Updated guide\n"}
         local = controller.context()
         sizes = [
-            len(json.dumps(controller.pr_review_context(p, before, after, "0" * 40)).encode())
+            prompts.size("review", controller.pr_review_context(p, before, after, "0" * 40), controller.bundle)
             for p in self.config["reviewers"]
-        ] + [len(json.dumps(local).encode())]
+        ] + [prompts.size("review", local, controller.bundle)]
         controller.config["max_context_bytes"] = max(sizes) + DISPATCH_ALLOWANCE + 100
         self.assertIsNone(controller.oversized(local, before, after), "the files fit")
         controller.state.setdefault("findings", []).append(
@@ -180,7 +181,7 @@ class CapacityTests(Harness, unittest.TestCase):
     def test_dispatch_names_the_stage(self):
         controller = self.run_to(EnvelopeAgents(), "review")
         controller.config["max_context_bytes"] = 100
-        with self.assertRaisesRegex(Blocked, "review context exceeds the size limit"):
+        with self.assertRaisesRegex(Blocked, "review prompt .* exceeds the size limit"):
             controller.ask("claude", "review", controller.context())
 
 

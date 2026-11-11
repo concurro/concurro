@@ -16,6 +16,7 @@ from support import (
 )
 
 import resume_proof
+import runner_layout
 
 
 class FakeCodex:
@@ -25,6 +26,8 @@ class FakeCodex:
         self.forget, self.calls = forget, []
 
     def __call__(self, command, input, **_):
+        assert Path(_["cwd"]).is_dir(), "the proof must create the workspace it runs in"
+        assert Path(_["cwd"]).name == runner_layout.WORKSPACE, "the proof must use the runner's workspace"
         codex = Path(_["env"]["CODEX_HOME"])
         self.calls.append(command)
         if "resume" in command:
@@ -64,7 +67,8 @@ class ResumeProofTests(unittest.TestCase):
 
     def test_a_restored_archive_resumes_with_its_context_and_without_caches(self):
         codex = FakeCodex()
-        output = self.run_proof(codex)
+        with patch.object(runner_layout, "WORKSPACE", "checkout"):
+            output = self.run_proof(codex)
         self.assertIn('dropped        8 KiB  "codex/.tmp"', output)
         self.assertIn("proof: the restored archive resumed the same thread", output)
         first, resumed = codex.calls

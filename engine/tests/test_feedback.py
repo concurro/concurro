@@ -7,12 +7,12 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from support import setUpModule as setUpModule, tearDownModule as tearDownModule
+from support import setUpModule as setUpModule, tearDownModule as tearDownModule, transport_size
 
 import feedback
 from agent_entry import prompt_for
 from agents import Agents
-from controller import Controller, transport_size
+from controller import Controller
 from fakes import CONFIG, FakeAgents, FakeGitHub
 from policy import design_roster, digest
 from runner_fixtures import MODELS, FakeExecutor
@@ -175,9 +175,17 @@ class FeedbackTests(unittest.TestCase):
             raw = json.loads((Path(directory) / reference["feedback_file"]).read_text())
             self.assertEqual(raw, value)
             self.assertEqual(digest(raw), reference["digest"])
-            request = {**turn["request"], "feedback_directory": directory, "workspace": "/work", "schema": {}}
+            request = {
+                **turn["request"],
+                "feedback_directory": directory,
+                "workspace": str(Path(root) / "work"),
+                "schema": {},
+            }
             prompt = json.loads(prompt_for(request, agents.bundle))
-            self.assertEqual(prompt["feedback_files"]["directory"], directory)
+            self.assertEqual(
+                (Path(request["workspace"]) / prompt["feedback_files"]["directory"]).resolve(),
+                Path(directory).resolve(),
+            )
             self.assertNotIn(value[0]["detail"], json.dumps(prompt))
         for key, data in [("../escape", value), ("a" * 64, value)]:
             with tempfile.TemporaryDirectory() as root, self.assertRaises(ValueError):

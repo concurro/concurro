@@ -385,9 +385,19 @@ refuse them. Rolling back after such a checkpoint requires a format-7-capable en
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities
-remain. `max_context_bytes` currently measures the controller context, excluding controller-only
-fields; it does not include the runner-added instructions and schema. Expanded accounting
-is a separate change; see the [measurement report](reports/limits-cleanup/README.md).
+remain. `max_context_bytes` counts the complete constructed stage prompt: controller context,
+role instructions, target charter/instructions, response schema, repository metadata and
+feedback-file indexes, serialized exactly as supplied to the harness. Controller-only fields,
+file contents read later with tools, CLI-added framing and retained conversation history are
+excluded. The full prompt is counted even when a retained session sends only changed fields.
+Paths in the prompt are relative to the runner workspace, making accounting independent of
+its temporary directory name. Candidate preflight uses the same representation with its
+existing dispatch allowance for prospective metadata.
+
+This expands the setting's former context-only meaning. A previously near-capacity stage
+may now need a higher operator-selected budget. Admission fails before spending a call;
+the diagnostic reports the complete prompt size. The target budget is not changed
+implicitly. See the [before/after measurement](reports/limits-cleanup/README.md).
 
 REST and GraphQL readers traverse complete collections without a fixed page count. Request
 sizes, HTTP deadlines and GitHub rate-limit handling remain. Outcome retrieval stops at the

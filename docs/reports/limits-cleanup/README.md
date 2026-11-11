@@ -58,8 +58,9 @@ python docs/reports/limits-cleanup/measure_context.py \
   --output /tmp/context-measurement.json
 ```
 
-Run the script from the original commit to reproduce the baseline (copy only this measurement
-script there); run it from this worktree for the cleanup result. No provider credentials or
+To reproduce the baseline, copy the limits-cleanup commit's version of the measurement script
+into the original commit checkout. The combined version uses the test helper in
+`engine/tests/support.py`; run it from this worktree for expanded accounting. No provider credentials or
 live inference are required. Prompt sizes may change with future bundle instructions; the
 report records the bundle identity rather than assuming a permanent number.
 
@@ -95,5 +96,67 @@ The same pinned target and offline lifecycle were remeasured after integration:
 record the new bundle identities and unchanged target file hashes. The headline prompt
 uses 160 characters as a soft preview target; longer output remains accepted and retained.
 
-The integrated cleanup-only export passed 1,001 engine tests with one platform skip, plus
-lint, formatting and type checks. Service validation passed 347 tests.
+## Separately reviewable expanded accounting
+
+The limits cleanup and expanded context accounting are separate commits, each with its own
+tests and measurements. Review the cleanup first, then accounting; the combined changes
+replace per-resource instruction ceilings with one complete-prompt budget.
+
+Admission now shares the runner's prompt builder. The JSON contains instructions (including
+target authority), schema, model-visible context, repository metadata, authorization and
+feedback indexes. Workspace and feedback paths are relative to the runner's working directory,
+so temporary path names do not change its measured size. Complete feedback remains in verified
+files; its prompt index is counted. The prompt and runner share the same directory-layout
+constants, with a regression test that relocates both directories. Subsequent tool reads, CLI framing and retained history
+are outside this setting. Retained sessions are budgeted against the full constructed prompt
+even when the harness sends an incremental update.
+
+[Expanded-accounting measurements](context-expanded.json) use the same target and fixture.
+No target setting was changed.
+
+| Stage | Largest prompt before cleanup | Largest prompt with cleanup and expanded accounting |
+| ---- | ---- | ---- |
+| Intake | 65,482 | 65,437 |
+| Planning | 67,499 | 67,258 |
+| Design review | 68,616 | 68,357 |
+| Implementation / repair | 72,185 | 72,049 |
+| PR review | 67,726 | 67,668 |
+
+All measured lifecycle prompts fit the existing 350,000-byte budget, leaving at least
+277,951 bytes. The padded near-limit cases exceed it by 13,254–14,912 bytes. A regression test
+proves that a context which formerly fit is refused before charging or dispatching a call,
+and that the exact full-prompt boundary is accepted. The diagnostic names the stage and
+reports the measured size. Operators with near-capacity stages must deliberately adjust
+`max_context_bytes` or reduce supplied context when adopting this accounting change.
+
+After integrating local main, [expanded accounting](context-main-expanded.json) measures
+63,978–69,669 bytes, leaving at least 280,331 bytes at the unchanged target budget. Padded
+near-limit contexts still exceed it by 10,900–13,477 bytes, so the accounting change remains
+separately reviewable.
+
+## Final checks
+
+After integrating local main, the combined engine suite passed 1,006 tests with one platform
+skip, and the service suite passed 347. The unchanged gateway suite previously passed 58. Ruff lint/format checks and the repository's configured
+Pyright checks passed. The cleanup-only index export independently passed all 1,001 engine tests with one platform
+skip, plus lint, formatting and type checks. All tests used fake
+providers and GitHub transports; nothing was deployed or published.
+
+Integration also passed 81 focused prompt, schema, target-policy, dashboard and accounting
+tests. Four dashboard snapshots were reconciled with main's numeric evidence-link ordering;
+the final full-suite results above include those corrections. The later soft headline-guidance
+change was remeasured and passed the same 81 focused tests; full suites were not repeated.
+
+```sh
+PYTHONPATH=engine:engine/tests python -m unittest discover -s engine/tests
+PYTHONPATH=engine:engine/tests:service/tests python -m unittest discover -s service/tests
+PYTHONPATH=gateway python -m unittest discover -s gateway/tests
+ruff check engine service gateway docs/reports/limits-cleanup
+ruff format --check engine service gateway docs/reports/limits-cleanup
+pyright
+```
+
+Review rendering format 5 applies consistent byte accounting to new records. Previously
+queued formats retain their original rendering so retries can match already-published
+Unicode bodies exactly. This is independent of checkpoint wire format 7, which permits
+the additional artifact-backed state fields.

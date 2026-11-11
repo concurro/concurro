@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import agent_entry
+import runner_layout
 import turns
 
 SCHEMA = {
@@ -31,7 +32,7 @@ class ProofFailed(Exception):
 
 def prepare(directory):
     """A turn's directories: the retained root, a workspace and the proof's schema and result."""
-    for name in ("retained", "work", "proof"):
+    for name in ("retained", runner_layout.WORKSPACE, "proof"):
         (directory / name).mkdir(parents=True)
     (directory / "proof/schema.json").write_text(json.dumps(SCHEMA))
     return directory
@@ -49,7 +50,7 @@ def turn(key, directory, request, prompt):
         capture_output=True,
         text=True,
         timeout=900,
-        cwd=directory / "work",
+        cwd=directory / runner_layout.WORKSPACE,
         env=turns.agent_environment(directory, key, True),
     )
     if result.returncode:
