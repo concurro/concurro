@@ -1,7 +1,8 @@
 # Concurro's inference gateway: agentgateway and the key exchange (sharing the gateway's
 # network namespace, so it alone reaches the loopback admin API). Nothing is published:
 # the host's edge Caddy reaches both on the `edge` network as `concurro-gateway`, through
-# the routes in concurro.caddy.
+# the routes in concurro.caddy. The credentials vault has no Caddy route; only services on
+# the `edge` network reach it, as `concurro-vault:8090`.
 name: concurro-gateway
 
 services:
@@ -53,9 +54,38 @@ services:
     pids_limit: 64
     restart: unless-stopped
 
+  vault:
+    image: concurro-vault:local
+    build: ./vault
+    environment:
+      VAULT_LISTEN: 0.0.0.0:8090
+      VAULT_STATE_DIR: /data
+      VAULT_MASTER_KEY_FILE: /run/secrets/vault-master-key
+    volumes:
+      # Owner-only (uid 65532, mode 0400); the vault refuses to start otherwise.
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/vault-master-key:/run/secrets/vault-master-key:ro
+      - vault-data:/data
+    networks:
+      edge:
+        aliases:
+          - concurro-vault
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+    restart: unless-stopped
+
 volumes:
   gateway-data:
   exchange-data:
+  vault-data:
 
 networks:
   edge:
