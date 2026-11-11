@@ -267,7 +267,7 @@ class StorageLifecycleTests(unittest.TestCase):
         # Trimming the checkpoint must not alter the complete immutable archived assessments.
         cold = Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"])
         for source, ref in archives.items():
-            self.assertEqual(cold.get(ref["digest"], ref["artifacts"])["classification"], originals[source])
+            self.assertEqual(cold.restore_reference(ref)["classification"], originals[source])
 
     def test_idle_reloads_use_constant_reads_and_no_collection_or_data_writes(self):
         """Growing history does not increase steady-state artifact calls."""
@@ -325,7 +325,7 @@ class StorageLifecycleTests(unittest.TestCase):
         bodies = [
             i["artifact"]["body"] for i in self.gh.artifacts[7].values() if i["artifact"]["body"].startswith(MARKER)
         ]
-        self.assertEqual(sum(b.count("UNIQUE FINDING") for b in bodies), 1)
+        self.assertEqual(sum("UNIQUE FINDING" in b for b in bodies), 1)
         self.assertEqual(self.controller().state["findings"][0]["detail"], detail)
 
     def test_cache_is_bounded_scoped_and_cannot_be_mutated_by_consumers(self):

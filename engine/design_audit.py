@@ -87,9 +87,16 @@ def json_block(body):
     return json.loads(match[2])
 
 
-def archived_report(snapshot, store, number):
+def archived_report(snapshot, store, number, entry=None):
     """Verify immutable authorship and full-report commitments, including nested parts."""
     item = store.verify(snapshot.repo(f"issues/{snapshot.issue}/artifacts/{number}"))
+    if entry is not None and entry.get("event") and "data" in entry:
+        if entry["data"]["artifacts"][0] != number:
+            raise ValueError("Shared report entry mismatch")
+        report = store.restore_reference(entry["data"])
+        if digest(report) != entry["source_digest"]:
+            raise ValueError("Shared report annotation mismatch")
+        return report
     if not item["body"].startswith(MARKER):
         raise ValueError("Not a report archive")
     root = protocol.artifact_url(snapshot.repository, snapshot.issue)
@@ -129,17 +136,20 @@ def measure(snapshot, author="concurro[bot]"):
     seen, records, counts = set(), [], {}
     boundaries = dashboard_runs.boundaries(state)
     for entry in state.get("reports", []):
-        if entry.get("step") != "Design review" or entry["artifact"] in seen:
+        identity = ("event", entry["event"]) if entry.get("event") else ("artifact", entry["artifact"])
+        if entry.get("step") != "Design review" or identity in seen:
             continue
         number = entry["artifact"]
-        seen.add(number)
-        run = max(i for i, b in enumerate(boundaries, 1) if number > b["artifact"])
+        seen.add(identity)
+        run = dashboard_runs.report_run(state, entry, boundaries)
         phase = dashboard_runs.round_label("Design review", entry["round"], boundaries[run - 1])
         count = counts.setdefault(f"run {run} / {phase}", Counter())
         count["archived_outputs"] += 1
         count["rejected" if entry["outcome"] == "invalid" else "accepted"] += 1
         record = {k: entry[k] for k in ("artifact", "provider", "round", "outcome")}
         record.update(run=run, run_round=phase)
+        if entry.get("event"):
+            record["event"] = entry["event"]
         observed = review_timing.normalize(entry.get("timing"))
         record["timing"] = observed
         record["durations"] = review_timing.durations(observed)
@@ -152,7 +162,7 @@ def measure(snapshot, author="concurro[bot]"):
             record["validation_code"] = entry["diagnostic"]["code"]
             count["validation:" + record["validation_code"]] += 1
         try:
-            report = archived_report(snapshot, store, number)
+            report = archived_report(snapshot, store, number, entry)
             record["report_digest"] = digest(report)
             updates = report.get("objection_updates", [])
             record["objection_dispositions"] = [{"id": u["id"], "status": u["status"]} for u in updates]

@@ -13,12 +13,14 @@ from support import (
 import conversation
 from controller import Controller
 from fakes import CONFIG, FakeAgents, FakeGitHub
+from legacy_publications import legacy_events
 from policy import approval_valid, digest
 
 
 class ConversationSizeTests(unittest.TestCase):
     """Large public reports fit checkpoints without discarding operative evidence."""
 
+    @legacy_events
     def test_large_plan_and_reviews_reach_disabled_merge_gates(self):
         """Measure every real audit write, including the not-yet-published outbox."""
         config = deepcopy(CONFIG)

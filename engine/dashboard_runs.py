@@ -73,10 +73,20 @@ def retain_boundaries(state):
         record.setdefault("display_start", boundary)
 
 
+def report_run(state, report, offsets=None):
+    """Use frozen event-run identity for shared artifacts, retaining legacy artifact boundaries."""
+    if "run" in report:
+        return report["run"]
+    return max(
+        (i for i, boundary in enumerate(offsets or boundaries(state), 1) if report["artifact"] > boundary["artifact"]),
+        default=1,
+    )
+
+
 def current_reports(state):
     """Return only report links belonging to the current assessment run."""
-    cutoff = boundaries(state)[-1]["artifact"]
-    return [r for r in state.get("reports", []) if r["artifact"] > cutoff]
+    offsets = boundaries(state)
+    return [r for r in state.get("reports", []) if report_run(state, r, offsets) == len(offsets)]
 
 
 def round_label(step, value, boundary):

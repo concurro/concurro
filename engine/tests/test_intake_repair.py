@@ -11,6 +11,7 @@ from checkpoints import LIMIT, Checkpoints
 from controller import INTAKE_OUTPUT_REPAIRS
 from conversation import ARCHIVE_LIMIT, PublicationError
 from fakes import FakeAgents, FakeGitHub
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked
 from protocol import ARTIFACT_BODY_BYTES
@@ -37,6 +38,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
             **changes,
         }
 
+    @legacy_events
     def test_contradiction_is_archived_then_corrected_without_writer_retry(self):
         """Rejected proceed never starts planning; feedback produces a separately charged turn."""
         self.agents.qc_reports = [self.report(questions=["Which partial-read behavior is intended?"]), self.report()]
@@ -66,6 +68,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertIn("do not remove real questions", feedback["instruction"])
         self.assertEqual(feedback["attempt"], 1)
 
+    @legacy_events
     def test_corrected_intake_completes_the_autonomous_pipeline(self):
         """An output repair preserves the independent planning, review and CI gates."""
         self.config["autonomous"] = True
@@ -112,6 +115,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
                 self.assertNotIn("intake_draft", controller.state)
                 self.assertEqual(controller.state["calls"], 1)
 
+    @legacy_events
     def test_exhaustion_survives_restart_and_retry_renews_only_corrections(self):
         """Every invalid report is archived; only a writer renews the spent correction allowance."""
         bad = self.report(questions=["Unanswered question?"])
@@ -135,6 +139,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(len({r["round"] for r in controller.state["reports"]}), 4)
         self.assertEqual(self.tick().state["stage"], "plan")
 
+    @legacy_events
     def test_malformed_and_oversized_reports_publish_bounded_excerpts(self):
         """Malformed shapes and hostile fences cannot break the archive or checkpoint."""
         for report in (
@@ -163,6 +168,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
                 if controller.state["intake_draft"]["truncated"]:
                     self.assertIn("Output excerpted", archive)
 
+    @legacy_events
     def test_completed_response_is_consumed_once_after_crash(self):
         """A crash before recording the rejection replays the retained response without a model call."""
         original = Checkpoints.save
@@ -187,6 +193,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(recovered.state["operation"]["status"], "consumed")
         self.assertEqual(len(self.gh.archives()), 1)
 
+    @legacy_events
     def test_lost_archive_response_recovers_before_next_correction(self):
         """A stored archive with a lost POST reply is found by marker, never duplicated."""
         original = self.gh.repo
@@ -210,6 +217,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(len(self.gh.archives()), 2)
         self.assertEqual(sum("Intake output rejected" in b for b in self.gh.archives()), 1)
 
+    @legacy_events
     def test_changed_archive_is_a_conflict_not_permission_to_correct(self):
         """Recovery never overwrites altered public evidence or calls the model past it."""
         original = self.gh.repo
@@ -232,6 +240,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(len(self.agents.calls), 1)
         self.assertEqual(len(self.gh.archives()), 1)
 
+    @legacy_events
     def test_transport_errors_and_call_budget_do_not_become_output_corrections(self):
         """Failures outside validation retain their original retry or blocking policy."""
         with patch.object(self.agents, "ask", side_effect=RuntimeError("transport failed")):
@@ -342,6 +351,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         controller.state["requirements"]["body"] = "A different task."
         self.assertNotIn("intake_concerns", controller.context())
 
+    @legacy_events
     def test_notice_recovers_a_lost_response_without_duplicate_or_model_call(self):
         """A successful comment POST with a lost response recovers before planning."""
         original = self.gh.repo
@@ -398,6 +408,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertIn("Some text is shortened.", body)
         self.assertEqual(controller.context()["intake_concerns"][0], concern)
 
+    @legacy_events
     def test_notice_escapes_and_bounds_model_text_without_losing_context(self):
         """Comments cannot exceed GitHub bounds; complete concerns stay in context and archives."""
         from conversation import EVENT_LIMIT

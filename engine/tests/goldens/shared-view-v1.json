@@ -1,0 +1,226 @@
+[
+  {
+    "name": "plan_summary",
+    "value": {
+      "summary": "Document locked builds. Add a fragment.",
+      "publication": {
+        "changes": [
+          "Add a note under step 5."
+        ],
+        "review_focus": [
+          "Is `--locked` accurate?"
+        ]
+      }
+    },
+    "view": "### Submitted model output\n\nDocument locked builds.\n\n<details><summary>Explanation</summary>\n\nAdd a fragment.\n\n</details>\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "qc_design",
+    "value": {
+      "decision": "revise",
+      "rationale": "One boundary is unspecified. The rest of the plan holds.",
+      "risk": "low",
+      "questions": [],
+      "concerns": [
+        "Specify the `<limit>` boundary."
+      ],
+      "scope": {},
+      "objection_updates": [
+        {
+          "id": "O1",
+          "status": "resolved",
+          "detail": "Old.",
+          "evidence": "Step 2 now covers it.",
+          "counterexample": "",
+          "closure": ""
+        },
+        {
+          "id": "O2",
+          "status": "open",
+          "detail": "Specify the `<limit>` boundary.",
+          "evidence": "Step 3 is silent.",
+          "counterexample": "A request at the limit.",
+          "closure": "Step 3 names the limit."
+        }
+      ]
+    },
+    "view": "### Submitted model output\n\nOne boundary is unspecified.\n\n<details><summary>Explanation</summary>\n\nThe rest of the plan holds.\n\n</details>\n\n#### Objections\n\n- **O1** · resolved: Old.\n- **O2** · open: Specify the `<limit>` boundary.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "review",
+    "value": {
+      "verdict": "changes_requested",
+      "headline": "Two defects remain; one earlier finding is fixed.",
+      "summary": "The guide is close.\n\n<!-- unclosed",
+      "findings": [
+        {
+          "path": "docs/guide.md",
+          "start_line": 3,
+          "line": 4,
+          "detail": "The term is undefined. Define it before use.",
+          "severity": "low",
+          "title": "Wording"
+        },
+        {
+          "path": null,
+          "start_line": null,
+          "line": null,
+          "detail": "No fragment.\n\n```\n</details>",
+          "severity": "high",
+          "title": "Missing *changelog* [fragment](x)"
+        }
+      ],
+      "dispositions": [
+        {
+          "id": "F1",
+          "status": "fixed",
+          "evidence": "Lines 3-4 define it."
+        }
+      ],
+      "design_issue": null,
+      "head": "dddddddddddddddddddddddddddddddddddddddd",
+      "model": "m",
+      "sequence": 2,
+      "finding_ids": [
+        "F2",
+        "F3"
+      ]
+    },
+    "view": "### Submitted model output\n\nTwo defects remain; one earlier finding is fixed.\n\n<details><summary>Explanation</summary>\n\nThe guide is close.\n\n&lt;!-- unclosed\n\n</details>\n\n#### Findings\n\n- **F2** Wording · `docs/guide.md`\n  The term is undefined. Define it before use.\n- **F3** Missing \\*changelog\\* \\[fragment\\]\\(x\\) · General\n  No fragment. \\`\\`\\` &lt;/details&gt;\n\n#### Earlier findings\n\n- **F1** · fixed: Lines 3-4 define it.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "qc_intake",
+    "value": {
+      "decision": "proceed",
+      "rationale": "One boundary is unspecified. The rest of the plan holds.",
+      "risk": "low",
+      "questions": [],
+      "concerns": [],
+      "scope": {},
+      "objection_updates": []
+    },
+    "view": "### Submitted model output\n\nOne boundary is unspecified.\n\n<details><summary>Explanation</summary>\n\nThe rest of the plan holds.\n\n</details>\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "review_rejection",
+    "value": {
+      "decision": "revise",
+      "rationale": "One boundary is unspecified. The rest of the plan holds.",
+      "risk": "low",
+      "questions": [],
+      "concerns": [
+        "Specify the `<limit>` boundary."
+      ],
+      "scope": {},
+      "objection_updates": [
+        {
+          "id": "O1",
+          "status": "resolved",
+          "detail": "Old.",
+          "evidence": "Step 2 now covers it.",
+          "counterexample": "",
+          "closure": ""
+        },
+        {
+          "id": "O2",
+          "status": "open",
+          "detail": "Specify the `<limit>` boundary.",
+          "evidence": "Step 3 is silent.",
+          "counterexample": "A request at the limit.",
+          "closure": "Step 3 names the limit."
+        }
+      ]
+    },
+    "view": "### Submitted model output\n\nOne boundary is unspecified.\n\n<details><summary>Explanation</summary>\n\nThe rest of the plan holds.\n\n</details>\n\n#### Objections\n\n- **O1** · resolved: Old.\n- **O2** · open: Specify the `<limit>` boundary.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "implementation",
+    "value": {
+      "summary": "Updated `read()`.",
+      "validation": "Two tests passed."
+    },
+    "view": "### Submitted model output\n\nUpdated `read()`.\n\n#### Testing (agent-reported)\n\nTwo tests passed.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "storage",
+    "value": [
+      1,
+      2,
+      3
+    ],
+    "view": "### Stored task data\n\nCanonical data is available in this artifact's raw API body."
+  },
+  {
+    "name": "malformed",
+    "value": {
+      "summary": {
+        "wrong": "type"
+      },
+      "findings": [
+        1
+      ]
+    },
+    "view": "### Submitted model output\n\nCanonical data is available in this artifact's raw API body.\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "all-sections",
+    "value": {
+      "decision": "approve",
+      "rationale": "The result preserves `foo()` safely.\n\n```rust\n<content>\n```",
+      "headline": "The result preserves `foo()` safely.",
+      "objection_updates": [
+        {
+          "id": "R1",
+          "status": "resolved",
+          "evidence": "Checked `foo`."
+        }
+      ],
+      "dispositions": [
+        {
+          "id": "F1",
+          "status": "fixed",
+          "evidence": "A <check>"
+        }
+      ],
+      "assessments": [
+        {
+          "criterion": "C1",
+          "status": "satisfied",
+          "reason": "No <overflow>"
+        }
+      ],
+      "tests": [
+        "Tests passed."
+      ],
+      "questions": [
+        "Any followup?"
+      ],
+      "design_issue": {
+        "explanation": "Consider `foo`."
+      },
+      "validation": "Tests passed."
+    },
+    "view": "### Submitted model output\n\nThe result preserves `foo()` safely.\n\n<details><summary>Explanation</summary>\n\n```rust\n<content>\n```\n\n</details>\n\n#### Objections\n\n- **R1** · resolved: Checked `foo`.\n\n#### Questions\n\n- Any followup?\n\n#### Testing\n\n- Tests passed.\n\n#### Earlier findings\n\n- **F1** · fixed: A &lt;check&gt;\n\n#### Assessments\n\n| Criterion | Result | Reason |\n| ---- | ---- | ---- |\n| Review criterion | satisfied | No &lt;overflow&gt; |\n\n#### Design issue\n\nConsider `foo`.\n\n#### Testing (agent-reported)\n\nTests passed.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "excerpt",
+    "value": {
+      "summary": "A lengthy explanation. ```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n"
+    },
+    "view": "### Submitted model output\n\nA lengthy explanation.\n\n<details><summary>Explanation</summary>\n\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe> 😀 `code`\n```\n&lt;unsafe> 😀 `code`\n```\n<unsafe\n```\n\nFull explanation in Raw data.\n\n</details>\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard."
+  },
+  {
+    "name": "display-fallback",
+    "value": {
+      "summary": "A large finding collection.",
+      "findings": [
+        {
+          "detail": "many items",
+          "path": "a.rs"
+        }
+      ]
+    },
+    "view": "### Submitted model output\n\nThis report exceeds the display limit. The complete report is available in Raw data.\n\n<sub>Concurro</sub>\n\n<details><summary>Raw data</summary>\n\nCanonical data is in this artifact's raw API body.\n\n</details>\n\nSubmitted model output; acceptance, attribution and diagnostics are recorded on the issue dashboard.",
+    "finding_copies": 3000
+  }
+]

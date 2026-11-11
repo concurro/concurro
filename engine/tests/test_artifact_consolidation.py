@@ -37,7 +37,7 @@ class ConsolidationTests(unittest.TestCase):
         body = self.gh.artifacts[7][numbers[0]]["artifact"]["body"]
         self.assertGreater(len(body.encode()), 60000)
         self.assertLessEqual(len(body.encode()), 256 * 1024)
-        self.assertIn("\n```text\n", body)
+        self.assertIn("\n<!-- concurro:report-part:v2\n", body)
         self.assertEqual(protocol.PUBLICATION_BODY_BYTES, 60000)
         self.assertEqual(self.fresh_store().get(key, numbers), value)
 
@@ -277,4 +277,4 @@ class ConsolidationTests(unittest.TestCase):
         self.assertEqual(self.fresh_store().restore_history(ref["digest"], ref["history"]), state["reports"])
         self.assertEqual(ref["history"], original)
         bodies = [v["artifact"]["body"] for v in self.gh.artifacts[7].values()]
-        self.assertEqual(sum(body.count("Evidence 24: ") for body in bodies), 1)
+        self.assertEqual(sum("Evidence 24: " in body for body in bodies), 1)

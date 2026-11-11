@@ -11,6 +11,7 @@ from support import (
 
 import conversation
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid
 
@@ -28,6 +29,7 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
         """Select only append-only conversation entries, excluding the editable summary."""
         return [c for c in self.gh.comments if c["body"].startswith(conversation.MARKER)]
 
+    @legacy_events
     def test_revision_conversation_sessions_and_fresh_gate(self):
         """Two revisions keep each model's session while fresh final votes authorize work."""
         self.agents.qc_reports = [
@@ -86,6 +88,7 @@ class ConversationTests(PipelineFixture, unittest.TestCase):
         self.assertFalse(self.gh.refs)
         self.assertEqual(self.gh.merges, 0)
 
+    @legacy_events
     def test_lost_event_response_reconciles_before_next_model_call(self):
         """An accepted archive with a lost response is found without duplicate publication."""
         original = self.gh.repo

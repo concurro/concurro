@@ -9,6 +9,7 @@ from support import CONFIG, ROOT, setUpModule as setUpModule, tearDownModule as 
 
 import design
 from fakes import PLAN, BatchAgents, decision, design_report
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, design_roster, plan_output_contract, validate_plan
 
@@ -179,6 +180,7 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
 class ReviewCorrectionFlowTests(PipelineFixture, unittest.TestCase):
     """The production batch path retains diagnostics, reports and call accounting."""
 
+    @legacy_events
     def test_parallel_correction_delivers_specific_feedback_and_keeps_peer_vote(self):
         """A corrected source ID is accepted once without restarting the sibling."""
         self.config["autonomous"] = True

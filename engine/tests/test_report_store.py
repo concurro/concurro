@@ -50,7 +50,7 @@ class StoreTests(unittest.TestCase):
         accepted = {**report, "classification": {"complexity": "high"}}
         self.store.put({"qc": accepted, "vote": {"report": accepted}, "response": report})
         bodies = [i["artifact"]["body"] for i in self.gh.artifacts[7].values()]
-        self.assertEqual(sum(b.count("UNIQUE-EVIDENCE") for b in bodies), 1)
+        self.assertEqual(sum("UNIQUE-EVIDENCE" in b for b in bodies), 1)
         self.assertEqual(self.fresh().get(raw, self.store.numbers[raw]), report)
 
     def test_existing_format_three_archive_is_reused(self):
@@ -121,7 +121,7 @@ class StoreTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.setUp()
                 value = {"summary": "complete evidence " * 5000}
-                key = self.store.put(value)
+                key = self.store.put(value, legacy=True)
                 numbers = self.store.numbers[key]
                 item = self.gh.artifacts[7][numbers[-1]]
                 if failure == "missing":

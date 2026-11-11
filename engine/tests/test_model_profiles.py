@@ -13,6 +13,7 @@ from agent_entry import command_for, provider_environment
 from agents import Agents, RunnerExecutor
 from controller import Controller, config_digest, validate_config
 from fakes import FINDING, FakeAgents, FakeGitHub, named_config
+from legacy_publications import legacy_events
 from model_config import parse, resolve
 from policy import Blocked, approval_binding, design_roster, digest
 from readiness import review_reasons
@@ -210,6 +211,7 @@ class PipelineTests(unittest.TestCase):
                 return controller, fake, agents
         self.fail("pipeline did not reach gates")
 
+    @legacy_events
     def test_only_assigned_reviewers_vote_and_first_pass_can_skip_fresh_round(self):
         controller, fake, agents = self.run_pipeline()
         names = [(name, stage) for name, stage, _ in agents.calls]

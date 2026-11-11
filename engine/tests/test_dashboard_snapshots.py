@@ -11,6 +11,7 @@ import markup
 from actions import BUNDLE_REASON
 from controller import Controller
 from fakes import ClassifiedAgents
+from legacy_publications import legacy_events
 from pipeline_fixtures import ISSUE, PipelineFixture
 from policy import approval_binding, design_roster, digest
 
@@ -139,6 +140,7 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.state["issue"], ISSUE)
         return bodies
 
+    @legacy_events
     def test_dashboard_bodies_match_snapshots(self):
         """Keep every byte, including links, alert severity, table order and recovery metadata."""
         bodies = self.scenarios()
@@ -147,6 +149,7 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(body, (GOLDENS / (name + ".md")).read_text())
 
+    @legacy_events
     def test_estimate_evidence_order_is_independent_of_operation_ids(self):
         """Report links stay in numeric order when bundle-dependent operation IDs change."""
         controller = self.reach("planned")

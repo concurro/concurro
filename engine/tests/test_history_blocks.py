@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
+import report_artifact
 import report_store
 from checkpoints import AUDIT_MARKER, STATE_PREFIX, CheckpointError, Checkpoints, legacy_state
 from fakes import CONFIG, FakeGitHub
@@ -30,7 +31,14 @@ class HistoryBlockTests(unittest.TestCase):
     def record(self, store, key):
         """Inspect emitted JSON independently of the production decoder."""
         parts = [self.gh.artifacts[7][n]["artifact"]["body"] for n in store.numbers[key]]
-        return json.loads("".join(p.split("\n```", 1)[1].split("\n", 1)[1].split("\n```", 1)[0] for p in parts))
+        return json.loads(
+            "".join(
+                report_artifact.parse(p, key)["part"]
+                if report_artifact.DATA in p
+                else p.split("\n```", 1)[1].split("\n", 1)[1].split("\n```", 1)[0]
+                for p in parts
+            )
+        )
 
     def test_append_and_metadata_update_only_replace_affected_block(self):
         """Closed positions remain stable even when an old entry grows considerably."""
@@ -52,7 +60,7 @@ class HistoryBlockTests(unittest.TestCase):
         self.assertEqual(second["blocks"][1:], third["blocks"][1:])
         self.assertEqual(self.store().get(digest(values), store.numbers[digest(values)]), values)
         bodies = [item["artifact"]["body"] for item in self.gh.artifacts[7].values()]
-        self.assertEqual(sum(body.count("Evidence 1: ") for body in bodies), 1)
+        self.assertEqual(sum("Evidence 1: " in body for body in bodies), 1)
 
     def test_checkpoint_uses_format_seven_and_cold_round_trip(self):
         """Block-only histories require format 7 even without extended state fields."""
@@ -131,8 +139,9 @@ class HistoryBlockTests(unittest.TestCase):
                     result = original(path, method, data)
                     body = (data or {}).get("body", "")
                     if method == "POST" and body.startswith(MARKER) and not lost:
-                        is_manifest = '\n  "blocks": [' in body
-                        is_block = '\n  "value": [' in body
+                        record = json.loads(body.split(report_artifact.DATA, 1)[1].split("\n-->\n", 1)[0])["part"]
+                        is_manifest = '\n  "blocks": [' in record
+                        is_block = '\n  "value": [' in record
                         if is_manifest if manifest else is_block:
                             lost.append(result)
                             raise RuntimeError("lost reply")
@@ -203,9 +212,9 @@ class HistoryBlockTests(unittest.TestCase):
                 ):
                     if partial:
                         with patch.object(self.gh, "repo", side_effect=write), self.assertRaises(RuntimeError):
-                            legacy.put(values)
+                            legacy.put(values, legacy=True)
                     else:
-                        legacy.put(values)
+                        legacy.put(values, legacy=True)
                 first = deepcopy(self.gh.artifacts[7])
                 current = self.store()
                 key = current.put(values)

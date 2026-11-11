@@ -1,6 +1,6 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: phase 1 implemented, awaiting review; phases 2–5 remain proposed.** Builds on
+**Status: phase 1 committed; phase 2 implemented, awaiting review; phases 3–5 remain proposed.** Builds on
 the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
 artifact deletion or diagnostic writes are authorized by this document.
 
@@ -225,7 +225,9 @@ Label the view **submitted model output**. Controller acceptance/rejection, fixe
 diagnostics and attempt attribution stay in the audit/index and notices, linking to that
 same artifact. A model's own approval must not appear to be controller approval.
 
-Freeze renderer version and inputs before writing. Keep the view content-derived, independent
+Verify the stored view text and its continuation trailer on reads; do not re-render evidence.
+Freeze the write-time renderer and its formatting dependencies, with byte-pinned goldens for
+interrupted writes. Freeze renderer version and inputs before writing. Keep the view content-derived, independent
 of event IDs and mutable controller annotations, so identical evidence remains reusable.
 Preserve `report_content`/`report_annotations`, logical digests and approval bindings. Use
 core references plus annotation snapshots in existing receipt/history records instead of
@@ -302,10 +304,10 @@ Existing artifacts remain; no deletion, repacking or mutable bulk archive is pro
 
 ## Implementation order and compatibility
 
-1. **Compact audit encoding and reads (implemented, awaiting review):** comment-encode new audit data, preserve old readers
+1. **Compact audit encoding and reads (committed):** comment-encode new audit data, preserve old readers
    and migration proofs, use latest-only reads plus history on demand. Implement the two
    pointer records and legacy-plan replacement above; pagination cannot restore expired history.
-2. **Shared report representation:** comment-encoded core, readable view, annotation receipts,
+2. **Shared report representation (implemented, awaiting review):** comment-encoded core, readable view, annotation receipts,
    event identity and readers. Define frozen multipart descriptors and continuation recovery.
 3. **Budget-based packing:** share the artifact transport setting, implement measured response
    accounting and the separate hard body check. Validate every response shape.

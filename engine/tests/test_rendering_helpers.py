@@ -13,6 +13,7 @@ import format_samples
 import report_store
 import reviews
 from fakes import FakeGitHub
+from legacy_publications import legacy_events
 from policy import Blocked, digest
 from readiness import ci_reasons
 
@@ -174,6 +175,7 @@ def snapshots():
 class RenderingContractTests(unittest.TestCase):
     """Goldens plus independent assertions protect text and publication semantics."""
 
+    @legacy_events
     def test_publication_snapshots(self):
         self.assertEqual(json.dumps(snapshots(), ensure_ascii=False, indent=2) + "\n", GOLDEN.read_text())
 

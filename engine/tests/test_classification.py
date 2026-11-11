@@ -14,6 +14,7 @@ import reviews
 from bundle import ENGINE_RESOURCES, Bundle
 from checkpoints import LIMIT, Checkpoints
 from fakes import APPROVE, ClassifiedAgents, FakeGitHub, assessment, design_report, intake, named_config
+from legacy_publications import legacy_events
 from model_config import resolve
 from pipeline_fixtures import PipelineFixture
 from policy import (
@@ -136,6 +137,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
                 return controller, states
         self.fail("fixture did not reach readiness")
 
+    @legacy_events
     def test_simple_pipeline_classifies_without_extra_calls_or_pr_text(self):
         controller, states = self.ready()
         self.assertEqual(len(self.agents.calls), 7)
@@ -253,6 +255,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.state["stage"], "escalated")
         self.assertEqual(len(self.agents.calls), 1)
 
+    @legacy_events
     def test_lost_report_archive_response_recovers_the_same_assessment(self):
         original, lost = self.gh.repo, []
 
@@ -273,6 +276,7 @@ class LifecycleTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(sum("Intake QC" in body for body in self.gh.archives()), 1)
         self.assertEqual(controller.state["classification_snapshot"]["sources"][0]["artifact"], lost[0]["number"])
 
+    @legacy_events
     def test_compaction_and_oversized_metadata_preserve_core_and_replay(self):
         original = self.agents.ask
 

@@ -10,6 +10,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 from checkpoints import LIMIT
 from conversation import PublicationError
 from fakes import CONFIG, FakeAgents, FakeGitHub
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import approval_valid, digest
 from report_store import Store
@@ -49,6 +50,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
             controller = self.tick()
         return controller, captured[0]
 
+    @legacy_events
     def test_specific_reason_archive_and_recovery_are_visible_below_live_status(self):
         """A correction is evidence, never a vote; a successful replacement marks it recovered."""
         self.reach_review()
@@ -76,6 +78,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         last = next(context for _, stage, context in reversed(self.agents.calls) if stage == "plan_qc")
         self.assertEqual(last["review_validation_feedback"]["detail"], reason)
 
+    @legacy_events
     def test_large_rejected_output_is_stored_once_and_reloadable(self):
         """Full rejection evidence does not consume the audit's inline capacity."""
         self.reach_review()
@@ -84,7 +87,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         store = Store(self.gh, 7, self.config["bot_login"])
         self.assertEqual(store.get(digest(report)), report)
         artifacts = [a["artifact"]["body"] for a in self.gh.artifacts[7].values()]
-        self.assertEqual(sum(body.count("FULL-REJECTED-REPORT") for body in artifacts), 1)
+        self.assertEqual(sum("FULL-REJECTED-REPORT" in body for body in artifacts), 1)
         self.assertTrue(self.load().state["reports"][-1]["diagnostic"])
 
     def test_decorated_goal_id_feedback_lists_exact_ids_and_recovers(self):
@@ -113,6 +116,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         self.assertTrue(self.load().state["design_votes"])
         self.assertIn("Recovered", self.gh.summary()["body"])
 
+    @legacy_events
     def test_evidence_validation_reason_survives_archival_reload_and_correction(self):
         """The reviewer and humans see the actual evidence failure rather than generic coverage advice."""
         for failure, reason in (
@@ -149,6 +153,7 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
                 self.assertEqual(context["review_validation_feedback"]["detail"], reason)
                 self.assertTrue(self.load().state["design_votes"])
 
+    @legacy_events
     def test_lost_rejection_archive_response_recovers_without_duplicate_or_extra_review(self):
         """Pending evidence is recovered before a replacement model result can overwrite it."""
         self.reach_review()

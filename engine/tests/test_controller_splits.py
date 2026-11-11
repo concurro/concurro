@@ -9,6 +9,7 @@ from unittest.mock import patch
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 from controller import BUNDLE_REASON, Controller, validate_config
+from legacy_publications import legacy_events
 from pipeline_fixtures import ConsensusFixture
 from policy import Blocked
 
@@ -182,15 +183,19 @@ class PublicationSequenceTests(ConsensusFixture, unittest.TestCase):
         self.assertEqual(posts.count("pulls"), 1)
         self.assertEqual(posts[-1], "pulls/9/reviews")
 
+    @legacy_events
     def test_full_publication_sequence(self):
         self.check_trace("normal")
 
+    @legacy_events
     def test_lost_tree_response_replays_without_repeating_implementation(self):
         self.check_trace("tree-crash", crash="git/trees")
 
+    @legacy_events
     def test_lost_pr_response_finds_existing_pr(self):
         self.check_trace("pr-crash", crash="pulls")
 
+    @legacy_events
     def test_uploaded_blob_sequence(self):
         self.check_trace("blob", blobs=True)
 

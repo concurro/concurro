@@ -14,6 +14,7 @@ from agents import Agents
 from checkpoints import AUDIT_MARKER, STATE_PREFIX, CheckpointError, legacy_state
 from controller import Controller
 from fakes import BatchAgents, Crash, FakeGitHub, decision, named_config
+from legacy_publications import legacy_events
 from pipeline_fixtures import ConsensusFixture
 from policy import Blocked, SessionFailure, UncertainOutcome, design_roster
 
@@ -346,6 +347,7 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         self.assertEqual(len(fresh), 2)
         self.assertTrue(all("controller_session" not in c and "own_objections" not in c for c in fresh))
 
+    @legacy_events
     def test_lost_report_publication_replays_sibling_without_duplicate_call_or_archive(self):
         """Result retention and independent consumption survive an archive's lost response."""
         original = self.gh.repo

@@ -13,6 +13,7 @@ from support import (
 import conversation
 import design
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision, design_report
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid, consensus_valid
 
@@ -121,6 +122,7 @@ class DesignContractTests(PipelineFixture, unittest.TestCase):
         with self.assertRaises(Blocked):
             controller.files(controller.state["base"], path, inspection=True)
 
+    @legacy_events
     def test_partial_resolution_keeps_one_stable_objection(self):
         """Accepting one correction does not require approving the entire plan."""
         self.agents.qc_reports = [

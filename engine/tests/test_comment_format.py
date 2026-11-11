@@ -19,6 +19,7 @@ import markup
 import reviews
 from controller import SUMMARY_LIMIT
 from fakes import FINDING
+from legacy_publications import legacy_events
 from policy import Blocked, validate_pr_review, validate_qc
 from review_fixtures import Harness, Reviewers, report
 
@@ -318,6 +319,7 @@ class SizeTests(unittest.TestCase):
         self.assertLessEqual(len(body.encode()), conversation.EVENT_LIMIT)
         self.assertIn("[Review on PR #9]", body)
 
+    @legacy_events
     def test_archive_keeps_the_report_verbatim(self):
         """An archive holds the whole report as JSON, in a fence no report text can close."""
         state, source, details = format_samples.review_state()

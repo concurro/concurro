@@ -95,7 +95,7 @@ class Dashboard:
     @cached_property
     def current_reports(self) -> list[ReportIndex]:
         """Keep only report links from the current run."""
-        return [r for r in self.state.get("reports", []) if r["artifact"] > self.boundary["artifact"]]
+        return dashboard_runs.current_reports(self.state)
 
     def summary_body(self) -> str:
         """The status comment: stage, plan, PR and votes first; reports and evidence collapsed.
@@ -609,7 +609,7 @@ class Dashboard:
             reports = [
                 r
                 for r in self.state.get("reports", [])
-                if boundaries[i]["artifact"] < r["artifact"] <= boundaries[i + 1]["artifact"]
+                if dashboard_runs.report_run(self.state, r, boundaries) == i + 1
             ]
             command = protocol.comment_url(self.config["repository"], self.state["issue"], record["comment"])
             sections.append(

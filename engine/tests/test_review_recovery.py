@@ -15,6 +15,7 @@ from support import (
 import design
 from controller import Controller
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision, design_report, sized_report
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid, validate_qc
 from repository import source_lines
@@ -352,6 +353,7 @@ class ReviewerRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(state["review_repair"]["attempts"], 1)
         self.assertEqual(len(self.tick().state["design_votes"]), 1)
 
+    @legacy_events
     def test_corrected_citation_is_saved_and_archived_after_crash_replay(self):
         """Unique wrong-line quotes recover deterministically without a correction call."""
         self.gh.trees[self.gh.base]["CONTRIBUTING.md"] = "Header\nUse docs.\nOther.\n"

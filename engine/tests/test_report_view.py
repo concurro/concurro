@@ -11,6 +11,7 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 import conversation
 import report_view
 from fakes import FakeGitHub
+from legacy_publications import legacy_events
 from test_rendering_helpers import samples
 
 
@@ -76,6 +77,7 @@ class ReportViewTests(unittest.TestCase):
         self.assertIn("[Full report]", body)
         self.assertIn("F2", body)
 
+    @legacy_events
     def test_lost_archive_response_reuses_readable_body_and_full_data(self):
         for name, sample in samples().items():
             with self.subTest(name=name):

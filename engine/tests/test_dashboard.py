@@ -14,6 +14,7 @@ import actions
 import conversation
 from controller import Controller
 from fakes import FakeAgents, FakeGitHub, decision
+from legacy_publications import legacy_events
 from policy import Blocked, digest
 from review_fixtures import Harness, Reviewers
 
@@ -26,6 +27,7 @@ def actionable(gh):
 class HappyPathTests(Harness, unittest.TestCase):
     """A task that needs no input posts only what a writer must act on."""
 
+    @legacy_events
     def test_welcome_and_actionable_comments_are_posted(self):
         for _ in range(3):  # reach the gates, check them, and check them again on the same head
             controller = self.run_to(Reviewers(set()), "gates")

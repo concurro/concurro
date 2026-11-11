@@ -15,6 +15,7 @@ import reviews
 from checkpoints import LIMIT
 from controller import Controller
 from fakes import APPROVE, FINDING, FakeAgents, FakeGitHub
+from legacy_publications import legacy_events
 from policy import Blocked, digest, validate_pr_review, validate_review
 from review_fixtures import DESIGN_ISSUE, Harness, Reviewers, answer, report
 
@@ -188,6 +189,7 @@ class LegacyRenderingTests(unittest.TestCase):
 class LifecycleTests(Harness, unittest.TestCase):
     """Findings through the real controller: repair rounds, freshness and gates."""
 
+    @legacy_events
     def test_both_providers_fix_their_findings_on_one_head(self):
         """Each provider's dispositions leave the other's report fresh; one repair round reaches the gates."""
         agents = Reviewers({"claude", "codex"})
@@ -276,6 +278,7 @@ class LifecycleTests(Harness, unittest.TestCase):
                 controller = self.run_to(Reviewers(set()), "gates", ticks=4)
                 self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
 
+    @legacy_events
     def test_large_reopen_is_persisted_with_its_full_design_issue(self):
         """A valid design defect remains actionable even when old outcomes are large."""
         self.run_to(Reviewers(set()), "review")
@@ -550,6 +553,7 @@ class PublicationTests(Harness, unittest.TestCase):
                 repairs = [c for _, stage, c in agents.calls if stage == "develop" and c["review_findings"]]
                 self.assertEqual(bool(repairs), when == "reply", "a conflict at publication blocks before repair")
 
+    @legacy_events
     def test_reopen_verdict_is_published_on_the_pr(self):
         """A PR review reopening the design is a COMMENT review on the PR, published from its outbox copy."""
         agents = Reviewers(set())

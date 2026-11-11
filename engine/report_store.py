@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import markup
 import protocol
+import report_artifact
 from github import NotFound
 from policy import Blocked, digest
 from review_state import source_value
@@ -84,6 +85,66 @@ def is_report(value):
     )
 
 
+def projection(value):
+    """Separate reproducible report annotations and rejected-output formatting from canonical content."""
+    draft = None
+    if (
+        isinstance(value, dict)
+        and set(value) == {"output", "reason", "attempt", "truncated"}
+        and isinstance(value["output"], str)
+    ):
+        try:
+            decoded = json.loads(value["output"])
+            if json.dumps(decoded, indent=2, ensure_ascii=True) == value["output"]:
+                order = []
+
+                def collect(node, path):
+                    """Record only object key order needed to reproduce a rejected output string exactly."""
+                    if isinstance(node, dict):
+                        order.append([path, list(node)])
+                        for k, child in node.items():
+                            collect(child, path + [k])
+                    elif isinstance(node, list):
+                        for i, child in enumerate(node):
+                            collect(child, path + [i])
+
+                collect(decoded, [])
+                draft = {"fields": {k: v for k, v in value.items() if k != "output"}, "order": order}
+                value = decoded
+        except (ValueError, TypeError):
+            pass
+    annotations = report_annotations(value) if is_report(value) else {}
+    core = report_content(value) if is_report(value) else value
+    return core, annotations, draft
+
+
+def annotated(value, annotations, draft=None):
+    """Reconstruct a full logical report or exact rejected-output wrapper from its receipt."""
+    if not isinstance(annotations, dict) or not set(annotations) <= ANNOTATIONS:
+        raise ValueError("Invalid report annotations")
+    if annotations:
+        if not isinstance(value, dict) or set(value) & set(annotations):
+            raise ValueError("Report annotations overwrite evidence")
+        value = {**value, **deepcopy(annotations)}
+    if draft is not None:
+        if set(draft) != {"fields", "order"} or set(draft["fields"]) != {"reason", "attempt", "truncated"}:
+            raise ValueError("Invalid rejected-output receipt")
+        holder = [deepcopy(value)]
+        seen = set()
+        for path, keys in draft["order"]:
+            location = tuple(path)
+            if location in seen or not isinstance(keys, list) or len(set(keys)) != len(keys):
+                raise ValueError("Invalid rejected-output key order")
+            seen.add(location)
+            parent, slot = (holder, 0) if not path else (source_value(holder[0], path[:-1]), path[-1])
+            node = parent[slot]
+            if not isinstance(node, dict) or set(node) != set(keys):
+                raise ValueError("Rejected-output keys changed")
+            parent[slot] = {key: node[key] for key in keys}
+        value = {**draft["fields"], "output": json.dumps(holder[0], indent=2, ensure_ascii=True)}
+    return value
+
+
 def packed(state):
     """Reference evidence and oversized collections, leaving small metadata inline."""
     if len(json.dumps(state).encode()) <= INLINE:
@@ -124,6 +185,17 @@ def packed(state):
 
     def visit(value, path):
         """Detach canonical reports, large state roots and large leaves."""
+        core, annotations, draft = projection(value)
+        if (
+            draft is not None
+            or is_report(value)
+            and (digest(core) in sources or len(json.dumps(core).encode()) > INLINE)
+        ):
+            ref = {"path": path, "digest": digest(core), "value": core, "select": [], "annotations": annotations}
+            if draft is not None:
+                ref["draft"] = draft
+            detached.append(ref)
+            return None
         if (
             path == ["review_draft"]
             or path[0] == "review_batch"
@@ -198,10 +270,20 @@ def allowed_path(path):
 def inline_fields(state, names):
     """Locate original metadata fields retained in the audit or its reference annotations."""
     compact, refs = packed(state)
+    # Published annotation snapshots are the archive now, including while the index is inline.
+    published = list(state.get("reports", [])) + list(state.get("conversation", {}).get("receipts", {}).values())
+    snapshots = {
+        id(entry["data"])
+        for entry in published
+        if isinstance(entry.get("data"), dict) and "annotations" in entry["data"]
+    }
+    snapshots.update(id(entry) for entry in published if entry.get("event") and "data" in entry)
     result = set()
 
     def visit(original, view):
         """Pair the packed layout with original holders, skipping detached subtrees."""
+        if id(original) in snapshots:
+            return
         if isinstance(view, dict):
             for key, child in view.items():
                 if key in names and child is not None:
@@ -213,7 +295,8 @@ def inline_fields(state, names):
 
     visit(state, compact)
     for ref in refs:
-        visit(source_value(state, ref["path"]), ref["annotations"])
+        if "draft" not in ref:
+            visit(source_value(state, ref["path"]), ref["annotations"])
     return result
 
 
@@ -234,7 +317,10 @@ def restore(state, refs, store):
             not in (
                 {"path", "digest", "artifacts", "select", "annotations"},
                 {"path", "digest", "history", "select", "annotations"},
+                {"path", "digest", "artifacts", "select", "annotations", "draft"},
             )
+            or "draft" in ref
+            and (state.get("version") != FORMAT or ref.get("select"))
             or "history" in ref
             and (state.get("version") != FORMAT or ref.get("select") or ref.get("annotations"))
             or not allowed_path(ref["path"])
@@ -258,10 +344,7 @@ def restore(state, refs, store):
             if not (isinstance(component, str) or type(component) is int and component >= 0):
                 raise ValueError()
             value = value[component]
-        if ref["annotations"]:
-            if not isinstance(value, dict) or set(value) & set(ref["annotations"]):
-                raise ValueError()
-            value = {**value, **ref["annotations"]}
+        value = annotated(value, ref["annotations"], ref.get("draft"))
         parent[slot] = value
 
 
@@ -420,14 +503,28 @@ class Store:
         """Ignore user imitations; duplicate controller markers are conflicts."""
         return owned(self.collection(), self.author, prefix, "creator")
 
-    def reference(self, value, *, prepare):
+    def shared_reference(self, value, *, prepare=True):
+        """Keep per-attempt annotations in the caller's receipt, sharing just immutable evidence."""
+        core, annotations, draft = projection(value)
+        ref = self.reference(core, prepare=prepare) | {"annotations": deepcopy(annotations)}
+        if draft is not None:
+            ref["draft"] = deepcopy(draft)
+        return ref
+
+    def restore_reference(self, ref):
+        """Read canonical data and reconstruct the receipt's exact annotation snapshot."""
+        return annotated(self.get(ref["digest"], ref["artifacts"]), ref.get("annotations", {}), ref.get("draft"))
+
+    def reference(self, value, *, prepare, legacy=False):
         """Describe immutable evidence, optionally confirming it before a checkpoint write."""
-        key = self.put(value) if prepare else digest(value)
+        key = self.put(value, legacy=legacy) if prepare else digest(value)
         return {"digest": key, "artifacts": self.numbers.get(key, [])}
 
     def checkpoint_reference(self, item, *, prepare=False):
         """Keep a growing list's directory and unfinished tail in the mutable checkpoint."""
         ref = {k: item[k] for k in ("path", "digest", "select", "annotations")}
+        if "draft" in item:
+            ref["draft"] = item["draft"]
         value = item["value"]
         if prepare and not self.numbers.get(item["digest"]) and self.matches(f"{MARKER}{item['digest']}:"):
             self.put(value)
@@ -471,7 +568,11 @@ class Store:
         tail = record["tail"]
         slots = set()
         for ref in tail["references"]:
-            if not isinstance(ref, dict) or set(ref) != {"path", "digest", "artifacts"}:
+            if not isinstance(ref, dict) or set(ref) not in (
+                {"path", "digest", "artifacts"},
+                {"path", "digest", "artifacts", "annotations"},
+                {"path", "digest", "artifacts", "annotations", "draft"},
+            ):
                 raise invalid
             path = tuple(ref["path"])
             if any(path[: len(old)] == old or old[: len(path)] == path for old in slots):
@@ -487,25 +588,33 @@ class Store:
             raise ReportDataError("Checkpoint history failed digest verification.")
         return value
 
-    def encode(self, value, *, blocks=True, prepare=True):
+    def encode(self, value, *, blocks=True, prepare=True, projected=True):
         """Reference canonical reports and fixed-position blocks of detached collections."""
         if blocks and isinstance(value, list) and len(value) > BLOCK_ENTRIES:
             refs = []
             for start in range(0, len(value), BLOCK_ENTRIES):
                 block = value[start : start + BLOCK_ENTRIES]
-                refs.append(self.reference(block, prepare=prepare) | {"count": len(block)})
+                refs.append(self.reference(block, prepare=prepare, legacy=not projected) | {"count": len(block)})
             return {"blocks": refs, "length": len(value), "size": BLOCK_ENTRIES}
         if is_report(value):
             annotations = report_annotations(value)
             if annotations:
                 core = report_content(value)
-                return {"report": self.reference(core, prepare=prepare), "annotations": annotations}
+                return {
+                    "report": self.reference(core, prepare=prepare, legacy=not projected),
+                    "annotations": annotations,
+                }
         refs = []
 
         def visit(child, path):
             """Keep containers inline, extracting whole nested reports once."""
-            if path and is_report(child):
-                refs.append({"path": path} | self.reference(child, prepare=prepare))
+            if path and (is_report(child) or projected and projection(child)[2] is not None):
+                ref = (
+                    self.shared_reference(child, prepare=prepare)
+                    if projected
+                    else self.reference(child, prepare=prepare, legacy=True)
+                )
+                refs.append({"path": path} | ref)
                 return None
             if isinstance(child, dict):
                 return {k: visit(v, path + [k]) for k, v in child.items()}
@@ -515,7 +624,7 @@ class Store:
 
         return {"value": visit(value, []), "references": refs}
 
-    def put(self, value):
+    def put(self, value, *, legacy=False):
         """Confirm immutable parts before referencing them; reuse earlier report archives."""
         key = digest(value)
         if key in self.verified:
@@ -541,17 +650,21 @@ class Store:
             item = self.read(self.archive_index[key])
             self.remember(key, [item["number"]], value)
             return key
-        # A pre-upgrade write may already have its first part, even after a lost reply.
-        # Finish that exact encoding rather than replacing the immutable digest marker.
+        matches = self.matches(f"{MARKER}{key}:")
+        modern = [item for item in matches if report_artifact.DATA in item["body"]]
+        if modern or not matches and not legacy:
+            if modern and len(modern) != len(matches):
+                raise ReportDataError("Mixed review data encodings.")
+            return self.put_shared(value, key, modern)
         first = self.matches(f"{MARKER}{key}:1:")
         if len(first) > 1:
             raise ReportDataError("Duplicate review data parts.")
-        if not first and self.matches(f"{MARKER}{key}:"):
+        if not first and matches:
             raise ReportDataError("Stored review data is missing its first part.")
         layout = parse_part(self.read(first[0])["body"], key) if first else None
         block_prefix = record_json({"blocks": []}).partition("]")[0]
         blocks = not first or "\n" + block_prefix in first[0]["body"]
-        record = self.encode(value, blocks=blocks)
+        record = self.encode(value, blocks=blocks, projected=False)
         refs = record.get("references", []) + record.get("blocks", [])
         refs += [record["report"]] if "report" in record else []
         links = []
@@ -589,6 +702,105 @@ class Store:
             numbers.append(item["number"])
         self.remember(key, numbers, value)
         return key
+
+    def shared_parts(self, key, items, *, verified=False):
+        """Verify a consistent layout and accept only byte-identical unedited duplicate parts."""
+        parts, layout = {}, None
+        for candidate in items:
+            item = candidate if verified else self.read(candidate)
+            part = report_artifact.parse(item["body"], key)
+            if layout is not None and layout != part["layout"]:
+                raise ReportDataError("Conflicting shared report layouts.")
+            layout = part["layout"]
+            index = part["index"]
+            if item["name"] != f"Concurro review data {key[:32]} part {index}":
+                raise ReportDataError("Shared report name changed.")
+            old = parts.get(index)
+            if old and any(old[0][k] != item[k] for k in ("body", "name")):
+                raise ReportDataError("Conflicting shared report copies.")
+            if old is None or item["number"] < old[0]["number"]:
+                parts[index] = (item, part)
+        return layout, parts
+
+    def put_shared(self, value, key, matches):
+        """Finish a frozen continuation-first write, reusing every verified surviving part."""
+        try:
+            layout, parts = self.shared_parts(key, matches)
+            record = self.encode(value, blocks=layout["blocks"] if layout else True)
+            encoded = record_json(record)
+            view = (
+                report_artifact.stored_view(
+                    parts[1][0]["body"], layout, parts[1][1]["continuations"], self.repository, self.issue
+                )
+                if 1 in parts
+                else report_artifact.submitted(value)
+            )
+            if layout is None:
+                layout = report_artifact.pack(key, encoded, view, True, CHUNK, self.repository, self.issue)
+            if digest(view) != layout["view"]:
+                raise ReportDataError("Shared report renderer changed.")
+            slices = report_artifact.slices(encoded, layout)
+            numbers = [None] * len(slices)
+            if 1 in parts:
+                # Existing entry links pin continuation identities, including valid duplicate copies.
+                for index, number in enumerate(parts[1][1]["continuations"], 2):
+                    item = self.verify(self.gh.repo(f"issues/{self.issue}/artifacts/{number}"))
+                    parsed = report_artifact.parse(item["body"], key)
+                    if parsed["index"] != index or parsed["layout"] != layout:
+                        raise ReportDataError("Shared report continuation changed.")
+                    parts[index] = (item, parsed)
+            for index in [*range(2, len(slices) + 1), 1]:
+                body = report_artifact.body(
+                    key, index, layout, slices[index - 1], view, numbers[1:], self.repository, self.issue
+                )
+                if len(body.encode()) > protocol.ARTIFACT_BODY_BYTES and index not in parts:
+                    raise ReportDataError("Shared report part exceeds artifact capacity.")
+                name = f"Concurro review data {key[:32]} part {index}"
+                if index in parts:
+                    item = parts[index][0]
+                    if item["body"] != body or item["name"] != name:
+                        raise ReportDataError("Shared report bytes changed.")
+                else:
+                    item = self.gh.repo(
+                        f"issues/{self.issue}/artifacts", "POST", {"type": "generic", "name": name, "body": body}
+                    )
+                    self.collection().append(item)
+                self.read(item)
+                numbers[index - 1] = item["number"]
+            self.remember(key, numbers, value)
+            return key
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise ReportDataError("Malformed or conflicting shared report data.") from None
+
+    def load_shared(self, key, items, numbers, *, verified=False):
+        """Read a complete shared artifact without confusing content identity with event identity."""
+        layout, parts = self.shared_parts(key, items, verified=verified)
+        if layout is None or set(parts) != set(range(1, len(layout["ends"]) + 1)):
+            raise ReportDataError("Shared report data is incomplete.")
+        actual = [parts[1][0]["number"], *parts[1][1]["continuations"]]
+        if numbers is not None and actual != numbers:
+            raise ReportDataError("Shared report identities changed.")
+        for index, number in enumerate(actual, 1):
+            if parts[index][0]["number"] != number:
+                item = self.verify(self.gh.repo(f"issues/{self.issue}/artifacts/{number}"))
+                parsed = report_artifact.parse(item["body"], key)
+                if parsed["index"] != index or parsed["layout"] != layout:
+                    raise ReportDataError("Shared report continuation changed.")
+                parts[index] = (item, parsed)
+        encoded = "".join(parts[i][1]["part"] for i in range(1, len(actual) + 1))
+        report_artifact.slices(encoded, layout)
+        value = self.decode_record(json.loads(encoded))
+        if digest(value) != key:
+            raise ReportDataError("Shared report digest mismatch.")
+        view = report_artifact.stored_view(parts[1][0]["body"], layout, actual[1:], self.repository, self.issue)
+        for index, (item, record) in parts.items():
+            expected = report_artifact.body(
+                key, index, layout, record["part"], view, actual[1:], self.repository, self.issue
+            )
+            if item["body"] != expected:
+                raise ReportDataError("Shared report body mismatch.")
+        self.remember(key, actual, value)
+        return value
 
     def remember(self, key, numbers, value):
         """Share a verified immutable value across ticks without sharing mutable state."""
@@ -645,8 +857,11 @@ class Store:
                     raise ReportDataError("Stored report failed digest verification.")
                 self.remember(key, numbers, value)
                 return value
+        discovered = items if items is not None else self.matches(MARKER + key + ":")
+        if any(report_artifact.DATA in item["body"] for item in discovered):
+            return self.load_shared(key, discovered, numbers, verified=items is not None)
         chunks, identities, count = {}, {}, None
-        for item in items if items is not None else self.matches(MARKER + key + ":"):
+        for item in discovered:
             body = item["body"] if items is not None else self.read(item)["body"]
             index, total, part, _ = parse_part(body, key)
             if not 1 <= index <= total or count not in (None, total) or index in chunks:
@@ -678,7 +893,7 @@ class Store:
             value = record["value"]
         for ref in record.get("references", []):
             parent, slot = graft_slot(value, ref["path"], ReportDataError("Overlapping report references."))
-            parent[slot] = self.get(ref["digest"], ref["artifacts"])
+            parent[slot] = self.restore_reference(ref)
         return value
 
     def restore_blocks(self, record):

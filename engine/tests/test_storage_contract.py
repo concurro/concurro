@@ -98,7 +98,7 @@ class StorageContractTests(unittest.TestCase):
                 self.setUp()
                 store = self.store()
                 with patch("report_store.CHUNK", chunk):
-                    self.assertEqual(store.put(report), key)
+                    self.assertEqual(store.put(report, legacy=True), key)
                 numbers = store.numbers[key]
                 expected = [
                     f"<!-- concurro:report-data:v1:{key}:{i}:{len(parts)} -->\n"

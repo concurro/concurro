@@ -2,6 +2,7 @@
 
 import json
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -26,6 +27,7 @@ from review_state import source_value as source_value
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.
 # Format 5 adds a bounded human view over the same canonical data.
+# Format 6 reuses the canonical artifact and keeps per-event annotation snapshots in the index.
 FORMAT = 3
 
 ARCHIVED = "… [Full text in its report archive.]"
@@ -442,14 +444,14 @@ def index_entry(state, kind, source, details):
 
 
 def event_format(kind, details):
-    """Choose embedded archives or canonical report links for newly queued sources."""
-    return 5
+    """Use shared canonical artifacts for newly queued reports."""
+    return 6
 
 
 def queue(state, title, body=None, *, source=None, kind=None, details=None, meta=(), request=None):
     """Persist a bounded event descriptor; large reports stay in their existing state fields.
 
-    A sourced event is a report, archived in its own artifact; `title` and `body` are for
+    A sourced event records a report publication against shared evidence; `title` and `body` are for
     an issue comment.
     """
     if source is not None and kind in ("qc", "review_rejection") and details.get("phase") != "intake":
@@ -482,6 +484,8 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
             format=event_format(kind, details),
             index=index_entry(state, kind, source, details),
         )
+        if event["format"] == 6:
+            event["run"] = len(state.get("invalidations", [])) + 1
         timing = review_timing.index_receipt(state, kind, details)
         if timing:
             event["index"]["timing"] = timing
@@ -579,9 +583,14 @@ def publish(state, github, config, store=None):
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"
             data = None
-            if event.get("format", 1) >= 4:
+            shared = event.get("format") == 6
+            if shared:
                 source = source_value(state, event["source"])
-                key = store.put(source)
+                data = store.shared_reference(source)
+                published = {"number": data["artifacts"][0]}
+            if not shared and event.get("format", 1) >= 4:
+                source = source_value(state, event["source"])
+                key = store.put(source, legacy=True)
                 numbers = store.numbers[key]
                 data = {"digest": key, "artifacts": numbers}
                 title, _, meta = render_v2(state, event["kind"], event["source"], event["details"])
@@ -599,31 +608,32 @@ def publish(state, github, config, store=None):
                 if event.get("format") == 5:
                     body = report_view.render(event, source, links, ARCHIVE_LIMIT)
             is_archive = event.get("format", 1) >= 3
-            if is_archive:
-                # Archives are artifacts, authored like the audit state.
-                if artifacts is None:
-                    artifacts = store.collection()
-                author = identities.author("state")
-                published_items = artifacts
-                author_field = "creator"
-            else:
-                # Recovery trusts only the one identity expected to author this event.
-                author = identities.author("conversation", event.get("role"))
-                published_items = comments
-                author_field = "user"
-            matches = [
-                c
-                for c in published_items
-                if c.get(author_field, {}).get("login") == author and c.get("body", "").startswith(marker)
-            ]
-            if len(matches) > 1 or matches and matches[0]["body"] != body:
-                raise PublicationError("conversation_conflict")
-            if matches:
-                published = matches[0]
-            elif is_archive:
-                published = _create_archive(github, state["issue"], event, body)
-            else:
-                published = _create_comment(github, state["issue"], body)
+            if not shared:
+                if is_archive:
+                    # Archives are artifacts, authored like the audit state.
+                    if artifacts is None:
+                        artifacts = store.collection()
+                    author = identities.author("state")
+                    published_items = artifacts
+                    author_field = "creator"
+                else:
+                    # Recovery trusts only the one identity expected to author this event.
+                    author = identities.author("conversation", event.get("role"))
+                    published_items = comments
+                    author_field = "user"
+                matches = [
+                    c
+                    for c in published_items
+                    if c.get(author_field, {}).get("login") == author and c.get("body", "").startswith(marker)
+                ]
+                if len(matches) > 1 or matches and matches[0]["body"] != body:
+                    raise PublicationError("conversation_conflict")
+                if matches:
+                    published = matches[0]
+                elif is_archive:
+                    published = _create_archive(github, state["issue"], event, body)
+                else:
+                    published = _create_comment(github, state["issue"], body)
             if "source" not in event:
                 journal["latest"] = published["id"]
                 actions.blocked_posted(state, published["id"], body)
@@ -633,13 +643,25 @@ def publish(state, github, config, store=None):
             source = source_value(state, event["source"])
             receipt = {"content_digest": event["content_digest"], "source_digest": digest(source)}
             if data is not None:
-                receipt["data"] = data
+                receipt["data"] = deepcopy(data)
             if isinstance(source, dict) and "classification" in source:
                 receipt["core_digest"] = digest(classification.core(source))
             if is_archive:
                 receipt["artifact"] = published["number"]
                 index = state.setdefault("reports", [])
-                index.append({**event["index"], "artifact": published["number"]})
+                entry = {**event["index"], "artifact": published["number"]}
+                if shared:
+                    entry.update(
+                        event=event["id"],
+                        run=event.get("run", len(state.get("invalidations", [])) + 1),
+                        data=deepcopy(data),
+                        source_digest=digest(source),
+                        publication={
+                            k: deepcopy(event[k]) for k in ("kind", "title", "source", "details", "sequence", "at")
+                        },
+                    )
+                if not shared or not any(r.get("event") == event["id"] for r in index):
+                    index.append(entry)
             else:
                 receipt["comment"] = published["id"]
                 journal["latest"] = published["id"]

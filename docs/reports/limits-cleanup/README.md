@@ -454,3 +454,81 @@ loss when compact overflow avoids trimming. Dashboard goldens and bundle resourc
 Bundle identity remains `837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
 The recorded deployed ref is `7e39bc4e954744c65afc1b1ed2b4f8ee78e16ca6`; this implementation
 extends the unreleased format-7 baseline. No live deployment state was changed or probed.
+
+
+## Artifact consolidation phase 2: shared reports
+
+New format-6 report publications link the first retained artifact, combining a neutral
+submitted-output view with comment-encoded canonical data. Ratings, attribution, source
+context and event identity remain in immutable publication snapshots in the existing
+index/receipts. Rejected serialized output reconstructs exactly, including JSON key order.
+No extra annotation-wrapper or readable-view artifact is created on the new publication path.
+Native PR reviews and model-call accounting are unchanged.
+
+Every new part carries its frozen renderer and layout descriptor. Continuations precede the
+entry; recovery from any surviving part keeps the original boundaries. Identical unedited
+App copies are accepted without changing pinned IDs; conflicting or edited copies fail.
+Legacy parts, whole-list histories and queued conversation formats 3–5 keep their old bytes.
+The phase-1 rollback restriction still applies to all saved tasks; shared parts additionally
+require the phase-2 reader, not just an arbitrary format-7 engine. There is no bundle change.
+
+[Traffic results](shared-phase2-traffic.json) replay the same script against phase-1 commit
+`4401e17` and this change: 48 retained and published reports, one plan, then ten cold idle saves.
+Unlike the earlier history-only workload, this includes actual conversation publication.
+Byte counts use the existing CommonMark response model, not live GitHub measurements.
+
+| Measurement | Phase 1 | Phase 2 |
+| ---- | ---- | ---- |
+| Canonical report artifacts | 48 | 48 |
+| Annotation wrappers | 48 | 0 |
+| Separate readable views | 48 | 0 |
+| History/index blocks | 0 | 6 |
+| Audit / plan artifacts | 1 / 1 | 1 / 1 |
+| **Total artifacts** | **146** | **56** |
+| GETs, including collection pages | 949 | 1,027 |
+| Collection GETs | 3 | 63 |
+| POSTs / PATCHes | 147 / 193 | 57 / 193 |
+| Uploaded JSON bytes | 2,886,179 | 3,161,060 |
+| Modeled response bytes | 28,531,618 | 35,204,563 |
+| Peak audit body bytes | 27,411 | 27,927 |
+
+The tradeoff is larger event receipts and six index blocks. Cold saves run the existing
+whole-list discovery check in `Store.checkpoint_reference`, increasing collection reads.
+Fewer artifacts do **not** yet mean fewer downloaded bytes. Phase 4 addresses ordinary
+scans; phase 3 replaces the existing 256 KiB packing policy with response-budget packing.
+Neither is included here. Network bytes are informational for this installation, where
+traffic is free; the cost constraint is avoiding repeated or uncached harness invocations.
+Recovery tests verify completed turns are not called or charged again, and the normal
+pipeline still makes seven model calls. The traffic run injects no interruption; regression tests lose
+every continuation/entry reply and confirm recovery leaves no unused duplicate artifacts.
+
+```bash
+python3 engine/tests/shared_report_traffic.py --reports 48
+```
+
+Validation: 19 new shared-artifact/controller tests, including exact annotation and rejected
+output recovery, reused content across runs, per-event audit accounting, immutable-copy
+verification and interrupted multipart publication. Five initial cases were replayed against
+phase 1: four exposed missing behavior (including the absent event field); the pre-existing
+audit count case passed. Historical rendering/recovery tests explicitly queue format 5 so
+their frozen text and artifact-number goldens remain unchanged. Current-format controller
+pipelines and both 48-call capacity cases pass with shared publication enabled.
+
+Full validation: engine 1,078 tests (one Linux-only skip on macOS), service 348, gateway 58;
+Ruff check/format, Pyright, compileall, unchanged bundle identity and whitespace checks.
+
+
+### Phase-2 review correction: renderer-independent reads
+
+Cold reads and completed-artifact reuse verify the stored readable text against the layout's
+view digest after checking/removing the exact continuation-link trailer. Neither invokes a
+renderer. An interrupted write with only continuations uses the frozen renderer-1 snapshot,
+including its formatting helpers; it has no dependency on live `report_view` or `markup`.
+That compatibility copy is deliberate: future presentation edits require a new version,
+while existing unfinished writes keep their bytes. Frozen goldens were captured before the
+fix, covering normal report types, structured sections, malformed values and display fallback.
+
+Four regression cases cover renderer-free cold reads/reuse, continuation-only recovery after
+live UI changes, view/trailer tampering, and frozen view bytes. The two behavioral cases
+failed before the fix; tamper checks and goldens already passed. Full validation passes with
+the counts above. The 48-report traffic measurements and bundle identity are unchanged.

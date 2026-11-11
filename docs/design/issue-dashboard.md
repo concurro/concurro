@@ -104,8 +104,9 @@ model calls. Missing audit history without a witness remains a verification fail
 
 - **Canonical report data:** new design and PR reviews store their full JSON in
   immutable, content-addressed issue artifacts. The retained response, accepted
-  vote, review history and rounds archive share the same report data. Controller
-  annotations and advisory ratings reference its core instead of duplicating it.
+  vote, review history and rounds table share the same report artifact. Its bounded readable
+  view describes submitted model output; canonical JSON is hidden in an HTML comment. Controller
+  annotations and advisory ratings live in per-event receipt snapshots, without wrapper artifacts.
   Existing format-3 archives are reused when their complete report matches.
 - **Audit references:** statuses and small collections stay in the audit;
   bulky reports, history collections and report indexes are referenced by digest and artifact numbers. Derived finding text
@@ -117,9 +118,12 @@ model calls. Missing audit history without a witness remains a verification fail
   Current, unarchived and pending-publication ratings remain intact; only inline archived
   historical ratings may be shortened or dropped from the checkpoint. Detached timing,
   ratings, snapshots and assessment links are not deleted to relieve audit pressure. The full
-  archived report remains unchanged. Historical trimming is covered through the 48-call budget in regression tests.
-  An unrelated duplicate cannot replace an already bound artifact. Ambiguous
-  discovery, missing data and invalid provenance or digests stop recovery.
+  archived report remains unchanged. New publication snapshots and event timing are never trimmed.
+  Historical trimming is covered through the 48-call budget in regression tests.
+  An unrelated duplicate cannot replace an already bound artifact. New immutable parts accept
+  byte-identical, unedited App copies, choosing the lowest number on discovery and retaining
+  pinned IDs. Conflicting copies, missing data and invalid provenance or digests stop recovery.
+  Legacy duplicate rules are unchanged.
 - **History blocks:** oversized lists store completed eight-entry blocks as immutable data.
   Their ordered directory and unfinished tail remain in the mutable audit. Report bodies
   within the tail still use canonical references. Appends create a history artifact only
@@ -135,15 +139,18 @@ model calls. Missing audit history without a witness remains a verification fail
   Eviction or restart re-verifies remotely and detects such changes. Mutable audit
   and plan artifacts are never trusted through this cache. The archive digest
   index is built once when a new write needs discovery.
-- **Publication:** new format-5 reports render verdicts, findings, objections, assessments
-  and agent-reported validation as Markdown. Canonical data links remain under Raw data;
-  format-5 archives carry a view marker and audit readers parse only that terminal section.
-  Rejected views use the controller diagnostic, never the rejected draft's own reason;
-  formats 2–4 remain readable and replay byte-for-byte. Criterion labels are frozen when
-  the report is queued. Excerpts shrink to fit without altering canonical evidence. Human
-  views retain a 60,000-byte allowance; new immutable data parts have a separate 256 KiB
-  operating size. Large parts use plain-text fences to avoid JSON syntax-highlighting expansion. Lost
-  responses are recovered by marker and exact body; artifacts are never edited.
+- **Publication:** new format-6 events reuse the canonical artifact instead of creating a
+  separate readable archive. Acceptance/rejection, fixed diagnostics, attribution and source
+  context remain in the event index and receipts. Stable event and run identities keep repeated
+  content distinct in the dashboard and audit tool. Formats 3–5 retain their original writers
+  and readers, including queued recovery; no existing artifact is rewritten.
+  New version-2 data parts hide JSON in comments, escaping `>` as `\u003e`. Every part records
+  the renderer and complete multipart layout. Continuations are written first; the entry links
+  their verified IDs. Readers verify stored view text against its digest without rendering.
+  Renderer 1 freezes its own formatting helpers for interrupted writes; new presentation needs
+  a new renderer version. Any surviving part fixes recovery boundaries despite changed packing
+  settings. Views retain a 60,000-byte allowance and complete data parts the existing 256 KiB
+  allowance; response-budget packing is a separate proposal phase.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.
 - **Runner feedback:** lengthy selected feedback is delivered as digest-checked
@@ -155,7 +162,8 @@ model calls. Missing audit history without a witness remains a verification fail
   Files are temporary transport, not another durable evidence store. Call identity
   still uses the original feedback, so file projection cannot duplicate a paid call.
 - **Checkpoint format:** new audits use format 7 for comment encoding, dashboard witnesses
-  and plan-replacement intents, alongside detached histories and overflow metadata.
+  and plan-replacement intents, alongside detached histories, overflow metadata and shared-report
+  annotation receipts. New shared parts require this reader even though the checkpoint stays at 7.
   Formats 2–6 remain readable and migrate on save without changing approvals or budgets.
   Rollback requires this phase's reader, not merely an earlier format-7 build. Never restore
   an old audit snapshot to roll back: that loses spent calls and publication progress.
@@ -163,7 +171,8 @@ model calls. Missing audit history without a witness remains a verification fail
   receipt-gated compaction. Referenced format-4 reports keep full evidence after
   publication. Oversized PR thread text is excerpted with a dashboard link; repair
   files retain the complete finding. Artifact discovery uses ten entries per page
-  to stay within the existing read bound, but idle ticks do not scan the collection.
+  to stay within the existing read bound. Legacy whole-list detection can still scan the
+  collection on cold saves; eliminating those scans is a later consolidation phase.
 
 
 ## Compatibility and future work

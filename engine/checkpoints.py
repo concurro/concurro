@@ -633,7 +633,7 @@ class Checkpoints:
         if len(body.encode()) <= protocol.ARTIFACT_VIEW_BYTES:
             return body
         draft = state.get("plan_draft")
-        key = digest(draft or state["plan"])
+        key = digest(report_store.projection(draft or state["plan"])[0])
         numbers = self.reports.numbers.get(key, [])
         if not numbers:
             raise CheckpointError("artifact_size")

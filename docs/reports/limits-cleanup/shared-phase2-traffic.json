@@ -1,0 +1,46 @@
+{
+  "baseline_commit": "4401e17",
+  "workload": "48 retained, annotated and published reports; one plan; ten cold idle save cycles",
+  "response_model": "JSON plus CommonMark; not a bound on GitHub HTML or live traffic",
+  "baseline": {
+    "reports": 48,
+    "artifacts": {
+      "audit": 1,
+      "plan": 1,
+      "canonical_report": 48,
+      "annotation_wrapper": 48,
+      "separate_readable_view": 48
+    },
+    "artifact_total": 146,
+    "requests": {
+      "GET": 949,
+      "collection_GET": 3,
+      "POST": 147,
+      "PATCH": 193
+    },
+    "uploaded_json_bytes": 2886179,
+    "modeled_response_bytes": 28531618,
+    "peak_audit_body_bytes": 27411,
+    "interruption_injected": false
+  },
+  "phase_2": {
+    "reports": 48,
+    "artifacts": {
+      "audit": 1,
+      "plan": 1,
+      "canonical_report": 48,
+      "history_or_index_block": 6
+    },
+    "artifact_total": 56,
+    "requests": {
+      "GET": 1027,
+      "collection_GET": 63,
+      "POST": 57,
+      "PATCH": 193
+    },
+    "uploaded_json_bytes": 3161060,
+    "modeled_response_bytes": 35204563,
+    "peak_audit_body_bytes": 27927,
+    "interruption_injected": false
+  }
+}

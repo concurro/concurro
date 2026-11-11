@@ -7,6 +7,7 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 
 import dashboard_runs
 from fakes import ClassifiedAgents, FakeGitHub
+from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
 from policy import approval_binding
 
@@ -81,6 +82,7 @@ class DashboardRunTests(PipelineFixture, unittest.TestCase):
         self.assertIn("↳ Round 2 iterative", summary)
         self.assertEqual(len(controller.state["invalidations"]), 1)
 
+    @legacy_events
     def test_legacy_invalidation_recovers_boundaries_and_excludes_stale_snapshot(self):
         """The already-running pilot needs no new invalidate to fix its presentation."""
         previous = deepcopy(self.reach("implement").state)
@@ -101,6 +103,7 @@ class DashboardRunTests(PipelineFixture, unittest.TestCase):
         self.assertIn("Round 1 · iterative", main)
         self.assertNotIn("retains earlier", main)
 
+    @legacy_events
     def test_multiple_invalidations_keep_separate_runs_and_correction_links(self):
         """Repeated invalidations don't relabel old corrections as current ones."""
         self.reach("implement")

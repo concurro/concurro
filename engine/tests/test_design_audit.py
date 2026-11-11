@@ -13,6 +13,7 @@ import report_view
 from checkpoints import Checkpoints, legacy_state
 from controller import Controller
 from design_audit import Snapshot, archived_report, measure
+from legacy_publications import legacy_events
 from pipeline_fixtures import ConsensusFixture
 from report_store import Store
 
@@ -159,6 +160,7 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
                     with self.subTest(path=path, method=method), self.assertRaises(ValueError):
                         snapshot.repo(path, method)
 
+    @legacy_events
     def test_multipart_design_reports_are_verified_through_the_real_writer(self):
         """Split published design reports remain measurable rather than unavailable."""
         with patch("report_store.CHUNK", 128):
@@ -193,7 +195,7 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
         report = {"decision": "approve", "rationale": "x" * 250}
         store = Store(self.gh, 7, self.config["bot_login"])
         with patch("report_store.CHUNK", 128 if multipart else 16000):
-            key = store.put(report)
+            key = store.put(report, legacy=True)
         self.assertEqual(store.numbers[key], [1, 2, 3] if multipart else [1])
         item = self.gh.repo(
             "issues/7/artifacts",
@@ -206,6 +208,7 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
         )
         return report, item["number"]
 
+    @legacy_events
     def test_literal_three_part_archive_is_verified(self):
         """Parsing must work independently of the shared link writer and regex."""
         report, number = self.literal_archive(
@@ -264,7 +267,7 @@ class AuditTests(ConsensusFixture, unittest.TestCase):
             }
             store = Store(self.gh, 7, self.config["bot_login"])
             with patch("report_store.CHUNK", 128 if multipart else 16000):
-                key = store.put(report)
+                key = store.put(report, legacy=True)
             numbers = store.numbers[key]
             links = "\n".join(
                 "- " + conversation.report_link(root, i, len(numbers), number) for i, number in enumerate(numbers, 1)
