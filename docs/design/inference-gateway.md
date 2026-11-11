@@ -110,7 +110,10 @@ Retained homes preserve provider transcripts and thread-state files between role
 Regenerable Codex caches are pruned before packing; the retained gzip archive has a
 24 MiB transport limit. No build cache or provider credential belongs in that archive.
 The service stores it privately and restores it only into the matching conversation.
-Fresh review phases do not reuse iterative transcripts.
+PR reviewers retain separate conversations across repair rounds; changed heads still
+need new reviews. Authority changes, a different PR and design reopens rotate those
+conversations. Fresh design reviews do not reuse iterative transcripts. Existing tasks
+without PR transcripts start them on their next review call; completed votes stay valid.
 
 Claude receives the session key through `ANTHROPIC_AUTH_TOKEN`; Codex uses a custom
 Responses provider with an environment-key reference. Both receive explicit model/effort

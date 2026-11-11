@@ -56,9 +56,35 @@ class SessionTests(unittest.TestCase):
         model = deepcopy(CONFIG)
         model["models"]["claude"] = "different-model"
         self.assertNotEqual(prepare(state, model, "claude", "plan", {})["scope"], first["scope"])
-        for stage in ("intake", "local_review", "review"):
+        for stage in ("intake", "local_review"):
             self.assertIsNone(prepare(state, CONFIG, "claude", stage, {}))
         self.assertIsNone(prepare(state, CONFIG, "claude", "plan_qc", {"review_phase": "fresh"}))
+
+    def test_pr_review_scope_survives_repairs_but_isolates_reviewers_and_authority(self):
+        """A new head continues the reviewer's thread; a different PR or authority does not."""
+        state = {**self.state(), "pr": 9, "head": "b" * 40, "round": 0}
+        first = prepare(state, CONFIG, "claude", "review", {})
+        self.assertIsNotNone(first)
+        state["sessions"][first["role"]]["turn"] = 1
+        state.update(head="c" * 40, round=1)
+        continued = prepare(state, CONFIG, "claude", "review", {})
+        self.assertEqual((continued["scope"], continued["turn"]), (first["scope"], 1))
+        other = prepare(state, CONFIG, "codex", "review", {})
+        self.assertNotEqual(other["scope"], first["scope"])
+        for key, value in (
+            ("pr", 10),
+            ("issue", 8),
+            ("base", "d" * 40),
+            ("requirements", {}),
+            ("bundle_id", "new bundle"),
+            ("config_digest", "new config"),
+            ("design_reopens", 1),
+            ("session_epoch", "invalidated"),
+        ):
+            with self.subTest(key=key):
+                fresh = prepare({**deepcopy(state), key: value}, CONFIG, "claude", "review", {})
+                self.assertNotEqual(fresh["scope"], first["scope"])
+                self.assertEqual(fresh["turn"], 0)
 
     def test_provider_resume_uses_exact_identity(self):
         """All configured models resume only their own explicit session; no latest-session lookup."""

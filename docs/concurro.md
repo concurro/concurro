@@ -185,8 +185,12 @@ a configured profile name (legacy configurations still use `claude` or `codex`).
 Design and PR reviewers assess independently of their peers. Feedback goes to the
 planner or implementer, who revises the work; reviewers do not collaborate on a verdict.
 Iterative design reviews retain each reviewer's own session and objections across
-revisions. Fresh design reviews use no earlier review discussion. PR reviews use fresh
-calls each round, with only that reviewer's own finding history supplied explicitly.
+revisions. Fresh design reviews use no earlier review discussion. PR reviews retain
+each reviewer's private session across repair rounds, supplying the full current
+base-to-head diff and that reviewer's own finding history. Each head needs new votes;
+retained conversations are not approval authority. Returned transcripts, including
+failed turns, are stored privately for diagnosis. Failed PR reviews prepare a fresh
+session for a writer-controlled retry; a lost runner may not return a transcript.
 The stored phase identifier `cooperative` is retained for compatibility; the dashboard
 and newly queued report labels call it `iterative`. Existing archived reports and queued
 publications keep their original wording.

@@ -714,6 +714,9 @@ class Controller:
                 design_eligibility.restart(self.state, session)
                 sessions.restart(self.state, session)
                 self.save()
+                if stage == "review":
+                    # Retaining PR transcripts must not add automatic retries to PR review.
+                    raise
                 if attempt:
                     raise Blocked("provider session failed twice; a fresh session is prepared for retry") from None
                 continue
@@ -1985,7 +1988,7 @@ class Controller:
         return self._publication().pr_url(number)
 
     def review(self):
-        """Run one fresh provider review of the same immutable change."""
+        """Continue one reviewer's private session against the current immutable change."""
         state = self.state
         provider = next((p for p in assigned(self.config, "pr_reviewers") if p not in state["reviews"]), None)
         if provider:

@@ -234,7 +234,8 @@ shared coordinator with a PR-shaped adapter from the start; production PR dispat
 serial until a separate reviewed integration:
 
 - Freeze the exact base/head and each reviewer's own findings before submission.
-- Use fresh PR-review calls, without iterative transcripts or `first_pass` semantics.
+- Continue each PR reviewer's private retained session, with no `first_pass` semantics.
+  Supply the full current base-to-head change and require new votes for each head.
 - Apply findings, dispositions and native COMMENT-review outboxes serially with existing
   freshness and duplicate-publication checks.
 - Gather ordinary changes-requested reviews before implementation repair begins.

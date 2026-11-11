@@ -413,13 +413,13 @@ class ReviewLifecycleTests(WriterRecoveryFixture, unittest.TestCase):
 
 
 class ReviewNativeTests(runner_fixtures.Workspace, unittest.TestCase):
-    """Actual review child processes retain cleanup, diagnostics and fresh-job semantics."""
+    """Review jobs retain private transcripts but never publish exploratory workspace edits."""
 
     def run_review(self, script, stopped=None, timeout=None):
         """Run a tiny local stand-in for the CLI with the real snapshot and cleanup path."""
         root = turns.directory(self.tmp / "turns")
         turn = {
-            "request": {"stage": "review", "session": None},
+            "request": {"stage": "review", "session": {"scope": "a" * 64, "turn": 0}},
             "spec": self.spec,
             "retained": None,
             "timeout": timeout,
@@ -436,8 +436,24 @@ class ReviewNativeTests(runner_fixtures.Workspace, unittest.TestCase):
         result = self.run_review(script)
         self.assertEqual(result["response"], {"verdict": "approve"})
         self.assertIsNone(result["workspace"])
-        self.assertIsNone(result["retained"], "PR reviews remain fresh contexts")
+        self.assertIsInstance(result["retained"], str)
         self.assertEqual(self.mirror.git("for-each-ref", "refs/concurro/snapshots/").stdout, b"")
+
+    def test_failed_review_retains_private_files_without_workspace_edits(self):
+        """A failed CLI's existing diagnostic files survive in the private archive."""
+        script = (
+            "import json, sys; from pathlib import Path; r=json.load(sys.stdin); "
+            'Path(r["retained_root"], "diagnostic.json").write_text(\'{"failure":"fixture"}\'); '
+            'Path(r["workspace"], "scratch.txt").write_text("exploration"); sys.exit(1)'
+        )
+        result = self.run_review(script)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertIsNone(result["response"])
+        self.assertIsNone(result["workspace"])
+        restored = self.tmp / "restored"
+        restored.mkdir()
+        turns.unpack(result["retained"], restored)
+        self.assertEqual((restored / "diagnostic.json").read_text(), '{"failure":"fixture"}')
 
     def test_signal_and_stop_have_safe_distinct_diagnostics(self):
         import threading

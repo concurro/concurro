@@ -1,4 +1,4 @@
-"""Scope provider transcripts to one role and one cooperative loop."""
+"""Scope provider transcripts to one role and one design or PR review loop."""
 
 import design_eligibility
 from model_config import resolve
@@ -6,8 +6,8 @@ from policy import Blocked, digest, selected_model
 
 
 def prepare(state, config, provider, stage, context):
-    """Select only cooperative sessions; fresh approval never receives a session."""
-    if stage not in ("plan", "plan_qc", "develop") or context.get("review_phase") == "fresh":
+    """Retain each role's conversation; fresh design approval never receives a session."""
+    if stage not in ("plan", "plan_qc", "develop", "review") or context.get("review_phase") == "fresh":
         return None
     model = context.get("reviewer_identity", {}).get("model") or selected_model(config, provider, stage)
     scope = digest(
@@ -25,6 +25,8 @@ def prepare(state, config, provider, stage, context):
             state.get("plan_id") if stage == "develop" else None,
         ]
     )
+    if stage == "review":
+        scope = digest([scope, state.get("pr")])
     if state.get("session_epoch"):
         scope = digest([scope, state["session_epoch"]])
     role = role_key(config, provider, stage, model)
