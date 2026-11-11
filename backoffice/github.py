@@ -1,5 +1,6 @@
 """GitHub reads and comment writes as the signed-in user, so GitHub decides what each user may see."""
 
+import hashlib
 import re
 import time
 
@@ -9,6 +10,9 @@ from service.target_config import read_remote
 from service.target_loader import CONFIG_LIMIT
 from service.transport import StaticCredential, Transport
 
+# Repository metadata (visibility and permissions) per user token, briefly.
+REPOSITORY_SECONDS = 60
+REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 
@@ -46,11 +50,17 @@ class UserAccess:
         return self.transport(repository).request("GET", f"repos/{repository}" + ("/" + path if path else ""))
 
     def repository(self, repository: str) -> dict | None:
-        """The repository as this user sees it, or None when it is hidden from them."""
+        """The repository as this user sees it, or None when it is hidden from them; cached briefly per user."""
+        key = (hashlib.sha256(self.token.encode()).hexdigest(), repository.lower())
+        cached = REPOSITORIES.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
         try:
-            return self.get(repository)
+            found = self.get(repository)
         except NotFound:
-            return None
+            found = None
+        REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)
+        return found
 
     def task_issues(self, repository: str) -> list[dict]:
         """Recently updated issues opted in with the `concurro` label (pull requests excluded)."""

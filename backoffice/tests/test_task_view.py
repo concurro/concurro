@@ -12,6 +12,7 @@ import fixtures  # noqa: E402 -- initializes the service and engine test paths
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # noqa: E402
 
+from backoffice import github as github_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import User  # noqa: E402
 from backoffice.github import UserAccess  # noqa: E402
 from backoffice.settings import Settings  # noqa: E402
@@ -27,8 +28,10 @@ class Wire(fixtures.Wire):
     def __init__(self, backend):
         super().__init__(backend)
         self.fixed = {}
+        self.paths = []
 
     def answer(self, method, path, data):
+        self.paths.append(path)
         if (method, path) in self.fixed:
             return fixtures.Reply(200, self.fixed[method, path])
         return super().answer(method, path, data)
@@ -37,6 +40,8 @@ class Wire(fixtures.Wire):
 class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
+        for cache in (tasks_module.STATES, tasks_module.CONFIGS, github_module.REPOSITORIES):
+            cache.clear()
         self.wire = Wire(self.backend)
         repository = KEY[0]
         metadata = {"full_name": repository, "description": "fixture", "permissions": {"push": True}}
@@ -78,6 +83,11 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.assertEqual(task["plans"][-1]["id"], state["plan_id"])
         self.assertEqual(view["target"]["mode"], "manual")
         self.assertTrue(view["target"]["writer"])
+        # An unchanged checkpoint comment serves the decoded state without reading artifacts again.
+        self.wire.paths.clear()
+        again = self.tasks().task_view(KEY[0], 7)
+        self.assertEqual(again["task"]["plans"], task["plans"])
+        self.assertFalse([path for path in self.wire.paths if "/artifacts" in path])
 
     def test_unknown_repositories_are_not_found(self):
         with self.assertRaises(TaskNotFound):

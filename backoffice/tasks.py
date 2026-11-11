@@ -4,21 +4,46 @@ List views use stage labels only (one GitHub call per target); a task view loads
 engine's audit checkpoint with `Checkpoints.load`, exactly as the controller does.
 """
 
+import hashlib
+import json
+import time
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import UTC, datetime
 
-from checkpoints import Checkpoints
+from checkpoints import MARKER, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
+from identities import Identities
+from report_store import Cache
 from vocab import Stage
 
 from .auth import User
 from .github import UserAccess
 from .settings import Settings
 
+# Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
+REPORTS = Cache()
+# Decoded checkpoint states by (repository, issue, checkpoint comment digest), oldest evicted first.
+STATES: dict[tuple, dict] = {}
+STATE_ENTRIES = 256
+# Target configurations by fork, briefly.
+CONFIG_SECONDS = 120
+CONFIGS: dict[str, tuple[float, tuple[dict, str]]] = {}
 COMMANDS = ("start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
+
+
+class ReadCheckpoints(Checkpoints):
+    """The engine's checkpoint loader without the rendered plan artifact, which only writers compare against."""
+
+    def read(self, number, kind):
+        return None if kind == "plan" else super().read(number, kind)
+
+    def discover(self, items, kind):
+        return None if kind == "plan" else super().discover(items, kind)
 
 
 class TaskNotFound(Exception):
@@ -49,24 +74,32 @@ class Tasks:
     def __init__(self, settings: Settings, access: UserAccess, user: User):
         self.settings, self.access, self.user = settings, access, user
         self.configs: dict[str, tuple[dict, str]] = {}
+        self.visible: list[tuple] | None = None
 
     # Targets
 
     def visible_targets(self) -> list[tuple]:
-        """Configured targets whose fork this user can see, with that repository's metadata."""
-        found = []
-        for target in self.settings.targets:
-            fork = self.access.repository(target.fork)
-            if fork is not None:
-                found.append((target, fork))
-        return found
+        """Configured targets whose fork this user can see, with that repository's metadata (once per request)."""
+        if self.visible is None:
+            self.visible = []
+            for target in self.settings.targets:
+                fork = self.access.repository(target.fork)
+                if fork is not None:
+                    self.visible.append((target, fork))
+        return self.visible
 
     def config(self, fork: str) -> tuple[dict, str]:
+        """The target configuration, shared briefly across users (visibility is checked separately)."""
         if fork not in self.configs:
-            try:
-                self.configs[fork] = self.access.config(fork)
-            except Exception:  # A missing or invalid configuration still lists the target.
-                self.configs[fork] = ({}, "main")
+            cached = CONFIGS.get(fork.lower())
+            if cached and cached[0] > time.monotonic():
+                self.configs[fork] = cached[1]
+            else:
+                try:
+                    self.configs[fork] = self.access.config(fork)
+                    CONFIGS[fork.lower()] = (time.monotonic() + CONFIG_SECONDS, self.configs[fork])
+                except Exception:  # A missing or invalid configuration still lists the target.
+                    self.configs[fork] = ({}, "main")
         return self.configs[fork]
 
     def target_record(self, target, fork: dict) -> dict:
@@ -129,16 +162,30 @@ class Tasks:
             raise TaskNotFound("the target's configuration can't be read")
         github = self.access.engine(repository)
         comments = github.pages(f"issues/{number}/comments")
-        return Checkpoints(github, config, number).load(comments)
+        author = Identities(config).author("state")
+        # The checkpoint comment pins the audit artifact by digest: the same comment means the same state.
+        pins = [c["body"] for c in comments if (c.get("user") or {}).get("login") == author and MARKER in c["body"]]
+        key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest())
+        if pins and key in STATES:
+            return deepcopy(STATES[key])
+        state = ReadCheckpoints(github, config, number, report_cache=REPORTS).load(comments)
+        if pins and state is not None:
+            STATES[key] = deepcopy(state)
+            while len(STATES) > STATE_ENTRIES:
+                STATES.pop(next(iter(STATES)))
+        return state
 
     def task_view(self, repository: str, number: int) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        try:
-            issue = self.access.get(repository, f"issues/{number}")
-        except NotFound:
-            raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
-        state = self.state(repository, number)
+        with ThreadPoolExecutor(2) as pool:
+            issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
+            state_read = pool.submit(self.state, repository, number)
+            try:
+                issue = issue_read.result()
+            except NotFound:
+                raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
+            state = state_read.result()
         if state is None and not stage_label(issue):
             raise TaskNotFound(f"{repository}#{number} is not enrolled in Concurro")
         config, _ = self.config(target.fork)
