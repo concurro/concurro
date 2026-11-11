@@ -13,7 +13,7 @@ required-version = ">=0.17.4,<0.18"
 target-version = "py312"
 line-length = 120
 # Flat engine and test modules are first-party alongside the service package.
-src = [".", "engine", "engine/tests", "service/tests", "gateway/exchange", "gateway/tests"]
+src = [".", "engine", "engine/tests", "service/tests", "gateway/exchange", "gateway/vault", "gateway/tests"]
 include = ["engine/**/*.py", "service/**/*.py", "gateway/**/*.py"]
 
 [lint]
@@ -26,5 +26,5 @@ combine-as-imports = true
 section-order = ["future", "standard-library", "third-party", "test-fixtures", "test-support", "first-party", "local-folder"]
 
 [lint.isort.sections]
-test-fixtures = ["fixtures", "exchange_fixtures"]
+test-fixtures = ["fixtures", "exchange_fixtures", "vault_fixtures"]
 test-support = ["support"]
