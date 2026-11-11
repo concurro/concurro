@@ -29,7 +29,7 @@ class StoreTests(unittest.TestCase):
 
     def fresh(self):
         """Simulate a new process without any trusted in-memory report cache."""
-        return Store(self.gh, 7, CONFIG["bot_login"])
+        return Store(self.gh, 7, CONFIG["bot_login"], write_version=2)
 
     def test_unicode_fences_and_multiple_parts_round_trip(self):
         """Neither escaping nor Markdown fences change the recovered JSON or exceed the API cap."""

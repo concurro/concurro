@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
 import actions
+import attempt_result
 import bundle_resume
 import candidates
 import change_attention
@@ -33,6 +34,7 @@ import prompts
 import protocol
 import readiness
 import reason_guidance
+import report_store
 import review_state
 import review_timing
 import reviews as review_rules
@@ -711,7 +713,7 @@ class Controller:
                 continue
             if session:
                 self.record_session_turn(session, self.state["calls"], context, response)
-            self.complete(operation, response)
+            self.complete(operation, response, session)
             return response
 
     def charge_call(self, credential):
@@ -781,6 +783,15 @@ class Controller:
         """Return a durably retained result not yet consumed; a completion without one was lost."""
         if operation.get("runner_termination"):
             raise RunnerTerminated(operation["runner_termination"])
+        if operation["status"] == "started":
+            try:
+                saved = self.checkpoints.reports.recover_attempt(
+                    attempt_result.binding(self.state, operation, self.config["repository"])
+                )
+                if saved and attempt_result.restore(self.state, operation, *saved, self.config["repository"]):
+                    self.checkpoint()
+            except report_store.ReportDataError:
+                raise CheckpointError("report_data") from None
         if operation["status"] != "completed":
             return None
         if "response" in operation:
@@ -799,15 +810,20 @@ class Controller:
             attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started", request=digest(context)
         )
 
-    def complete(self, operation, response):
-        """Checkpoint the result itself, when it fits, until the stage durably consumes it."""
+    def complete(self, operation, response, session=None):
+        """Retain the result and its upload completion proof until the stage durably consumes it."""
         operation["status"] = "completed"
         retained = deepcopy(response)
         if operation.get("stage") in classification.STAGES and isinstance(retained, dict):
             value = classification.normalize(retained.pop("classification", None))
             retained["classification"] = value
         operation["response"] = retained
-        self.checkpoint()
+        store = self.checkpoints.reports
+        store.completion = attempt_result.capture(self.state, operation, retained, session, self.config["repository"])
+        try:
+            self.checkpoint()
+        finally:
+            store.completion = None
         self.consuming = (operation["id"], operation["attempt"])
 
     def permitted(self, login):

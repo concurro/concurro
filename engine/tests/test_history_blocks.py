@@ -27,7 +27,7 @@ class HistoryBlockTests(unittest.TestCase):
 
     def store(self):
         """Discard process caches to exercise verification and discovery."""
-        return Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"])
+        return Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"], write_version=2)
 
     def record(self, store, key):
         """Inspect emitted JSON independently of the production decoder."""
@@ -130,6 +130,7 @@ class HistoryBlockTests(unittest.TestCase):
         for manifest in (False, True):
             with self.subTest(manifest=manifest):
                 self.setUp()
+                self.cp.reports.write_version = 2
                 values = [history_entry(i) for i in range(48)]
                 state = {"version": 2, "issue": 7, "calls": 48, "qc_history": values}
                 original = self.gh.repo
@@ -154,6 +155,7 @@ class HistoryBlockTests(unittest.TestCase):
                     else:
                         self.cp.save(state)
                 recovered = Checkpoints(self.gh, CONFIG, 7)
+                recovered.reports.write_version = 2
                 recovered.save(state)
                 self.assertEqual(Checkpoints(self.gh, CONFIG, 7).load([]), state)
                 before = len(self.gh.artifacts[7])

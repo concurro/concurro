@@ -5,6 +5,7 @@ import re
 import tempfile
 import unittest
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +26,10 @@ from design_audit import Snapshot, measure
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision
 from pipeline_fixtures import PipelineFixture
 from policy import approval_valid, digest
-from report_store import Store
+from report_store import Store as ReportStore
+
+# These pin the phase-two encoding and its interrupted-write behavior.
+Store = partial(ReportStore, write_version=2)
 
 
 class SharedReportTests(unittest.TestCase):
@@ -36,6 +40,7 @@ class SharedReportTests(unittest.TestCase):
         self.gh = FakeGitHub(CONFIG)
         self.gh.comments = []
         self.cp = Checkpoints(self.gh, CONFIG, 7)
+        self.cp.reports.write_version = 2
         self.state = {"version": 2, "issue": 7, "stage": "stopped", "calls": 1}
         self.report = {
             "decision": "approve",
@@ -477,7 +482,7 @@ class SharedPipelineTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(controller.checkpoints.reports.restore_reference(rejected["data"]), retained)
 
     def test_lost_shared_publication_does_not_repeat_intake(self):
-        """A lost artifact reply recovers the retained response before starting the next harness turn."""
+        """Lost derived publication may leave an unused copy, but does not repeat retained intake."""
         original, lost = self.gh.repo, []
 
         def write(path, method="GET", data=None):
@@ -497,7 +502,7 @@ class SharedPipelineTests(PipelineFixture, unittest.TestCase):
         self.assertEqual([stage for _, stage, _ in self.agents.calls], ["intake", "plan"])
         self.assertEqual(controller.state["calls"], 2)
         self.assertEqual(self.gh.artifacts[7][lost[0]], first)
-        self.assertEqual(controller.state["reports"][0]["artifact"], lost[0])
+        self.assertNotEqual(controller.state["reports"][0]["artifact"], lost[0])
         self.assertEqual(
             sum(a["artifact"]["body"] == first["artifact"]["body"] for a in self.gh.artifacts[7].values()), 1
         )

@@ -3,6 +3,7 @@
 import json
 import re
 import threading
+import uuid
 from collections import OrderedDict
 from copy import deepcopy
 
@@ -457,7 +458,7 @@ def audit_envelope(payload, store, repository, issue):
 class Store:
     """Write once, recover by marker, and verify every part before decoding a value."""
 
-    def __init__(self, github, issue, author, repository=None, cache=None):
+    def __init__(self, github, issue, author, repository=None, cache=None, *, write_version=3):
         """Bind all storage and discovery to this task's issue and controller identity."""
         self.gh, self.issue, self.author = github, issue, author
         self.repository = (
@@ -472,6 +473,8 @@ class Store:
         self.reading = set()
         self.history_paths = set()
         self.receipt_references = {}
+        self.write_version = write_version
+        self.completion = None
 
     def collection(self):
         """Lazily discover artifacts once per controller invocation."""
@@ -547,6 +550,7 @@ class Store:
             self.put(value)
         if (
             prepare
+            and self.write_version == 2
             and isinstance(value, list)
             and tuple(item["path"]) not in self.history_paths
             and not self.numbers.get(item["digest"])
@@ -653,7 +657,7 @@ class Store:
         return {"value": visit(value, []), "references": refs}
 
     def put(self, value, *, legacy=False):
-        """Confirm immutable parts before referencing them; reuse earlier report archives."""
+        """Reuse verified references, or upload fresh content without scanning for old copies."""
         key = digest(value)
         if key in self.verified:
             return key
@@ -663,6 +667,8 @@ class Store:
                 raise ReportDataError("Published review data reference is missing its artifact identities.")
             self.get(key, numbers)
             return key
+        if not legacy and self.write_version == 3:
+            return self.put_shared(value, key, [], fresh=True)
         # Parse old archive bodies once per invocation, only when discovering a new value.
         if self.archive_index is None:
             self.archive_index = {}
@@ -685,6 +691,17 @@ class Store:
             self.remember(key, [item["number"]], value)
             return key
         matches = self.matches(f"{MARKER}{key}:")
+        uploads = [item for item in matches if report_artifact.ATTEMPT_DATA in item["body"]]
+        if uploads:
+            complete = self.upload_sets(key, uploads)
+            if complete:
+                numbers, stored, _ = min(complete, key=lambda result: result[0][0])
+                self.remember(key, numbers, stored)
+                return key
+            # An old queued publication may outlive a partial new upload of the same source.
+            matches = [item for item in matches if report_artifact.ATTEMPT_DATA not in item["body"]]
+            if not matches:
+                return self.put_shared(value, key, [], fresh=True)
         modern = [item for item in matches if report_artifact.DATA in item["body"]]
         if modern or not matches and not legacy:
             if modern and len(modern) != len(matches):
@@ -756,11 +773,14 @@ class Store:
                 parts[index] = (item, part)
         return layout, parts
 
-    def put_shared(self, value, key, matches):
-        """Finish a frozen continuation-first write, reusing every verified surviving part."""
+    def put_shared(self, value, key, matches, *, fresh=False):
+        """Upload a fresh nonce or finish a legacy continuation-first layout."""
         try:
             layout, parts = self.shared_parts(key, matches)
             record = self.encode(value, blocks=layout["blocks"] if layout else True)
+            completion = self.completion[1] if fresh and self.completion and self.completion[0] == key else None
+            if completion is not None:
+                record["completion"] = deepcopy(completion)
             encoded = record_json(record)
             view = (
                 report_artifact.stored_view(
@@ -770,7 +790,12 @@ class Store:
                 else report_artifact.view_for(value, layout)
             )
             if layout is None:
-                layout = report_artifact.pack(key, encoded, view, True, self.repository, self.issue)
+                upload = (
+                    {"nonce": uuid.uuid4().hex, "attempt": digest(completion["binding"]) if completion else None}
+                    if fresh
+                    else {}
+                )
+                layout = report_artifact.pack(key, encoded, view, True, self.repository, self.issue, **upload)
                 if layout["renderer"] == 2:
                     view = report_artifact.COMPACT_VIEW
             if digest(view) != layout["view"]:
@@ -808,7 +833,8 @@ class Store:
                     item = self.gh.repo(
                         f"issues/{self.issue}/artifacts", "POST", {"type": "generic", "name": name, "body": body}
                     )
-                    self.collection().append(item)
+                    if self.items is not None:
+                        self.items.append(item)
                 self.read(item)
                 numbers[index - 1] = item["number"]
             self.remember(key, numbers, value)
@@ -818,7 +844,7 @@ class Store:
         except (KeyError, IndexError, TypeError, ValueError):
             raise ReportDataError("Malformed or conflicting shared report data.") from None
 
-    def load_shared(self, key, items, numbers, *, verified=False):
+    def load_shared(self, key, items, numbers, *, verified=False, completion=False):
         """Read a complete shared artifact without confusing content identity with event identity."""
         layout, parts = self.shared_parts(key, items, verified=verified)
         if layout is None or set(parts) != set(range(1, len(layout["ends"]) + 1)):
@@ -835,7 +861,11 @@ class Store:
                 parts[index] = (item, parsed)
         encoded = "".join(parts[i][1]["part"] for i in range(1, len(actual) + 1))
         report_artifact.slices(encoded, layout)
-        value = self.decode_record(json.loads(encoded))
+        record = json.loads(encoded)
+        receipt = record.get("completion")
+        if layout["version"] == 3 and layout["attempt"] != (digest(receipt["binding"]) if receipt else None):
+            raise ReportDataError("Attempt completion identity changed.")
+        value = self.decode_record(record)
         if digest(value) != key:
             raise ReportDataError("Shared report digest mismatch.")
         view = report_artifact.stored_view(parts[1][0]["body"], layout, actual[1:], self.repository, self.issue)
@@ -846,7 +876,61 @@ class Store:
             if item["body"] != expected:
                 raise ReportDataError("Shared report body mismatch.")
         self.remember(key, actual, value)
-        return value
+        return (value, receipt) if completion else value
+
+    def upload_sets(self, key, items):
+        """Verify independent uploads; partial sets never borrow parts from another nonce."""
+        groups, legacy = {}, []
+        for item in items:
+            if report_artifact.ATTEMPT_DATA in item["body"] or report_artifact.DATA in item["body"]:
+                parsed = report_artifact.parse(item["body"], key)
+                groups.setdefault(parsed["layout"].get("nonce"), []).append(item)
+            else:
+                legacy.append(item)
+        results = []
+        for group in groups.values():
+            layout, parts = self.shared_parts(key, group)
+            if set(parts) != set(range(1, len(layout["ends"]) + 1)):
+                continue
+            value, receipt = self.load_shared(key, [p[0] for p in parts.values()], None, verified=True, completion=True)
+            results.append((self.numbers[key], value, receipt))
+        if legacy:
+            ordered = sorted(legacy, key=lambda item: parse_part(item["body"], key)[0])
+            numbers = [item["number"] for item in ordered]
+            results.append((numbers, self.load(key, numbers), None))
+        return results
+
+    def recover_attempt(self, binding):
+        """Discover a completed paid result once per invocation, never from partial evidence."""
+        tag = digest(binding)
+        grouped = {}
+        try:
+            for item in self.collection():
+                body = item.get("body", "")
+                marker = body.partition(report_artifact.ATTEMPT_DATA)[0]
+                if (
+                    item.get("creator", {}).get("login") == self.author
+                    and body.startswith(MARKER)
+                    and report_artifact.ATTEMPT_DATA in body
+                    and marker.endswith(":" + tag + " -->")
+                ):
+                    key = marker[len(MARKER) :].split(":", 1)[0]
+                    grouped.setdefault(key, []).append(item)
+            found = []
+            for key, items in grouped.items():
+                for numbers, value, receipt in self.upload_sets(key, items):
+                    if receipt is None or receipt["binding"] != binding:
+                        raise ReportDataError("Attempt completion binding changed.")
+                    found.append((numbers, key, value, receipt))
+            if not found:
+                return None
+            if len({digest([key, receipt]) for _, key, _, receipt in found}) != 1:
+                raise ReportDataError("Conflicting results for one model attempt.")
+            numbers, key, value, receipt = min(found, key=lambda result: result[0][0])
+            self.remember(key, numbers, value)
+            return value, receipt
+        except (KeyError, IndexError, TypeError, ValueError, NotFound):
+            raise ReportDataError("Malformed or incomplete attempt artifacts.") from None
 
     def remember(self, key, numbers, value):
         """Share a verified immutable value across ticks without sharing mutable state."""
@@ -869,10 +953,13 @@ class Store:
             cached = self.cache.get(self.scope, key, numbers)
             if cached is not None:
                 self.verified[key], self.numbers[key] = cached, numbers
+        prior = None
         if key in self.verified:
-            if numbers is not None and numbers != self.numbers[key]:
-                raise ReportDataError("Review artifact identities changed.")
-            return deepcopy(self.verified[key])
+            if numbers is None or numbers == self.numbers[key]:
+                return deepcopy(self.verified[key])
+            # Two durable references may name independent uploads of identical content.
+            # Verify the second identity without replacing the first pin or trusting its digest alone.
+            prior = (self.verified[key], self.numbers[key])
         if key in self.reading or len(self.reading) >= 16:
             raise ReportDataError("Cyclic or excessively nested review references.")
         self.reading.add(key)
@@ -882,6 +969,8 @@ class Store:
             raise ReportDataError("Malformed or incomplete review data.") from None
         finally:
             self.reading.remove(key)
+            if prior is not None:
+                self.verified[key], self.numbers[key] = prior
 
     def load(self, key, numbers):
         """Decode verified immutable parts, including earlier format-3 report archives."""
@@ -904,6 +993,15 @@ class Store:
                 self.remember(key, numbers, value)
                 return value
         discovered = items if items is not None else self.matches(MARKER + key + ":")
+        if any(report_artifact.ATTEMPT_DATA in item["body"] for item in discovered):
+            if numbers is not None:
+                return self.load_shared(key, discovered, numbers, verified=True)
+            candidates = self.upload_sets(key, discovered)
+            if not candidates:
+                raise ReportDataError("Shared report data is incomplete.")
+            actual, value, _ = min(candidates, key=lambda result: result[0][0])
+            self.remember(key, actual, value)
+            return value
         if any(report_artifact.DATA in item["body"] for item in discovered):
             return self.load_shared(key, discovered, numbers, verified=items is not None)
         chunks, identities, count = {}, {}, None

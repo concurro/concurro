@@ -1,7 +1,7 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: phases 1–3 committed; phase 4a reference reuse implemented for review;
-phase 4b attempt-tagged uploads and phase 5 proposed. Not ready for release.** Builds on
+**Status: phases 1–4a committed; phase 4b implemented with passing traffic criteria, awaiting review.
+Phase 5 remains a final release review. No deployment authorized.** Builds on
 the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
 artifact deletion or diagnostic writes are authorized by this document.
 
@@ -312,7 +312,7 @@ Fewer artifacts reduce requests, not necessarily downloaded bytes: a cold collec
 still returns every body. Larger parts also make interrupted uploads more expensive.
 Existing artifacts remain; no deletion, repacking or mutable bulk archive is proposed.
 
-### 4b. Attempt-tagged uploads (proposed)
+### 4b. Attempt-tagged uploads
 
 Phase 4a's reference reuse is correct but insufficient for release: new outputs still scan.
 Use the model attempt already saved before dispatch, rather than adding a storage journal.
@@ -384,8 +384,8 @@ solely for this feature; test both exceptions without claiming that every paid c
 
 #### Recovery before replacement admission
 
-`Controller.recover` currently returns immediately for `started`; add the scan to that
-case at its existing call site in `Controller.ask`. It must run **before** `max_model_calls`,
+`Controller.recover` scans abandoned `started` attempts at its existing call site in
+`Controller.ask`, **before** `max_model_calls`,
 credential acquisition and `begin_attempt`'s uncertainty check: a response already paid for
 must remain recoverable at either budget limit. For `plan_qc`, keep `sessions.prepare` and
 `design_eligibility.prepare` before recovery. They preserve an unchanged scope; if preparation
@@ -461,7 +461,9 @@ The complete cycle is **15 / 2 → 24 / 11** for either. Across six calls, total
 A design that adds requests can lose even to phase 2 on this small issue, so both sizes
 are release comparisons, not only the artifact-heavy case.
 
-Before release, fill these rows with the attempt-tagged implementation, not projections:
+The [phase-4b measurements](../reports/limits-cleanup/README.md#phase-4b-attempt-tagged-uploads)
+meet the ordinary-write criteria below at both sizes, including production completion
+metadata. Recovery traffic is reported separately.
 
 | Case, at both 10 and 150+ existing artifacts | Required result / allowed traffic |
 | ---- | ---- |
@@ -492,9 +494,9 @@ one digest, conflicting results for one attempt, stale attempts, session mismatc
 
 Report total GET/POST/PATCH, collection requests, artifact counts by purpose, completion
 metadata bytes, unused complete/partial sets, peak audit size and actual harness calls.
-Bytes remain informational modeled traffic. The attempt-tagged design is not implemented;
-its savings and recovery costs have **not** been measured. Keep these comparisons as the
-release condition for phases 3–4.
+Bytes remain informational modeled traffic. The [phase-4b results](../reports/limits-cleanup/attempt-upload-traffic.json)
+record these cases and satisfy both ordinary-write comparisons. Recovery and legacy paths
+remain separate; review the results before releasing phases 3–4 together.
 
 ## Implementation order and compatibility
 
@@ -506,10 +508,10 @@ release condition for phases 3–4.
 3. **Budget-based packing (committed):** share the artifact transport setting, implement measured response
    accounting and the separate hard body check. Validate every response shape. Release with phase 4.
 4. **Avoid ordinary scans:**
-   - **4a, reference reuse (implemented for review):** direct known-reference reads and no
+   - **4a, reference reuse (committed):** direct known-reference reads and no
      cold-save whole-list scan for verified block directories. Keep its regression tests
      and [measurements](../reports/limits-cleanup/README.md#phase-4-reference-based-ordinary-operations).
-   - **4b, attempt-tagged uploads (proposed):** versioned readers and serial/batch attempt
+   - **4b, attempt-tagged uploads (implemented for review):** versioned readers and serial/batch attempt
      recovery first, then scan-free new-encoding writers. Cover retention, publication,
      nested reports, history blocks, preflight and overflow. Compare cold new-output saves
      and complete per-call storage against phase 2 on small and 150+-artifact issues;

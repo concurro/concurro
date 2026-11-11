@@ -101,13 +101,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(request.called)
         self.assertTrue(all("/artifacts/" in c.args[0] for c in request.call_args_list))
 
-    def test_history_block_completion_keeps_only_missing_reference_discovery(self):
-        """A newly closed block has no receipt yet and still uses one recovery scan."""
+    def test_history_block_completion_needs_no_discovery(self):
+        """A newly closed block gets a fresh nonce without a recovery scan."""
         cp, state = self.cold()
         state["review_history"].extend({"note": "tail " + str(i)} for i in range(5))
         with patch.object(self.gh, "pages", wraps=self.gh.pages) as pages:
             cp.save(state)
-        self.assertEqual([c.args[0] for c in pages.call_args_list], ["issues/7/artifacts"])
+        self.assertEqual(pages.call_args_list, [])
         # Once the directory is saved, its next cold save needs no scan.
         cp.publish_dashboard(MARKER + "\nFixture\n" + cp.links()[1] + "\n")
         with patch.object(self.gh, "pages", side_effect=self.no_scan):
@@ -135,7 +135,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(self.gh.artifacts[7][number], before[number])
 
     def test_missing_receipt_recovers_lost_creation_reply(self):
-        """An unreferenced artifact is discovered before re-creating it, even after a restart."""
+        """An unreferenced legacy artifact is discovered before re-creating it, even after a restart."""
         value = {"summary": "Unacknowledged " * 1000}
         original = self.gh.repo
         created = []
@@ -149,9 +149,9 @@ class DiscoveryTests(unittest.TestCase):
             return item
 
         with patch.object(self.gh, "repo", side_effect=write), self.assertRaises(RuntimeError):
-            Store(self.gh, 7, CONFIG["bot_login"]).put(value)
+            Store(self.gh, 7, CONFIG["bot_login"], write_version=2).put(value)
         before = deepcopy(self.gh.artifacts[7])
-        store = Store(self.gh, 7, CONFIG["bot_login"])
+        store = Store(self.gh, 7, CONFIG["bot_login"], write_version=2)
         with patch.object(self.gh, "pages", wraps=self.gh.pages) as pages:
             key = store.put(value)
         self.assertEqual([c.args[0] for c in pages.call_args_list], ["issues/7/artifacts"])

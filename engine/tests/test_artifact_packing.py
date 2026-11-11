@@ -25,7 +25,7 @@ class PackingTests(unittest.TestCase):
 
     def store(self):
         """Create a cold writer without shared in-memory receipts."""
-        return Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"])
+        return Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"], write_version=2)
 
     def test_multimegabyte_record_fits_one_artifact(self):
         """A large hidden record fits the transport without an independent part-size cap."""

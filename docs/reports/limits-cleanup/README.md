@@ -700,12 +700,11 @@ from 175 to 1,029 for inline outputs, and 190 to 1,044 for detached outputs. Bot
 make six POSTs and 24 PATCHes. Inline output postpones the scan until publication rather
 than eliminating it.
 
-The [proposed attempt-tagged upload design](../../proposals/issue-artifact-consolidation.md#4b-attempt-tagged-uploads-proposed)
+The [attempt-tagged upload design](../../proposals/issue-artifact-consolidation.md#4b-attempt-tagged-uploads)
 replaces the earlier storage-journal proposal. It uses the existing saved model attempt to
 recover complete uploaded responses and permits recomputation of unreferenced derived data.
-It has not been implemented or measured. The proposal includes serial and parallel recovery,
-exact session-completion restoration, and separate recovery-traffic criteria. The existing
-phase-4 implementation and validation results are unchanged by this docs update.
+Phase 4b below implements and measures it, including serial and parallel recovery, exact
+session-completion restoration and separate recovery-traffic criteria.
 
 The evidence JSON also includes a ten-artifact fixture, using five unrelated artifacts
 rather than 150. Its first-call total GETs / collection GETs are:
@@ -730,3 +729,108 @@ it with each checkout root as its argument. Copy the same `discovery_traffic.py`
 For the small fixture use `small_issue.reproducer` with arguments `CHECKOUT_ROOT 5`;
 `CHECKOUT_ROOT 150` reproduces the large fixture. This only changes the number of unrelated
 seed artifacts; production code and the per-call sequence are identical.
+
+
+## Phase 4b: attempt-tagged uploads
+
+New version-3 parts use a fresh upload nonce. Ordinary retention, publication, history-block
+and overflow writes no longer discover old content. Verified references still reuse their
+recorded IDs. An abandoned `started` attempt scans once for a complete upload carrying its
+attempt/request binding, logical-response digest, annotations, reconstruction metadata,
+normalized timing and exact session completion. Recovery precedes replacement admission;
+parallel members share the collection read. It restores neither budgets nor eligibility,
+and the recovered output still goes through normal validation.
+
+The completion record references the canonical data in its upload rather than copying the
+response. Session completion retains the original response digest from before classification
+normalization. Replaying recovery sets the expected next turn rather than incrementing it.
+Partial new uploads remain unused; replacements use a fresh nonce. Legacy queued writers
+keep their existing encodings and interrupted-write rules.
+
+### Traffic and release condition
+
+[Raw measurements](attempt-upload-traffic.json) replay the same instrument on phase 2
+(`795a639`) and this change. Each of six calls starts with cold controller/storage objects.
+The instrument uses production `record_session_turn` and `Controller.complete`, including
+completion metadata, followed by deterministic application, checkpointing, publication,
+receipt save and dashboard write/readback. It measures storage, excluding admission, model
+dispatch, CI and unrelated controller requests. No live GitHub or model calls were made.
+
+| First call | Phase 2: 10 artifacts | Phase 2: 155 artifacts | Phase 4b: either size |
+| ---- | ---- | ---- | ---- |
+| Retain new inline output: GETs / collection GETs | 4 / 2 | 18 / 16 | 2 / 0 |
+| Retain new detached output: GETs / collection GETs | 5 / 2 | 19 / 16 | 3 / 0 |
+| Complete storage cycle: GETs / collection GETs | 15 / 2 | 29 / 16 | 13 / 0 |
+| Complete cycle: total GET + POST + PATCH | 20 | 34 | 18 |
+
+Across six calls, total GETs fall **90 → 78** (inline) and **105 → 93** (detached) on the
+small issue; **175 → 78** and **190 → 93** on the large issue. Both versions make six POSTs
+and 24 PATCHes. Every uninterrupted call has zero artifact collection GETs, so both release
+comparisons pass. Each call adds one canonical report artifact, shared with publication.
+Bytes are modeled with CommonMark/JSON and remain informational; the request counts are
+observed on the fake transport.
+
+Recovery is deliberately separate. After the uploaded result raises the fixture to 11 or
+156 artifacts, cold recovery costs **19 or 164 GETs**, respectively, including **12 or 157
+collection-page GETs**, plus one checkpoint PATCH. It creates no artifact, repeats no model
+call and advances the session exactly once. That is one logical collection scan, with
+one-item pages and the final empty page. Batch regressions verify the same collection is
+shared across recovering members.
+
+The six detached calls add 1,384 bytes of logical completion JSON each (its escaped wire
+cost is included in the measurements); inline calls add none. Peak audit bodies are
+12,167 bytes on the small fixture and 12,217 on the large one. Every ordinary call adds
+one immutable data part, with no unused sets. The warm 48-report workload still has
+56 artifacts: 48 reports, six history/index blocks, audit and plan; its three remaining
+collection GETs are bootstrap discovery. It is supplementary, not the cold-call baseline.
+
+| Exceptional path | GETs: small / large | Collection GETs: small / large | POST / PATCH | Result |
+| ---- | ---- | ---- | ---- | ---- |
+| First-ever audit and dashboard | 4 / 4 | 2 / 2 | 2 / 0 | Normal bootstrap discovery |
+| Queued format-5 publication | 13 / 158 | 11 / 156 | 2 / 0 | Original legacy writer |
+| Partial attempt upload recovery | 17 / 162 | 12 / 157 | 0 / 0 | One unused partial set; no response |
+| Lost inline response | 15 / 160 | 11 / 156 | 0 / 0 | No uploaded response |
+| Lost reused-core response | 16 / 161 | 12 / 157 | 0 / 0 | Existing core has no completion for this attempt |
+| Replace derived data after a lost reply | 1 / 1 | 0 / 0 | 1 / 0 | One unused complete copy, one replacement |
+
+Incomplete/inline/reused-core recovery spends no call itself. A later admitted replacement
+costs one call under the existing allowance; regressions exercise that path with fake agents.
+The raw file records fixture-setup requests separately, including the five or 150 unrelated
+seed POSTs, so those costs are not hidden in the ordinary-call comparison.
+
+Reproduce with the same instruments (`attempt_traffic.py`, `discovery_traffic.py`,
+`audit_traffic.py` and `artifact_fixtures.py`) in each checkout:
+
+```sh
+python3 engine/tests/attempt_traffic.py --unrelated 5
+python3 engine/tests/attempt_traffic.py --unrelated 150
+# Recovery is available on the phase-4b checkout:
+python3 engine/tests/attempt_traffic.py --unrelated 5 --recovery
+python3 engine/tests/attempt_traffic.py --unrelated 150 --recovery
+```
+
+### Tradeoffs and compatibility
+
+- Unreferenced derived uploads may leave unused complete copies after a lost reply. Partial
+  model-output uploads are also left unused; no garbage collection is added.
+- Inline outputs and already-known cores get no separate completion artifact. Losing them
+  before checkpoint commit can still require a replacement model call under existing budgets.
+- A failed scan propagates; it is not evidence that a replacement call is safe. Recovery can
+  still read the whole issue collection, but uninterrupted new writes never do.
+- New parts require this reader. **All tasks already cross the format-7 rollback boundary on
+  save; tasks referencing version-3 parts additionally require phase 4b.** An earlier format-7
+  engine is not a rollback target. No bundle, model instructions or task authority changed.
+
+The initial three regressions failed before implementation. The new tests cover the paid
+result/session recovery boundaries, both budget limits, failed scans, partial and conflicting
+uploads, exact rejected-output reconstruction, stale sessions/batches, live handles, shared
+batch discovery, legacy paths, derived writes and both traffic fixtures. Legacy-format tests
+explicitly select their original writer; they still pin those bytes and recovery behavior.
+
+
+Validation: **1,102 → 1,126 engine tests** (one Linux-only skip on macOS), **350 service** and
+**58 gateway** tests pass. The 24 new tests also pass independently. Ruff check and format,
+Pyright, compileall, bundle comparison and `git diff --check` pass. Bundle identity remains
+`837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
+All requested behavior is implemented; no items were deferred. Changes remain uncommitted;
+no deployment, live API writes, model invocations or pilot commands occurred.

@@ -61,6 +61,9 @@ class Design:
             _, context = c.quality_context("plan_qc", identity)
             self.contexts[key] = deepcopy(context)
             operation = member.get("operation", {})
+            if operation.get("status") == "started":
+                c.recover(operation)
+                c.release_result()
             # An unfinished previous invocation is uncertain; never poll its old turn ID.
             if (
                 operation.get("status") in ("started", "uncertain")
@@ -167,7 +170,7 @@ class Design:
         if session:
             c.record_session_turn(session, member["operation"]["call"], self.contexts[key], response)
         member["status"] = "complete"
-        c.complete(member["operation"], response)
+        c.complete(member["operation"], response, session)
         c.release_result()
 
     def apply(self, key):

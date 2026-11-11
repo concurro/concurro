@@ -38,7 +38,7 @@ class ConsolidationTests(unittest.TestCase):
         body = self.gh.artifacts[7][numbers[0]]["artifact"]["body"]
         self.assertGreater(len(body.encode()), 60000)
         self.assertLessEqual(len(body.encode()), 256 * 1024)
-        self.assertIn("\n<!-- concurro:report-part:v2\n", body)
+        self.assertIn("\n<!-- concurro:report-part:v3\n", body)
         self.assertEqual(protocol.PUBLICATION_BODY_BYTES, 60000)
         self.assertEqual(self.fresh_store().get(key, numbers), value)
 
@@ -84,6 +84,7 @@ class ConsolidationTests(unittest.TestCase):
                     )
                 before = deepcopy(self.gh.artifacts[7])
                 store = self.fresh_store()
+                store.write_version = 2  # Finish a legacy interrupted writer.
                 store.put(value)
                 self.assertEqual(len(store.numbers[key]), len(parts))
                 for number, artifact in before.items():

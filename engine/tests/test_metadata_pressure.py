@@ -112,10 +112,11 @@ class MetadataPressureTests(unittest.TestCase):
     def test_manifest_detection_uses_the_record_encoder(self):
         """Changing indentation for both writes and replay keeps block detection aligned."""
         values = list(range(24))
+        self.cp.reports.write_version = 2  # Legacy manifest discovery still follows its encoder.
         with patch("report_store.record_json", side_effect=lambda value: json.dumps(value, sort_keys=True, indent=4)):
             key = self.cp.reports.put(values)
             before = deepcopy(self.gh.artifacts[7])
-            fresh = report_store.Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"])
+            fresh = report_store.Store(self.gh, 7, CONFIG["bot_login"], CONFIG["repository"], write_version=2)
             self.assertEqual(fresh.put(values), key)
             self.assertEqual(fresh.get(key), values)
             self.assertEqual(self.gh.artifacts[7], before)

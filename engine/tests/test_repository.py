@@ -15,6 +15,7 @@ from support import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from support import transport_size
 
+from checkpoints import Checkpoints
 from controller import MAX_DIFF, Controller, changes
 from fakes import CONFIG, FakeAgents, FakeGitHub
 from gitfixture import Upstream, build, mirror_of
@@ -140,6 +141,7 @@ class TransportTests(unittest.TestCase):
             "agent_image": "image",
             "config_digest": "config",
         }
+        controller.checkpoints = Checkpoints(controller.gh, CONFIG, 7)
         with patch.object(controller, "save"), patch.object(controller, "checkpoint"):
             controller.ask("claude", "plan", {"repository_commit": "f" * 40, "repository": {"refs": {}, "head": "x"}})
             self.assertEqual(agents.calls[-1][2]["repository"], {"refs": {"main": "a" * 40}, "head": "main"})

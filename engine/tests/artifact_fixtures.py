@@ -8,9 +8,9 @@ from policy import digest
 def fixed_parts(width):
     """Freeze a phase-two renderer/layout without reinstating a production part-size setting."""
 
-    def pack(key, encoded, view, blocks, repository, issue):
+    def pack(key, encoded, view, blocks, repository, issue, **upload):
         """Use the old explicit character boundaries, independent of current response packing."""
-        return {
+        layout = {
             "version": 2,
             "renderer": 1,
             "ends": list(range(width, len(encoded), width)) + [len(encoded)],
@@ -18,5 +18,8 @@ def fixed_parts(width):
             "view": digest(view),
             "blocks": blocks,
         }
+        if upload:
+            layout.update(version=3, **upload)
+        return layout
 
     return patch("report_artifact.pack", side_effect=pack)

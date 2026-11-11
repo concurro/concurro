@@ -107,14 +107,17 @@ model calls. Missing audit history without a witness remains a verification fail
   vote, review history and rounds table share the same report artifact. Its bounded readable
   view describes submitted model output; canonical JSON is hidden in an HTML comment. Controller
   annotations and advisory ratings live in per-event receipt snapshots, without wrapper artifacts.
-  Existing format-3 archives are reused when their complete report matches.
+  Existing format-3 archives remain readable through their recorded references. Legacy writers
+  can also discover matching archived reports.
 - **Audit references:** statuses and small collections stay in the audit;
   bulky reports, history collections and report indexes are referenced by digest and artifact numbers. Derived finding text
   uses a path into its source report rather than a second stored copy. References
   are hydrated before policy checks. Known audit, plan and report identities are
   read directly, including small inline reports with canonical publication receipts. Receipt
   identities are verified before reuse; invalid references do not fall back to discovery.
-  Marker discovery remains necessary when no canonical reference survived.
+  New unreferenced writes use fresh upload nonces without scanning. Abandoned model attempts
+  scan once for their complete uploaded result before replacement admission; legacy writers
+  retain discovery.
   Completed responses remain available until their results are consumed. Checkpoint
   pressure never discards a response or turns it into an uncertain model call.
   Current, unarchived and pending-publication ratings remain intact; only inline archived
@@ -123,8 +126,10 @@ model calls. Missing audit history without a witness remains a verification fail
   archived report remains unchanged. New publication snapshots and event timing are never trimmed.
   Historical trimming is covered through the 48-call budget in regression tests.
   An unrelated duplicate cannot replace an already bound artifact. New immutable parts accept
-  byte-identical, unedited App copies, choosing the lowest number on discovery and retaining
-  pinned IDs. Conflicting copies, missing data and invalid provenance or digests stop recovery.
+  byte-identical, unedited App copies within a write nonce. Different complete nonces may hold
+  the same content; discovery chooses the lowest entry number, while known references keep
+  their IDs. Conflicting copies or attempt results, missing referenced data and invalid
+  provenance or digests stop recovery.
   Legacy duplicate rules are unchanged.
 - **History blocks:** oversized lists store completed eight-entry blocks as immutable data.
   Their ordered directory and unfinished tail remain in the mutable audit. Report bodies
@@ -140,26 +145,35 @@ model calls. Missing audit history without a witness remains a verification fail
   someone later edits or deletes the remote artifact; it cannot accept new bytes.
   Eviction or restart re-verifies remotely and detects such changes. Mutable audit
   and plan artifacts are never trusted through this cache. The archive digest
-  index is built once when a new write needs discovery.
+  index is built only for legacy writers needing discovery.
 - **Publication:** new format-6 events reuse the canonical artifact instead of creating a
   separate readable archive. Acceptance/rejection, fixed diagnostics, attribution and source
   context remain in the event index and receipts. Stable event and run identities keep repeated
   content distinct in the dashboard and audit tool. Formats 3–5 retain their original writers
   and readers, including queued recovery; no existing artifact is rewritten.
-  New version-2 data parts hide JSON in comments, escaping `>` as `\u003e`. Every part records
-  the renderer and complete multipart layout. Continuations are written first; the entry links
+  New version-3 data parts hide JSON in comments, escaping `>` as `\u003e`. Every part records
+  a fresh write nonce, the renderer and complete multipart layout. Version-2 parts remain readable. Continuations are written first; the entry links
   their verified IDs. Readers verify stored view text against its digest without rendering.
   Renderer 1 freezes its own formatting helpers for interrupted writes; new presentation needs
-  a new renderer version. Any surviving part fixes recovery boundaries despite changed packing
-  settings. New parts fit the shared 16,000,000-byte artifact response budget and GitHub's
-  independent 16,777,215-byte body ceiling. Packing counts JSON escaping, descriptor/link
+  a new renderer version. Within an upload its layout stays fixed. A partial new upload is
+  left unused; a replacement uses a new nonce and current packing settings. Only interrupted
+  legacy writers continue their old layout. New parts fit the shared 16,000,000-byte artifact
+  response budget and GitHub's independent 16,777,215-byte body ceiling. Packing counts JSON escaping, descriptor/link
   overhead and an allowance for rendered HTML. A frozen compact renderer (version 2) replaces
   the readable view before splitting canonical data; no evidence is shortened. The original
-  renderer remains available for interrupted writes. A lower response budget refuses an
-  incompatible frozen layout rather than repacking it. Legacy queued writers retain their
+  renderer remains available for interrupted legacy writes. A lower response budget refuses
+  an incompatible legacy frozen layout rather than repacking it. Legacy queued writers retain their
   old allowances. Comments and full readable views keep separate 60,000-byte allowances.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.
+- **Attempt recovery:** a newly detached model response carries its attempt/request binding,
+  logical-response digest, annotation/reconstruction metadata, exact session completion and
+  normalized timing in the same upload. Only abandoned `started` operations scan, before
+  budgets or credentials are checked; batch members share the scan. Restoration checkpoints
+  the response and expected session turn without changing spending or eligibility. Ordinary
+  semantic validation still applies. Incomplete uploads, inline responses and reuse of an
+  existing core without this attempt's completion metadata retain the existing retry window.
+  Derived data can be recomputed after a lost reply, leaving an unused immutable copy.
 - **Runner feedback:** lengthy selected feedback is delivered as digest-checked
   JSON files outside the candidate checkout and retained provider home. Prompts
   carry an index of every finding/objection, its identity and status, and the file
@@ -170,7 +184,8 @@ model calls. Missing audit history without a witness remains a verification fail
   still uses the original feedback, so file projection cannot duplicate a paid call.
 - **Checkpoint format:** new audits use format 7 for comment encoding, dashboard witnesses
   and plan-replacement intents, alongside detached histories, overflow metadata and shared-report
-  annotation receipts. New shared parts require this reader even though the checkpoint stays at 7.
+  annotation receipts. Version-3 attempt-tagged parts require this reader even though the
+  checkpoint stays at 7.
   Formats 2–6 remain readable and migrate on save without changing approvals or budgets.
   Rollback requires this phase's reader, not merely an earlier format-7 build. Never restore
   an old audit snapshot to roll back: that loses spent calls and publication progress.
@@ -178,9 +193,9 @@ model calls. Missing audit history without a witness remains a verification fail
   receipt-gated compaction. Referenced format-4 reports keep full evidence after
   publication. Oversized PR thread text is excerpted with a dashboard link; repair
   files retain the complete finding. Artifact discovery uses one entry per page
-  so large bodies fit the same response budget. Legacy whole-list detection can still scan the
-  collection when no representation is known. Verified history directories and canonical
-  report receipts avoid collection scans on ordinary cold saves and republication.
+  so large bodies fit the same response budget. Legacy discovery and abandoned-attempt recovery
+  can still scan. Ordinary new writes, verified history directories and canonical report
+  receipts avoid collection scans on cold saves and publication.
 
 
 ## Compatibility and future work

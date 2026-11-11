@@ -208,12 +208,14 @@ class StorageContractTests(unittest.TestCase):
         core = {"verdict": "approve", "summary": "ok"}
         for value in (report, core):
             store = self.store()
+            store.write_version = 2
             store.items = [second, first]
             key = store.put(value)
             self.assertEqual(store.numbers[key], [second["number"]])
             self.assertEqual(self.store().get(key, store.numbers[key]), value)
         self.gh.artifacts[7][second["number"]]["versions"][0]["actor"] = {"login": "writer"}
         store = self.store()
+        store.write_version = 2
         store.items = [second, first]
         with self.assertRaisesRegex(ReportDataError, "^Stored review data changed; restore it before continuing.$"):
             store.put(core)

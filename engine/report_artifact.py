@@ -1,4 +1,4 @@
-"""Version-two immutable parts: frozen layout, hidden canonical data and a shared readable view."""
+"""Versioned immutable parts with frozen layout, hidden data and optional attempt identity."""
 
 import json
 import re
@@ -10,6 +10,7 @@ from report_artifact_view_v1 import submitted as submitted
 
 MARKER = "<!-- concurro:report-data:v1:"
 DATA = "\n<!-- concurro:report-part:v2\n"
+ATTEMPT_DATA = "\n<!-- concurro:report-part:v3\n"
 # Renderer 2 is a frozen neutral fallback; keep these bytes stable for continuation recovery.
 COMPACT_VIEW = "### Submitted model output\n\nCanonical data is available in the raw API body and any linked parts."
 
@@ -20,7 +21,15 @@ def body(key, index, layout, part, view, numbers, repository, issue):
     record = {"layout": layout, "index": index, "part": part, "continuations": numbers if index == 1 else []}
     encoded = json.dumps(record, sort_keys=True).replace(">", "\\u003e")
     prefix = f"{MARKER}{key}:{index}:{count}:{digest(layout)} -->"
-    return prefix + DATA + encoded + "\n-->\n" + readable(index, count, view, numbers, repository, issue)
+    if layout["version"] == 3:
+        prefix = prefix.removesuffix(" -->") + f":{layout['nonce']}:{layout['attempt'] or '-'} -->"
+    return (
+        prefix
+        + (ATTEMPT_DATA if layout["version"] == 3 else DATA)
+        + encoded
+        + "\n-->\n"
+        + readable(index, count, view, numbers, repository, issue)
+    )
 
 
 def continuation_links(numbers, repository, issue):
@@ -47,8 +56,12 @@ def stored_view(text, layout, numbers, repository, issue):
 
 def parse(text, key):
     """Validate the entire self-contained descriptor before any continuation is read."""
-    marker, separator, tail = text.partition(DATA)
-    match = re.fullmatch(re.escape(MARKER + key + ":") + r"(\d+):(\d+):(" + protocol.DIGEST_PATTERN + r") -->", marker)
+    modern = ATTEMPT_DATA in text
+    marker, separator, tail = text.partition(ATTEMPT_DATA if modern else DATA)
+    suffix = r":([0-9a-f]{32}):(" + protocol.DIGEST_PATTERN + r"|-)" if modern else ""
+    match = re.fullmatch(
+        re.escape(MARKER + key + ":") + r"(\d+):(\d+):(" + protocol.DIGEST_PATTERN + ")" + suffix + " -->", marker
+    )
     encoded, closing, view = tail.partition("\n-->\n")
     if not separator or not match or not closing or ">" in encoded:
         raise ValueError("Malformed shared report part")
@@ -56,8 +69,11 @@ def parse(text, key):
     layout = record["layout"]
     if (
         set(record) != {"layout", "index", "part", "continuations"}
-        or set(layout) != {"version", "renderer", "ends", "record", "view", "blocks"}
-        or layout["version"] != 2
+        or set(layout)
+        != {"version", "renderer", "ends", "record", "view", "blocks"} | ({"nonce", "attempt"} if modern else set())
+        or layout["version"] != (3 if modern else 2)
+        or modern
+        and (layout["nonce"] != match[4] or layout["attempt"] != (None if match[5] == "-" else match[5]))
         or layout["renderer"] not in (1, 2)
         or type(layout["version"]) is not int
         or type(layout["renderer"]) is not int
@@ -117,7 +133,7 @@ def packing_bodies(key, encoded, layout, view, repository, issue):
     ]
 
 
-def pack(key, encoded, view, blocks, repository, issue):
+def pack(key, encoded, view, blocks, repository, issue, *, nonce=None, attempt=None):
     """Fit complete encoded responses, shortening only presentation before splitting canonical data."""
     layout = {
         "version": 2,
@@ -127,6 +143,8 @@ def pack(key, encoded, view, blocks, repository, issue):
         "view": digest(view),
         "blocks": blocks,
     }
+    if nonce is not None:
+        layout.update(version=3, nonce=nonce, attempt=attempt)
     if all(artifact_capacity.fits(b, v) for b, v in packing_bodies(key, encoded, layout, view, repository, issue)):
         return layout
     view = COMPACT_VIEW

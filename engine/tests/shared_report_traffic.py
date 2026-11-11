@@ -82,10 +82,9 @@ def measure(count=48):
         elif artifact["name"].startswith("Concurro report "):
             purposes["separate_readable_view"] += 1
         elif body.startswith(DATA_MARKER):
-            if "\n<!-- concurro:report-part:v2\n" in body:
-                encoded = json.loads(body.split("\n<!-- concurro:report-part:v2\n", 1)[1].split("\n-->\n", 1)[0])[
-                    "part"
-                ]
+            if "\n<!-- concurro:report-part:v" in body:
+                hidden = body.split("\n<!-- concurro:report-part:v", 1)[1].split("\n", 1)[1]
+                encoded = json.loads(hidden.split("\n-->\n", 1)[0])["part"]
             else:
                 encoded = body.split("\n```", 1)[1].split("\n", 1)[1].split("\n```", 1)[0]
             record = json.loads(encoded)  # This workload deliberately stays single-part.
