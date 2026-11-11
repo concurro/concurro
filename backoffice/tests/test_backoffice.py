@@ -1,0 +1,325 @@
+"""Backoffice API: sign-in, request protection, task projection, diagnostics, commands and credentials."""
+
+import base64
+import io
+import json
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+import httpx  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backoffice import app as app_module, tasks as tasks_module  # noqa: E402
+from backoffice.auth import AuthError, Sessions, User, challenge  # noqa: E402
+from backoffice.credentials import Vault  # noqa: E402
+from backoffice.settings import Settings  # noqa: E402
+from backoffice.turns import Diagnostics, normalize  # noqa: E402
+from service import diagnostics  # noqa: E402
+from service.targets import Target  # noqa: E402
+
+USER = User(42, "octo", "Octo Cat", "https://avatars.invalid/42")
+TURN_ID = "12345678-1234-1234-1234-123456789abc"
+
+
+def settings(public_url="https://host.invalid/concurro", **extra) -> Settings:
+    return Settings(
+        public_url=public_url,
+        client_id="client",
+        client_secret="secret",
+        targets=(Target("up/project", "owner/project", "fork"),),
+        **extra,
+    )
+
+
+class FakeOAuth:
+    def __init__(self):
+        self.exchanged = []
+
+    def exchange(self, code, callback, verifier):
+        if code != "good":
+            raise AuthError("GitHub refused the sign-in; please sign in again")
+        self.exchanged.append((code, callback, verifier))
+        return "user-token", 3600.0
+
+    def user(self, token):
+        return USER
+
+
+def archive(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+class SignInTests(unittest.TestCase):
+    def setUp(self):
+        self.oauth = FakeOAuth()
+        self.client = TestClient(
+            # The edge strips `/concurro`, so cookies scoped to it can't be exercised here; use the root.
+            app_module.create_app(settings("https://host.invalid"), oauth=self.oauth, vault=Vault(None)),  # type: ignore[arg-type]
+            base_url="https://host.invalid",
+        )
+
+    def start(self, next_path="/tasks"):
+        response = self.client.get("/auth/login", params={"next": next_path}, follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        query = parse_qs(urlsplit(response.headers["location"]).query)
+        self.assertEqual(query["redirect_uri"], ["https://host.invalid/auth/callback"])
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        return query["state"][0], query["code_challenge"][0]
+
+    def test_sign_in_binds_state_and_pkce_to_the_browser(self):
+        state, code_challenge = self.start()
+        response = self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
+        self.assertEqual(response.headers["location"], "/tasks")
+        verifier = self.oauth.exchanged[0][2]
+        self.assertEqual(challenge(verifier), code_challenge)
+        self.assertEqual(self.client.get("/api/me").json()["login"], "octo")
+        # The state was consumed.
+        again = self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
+        self.assertIn("/signin?error=", again.headers["location"])
+
+    def test_a_callback_from_another_browser_is_refused(self):
+        state, _ = self.start()
+        self.client.cookies.clear()
+        response = self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
+        self.assertIn("/signin?error=", response.headers["location"])
+        self.assertEqual(self.oauth.exchanged, [])
+        self.assertEqual(self.client.get("/api/me").status_code, 401)
+
+    def test_open_redirects_are_dropped(self):
+        state, _ = self.start("//evil.invalid")
+        response = self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
+        self.assertEqual(response.headers["location"], "/")
+
+    def test_writes_need_the_request_header(self):
+        state, _ = self.start()
+        self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
+        refused = self.client.post("/api/tasks/up/project/7/commands", json={"command": "stop"})
+        self.assertEqual(refused.status_code, 403)
+        unknown = self.client.post(
+            "/api/tasks/up/project/7/commands", json={"command": "merge"}, headers={app_module.CSRF_HEADER: "1"}
+        )
+        self.assertEqual(unknown.status_code, 422)
+
+
+class SettingsTests(unittest.TestCase):
+    def test_paths_derive_from_the_public_url(self):
+        configured = settings()
+        self.assertEqual(configured.base_path, "/concurro")
+        self.assertEqual(configured.callback_url, "https://host.invalid/concurro/auth/callback")
+        self.assertTrue(configured.secure)
+
+
+class SessionTests(unittest.TestCase):
+    def test_sessions_expire(self):
+        now = [0.0]
+        sessions = Sessions(clock=lambda: now[0])
+        sid = sessions.create("token", USER, 10)
+        self.assertIsNotNone(sessions.get(sid))
+        now[0] = 11
+        self.assertIsNone(sessions.get(sid))
+
+
+class CommandTests(unittest.TestCase):
+    def test_command_text_matches_the_engine_grammar(self):
+        from commands import parse
+
+        self.assertEqual(tasks_module.command_text("stop", None, lambda: None), "/concurro stop")
+        approve = tasks_module.command_text("approve", None, lambda: {"plan_id": "a" * 64})
+        self.assertEqual(approve, "/concurro approve " + "a" * 64)
+        retry = tasks_module.command_text("retry", "2", lambda: None)
+        for text in ("/concurro stop", approve, retry):
+            self.assertIsNotNone(parse(text), text)
+        with self.assertRaises(tasks_module.TaskNotFound):
+            tasks_module.command_text("approve", None, lambda: {})
+
+
+class CredentialTests(unittest.TestCase):
+    def test_routes_map_between_the_ui_and_the_vault(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path, request.headers["authorization"]))
+            if request.method == "GET":
+                entry = {
+                    "route": "anthropic-api-key",
+                    "status": "valid",
+                    "fingerprint": "abcd",
+                    "version": 2,
+                    "updated": "t",
+                }
+                return httpx.Response(200, json=[entry])
+            return httpx.Response(422, json={"error": "provider rejected the secret"})
+
+        vault = Vault("http://vault.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
+        routes = {r["id"]: r for r in vault.routes("user-token")}
+        self.assertEqual(routes["anthropic_api"]["status"], "valid")
+        self.assertEqual(routes["openai_api"]["status"], "missing")
+        self.assertEqual(routes["claude_subscription"]["status"], "missing")
+        with self.assertRaises(Exception) as raised:
+            vault.put("user-token", "openai_api", "sk-test")
+        self.assertEqual(getattr(raised.exception, "status", None), 422)
+        self.assertEqual(seen[-1][:2], ("PUT", "/credentials/openai-api-key"))
+        self.assertTrue(all(auth == "Bearer user-token" for _, _, auth in seen))
+
+
+class DiagnosticsTests(unittest.TestCase):
+    def test_turns_and_transcripts_read_back(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        store = diagnostics.Store(root, clock=lambda: 1000.0)
+        self.addCleanup(store.close)
+        turn = {
+            "request": {"stage": "develop", "provider": "claude", "model": "claude-opus", "effort": "high"},
+            "spec": {},
+            "feedback": {},
+        }
+        store.submitted(TURN_ID, turn, {"repository": "up/project", "issue": 7})
+        store.observed(TURN_ID, "done", {"created": 1000.0, "started": 1002.0, "finished": 1010.0}, {"s-1"})
+        lines = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading"}]}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"p": 1}}]},
+            },
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        ]
+        data = archive({"claude/projects/x/s.jsonl": "\n".join(json.dumps(line) for line in lines)})
+        workspace = {"edits": [{"path": "a.py", "content": "print(1)\n"}], "removed": ["b.py"], "skipped": []}
+        store.finished(
+            TURN_ID,
+            {
+                "outcome": "ok",
+                "response": {"summary": "done"},
+                "retained": base64.b64encode(data).decode(),
+                "workspace": workspace,
+            },
+        )
+        [result] = Diagnostics(root).turns("up/project", 7)
+        self.assertEqual(
+            (result["n"], result["stage"], result["role"], result["outcome"]), (1, "implement", "implementer", "ok")
+        )
+        self.assertEqual((result["queuedMs"], result["durationMs"]), (2000, 8000))
+        self.assertEqual([item["kind"] for item in result["transcript"]], ["assistant", "tool_call", "tool_result"])
+        self.assertIn("=== a.py", result["diff"])
+        self.assertIn("b.py (removed)", result["diff"])
+        self.assertEqual(Diagnostics(root).turns("up/project", 8), [])
+        self.assertEqual(Diagnostics(None).turns("up/project", 7), [])
+
+    def test_codex_transcripts_normalize(self):
+        events = [
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]},
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1"},
+            },
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "done"}},
+            {"type": "event_msg", "payload": {}},
+        ]
+        items = normalize(archive({"codex/sessions/r.jsonl": "\n".join(json.dumps(e) for e in events)}))
+        self.assertEqual([i["kind"] for i in items], ["assistant", "tool_call", "tool_result"])
+        self.assertEqual(normalize(b"not an archive")[0]["kind"], "assistant")
+
+
+class RosterTests(unittest.TestCase):
+    def test_named_and_legacy_configurations(self):
+        named = {
+            "models": {"opus": {"provider": "anthropic", "model": "claude-opus", "effort": "high"}},
+            "agents": {
+                "triage": "opus",
+                "planner": "opus",
+                "plan_reviewers": ["opus"],
+                "implementer": "opus",
+                "pr_reviewers": ["opus"],
+            },
+        }
+        roster, profiles = tasks_module.roster_and_profiles(named)
+        self.assertEqual(len(roster), 5)
+        self.assertEqual(
+            profiles, [{"name": "opus", "provider": "anthropic", "model": "claude-opus", "effort": "high"}]
+        )
+        legacy = {
+            "planner": "claude",
+            "implementer": "codex",
+            "qc": "codex",
+            "reviewers": ["claude", "codex"],
+            "models": {"claude": "claude-opus", "codex": "gpt-sol"},
+        }
+        roster, profiles = tasks_module.roster_and_profiles(legacy)
+        self.assertEqual(
+            [r["role"] for r in roster], ["planner", "plan_reviewer", "implementer", "pr_reviewer", "pr_reviewer"]
+        )
+        self.assertEqual({p["name"]: p["provider"] for p in profiles}, {"claude": "anthropic", "codex": "openai"})
+
+
+class ProjectionTests(unittest.TestCase):
+    ISSUE = {
+        "number": 7,
+        "title": "Fix it",
+        "user": {"login": "author"},
+        "labels": [{"name": "concurro"}, {"name": "concurro:stage:review"}, {"name": "bug"}],
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-02T00:00:00Z",
+        "closed_at": None,
+    }
+
+    def test_summary_uses_the_stage_label(self):
+        task = tasks_module.summary("up/project", self.ISSUE, "manual")
+        self.assertEqual((task["stage"], task["labels"]), ("review", ["bug"]))
+
+    def test_checkpoint_state_projects_into_the_task(self):
+        member = {"id": "m1", "model": "claude-opus", "effort": "high", "agent": {"profile": "opus-high"}}
+        state = {
+            "stage": "observed_merged",
+            "mode": "autonomous",
+            "plan_id": "p" * 64,
+            "plan": {"summary": "Do it", "steps": ["one"], "headline": "Fix the bug"},
+            "approval": {"kind": "consensus", "plan": "p" * 64},
+            "design_generation": 1,
+            "design_votes": {"m1": {"identity": member, "report": {"decision": "approve"}}},
+            "objections": [{"id": "O1-m1", "reviewer": "m1", "text": "edge case", "resolved": True}],
+            "review_history": [{"claude": {"verdict": "changes_requested", "head": "a" * 40, "sequence": 1}}],
+            "reviews": {"claude": {"verdict": "approve", "head": "b" * 40, "sequence": 2}},
+            "findings": [
+                {"id": "F1", "provider": "claude", "review": 1, "status": "fixed", "detail": "Off by one\nmore"}
+            ],
+            "calls": 9,
+            "round": 1,
+            "completion": {
+                "kind": "observed_external",
+                "merge_sha": "c" * 40,
+                "merged_by": "human",
+                "observed_stage": "review",
+            },
+            "reports": [{"step": "review", "provider": "claude", "outcome": "approve", "timing": {"finished": 1.8e9}}],
+        }
+        task = tasks_module.project(state, {"max_model_calls": 40}, "up/project", self.ISSUE)
+        self.assertEqual((task["stage"], task["atStage"], task["mode"]), ("observed_merged", "review", "autonomous"))
+        self.assertEqual(task["plans"][-1]["summary"], "Fix the bug")
+        self.assertEqual(task["approvedPlanId"], "p" * 64)
+        self.assertEqual(task["designReview"][0]["reviews"][0]["agent"], "opus-high")
+        self.assertTrue(task["designReview"][0]["reviews"][0]["objections"][0]["resolved"])
+        self.assertEqual([r["votes"][0]["verdict"] for r in task["rounds"]], ["changes_requested", "approve"])
+        self.assertEqual(task["findings"][0]["title"], "Off by one")
+        self.assertEqual(task["budgets"]["modelCalls"], {"used": 9, "max": 40})
+        self.assertEqual(task["completion"]["handedOff"], False)
+        self.assertEqual(len(task["timeline"]), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
