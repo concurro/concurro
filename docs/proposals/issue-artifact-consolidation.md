@@ -1,6 +1,7 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: phases 1–3 committed; phases 4–5 remain proposed.** Builds on
+**Status: phases 1–3 committed; phase 4a reference reuse implemented for review;
+phase 4b attempt-tagged uploads and phase 5 proposed. Not ready for release.** Builds on
 the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
 artifact deletion or diagnostic writes are authorized by this document.
 
@@ -259,14 +260,17 @@ packing. The descriptor identifies the encoding and boundary units; do not recom
 from the current budget. Freeze entry links from recovered continuation receipts before
 its POST so a lost entry reply is matched against the same bytes.
 
-Recovery finishes the original layout even if configuration changes. A lower current
-transport allowance must not trigger silent repacking of an uncertain write; report that
-its original artifacts cannot be read with that allowance. Existing interrupted writes
-retain their original 16,000-character or 256 KiB encoding/layout too.
+Legacy interrupted writes finish their original layout even if configuration changes,
+including their original 16,000-character or 256 KiB encoding. A lower transport allowance
+must not silently repack an existing upload; report when its artifacts cannot be read with
+that allowance. Section 4b leaves partial new-encoding sets unused rather than continuing
+them, and uses a new nonce/layout for any replacement upload.
 
 A 500, timeout or lost reply can follow successful creation. Keep exact marker/body,
 authorship, version and digest verification. Missing reads or failed scans never prove
-absence. Do not resend an uncertain part under a different layout.
+absence. Do not resend an uncertain part under a different layout within that upload.
+Section 4b permits fresh replacement uploads under a new nonce after incomplete recovery;
+legacy uploads keep the original recovery rules.
 
 ### 4. Ordinary writes versus discovery
 
@@ -274,25 +278,31 @@ Use known durable references and digest receipts for ordinary saves. A process-c
 with a durable reference needs a direct verified read, not collection discovery. This
 applies to `Store.put`'s legacy archive lookup, `matches`, and `checkpoint_reference`.
 
+Phase 4a indexes canonical references from the report index and publication receipts,
+including small reports that remain inline in the audit. Reuse verifies their recorded
+artifact IDs through the existing reader; invalid references never fall back to discovery.
+Restored history directories retain their representation across saves and tail appends,
+without searching for a hypothetical legacy whole-list copy. These are process-local
+lookup hints, not new persisted fields. Known legacy whole-list references stay whole.
+
 Missing references are different: today they do not distinguish fresh content from a
-successful write whose reply/checkpoint was lost. Keep discovery on that path until durable
-write intent makes the distinction explicit. Do not claim that all new-content scans can
-be removed by skipping the legacy archive index. Intent can potentially be batched with an
-existing save; its persistence order and audit-storage bootstrap need a separate design,
-not an assumed extra save per artifact.
+successful write whose reply/checkpoint was lost. Phase 4a keeps discovery on that path.
+That preserves correctness but leaves routine first writes too expensive; phase 4b below
+specifies attempt-tagged uploads and recovery without a separate storage journal.
 
 Proposed duplicate policy for the new immutable encoding: accept several controller-owned,
 unedited artifacts only when marker, name, layout and exact body bytes agree. On discovery,
 choose the lowest-numbered verified copy; preserve already recorded valid artifact IDs
 and links rather than retargeting published receipts. Different bytes under one marker
-remain a conflict. Keep legacy and mutable-audit duplicate rules unchanged. This is an
-explicit behavior change to test, not something current `Store.put` already permits.
+remain a conflict. Keep legacy and mutable-audit duplicate rules unchanged. This policy was
+implemented in phase 2; phase 4b preserves it within each write identity.
 
 Identical-duplicate acceptance is not a replacement for layout recovery: after a lost reply
 and budget change, recover the original descriptor before continuing. Nor does it eliminate
-unreferenced copies. Scans of ambiguous missing references remain necessary unless an
-intent supplies the original layout and write state. Do not promise zero duplicate uploads
-or zero cold discovery requests.
+unreferenced copies. Phase 4a and legacy writers still scan ambiguous missing references.
+Phase 4b replaces that ordinary-write rule with fresh nonces, reserving discovery for
+attempt recovery and legacy paths. Do not promise zero unused uploads or zero cold
+recovery requests.
 
 Use one artifact per discovery page for the larger bodies, leaving other endpoints unchanged.
 Measure the extra GETs; do not add adaptive pagination speculatively. If page sizing later
@@ -301,6 +311,190 @@ changes within recovery, restart at page one rather than changing offsets mid-sc
 Fewer artifacts reduce requests, not necessarily downloaded bytes: a cold collection scan
 still returns every body. Larger parts also make interrupted uploads more expensive.
 Existing artifacts remain; no deletion, repacking or mutable bulk archive is proposed.
+
+### 4b. Attempt-tagged uploads (proposed)
+
+Phase 4a's reference reuse is correct but insufficient for release: new outputs still scan.
+Use the model attempt already saved before dispatch, rather than adding a storage journal.
+`Controller.ask` calls `begin_attempt`, charges and saves before invoking the agent;
+`Design.reserve` does the equivalent for each batch member. Both later record session
+completion and call `Controller.complete` before applying the result.
+
+**No additional intent PATCH, committed-state copy, activation checkpoint, receipt pages or
+one-active-object rule.** Preserve the existing audit and publication ordering. This replaces
+the earlier journal design; it changes immutable upload/recovery behavior, not task authority.
+
+#### New writes and identities
+
+- Resolve known references first through the verified reader. Never replace a referenced
+  artifact that fails verification. New unreferenced objects use a fresh write nonce, shared
+  by all their parts. Markers bind nonce, content digest, part index and frozen layout digest.
+  Creation does not build the legacy archive index or call `matches`/`collection`; even
+  updating an in-memory collection cache must not lazily trigger a scan.
+- A nonce distinguishes a new upload from old copies of the same content. It does **not**
+  assert that the content has never existed. Keep content-based reuse through known receipts
+  and verified caches. Every part retains its layout descriptor; continuations precede the
+  entry, and the entry pins their identities. Freeze rendering/packing for that upload.
+- Derived data (history blocks, overflow, preflight data and first publication of a report
+  already committed inline) needs no pre-upload journal. Recompute it from retained task
+  data after a lost reply, using a new nonce if necessary. This may leave unused complete or
+  partial sets. Preserve preflight's rule that storage completes before branch/PR writes;
+  never install its hypothetical future task state during recovery.
+- Readers group new parts by nonce before checking layout and body commitments. Several
+  complete verified sets for one content digest are valid: prefer existing referenced IDs;
+  without a reference, choose the complete set with the lowest entry artifact number.
+  Never combine parts across nonces. Incomplete unreferenced sets are not usable evidence;
+  conflicting copies within one nonce remain errors. Known missing references cannot be
+  bypassed by selecting a different set. Legacy markers retain their existing rules.
+
+All new-encoding writers use this path, including nested reports and overflow. Already
+queued legacy writers and interrupted old encodings retain their bytes and discovery rules.
+Land versioned readers before enabling new writers, under the compatibility rule below.
+No separate activation/bootstrap storage protocol is required.
+
+#### Completion record for uploaded model responses
+
+Only the root representing a newly retained model response carries a completion record;
+ordinary derived copies must not claim to complete an attempt. Bind repository/issue,
+operation ID and attempt, stage/reviewer or batch member, request/contract and session identity.
+The attempt tag is discoverable in the new part markers. The entry commits to the completion
+record, including:
+
+- The retained logical-response digest plus annotations and rejected-output reconstruction,
+  pointing to the canonical record in the same upload. Do not store a second response copy.
+  Reconstruct the logical response from those pieces and verify its digest before restoration.
+- Session scope/identity, expected previous turn, completed turn and the exact `completed`
+  record written by `record_session_turn` (`call`, request digest, response digest).
+  That response digest precedes `Controller.complete`'s classification normalization: do not
+  recompute it from the normalized retained response.
+- Normalized timing, if observed, and the batch member's completion status. Do not fabricate
+  timing, restore eligibility to true, or restore an entire stale task snapshot.
+
+These fields are normally small, not subject to a new fixed-size cap. Include all completion
+bytes in response-budget packing and integrity checks; large reconstruction metadata can be
+part of the multipart record whose entry commits to it. Recovery requires the complete
+record and all referenced data. Do not publish credentials, transcripts or raw provider errors.
+
+If a detached response reuses an existing canonical core, upload nothing and do not add a
+separate completion entry. The older artifact cannot be edited and is not proof of this
+attempt's result. A crash before the checkpoint in this case retains today's retry behavior,
+as does an inline response lost before commit. This deliberately leaves those windows open
+to avoid a new artifact type and recovery path. Small inline responses are not uploaded
+solely for this feature; test both exceptions without claiming that every paid call recovers.
+
+#### Recovery before replacement admission
+
+`Controller.recover` currently returns immediately for `started`; add the scan to that
+case at its existing call site in `Controller.ask`. It must run **before** `max_model_calls`,
+credential acquisition and `begin_attempt`'s uncertainty check: a response already paid for
+must remain recoverable at either budget limit. For `plan_qc`, keep `sessions.prepare` and
+`design_eligibility.prepare` before recovery. They preserve an unchanged scope; if preparation
+rotated the session, the completion record's session/previous-turn check rejects it as stale.
+
+1. Scan only a persisted **`started`** attempt from an abandoned invocation. Do not add scans
+   for `uncertain`, `failed` or legacy completed-without-response records; retain their
+   existing handling. In `Design.open`, recover a started member before it becomes uncertain
+   and before `reserve` checks admission. A changed batch binding discards stale members
+   without scanning. Share one collection result across recovering members. Never scan or
+   infer failure for a handle still running in the current serial invocation or
+   `review_batch.run`'s live set. Keep ownership/lost-generation semantics unchanged; no new
+   exchange polling path. Existing completed responses still return through normal recovery.
+
+2. Verify App authorship, unedited parts, namespace, complete layout, content and completion
+   record against the durable attempt, contract and session. Different responses or incompatible
+   completion records claiming the same attempt are a conflict, not a lowest-number tie-break.
+   Identical complete copies may use the selection rule above. Foreign/stale attempts cannot
+   restore current work; invalidation or explicit session restart is not reversed.
+3. Restore `operation.response` and completed status, its timing and the session completion
+   update as one checkpoint. Set the expected next turn, not an unconditional increment:
+   replay of an already-applied completion is a no-op. Reject a mismatched session rather than
+   overwriting newer work. For batches, restore only the matching member before `reserve`.
+   Preserve all call/credential budgets, prior findings and eligibility decisions.
+4. Feed the retained response through the existing semantic validation/application path.
+   Recovery proves completion, not approval. A lost recovery-checkpoint reply repeats this
+   reconciliation without spending another model call or advancing the session twice.
+5. If a successful complete scan finds no complete matching result, keep today's source-loss
+   and retry behavior. A failed read/list is not a negative result: propagate the read failure
+   rather than charge a replacement based on incomplete discovery. A positively conflicting
+   matching set remains a storage error, not permission to choose an unrelated copy.
+
+This recovers a complete attempt-tagged upload whose reply or checkpoint commit was lost.
+It cannot recover a never-uploaded or inline response, a partial multipart result, or a
+reused core without this attempt's completion metadata. Those windows retain phase-2 retry
+behavior; no payload spool or additional retry allowance is introduced.
+
+Never resume a partial new-encoding upload after interruption. Leave its nonce and parts
+unused. If a verified source is available, create a fresh upload with a new nonce and a
+layout fitting the current budget; otherwise use today's source-loss handling. First check
+for a complete matching attempt result, so an entry whose creation reply was lost is not
+mistaken for a partial upload. Within an upload, boundaries remain frozen; old interrupted
+encodings alone retain their continuation/repacking rules. Complete referenced layouts remain
+readable without alteration.
+
+#### Measurement and acceptance
+
+The [retention evidence](../reports/limits-cleanup/retention-save-traffic.json) replays phase 2
+(`795a639`) and phase 4a with the same 155-artifact fixture. Each simulated call starts a new
+`Checkpoints`/`Store`, with no cross-tick cache. The complete storage cycle includes cold
+load, retention, deterministic report application, checkpointing, publication, receipt save
+and dashboard write/readback. It excludes model dispatch, native PR review and unrelated
+controller traffic. Zero models or live GitHub APIs were called.
+
+| First call, 155 existing artifacts | Phase 2 GETs / collection GETs | Phase 4a GETs / collection GETs |
+| ---- | ---- | ---- |
+| Save newly completed inline response | 18 / 16 | 2 / 0 |
+| Save newly completed detached response | 19 / 16 | 159 / 156 |
+| Complete inline-response storage cycle | 29 / 16 | 169 / 156 |
+| Complete detached-response storage cycle | 29 / 16 | 169 / 156 |
+
+Across six cold calls, the issue grows from 155 to 161 artifacts. Inline cycles total
+**175 → 1,029 GETs**, detached cycles **190 → 1,044**; collection GETs are **97 → 951** in
+both workloads. POSTs remain six and PATCHes 24. Inline retention is cheap in phase 4a, but
+its first publication pays the scan instead. The earlier 48-report script reused one Store
+for all calls before testing cold idle ticks; its 576 → 6 result does not measure this path.
+
+A second fixture starts with **ten artifacts**, using five unrelated artifacts instead of
+150. Its first-call retention counts are **4 / 2 → 2 / 0** for inline output and
+**5 / 2 → 14 / 11** for detached output (GETs / collection GETs, phase 2 → phase 4a).
+The complete cycle is **15 / 2 → 24 / 11** for either. Across six calls, total GETs are
+**90 → 159** inline and **105 → 174** detached; collection GETs are **12 → 81**.
+A design that adds requests can lose even to phase 2 on this small issue, so both sizes
+are release comparisons, not only the artifact-heavy case.
+
+Before release, fill these rows with the attempt-tagged implementation, not projections:
+
+| Case, at both 10 and 150+ existing artifacts | Required result / allowed traffic |
+| ---- | ---- |
+| Retention-save and complete cold per-call cycle, inline and detached | Zero artifact collection GETs on uninterrupted new-encoding writes; total GET + POST + PATCH no higher than phase 2, including completion records/readbacks |
+| Interrupted attempt with complete uploaded result but lost checkpoint | One shared collection scan per recovery invocation, then direct verification and the existing checkpoint sequence; zero model calls or duplicate session advances |
+| Several abandoned batch members | Reuse that one collection scan; no scan per member, part or candidate set |
+| Partial or absent attempt upload | One scan before existing source-loss handling; report replacement model work separately, never describe it as successful artifact recovery |
+| Inline or reused-core result lost before commit | No fabricated completion; preserve the existing retry path and report its model-call cost |
+| Active in-memory runner handle | No attempt-recovery scan, no replacement dispatch |
+| Derived upload with lost reply | Recompute without collection discovery; count abandoned sets and replacement POSTs |
+
+Recovery is explicitly allowed to cost more requests than phase 2. With one-item pages,
+a full collection pass over N artifacts currently takes N+1 GETs, including the final empty
+page. Add direct reads of matching parts/dependencies and checkpoint writes/readbacks;
+report each component and the whole recovery total. This is not the normal per-call path.
+A failed scan is retried through existing error handling, never counted as proof of absence.
+Do not impose a new scan cap that could silently miss the result.
+
+Also cover history-block closure and oversized-audit overflow, full-call-budget lifecycles,
+large reconstruction metadata, rejected outputs and reused cores with no extra completion
+artifact. Test recovery at exhausted call/uncertainty budgets before credential acquisition,
+scan eligibility by status, changed batch bindings and plan-review session preparation.
+Include first-ever audit creation and queued legacy writers as separate rows; their
+existing discovery is not a new-output-write regression. No setup/migration costs may be
+hidden in the fixture. Inject interruption at each part POST/readback, entry completion,
+response checkpoint and recovery checkpoint. Test changed budgets, multiple write IDs for
+one digest, conflicting results for one attempt, stale attempts, session mismatch and replay.
+
+Report total GET/POST/PATCH, collection requests, artifact counts by purpose, completion
+metadata bytes, unused complete/partial sets, peak audit size and actual harness calls.
+Bytes remain informational modeled traffic. The attempt-tagged design is not implemented;
+its savings and recovery costs have **not** been measured. Keep these comparisons as the
+release condition for phases 3–4.
 
 ## Implementation order and compatibility
 
@@ -311,18 +505,22 @@ Existing artifacts remain; no deletion, repacking or mutable bulk archive is pro
    event identity and readers. Define frozen multipart descriptors and continuation recovery.
 3. **Budget-based packing (committed):** share the artifact transport setting, implement measured response
    accounting and the separate hard body check. Validate every response shape. Release with phase 4.
-4. **Avoid ordinary scans:** eliminate ordinary collection scans, including the cold-save
-   whole-list check in `Store.checkpoint_reference`, while retaining recovery/legacy discovery.
-   Completion requires total and collection GET counts for cold load, save and publish on
-   identical issues with at least 150 existing artifacts, compared with phase 2 (`795a639`).
-   Report each operation separately and distinguish necessary recovery/legacy scans from
-   the ordinary path. Missing-reference ambiguity still requires discovery until durable
-   write intent resolves it, as specified above.
+4. **Avoid ordinary scans:**
+   - **4a, reference reuse (implemented for review):** direct known-reference reads and no
+     cold-save whole-list scan for verified block directories. Keep its regression tests
+     and [measurements](../reports/limits-cleanup/README.md#phase-4-reference-based-ordinary-operations).
+   - **4b, attempt-tagged uploads (proposed):** versioned readers and serial/batch attempt
+     recovery first, then scan-free new-encoding writers. Cover retention, publication,
+     nested reports, history blocks, preflight and overflow. Compare cold new-output saves
+     and complete per-call storage against phase 2 on small and 150+-artifact issues;
+     include completion records and report recovery scan costs separately.
+
 5. **Measure complete lifecycles:** compare all artifacts and traffic, then update operator docs.
 
-**Release phases 3 and 4 together.** One-item pages raised collection GETs from 63 to 576
-on the 48-report workload. Request volume risks installation rate limits on artifact-heavy
-issues; free network traffic does not remove that constraint. Phase 3 must not ship alone.
+**Release phase 3 only with both 4a and 4b and their measurements.** Phase 4a removes
+redundant known-reference scans but does not satisfy the request-volume condition for new
+model outputs. The cold-per-call results above supersede using the warm 48-report aggregate
+as release evidence. Free network traffic does not remove installation request limits.
 
 Land readers before writers. New records may join checkpoint format 7 only while it remains
 unreleased; otherwise use a new incompatible wire version that old engines reject. Check
@@ -344,8 +542,9 @@ authorization and must not use a pilot issue.
   multiple pages, unavailable revisions, concurrent changes and both old/new body encodings.
 - Inline and detached retention produce the same core; accepted and rejected reports reuse
   it. Crash before validation never drops a response or spends another model call.
-- Lost replies at each continuation and entry write; recovery with only a continuation,
-  changed budget, missing local receipts, unchanged saves and old interrupted encodings.
+- Lost replies at each continuation and entry write; distinguish complete new attempt
+  recovery, unused new partial sets and legacy continuation recovery. Cover changed budgets,
+  missing local receipts and unchanged saves.
 - Exact core/response/published-annotation reconstruction; missing, reordered, edited or
   differently authored parts retain existing verification failures.
 - Distinct events sharing an artifact retain separate receipts, votes and timing; cover
@@ -360,8 +559,11 @@ authorization and must not use a pilot issue.
 - Unbound plans with unavailable version 1 remain byte-identical while a new view is bound;
   lost replacement replies recover one view, unrelated App plans remain untouched, and
   missing task plans do not trigger invented work. No fabricated historical proof.
-- Cold/warm ordinary saves do not scan unnecessarily; recovery still finds unacknowledged
-  writes. Full-call-budget lifecycles include parallel review, repair and publication.
+- Cold/warm known-reference saves and uninterrupted new-encoding first writes avoid
+  collection scans; uncertain/legacy recovery still discovers unacknowledged writes. Include
+  every phase-4b crash boundary, completion-record restoration and session replay without
+  additional model calls.
+  Full-call-budget lifecycles include parallel review, repair and publication.
 
 Report all artifacts by purpose: combined reports, annotations, history blocks, overflow,
 audit and plan views. Include POST/PATCH/GET counts, collection requests, uploaded/downloaded

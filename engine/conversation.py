@@ -579,6 +579,7 @@ def publish(state, github, config, store=None):
         identities = Identities(config)
         artifacts = None
         store = store or report_store.Store(github, state["issue"], identities.author("state"), config["repository"])
+        store.bind_receipts(state)
         for event in pending:
             body = event_body(state, event)
             marker = MARKER + event["id"] + " -->"

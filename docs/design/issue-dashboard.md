@@ -112,7 +112,9 @@ model calls. Missing audit history without a witness remains a verification fail
   bulky reports, history collections and report indexes are referenced by digest and artifact numbers. Derived finding text
   uses a path into its source report rather than a second stored copy. References
   are hydrated before policy checks. Known audit, plan and report identities are
-  read directly; marker discovery is for initial creation or lost-write recovery.
+  read directly, including small inline reports with canonical publication receipts. Receipt
+  identities are verified before reuse; invalid references do not fall back to discovery.
+  Marker discovery remains necessary when no canonical reference survived.
   Completed responses remain available until their results are consumed. Checkpoint
   pressure never discards a response or turns it into an uncertain model call.
   Current, unarchived and pending-publication ratings remain intact; only inline archived
@@ -177,7 +179,8 @@ model calls. Missing audit history without a witness remains a verification fail
   publication. Oversized PR thread text is excerpted with a dashboard link; repair
   files retain the complete finding. Artifact discovery uses one entry per page
   so large bodies fit the same response budget. Legacy whole-list detection can still scan the
-  collection on cold saves; eliminating those scans is a later consolidation phase.
+  collection when no representation is known. Verified history directories and canonical
+  report receipts avoid collection scans on ordinary cold saves and republication.
 
 
 ## Compatibility and future work

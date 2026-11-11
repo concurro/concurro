@@ -367,6 +367,7 @@ class Checkpoints:
                     ):
                         raise ValueError()
                 self.preserved_plans = deepcopy(intent["preserved"])
+            self.reports.bind_receipts(state)
             state["version"] = 2
             return state
         except report_store.ReportDataError:
@@ -727,6 +728,7 @@ class Checkpoints:
         # This proof only reads Git; failure cannot make a checkpoint write uncertain.
         file_inventory.restore(deepcopy(compact), refs, self.reader)
         _, detached = report_store.packed(compact)
+        self.reports.bind_receipts(state)
         if not self.plan and self.preserved_plans and (state.get("plan") or state.get("plan_draft")):
             self.plan_replacement = {
                 "preserved": deepcopy(self.preserved_plans),

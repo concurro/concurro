@@ -347,6 +347,8 @@ def restore(state, refs, store):
             value = value[component]
         value = annotated(value, ref["annotations"], ref.get("draft"))
         parent[slot] = value
+        if "history" in ref:
+            store.history_paths.add(path)
 
 
 class Cache:
@@ -468,6 +470,8 @@ class Store:
         self.verified = {}
         self.numbers = {}
         self.reading = set()
+        self.history_paths = set()
+        self.receipt_references = {}
 
     def collection(self):
         """Lazily discover artifacts once per controller invocation."""
@@ -516,6 +520,18 @@ class Store:
         """Read canonical data and reconstruct the receipt's exact annotation snapshot."""
         return annotated(self.get(ref["digest"], ref["artifacts"]), ref.get("annotations", {}), ref.get("draft"))
 
+    def bind_receipts(self, state):
+        """Index controller-owned publication references; verify their bytes only when reused."""
+        entries = list(state.get("reports", [])) + list(state.get("conversation", {}).get("receipts", {}).values())
+        for entry in entries:
+            ref = entry.get("data") if isinstance(entry, dict) else None
+            if (
+                isinstance(ref, dict)
+                and isinstance(ref.get("digest"), str)
+                and re.fullmatch(protocol.DIGEST_PATTERN, ref["digest"])
+            ):
+                self.receipt_references.setdefault(ref["digest"], deepcopy(ref.get("artifacts")))
+
     def reference(self, value, *, prepare, legacy=False):
         """Describe immutable evidence, optionally confirming it before a checkpoint write."""
         key = self.put(value, legacy=legacy) if prepare else digest(value)
@@ -527,7 +543,15 @@ class Store:
         if "draft" in item:
             ref["draft"] = item["draft"]
         value = item["value"]
-        if prepare and not self.numbers.get(item["digest"]) and self.matches(f"{MARKER}{item['digest']}:"):
+        if prepare and item["digest"] in self.receipt_references:
+            self.put(value)
+        if (
+            prepare
+            and isinstance(value, list)
+            and tuple(item["path"]) not in self.history_paths
+            and not self.numbers.get(item["digest"])
+            and self.matches(f"{MARKER}{item['digest']}:")
+        ):
             self.put(value)
         if isinstance(value, list) and not self.numbers.get(item["digest"]):
             end = len(value) // BLOCK_ENTRIES * BLOCK_ENTRIES
@@ -535,7 +559,7 @@ class Store:
                 self.reference(value[i : i + BLOCK_ENTRIES], prepare=prepare) | {"count": BLOCK_ENTRIES}
                 for i in range(0, end, BLOCK_ENTRIES)
             ]
-            return ref | {
+            result = ref | {
                 "history": {
                     "blocks": blocks,
                     "length": end,
@@ -543,6 +567,9 @@ class Store:
                     "tail": self.encode(value[end:], blocks=False, prepare=prepare),
                 }
             }
+            if prepare:
+                self.history_paths.add(tuple(item["path"]))
+            return result
         return ref | self.reference(value, prepare=prepare)
 
     def restore_history(self, key, record):
@@ -629,6 +656,12 @@ class Store:
         """Confirm immutable parts before referencing them; reuse earlier report archives."""
         key = digest(value)
         if key in self.verified:
+            return key
+        if key in self.receipt_references:
+            numbers = self.receipt_references[key]
+            if numbers is None:
+                raise ReportDataError("Published review data reference is missing its artifact identities.")
+            self.get(key, numbers)
             return key
         # Parse old archive bodies once per invocation, only when discovering a new value.
         if self.archive_index is None:

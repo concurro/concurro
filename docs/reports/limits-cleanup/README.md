@@ -609,3 +609,124 @@ their recovery and frozen-rendering assertions remain intact.
 Validation: engine 1,092 tests (one Linux-only skip on macOS), service 350 and gateway 58;
 Ruff check/format, Pyright, compileall, unchanged instruction-bundle identity and whitespace.
 Baseline counts were 1,078 / 348 / 58. The dashboard goldens and command matrix are unchanged.
+
+
+### Phase 4: reference-based ordinary operations
+
+Reference reuse is implemented on phase 3 (`54aa2bf`) and reviewed for correctness.
+**It is not release-ready:** new-output writes still scan. The proposed phase-4b attempt-tagged upload
+extension and cold-per-call evidence below must close that gap before shipping phase 3.
+Known canonical references in report-index entries and conversation receipts now feed the
+existing verified reader, including small reports still inline in the audit. A cold cache
+miss reads those artifact IDs directly. Missing, edited or mismatched referenced artifacts
+fail verification rather than triggering a scan or replacement upload. Bound identical
+copies retain their recorded IDs.
+
+Verified history directories keep their representation on cold saves and tail appends.
+They no longer search for hypothetical legacy whole-list copies. Known whole-list artifacts
+remain whole. A newly completed block without a receipt still needs discovery; subsequent
+cold saves reuse its reference. No persisted fields, encoding, bundle, model calls, approvals
+or budget rules change.
+
+[Traffic evidence](discovery-phase4-traffic.json) compares identical fixtures and instruments
+against phase 2 (`795a639`), phase 3 (`54aa2bf`) and this change. Each operation starts with
+155 artifacts (150 unrelated plus audit, plan, two history blocks and a report); the retained
+report and lost-write cases have 156. Save/publish counts exclude setup and cold load, which
+is measured separately. All caches are cold. Values below are **total GETs / artifact
+collection GETs**; total GETs also include comment pages.
+
+| Operation | Phase 2 | Phase 3 | Phase 4 |
+| ---- | ---- | ---- | ---- |
+| Cold load through dashboard pointer | 4 / 0 | 4 / 0 | 4 / 0 |
+| Unchanged save | 18 / 16 | 158 / 156 | 2 / 0 |
+| Save with inline history-tail append | 18 / 16 | 158 / 156 | 2 / 0 |
+| Publish another event for a known small report | 19 / 16 | 159 / 156 | 2 / 0 |
+| Publish a response already detached during retention | 1 / 0 | 1 / 0 | 1 / 0 |
+| First publication of an unreferenced inline report | 18 / 16 | 158 / 156 | 158 / 156 |
+| Load without a dashboard pointer (legacy discovery) | 20 / 16 | 160 / 156 | 160 / 156 |
+| Recover creation with no surviving receipt | 18 / 16 | 159 / 157 | 159 / 157 |
+
+The last three cases deliberately retain discovery. No reference cannot distinguish a new
+value from an earlier successful write whose reply was lost. The proposed phase-4b
+attempt-tagged uploads address that separately; phase 4a does not promise scan-free first publication. One-item pages
+still make these exceptional paths more expensive than phase 2. The only new artifact in
+this table is the first publication of unreferenced data; recovery creates no duplicate.
+
+On the 48-report lifecycle, artifact collection GETs fall **63 → 576 → 6**, and total GETs
+**1,075 → 1,588 → 1,018** (phases 2, 3, 4). The remaining six collection requests cover
+bootstrap discovery. All versions retain 56 artifacts, 57 POSTs, 193 PATCHes and a 27,927-byte
+peak audit. This instrument counts comment pages omitted by the earlier lifecycle totals;
+it adds 48 GETs consistently to both baselines. Response bytes are modeled, not live, and
+informational: request volume and avoiding extra harness invocations are the objectives.
+There are zero harness calls in these offline measurements.
+
+Reproduce in each checkout with the same `discovery_traffic.py` and `audit_traffic.py`
+instruments (copy them into the baseline checkouts):
+
+```sh
+python3 engine/tests/discovery_traffic.py
+```
+
+The three initial ordinary-path tests failed against phase 3 before the fix. Ten regression
+tests now cover cold load/save, tail append and block completion, small-report and receipt-only
+reuse, invalid references, legacy whole-list identity, list receipts, pinned identical copies
+and lost creation replies. Existing multipart, rendering and interrupted-write tests remain
+unchanged. Validation: engine 1,102 tests (one Linux-only skip on macOS), service 350, gateway
+58; Ruff check/format, Pyright, compileall, unchanged bundle identity and whitespace checks.
+Baseline counts were 1,092 / 350 / 58. No live writes, deployment or pilot commands were run.
+
+
+### Phase-4 review follow-up: cold new-output writes
+
+Claude correctly identified that the 48-report aggregate reused a Store during model work.
+It measured cold idle ticks, not a fresh process per model call. The new
+[retention-save evidence](retention-save-traffic.json) contains the exact offline reproducer,
+source hashes, six per-call rows for inline output, and six for detached output, run against
+phase 2 (`795a639`) and the unchanged phase-4 implementation. Both start with 155 artifacts.
+No live requests or model invocations were made.
+
+| First call | Phase 2 GETs / artifact collection GETs | Phase 4 GETs / artifact collection GETs |
+| ---- | ---- | ---- |
+| Retain new inline response | 18 / 16 | 2 / 0 |
+| Retain new detached response | 19 / 16 | 159 / 156 |
+| Complete inline storage cycle | 29 / 16 | 169 / 156 |
+| Complete detached storage cycle | 29 / 16 | 169 / 156 |
+
+Complete cycles include cold load, retention, simulated report application, publication,
+receipt checkpoints and dashboard write/readback. They exclude dispatch and unrelated
+controller I/O; these are storage measurements, not total live-task request estimates.
+Across six calls, collection GETs rise from 97 to 951 in either workload. Total GETs rise
+from 175 to 1,029 for inline outputs, and 190 to 1,044 for detached outputs. Both versions
+make six POSTs and 24 PATCHes. Inline output postpones the scan until publication rather
+than eliminating it.
+
+The [proposed attempt-tagged upload design](../../proposals/issue-artifact-consolidation.md#4b-attempt-tagged-uploads-proposed)
+replaces the earlier storage-journal proposal. It uses the existing saved model attempt to
+recover complete uploaded responses and permits recomputation of unreferenced derived data.
+It has not been implemented or measured. The proposal includes serial and parallel recovery,
+exact session-completion restoration, and separate recovery-traffic criteria. The existing
+phase-4 implementation and validation results are unchanged by this docs update.
+
+The evidence JSON also includes a ten-artifact fixture, using five unrelated artifacts
+rather than 150. Its first-call total GETs / collection GETs are:
+
+| Operation | Phase 2 | Phase 4a |
+| ---- | ---- | ---- |
+| Retain new inline response | 4 / 2 | 2 / 0 |
+| Retain new detached response | 5 / 2 | 14 / 11 |
+| Complete inline or detached storage cycle | 15 / 2 | 24 / 11 |
+
+Across six calls, total GETs rise from 90 to 159 for inline outputs and 105 to 174 for detached
+outputs; collection GETs rise from 12 to 81. POSTs remain six and PATCHes 24. This smaller
+fixture catches fixed overhead that a large-issue comparison could hide. Release requires
+zero collection GETs for uninterrupted new-encoding writes and no increase in total requests
+against phase 2 on **both** sizes. Interrupted-attempt recovery may use one shared full scan,
+plus direct verification and checkpoint I/O; measure it separately after implementation.
+
+To replay, extract `reproducer` from the evidence JSON into a temporary `.py` file and run
+it with each checkout root as its argument. Copy the same `discovery_traffic.py` and
+`audit_traffic.py` instruments into the phase-2 checkout, as for the earlier comparison.
+
+For the small fixture use `small_issue.reproducer` with arguments `CHECKOUT_ROOT 5`;
+`CHECKOUT_ROOT 150` reproduces the large fixture. This only changes the number of unrelated
+seed artifacts; production code and the per-call sequence are identical.

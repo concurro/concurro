@@ -1,0 +1,1390 @@
+{
+  "status": "Before attempt-tagged uploads; measured offline, not projected improvements.",
+  "methodology": {
+    "initial_artifacts": 155,
+    "calls_per_workload": 6,
+    "fixtures": "Independent inline and detached workloads; distinct reports; cold Checkpoints/Store every call; no shared process cache.",
+    "retention_save": "Only cp.save after setting completed operation.response; excludes cold load.",
+    "whole_call_storage": "Cold load, response retention, simulated deterministic application, save, conversation publication, receipt save, dashboard write/readback. No model dispatch, CI, native PR reviews or unrelated stage/command GitHub traffic.",
+    "identity": "Both workloads start from the same prepared fixture. Six distinct simulated reports add six artifacts. One logical call is charged per fixture iteration; zero harness invocations.",
+    "GET": "Includes direct and paginated requests, including comments; collection_GET is artifact collections only.",
+    "response_bytes": "CommonMark/JSON model, not GitHub measurement.",
+    "warm_lifecycle_caveat": "The previous 48-report script retains the same Store across its 48 calls, then makes ten cold idle ticks; it is not a cold-per-call baseline."
+  },
+  "reproducer": "\"\"\"Offline cold-call retention measurements; no model or remote calls.\"\"\"\nimport json\nimport sys\nfrom copy import deepcopy\nfrom pathlib import Path\n\nroot=Path(sys.argv[1])\nsys.path.insert(0,str(root/'engine/tests'))\nimport support\nimport conversation\nfrom checkpoints import Checkpoints, MARKER\nfrom discovery_traffic import OperationTraffic, prepared, queue\nfrom fakes import CONFIG\n\n\ndef snapshot(gh):\n    return {k:gh.counts[k] for k in ('GET','collection_GET','POST','PATCH')}\n\n\ndef report(index,large):\n    return {'decision':'approve','rationale':f'Attempt {index}: '+('Verified source evidence. '*1000 if large else 'Verified.'),'concerns':[],'questions':[]}\n\n\ndef measure(large,count=6):\n    gh,state=prepared(OperationTraffic())\n    rows=[]\n    for i in range(count):\n        existing=len(gh.artifacts[7])\n        gh.counts.clear();gh.uploaded=gh.downloaded=0\n        cp=Checkpoints(gh,CONFIG,7)\n        state=cp.load(gh.comments)\n        loaded=snapshot(gh)\n        state['calls']+=1\n        value=report(i,large)\n        state['operation']={'status':'completed','response':deepcopy(value)}\n        before=snapshot(gh)\n        cp.save(state)\n        retained=snapshot(gh)\n        retention={k:retained[k]-before[k] for k in before}\n        if state.get('qc',{}).get('plan'):\n            state.setdefault('qc_history',[]).append(deepcopy(state['qc']['plan']))\n        state['qc']['plan']=deepcopy(value)\n        queue(state)\n        state.pop('operation')\n        cp.save(state)\n        conversation.publish(state,gh,CONFIG,cp.reports)\n        cp.save(state)\n        cp.publish_dashboard(MARKER+f'\\nCompleted calls: {state[\"calls\"]}\\n'+cp.links()[1]+'\\n')\n        rows.append({'call':i+1,'existing_artifacts':existing,'response_json_bytes':len(json.dumps(value).encode()),'cold_load':loaded,'retention_save':retention,'whole_call_storage':snapshot(gh),'new_artifacts':len(gh.artifacts[7])-existing,'uploaded_json_bytes':gh.uploaded,'modeled_response_bytes':gh.downloaded})\n    return {'response':'detached' if large else 'inline','calls':rows,'total':{k:sum(r['whole_call_storage'][k] for r in rows) for k in ('GET','collection_GET','POST','PATCH')},'harness_calls':0}\n\nprint(json.dumps({'workloads':[measure(False),measure(True)]},indent=2))\n",
+  "instrument_sha256": {
+    "engine/checkpoints.py": "2b291ecb0a76ca5b9bcc8ac3d4e7fa4f0e3e1dece5263c2ab56814c4a599f2f2",
+    "engine/conversation.py": "53da00848510157996311f9ff8b7800593a7794c0f46b294829bf44b5f594656",
+    "engine/report_store.py": "47645abd70b0141803ba42786b5a70fe37c7ff0e6934b220c7290c341165898e",
+    "engine/tests/discovery_traffic.py": "b75215b4fa93ffc55c462938e657819eca073523a23a88403a635111274dcb13",
+    "engine/tests/audit_traffic.py": "3379c98f359fd8026951e3a912e0628e6ff5e8c42fe4cbe89011367b10e5677c"
+  },
+  "phase_2": {
+    "revision": "795a639",
+    "workloads": [
+      {
+        "response": "inline",
+        "calls": [
+          {
+            "call": 1,
+            "existing_artifacts": 155,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 18,
+              "collection_GET": 16,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 21746,
+            "modeled_response_bytes": 225336
+          },
+          {
+            "call": 2,
+            "existing_artifacts": 156,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 18,
+              "collection_GET": 16,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 24557,
+            "modeled_response_bytes": 245155
+          },
+          {
+            "call": 3,
+            "existing_artifacts": 157,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 18,
+              "collection_GET": 16,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 27351,
+            "modeled_response_bytes": 263474
+          },
+          {
+            "call": 4,
+            "existing_artifacts": 158,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 18,
+              "collection_GET": 16,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 30147,
+            "modeled_response_bytes": 281799
+          },
+          {
+            "call": 5,
+            "existing_artifacts": 159,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 18,
+              "collection_GET": 16,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 32940,
+            "modeled_response_bytes": 300111
+          },
+          {
+            "call": 6,
+            "existing_artifacts": 160,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 17,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 30,
+              "collection_GET": 17,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 35733,
+            "modeled_response_bytes": 318435
+          }
+        ],
+        "total": {
+          "GET": 175,
+          "collection_GET": 97,
+          "POST": 6,
+          "PATCH": 24
+        },
+        "harness_calls": 0
+      },
+      {
+        "response": "detached",
+        "calls": [
+          {
+            "call": 1,
+            "existing_artifacts": 155,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 29,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 49978,
+            "modeled_response_bytes": 317309
+          },
+          {
+            "call": 2,
+            "existing_artifacts": 156,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 5,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 30,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 53286,
+            "modeled_response_bytes": 433493
+          },
+          {
+            "call": 3,
+            "existing_artifacts": 157,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 6,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 31,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 56578,
+            "modeled_response_bytes": 548187
+          },
+          {
+            "call": 4,
+            "existing_artifacts": 158,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 7,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 32,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 59872,
+            "modeled_response_bytes": 662887
+          },
+          {
+            "call": 5,
+            "existing_artifacts": 159,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 8,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 19,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 33,
+              "collection_GET": 16,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 63163,
+            "modeled_response_bytes": 777574
+          },
+          {
+            "call": 6,
+            "existing_artifacts": 160,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 9,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 20,
+              "collection_GET": 17,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 35,
+              "collection_GET": 17,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 66454,
+            "modeled_response_bytes": 892273
+          }
+        ],
+        "total": {
+          "GET": 190,
+          "collection_GET": 97,
+          "POST": 6,
+          "PATCH": 24
+        },
+        "harness_calls": 0
+      }
+    ]
+  },
+  "phase_4": {
+    "base": "54aa2bf",
+    "working_tree": "Phase-4 uncommitted implementation identified by source hashes above",
+    "workloads": [
+      {
+        "response": "inline",
+        "calls": [
+          {
+            "call": 1,
+            "existing_artifacts": 155,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 169,
+              "collection_GET": 156,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 21746,
+            "modeled_response_bytes": 228498
+          },
+          {
+            "call": 2,
+            "existing_artifacts": 156,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 170,
+              "collection_GET": 157,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 24557,
+            "modeled_response_bytes": 248052
+          },
+          {
+            "call": 3,
+            "existing_artifacts": 157,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 171,
+              "collection_GET": 158,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 27351,
+            "modeled_response_bytes": 266386
+          },
+          {
+            "call": 4,
+            "existing_artifacts": 158,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 172,
+              "collection_GET": 159,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 30147,
+            "modeled_response_bytes": 284727
+          },
+          {
+            "call": 5,
+            "existing_artifacts": 159,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 173,
+              "collection_GET": 160,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 32940,
+            "modeled_response_bytes": 303053
+          },
+          {
+            "call": 6,
+            "existing_artifacts": 160,
+            "response_json_bytes": 93,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 2,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 174,
+              "collection_GET": 161,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 35733,
+            "modeled_response_bytes": 321375
+          }
+        ],
+        "total": {
+          "GET": 1029,
+          "collection_GET": 951,
+          "POST": 6,
+          "PATCH": 24
+        },
+        "harness_calls": 0
+      },
+      {
+        "response": "detached",
+        "calls": [
+          {
+            "call": 1,
+            "existing_artifacts": 155,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 4,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 159,
+              "collection_GET": 156,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 169,
+              "collection_GET": 156,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 49978,
+            "modeled_response_bytes": 319411
+          },
+          {
+            "call": 2,
+            "existing_artifacts": 156,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 5,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 160,
+              "collection_GET": 157,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 171,
+              "collection_GET": 157,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 53286,
+            "modeled_response_bytes": 435610
+          },
+          {
+            "call": 3,
+            "existing_artifacts": 157,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 6,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 161,
+              "collection_GET": 158,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 173,
+              "collection_GET": 158,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 56578,
+            "modeled_response_bytes": 550319
+          },
+          {
+            "call": 4,
+            "existing_artifacts": 158,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 7,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 162,
+              "collection_GET": 159,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 175,
+              "collection_GET": 159,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 59872,
+            "modeled_response_bytes": 665034
+          },
+          {
+            "call": 5,
+            "existing_artifacts": 159,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 8,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 163,
+              "collection_GET": 160,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 177,
+              "collection_GET": 160,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 63163,
+            "modeled_response_bytes": 779736
+          },
+          {
+            "call": 6,
+            "existing_artifacts": 160,
+            "response_json_bytes": 26084,
+            "cold_load": {
+              "GET": 9,
+              "collection_GET": 0,
+              "POST": 0,
+              "PATCH": 0
+            },
+            "retention_save": {
+              "GET": 164,
+              "collection_GET": 161,
+              "POST": 1,
+              "PATCH": 1
+            },
+            "whole_call_storage": {
+              "GET": 179,
+              "collection_GET": 161,
+              "POST": 1,
+              "PATCH": 4
+            },
+            "new_artifacts": 1,
+            "uploaded_json_bytes": 66454,
+            "modeled_response_bytes": 894433
+          }
+        ],
+        "total": {
+          "GET": 1044,
+          "collection_GET": 951,
+          "POST": 6,
+          "PATCH": 24
+        },
+        "harness_calls": 0
+      }
+    ]
+  },
+  "small_issue": {
+    "methodology": "Same fixture, with five rather than 150 unrelated artifacts; ten total before the first call. Same six-call procedure and production code.",
+    "reproducer": "\"\"\"Offline cold-call retention measurements; no model or remote calls.\"\"\"\nimport json\nimport sys\nfrom copy import deepcopy\nfrom pathlib import Path\nfrom unittest.mock import patch\n\nroot=Path(sys.argv[1])\nsys.path.insert(0,str(root/'engine/tests'))\nimport support\nimport conversation\nfrom checkpoints import Checkpoints, MARKER\nfrom discovery_traffic import OperationTraffic, prepared, queue\nfrom fakes import CONFIG\n\n\ndef snapshot(gh):\n    return {k:gh.counts[k] for k in ('GET','collection_GET','POST','PATCH')}\n\n\ndef report(index,large):\n    return {'decision':'approve','rationale':f'Attempt {index}: '+('Verified source evidence. '*1000 if large else 'Verified.'),'concerns':[],'questions':[]}\n\n\ndef measure(large,count=6):\n    unrelated=int(sys.argv[2]) if len(sys.argv)>2 else 150\n    with patch(\"discovery_traffic.range\", side_effect=lambda *args: range(unrelated) if args==(150,) else range(*args), create=True):\n        gh,state=prepared(OperationTraffic())\n    rows=[]\n    for i in range(count):\n        existing=len(gh.artifacts[7])\n        gh.counts.clear();gh.uploaded=gh.downloaded=0\n        cp=Checkpoints(gh,CONFIG,7)\n        state=cp.load(gh.comments)\n        loaded=snapshot(gh)\n        state['calls']+=1\n        value=report(i,large)\n        state['operation']={'status':'completed','response':deepcopy(value)}\n        before=snapshot(gh)\n        cp.save(state)\n        retained=snapshot(gh)\n        retention={k:retained[k]-before[k] for k in before}\n        if state.get('qc',{}).get('plan'):\n            state.setdefault('qc_history',[]).append(deepcopy(state['qc']['plan']))\n        state['qc']['plan']=deepcopy(value)\n        queue(state)\n        state.pop('operation')\n        cp.save(state)\n        conversation.publish(state,gh,CONFIG,cp.reports)\n        cp.save(state)\n        cp.publish_dashboard(MARKER+f'\\nCompleted calls: {state[\"calls\"]}\\n'+cp.links()[1]+'\\n')\n        rows.append({'call':i+1,'existing_artifacts':existing,'response_json_bytes':len(json.dumps(value).encode()),'cold_load':loaded,'retention_save':retention,'whole_call_storage':snapshot(gh),'new_artifacts':len(gh.artifacts[7])-existing,'uploaded_json_bytes':gh.uploaded,'modeled_response_bytes':gh.downloaded})\n    return {'response':'detached' if large else 'inline','calls':rows,'total':{k:sum(r['whole_call_storage'][k] for r in rows) for k in ('GET','collection_GET','POST','PATCH')},'harness_calls':0}\n\nprint(json.dumps({'workloads':[measure(False),measure(True)]},indent=2))\n",
+    "arguments": "CHECKOUT_ROOT 5 (150 reproduces the large fixture)",
+    "phase_2": {
+      "workloads": [
+        {
+          "response": "inline",
+          "calls": [
+            {
+              "call": 1,
+              "existing_artifacts": 10,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 21682,
+              "modeled_response_bytes": 192158
+            },
+            {
+              "call": 2,
+              "existing_artifacts": 11,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 24487,
+              "modeled_response_bytes": 211928
+            },
+            {
+              "call": 3,
+              "existing_artifacts": 12,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 27275,
+              "modeled_response_bytes": 230210
+            },
+            {
+              "call": 4,
+              "existing_artifacts": 13,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 30065,
+              "modeled_response_bytes": 248498
+            },
+            {
+              "call": 5,
+              "existing_artifacts": 14,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 32852,
+              "modeled_response_bytes": 266773
+            },
+            {
+              "call": 6,
+              "existing_artifacts": 15,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 4,
+                "collection_GET": 2,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 35639,
+              "modeled_response_bytes": 285043
+            }
+          ],
+          "total": {
+            "GET": 90,
+            "collection_GET": 12,
+            "POST": 6,
+            "PATCH": 24
+          },
+          "harness_calls": 0
+        },
+        {
+          "response": "detached",
+          "calls": [
+            {
+              "call": 1,
+              "existing_artifacts": 10,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 15,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 49905,
+              "modeled_response_bytes": 284066
+            },
+            {
+              "call": 2,
+              "existing_artifacts": 11,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 5,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 16,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 53198,
+              "modeled_response_bytes": 400110
+            },
+            {
+              "call": 3,
+              "existing_artifacts": 12,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 6,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 17,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 56475,
+              "modeled_response_bytes": 514676
+            },
+            {
+              "call": 4,
+              "existing_artifacts": 13,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 7,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 18,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 59754,
+              "modeled_response_bytes": 629248
+            },
+            {
+              "call": 5,
+              "existing_artifacts": 14,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 8,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 19,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 63030,
+              "modeled_response_bytes": 743807
+            },
+            {
+              "call": 6,
+              "existing_artifacts": 15,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 9,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 5,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 20,
+                "collection_GET": 2,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 66306,
+              "modeled_response_bytes": 858361
+            }
+          ],
+          "total": {
+            "GET": 105,
+            "collection_GET": 12,
+            "POST": 6,
+            "PATCH": 24
+          },
+          "harness_calls": 0
+        }
+      ]
+    },
+    "phase_4": {
+      "workloads": [
+        {
+          "response": "inline",
+          "calls": [
+            {
+              "call": 1,
+              "existing_artifacts": 10,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 24,
+                "collection_GET": 11,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 21682,
+              "modeled_response_bytes": 193351
+            },
+            {
+              "call": 2,
+              "existing_artifacts": 11,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 25,
+                "collection_GET": 12,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 24487,
+              "modeled_response_bytes": 212860
+            },
+            {
+              "call": 3,
+              "existing_artifacts": 12,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 26,
+                "collection_GET": 13,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 27275,
+              "modeled_response_bytes": 231157
+            },
+            {
+              "call": 4,
+              "existing_artifacts": 13,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 27,
+                "collection_GET": 14,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 30065,
+              "modeled_response_bytes": 249461
+            },
+            {
+              "call": 5,
+              "existing_artifacts": 14,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 28,
+                "collection_GET": 15,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 32852,
+              "modeled_response_bytes": 267750
+            },
+            {
+              "call": 6,
+              "existing_artifacts": 15,
+              "response_json_bytes": 93,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 2,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 29,
+                "collection_GET": 16,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 35639,
+              "modeled_response_bytes": 286035
+            }
+          ],
+          "total": {
+            "GET": 159,
+            "collection_GET": 81,
+            "POST": 6,
+            "PATCH": 24
+          },
+          "harness_calls": 0
+        },
+        {
+          "response": "detached",
+          "calls": [
+            {
+              "call": 1,
+              "existing_artifacts": 10,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 4,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 14,
+                "collection_GET": 11,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 24,
+                "collection_GET": 11,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 49905,
+              "modeled_response_bytes": 284201
+            },
+            {
+              "call": 2,
+              "existing_artifacts": 11,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 5,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 15,
+                "collection_GET": 12,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 26,
+                "collection_GET": 12,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 53198,
+              "modeled_response_bytes": 400262
+            },
+            {
+              "call": 3,
+              "existing_artifacts": 12,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 6,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 16,
+                "collection_GET": 13,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 28,
+                "collection_GET": 13,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 56475,
+              "modeled_response_bytes": 514843
+            },
+            {
+              "call": 4,
+              "existing_artifacts": 13,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 7,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 17,
+                "collection_GET": 14,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 30,
+                "collection_GET": 14,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 59754,
+              "modeled_response_bytes": 629430
+            },
+            {
+              "call": 5,
+              "existing_artifacts": 14,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 8,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 18,
+                "collection_GET": 15,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 32,
+                "collection_GET": 15,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 63030,
+              "modeled_response_bytes": 744004
+            },
+            {
+              "call": 6,
+              "existing_artifacts": 15,
+              "response_json_bytes": 26084,
+              "cold_load": {
+                "GET": 9,
+                "collection_GET": 0,
+                "POST": 0,
+                "PATCH": 0
+              },
+              "retention_save": {
+                "GET": 19,
+                "collection_GET": 16,
+                "POST": 1,
+                "PATCH": 1
+              },
+              "whole_call_storage": {
+                "GET": 34,
+                "collection_GET": 16,
+                "POST": 1,
+                "PATCH": 4
+              },
+              "new_artifacts": 1,
+              "uploaded_json_bytes": 66306,
+              "modeled_response_bytes": 858573
+            }
+          ],
+          "total": {
+            "GET": 174,
+            "collection_GET": 81,
+            "POST": 6,
+            "PATCH": 24
+          },
+          "harness_calls": 0
+        }
+      ]
+    }
+  }
+}

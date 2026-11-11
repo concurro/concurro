@@ -1,0 +1,374 @@
+{
+  "methodology": {
+    "script": "engine/tests/discovery_traffic.py",
+    "fixture": "150 unrelated artifacts plus audit, plan, two history blocks and one published report; no warm Store or Cache",
+    "isolation": "Save and publication counters exclude setup and cold load; cold_load measures that load separately.",
+    "GET": "All direct and paginated requests, including comment collection pages. collection_GET counts artifact collection pages only.",
+    "responses": "Offline JSON/CommonMark model, not live GitHub measurements. No model calls or remote writes."
+  },
+  "runs": {
+    "phase_2": {
+      "revision": "795a639",
+      "operations": [
+        {
+          "operation": "cold_load",
+          "existing_artifacts": 155,
+          "GET": 4,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 52824,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save",
+          "existing_artifacts": 155,
+          "GET": 18,
+          "collection_GET": 16,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6173,
+          "modeled_response_bytes": 93908,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save_tail",
+          "existing_artifacts": 155,
+          "GET": 18,
+          "collection_GET": 16,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6206,
+          "modeled_response_bytes": 94007,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_existing",
+          "existing_artifacts": 155,
+          "GET": 19,
+          "collection_GET": 16,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 68033,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_retained",
+          "existing_artifacts": 156,
+          "GET": 1,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 285,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_unreferenced",
+          "existing_artifacts": 155,
+          "GET": 18,
+          "collection_GET": 16,
+          "POST": 1,
+          "PATCH": 0,
+          "new_artifacts": 1,
+          "uploaded_json_bytes": 1098,
+          "modeled_response_bytes": 66884,
+          "harness_calls": 0
+        },
+        {
+          "operation": "legacy_discovery",
+          "existing_artifacts": 155,
+          "GET": 20,
+          "collection_GET": 16,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 114548,
+          "harness_calls": 0
+        },
+        {
+          "operation": "lost_write_recovery",
+          "existing_artifacts": 156,
+          "GET": 18,
+          "collection_GET": 16,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 68981,
+          "harness_calls": 0
+        }
+      ],
+      "lifecycle": {
+        "reports": 48,
+        "artifacts": {
+          "audit": 1,
+          "plan": 1,
+          "canonical_report": 48,
+          "history_or_index_block": 6
+        },
+        "artifact_total": 56,
+        "requests": {
+          "GET": 1075,
+          "collection_GET": 63,
+          "POST": 57,
+          "PATCH": 193
+        },
+        "uploaded_json_bytes": 3161060,
+        "modeled_response_bytes": 35219036,
+        "peak_audit_body_bytes": 27927,
+        "interruption_injected": false
+      }
+    },
+    "phase_3": {
+      "revision": "54aa2bf",
+      "operations": [
+        {
+          "operation": "cold_load",
+          "existing_artifacts": 155,
+          "GET": 4,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 52824,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save",
+          "existing_artifacts": 155,
+          "GET": 158,
+          "collection_GET": 156,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6173,
+          "modeled_response_bytes": 96010,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save_tail",
+          "existing_artifacts": 155,
+          "GET": 158,
+          "collection_GET": 156,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6206,
+          "modeled_response_bytes": 96109,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_existing",
+          "existing_artifacts": 155,
+          "GET": 159,
+          "collection_GET": 156,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 70135,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_retained",
+          "existing_artifacts": 156,
+          "GET": 1,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 285,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_unreferenced",
+          "existing_artifacts": 155,
+          "GET": 158,
+          "collection_GET": 156,
+          "POST": 1,
+          "PATCH": 0,
+          "new_artifacts": 1,
+          "uploaded_json_bytes": 1098,
+          "modeled_response_bytes": 68986,
+          "harness_calls": 0
+        },
+        {
+          "operation": "legacy_discovery",
+          "existing_artifacts": 155,
+          "GET": 160,
+          "collection_GET": 156,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 116650,
+          "harness_calls": 0
+        },
+        {
+          "operation": "lost_write_recovery",
+          "existing_artifacts": 156,
+          "GET": 159,
+          "collection_GET": 157,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 71098,
+          "harness_calls": 0
+        }
+      ],
+      "lifecycle": {
+        "reports": 48,
+        "artifacts": {
+          "audit": 1,
+          "plan": 1,
+          "canonical_report": 48,
+          "history_or_index_block": 6
+        },
+        "artifact_total": 56,
+        "requests": {
+          "GET": 1588,
+          "collection_GET": 576,
+          "POST": 57,
+          "PATCH": 193
+        },
+        "uploaded_json_bytes": 3161060,
+        "modeled_response_bytes": 35226755,
+        "peak_audit_body_bytes": 27927,
+        "interruption_injected": false
+      }
+    },
+    "phase_4": {
+      "revision": "uncommitted on 54aa2bf",
+      "operations": [
+        {
+          "operation": "cold_load",
+          "existing_artifacts": 155,
+          "GET": 4,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 52824,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save",
+          "existing_artifacts": 155,
+          "GET": 2,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6173,
+          "modeled_response_bytes": 32184,
+          "harness_calls": 0
+        },
+        {
+          "operation": "save_tail",
+          "existing_artifacts": 155,
+          "GET": 2,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 1,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 6206,
+          "modeled_response_bytes": 32283,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_existing",
+          "existing_artifacts": 155,
+          "GET": 2,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 3297,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_retained",
+          "existing_artifacts": 156,
+          "GET": 1,
+          "collection_GET": 0,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 285,
+          "harness_calls": 0
+        },
+        {
+          "operation": "publish_unreferenced",
+          "existing_artifacts": 155,
+          "GET": 158,
+          "collection_GET": 156,
+          "POST": 1,
+          "PATCH": 0,
+          "new_artifacts": 1,
+          "uploaded_json_bytes": 1098,
+          "modeled_response_bytes": 68986,
+          "harness_calls": 0
+        },
+        {
+          "operation": "legacy_discovery",
+          "existing_artifacts": 155,
+          "GET": 160,
+          "collection_GET": 156,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 116650,
+          "harness_calls": 0
+        },
+        {
+          "operation": "lost_write_recovery",
+          "existing_artifacts": 156,
+          "GET": 159,
+          "collection_GET": 157,
+          "POST": 0,
+          "PATCH": 0,
+          "new_artifacts": 0,
+          "uploaded_json_bytes": 0,
+          "modeled_response_bytes": 71098,
+          "harness_calls": 0
+        }
+      ],
+      "lifecycle": {
+        "reports": 48,
+        "artifacts": {
+          "audit": 1,
+          "plan": 1,
+          "canonical_report": 48,
+          "history_or_index_block": 6
+        },
+        "artifact_total": 56,
+        "requests": {
+          "GET": 1018,
+          "collection_GET": 6,
+          "POST": 57,
+          "PATCH": 193
+        },
+        "uploaded_json_bytes": 3161060,
+        "modeled_response_bytes": 29397283,
+        "peak_audit_body_bytes": 27927,
+        "interruption_injected": false
+      }
+    }
+  }
+}
