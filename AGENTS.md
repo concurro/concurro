@@ -3,6 +3,12 @@
 Keep requested changes uncommitted for review. Do not deploy, change App permissions,
 or retry live tasks unless the user authorizes those actions.
 
+## Dependencies and hosts
+
+Third-party Python packages are allowed; pin exact versions in the component's
+`requirements.txt`. Committed material names the deployment host only as `<host>`, never
+its address.
+
 ## Documentation
 
 For changes affecting documented behavior, configuration, interfaces, architecture or

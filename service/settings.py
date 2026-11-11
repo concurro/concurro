@@ -28,8 +28,9 @@ FIELDS = {
     "targets",
     "limits",
     "gateway",
+    "diagnostics_dir",
 }
-OPTIONAL = {"engine"}
+OPTIONAL = {"engine", "diagnostics_dir"}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
 WORKFLOW_REF = re.compile(
@@ -80,6 +81,8 @@ class Settings:
     targets: tuple
     limits: Limits
     gateway: Gateway
+    # Run diagnostics are recorded here when set (see `service.diagnostics`).
+    diagnostics_dir: Path | None = None
 
 
 def require(condition, field):
@@ -174,6 +177,7 @@ def load(path):
         targets=tuple(targets),
         limits=Limits(total, limits["per_repository"]),
         gateway=gateway,
+        diagnostics_dir=absolute(data["diagnostics_dir"], "diagnostics_dir") if "diagnostics_dir" in data else None,
     )
 
 

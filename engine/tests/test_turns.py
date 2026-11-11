@@ -289,6 +289,16 @@ class ExecuteTests(Workspace, unittest.TestCase):
         with patch.object(turns, "MAX_RETAINED", 10), self.assertRaises(turns.TurnError):
             turns.unpack(archive, tempfile.mkdtemp())
 
+    def test_a_fresh_turn_transcript_is_dropped_rather_than_failing_when_too_large(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "claude").mkdir()
+            Path(directory, "claude/session.jsonl").write_bytes(os.urandom(4096))
+            self.assertEqual(turns.transcript(directory), turns.pack(directory))
+            with patch.object(turns, "MAX_TRANSCRIPT", 10):
+                self.assertIsNone(turns.transcript(directory))
+            with patch.object(turns, "MAX_RETAINED", 10):
+                self.assertIsNone(turns.transcript(directory))
+
     def test_an_oversized_retained_archive_names_its_largest_parts(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "codex/sessions").mkdir(parents=True)

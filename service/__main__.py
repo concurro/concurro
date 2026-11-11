@@ -17,6 +17,7 @@ from policy import Blocked
 
 from . import control, ingress, settings as settings_module
 from .cutover import Cutover
+from .diagnostics import Store
 from .errors import GatewayStop, RegistryError
 from .gateway import MutationGateway
 from .identity import Identity, IdentityError
@@ -89,7 +90,10 @@ class Daemon:
         self.registry = Registry.open(settings.state_dir, settings.registry_id, initialize=self.initialize)
         gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__, bot_login)
         self.reconciler = Reconciler(self.registry, readers.__getitem__, issue_repositories, {bot_login})
-        worker = Worker(settings, gateway, self.registry, self.reconciler, readers.__getitem__, bot_login)
+        diagnostics = Store(settings.diagnostics_dir) if settings.diagnostics_dir else None
+        worker = Worker(
+            settings, gateway, self.registry, self.reconciler, readers.__getitem__, bot_login, diagnostics=diagnostics
+        )
         self.reconciler.cleanup = worker.cleanup_runners
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)

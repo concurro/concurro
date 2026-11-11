@@ -304,13 +304,18 @@ class RunnerExecutor:
         task=None,
         check_owner=None,
         runner_status=None,
+        recorder=None,
     ):
-        """`expected` holds OIDC claims; `dispatch(session, labels)` starts a labeled runner."""
+        """`expected` holds OIDC claims; `dispatch(session, labels)` starts a labeled runner.
+
+        `recorder`, when given, observes each turn's submission, exchange observations and result.
+        """
         self.operator, self.gateway, self.expected = operator, gateway, expected
         self.models, self.budget, self.dispatch, self.lease = models, budget, dispatch, lease
         self.clock, self.sleep, self.task = clock, sleep, task
         self.check_owner = check_owner or (lambda: None)
         self.runner_status = runner_status or (lambda observation: None)
+        self.recorder = recorder
         self.sessions = set()
         self.groups = {}
         self.timing = None
@@ -369,11 +374,14 @@ class RunnerExecutor:
             group,
             set(self.groups.get(group, ())),
         )
+        self.record("submitted", identifier, turn)
         try:
             reply = self.admit(handle.identifier, turn, pin)
             if reply is None:
                 self.withdraw(handle.identifier)
-                handle.result = self.lost(TurnOutcome.ADMISSION_UNKNOWN if handle.job_bound else TurnOutcome.UNCERTAIN)
+                self.settle(
+                    handle, self.lost(TurnOutcome.ADMISSION_UNKNOWN if handle.job_bound else TurnOutcome.UNCERTAIN)
+                )
             else:
                 self.receive(handle, reply)
             return handle
@@ -385,6 +393,16 @@ class RunnerExecutor:
     def lost(outcome):
         """An absent result cannot authorize work."""
         return {"outcome": outcome, "response": None, "retained": None, "workspace": None}
+
+    def record(self, event, *args):
+        """Tell the recorder, if any; it never affects the turn."""
+        if self.recorder is not None:
+            getattr(self.recorder, event)(*args)
+
+    def settle(self, handle, result):
+        """Set the handle's final result once and record it."""
+        handle.result = result
+        self.record("finished", handle.identifier, result)
 
     def receive(self, handle, reply):
         """Update one observation; dispatch and retain no sibling's session."""
@@ -400,10 +418,11 @@ class RunnerExecutor:
             handle.sessions.add(session)
             self.groups.setdefault(handle.group, set()).add(session)
             self.start(session, handle.turn)
+        self.record("observed", handle.identifier, handle.status, handle.timing, handle.sessions)
         if reply.get("refusal"):
             raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
         if reply.get("status") == "done" and "result" in reply:
-            handle.result = reply["result"]
+            self.settle(handle, reply["result"])
         elif reply.get("status") in ("lost", "cancelled"):
             if handle.job_bound:
                 detail = self.runner_status(reply)
@@ -412,7 +431,7 @@ class RunnerExecutor:
                     or f"{turn_label(handle.turn['request']['stage'])} runner stopped reporting or was ended; no result was saved. "
                     "The cause is unconfirmed. Inspect the runner before a writer retries."
                 )
-            handle.result = self.lost(TurnOutcome.LOST)
+            self.settle(handle, self.lost(TurnOutcome.LOST))
 
     def observe(self, handle, wait=0):
         """One bounded observation; default zero-wait permits round-robin polling."""
@@ -421,7 +440,7 @@ class RunnerExecutor:
             return handle.result
         if not handle.job_bound and handle.deadline is not None and self.clock() > handle.deadline:
             self.withdraw(handle.identifier)
-            handle.result = self.lost(TurnOutcome.UNCERTAIN)
+            self.settle(handle, self.lost(TurnOutcome.UNCERTAIN))
             return handle.result
         if self.clock() < handle.next_poll:
             return None
@@ -445,7 +464,7 @@ class RunnerExecutor:
             # Controller connectivity is not evidence of runner death. The runner may
             # still be heartbeating and delivering a result through a different path.
             if not handle.job_bound and handle.failures > MAX_POLL_FAILURES:
-                handle.result = self.lost(TurnOutcome.UNCERTAIN)
+                self.settle(handle, self.lost(TurnOutcome.UNCERTAIN))
             return handle.result
         self.receive(handle, reply)
         # Observe first: a queued turn may have started since our last poll.
@@ -457,7 +476,7 @@ class RunnerExecutor:
             and self.clock() > handle.deadline
         ):
             self.withdraw(handle.identifier)
-            handle.result = self.lost(TurnOutcome.QUEUE_EXPIRED)
+            self.settle(handle, self.lost(TurnOutcome.QUEUE_EXPIRED))
         return handle.result
 
     def cancel(self, handle):

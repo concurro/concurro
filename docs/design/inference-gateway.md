@@ -110,6 +110,9 @@ Retained homes preserve provider transcripts and thread-state files between role
 Regenerable Codex caches are pruned before packing; the retained gzip archive has a
 24 MiB transport limit. No build cache or provider credential belongs in that archive.
 The service stores it privately and restores it only into the matching conversation.
+Fresh turns also return their CLI homes as a diagnostics `transcript` (dropped above
+8 MiB encoded); the service records it, with retained archives, only when run
+diagnostics are enabled, and never restores it.
 PR reviewers retain separate conversations across repair rounds; changed heads still
 need new reviews. Authority changes, a different PR and design reopens rotate those
 conversations. Fresh design reviews do not reuse iterative transcripts. Existing tasks

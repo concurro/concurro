@@ -33,6 +33,7 @@ operator-requested design evaluation. There is no host executor or build workben
 | Ownership generations and write outcomes | Service registry; must survive restarts |
 | Runner sessions, OIDC binding, queued turns and results | Exchange database; lost/expired sessions cannot deliver accepted results |
 | Retained model transcripts | Private service storage, transported to replacement role jobs |
+| Run diagnostics | Optional `diagnostics_dir` (`service/diagnostics.py`): each turn's request, reconstructed prompt, result and transcript archive; best effort, never read by the engine |
 | Provider credentials and inference accounting | Gateway deployment; never runner configuration |
 | Verified immutable report cache | Disposable service memory; misses re-read and verify artifacts |
 
