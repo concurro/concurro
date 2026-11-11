@@ -1,18 +1,44 @@
 ---
 name: concurro-design
-description: Design or revise a bounded improvement to the target repository before implementation.
+description: Plan a repository change before implementation, or revise a plan after review. Define architecture, edit scope, implementation steps and observable acceptance tests.
 ---
 
 # concurro-design
 
-For standalone use, first read the [shared instructions](../../instructions.md) and the target repository's versioned project charter (`.concurro/charter.json`). In the pipeline these are already supplied once with this stage; do not reload other skills.
+## Design and scope
 
-Settle the architecture, design decisions and risks, and produce implementation steps and observable tests from the requirements, charter and source inventory. Do not try to predict every edit: `files` are the primary files the design is about, and `scope` draws the area the implementer may edit. Make `scope.paths` cover where the design legitimately reaches, generous enough for mechanical follow-on edits (callers of a changed signature, imports, tests) and no wider. Do not estimate or impose a changed-line budget. When the design changes dependencies, say so as a design decision with its risk, and put the manifests and lockfiles it touches inside the envelope. Lockfiles remain inside the reviewed scope. `tests` describes observable acceptance criteria and useful validation commands. The implementer chooses how to validate in the target environment; no check catalog is imposed. Address consolidated objections and relevant prior outcomes as evidence. Return one `responses` entry per supplied open objection, using its exact ID and explaining the change or a reasoned disagreement. Use an empty array when there are no open objections. Your response does not resolve an objection; its reviewer must reassess it. Questions stop implementation. For an existing PR, keep every accumulated changed file inside the new scope; otherwise escalate through questions.
+Settle architecture, decisions and risks from requirements, charter and source inventory;
+provide implementation steps and observable acceptance tests. `files` identifies distinct
+primary files, not every predicted edit. `scope.paths` covers the design and mechanical
+follow-ons (callers, imports, tests), using distinct narrow directories/globs and no broader envelope.
+Treat dependency changes as design decisions with risks; include their manifests and lockfiles
+in scope. For an existing PR, include every accumulated changed file or escalate through questions.
 
-Give the plan a `headline`: an imperative summary of the change under 60 characters, such as "Recommend plain cargo build in the README". It becomes the pull request's title, so do not prefix it with "Plan:". Keep the summary about the design, without earlier verdicts or claims of approval. Put concise changes since the previous version and the points needing reviewer attention in `publication.changes` and `publication.review_focus`. The full plan belongs in its document artifact; these lists appear in the chronological issue comment. Do not repeat full steps or tests in them.
+Check `plan_output_contract` for effective edit policy and workload `limits`; null means no
+configured cap. Do not invent file allowances or omit required work to fit a limit: ask for a
+policy decision. Static file restrictions apply inside approved scope. If required code or docs
+are forbidden, request a target-policy decision; a writer's prose cannot override file permissions.
 
-Check the supplied `plan_output_contract` before returning a plan. It gives the effective target edit policy and workload `limits`; null means no configured cap. Name distinct primary files and scope paths, using narrow directories/globs for related follow-on edits. Do not invent a file-count allowance or omit necessary work to fit an optional limit; ask for a policy decision when required work cannot fit. Each publication list has 1–5 non-empty bullets of at most 300 characters. The complete plan must fit 20,000 JSON characters; put full design and validation detail in summary, steps and tests.
+`tests` describes observable acceptance criteria and useful commands. The implementer chooses
+validation in the target environment; impose no check catalog. Put full design and validation
+detail in `summary`, `steps` and `tests`.
 
-The target edit policy applies even inside an approved scope. If required documentation or code is forbidden, ask for a target-policy decision rather than dropping it or suggesting that an issue reply can grant file permission. A writer can clarify intended scope, but cannot override a static file restriction in prose.
+## Revisions
 
-In the pipeline, use the supplied external [response contract](../../schemas/plan.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.
+Consider consolidated objections and relevant prior outcomes as evidence. Return one `responses`
+entry per supplied open objection, with its exact ID and the change or reasoned disagreement;
+use an empty array when none exist. Only the reviewer resolves an objection. Questions stop
+implementation.
+
+## Report and publication
+
+Return the supplied [response contract](../../schemas/plan.json), within 20,000 JSON characters.
+
+- `headline`: imperative change summary under 60 characters, used as the PR title; no `Plan:`
+  prefix. Keep the plan summary about the design, without earlier verdicts or approval claims.
+- `publication.changes`: concise changes since the previous version.
+- `publication.review_focus`: points needing reviewer attention.
+
+Each publication list has 1–5 non-empty bullets of at most 300 characters. These appear in the
+chronological issue comment; the full plan belongs in its artifact. Do not repeat full steps
+or tests in publication lists.

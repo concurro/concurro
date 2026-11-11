@@ -22,7 +22,8 @@
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "description": "Set high and escalate for consequential uncertainty requiring human judgment. This QC risk is distinct from advisory classification.change_risk."
     },
     "questions": {
       "type": "array",
@@ -43,14 +44,14 @@
       "properties": {
         "goal_ids": {
           "type": "array",
-          "description": "Exact keys from the supplied charter's goals, without explanations or suffixes. Put the explanation in scope.fit.",
+          "description": "Copy each ID verbatim from the supplied charter goals: G-CORRECTNESS, not G-CORRECTNESS: improves validation. Put fit evidence in scope.fit; never invent IDs or use goal descriptions as IDs.",
           "items": {
             "type": "string"
           }
         },
         "fit": {
           "type": "string",
-          "description": "Explain how the request fits the cited charter goals."
+          "description": "Explain concrete fit with the cited charter goals; identify compatibility uncertainty."
         },
         "conflicts": {
           "type": "array",

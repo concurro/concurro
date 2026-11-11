@@ -40,6 +40,20 @@ pin; `/concurro invalidate` restarts assessment with the already selected config
 An optional target `engine` pin must match the served commit. Omit it when the same
 operator controls service and target.
 
+## Standalone skill use
+
+For ad hoc use, read the [shared instructions](../bundle/instructions.md), the target's
+versioned `.concurro/charter.json`, and only the selected role's skill and response
+contract from the [role manifest](../bundle/roles.json). Supply applicable trusted target
+guidance and the request, plan or diff needed by that role. Apply the role's decisions
+in the requesting provider; standalone use grants no pipeline transport or publication
+authority. The implementation skill still requires controller-verified authorization
+for an approved plan; an ad hoc invocation cannot manufacture it.
+
+In the pipeline, Concurro supplies the shared instructions, charter, selected skill,
+applicable target instructions and effective response schema. Agents should not reload
+that material or unrelated skills.
+
 ## Edit policy and workload limits
 
 New targets use an extension deny-list. An explicit empty list allows all supported

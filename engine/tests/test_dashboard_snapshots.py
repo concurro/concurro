@@ -147,6 +147,21 @@ class DashboardSnapshotTests(PipelineFixture, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(body, (GOLDENS / (name + ".md")).read_text())
 
+    def test_estimate_evidence_order_is_independent_of_operation_ids(self):
+        """Report links stay in numeric order when bundle-dependent operation IDs change."""
+        controller = self.reach("planned")
+        initial = deepcopy(controller.state)
+        for operation_ids in (("a", "z"), ("z", "a")):
+            with self.subTest(operation_ids=operation_ids):
+                controller.state = deepcopy(initial)
+                for vote, operation_id in zip(controller.state["design_votes"].values(), operation_ids):
+                    source = vote["report"]["classification"]["source"]
+                    archive = next(r for r in controller.state["reports"] if r.get("assessment") == source["report"])
+                    archive["assessment"] = operation_id
+                    source["report"] = operation_id
+                body = self.render(controller)
+                self.assertLess(body.index("[Report 8]"), body.index("[Report 10]"))
+
     def test_snapshot_semantics_are_independently_checked(self):
         """Guard the important meanings so regenerating goldens cannot silently bless a regression."""
         bodies = self.scenarios()
