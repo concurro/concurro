@@ -72,11 +72,11 @@ class StorageContractTests(unittest.TestCase):
         return {"path": path, "digest": "a" * 64, "artifacts": [1], "select": [], "annotations": {}, **changes}
 
     def test_checkpoint_literal_round_trip(self):
-        """The audit envelope and wire-version conversion stay byte-identical."""
+        """The new comment envelope is literal, including wire version and JSON escaping."""
         state = {"version": 2, "issue": 7, "stage": "blocked", "calls": 3, "reason": "é"}
         expected = (
-            '<!-- concurro:audit:v1 -->\n```json\n{"repository": "owner/repo", "state": '
-            '{"calls": 3, "issue": 7, "reason": "\\u00e9", "stage": "blocked", "version": 3}}\n```\n'
+            '<!-- concurro:audit:v1 -->\n<!-- concurro:audit-data:v1\n{"repository": "owner/repo", "state": '
+            '{"calls": 3, "issue": 7, "reason": "\\u00e9", "stage": "blocked", "version": 7}}\n-->\n'
         )
         with patch.object(self.gh, "repo", wraps=self.gh.repo) as repo:
             self.cp.save(state)

@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "064a3b5",
+  "method": "Identical offline inputs; CommonMark-rendered fixture responses, not live GitHub HTML or wire measurements. 48 append saves, plan view and dashboard, then 10 cold idle save cycles.",
+  "baseline": {
+    "entries_per_collection": 48,
+    "artifacts": {
+      "report": 48,
+      "audit": 1,
+      "plan": 1,
+      "history": 6
+    },
+    "requests": {
+      "GET": 785,
+      "collection_GET": 63,
+      "POST": 57,
+      "PATCH": 105
+    },
+    "uploaded_json_bytes": 1238702,
+    "modeled_response_bytes": 144705875,
+    "peak_audit_body_bytes": 49590,
+    "interruption_injected": false
+  },
+  "phase_1": {
+    "entries_per_collection": 48,
+    "artifacts": {
+      "report": 48,
+      "audit": 1,
+      "plan": 1,
+      "history": 6
+    },
+    "requests": {
+      "GET": 835,
+      "collection_GET": 63,
+      "POST": 57,
+      "PATCH": 97
+    },
+    "uploaded_json_bytes": 1261099,
+    "modeled_response_bytes": 20739758,
+    "peak_audit_body_bytes": 49851,
+    "interruption_injected": false
+  }
+}

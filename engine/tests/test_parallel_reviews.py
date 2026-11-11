@@ -11,7 +11,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import conversation
 import review_batch
 from agents import Agents
-from checkpoints import AUDIT_MARKER, BATCH_FORMAT, STATE_PREFIX, CheckpointError, legacy_state
+from checkpoints import AUDIT_MARKER, STATE_PREFIX, CheckpointError, legacy_state
 from controller import Controller
 from fakes import BatchAgents, Crash, FakeGitHub, decision, named_config
 from pipeline_fixtures import ConsensusFixture
@@ -48,7 +48,7 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         self.assertEqual(state["stage"], "implement")
         self.assertEqual(len(state["design_votes"]), 2)
         self.assertTrue(all(v["first_pass"] for v in state["design_votes"].values()))
-        self.assertEqual(legacy_state(self.gh.artifacts[7][1]["artifact"]["body"])["state"]["version"], BATCH_FORMAT)
+        self.assertEqual(legacy_state(self.gh.artifacts[7][1]["artifact"]["body"])["state"]["version"], 7)
         self.assertNotIn("review_batch", state)
 
     def test_insufficient_roster_budget_charges_and_submits_nothing(self):
@@ -256,7 +256,7 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         c.checkpoint()
         body = c.checkpoints.audit_body(c.state)
         raw = legacy_state(body)
-        self.assertEqual(raw["state"]["version"], 4)
+        self.assertEqual(raw["state"]["version"], 7)
         self.assertEqual(c.checkpoints.decode({"body": body}), c.state)
         for version in (2, 3, 8):
             broken = deepcopy(raw)

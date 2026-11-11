@@ -88,9 +88,19 @@ Discovery skips terminal stages. Lost edits recover by the intended resolved-bod
 
 ## Report archive
 
-The mutable audit is not a report archive: artifact reads have returned only the newest
-30 versions. Reports therefore need independent immutable storage; checkpoint history
-cannot guarantee that a compacted report remains retrievable.
+The mutable audit is not a report archive. Artifact history defaults to 30 versions per
+page; live probes exposed only the latest 100 revisions. Normal audit and bound-plan reads
+request one version, with older pages fetched only for provenance. Reports therefore need
+independent immutable storage. New audit JSON is hidden from rendered HTML inside a
+versioned comment; it remains public through the raw API. Fenced legacy audits remain readable.
+
+The current audit carries a confirmed dashboard pointer and at most one pending pointer.
+Readback confirms publication; the next ordinary checkpoint stores its receipt. Either
+witness can verify a pointer whose version has expired. Visible dashboard content, excluding
+its verified recovery marker, determines freshness; receipt-only saves do not refresh it.
+Unbound legacy plans whose origin has expired are preserved. A durable replacement intent
+allows a new view from the audit to be recovered after a lost reply and bound without new
+model calls. Missing audit history without a witness remains a verification failure.
 
 - **Canonical report data:** new design and PR reviews store their full JSON in
   immutable, content-addressed issue artifacts. The retained response, accepted
@@ -144,13 +154,11 @@ cannot guarantee that a compacted report remains retrievable.
   receive no previous votes, and PR reviewers receive only their own findings.
   Files are temporary transport, not another durable evidence store. Call identity
   still uses the original feedback, so file projection cannot duplicate a paid call.
-- **Checkpoint format:** serial audit writes use version 3; tasks that start parallel reviews
-  use version 4 thereafter. Versions 2 and 3 remain readable
-  and migrates on the next save without changing approvals or budgets. Unknown
-  versions fail closed. Older engines reject version 3 instead of treating reference
-  placeholders as state. After a v3 or v4 save, rollback requires an engine supporting that format;
-  never restore an old audit snapshot to roll back, since that loses consumed calls
-  and publication progress. Deploy the matching engine and runner workflow together.
+- **Checkpoint format:** new audits use format 7 for comment encoding, dashboard witnesses
+  and plan-replacement intents, alongside detached histories and overflow metadata.
+  Formats 2–6 remain readable and migrate on save without changing approvals or budgets.
+  Rollback requires this phase's reader, not merely an earlier format-7 build. Never restore
+  an old audit snapshot to roll back: that loses spent calls and publication progress.
 - **Archive compatibility:** queued formats 1–3 retain their exact rendering and
   receipt-gated compaction. Referenced format-4 reports keep full evidence after
   publication. Oversized PR thread text is excerpted with a dashboard link; repair

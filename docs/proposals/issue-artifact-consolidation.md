@@ -1,7 +1,7 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: proposal for Claude review; not implemented.** Builds on the uncommitted
-`limits-cleanup` consolidation, not the deployed engine. No deployment, pilot commands,
+**Status: phase 1 implemented, awaiting review; phases 2–5 remain proposed.** Builds on
+the committed `limits-cleanup` baseline (`064a3b5`), not the deployed engine. No deployment, pilot commands,
 artifact deletion or diagnostic writes are authorized by this document.
 
 Make a report's first durable artifact serve both recovery and human reading, and avoid
@@ -38,7 +38,7 @@ They are reported measurements, not committed response fixtures. Add representat
 serialization/rendering fixtures when implementing; session scratch paths are not evidence
 dependencies.
 
-The pending code already separates capacities (`engine/protocol.py`): 256 KiB data parts,
+The baseline separates capacities (`engine/protocol.py`): 256 KiB data parts,
 60,000-byte comment/view allowances and a separate 60,000-byte audit target with immutable
 overflow. That audit target is an operating choice, **not GitHub's artifact limit**.
 
@@ -133,6 +133,10 @@ alone: `Dashboard` also uses configuration, plan links and controller-provided d
 inputs. Keep the other plan-repair/dirty checks. Witness-only saves must not cause comment
 rewrites, while actual display changes still do. Never treat an invalid pointer as valid
 merely because the visible text matches.
+
+On recovery, newer visible content may be published with the same pending pointer; this
+does not introduce a third pointer. The pointer witnesses publication, while task state
+continues to come from the current audit.
 
 This adds readback, but no dedicated pre-publication or confirmation audit save. Record
 receipts in ordinary saves; include actual traffic in measurements rather than promising
@@ -298,7 +302,7 @@ Existing artifacts remain; no deletion, repacking or mutable bulk archive is pro
 
 ## Implementation order and compatibility
 
-1. **Compact audit encoding and reads:** comment-encode new audit data, preserve old readers
+1. **Compact audit encoding and reads (implemented, awaiting review):** comment-encode new audit data, preserve old readers
    and migration proofs, use latest-only reads plus history on demand. Implement the two
    pointer records and legacy-plan replacement above; pagination cannot restore expired history.
 2. **Shared report representation:** comment-encoded core, readable view, annotation receipts,

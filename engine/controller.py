@@ -402,17 +402,14 @@ class Controller:
         body = self.summary_body()
         if len(body.encode()) > SUMMARY_LIMIT:
             raise Blocked("summary exceeds comment limit")
-        if self.comment_id:
-            self.checkpoints.request(f"issues/comments/{self.comment_id}", "PATCH", {"body": body})
-        else:
-            result = self.checkpoints.request(f"issues/{self.issue['number']}/comments", "POST", {"body": body})
-            self.comment_id = result["id"]
+        self.checkpoints.publish_dashboard(body)
+        self.comment_id = self.checkpoints.comment["id"] if self.checkpoints.comment else None
         self.checkpoints.dirty = False
         self.stage_fallback = False
         if self.stage_sync_warned:
             fallback = "Stage: **" + state["stage"] + "** (label sync unavailable).\n"
             body = body.replace("## Concurro\n", "## Concurro\n\n" + fallback, 1)
-            self.checkpoints.request(f"issues/comments/{self.comment_id}", "PATCH", {"body": body})
+            self.checkpoints.publish_dashboard(body)
             self.stage_fallback = True
 
     def transition(self, state):
@@ -2206,6 +2203,9 @@ class Controller:
             self.stage_sync_warned
             or self.stage_fallback
             or self.checkpoints.dirty
+            or self.state
+            and self.checkpoints.audit
+            and self.checkpoints.dashboard_dirty(self.summary_body())
             or self.state
             and (
                 self.state.get("conversation", {}).get("pending")

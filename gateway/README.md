@@ -225,8 +225,13 @@ legacy tasks; see [recovery](../docs/concurro.md#commands-and-recovery).
 [`/concurro resume`](../docs/design/checkpoint-resume.md) adopts current configuration
 and instructions while preserving completed work and original approval bindings.
 It records explicit writer authority, without a release compatibility certificate.
-Its receipts require checkpoint format 6; large inventories require format 5. Rollback
-must use readers that support all formats already saved by tasks.
+Resume receipts require at least checkpoint format 6; large inventories require format 5.
+Artifact consolidation phase 1 writes **format 7 on every checkpoint save**. After deployment,
+this applies to every task that saves, not only tasks with large reports or new storage layouts.
+Rollback must therefore use an engine supporting phase 1's comment-encoded audits and
+publication receipts for all such tasks; an earlier format-7 reader is insufficient.
+Do not restore older task checkpoints to bypass this requirement: that loses spent budgets
+and publication progress.
 
 For rollback, stop the new service and jobs first. Restore the matching backed-up stores,
 settings and old committed server release together, then align its workflow ref. Do not

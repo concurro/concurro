@@ -19,6 +19,7 @@ from checkpoints import (
     AUDIT_NAME,
     MARKER,
     PLAN_NAME,
+    REF_MARKER,
     STATE_PREFIX,
     CheckpointError,
     Checkpoints,
@@ -280,7 +281,11 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(repaired["versions"][1], human)
                 self.assertEqual(repaired["artifact"]["updated_by_actor"]["login"], self.config["bot_login"])
                 self.assertEqual(self.controller().state, state)
-                self.assertEqual(self.artifact(), audit)
+                current = legacy_state(self.artifact()["artifact"]["body"])
+                previous = legacy_state(audit["artifact"]["body"])
+                current.pop("dashboard", None)
+                previous.pop("dashboard", None)
+                self.assertEqual(current, previous)
                 self.assertEqual(len(self.agents.calls), calls)
                 self.assertFalse(self.gh.refs)
 
@@ -449,13 +454,20 @@ class CheckpointTests(unittest.TestCase):
         repaired = self.artifact(PLAN_NAME)
         self.assertEqual(repaired["artifact"]["id"], identity["id"])
         self.assertIn(human_version, repaired["versions"])
-        self.assertEqual(self.artifact(), audit)
+        current = legacy_state(self.artifact()["artifact"]["body"])
+        previous = legacy_state(audit["artifact"]["body"])
+        current.pop("dashboard", None)
+        previous.pop("dashboard", None)
+        self.assertEqual(current, previous)
         self.assertEqual(len(self.state_artifacts()), 2)
 
-    def test_missing_origin_without_binding_stops_instead_of_adopting_or_duplicating(self):
+    def test_missing_origin_without_binding_preserves_original_and_replaces_view(self):
         """An older unbound view outside the window cannot be mistaken for an unrelated artifact."""
         controller = self.start()
         controller.advance(7)
+        controller.state["stage"] = "stopped"
+        controller.save()
+        state = deepcopy(controller.state)
         plan = self.artifact(PLAN_NAME)
         audit = self.artifact()
         payload = legacy_state(audit["artifact"]["body"])
@@ -465,12 +477,15 @@ class CheckpointTests(unittest.TestCase):
         self.gh.comments.clear()
         plan["artifact"].update(name="Renamed", body="Rewritten")
         plan["versions"] = [dict(plan["versions"][0], version=31, name="Renamed", body="Rewritten")]
-        before = deepcopy(self.gh.artifacts)
+        before = deepcopy(plan)
         calls = len(self.agents.calls)
-        with self.assertRaises(CheckpointError) as caught:
-            self.controller().advance(7)
-        self.assertEqual(caught.exception.code, "plan_history")
-        self.assertEqual(self.gh.artifacts, before)
+        self.assertFalse(self.controller().advance(7))
+        self.assertEqual(plan, before)
+        self.assertEqual(self.controller().state, state)
+        binding = legacy_state(self.artifact()["artifact"]["body"])["plan_artifact"]
+        self.assertNotEqual(binding["id"], plan["artifact"]["id"])
+        self.assertEqual(len(self.state_artifacts()), 2)
+        self.assertIn(plan, self.gh.artifacts[7].values())
         self.assertEqual(len(self.agents.calls), calls)
 
     def test_existing_unbound_plan_is_bound_without_changing_task_state(self):
@@ -514,6 +529,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(recovered.state, expected)
         recovered.save()
         self.assertFalse(recovered.state["conversation"]["pending"])
+        recovered.checkpoint()  # The next ordinary checkpoint carries the dashboard receipt.
         before = deepcopy(self.gh.artifacts)
         recovered.save()
         self.assertEqual(self.gh.artifacts, before)
@@ -524,7 +540,7 @@ class CheckpointTests(unittest.TestCase):
         controller = self.start()
         controller.advance(7)
         plan = deepcopy(self.artifact(PLAN_NAME))
-        path = f"issues/7/artifacts/{plan['artifact']['number']}"
+        path = f"issues/7/artifacts/{plan['artifact']['number']}?per_page=1&page=1"
         with patch.object(self.gh, "repo", wraps=self.gh.repo) as transport:
             controller = self.controller()
         self.assertEqual(sum(call.args[0] == path for call in transport.call_args_list), 1)
@@ -557,25 +573,25 @@ class CheckpointTests(unittest.TestCase):
         controller = self.start()
         controller.advance(7)
         old_comment = deepcopy(self.gh.summary())
+        # Select a valid, never-published revision that has no carried-forward witness.
+        earliest = self.artifact()["versions"][-1]
+        pointer = controller.checkpoints.reference() | {
+            "revision": earliest["version"],
+            "digest": digest(earliest["body"]),
+        }
+        old_comment["body"] = MARKER + "\nOld display\n" + REF_MARKER + json.dumps(pointer) + " -->\n"
         for index in range(40):
             controller.state["reason"] = f"Progress {index}"
             controller.save()
         state = deepcopy(controller.state)
         before = deepcopy(self.gh.artifacts)
-        original = self.gh.repo
-
-        def windowed(path, method="GET", data=None):
-            """Return GitHub's observed newest-30 window."""
-            response = original(path, method, data)
-            if method == "GET" and "/artifacts/" in path:
-                response["versions"] = response["versions"][:30]
-            return response
-
-        with patch.object(self.gh, "repo", side_effect=windowed):
-            self.assertEqual(self.controller().state, state)
-            self.gh.summary().update(old_comment)
-            with self.assertRaises(CheckpointError) as caught:
-                self.controller()
+        # Simulate unavailable history, not just a paginated default response.
+        self.artifact()["versions"][:] = self.artifact()["versions"][:30]
+        before = deepcopy(self.gh.artifacts)
+        self.assertEqual(self.controller().state, state)
+        self.gh.summary().update(old_comment)
+        with self.assertRaises(CheckpointError) as caught:
+            self.controller()
         self.assertEqual(caught.exception.code, "audit_history")
         self.assertEqual(self.gh.artifacts, before)
 

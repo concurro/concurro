@@ -157,7 +157,8 @@ class SurfaceTests(unittest.TestCase):
         with patch.object(self.gh, "repo", wraps=self.gh.repo) as repo:
             self.assertFalse(self.controller().advance(7))
         writes = [call for call in repo.call_args_list if len(call.args) > 1 and call.args[1] == "PATCH"]
-        self.assertEqual(len(writes), 1)
+        self.assertEqual(len(writes), 2)  # Ordinary receipt save, then the corrected dashboard.
+        self.assertEqual(sum("issues/comments/" in c.args[0] for c in writes), 1)
         self.assertNotIn("label sync unavailable", self.gh.summary()["body"].split("<details>")[0])
         self.assertEqual(self.controller().state, state)
         with patch.object(self.gh, "repo", wraps=self.gh.repo) as repo:

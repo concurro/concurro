@@ -19,6 +19,7 @@ from storage_helpers import owned
 MARKER = "<!-- concurro:v1 -->"
 STATE_PREFIX = "\n```json\n"
 AUDIT_MARKER = "<!-- concurro:audit:v1 -->"
+AUDIT_DATA = "\n<!-- concurro:audit-data:v1\n"
 PLAN_MARKER = "<!-- concurro:plan:v1 -->"
 REF_MARKER = "<!-- concurro:checkpoint:v1 "
 AUDIT_NAME = "Concurro audit state"
@@ -70,7 +71,15 @@ class CheckpointError(Blocked):
 
 
 def legacy_state(body):
-    """Read either expanded or collapsed v2 JSON from a historical bot comment."""
+    """Decode comment-encoded audits or the original fenced audit/comment payload."""
+    if body.startswith(AUDIT_MARKER + AUDIT_DATA):
+        value, closing, _ = body[len(AUDIT_MARKER + AUDIT_DATA) :].partition("\n-->\n")
+        if not closing or ">" in value:
+            raise ValueError("Invalid audit data comment")
+        payload = json.loads(value)
+        if payload["state"]["version"] != report_store.FORMAT:
+            raise ValueError("Invalid audit encoding version")
+        return payload
     return json.loads(body.rsplit(STATE_PREFIX, 1)[1].rsplit("\n```", 1)[0])
 
 
@@ -89,6 +98,9 @@ class Checkpoints:
         self.author = Identities(config).author("state")
         self.audit = self.plan = self.comment = self.legacy = None
         self.plan_binding = None
+        self.dashboard = {}
+        self.plan_replacement = None
+        self.preserved_plans = []
         self.dirty = False
         self.uncertain = False
         self.reports = report_store.Store(github, issue, self.author, config["repository"], cache=report_cache)
@@ -114,7 +126,7 @@ class Checkpoints:
     def read(self, number, kind):
         """Verify artifact identity and current version attribution before trusting its body."""
         try:
-            response = self.request(f"issues/{self.issue}/artifacts/{number}")
+            response = self.request(f"issues/{self.issue}/artifacts/{number}?per_page=1&page=1")
             artifact, versions = response["artifact"], response["versions"]
             name, marker = artifact_metadata(kind)
             bot = self.author
@@ -147,24 +159,61 @@ class Checkpoints:
             ):
                 raise CheckpointError("artifact_identity")
             bound_plan = kind == "plan" and self.plan_binding == self.plan_identity(artifact)
-            if kind == "plan" and not bound_plan and not any(v.get("version") == 1 for v in versions):
-                raise CheckpointError("plan_history")
-            managed_plan = (
-                bound_plan
-                or kind == "plan"
-                and any(
-                    v.get("version") == 1
-                    and v.get("name") == PLAN_NAME
-                    and v.get("actor", {}).get("login") == bot
-                    and v.get("body", "").startswith(PLAN_MARKER)
-                    for v in versions
-                )
+            artifact = {**artifact, "versions": versions, "revision": latest["version"]}
+            origin = None
+            if kind == "plan" and not bound_plan:
+                origin = next((v for v in self.history(artifact) if v.get("version") == 1), None)
+            artifact.update(
+                managed_plan=bool(
+                    bound_plan
+                    or origin
+                    and origin.get("name") == PLAN_NAME
+                    and origin.get("actor", {}).get("login") == bot
+                    and origin.get("body", "").startswith(PLAN_MARKER)
+                ),
+                origin_missing=kind == "plan" and not bound_plan and origin is None,
+                origin_digest=digest(origin["body"]) if origin else None,
             )
-            return {**artifact, "versions": versions, "revision": latest["version"], "managed_plan": managed_plan}
+            return artifact
         except CheckpointError:
             raise
         except (KeyError, IndexError, TypeError, ValueError):
             raise CheckpointError("artifact_identity") from None
+
+    def history(self, artifact):
+        """Read older versions lazily, refusing pages from a changed current artifact."""
+        yield artifact["versions"][0]
+        if artifact["revision"] == 1:
+            return
+        previous = artifact["revision"]
+        page = 1
+        while True:
+            response = self.request(f"issues/{self.issue}/artifacts/{artifact['number']}?per_page=30&page={page}")
+            try:
+                current, versions = response["artifact"], response["versions"]
+                if any(
+                    current[k] != artifact[k]
+                    for k in ("id", "number", "type", "name", "body", "creator", "updated_by_actor")
+                ):
+                    raise CheckpointError("concurrent_change")
+                if not isinstance(versions, list) or type(response["has_next_page"]) is not bool:
+                    raise ValueError()
+                if page == 1:
+                    if not versions or versions[0] != artifact["versions"][0]:
+                        raise CheckpointError("concurrent_change")
+                    versions = versions[1:]
+                for version in versions:
+                    if type(version["version"]) is not int or not 0 < version["version"] < previous:
+                        raise CheckpointError("concurrent_change")
+                    previous = version["version"]
+                    yield version
+                if not response["has_next_page"]:
+                    return
+                if not versions:
+                    raise ValueError()
+                page += 1
+            except (KeyError, IndexError, TypeError, ValueError):
+                raise CheckpointError("artifact_identity") from None
 
     def discover(self, items, kind):
         """Find a unique App-owned artifact, ignoring unrelated human artifacts."""
@@ -176,11 +225,23 @@ class Checkpoints:
                 continue
             if not named and not (kind == "plan" and item.get("type") == "plan"):
                 continue
+            if kind == "plan" and self.plan_identity(item) in self.preserved_plans:
+                continue
             artifact = self.read(item["number"], kind)
+            if kind == "plan" and artifact["origin_missing"]:
+                self.preserved_plans.append(self.plan_identity(artifact))
+                continue
             if kind == "plan" and not artifact["managed_plan"]:
                 if named:
                     raise CheckpointError("plan_origin")
                 continue
+            if (
+                kind == "plan"
+                and self.plan_replacement
+                and not self.plan_binding
+                and artifact["origin_digest"] != self.plan_replacement["digest"]
+            ):
+                raise CheckpointError("duplicate_artifacts")
             matches.append(artifact)
         if len(matches) > 1:
             raise CheckpointError("duplicate_artifacts")
@@ -198,23 +259,7 @@ class Checkpoints:
         # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
         payload = {
             "repository": self.config["repository"],
-            "state": {
-                **compact,
-                "version": report_store.FORMAT
-                if any(
-                    item["path"][0] in report_store.EXTENDED_FIELDS or isinstance(item["value"], list)
-                    for item in detached
-                )
-                else bundle_resume.FORMAT
-                if state.get("bundle_resume")
-                else file_inventory.FORMAT
-                if inventories or state.get("candidate", {}).get("file_inventory")
-                else BATCH_FORMAT
-                if state.get("review_batch_version")
-                else FORMAT,
-            }
-            if external
-            else compact,
+            "state": {**compact, "version": report_store.FORMAT} if external else compact,
         }
         if inventories:
             payload["file_inventories"] = inventories
@@ -222,9 +267,13 @@ class Checkpoints:
             payload["report_data"] = [self.reports.checkpoint_reference(item) for item in detached]
         if bind_plan and self.plan_binding:
             payload["plan_artifact"] = self.plan_binding
+        if external and self.dashboard:
+            payload["dashboard"] = deepcopy(self.dashboard)
+        if external and self.plan_replacement:
+            payload["plan_replacement"] = deepcopy(self.plan_replacement)
         return payload
 
-    def render_audit(self, payload):
+    def render_audit(self, payload, *, legacy=False):
         """Render a compact mutable audit and links to its immutable evidence."""
         refs = payload.get("report_data", []) + ([payload["audit_data"]] if "audit_data" in payload else [])
         links = set()
@@ -237,12 +286,15 @@ class Checkpoints:
         footer = "".join(
             f"\n[Report data {n}]({protocol.artifact_url(self.config['repository'], self.issue, n)})" for n in links
         )
-        return AUDIT_MARKER + STATE_PREFIX + json.dumps(payload, sort_keys=True) + "\n```\n" + footer
+        data = json.dumps(payload, sort_keys=True)
+        if legacy:
+            return AUDIT_MARKER + STATE_PREFIX + data + "\n```\n" + footer
+        return AUDIT_MARKER + AUDIT_DATA + data.replace(">", "\\u003e") + "\n-->\n" + footer
 
     def audit_body(self, state, bind_plan=True, external=True, *, prepare=False, target=LIMIT):
         """Keep mutable versions compact; optionally persist overflow metadata before writing."""
         payload = self.audit_payload(state, bind_plan, external)
-        body = self.render_audit(payload)
+        body = self.render_audit(payload, legacy=not external)
         if external and len(body.encode()) > target:
             payload["state"]["version"] = report_store.FORMAT
             key = digest(payload)
@@ -292,7 +344,29 @@ class Checkpoints:
                 or any(type(value) is not int or value < 1 for value in binding.values())
             ):
                 raise ValueError()
+            if ("dashboard" in payload or "plan_replacement" in payload) and state["version"] != report_store.FORMAT:
+                raise ValueError()
             self.plan_binding = binding
+            self.dashboard = deepcopy(payload.get("dashboard", {}))
+            self.validate_dashboard()
+            self.plan_replacement = deepcopy(payload.get("plan_replacement"))
+            if self.plan_replacement is not None:
+                intent = self.plan_replacement
+                if (
+                    not isinstance(intent, dict)
+                    or set(intent) != {"preserved", "digest"}
+                    or not isinstance(intent["preserved"], list)
+                    or not re.fullmatch(protocol.DIGEST_PATTERN, intent["digest"])
+                ):
+                    raise ValueError()
+                for item in intent["preserved"]:
+                    if (
+                        not isinstance(item, dict)
+                        or set(item) != {"id", "number"}
+                        or any(type(v) is not int or v < 1 for v in item.values())
+                    ):
+                        raise ValueError()
+                self.preserved_plans = deepcopy(intent["preserved"])
             state["version"] = 2
             return state
         except report_store.ReportDataError:
@@ -318,6 +392,119 @@ class Checkpoints:
         """Pin the comment to an artifact identity and a known durable version."""
         return {key: self.audit[key] for key in ("id", "number", "revision")} | {"digest": digest(self.audit["body"])}
 
+    @staticmethod
+    def pointer_valid(pointer):
+        """Recognize the exact recovery-reference schema without coercing identities."""
+        return (
+            isinstance(pointer, dict)
+            and set(pointer) == {"id", "number", "revision", "digest"}
+            and all(type(pointer[k]) is int and pointer[k] > 0 for k in ("id", "number", "revision"))
+            and isinstance(pointer["digest"], str)
+            and re.fullmatch(protocol.DIGEST_PATTERN, pointer["digest"]) is not None
+        )
+
+    @classmethod
+    def comment_pointer(cls, body):
+        """Parse the single recovery reference carried by a dashboard comment."""
+        matches = re.findall(re.escape(REF_MARKER) + r"(\{[^\n]*\}) -->", body)
+        if len(matches) != 1:
+            raise ValueError("Invalid dashboard reference")
+        pointer = json.loads(matches[0])
+        if not cls.pointer_valid(pointer):
+            raise ValueError("Invalid dashboard reference")
+        return pointer
+
+    @classmethod
+    def display_body(cls, body):
+        """Exclude only a valid recovery marker when comparing rendered dashboard content."""
+        cls.comment_pointer(body)
+        return re.sub(re.escape(REF_MARKER) + r"\{[^\n]*\} -->", "", body, count=1)
+
+    def validate_dashboard(self):
+        """Validate bounded publication receipts before they can witness a historical pointer."""
+        if not isinstance(self.dashboard, dict) or not set(self.dashboard) <= {"confirmed", "pending"}:
+            raise ValueError()
+        for kind, record in self.dashboard.items():
+            if (
+                not isinstance(record, dict)
+                or set(record) != {"pointer", "display"}
+                or not self.pointer_valid(record["pointer"])
+                or not (kind == "pending" and record["display"] is None)
+                and (
+                    not isinstance(record["display"], str)
+                    or not re.fullmatch(protocol.DIGEST_PATTERN, record["display"])
+                )
+            ):
+                raise ValueError()
+            if self.audit and (
+                any(record["pointer"][k] != self.audit[k] for k in ("id", "number"))
+                or record["pointer"]["revision"] > self.audit["revision"]
+            ):
+                raise ValueError()
+
+    def verify_pointer(self, pointer):
+        """Require a verified historical version or a carried-forward publication receipt."""
+        if not self.audit or any(pointer[k] != self.audit[k] for k in ("id", "number")):
+            raise CheckpointError("audit_missing")
+        if any(record["pointer"] == pointer for record in self.dashboard.values()):
+            return
+        known = next((v for v in self.history(self.audit) if v.get("version") == pointer["revision"]), None)
+        if (
+            known is None
+            or known.get("actor", {}).get("login") != self.author
+            or digest(known.get("body")) != pointer["digest"]
+        ):
+            raise CheckpointError("audit_history")
+
+    def observe_dashboard(self, comment):
+        """Confirm an observed pointer without retiring a different uncertain publication."""
+        if comment.get("user", {}).get("login") != self.author:
+            raise CheckpointError("comment_format")
+        try:
+            pointer = self.comment_pointer(comment["body"])
+            display = digest(self.display_body(comment["body"]))
+        except (KeyError, TypeError, ValueError):
+            raise CheckpointError("comment_format") from None
+        self.verify_pointer(pointer)
+        pending = self.dashboard.get("pending")
+        if pending and pending["pointer"] == pointer:
+            self.dashboard.pop("pending")
+        self.dashboard["confirmed"] = {"pointer": pointer, "display": display}
+        self.comment = deepcopy(comment)
+
+    def dashboard_dirty(self, body):
+        """Refresh changed presentation, not audit revisions containing only receipts."""
+        if not self.comment or REF_MARKER not in self.comment["body"]:
+            return True
+        return self.display_body(self.comment["body"]) != self.display_body(body)
+
+    def publish_dashboard(self, body):
+        """Publish one pointer at a time; persist its outcome in the next ordinary checkpoint."""
+        if not self.dashboard_dirty(body):
+            return False
+        pending = self.dashboard.get("pending")
+        pointer = pending["pointer"] if pending else self.reference()
+        # A restarted task may have newer display content, but cannot retire an uncertain
+        # pointer by publishing a third one. Reuse the pending pointer until observed.
+        body = re.sub(
+            re.escape(REF_MARKER) + r"\{[^\n]*\} -->",
+            lambda _: REF_MARKER + json.dumps(pointer, sort_keys=True, separators=(",", ":")) + " -->",
+            body,
+            count=1,
+        )
+        self.dashboard["pending"] = {"pointer": deepcopy(pointer), "display": digest(self.display_body(body))}
+        if self.comment:
+            number = self.comment["id"]
+            self.request(f"issues/comments/{number}", "PATCH", {"body": body})
+        else:
+            result = self.request(f"issues/{self.issue}/comments", "POST", {"body": body})
+            number = result["id"]
+        observed = self.request(f"issues/comments/{number}")
+        if observed.get("body") != body:
+            raise CheckpointError("write_unconfirmed")
+        self.observe_dashboard(observed)
+        return True
+
     def load(self, comments):
         """Prefer verified artifact state; use a legacy comment only before migration."""
         matches = owned(comments, self.author, MARKER, "user")
@@ -331,16 +518,7 @@ class Checkpoints:
                 raise CheckpointError("comment_size")
             try:
                 if REF_MARKER in body:
-                    pointers = re.findall(re.escape(REF_MARKER) + r"(\{[^\n]*\}) -->", body)
-                    if len(pointers) != 1:
-                        raise ValueError()
-                    pointer = json.loads(pointers[0])
-                    if (
-                        set(pointer) != {"id", "number", "revision", "digest"}
-                        or any(type(pointer[k]) is not int or pointer[k] < 1 for k in ("id", "number", "revision"))
-                        or not re.fullmatch(protocol.DIGEST_PATTERN, pointer["digest"])
-                    ):
-                        raise ValueError()
+                    pointer = self.comment_pointer(body)
                 else:
                     self.legacy = legacy_state(body)
                     self.validate_state(self.legacy)
@@ -353,24 +531,22 @@ class Checkpoints:
             items = self.collection()
             self.reports.items = items
             self.audit = self.discover(items, "generic")
-        if pointer:
-            if not self.audit or any(pointer[k] != self.audit[k] for k in ("id", "number")):
-                raise CheckpointError("audit_missing")
-            known = [v for v in self.audit["versions"] if v.get("version") == pointer["revision"]]
-            if (
-                len(known) != 1
-                or known[0].get("actor", {}).get("login") != self.author
-                or digest(known[0].get("body")) != pointer["digest"]
-            ):
-                raise CheckpointError("audit_history")
         if self.audit:
+            state = self.decode(self.audit)
+            if pointer:
+                self.verify_pointer(pointer)
+                had_pending = "pending" in self.dashboard
+                self.observe_dashboard(self.comment)
+                # The process may have died after sending the current revision's dashboard,
+                # before any receipt save. Preserve that possible write alongside the observed one.
+                if not had_pending and pointer != self.reference():
+                    self.dashboard["pending"] = {"pointer": self.reference(), "display": None}
             if self.legacy is not None and not any(
                 v.get("body") == self.audit_body(self.legacy, bind_plan=False, external=False)
                 and v.get("actor", {}).get("login") == self.author
-                for v in self.audit["versions"]
+                for v in self.history(self.audit)
             ):
                 raise CheckpointError("legacy_history")
-            state = self.decode(self.audit)
             if self.plan_binding:
                 try:
                     self.plan = self.read(self.plan_binding["number"], "plan")
@@ -382,7 +558,7 @@ class Checkpoints:
             else:
                 self.plan = self.discover(items if items is not None else self.collection(), "plan")
             self.dirty = (
-                pointer != self.reference()
+                not pointer
                 or (self.plan or state.get("plan") or state.get("plan_draft"))
                 and (
                     not self.plan
@@ -393,7 +569,7 @@ class Checkpoints:
             )
             return state
         self.plan = self.discover(items, "plan")
-        if self.plan:
+        if self.plan or self.preserved_plans:
             raise CheckpointError("audit_absent")
         self.dirty = self.legacy is not None
         return deepcopy(self.legacy)
@@ -551,6 +727,11 @@ class Checkpoints:
         # This proof only reads Git; failure cannot make a checkpoint write uncertain.
         file_inventory.restore(deepcopy(compact), refs, self.reader)
         _, detached = report_store.packed(compact)
+        if not self.plan and self.preserved_plans and (state.get("plan") or state.get("plan_draft")):
+            self.plan_replacement = {
+                "preserved": deepcopy(self.preserved_plans),
+                "digest": digest(self.plan_body(state)),
+            }
         try:
             for item in detached:
                 self.reports.checkpoint_reference(item, prepare=True)

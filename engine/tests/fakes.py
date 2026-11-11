@@ -372,7 +372,8 @@ class FakeGitHub(PendingReviews):
     def repo(self, path, method="GET", data=None):
         """Implement only the controller's explicit GitHub operations."""
         if "/artifacts" in path:
-            parts = path.split("/")
+            route, _, query = path.partition("?")
+            parts = route.split("/")
             items = self.artifacts.setdefault(int(parts[1]), {})
             if method == "POST":
                 self.artifact_counter += 1
@@ -388,7 +389,14 @@ class FakeGitHub(PendingReviews):
             else:
                 number = int(parts[3])
                 if method == "GET":
-                    return deepcopy(items[number])
+                    result = deepcopy(items[number])
+                    if query:
+                        parameters = dict(part.split("=", 1) for part in query.split("&"))
+                        size, page = int(parameters.get("per_page", 30)), int(parameters.get("page", 1))
+                        versions = result["versions"]
+                        result["versions"] = versions[(page - 1) * size : page * size]
+                        result.update(total_count=len(versions), has_next_page=page * size < len(versions))
+                    return result
                 item = items[number]["artifact"]
                 item.update(deepcopy(data))
             item["updated_by_actor"] = {"login": self.config["bot_login"]}
@@ -396,7 +404,7 @@ class FakeGitHub(PendingReviews):
             versions.insert(
                 0,
                 {
-                    "version": len(versions) + 1,
+                    "version": versions[0]["version"] + 1 if versions else 1,
                     "name": item["name"],
                     "body": item["body"],
                     "actor": deepcopy(item["updated_by_actor"]),

@@ -13,6 +13,7 @@ import dashboard_runs
 import protocol
 import report_view
 import review_timing
+from checkpoints import legacy_state
 from conversation import MARKER, REPORT_LINK
 from policy import digest
 from report_store import Store, audit_envelope, restore
@@ -120,7 +121,7 @@ def measure(snapshot, author="concurro[bot]"):
         or not audit["body"].startswith("<!-- concurro:audit:v1 -->")
     ):
         raise ValueError("Audit authorship or latest version invalid")
-    envelope = json_block(audit["body"])
+    envelope = legacy_state(audit["body"])
     store = Store(snapshot, snapshot.issue, author, snapshot.repository)
     envelope = audit_envelope(envelope, store, snapshot.repository, snapshot.issue)
     state = envelope["state"]

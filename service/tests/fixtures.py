@@ -140,6 +140,8 @@ class RestBackend:
             if comment is None:
                 raise NotFound("GitHub request failed: GET " + relative)
             return {**deepcopy(comment), "pull_request_url": f"https://api.github.com/{self.root}pulls/9"}
+        if re.fullmatch(r"issues/\d+/artifacts/\d+\?per_page=\d+&page=\d+", relative):
+            return self.fake.repo(relative, "GET")
         if match := re.fullmatch(r"(.*)[?&]per_page=(\d+)&page=(\d+)", relative):
             base, size, page = match[1], int(match[2]), int(match[3])
             key = next(

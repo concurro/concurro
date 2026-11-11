@@ -375,3 +375,82 @@ Remaining tradeoffs are unchanged: separate readable archives still exist, disco
 scan collections, and overflow-envelope changes create immutable snapshots. The newer
 format-7 layouts require readers from this baseline; an earlier format-7 implementation
 is not a sufficient rollback target merely because its version number matches.
+
+## Phase 1: compact audit encoding and recovery
+
+Implemented on baseline `064a3b5`, pending Claude review. New audit JSON uses a versioned
+HTML comment and escapes `>` after JSON serialization. Readers retain fenced formats and
+exact legacy migration proofs. Audit and plan GETs request one version; historical pages
+are fetched only for an older pointer, legacy migration or an unbound plan's origin.
+
+Dashboard publication now reads back the comment. Confirmed/pending pointer receipts ride
+in the next ordinary checkpoint; they introduce no dedicated audit save. A crash before
+that save can recover the candidate from the newest durable revision. An old-pointer
+readback retains the pending candidate. Recovery can update visible content under that same
+pending pointer before advancing to another. Freshness compares rendered content without
+its validated pointer, so receipt-only saves do not cause an idle rewrite loop.
+
+An unbound plan whose origin is outside the readable window is left untouched. A replacement
+intent is checkpointed before creating a view from authoritative task state. Recovery binds
+that one replacement after a lost creation/binding reply; no planning or approval repeats.
+
+### Offline traffic
+
+[Results](audit-phase1-traffic.json) compare identical inputs against committed baseline
+`064a3b5`: 48 entries in each of four histories, one plan and a dashboard, followed by ten
+cold idle save cycles. Responses model the measured 30-version default and 100-version
+window. Byte counts use JSON plus CommonMark rendering **without GitHub's syntax highlighting
+or sanitization**; they are comparative fixture measurements, not live transport predictions.
+
+| Measurement | Baseline | Phase 1 |
+| ---- | ---- | ---- |
+| Artifacts: reports / history / audit / plan | 48 / 6 / 1 / 1 | 48 / 6 / 1 / 1 |
+| GETs (including collection pages) | 785 | 835 |
+| Collection GETs | 63 | 63 |
+| POSTs | 57 | 57 |
+| PATCHes | 105 | 97 |
+| Uploaded JSON bytes | 1,238,702 | 1,261,099 |
+| Modeled response bytes | 144,705,875 | 20,739,758 |
+| Peak audit body bytes | 49,590 | 49,851 |
+
+The tradeoff is extra dashboard readbacks and receipt bytes, with much smaller audit reads
+and fewer redundant dashboard PATCHes. Artifact counts are unchanged in this phase. There
+are no combined report views, new part-size rules or reduced discovery scans yet. The
+traffic run injects no interruption; separate regression tests cover lost writes and prove
+one replacement plan, with the unverifiable original intentionally retained.
+
+```bash
+python3 engine/tests/audit_traffic.py --entries 48
+```
+
+For the baseline, copy this script into an archive of `064a3b5` and run the same command.
+No live GitHub requests, deployments or pilot commands are used.
+
+Phase 1's regressions cover hostile comment syntax and literal escapes, pagination and
+concurrent changes, 100+ revisions with confirmed/pending witnesses, failed readback,
+crash before receipt persistence, idle freshness, overflow receipts, and lost replacement
+creation/binding replies. Existing tests retain legacy migration and provenance checks.
+Every checkpoint save now writes format 7. After deployment, **every task that saves**
+requires this phase's reader for rollback, not only tasks using large reports or detached
+layouts. The baseline's format-7 reader alone cannot read the new comment encoding and receipts.
+
+### Phase 1 validation
+
+| Check | Baseline | Phase 1 |
+| ---- | ---- | ---- |
+| Engine suite | 1,041 | 1,059, passing; one Linux-only test skipped on macOS |
+| Service suite | 348 | 348, passing |
+| Gateway suite | 58 | 58, passing |
+| Ruff 0.17.4 check / format check | Pass | Pass |
+| Pyright 1.1.408 | Pass | Zero errors and warnings |
+| Compileall / whitespace / changed-doc local links | Pass | Pass |
+
+The initial nine phase-1 regression cases were written before implementation; eight failed
+against the baseline. The final module has 18 cases. Existing contract tests now expect
+format 7 and comment encoding; view-repair assertions exclude only publication witnesses,
+retaining exact task state and approvals. The capacity test no longer requires metadata
+loss when compact overflow avoids trimming. Dashboard goldens and bundle resources are unchanged.
+
+Bundle identity remains `837b6a126a52294a556a8e5a507cb50425b04ec97f3d5e79aba1d66a29574b45`.
+The recorded deployed ref is `7e39bc4e954744c65afc1b1ed2b4f8ee78e16ca6`; this implementation
+extends the unreleased format-7 baseline. No live deployment state was changed or probed.

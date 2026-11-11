@@ -382,12 +382,16 @@ including their Markdown envelope; records can span as many parts as needed. Thi
 granularity, not a GitHub maximum or a report-size limit. Comments and human-readable
 artifact views retain separate 60,000-byte allowances. Plan and PR views may be excerpted with
 links to complete evidence. Canonical content is preserved across save/load and retries.
-The mutable audit targets 60,000 bytes because GitHub returns its version history, including
-rendered HTML. Excess packed metadata moves to immutable data behind a verified audit pointer.
+The mutable audit retains a 60,000-byte operating target, not a GitHub artifact limit. Its
+JSON uses a versioned HTML comment, avoiding rendered data duplication. Reads request only
+the latest version; older pages are fetched when provenance requires them. Confirmed and
+pending dashboard pointers are carried forward in ordinary saves, so expired history does
+not invalidate those references. Excess packed metadata moves to immutable data behind a
+verified audit pointer.
 History directories and unfinished tails stay in the audit; completed eight-entry blocks are
 stored once unless their contents change. No past artifacts are deleted or repacked.
 These layouts use the unreleased checkpoint format 7; rolling back requires an engine that
-understands all format-7 records.
+understands all format-7 records, including comment-encoded audits and dashboard witnesses.
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities
