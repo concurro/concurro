@@ -19,6 +19,8 @@ The gateway runs from a Git clone; everything host-specific lives under `/etc` a
 | Gateway state | `/var/lib/concurro/gateway/{inference,exchange}` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
+| Backoffice settings and OAuth client secret (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, `client-secret` (see `backoffice/README.md`) |
+| Backoffice web app (static build) | `/srv/concurro-backoffice` |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Edge Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
