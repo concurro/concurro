@@ -15,8 +15,8 @@ import threading
 import time
 from pathlib import Path
 
-from agent_entry import prompt_for
 from bundle import Bundle
+from prompts import prompt_for
 
 log = logging.getLogger("concurro.diagnostics")
 
@@ -60,8 +60,6 @@ CREATE INDEX IF NOT EXISTS turns_task ON turns (repository, issue, submitted);
 """
 # Request fields kept out of the record: endpoint configuration, and bundle texts the prompt already holds.
 OMITTED = ("gateway", "charter", "instruction_texts")
-# Stand-ins for runner-local paths in a reconstructed prompt.
-WORKSPACE, FEEDBACK = "<workspace>", "<feedback>"
 
 
 def connect(root, readonly=False):
@@ -88,17 +86,14 @@ def encoded(value):
 
 
 def prompt(request, feedback):
-    """The prompt `agent_entry` builds on the runner, with runner paths replaced by placeholders.
+    """The prompt the runner builds (`prompts.prompt_for`), from the request's own bundle texts.
 
     Session turns after the first send only the changed context; the transcript shows what was sent.
     """
     bundle = Bundle(charter_text=request["charter"], instruction_texts=request.get("instruction_texts") or {})
     if bundle.identity != request.get("bundle_id"):
         return None
-    payload = {**request, "workspace": WORKSPACE, "schema": bundle.schema(request["stage"])}
-    if feedback:
-        payload["feedback_directory"] = FEEDBACK
-    return json.loads(prompt_for(payload, bundle))
+    return json.loads(prompt_for({**request, "feedback_directory": bool(feedback)}, bundle))
 
 
 class Store:

@@ -14,6 +14,7 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 from agents import RunnerExecutor
 from bundle import Bundle
+from prompts import prompt_for
 from runner_fixtures import GATEWAY, TASK, TURN, FakeOperator
 from service import diagnostics
 from service.settings import CHECKOUT
@@ -70,8 +71,9 @@ class StoreTests(unittest.TestCase):
         request = json.loads(row["request"])
         self.assertFalse({"gateway", "charter", "instruction_texts"} & set(request))
         prompt = json.loads(row["prompt"])
-        self.assertEqual(prompt["repository_snapshot"]["workspace"], diagnostics.WORKSPACE)
-        self.assertEqual(prompt["feedback_files"]["directory"], diagnostics.FEEDBACK)
+        bundle = Bundle(charter_text=turn["request"]["charter"], instruction_texts=turn["request"]["instruction_texts"])
+        self.assertEqual(prompt, json.loads(prompt_for({**turn["request"], "feedback_directory": True}, bundle)))
+        self.assertIn("feedback_files", prompt)
         self.assertEqual(prompt["instructions"]["role"], "plan")
         sha = hashlib.sha256(ARCHIVE).hexdigest()
         self.assertEqual((row["transcript"], row["transcript_bytes"]), (sha, len(ARCHIVE)))

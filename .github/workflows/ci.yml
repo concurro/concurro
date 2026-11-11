@@ -24,16 +24,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt httpx==0.28.1 markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
+      - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
       - name: Lint Python
-        run: ruff check engine service gateway
+        run: ruff check engine service gateway backoffice
       - name: Check Python formatting
-        run: ruff format --check engine service gateway
+        run: ruff format --check engine service gateway backoffice
       - name: Check extracted engine types
         run: pyright --project pyrightconfig.json
       - run: python3 -m unittest discover -s engine/tests -v
       - run: python3 -m unittest discover -s service/tests -v
       - run: python3 -m unittest discover -s gateway/tests -v
-      - run: python3 -m compileall -q engine service gateway/exchange gateway/vault
+      - run: python3 -m unittest discover -s backoffice/tests -v
+      - run: python3 -m compileall -q engine service gateway/exchange gateway/vault backoffice
       - name: Verify trusted role, skill, schema and example charter packaging
         run: python3 engine/bundle.py examples/stacks-core
