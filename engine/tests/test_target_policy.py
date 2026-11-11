@@ -105,7 +105,7 @@ class BundleSplitTests(unittest.TestCase):
                 goal_ids = schema["properties"]["scope"]["properties"]["goal_ids"]
                 self.assertEqual(goal_ids["items"]["enum"], ["STABILITY", "USABILITY"])
                 self.assertIn("scope.fit", goal_ids["description"])
-                self.assertIn("Copy each ID verbatim", bundle.instructions(stage)["shared"])
+                self.assertIn("Copy each ID verbatim", goal_ids["description"])
                 self.assertEqual(runner.schema(stage), schema)
                 goal_ids["items"]["enum"].append("UNTRUSTED")
                 self.assertNotIn(

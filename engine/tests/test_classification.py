@@ -86,6 +86,7 @@ class ContractTests(unittest.TestCase):
             schema = bundle.schema(stage)
             self.assertIn("classification", schema["required"])
             field = schema["properties"]["classification"]
+            self.assertEqual(field, json.loads(bundle.resources["bundle/schemas/classification.json"])["schema"])
             self.assertEqual(field["type"], "object")
             self.assertFalse(field["additionalProperties"])
             self.assertEqual(set(field["required"]), ratings.FIELDS)

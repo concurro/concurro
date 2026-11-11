@@ -819,13 +819,14 @@ class BundleTests(unittest.TestCase):
             instructions = bundle.instructions(stage)
             self.assertEqual(instructions["role"], stage)
             self.assertEqual(instructions["skill"], bundle.resources[bundle.roles[stage]["skill"]])
+            self.assertEqual(instructions["shared"], bundle.resources["bundle/instructions.md"])
+            self.assertEqual(instructions["charter"], json.loads(bundle.charter_text))
             self.assertEqual(set(instructions), {"shared", "charter", "role", "skill", "target"})
             self.assertTrue(bundle.schema(stage)["additionalProperties"] is False)
             skill_path = bundle.root / bundle.roles[stage]["skill"]
             links = re.findall(r"\]\(([^)]+)\)", instructions["skill"])
             resolved = {(skill_path.parent / link).resolve() for link in links}
-            self.assertIn((bundle.root / "bundle/instructions.md").resolve(), resolved)
-            self.assertIn("`.concurro/charter.json`", instructions["skill"])
+            self.assertIn((bundle.root / bundle.roles[stage]["schema"]).resolve(), resolved)
             for path in resolved:
                 self.assertTrue(path.is_file())
         self.assertNotIn("Intake:", Path(__file__).resolve().parents[1].joinpath("agent_entry.py").read_text())

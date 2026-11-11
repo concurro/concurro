@@ -1,18 +1,41 @@
 ---
 name: concurro-review-design
-description: Independently review one exact Concurro design during cooperative revisions and fresh final approval.
+description: Review an implementation plan before coding or after revision. Independently assess source evidence, requirements, scope and risks; approve or raise actionable design objections.
 ---
 
 # concurro-review-design
 
-For standalone use, first read the [shared instructions](../../instructions.md) and the target repository's versioned project charter (`.concurro/charter.json`). In the pipeline these are already supplied once with this stage; do not reload other skills.
+## Review
 
-Review the exact plan, base, requirements, charter and bundle identity against repository evidence. Cover every `review_criteria` ID in `assessments`, with repository `sources`, an explanation and a considered counterexample. Verify current source rather than accepting a planner claim or earlier approval. In cooperative mode retain your own review context and reassess each own open objection through `objection_updates`. Its open details must equal `concerns` in order; resolved dispositions may accompany a revise verdict. Refine the same ID for the same defect rather than issuing a duplicate. In fresh mode assess the final design without earlier votes or reviewer discussion; this is a separate gate, including when you previously planned or will implement it. Do not infer peer votes or defer to other models. Judge whether the plan is coherent and independently reviewable, and whether its `scope` paths fit the design and its risks; an envelope wider than the design needs, especially around consensus or wire code, is a reason to revise. Line count alone is not a defect or a reason to revise; any legacy `max_changed_lines` field is ignored. Do not negotiate a line allowance or trim necessary tests to fit one. A dependency change is a design decision: judge it, and require its manifests and lockfiles inside the envelope. Approve only with all criteria satisfied and no unanswered questions, concerns, non-goal conflicts or unresolved decisions requiring human judgment. Revise concrete defects, clarify missing intent, reject off-goal work, escalate consequential uncertainty.
+Review the exact plan, base, requirements, charter and bundle identity against current source,
+not planner claims or earlier approvals. Assess coherence, independent reviewability and whether
+scope fits the design and its risks. Revise unnecessarily broad envelopes, especially around
+consensus/wire code. Judge dependency changes as design decisions; require their manifests and
+lockfiles in scope.
 
-Declare repository citations in `sources`, each with a unique `id`, repository-relative `path`, 1-based `line` and literal `quote`. In each assessment, `sources` contains only those exact IDs: if the citation has `id: "S1"`, use `["S1"]`, not `["src/file.rs:42"]`. External issue/PR URLs and search-output prose are not repository citations. If evidence is insufficient, reconsider the verdict and preserve genuine questions or objections; do not invent citations to obtain approval.
+- Cooperative mode: retain your review context and reassess each own open objection through
+  `objection_updates`. Reuse its ID for the same defect. Open details must equal `concerns` in
+  order; resolved dispositions may accompany revise.
+- Fresh mode: independently assess the final design without earlier votes or discussion, even
+  if you previously planned or will implement it. This remains a separate approval gate.
 
-In the pipeline, use the supplied external [response contract](../../schemas/plan_qc.json). For ad hoc use, apply these decisions in the requesting provider without assuming pipeline transport or publication authority.
+Do not infer peer votes or defer to other models. Approve only with every criterion satisfied
+and no unanswered questions, concerns, non-goal conflicts or unresolved human decisions.
+Revise concrete defects, clarify missing intent, reject off-goal work, and escalate consequential
+uncertainty.
 
-Return the required `classification` using the shared rubric. Assess the exact proposed plan independently of peer ratings. High change risk alone does not prevent proceeding or approval; report real defects or unresolved human decisions through the existing verdict fields.
+## Evidence and report
 
-Keep evidence clear and proportionate. Reviews are archived in full; audit history does not reduce your response allowance. Cover every criterion and objection without negotiating a prose budget.
+Return the supplied [response contract](../../schemas/plan_qc.json). Cover every `review_criteria`
+ID in `assessments` with source IDs, an explanation and a considered counterexample.
+
+Declare citations in `sources`: unique `id`, repository-relative `path`, 1-based `line` and
+literal `quote`. Assessments reference only those IDs: `["S1"]`, not `["src/file.rs:42"]`.
+External issue/PR URLs and search-output prose are not repository citations. Insufficient
+evidence requires reconsidering the verdict and preserving genuine questions/objections,
+never inventing citations for approval.
+
+Include `classification` using the response-schema rubric, assessing the exact plan independently
+of peer ratings. Keep evidence proportionate but cover every criterion and objection; full
+reviews are archived, and audit history does not reduce the response allowance. Do not negotiate
+a prose budget.

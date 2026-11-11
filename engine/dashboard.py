@@ -297,16 +297,15 @@ class Dashboard:
         if result.disagreement:
             detail += " · reviewers disagree"
         sources = classification.resolve_sources(estimate.sources, self.state)
-        links = [
-            link("Report " + str(s["artifact"]), self.artifact_url(s["artifact"])) for s in sources if s.get("artifact")
-        ]
+        artifacts = sorted({s["artifact"] for s in sources if s.get("artifact")})
+        links = [link(f"Report {number}", self.artifact_url(number)) for number in artifacts]
         return markup.table(
             ["Estimate", "Assessment", "Evidence"],
             [
                 [
                     f"Complexity: {estimate.complexity} · Change risk: {estimate.change_risk}",
                     text(f"Confidence: {estimate.confidence} · {detail}"),
-                    " · ".join(dict.fromkeys(links)),
+                    " · ".join(links),
                 ]
             ],
         )

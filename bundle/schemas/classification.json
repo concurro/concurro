@@ -18,7 +18,8 @@
           "low",
           "medium",
           "high"
-        ]
+        ],
+        "description": "Reasoning and verification difficulty: low for local familiar changes; medium for interacting behaviors or compatibility constraints; high for substantial coupling, state or architectural uncertainty. Use unknown when evidence is insufficient."
       },
       "change_risk": {
         "type": "string",
@@ -27,7 +28,8 @@
           "low",
           "medium",
           "high"
-        ]
+        ],
+        "description": "Consequences of a plausible mistake: low for limited reversible effects; medium for workflow/API disruption; high for serious security, persistent-data, consensus or funds consequences, or difficult recovery. Rate this change, not the module reputation; use unknown when evidence is insufficient."
       },
       "confidence": {
         "type": "string",
@@ -35,11 +37,13 @@
           "low",
           "medium",
           "high"
-        ]
+        ],
+        "description": "Confidence in the assessment, separate from complexity and change risk."
       },
       "rationale": {
         "type": "string",
-        "maxLength": 600
+        "maxLength": 600,
+        "description": "Explain both ratings concisely."
       },
       "unknowns": {
         "type": "array",
@@ -47,8 +51,10 @@
         "items": {
           "type": "string",
           "maxLength": 200
-        }
+        },
+        "description": "Unresolved evidence gaps."
       }
-    }
+    },
+    "description": "Assess complexity and change risk independently. Ratings, disagreement and unknowns are descriptive, never independent reasons to revise, clarify or escalate. Do not infer ratings from line counts, clean tests or approval."
   }
 }
