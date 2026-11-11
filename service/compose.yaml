@@ -13,6 +13,7 @@ services:
     volumes:
       - /etc/concurro/service:/etc/concurro/service:ro
       - /var/lib/concurro/service:/var/lib/concurro/service
+      - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
     networks:
       edge:
         aliases:

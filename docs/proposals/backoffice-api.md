@@ -39,16 +39,39 @@ missing. Credential management builds on [per-user credentials](per-user-credent
   workspace diffs, runner details) are visible at the Reader tier for now.
 - **Diagnostics retention:** per-turn diagnostics are persisted in a database rather than
   relying on the exchange's 24-hour turn retention or the overwritten transcript archives.
+- **Backend:** a separate Python service (`backoffice/` in this repository) using pinned
+  third-party packages (FastAPI, pydantic, httpx, uvicorn). It imports the engine's
+  decoders instead of reimplementing them.
+- **Diagnostics store:** a SQLite file in its own directory, written by the service daemon
+  and read by the backoffice. Transcript archives are stored as files named by their
+  SHA-256, outside the database. Local disk, no pruning for now.
+- **Vault:** a separate service in the gateway trust zone. The backoffice forwards the
+  user's GitHub token, and the vault resolves the user itself (`GET /user`) rather than
+  trusting an identity asserted by the backoffice. A compromised backoffice can then act
+  only for users with live sessions, and can never read a stored credential.
+- **API types:** the backoffice's pydantic models are the source of truth; the frontend
+  generates its TypeScript types from the OpenAPI document (`openapi-typescript`).
+- **Host:** committed material names the deployment host only as `<host>`.
+
+## Phase 1 (demo) scope
+
+- **In:** GitHub sign-in; overview, target and task views from GitHub and issue artifacts;
+  run diagnostics captured from deployment onwards; commands posted as the user's issue
+  comments; storing, validating and listing your own credentials.
+- **Out:** sponsorship, live updates (the frontend polls), operator endpoints,
+  preferences, and injecting stored credentials into the gateway (credentials proposal
+  phase 0).
 
 ## Architecture assumptions
 
 - **One public API (BFF)** under the edge, e.g. `/concurro/api/*`, holding the user's
   GitHub token server-side in an HTTP-only session. All writes need CSRF protection.
-- **Credential endpoints are served from the gateway trust zone** (portal + vault per the
-  [proposal](per-user-credentials.md#4-portal)); the BFF proxies them but never sees
-  secrets after submission.
-- **Task/diagnostics endpoints are served by the service daemon** (new internal read API),
-  which already owns the registry, installation tokens and the engine decoders.
+- **Credential endpoints are served from the gateway trust zone** (vault per the
+  [proposal](per-user-credentials.md#5-vault)); the BFF forwards them but never stores
+  or reads back secrets.
+- **Task endpoints read GitHub with the user's token,** so GitHub enforces visibility;
+  diagnostics endpoints read the diagnostics store. Registry state (queue, leases, write
+  intents) needs a daemon read API, deferred with the operator endpoints.
 - **Commands are posted as issue comments with the user's token.** The sender is the user
   (not a Concurro identity, so `ingress.ours` doesn't drop it) and the engine's existing
   `permitted` check, audit and replay protection apply unchanged. No second authorization
@@ -233,11 +256,7 @@ Fed by the daemon (tick outcomes, ingress deliveries) and exchange turn transiti
 
 ## Open questions
 
-1. Which database holds diagnostics (SQLite next to the service registry, or a separate
-   server), and does it ever prune?
-2. Should diagnostics later be restricted again (e.g. writer-only), once private
+1. Should diagnostics later be restricted again (e.g. writer-only), once private
    repositories are supported?
-3. Should the BFF and portal be one service (simpler) or two (keeps the vault surface
-   minimal, as the credentials proposal prefers)?
-4. Operator identity: a settings allow-list of GitHub user IDs, or an org/team membership?
-5. Proxy Actions logs, or link to GitHub only?
+2. Operator identity: a settings allow-list of GitHub user IDs, or an org/team membership?
+3. Proxy Actions logs, or link to GitHub only?

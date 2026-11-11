@@ -20,6 +20,7 @@ from report_store import Cache
 
 from . import failures
 from .admission import RUN_BRANCH_PREFIX
+from .diagnostics import Recorder
 from .errors import GatewayStop
 from .gateway import LEASE_SECONDS, GatewayGitHub
 from .github_reads import (
@@ -106,8 +107,12 @@ class Worker:
         agents=Agents,
         renew_seconds=RENEW_SECONDS,
         executor=None,
+        diagnostics=None,
     ):
-        """`reader(repository)` returns a read transport; `agents` and `executor` are injectable."""
+        """`reader(repository)` returns a read transport; `agents` and `executor` are injectable.
+
+        `diagnostics`, a `service.diagnostics.Store`, records every runner turn when given.
+        """
         self.settings, self.gateway, self.registry, self.reconciler = settings, gateway, registry, reconciler
         self.reader, self.bot_login, self.engine_root = reader, bot_login, engine_root
         self.agents, self.renew_seconds = agents, renew_seconds
@@ -117,6 +122,7 @@ class Worker:
         self.failures = {}
         self.claims = {}
         self.report_cache = Cache()
+        self.diagnostics = diagnostics
 
     def _operator(self):
         """Read the operator credential when starting runner authorization or cleanup."""
@@ -167,6 +173,7 @@ class Worker:
             runner_status=lambda observation: runner_termination(
                 self.reader(fork), fork, binding.config_sha, observation
             ),
+            recorder=Recorder(self.diagnostics, task) if self.diagnostics else None,
         )
 
     def evaluate(self, repository, issue, provider):
