@@ -17,6 +17,7 @@ it is implemented (its design notes go to `docs/design/`) or abandoned (it is de
 | [Per-user provider credentials](per-user-credentials.md) | Epic | Each person's own provider credentials pay for the work they trigger. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
+| [Issue artifact consolidation](issue-artifact-consolidation.md) | Feature | Share canonical data and readable views, pack against the response budget and avoid routine artifact scans. |
 
 ## Cross-cutting rules
 

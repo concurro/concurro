@@ -1,0 +1,131 @@
+{
+  "observed_on": "2026-11-11",
+  "method": "GET",
+  "endpoint": "repos/concurro-demo-upstream/stacks-core/issues/35/artifacts/1",
+  "purpose": "Read-only version-pagination evidence; summaries only, no pilot bodies.",
+  "observations": [
+    {
+      "query": "",
+      "explicit_api_version": null,
+      "response_bytes": 5864881,
+      "response_sha256": "3436365a42e0b1ff74d7571024e24bc0d34841aa50d2d2c7e5b6c66be6b299f0",
+      "total_count": 100,
+      "has_next_page": true,
+      "versions": [
+        134,
+        133,
+        132,
+        131,
+        130,
+        129,
+        128,
+        127,
+        126,
+        125,
+        124,
+        123,
+        122,
+        121,
+        120,
+        119,
+        118,
+        117,
+        116,
+        115,
+        114,
+        113,
+        112,
+        111,
+        110,
+        109,
+        108,
+        107,
+        106,
+        105
+      ],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": [
+        134
+      ]
+    },
+    {
+      "query": "per_page=1&page=1",
+      "explicit_api_version": null,
+      "response_bytes": 392292,
+      "response_sha256": "15b6336469b355309036be3fe62bff34324dda87aacaaa9c722384f60837d035",
+      "total_count": 100,
+      "has_next_page": true,
+      "versions": [
+        134
+      ],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": [
+        134
+      ]
+    },
+    {
+      "query": "per_page=1&page=2",
+      "explicit_api_version": null,
+      "response_bytes": 394482,
+      "response_sha256": "666319cb792c02d67eeb3115c8717723ced26f48ee1f9b3cb606a51621cafe42",
+      "total_count": 100,
+      "has_next_page": true,
+      "versions": [
+        133
+      ],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": []
+    },
+    {
+      "query": "per_page=1&page=1",
+      "explicit_api_version": "2022-11-28",
+      "response_bytes": 392292,
+      "response_sha256": "15b6336469b355309036be3fe62bff34324dda87aacaaa9c722384f60837d035",
+      "total_count": 100,
+      "has_next_page": true,
+      "versions": [
+        134
+      ],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": [
+        134
+      ]
+    },
+    {
+      "query": "per_page=1&page=100",
+      "explicit_api_version": "2022-11-28",
+      "response_bytes": 318244,
+      "response_sha256": "0927602c1ed64509c64f0a97625d2d0310e7ce600ba5e00b0bebb1adb94dc7d5",
+      "total_count": 100,
+      "has_next_page": false,
+      "versions": [
+        35
+      ],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": []
+    },
+    {
+      "query": "per_page=1&page=101",
+      "explicit_api_version": "2022-11-28",
+      "response_bytes": 196361,
+      "response_sha256": "d5fd105b9898a0aad9000af2cbd5a1176147d5bb7d63065cc71fce9eaf0cbb8e",
+      "total_count": 100,
+      "has_next_page": false,
+      "versions": [],
+      "current_body_bytes": 57433,
+      "current_html_bytes": 131566,
+      "current_body_sha256": "b901729e137287407205be7df975f19f5926bd6113c9831e5431cce8148f2369",
+      "versions_matching_current_body": []
+    }
+  ]
+}
