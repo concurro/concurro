@@ -9,7 +9,6 @@ from policy import digest
 from readiness import ci_refs
 
 ENROLLMENT = "concurro"
-PAGE_LIMIT = 100
 # A cached comment and label-event scan is reused while the issue's `updated_at` is unchanged,
 # and refreshed at least this often regardless.
 HINT_SECONDS = 3600
@@ -18,8 +17,8 @@ log = logging.getLogger("concurro.service")
 
 
 def pages(reader, path, key=None):
-    """Read every page of a collection, or fail if the bounded traversal cannot finish."""
-    return paginate(lambda url: reader.request("GET", url), path, key=key, page_size=100, max_pages=PAGE_LIMIT)
+    """Read every page of a collection."""
+    return paginate(lambda url: reader.request("GET", url), path, key=key, page_size=100)
 
 
 class Reconciler:

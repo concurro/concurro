@@ -66,7 +66,7 @@ def runner_claims(reader, repository, workflow_ref, engine, bot_login):
     }
 
 
-def content(reader, repository, path, sha, limit):
+def content(reader, repository, path, sha, limit=None):
     """A regular file's text at one commit; links, directories and oversized files are refused."""
     item = reader.request("GET", f"repos/{repository}/contents/{quote(path)}?ref={sha}")
     if (
@@ -75,10 +75,11 @@ def content(reader, repository, path, sha, limit):
         or item.get("encoding") != "base64"
         or item.get("path") != path
         or not isinstance(item.get("size"), int)
-        or item["size"] > limit
+        or limit is not None
+        and item["size"] > limit
     ):
-        raise Blocked("target configuration must be bounded regular files")
+        raise Blocked("target configuration must be regular files within the requested transport allowance")
     data = base64.b64decode(item["content"])
     if len(data) != item["size"]:
-        raise Blocked("target configuration must be bounded regular files")
+        raise Blocked("target configuration must be regular files within the requested transport allowance")
     return data.decode("utf-8")

@@ -44,19 +44,14 @@ class ServiceGitHubIOContractTests(unittest.TestCase):
                     [("GET", f"{path}{sep}per_page=100&page={p}") for p in (1, 2)],
                 )
 
-    def test_reconciler_pagination_bound(self):
-        """The 100th short page succeeds; a full page raises without a 101st call."""
-        for final in (99, 100):
-            with self.subTest(final=final):
-                reader = Mock()
-                reader.request.side_effect = [[0] * 100 for _ in range(99)] + [[0] * final]
-                if final == 100:
-                    with self.assertRaisesRegex(RuntimeError, "^pagination exceeded safety bound$"):
-                        reconciler.pages(reader, "repos/owner/repo/issues")
-                else:
-                    self.assertEqual(len(reconciler.pages(reader, "repos/owner/repo/issues")), 9999)
-                self.assertEqual(reader.request.call_count, 100)
-                reader.request.assert_called_with("GET", "repos/owner/repo/issues?per_page=100&page=100")
+    def test_reconciler_pagination_past_old_bound(self):
+        """Reconciliation retains entries beyond the old 100-page ceiling."""
+        reader = Mock()
+        reader.request.side_effect = [[0] * 100 for _ in range(101)] + [["last"]]
+        result = reconciler.pages(reader, "repos/owner/repo/issues")
+        self.assertEqual(len(result), 10101)
+        self.assertEqual(result[-1], "last")
+        self.assertEqual(reader.request.call_count, 102)
 
     def test_authenticated_headers_and_body_bytes(self):
         """None alone omits Content-Type; default JSON spacing, escaping and key order stay exact."""

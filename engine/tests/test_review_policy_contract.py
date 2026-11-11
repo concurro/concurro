@@ -54,7 +54,7 @@ class ValidatorContractTests(unittest.TestCase):
             ),
             ({"design_issue": ISSUE, "findings": [{}]}, "review verdict contradicts design issue"),
             ({"findings": [{}], "summary": "x" * 16001}, "review verdict contradicts findings"),
-            ({"verdict": "changes_requested", "findings": [{}], "summary": "x" * 16001}, "review too large"),
+            ({"verdict": "changes_requested", "findings": [{}], "summary": "x" * 16001}, "invalid finding"),
             ({"verdict": "changes_requested", "findings": [{}, {"path": 1, "detail": 2}]}, "invalid finding"),
         ]
         for changes, expected in cases:
@@ -75,7 +75,10 @@ class ValidatorContractTests(unittest.TestCase):
             ({"verdict": {}, "summary": None}, "invalid review verdict"),
             ({"summary": None, "findings": [{}] * 21}, "invalid review content"),
             ({"dispositions": None, "design_issue": ISSUE}, "invalid review content"),
-            ({"verdict": "reopen", "findings": [{}] * 21, "design_issue": {}}, "review too large"),
+            (
+                {"verdict": "reopen", "findings": [{}] * 21, "design_issue": {}},
+                "design reopening requires structured evidence",
+            ),
             (
                 {"verdict": "reopen", "findings": [{}], "design_issue": {}},
                 "design reopening requires structured evidence",
@@ -119,11 +122,7 @@ class ValidatorContractTests(unittest.TestCase):
         with self.assertRaises(Blocked) as caught:
             validate_review({**LOCAL, "classification": {"unknown": "ignored"}})
         self.assertEqual(str(caught.exception), "invalid review fields")
-        # Local limits count JSON characters (including escaping), not UTF-8 source bytes.
-        self.assertIsNone(validate_review({**LOCAL, "summary": "é" * 2600}))
-        with self.assertRaises(Blocked) as caught:
-            validate_review({**LOCAL, "summary": "é" * 2700})
-        self.assertEqual(str(caught.exception), "review too large")
+        self.assertIsNone(validate_review({**LOCAL, "summary": "é" * 2700}))
 
 
 class ImportAndRosterContractTests(unittest.TestCase):

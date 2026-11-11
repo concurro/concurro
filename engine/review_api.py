@@ -2,6 +2,8 @@
 
 import re
 
+from protocol import PUBLICATION_BODY_BYTES
+
 REVIEW_FIELDS = (
     "id databaseId body state author { login } commit { oid } pullRequest { number state repository { nameWithOwner } }"
 )
@@ -52,11 +54,12 @@ def identify(body):
             required |= {"startLine", "startSide"}
     if set(value) != required:
         return None
+    # Retained publication intents use the historical character bound, including Unicode retries.
     for key, item in value.items():
         if key in ("line", "startLine"):
             if type(item) is not int or item < 1:
                 return None
-        elif not isinstance(item, str) or not item or len(item) > 60000:
+        elif not isinstance(item, str) or not item or len(item) > PUBLICATION_BODY_BYTES:
             return None
     if name == "addPullRequestReview" and not re.fullmatch(r"[0-9a-f]{40}", value["commitOID"]):
         return None
@@ -116,7 +119,7 @@ def reviews(github, number):
     """Read all reviews, including the authenticated App's invisible pending review."""
     owner, name = github.repository.split("/")
     cursor = None
-    for _ in range(100):
+    while True:
         response = github.api(
             "graphql",
             "POST",
@@ -129,4 +132,3 @@ def reviews(github, number):
         if not page["pageInfo"]["hasNextPage"]:
             return
         cursor = page["pageInfo"]["endCursor"]
-    raise ValueError("review pagination exceeded safety bound")

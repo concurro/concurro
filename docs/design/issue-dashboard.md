@@ -119,7 +119,7 @@ cannot guarantee that a compacted report remains retrievable.
   format-5 archives carry a view marker and audit readers parse only that terminal section.
   Rejected views use the controller diagnostic, never the rejected draft's own reason;
   formats 2–4 remain readable and replay byte-for-byte. Criterion labels are frozen when
-  the report is queued. Excerpts shrink to fit without altering canonical evidence. Each artifact stays below GitHub's 60,000-byte limit. Lost
+  the report is queued. Excerpts shrink to fit without altering canonical evidence. Each artifact stays within the conservative 60,000-byte publication allowance. Lost
   responses are recovered by marker and exact body; artifacts are never edited.
   The response transport capacity remains 300,000 UTF-8 bytes, independent of
   checkpoint size. Valid reviews are not sent back for shortening to fit an audit.
@@ -162,3 +162,8 @@ controller reasons; model prose mentioning an operator does not change the actio
 
 The merge-blocking explanation appears only while findings are open or withdrawn.
 Operator and readiness reasons share constants with their producers.
+
+Large plan, charter, template, requirements, candidate and conversation fields can be stored
+by verified reference in format-7 checkpoints. Individual publication limits still apply;
+the number of report parts and pending conversation events has no fixed ceiling. Full plan
+data remains recoverable when its generated view is excerpted.

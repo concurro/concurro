@@ -1,4 +1,4 @@
-"""Load an operator-owned, bounded instruction bundle without candidate resources."""
+"""Load an operator-owned instruction bundle without candidate resources."""
 
 import hashlib
 import json
@@ -39,14 +39,13 @@ INSTRUCTION_ROLES = {
 TARGET_INSTRUCTIONS = {
     f".concurro/instructions/{role}.md" for role in ("shared", "planner", "design-reviewer", "implementer", "reviewer")
 }
-RESOURCE_LIMIT = 24000
 
 
 class Bundle:
     """Freeze engine instructions and the target's charter from explicitly allowlisted roots."""
 
     def __init__(self, root=None, target=None, charter_text=None, instruction_texts=None):
-        """Freeze bounded engine instructions and the charter supplied from the target config commit."""
+        """Freeze engine instructions and the charter supplied from the target config commit."""
         self.root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
         self.resources = {}
         manifest_text = read(self.root, MANIFEST)
@@ -70,19 +69,17 @@ class Bundle:
                 for path in sorted(TARGET_INSTRUCTIONS)
                 if (self.target / path).exists() or (self.target / path).is_symlink()
             }
-        elif not isinstance(charter_text, str) or len(charter_text.encode()) > RESOURCE_LIMIT:
-            raise Blocked("bundle resource must be a bounded regular file")
+        elif not isinstance(charter_text, str):
+            raise Blocked("bundle resource must be a regular file")
         instruction_texts = {} if instruction_texts is None else instruction_texts
         if (
             not isinstance(instruction_texts, dict)
             or not set(instruction_texts) <= TARGET_INSTRUCTIONS
-            or not all(isinstance(v, str) and len(v.encode()) <= RESOURCE_LIMIT for v in instruction_texts.values())
+            or not all(isinstance(v, str) for v in instruction_texts.values())
         ):
-            raise Blocked("target instructions must be bounded approved resources")
+            raise Blocked("target instructions must be approved resources")
         self.resources.update(instruction_texts)
         self.resources[CHARTER] = charter_text
-        if sum(len(v.encode()) for v in self.resources.values()) > 100000:
-            raise Blocked("instruction bundle too large")
         self.hashes = hashes(self.resources)
         self.identity = digest(self.hashes)
         self.charter = json.loads(self.resources[CHARTER])
@@ -161,7 +158,7 @@ def hashes(resources):
 
 
 def read(root, path):
-    """Read only regular bounded files under a real directory chain."""
+    """Read only regular files under a real directory chain."""
     if path not in ENGINE_RESOURCES | TARGET_INSTRUCTIONS | {MANIFEST, CHARTER}:
         raise Blocked("unapproved bundle resource")
     current = Path(root)
@@ -173,8 +170,8 @@ def read(root, path):
         if stat.S_ISLNK(mode):
             raise Blocked("bundle resources cannot contain symlinks")
     metadata = current.stat()
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > RESOURCE_LIMIT:
-        raise Blocked("bundle resource must be a bounded regular file")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise Blocked("bundle resource must be a regular file")
     return current.read_text(encoding="utf-8")
 
 

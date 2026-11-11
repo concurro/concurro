@@ -30,15 +30,13 @@
       "type": "array",
       "items": {
         "type": "string"
-      },
-      "maxItems": 8
+      }
     },
     "concerns": {
       "type": "array",
       "items": {
         "type": "string"
-      },
-      "maxItems": 12
+      }
     },
     "scope": {
       "type": "object",
@@ -48,8 +46,7 @@
           "description": "Copy each ID verbatim from the supplied charter goals: G-CORRECTNESS, not G-CORRECTNESS: improves validation. Put fit evidence in scope.fit; never invent IDs or use goal descriptions as IDs.",
           "items": {
             "type": "string"
-          },
-          "maxItems": 12
+          }
         },
         "fit": {
           "type": "string",
@@ -59,8 +56,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "maxItems": 8
+          }
         }
       },
       "required": [
@@ -77,12 +73,10 @@
         "properties": {
           "id": {
             "type": "string",
-            "maxLength": 80,
             "description": "A unique source ID used verbatim by assessments[].sources, for example S1."
           },
           "path": {
             "type": "string",
-            "maxLength": 4096,
             "description": "A repository-relative file path in the pinned checkout, not a URL or path:line string."
           },
           "line": {
@@ -101,8 +95,7 @@
           "quote"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 12
+      }
     },
     "assessments": {
       "type": "array",
@@ -110,8 +103,7 @@
         "type": "object",
         "properties": {
           "criterion": {
-            "type": "string",
-            "maxLength": 16
+            "type": "string"
           },
           "status": {
             "type": "string",
@@ -124,10 +116,8 @@
           "sources": {
             "type": "array",
             "items": {
-              "type": "string",
-              "maxLength": 600
+              "type": "string"
             },
-            "maxItems": 12,
             "description": "Non-empty list of exact IDs declared in sources[].id, for example [\"S1\"]. Never put paths, path:line strings, URLs or explanations here."
           },
           "reason": {
@@ -145,8 +135,7 @@
           "counterexample"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 32
+      }
     },
     "objection_updates": {
       "type": "array",
@@ -154,8 +143,7 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string",
-            "maxLength": 80
+            "type": "string"
           },
           "status": {
             "type": "string",
@@ -186,8 +174,7 @@
           "evidence"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 24
+      }
     }
   },
   "required": [

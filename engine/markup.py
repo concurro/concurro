@@ -203,16 +203,16 @@ def severity(finding):
     return label(entry) if entry else ""
 
 
-def excerpt(value, max_bytes, note):
-    """Bound a Markdown display excerpt without changing its stored source text."""
+def excerpt(value, max_bytes, note, *, render=block):
+    """Shorten raw source before rendering; preserve complete renderer-owned markup."""
     if len(note.encode()) + 2 > max_bytes:
         raise ValueError("excerpt note exceeds display capacity")
-    rendered = block(value)
+    rendered = render(value)
     if len(rendered.encode()) <= max_bytes:
         return rendered
     while len((rendered + "\n\n" + note).encode()) > max_bytes:
         value = value[: len(value) // 2]
-        rendered = block(value)
+        rendered = render(value)
     return rendered + "\n\n" + note
 
 

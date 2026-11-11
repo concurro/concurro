@@ -20,14 +20,14 @@ from github import Transient
 from identities import Identities
 from markup import block, code, details as collapsed, link, table, text
 from policy import Blocked, digest
-from protocol import EVENT_MARKER as MARKER
+from protocol import EVENT_MARKER as MARKER, PUBLICATION_BODY_BYTES as ARCHIVE_LIMIT
 from review_state import source_value as source_value
 
 # A sourced event without `format` is format 1 forever; format 2 posted reports as issue comments.
 # Format 3 embeds a report; format 4 links its canonical immutable report data.
 # Format 5 adds a bounded human view over the same canonical data.
 FORMAT = 3
-ARCHIVE_LIMIT = 60000
+
 ARCHIVED = "… [Full text in its report archive.]"
 # GitHub's artifact name rules: letters, numbers, spaces, periods, hyphens and underscores, starting and
 # ending with a letter or number; 255 characters were measured as accepted.
@@ -457,8 +457,6 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     if source is not None and kind in ("qc", "review_rejection") and details.get("phase") != "intake":
         details = {**details, "display_phase": markup.review_phase(details["phase"])}
     journal = state.setdefault("conversation", {"sequence": 0, "pending": []})
-    if len(journal["pending"]) >= 8:
-        raise Blocked("conversation event exceeds publication bounds")
     sequence = journal["sequence"] + 1
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if source is not None:

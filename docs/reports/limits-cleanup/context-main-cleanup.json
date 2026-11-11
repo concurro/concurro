@@ -1,0 +1,199 @@
+{
+  "target_commit": "e296939a775a9934f4da1a1f11d566b938aa8c25",
+  "target_repository": "concurro-demo-fork/stacks-core",
+  "limit": 350000,
+  "method": "Real pinned target authority; synthetic guide task, review finding and repair. Near-limit padding is synthetic, not observed live traffic. CLI-added framing and retained history are not measured.",
+  "files": {
+    ".agents/skills/stacks-pr-review/SKILL.md": "b4e3535c612cbe0cd7948f57f20de782d1b7f9df8b558fe08e4a1a3a3712b05f",
+    ".concurro/charter.json": "3d7246783aac2e22e6fabcf9a8a0c7c3613f6e7a95adac6919a9f2880b741b9a",
+    ".concurro/config.yaml": "a9b8dbc9e26bcac6cada804b1778b1e57e2801c834bd9720a0d0a3d11706518d",
+    ".concurro/instructions/implementer.md": "02b6e329e9eff3452ec8bcb1ec34d2392212e143e0b049875c97a0022c5ec3ec",
+    ".concurro/instructions/reviewer.md": "e5efa8ea64d16c9aafdec76a6a1474e52e3072677b0cb08c9fdfd8f772b59e77",
+    ".concurro/instructions/shared.md": "2e49397df6ad79e6e4353dd8121f43a6a6f3c1e01377c01ca524664a5189bc66",
+    ".github/copilot-instructions.md": "f24670612c6476ca79b2c6082071615606e8a41d2e6ccf63626d259abaee1834",
+    "CONTRIBUTING.md": "ee9922f7e07e912e2c7889233d8fea05424845d5a26b5eaf06d17af7ddfc3919"
+  },
+  "bundle": "6e6c76c1f187604fb8b4aae82d8387cb65abaf7bbd3be15a0f439bb324ddbe52",
+  "measurements": [
+    {
+      "stage": "intake",
+      "profile": "sonnet55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 52183,
+      "prompt_bytes": 63994,
+      "additional_bytes": 11811,
+      "headroom_bytes": 286006
+    },
+    {
+      "stage": "intake",
+      "profile": "sonnet55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 361811,
+      "additional_bytes": 11811,
+      "headroom_bytes": -11811
+    },
+    {
+      "stage": "plan",
+      "profile": "opus55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53491,
+      "prompt_bytes": 64407,
+      "additional_bytes": 10916,
+      "headroom_bytes": 285593
+    },
+    {
+      "stage": "plan",
+      "profile": "opus55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 360916,
+      "additional_bytes": 10916,
+      "headroom_bytes": -10916
+    },
+    {
+      "stage": "plan_qc",
+      "profile": "opus55-medium",
+      "scenario": "lifecycle",
+      "context_bytes": 53445,
+      "prompt_bytes": 66938,
+      "additional_bytes": 13493,
+      "headroom_bytes": 283062
+    },
+    {
+      "stage": "plan_qc",
+      "profile": "opus55-medium",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 363493,
+      "additional_bytes": 13493,
+      "headroom_bytes": -13493
+    },
+    {
+      "stage": "plan_qc",
+      "profile": "sol61-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53410,
+      "prompt_bytes": 66903,
+      "additional_bytes": 13493,
+      "headroom_bytes": 283097
+    },
+    {
+      "stage": "plan_qc",
+      "profile": "sol61-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 363493,
+      "additional_bytes": 13493,
+      "headroom_bytes": -13493
+    },
+    {
+      "stage": "develop",
+      "profile": "sonnet55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 54544,
+      "prompt_bytes": 66550,
+      "additional_bytes": 12006,
+      "headroom_bytes": 283450
+    },
+    {
+      "stage": "develop",
+      "profile": "sonnet55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362006,
+      "additional_bytes": 12006,
+      "headroom_bytes": -12006
+    },
+    {
+      "stage": "review",
+      "profile": "opus55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53283,
+      "prompt_bytes": 65726,
+      "additional_bytes": 12443,
+      "headroom_bytes": 284274
+    },
+    {
+      "stage": "review",
+      "profile": "opus55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362443,
+      "additional_bytes": 12443,
+      "headroom_bytes": -12443
+    },
+    {
+      "stage": "review",
+      "profile": "sol61-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53274,
+      "prompt_bytes": 65717,
+      "additional_bytes": 12443,
+      "headroom_bytes": 284283
+    },
+    {
+      "stage": "review",
+      "profile": "sol61-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362443,
+      "additional_bytes": 12443,
+      "headroom_bytes": -12443
+    },
+    {
+      "stage": "develop",
+      "profile": "sonnet55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 57577,
+      "prompt_bytes": 69685,
+      "additional_bytes": 12108,
+      "headroom_bytes": 280315
+    },
+    {
+      "stage": "develop",
+      "profile": "sonnet55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362108,
+      "additional_bytes": 12108,
+      "headroom_bytes": -12108
+    },
+    {
+      "stage": "review",
+      "profile": "opus55-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53402,
+      "prompt_bytes": 65845,
+      "additional_bytes": 12443,
+      "headroom_bytes": 284155
+    },
+    {
+      "stage": "review",
+      "profile": "opus55-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362443,
+      "additional_bytes": 12443,
+      "headroom_bytes": -12443
+    },
+    {
+      "stage": "review",
+      "profile": "sol61-high",
+      "scenario": "lifecycle",
+      "context_bytes": 53274,
+      "prompt_bytes": 65717,
+      "additional_bytes": 12443,
+      "headroom_bytes": 284283
+    },
+    {
+      "stage": "review",
+      "profile": "sol61-high",
+      "scenario": "near-limit",
+      "context_bytes": 350000,
+      "prompt_bytes": 362443,
+      "additional_bytes": 12443,
+      "headroom_bytes": -12443
+    }
+  ]
+}

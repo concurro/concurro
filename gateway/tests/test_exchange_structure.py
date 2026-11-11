@@ -1057,9 +1057,22 @@ class DataContractTests(StateFixture, unittest.TestCase):
                     expected["runner"] = {"session": session, "run_id": "77/1"}
                 self.assertEqual(list(self.exchange.observation(queued["turn"]).items()), list(expected.items()))
 
+    def test_capacity_is_readiness_with_one_active_turn_per_session(self):
+        """Zero pauses claims; any positive legacy capacity admits exactly one turn."""
+        queued = self.submit()
+        session = queued["dispatch"]
+        token = self.claim(session)
+        second = self.submit()
+        self.assertEqual(self.exchange.next(session, token, 0, 0, now=NOW), {"turns": []})
+        reply = self.exchange.next(session, token, 1000, 0, now=NOW)
+        self.assertEqual(len(reply["turns"]), 1)
+        self.assertEqual(reply["turns"][0]["id"], queued["turn"])
+        self.assertEqual(self.exchange.next(session, token, 1000, 0, now=NOW), {"turns": []})
+        self.assertEqual(self.exchange.observation(second["turn"])["status"], "queued")
+
     def test_capacity_and_wait_boundaries(self):
         turn, session, token = self.running()
-        for capacity, accepted in ((True, False), (-1, False), (0, True), (1, True), (8, True), (9, False)):
+        for capacity, accepted in ((True, False), (-1, False), (0, True), (1, True), (8, True), (9, True)):
             if accepted:
                 self.assertEqual(self.exchange.next(session, token, capacity, 0, now=NOW), {"turns": []})
             else:

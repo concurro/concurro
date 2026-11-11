@@ -133,21 +133,16 @@ class RoundTwoTests(unittest.TestCase):
         body = actions.explain("x" * 15000, actions.BLOCKED_RETRY)
         self.assertIn("Full reason in the audit state.", body)
 
-    def test_21_subject_budget_includes_prefix_and_uses_word_boundary(self):
-        raw = "Explain boundary behavior " * 6
-        for repair in (False, True):
-            for conventional in (False, True):
-                state = {"issue": 7, "plan": {"summary": raw}, **({"head": "a"} if repair else {})}
-                message = pr_description.commit_message(
-                    state, {**CONFIG, "conventional_commits": conventional}, {**COMMIT, "subject": raw}
-                )
-                subject = message.splitlines()[0]
-                self.assertLessEqual(len(subject), 72)
-                self.assertTrue(subject.endswith("…"))
-                prefix = "docs: " if conventional else ""
-                self.assertEqual(subject, prefix + markup.short_title(raw.strip(), 72 - len(prefix)))
-                self.assertIn(subject.removeprefix(prefix)[:-1].split()[-1], raw.split())
-        self.assertEqual(len(markup.short_title("x" * 100, 72)), 72)
+    def test_commit_subject_preserves_author_wording(self):
+        """Subject length is editorial guidance and never truncates the author's text."""
+        raw = "Document the detailed enrollment and configuration changes " * 3
+        for conventional in (False, True):
+            subject = pr_description.commit_message(
+                {"head": "a" * 40, "issue": 7},
+                {**CONFIG, "conventional_commits": conventional},
+                {"type": "docs", "subject": raw, "changes": []},
+            ).splitlines()[0]
+            self.assertEqual(subject, ("docs: " if conventional else "") + raw.strip())
 
     def test_23_explanation_only_removes_an_identical_leading_headline(self):
         cases = (

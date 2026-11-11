@@ -83,8 +83,6 @@ def criteria(requirements):
         values += requirement_parts(comment["body"], acknowledgements=True)
     # Repeated statements remain in the full issue context, but need one assessment.
     values = list(dict.fromkeys(values))
-    if len(values) > 32:
-        raise Blocked("request exceeds design criterion limit; narrow or clarify it")
     return [{"id": "R" + str(i + 1), "text": value} for i, value in enumerate(values)]
 
 
@@ -195,8 +193,8 @@ def validate_evidence(report, requirements, own_objections=(), files=None):
             if line is None:
                 raise ReviewError("review_citation", f"sources[{source_index}]")
             source["line"] = line
-    if not 1 <= len(sources) <= 12:
-        raise Blocked("design review needs bounded repository evidence")
+    if not sources:
+        raise Blocked("design review needs repository evidence")
     seen = set()
     for assessment_index, item in enumerate(assessments):
         if (

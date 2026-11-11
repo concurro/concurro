@@ -28,12 +28,12 @@ class PlainTextReferences(unittest.TestCase):
                     title = publication.pr_title()
                     self.assertIn("\u200b", title)
                     self.assertEqual(title.replace("\u200b", ""), raw)
-                    self.assertLessEqual(len(title), 72)
-        state = {"issue": 7, "plan": {"summary": "Fix #12 " + "overflow " * 20}}
+                    self.assertLessEqual(len(title), 256)
+        state = {"issue": 7, "plan": {"summary": "Fix #12 " + "overflow " * 40}}
         title = Publication(None, None, CONFIG, state, None).pr_title()
         self.assertIn("#\u200b12", title)
         self.assertTrue(title.endswith("…"))
-        self.assertLessEqual(len(title), 72)
+        self.assertLessEqual(len(title), 256)
         for raw in ("Fix C# and #[derive]", "Fix overflow in `foo#bar`", "Contact a@example.com"):
             state["plan"] = {"summary": raw}
             self.assertEqual(Publication(None, None, CONFIG, state, None).pr_title(), raw)

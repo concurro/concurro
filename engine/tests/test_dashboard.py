@@ -155,17 +155,16 @@ class PullRequestTests(Harness, unittest.TestCase):
         self.assertTrue(self.gh.pr["body"].endswith("Closes #7"))
         self.assertNotIn("pending", self.gh.pr["body"])
 
-    def test_long_headline_is_cut(self):
+    def test_title_preserves_wording_until_publication_capacity(self):
+        """The old 72-character convention no longer truncates model titles."""
         controller = self.run_to(Reviewers(set()), "review")
         controller.state["plan"]["headline"] = "Word " * 40
-        self.assertLessEqual(len(controller.pr_title()), 72)
-        self.assertTrue(controller.pr_title().endswith("Word…"), "cut at a word boundary")
-        controller.state["plan"]["headline"] = (
-            "README section 3 recommends plain `cargo build` for everyday development work"
-        )
-        self.assertEqual(controller.pr_title(), "README section 3 recommends plain `cargo build` for everyday…")
-        controller.state["plan"]["headline"] = "x" * 100
-        self.assertEqual(controller.pr_title(), "x" * 71 + "…", "one long word is cut where it must be")
+        self.assertEqual(controller.pr_title(), ("Word " * 40).strip())
+        controller.state["plan"]["headline"] = "Word " * 100
+        self.assertLessEqual(len(controller.pr_title()), 256)
+        self.assertTrue(controller.pr_title().endswith("Word…"))
+        controller.state["plan"]["headline"] = "x" * 300
+        self.assertEqual(controller.pr_title(), "x" * 255 + "…")
 
 
 class CompactionTests(unittest.TestCase):

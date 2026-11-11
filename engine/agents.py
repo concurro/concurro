@@ -18,14 +18,13 @@ from github import Transient
 from model_config import resolve
 from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest, runner_bound, turn_label
 from relay import WAIT, ExchangeError
+from runtime_defaults import DEFAULT_RETAINED_BYTES, DEFAULT_TURN_SECONDS as DEFAULT_TURN_SECONDS
 from snapshot import inspection
 from vocab import TurnOutcome
 
 # Providers whose CLIs the gateway serves natively.
 PROVIDERS = ("claude", "codex")
 ADAPTER = "gateway-key"
-# Workspace implementation and PR review use the Actions job limit.
-DEFAULT_TURN_SECONDS = 1200
 # A runner turn may also wait for a runner to be dispatched, to start and finish target setup.
 QUEUE_SECONDS = 1800
 SUBMIT_ATTEMPTS = 4
@@ -33,6 +32,7 @@ REVIEW_POLL_SECONDS = 5
 ADMIT_RETRY_SECONDS = 15
 POLL_BACKOFF_SECONDS = 15
 POLL_BACKOFF_CAP = 60
+# Non-job-bound stages tolerate five minutes of consecutive polling failures (20 × 15s).
 MAX_POLL_FAILURES = 20
 OWNERSHIP_CHECK_SECONDS = 15
 DEFAULT_LEASE_SECONDS = 6 * 3600
@@ -148,6 +148,7 @@ class Agents:
             "bundle_id": self.bundle.identity,
             "charter": self.bundle.charter_text,
             "instruction_texts": self.bundle.instruction_texts,
+            "max_retained_bytes": self.config.get("max_retained_bytes", DEFAULT_RETAINED_BYTES),
             "context": context,
             "session": session,
             "local_candidate": candidate is not None,
@@ -158,7 +159,7 @@ class Agents:
             "feedback": feedback,
             "spec": inspection(context.get("repository"), candidate, stage, self.config["base"], self.config),
             "retained": self.retained.load(session) if session else None,
-            "timeout": None if runner_bound(stage) else DEFAULT_TURN_SECONDS,
+            "timeout": None if runner_bound(stage) else self.config.get("turn_timeout_seconds", DEFAULT_TURN_SECONDS),
         }
         return turn
 
@@ -392,7 +393,7 @@ class RunnerExecutor:
         if observed and observed["turn"] == handle.identifier:
             handle.timing = observed
         handle.status = reply.get("status", handle.status)
-        if handle.job_bound and handle.status == "running":
+        if (handle.job_bound or handle.turn["timeout"] is None) and handle.status == "running":
             handle.deadline = None
         session = reply.get("dispatch")
         if session and session not in handle.sessions:

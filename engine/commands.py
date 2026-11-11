@@ -329,7 +329,7 @@ class CommandHandler:
             state.setdefault("revision_wait", {"stage": controller.waiting_revision()})
             body = (
                 "The plan revision allowance is exhausted. This command cannot increase it. "
-                "A writer can grant 1–3 additional revisions, for example "
+                "A writer can grant additional revisions, for example "
                 + code("/concurro retry --plan-revisions 1")
                 + ". Findings and spent budgets are preserved."
             )
@@ -360,8 +360,8 @@ class CommandHandler:
             return False
         state.setdefault("revision_wait", {"stage": stage})
         with controller.consume_on_refusal(comment):
-            if not 1 <= amount <= 3:
-                raise Blocked("Grant between 1 and 3 additional plan revisions per command.")
+            if type(amount) is not int or amount < 1:
+                raise Blocked("Grant a positive integer number of additional plan revisions.")
             if state.get("pending"):
                 raise Blocked("Publication is pending; reconcile it before granting revision capacity.")
             if not bundle_resume.config_current(state, self.config_digest(controller.config)) or state[
@@ -420,8 +420,6 @@ class CommandHandler:
         ]
         if writer_feedback:
             latest = max(writer_feedback, key=lambda c: c["id"])
-            if len(latest["body"].encode()) > 4000:
-                raise Blocked("repair feedback exceeds 4000 bytes; provide a shorter writer comment")
             if state["round"] >= controller.config["max_fix_rounds"]:
                 raise Blocked("writer-requested repair allowance exhausted")
             state.update(

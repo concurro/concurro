@@ -26,7 +26,8 @@ if TYPE_CHECKING:
     from records import Config, Document, Edit, GitHubClient, PendingPublication, PlanArtifact, TaskState, TreeEntry
 
 
-PR_TITLE_LIMIT = 72
+# Publication title capacity; full model wording stays in the plan artifact.
+PR_TITLE_LIMIT = 256
 # Keep tree requests compact; larger contents are published as separate blob objects.
 INLINE_BLOB_LIMIT = 64000
 
@@ -247,7 +248,7 @@ class Publication:
         return pr
 
     def pr_title(self) -> str:
-        """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
+        """The plan's headline, or its summary's first sentence, as plain text within the publication title capacity."""
         plan, suffix = self.state["plan"], ""
         title = (
             markup.one_line(plan.get("headline") or "")
@@ -297,15 +298,38 @@ class Publication:
                 ),
                 "",
             ]
-        for path, delta in sorted((self.state.get("candidate", {}).get("dependencies") or {}).items()):
-            lines += ["📦 " + text(dependency_summary(path, delta)), ""]
+        dependencies = [
+            "📦 " + text(dependency_summary(path, delta))
+            for path, delta in sorted((self.state.get("candidate", {}).get("dependencies") or {}).items())
+        ]
+        for notice in dependencies:
+            lines += [notice, ""]
         issue = protocol.issue_url(self.config["repository"], self.state["issue"])
         closing = (
             f"Closes #{self.state['issue']}"
             if self.config.get("upstream", self.config["repository"]) == self.config["repository"]
             else f"Closes {issue}"
         )
-        return "\n".join(lines + [closing])
+        body = "\n".join(lines + [closing])
+        if len(body.encode()) <= protocol.PUBLICATION_BODY_BYTES:
+            return body
+        note = "Full implementation evidence is retained in the issue's report archives."
+        if plan:
+            note += " " + link(
+                "Implementation plan",
+                protocol.artifact_url(self.config["repository"], self.state["issue"], plan["number"]),
+            )
+        lead = candidate.get("description", {}).get("lead") or self.state["plan"]["summary"]
+        notices = (["### Review focus\n\n" + attention] if attention else []) + dependencies
+        suffix = "\n\n" + "\n\n".join([*notices, note, closing])
+        return (
+            markup.excerpt(
+                pr_description.inert(lead),
+                protocol.PUBLICATION_BODY_BYTES - len(suffix.encode()),
+                "Complete text in the report archives.",
+            )
+            + suffix
+        )
 
     def pr_url(self, number: int) -> str:
         """The task's pull request on GitHub."""

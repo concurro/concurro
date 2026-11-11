@@ -32,7 +32,7 @@ from .github_reads import (
 )
 from .runner_diagnostics import runner_termination as runner_termination
 from .settings import CHECKOUT
-from .target_loader import CONFIG_LIMIT as CONFIG_LIMIT, Target as Target, load_target as load_target
+from .target_loader import Target as Target, load_target as load_target
 from .targets import enrollment
 
 RENEW_SECONDS = LEASE_SECONDS // 3

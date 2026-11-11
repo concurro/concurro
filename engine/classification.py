@@ -12,7 +12,6 @@ from reviews import report_for
 LEVELS = ("unknown", "low", "medium", "high")
 CONFIDENCE = ("low", "medium", "high")
 STAGES = ("intake", "plan_qc", "review")
-MAX_BYTES = 4096
 FIELDS = {"complexity", "change_risk", "confidence", "rationale", "unknowns"}
 
 
@@ -72,7 +71,7 @@ def size(value):
 
 
 def normalize(value):
-    """Treat missing or malformed metadata as unavailable, clipping excessive evidence."""
+    """Treat missing or malformed metadata as unavailable; preserve valid evidence."""
     if not isinstance(value, dict) or not FIELDS <= value.keys():
         return Assessment(diagnostic="Classification missing or malformed.").record()
     if (
@@ -85,26 +84,22 @@ def normalize(value):
     ):
         return Assessment(diagnostic="Classification missing or malformed.").record()
     try:
-        value["rationale"][:600].encode("utf-8")
-        for unknown in value["unknowns"][:5]:
-            unknown[:200].encode("utf-8")
+        value["rationale"].encode("utf-8")
+        for unknown in value["unknowns"]:
+            unknown.encode("utf-8")
     except UnicodeError:
         return Assessment(diagnostic="Classification missing or malformed.").record()
-    shortened = (
-        len(value["rationale"]) > 600 or len(value["unknowns"]) > 5 or any(len(v) > 200 for v in value["unknowns"])
-    )
     result = Assessment(
         value["complexity"],
         value["change_risk"],
         value["confidence"],
-        value["rationale"][:600],
-        tuple(v[:200] for v in value["unknowns"][:5]),
-        "Classification evidence shortened." if shortened else "",
+        value["rationale"],
+        tuple(value["unknowns"]),
     ).record()
     # Retained responses may already carry a controller diagnostic; do not lose it on replay.
     if value.get("diagnostic") in ("Classification missing or malformed.", "Classification evidence shortened."):
         result["diagnostic"] = value["diagnostic"]
-    return fit(result, MAX_BYTES)
+    return result
 
 
 def fit(value, limit):
@@ -150,7 +145,7 @@ def attach(report, state, agent, stage, allowance):
         "agent": agent,
         "report": str(operation.get("id", "")) + ":" + str(operation.get("attempt", "")),
     }
-    value = fit(value, min(MAX_BYTES, max(0, allowance)))
+    value = fit(value, max(0, allowance))
     if value is not None:
         result["classification"] = value
     return result

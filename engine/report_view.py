@@ -33,7 +33,7 @@ def bullets(values, limit):
     return "\n".join("- " + markup.inline(value, limit) for value in values)
 
 
-def render(event, value, links, limit=60000):
+def render(event, value, links, limit=protocol.PUBLICATION_BODY_BYTES):
     """Render a deterministic readable archive, retaining canonical links on every path."""
     details, kind = event["details"], event["kind"]
     value = value if isinstance(value, dict) else {}

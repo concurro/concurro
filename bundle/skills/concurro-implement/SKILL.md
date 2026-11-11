@@ -36,12 +36,12 @@ discarded. Another call site inside the envelope does not require reopening.
 Return the supplied [response contract](../../schemas/develop.json). The runner extracts edits;
 do not include a separate edit list.
 
-- `description` covers the entire base-to-head PR diff, including earlier repairs: one lead
-  sentence, 1–4 problem bullets, 1–6 change bullets naming files/functions, and 0–4 compatibility
-  bullets. Each field is at most 200 characters, without headings or line breaks. Testing claims
-  belong only in `validation`.
-- `commit` covers this round: a subject of at most 72 characters without a prefix, a conventional
-  commit type, and 1–6 change bullets of at most 200 characters. Concurro uses the plan headline
+- `description` covers the entire base-to-head PR diff, including earlier repairs: a concise lead
+  sentence, problem bullets, change bullets naming files/functions, and compatibility bullets
+  where relevant. Keep fields concise, without headings or line breaks. Testing claims belong
+  only in `validation`.
+- `commit` covers this round: a concise subject following target conventions without a prefix,
+  a conventional commit type, and concise change bullets covering the round. Concurro uses the plan headline
   for the first commit, the subject for repairs, and adds the type prefix only when
   `conventional_commits` is enabled.
 

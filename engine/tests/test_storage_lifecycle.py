@@ -213,7 +213,7 @@ class StorageLifecycleTests(unittest.TestCase):
                 state,
                 agent,
                 stage,
-                classification.MAX_BYTES,
+                4096,
             )
             rating = report["classification"]
             self.assertEqual((len(rating["rationale"]), [len(v) for v in rating["unknowns"]]), (600, [200] * 5))
@@ -368,7 +368,7 @@ class StorageLifecycleTests(unittest.TestCase):
         # This is the deployed v2 reader's admission predicate.
         self.assertNotEqual(raw["state"]["version"], 2)
         self.assertEqual(self.controller().state, state)
-        raw["state"]["version"] = 7
+        raw["state"]["version"] = 8
         body = AUDIT_MARKER + STATE_PREFIX + json.dumps(raw) + "\n```\n"
         with self.assertRaises(CheckpointError):
             checkpoints.decode({"body": body})

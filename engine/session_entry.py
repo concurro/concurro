@@ -7,14 +7,16 @@ import uuid
 from pathlib import Path
 
 from policy import digest
+from runtime_defaults import DEFAULT_RETAINED_BYTES
 
 
 class SessionTurn:
     """Serialize a turn and detect interrupted or repeated provider invocations."""
 
-    def __init__(self, session, prompt, root=Path("/retained")):
+    def __init__(self, session, prompt, root=Path("/retained"), max_bytes=DEFAULT_RETAINED_BYTES):
         """Lock storage before inspecting the last completed turn."""
         self.root, self.session, self.prompt = root, session, json.loads(prompt)
+        self.max_bytes = max_bytes
         self.lock = root.joinpath("turn.lock").open("a")
         self.path = root / "turn.json"
         try:
@@ -43,7 +45,7 @@ class SessionTurn:
         elif session["turn"] != 0:
             raise ValueError("retained transcript missing")
         size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
-        if size > 64 * 1024 * 1024:
+        if self.max_bytes is not None and size > self.max_bytes:
             raise ValueError("retained transcript exceeds storage budget")
 
     def write(self, data):

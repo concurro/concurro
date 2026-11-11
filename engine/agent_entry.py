@@ -9,6 +9,7 @@ from pathlib import Path
 from bundle import Bundle
 from model_config import default_effort
 from policy import KEY_VARIABLE as KEY_VARIABLE, KILLED, TIMEOUT_EXIT, UNCERTAIN_EXIT
+from runtime_defaults import DEFAULT_RETAINED_BYTES
 from session_entry import SessionTurn
 
 
@@ -178,7 +179,16 @@ def main():
     request["schema"] = bundle.schema(request["stage"])
     Path(schema_path).write_text(json.dumps(request["schema"]))
     prompt = prompt_for(request, bundle)
-    turn = SessionTurn(request["session"], prompt, Path(request["retained_root"])) if request.get("session") else None
+    turn = (
+        SessionTurn(
+            request["session"],
+            prompt,
+            Path(request["retained_root"]),
+            request.get("max_retained_bytes", DEFAULT_RETAINED_BYTES),
+        )
+        if request.get("session")
+        else None
+    )
     try:
         if turn:
             if turn.cached is not None:

@@ -44,8 +44,7 @@ class ContractTests(unittest.TestCase):
         ):
             with self.subTest(change=change), self.assertRaises(Blocked):
                 validate_pr_review(report("changes_requested", [{**FINDING, **change}]), [], [])
-        with self.assertRaises(Blocked):
-            validate_pr_review(report("changes_requested", [FINDING] * 21), [], [])
+        validate_pr_review(report("changes_requested", [FINDING] * 21), [], [])
 
     def test_dispositions_answer_each_finding_once(self):
         cases = {

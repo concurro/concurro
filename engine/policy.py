@@ -19,9 +19,6 @@ from report_core import core as report_core
 IMAGE = re.compile(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:" + protocol.DIGEST_PATTERN)
 
 
-PLAN_PUBLICATION_ITEMS, PLAN_PUBLICATION_CHARACTERS, PLAN_JSON_CHARACTERS = 5, 300, 20000
-
-
 PROTECTED_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"})
 
 
@@ -125,8 +122,6 @@ def validate_qc(report, stage, charter=None):
     for key in ("questions", "concerns"):
         if not isinstance(report[key], list) or not all(isinstance(v, str) and v.strip() for v in report[key]):
             raise Blocked("invalid QC questions or concerns")
-    if stage != "plan_qc" and len(json.dumps(report).encode()) > 6000:
-        raise Blocked("QC report too large")
     scope = report["scope"]
     if (
         not isinstance(scope, dict)
@@ -277,7 +272,7 @@ def validate_design_issue(issue):
 
 def path_safe(path):
     """Keep candidate paths relative and outside Git and pinned Concurro metadata."""
-    if not isinstance(path, str) or not path or len(path) > 240:
+    if not isinstance(path, str) or not path:
         return False
     parts = path.split("/")
     return (
@@ -334,9 +329,6 @@ def plan_output_contract(config):
     return {
         "limits": limits(config),
         "publication_items_min": 1,
-        "publication_items_max": PLAN_PUBLICATION_ITEMS,
-        "publication_item_characters_max": PLAN_PUBLICATION_CHARACTERS,
-        "plan_json_characters_max": PLAN_JSON_CHARACTERS,
         "edit_policy": {
             "paths": path_rules(config),
             "policy_documents": config["policy_documents"],
@@ -349,7 +341,7 @@ def plan_output_contract(config):
             "Paths must be repository-relative, without empty, . or .. components. "
             "Neither scope nor an issue reply overrides edit_policy. If required work is forbidden, ask for a "
             "target-policy decision in questions; do not omit required work or claim that a reply grants permission. "
-            "Check all limits together, including the short publication lists; the full design belongs in summary, "
+            "Keep publication lists concise; the full design belongs in summary, "
             "steps and tests. Genuine questions may leave files/scope incomplete and stop implementation."
         ),
     }
@@ -367,15 +359,12 @@ def validate_plan(plan, config):
     else:
         for key in ("changes", "review_focus"):
             values = publication[key]
-            if not isinstance(values, list) or not 1 <= len(values) <= PLAN_PUBLICATION_ITEMS:
-                problems.append(f"publication.{key} must contain 1–{PLAN_PUBLICATION_ITEMS} strings")
+            if not isinstance(values, list) or not values:
+                problems.append(f"publication.{key} must contain non-empty strings")
             if isinstance(values, list):
                 for index, value in enumerate(values):
-                    if not isinstance(value, str) or not 0 < len(value) <= PLAN_PUBLICATION_CHARACTERS:
-                        problems.append(
-                            f"publication.{key}[{index}] must be a non-empty string of at most "
-                            f"{PLAN_PUBLICATION_CHARACTERS} characters; put the full detail in steps/tests"
-                        )
+                    if not isinstance(value, str) or not value.strip():
+                        problems.append(f"publication.{key}[{index}] must be a non-empty string")
                         break
     if not isinstance(plan["responses"], list) or any(
         not isinstance(v, dict)
@@ -391,8 +380,6 @@ def validate_plan(plan, config):
             lists_valid = False
     if not isinstance(plan["summary"], str) or not plan["summary"].strip():
         problems.append("plan summary missing")
-    if len(json.dumps(plan)) > PLAN_JSON_CHARACTERS:
-        problems.append(f"plan too large: at most {PLAN_JSON_CHARACTERS} JSON characters")
     if lists_valid and not plan["questions"]:
         if not plan["files"] or len(set(plan["files"])) != len(plan["files"]):
             problems.append("plan must name distinct primary files; put related follow-on edits in scope")
@@ -460,13 +447,12 @@ def manifest_fields(review, manifests):
     entries = review.get("manifests", []) if isinstance(review, dict) else []
     if (
         not isinstance(entries, list)
-        or len(entries) > 16
         or not all(
             isinstance(e, dict)
             and set(e) == {"path", "assessment"}
             and isinstance(e["path"], str)
             and isinstance(e["assessment"], str)
-            and 1 <= len(e["assessment"].strip()) <= 2000
+            and bool(e["assessment"].strip())
             for e in entries
         )
         or len({e["path"] for e in entries}) != len(entries)
@@ -510,9 +496,6 @@ def validate_review(review, manifests=()):
     _check_review_design_issue(review)
     if (review["verdict"] == "approve") != (not review["findings"]):
         raise Blocked("review verdict contradicts findings")
-    # Local reopen verdicts deliberately bypass this size check; PR finding counts do not.
-    if len(json.dumps(review)) > 16000:
-        raise Blocked("review too large")
     for finding in review["findings"]:
         if set(finding) != {"path", "detail"} or not all(isinstance(v, str) for v in finding.values()):
             raise Blocked("invalid finding")
@@ -521,7 +504,6 @@ def validate_review(review, manifests=()):
 PR_REVIEW_FIELDS = {"verdict", "summary", "findings", "dispositions", "design_issue"}
 PR_FINDING_FIELDS = {"path", "start_line", "line", "detail"}
 SEVERITIES = ("critical", "high", "medium", "low")
-MAX_PR_FINDINGS = 20
 MODEL_RESPONSE_LIMIT = 300000
 
 
@@ -538,11 +520,7 @@ def validate_pr_finding(finding):
         raise Blocked("invalid finding severity")
     path, start, line, detail = (finding[k] for k in ("path", "start_line", "line", "detail"))
     if path is not None and (
-        not isinstance(path, str)
-        or not path.strip()
-        or len(path) > 240
-        or PurePosixPath(path).is_absolute()
-        or ".." in path.split("/")
+        not isinstance(path, str) or not path.strip() or PurePosixPath(path).is_absolute() or ".." in path.split("/")
     ):
         raise Blocked("finding path must be a relative repository path")
     if not line_number(start) or not line_number(line) or start is not None and (line is None or start > line):
@@ -570,8 +548,6 @@ def validate_pr_review(review, open_ids, withdrawn_ids, manifests=()):
         or not isinstance(review["dispositions"], list)
     ):
         raise Blocked("invalid review content")
-    if len(review["findings"]) > MAX_PR_FINDINGS:
-        raise Blocked("review too large")
     if review["verdict"] == "reopen":
         validate_design_issue(review["design_issue"])
         if review["findings"] or review["dispositions"]:

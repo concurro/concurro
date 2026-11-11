@@ -98,7 +98,8 @@ components remain reserved regardless of configuration, and traversal is never a
 Each limit accepts a positive integer or `null` (unlimited). Missing keys use the table's
 defaults. Unknown keys, booleans and malformed values are rejected. Every agent receives
 the effective policy and limits, and refusals name the relevant `limits.*` setting.
-Aggregate transport, response, context and checkpoint bounds still apply. Older approved
+Aggregate transport, response, context and checkpoint bounds still apply.
+Criteria, findings, evidence lists and report fields have no additional fixed item/prose caps. Older approved
 plans retain any `scope.max_files` allowance; new plan schemas omit that field.
 
 Existing `editable_extensions` configurations remain supported with their original
@@ -106,6 +107,26 @@ allow-list, hidden-path, governance and policy-document protections. Do not comb
 `editable_extensions` with `protected_extensions`; the engine refuses mixed policies.
 Switching formats or limits changes the config digest; existing tasks adopt it with `/concurro resume`. Deploy
 support before merging a new-format target configuration; older engines cannot read it.
+
+### Task budgets and execution duration
+
+Operator-selected budgets have no engine-imposed upper ceiling. `max_model_calls`,
+`max_outcome_issues` and `max_outcome_lessons` require positive integers.
+`max_fix_rounds`, `max_plan_revisions`, `max_design_reopens` and `max_review_repairs`
+accept non-negative integers; zero permits no corresponding repair/revision/reopen.
+Booleans are not integers. Writer revision grants accept any positive integer, preserve
+spent revisions and remain subject to the total model-call budget.
+
+`turn_timeout_seconds` defaults to 1200 for intake, planning and design review. Set a
+positive integer or `null` to use the runner job lifetime. Implementation and PR review
+continue to use the job lifetime. Queue deadlines, ownership and heartbeat checks remain.
+`max_retained_bytes` defaults to 67,108,864 bytes of uncompressed retained session files;
+a positive integer changes it and `null` disables that storage allowance. The compressed
+archive and exchange transport limits still apply independently.
+
+Named model profiles and reviewer lists have no count ceiling. Review rosters still need
+at least two distinct provider/model identities. Policy-document lists and path-policy
+lists have no entry-count or string-length ceiling; structural path checks remain.
 
 ### Large changes and resource bounds
 
@@ -244,7 +265,7 @@ also keep the PR draft. An explicitly empty, queued non-Actions suite with no co
 is ignored only when no fetched check run belongs to it. The App needs upstream Actions
 read access to observe workflow approval waits.
 CI webhooks and the periodic poll wake only readiness, never a model-stage retry. Red CI,
-missing CI or workflow approval leaves the PR draft. A writer can post a brief failure explanation (up to 4,000 bytes), then
+missing CI or workflow approval leaves the PR draft. A writer can post a failure explanation, then
 `/concurro retry` to request a repair within the existing scope and round budget.
 The latest new writer comment supplies the feedback; retry without new feedback
 only rechecks readiness. There is no automatic log ingestion, rerun or CI repair.
@@ -268,7 +289,7 @@ invalidation commands are consumed; retrying invalidation requires a new command
 Input-needed comments describe the applicable continuation.
 
 When a plan revision exhausts its allowance, a writer can resume that revision with
-`/concurro retry --plan-revisions N` (1–3 additional revisions per command). The grant
+`/concurro retry --plan-revisions N` (a positive number of additional revisions). The grant
 extends the pinned allowance; it never resets spent revisions or model calls. It keeps
 the plan, findings, reviewer sessions and requirements, and reserves the pending
 revision without repeating intake. Reviewers must approve the revised plan, including
@@ -352,3 +373,22 @@ Run the commands in the [README](../README.md#development). No live provider cal
 GitHub mutations or Docker execution are part of those tests. Check CI for the exact
 release before deployment; offline tests do not verify live App permissions or target
 configuration. A live pilot requires explicit enrollment and deployment authorization.
+
+### Large report recovery
+
+Oversized plans, target authority, templates and queued conversation data use the existing
+immutable, digest-verified artifact storage. Individual artifacts retain their publication
+limit; records can span as many parts as needed. Plan and PR views may be excerpted with
+links to complete evidence. Canonical content is preserved across save/load and retries.
+Checkpoints using these additional referenced fields use wire format 7; older engines
+refuse them. Rolling back after such a checkpoint requires a format-7-capable engine.
+
+Instruction, charter, configuration and template files have no separate policy-size ceiling.
+HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities
+remain. `max_context_bytes` currently measures the controller context, excluding controller-only
+fields; it does not include the runner-added instructions and schema. Expanded accounting
+is a separate change; see the [measurement report](reports/limits-cleanup/README.md).
+
+REST and GraphQL readers traverse complete collections without a fixed page count. Request
+sizes, HTTP deadlines and GitHub rate-limit handling remain. Outcome retrieval stops at the
+operator-selected issue allowance and uses normal pagination for larger windows.

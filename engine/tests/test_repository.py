@@ -1,11 +1,8 @@
 """Repository tools, Git snapshots, the tool container boundary and the isolated Docker transport."""
 
 import hashlib
-import io
-import json
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,137 +13,12 @@ from support import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import repository
 from controller import MAX_DIFF, Controller, changes, transport_size
 from fakes import CONFIG, FakeAgents, FakeGitHub
 from gitfixture import Upstream, build, mirror_of
-from policy import Blocked, digest, path_allowed
-from repository import TOOL_NAMES, Repository, ToolTimeout, relay, run_git, serve
+from policy import Blocked, digest
+from repository import source_lines
 from snapshot import inspection
-
-
-class RepositoryTests(unittest.TestCase):
-    """Read protection is distinct from edit permission and cannot reach host secrets."""
-
-    def test_protected_reference_is_listed_readable_and_searchable(self):
-        """Protected governance text is discoverable without edit authority."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / ".concurro").mkdir()
-            (root / "CONTRIBUTING.md").write_text("Writer enrollment\nMerge disabled\n")
-            (root / ".concurro/config.json").write_text("{}")
-            repo = Repository(root)
-            self.assertFalse(path_allowed("CONTRIBUTING.md", CONFIG))
-            self.assertIn("CONTRIBUTING.md", json.loads(repo.call("list_files", {}))["paths"])
-            self.assertEqual(
-                json.loads(repo.call("read_file", {"path": "CONTRIBUTING.md"}))["lines"][0]["text"], "Writer enrollment"
-            )
-            self.assertEqual(
-                json.loads(repo.call("search", {"query": "enrollment"}))["matches"][0]["path"], "CONTRIBUTING.md"
-            )
-            self.assertEqual(repo.read(".concurro/config.json"), "{}")
-
-    def test_file_tools_reject_symlink_components_and_git_metadata(self):
-        """The file tools never follow links or read Git state; the git tool is the way into history."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "file").write_text("safe")
-            (root / ".git").mkdir()
-            (root / "link").symlink_to("/etc")
-            repo = Repository(root)
-            self.assertEqual(repo.paths, ["file"])
-            for name in ("../secret", "/etc/passwd", "link/passwd", ".git/config", "file/../file", "./file"):
-                with self.subTest(name=name), self.assertRaises(ValueError):
-                    repo.read(name)
-
-    def test_read_pagination_binary_rejection_and_budget(self):
-        """Large output is paginated and repeated retrieval cannot run unbounded."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "lines").write_text("\n".join(str(i) for i in range(250)))
-            (root / "binary").write_bytes(b"secret\x00data")
-            repo = Repository(root)
-            first = json.loads(repo.call("read_file", {"path": "lines"}))
-            self.assertEqual(first["next_offset"], 100)
-            self.assertEqual(repo.read_file("lines", offset=100)["lines"][0]["text"], "100")
-            with self.assertRaises(ValueError):
-                repo.read("binary")
-            with self.assertRaises(ValueError):
-                repo.read_file("lines", limit=True)
-            repo.calls = 80
-            with self.assertRaises(ValueError):
-                repo.call("list_files", {})
-
-    def test_mcp_protocol_has_only_read_tools_and_sanitized_errors(self):
-        """A real stdio handshake and calls expose the fixed read surface only."""
-        with tempfile.TemporaryDirectory() as directory:
-            requests = [
-                {"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
-                {"method": "notifications/initialized"},
-                {"id": 2, "method": "tools/list"},
-                {"id": 3, "method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "/secret"}}},
-                {
-                    "id": 4,
-                    "method": "tools/call",
-                    "params": {"name": "shell", "arguments": {"command": "touch /tmp/pwn"}},
-                },
-                {"id": 5, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}},
-            ]
-            output = io.StringIO()
-            serve(Repository(Path(directory)), io.StringIO("\n".join(map(json.dumps, requests))), output)
-            results = list(map(json.loads, output.getvalue().splitlines()))
-            self.assertEqual(results[0]["result"]["protocolVersion"], "2025-03-26")
-            self.assertEqual([t["name"] for t in results[1]["result"]["tools"]], list(TOOL_NAMES))
-            self.assertTrue(results[2]["result"]["isError"])
-            self.assertTrue(results[3]["result"]["isError"])
-            self.assertNotIn("/secret", output.getvalue())
-            self.assertEqual(json.loads(results[4]["result"]["content"][0]["text"])["paths"], [])
-
-    def test_mcp_recovers_after_malformed_messages(self):
-        """Bad frames receive protocol errors without losing the next valid request."""
-        frames = [
-            "not-json",
-            "[]",
-            '{"id":1,"method":"initialize","params":null}',
-            '{"id":2,"method":"tools/call","params":[]}',
-            '{"id":3,"method":"tools/list"}',
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            output = io.StringIO()
-            serve(Repository(Path(directory)), io.StringIO("\n".join(frames)), output)
-            replies = list(map(json.loads, output.getvalue().splitlines()))
-            self.assertEqual([r["error"]["code"] for r in replies[:-1]], [-32700, -32600, -32602, -32602])
-            self.assertEqual([t["name"] for t in replies[-1]["result"]["tools"]], list(TOOL_NAMES))
-
-    def test_mcp_notifications_and_pings_do_not_spend_retrieval_budget(self):
-        """More than 200 protocol messages must not terminate useful repository inspection."""
-        frames = [{"method": "notifications/initialized"}] * 250
-        frames += [{"id": n, "method": "ping"} for n in range(250)]
-        frames += [{"id": 999, "method": "tools/call", "params": {"name": "list_files"}}]
-        with tempfile.TemporaryDirectory() as directory:
-            repo, output = Repository(Path(directory)), io.StringIO()
-            serve(repo, io.StringIO("\n".join(map(json.dumps, frames))), output)
-            replies = list(map(json.loads, output.getvalue().splitlines()))
-            self.assertEqual(len(replies), 251)
-            self.assertEqual(replies[-1]["id"], 999)
-            self.assertNotIn("error", replies[-1])
-            self.assertEqual(repo.calls, 1)
-            repo.calls = 80
-            with self.assertRaises(ValueError):
-                repo.call("list_files", {})
-
-    def test_read_and_search_use_source_line_numbers(self):
-        """Unicode separators and form feeds stay on their LF-delimited source line."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "source").write_bytes("first\fsecond\u2028third\r\nfourth\nfifth".encode())
-            repo = Repository(root)
-            lines = repo.read_file("source")["lines"]
-            self.assertEqual([line["line"] for line in lines], [1, 2, 3])
-            self.assertEqual(lines[0]["text"], "first\fsecond\u2028third")
-            self.assertEqual(repo.search("third")["matches"][0]["line"], 1)
-            self.assertEqual(repo.search("fourth")["matches"][0]["line"], 2)
-            self.assertEqual(repo.read_file("source", offset=2)["lines"][0]["text"], "fifth")
 
 
 class GitSnapshotTests(unittest.TestCase):
@@ -228,57 +100,10 @@ class GitSnapshotTests(unittest.TestCase):
             ):
                 build(self.mirror, Path(directory), refs, head, candidate)
 
-    def test_git_tool_pages_bounds_and_refuses_writes(self):
-        repo = build(self.mirror, self.root / "snap", self.refs, "concurro/issue-1")
-        with patch.object(repository, "GIT_CAPTURE", 50):
-            repo.outputs = {}
-            capped = repo.git(["log", "--format=%H %s"])
-        self.assertTrue(capped["truncated"])
-        self.assertIsNone(capped["exit_code"])
-        page = repo.git(["log", "--format=%H"], offset=41)
-        self.assertEqual(page["output"].strip(), self.base)
-        for args in (["push"], ["config", "x", "y"], ["-c", "a=b", "log"], [], ["log", 1], "log"):
-            with self.subTest(args=args), self.assertRaises(ValueError):
-                repo.git(args)
-
     def test_pathspecs_are_literal(self):
         repo = build(self.mirror, self.root / "snap", self.refs, "concurro/issue-1")
         self.assertEqual(repo.git(["log", "--format=%s", "--", "docs/*.md"])["output"], "")
         self.assertIn("head", repo.git(["log", "--format=%s", "--", "docs/guide.md"])["output"])
-
-    def test_a_hung_git_program_times_out(self):
-        """Free arguments can start programs; a hung one raises ToolTimeout, which ends the tool container."""
-        repo = build(self.mirror, self.root / "snap", self.refs, "concurro/issue-1")
-        with self.assertRaises(ToolTimeout):
-            run_git(repo.root, ["grep", "--open-files-in-pager=sleep 5;", "Guide"], timeout=1)
-        requests = [
-            {
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "git", "arguments": {"args": ["grep", "--open-files-in-pager=sleep 5;", "Guide"]}},
-            }
-        ]
-        output = io.StringIO()
-        with patch.object(repository, "GIT_TIMEOUT", 1), self.assertRaises(ToolTimeout):
-            serve(repo, io.StringIO(json.dumps(requests[0])), output)
-        self.assertTrue(json.loads(output.getvalue())["result"]["isError"])
-
-    def test_listener_and_relay_carry_mcp_over_a_socket(self):
-        build(self.mirror, self.root / "snap", self.refs, "concurro/issue-1")
-        directory = tempfile.mkdtemp()
-        self.addCleanup(lambda: Path(directory, "s").unlink(missing_ok=True))
-        path = Path(directory) / "s"
-        threading.Thread(target=repository.listen, args=(path, self.root / "snap", 3600), daemon=True).start()
-        requests = [
-            {"id": 1, "method": "tools/call", "params": {"name": "git", "arguments": {"args": ["diff", "main"]}}},
-            {"id": 2, "method": "tools/list"},
-        ]
-        incoming = io.BytesIO("\n".join(map(json.dumps, requests)).encode() + b"\n")
-        outgoing = io.BytesIO()
-        relay(path, incoming, outgoing, wait=10)
-        replies = [json.loads(line) for line in outgoing.getvalue().decode().splitlines()]
-        self.assertIn("+More", json.loads(replies[0]["result"]["content"][0]["text"])["output"])
-        self.assertEqual([t["name"] for t in replies[1]["result"]["tools"]], list(TOOL_NAMES))
 
 
 class TransportTests(unittest.TestCase):
@@ -371,10 +196,7 @@ class ReviewContextTests(unittest.TestCase):
         self.assertIn("@@ -1,3 +1,3 @@", change["diff"])
         self.assertNotIn("No newline", change["diff"])
         self.assertEqual((change["added"], change["removed"]), (1, 1))
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "s.md").write_text(after)
-            lines = Repository(Path(directory)).read_file("s.md")["lines"]
-        self.assertEqual(next(line["line"] for line in lines if line["text"] == "new"), 3)
+        self.assertEqual(source_lines(after).index("new") + 1, 3)
         [unterminated] = changes({"t.md": "x\u2028y"}, {"t.md": "x\u2028z"})
         self.assertIn("@@ -1 +1 @@", unterminated["diff"])
         self.assertEqual(unterminated["diff"].count("No newline at end of file"), 2)

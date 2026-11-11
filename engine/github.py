@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from itertools import count
 from urllib.parse import quote
 
 from vocab import Stage
@@ -46,21 +47,22 @@ class Transient(RuntimeError):
         super().__init__(self.TEXT[self.code])
 
 
-def paginate(fetch, path, *, key=None, page_size, max_pages):
-    """Collect a bounded REST listing, preserving the endpoint's query and response shape."""
+def paginate(fetch, path, *, key=None, page_size, limit=None):
+    """Collect a REST listing, optionally stopping at an operator-selected item count."""
     result = []
-    for page in range(1, max_pages + 1):
+    for page in count(1):
         sep = "&" if "?" in path else "?"
         batch = fetch(f"{path}{sep}per_page={page_size}&page={page}")
         batch = batch[key] if key else batch
         result.extend(batch)
+        if limit is not None and len(result) >= limit:
+            return result[:limit]
         if len(batch) < page_size:
             return result
-    raise RuntimeError("pagination exceeded safety bound")
 
 
 class GitHub:
-    """Use gh's authenticated transport, with bounded pagination and explicit methods."""
+    """Use gh's authenticated transport, with complete pagination and explicit methods."""
 
     def __init__(self, repository):
         """Select the sole repository this client may mutate."""
@@ -141,14 +143,24 @@ class GitHub:
             self._remove_label(number, ATTENTION_LABEL)
 
     def pages(self, path, key=None):
-        """Read all pages or fail if the bounded traversal cannot finish."""
+        """Read every page of the requested collection."""
         # Artifact reads deliberately use smaller pages; reconciler scans always use 100.
         page_size = 10 if path.endswith("/artifacts") else 100
-        return paginate(self.repo, path, key=key, page_size=page_size, max_pages=10000 // page_size)
+        return paginate(
+            self.repo,
+            path,
+            key=key,
+            page_size=page_size,
+        )
 
     def outcome_candidates(self, limit):
-        """Retrieve at most ten recent opted-in issues and ten recent comments per issue."""
-        issues = self.repo(f"issues?state=all&labels=concurro&sort=updated&direction=desc&per_page={limit}")
+        """Retrieve the configured recent issue window and a small comment discovery window."""
+        issues = paginate(
+            self.repo,
+            "issues?state=all&labels=concurro&sort=updated&direction=desc",
+            page_size=min(limit, 100),
+            limit=limit,
+        )
         result = []
         for issue in issues[:limit]:
             if "pull_request" in issue:
@@ -209,7 +221,7 @@ class GitHub:
           } }
         }""".replace("FIELDS", fields)
         cursor = None
-        for _ in range(100):
+        while True:
             response = self.api(
                 "graphql",
                 "POST",
@@ -222,4 +234,3 @@ class GitHub:
             if not page["pageInfo"]["hasNextPage"]:
                 return
             cursor = page["pageInfo"]["endCursor"]
-        raise RuntimeError("review-thread pagination exceeded safety bound")

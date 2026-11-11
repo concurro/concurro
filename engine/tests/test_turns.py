@@ -352,6 +352,16 @@ class AgentsTests(unittest.TestCase):
             _, executor, _ = self.ask(stage=stage)
             self.assertEqual(executor.turns[0][0]["timeout"], expected)
 
+    def test_configured_timeout_and_retained_budget_reach_the_runner(self):
+        """Explicit execution settings survive preparation, including disabled bounds."""
+        for timeout in (1, 7201, None):
+            self.config.update(turn_timeout_seconds=timeout, max_retained_bytes=None)
+            for stage in ("plan", "plan_qc", "review"):
+                _, executor, _ = self.ask(stage=stage)
+                turn = executor.turns[0][0]
+                self.assertEqual(turn["timeout"], None if stage == "review" else timeout)
+                self.assertIsNone(turn["request"]["max_retained_bytes"])
+
     def test_develop_returns_the_workspace_edits(self):
         response = {"summary": "s", "checks": ["lint"], "design_issue": None}
         workspace = {"edits": [{"path": "a.md", "content": "x"}], "removed": [], "skipped": []}

@@ -117,7 +117,7 @@ class DescriptionTests(unittest.TestCase):
         candidates.development(legacy)
         report = {**legacy, "description": deepcopy(DESCRIPTION), "commit": deepcopy(COMMIT)}
         candidates.development(report)
-        for field, value in (("lead", "x" * 201), ("changes", ["new\nheading"]), ("problem", [])):
+        for field, value in (("lead", ""), ("changes", ["new\nheading"]), ("problem", [])):
             changed = deepcopy(report)
             changed["description"][field] = value
             with self.assertRaises(Blocked):

@@ -47,6 +47,17 @@ class ExecutorTests(runner_fixtures.ExecutorFixture, unittest.TestCase):
         self.assertEqual(executor.observe(handle), result)
         self.assertFalse(any(call[0] == "cancel" for call in operator.calls))
 
+    def test_planning_with_disabled_timeout_survives_the_old_deadline(self):
+        """A running planning turn with an explicit null timeout uses its runner lifetime."""
+        now = [0]
+        executor, _, _ = self.runner([{"status": "running"}, {"status": "running"}], clock=lambda: now[0])
+        turn = self.turn()
+        turn["request"]["stage"] = "plan"
+        handle = executor.submit(turn)
+        now[0] = 5 * 3600
+        self.assertIsNone(executor.observe(handle))
+        self.assertIsNone(handle.deadline)
+
     def test_observe_running_or_saved_result_before_applying_queue_deadline(self):
         for reply in ({"status": "running"}, {"status": "done", "result": {"outcome": "ok"}}):
             now = [0]
@@ -269,9 +280,10 @@ class NativeTests(runner_fixtures.Workspace, unittest.TestCase):
         self.assertEqual(len(client.batches), 1)
         self.assertTrue(loop.stopped.is_set())
 
-    def test_unbounded_timeout_is_rejected_for_planning(self):
-        with self.assertRaisesRegex(turns.TurnError, "timeout"):
-            turns.execute({"request": {"stage": "plan"}, "spec": {}, "timeout": None}, "", None, self.tmp)
+    def test_configured_timeout_accepts_positive_seconds_or_none(self):
+        """Planning can disable its timer or choose either side of the old range."""
+        for timeout in (None, 1, 59, 7201):
+            self.assertEqual(turns._validated_timeout({"stage": "plan"}, timeout), timeout)
 
     def test_provider_process_receives_none_timeout(self):
         bundle = Bundle()

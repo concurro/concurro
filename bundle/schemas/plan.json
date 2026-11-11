@@ -74,23 +74,19 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 300
+            "minLength": 1
           },
           "minItems": 1,
-          "maxItems": 5,
-          "description": "1\u20135 short publication bullets, each 1\u2013300 characters. Put the full design and evidence in summary, steps and tests."
+          "description": "Concise publication bullets. Put the full design and evidence in summary, steps and tests."
         },
         "review_focus": {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 300
+            "minLength": 1
           },
           "minItems": 1,
-          "maxItems": 5,
-          "description": "1\u20135 short publication bullets, each 1\u2013300 characters. Put the full design and evidence in summary, steps and tests."
+          "description": "Concise publication bullets. Put the full design and evidence in summary, steps and tests."
         }
       },
       "required": [

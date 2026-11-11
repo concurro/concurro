@@ -1,5 +1,6 @@
 """Invalid intake output is visible, recoverable and corrected without authorizing work."""
 
+import json
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -139,8 +140,8 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
             [],
             self.report(decision=[]),
             self.report(scope={"goal_ids": []}),
-            self.report(rationale="`" * 30000),
-            self.report(rationale="~`<details>\n" * 30000),
+            self.report(decision=[], rationale="`" * 30000),
+            self.report(decision=[], rationale="~`<details>\n" * 30000),
         ):
             with self.subTest(kind=type(report)):
                 self.setUp()
@@ -149,7 +150,12 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
                 self.assertEqual(controller.state["stage"], "intake")
                 archive = self.gh.archives()[0]
                 self.assertIn("Intake output rejected", archive)
-                self.assertLessEqual(len(archive.encode()), ARCHIVE_LIMIT)
+                for item in self.gh.artifacts[7].values():
+                    self.assertLessEqual(len(item["artifact"]["body"].encode()), ARCHIVE_LIMIT)
+                draft = controller.state["intake_draft"]
+                self.assertFalse(draft["truncated"])
+                self.assertEqual(json.loads(draft["output"]), report)
+                self.assertEqual(self.loaded().state["intake_draft"], draft)
                 self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
                 if controller.state["intake_draft"]["truncated"]:
                     self.assertIn("Output excerpted", archive)

@@ -295,7 +295,6 @@ SESSION_COLUMNS = (
     "binding",
     "staffing",
 )
-MAX_CAPACITY = 8
 MAX_WAIT_SECONDS = 50
 FINISHED_RETENTION_SECONDS = 86400
 
@@ -501,10 +500,10 @@ class Exchange:
             self.runner(session, token, time.time())
 
     def next(self, session, token, capacity, wait, now=None):
-        """Up to `capacity` queued turns of the session's target, waiting up to `wait` seconds for one."""
+        """Claim one turn when ready; legacy capacity zero pauses claims, positive values mean ready."""
         if (
             type(capacity) is not int
-            or not 0 <= capacity <= MAX_CAPACITY
+            or capacity < 0
             or not isinstance(wait, (int, float))
             or not 0 <= wait <= MAX_WAIT_SECONDS
         ):
@@ -522,8 +521,8 @@ class Exchange:
                     if not capacity or busy or not record["binding"]
                     else self.db.execute(
                         "SELECT id, payload FROM turns WHERE status = 'queued' AND staffing = ? AND (pin IS NULL OR pin = ?) "
-                        "ORDER BY created LIMIT ?",
-                        (record["staffing"], session, min(capacity, 1)),
+                        "ORDER BY created LIMIT 1",
+                        (record["staffing"], session),
                     ).fetchall()
                 )
                 for turn, _ in turns:

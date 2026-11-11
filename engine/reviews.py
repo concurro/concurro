@@ -10,6 +10,7 @@ import reason_guidance
 from github import Transient
 from markup import block, code, link, table, text
 from policy import Blocked, digest
+from protocol import PUBLICATION_BODY_BYTES as REVIEW_BODY_LIMIT
 
 # A closed finding's text is excerpted once its review event is published.
 EXCERPT = 300
@@ -133,7 +134,7 @@ def report_lines(report):
 # its marker and author before anything is sent again.
 
 # Findings and outbox items created from now on publish in this format; one without `format` is format 1 forever.
-FORMAT = 4
+FORMAT = 5
 PUBLICATION = "pending-v1"
 REVIEW_MARKER = "<!-- concurro:review:v1:"
 FINDING_MARKER = "<!-- concurro:finding:v1:"
@@ -143,7 +144,7 @@ WITHDRAWN_MARKER = "<!-- concurro:withdrawn:v1:"
 MAX_ATTEMPTS = 3
 CONFLICT = reason_guidance.REVIEW_CONFLICT
 # GitHub rejects a review body over 65,536 characters.
-REVIEW_BODY_LIMIT = 60000
+
 KEPT_TEXT = 1000
 OMITTED = "Full text omitted: it exceeds GitHub's review limit. It is kept in the automation audit state."
 HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -279,7 +280,7 @@ def review_body_v2(state, config, item, report, findings, placed):
     ]
     # The summary itself leads when it is one short sentence or has no headline to lead with.
     # Long model text is `Droppable`: it goes, for one note, when the body would exceed GitHub's limit.
-    # This format deliberately counts characters, unlike conversation events' byte limits.
+    # Format 5 uses UTF-8 bytes; older formats retain their exact replay rendering.
     title = markup.headline(report, "summary")
     collapse = bool(title) and not markup.redundant(report, "summary")
     summary = block(report["summary"])
@@ -349,8 +350,27 @@ def review_body_v2(state, config, item, report, findings, placed):
             + markup.details("Diagnostics", "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}")
         )
     body = "\n".join(str(line) for line in lines)
-    if len(body) > REVIEW_BODY_LIMIT:
+    measured = len(body.encode()) if item.get("format", 1) >= 5 else len(body)
+    if measured > REVIEW_BODY_LIMIT:
         body = "\n".join(OMITTED if isinstance(line, Droppable) else line for line in lines)
+    if item.get("format", 1) >= 5 and len(body.encode()) > REVIEW_BODY_LIMIT:
+        prefix = review_marker(state, config, item["sequence"]) + f"\n### {emoji} Concurro review · {outcome}\n\n"
+        note = "Full review and findings in the report archive linked from the issue dashboard."
+        footer = (
+            "\n\n"
+            + note
+            + "\n\n"
+            + markup.details("Diagnostics", "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}")
+        )
+        body = (
+            prefix
+            + markup.excerpt(
+                report["summary"],
+                REVIEW_BODY_LIMIT - len((prefix + footer).encode()),
+                "Full summary in the report archive.",
+            )
+            + footer
+        )
     return body
 
 

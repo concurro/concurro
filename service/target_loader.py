@@ -4,7 +4,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from bundle import CHARTER, RESOURCE_LIMIT, TARGET_INSTRUCTIONS, Bundle
+from bundle import CHARTER, TARGET_INSTRUCTIONS, Bundle
 from controller import validate_config
 from github import NotFound
 from model_config import parse as parse_models
@@ -13,8 +13,6 @@ from policy import Blocked
 from .github_reads import content, head
 from .settings import CHECKOUT
 from .target_config import read_remote
-
-CONFIG_LIMIT = 64_000
 
 
 @dataclass(frozen=True)
@@ -35,7 +33,7 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_
     """
     repository = target.fork
     sha = config_sha or head(reader, repository)
-    config = read_remote(lambda path: content(reader, repository, path, sha, CONFIG_LIMIT))
+    config = read_remote(lambda path: content(reader, repository, path, sha))
     if not isinstance(config, dict):
         raise Blocked("target configuration must be an object")
     validate_config(config)
@@ -58,7 +56,7 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_
         root.chmod(0o700)
         for path in paths + sorted(TARGET_INSTRUCTIONS):
             try:
-                text = content(reader, repository, path, sha, RESOURCE_LIMIT)
+                text = content(reader, repository, path, sha)
             except NotFound:
                 if path in TARGET_INSTRUCTIONS:
                     continue

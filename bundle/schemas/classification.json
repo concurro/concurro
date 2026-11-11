@@ -42,15 +42,12 @@
       },
       "rationale": {
         "type": "string",
-        "maxLength": 600,
         "description": "Explain both ratings concisely."
       },
       "unknowns": {
         "type": "array",
-        "maxItems": 5,
         "items": {
-          "type": "string",
-          "maxLength": 200
+          "type": "string"
         },
         "description": "Unresolved evidence gaps."
       }

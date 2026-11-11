@@ -36,9 +36,9 @@ Reviewers raise independently verified defects, not unresolved advisories alone.
 Return only the supplied JSON contract. Never claim commands or results you did not run;
 agent-reported validation is separate from project CI and human review.
 
-A report's `headline` is a standalone plain sentence under 160 characters. Keep approval
-summaries to at most two sentences. Complete all required assessments, counterexamples,
-citations and dispositions; summary brevity never removes evidence. Each report must be
+A report's `headline` is a concise standalone plain sentence. Aim for under 160 characters
+to fit the GitHub preview; this is a soft target. Keep approval summaries brief. Complete all
+required assessments, counterexamples, citations and dispositions; summary brevity never removes evidence. Each report must be
 self-contained even when another cites the same source. Reuse source IDs within a report.
 Cite findings, objections, questions and non-obvious claims. Omit redundant narrative,
 controller-rule recitations and boilerplate about unclaimed execution results.

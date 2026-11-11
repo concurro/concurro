@@ -114,7 +114,8 @@ Implementation and PR review have no Concurro execution timer. The reusable Acti
 The controller retains the 30-minute dispatch/setup queue limit and heartbeat-loss
 checks. Credential leases include that queue allowance and five minutes beyond the job
 limit; revocation and heartbeat expiry still apply. Intake, planning and design review
-retain their 20-minute execution limit. Increasing the workflow's job limit also requires
+default to a 20-minute execution limit, configurable with `turn_timeout_seconds`
+(a positive integer, or `null` to rely on the job lifetime). Increasing the workflow's job limit also requires
 updating the credential lease.
 
 Implementation and PR-review status polling retries connection errors and HTTP 408/429/5xx

@@ -18,6 +18,7 @@ from checkpoints import MARKER
 from markup import code, link, text
 from model_config import assigned
 from policy import approval_binding, design_roster, digest
+from protocol import PUBLICATION_BODY_BYTES as SUMMARY_LIMIT
 from vocab import MERGED_STAGES
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
 
 
 # GitHub rejects a comment over 65,536 characters.
-SUMMARY_LIMIT = 60000
+
 STEPS = ("Intake", "Plan", "Design review", "Implement", "Code review", "Handoff")
 STAGE_STEP = {
     "intake": 0,

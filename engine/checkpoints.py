@@ -12,6 +12,7 @@ import report_store
 from github import Transient
 from identities import Identities
 from policy import Blocked, digest
+from protocol import PUBLICATION_BODY_BYTES as LIMIT
 from repository_reader import RepositoryReader
 from storage_helpers import graft_slot, owned
 
@@ -22,7 +23,7 @@ PLAN_MARKER = "<!-- concurro:plan:v1 -->"
 REF_MARKER = "<!-- concurro:checkpoint:v1 "
 AUDIT_NAME = "Concurro audit state"
 PLAN_NAME = "Concurro implementation plan"
-LIMIT = 60000
+
 FORMAT = 3
 BATCH_FORMAT = 4
 
@@ -199,7 +200,9 @@ class Checkpoints:
             "repository": self.config["repository"],
             "state": {
                 **compact,
-                "version": bundle_resume.FORMAT
+                "version": report_store.FORMAT
+                if any(item["path"][0] in report_store.EXTENDED_FIELDS for item in detached)
+                else bundle_resume.FORMAT
                 if state.get("bundle_resume")
                 else file_inventory.FORMAT
                 if inventories or state.get("candidate", {}).get("file_inventory")
@@ -237,7 +240,13 @@ class Checkpoints:
                 raise ValueError()
             self.validate_state(state)
             refs = payload.get("report_data", [])
-            if refs and state["version"] not in (FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT):
+            if refs and state["version"] not in (
+                FORMAT,
+                BATCH_FORMAT,
+                file_inventory.FORMAT,
+                bundle_resume.FORMAT,
+                report_store.FORMAT,
+            ):
                 raise ValueError()
             if not isinstance(refs, list):
                 raise ValueError()
@@ -272,6 +281,7 @@ class Checkpoints:
             if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
+                report_store.FORMAT,
             ):
                 raise ValueError()
             file_inventory.restore(state, inventories, self.reader)
@@ -293,12 +303,13 @@ class Checkpoints:
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""
         if (
-            state["version"] not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT)
+            state["version"]
+            not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT, report_store.FORMAT)
             or state.get("bundle_resume")
-            and state["version"] != bundle_resume.FORMAT
+            and state["version"] not in (bundle_resume.FORMAT, report_store.FORMAT)
             or state["issue"] != self.issue
             or (state.get("review_batch_version") or state.get("review_batch"))
-            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT)
+            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT, report_store.FORMAT)
             or state.get("review_batch_version", 1) != 1
         ):
             raise CheckpointError("state_identity")
@@ -419,7 +430,7 @@ class Checkpoints:
             for key in ("questions", "files", "steps", "tests"):
                 if plan[key]:
                     entries = [
-                        (f"{i}. " if key == "steps" else "- ") + markup.text(item, 24000)
+                        (f"{i}. " if key == "steps" else "- ") + markup.text(item)
                         for i, item in enumerate(plan[key], 1)
                     ]
                     lines += ["## " + key.capitalize(), "", *entries, ""]
@@ -427,7 +438,7 @@ class Checkpoints:
                 lines += (
                     ["## Review responses", ""]
                     + [
-                        f"- **{markup.text(item['id'])}**: {markup.text(item['response'], 4000)}"
+                        f"- **{markup.text(item['id'])}**: {markup.text(item['response'])}"
                         for item in plan["responses"]
                     ]
                     + [""]
@@ -442,7 +453,44 @@ class Checkpoints:
             lines += [markup.details("Diagnostics", diagnostics), ""]
         else:
             lines += ["The previous plan is superseded. A new plan is required before implementation.", ""]
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        if len(body.encode()) <= LIMIT:
+            return body
+        draft = state.get("plan_draft")
+        key = digest(draft or state["plan"])
+        numbers = self.reports.numbers.get(key, [])
+        if not numbers:
+            raise CheckpointError("artifact_size")
+        root = protocol.artifact_url(self.config["repository"], self.issue)
+        links = "\n".join(f"[Complete plan data, part {i}]({root}{n})" for i, n in enumerate(numbers, 1))
+        prefix = PLAN_MARKER + "\n# Concurro implementation plan\n\n"
+        note = "Complete plan retained in the verified data artifacts:\n\n" + links
+        footer = "\n\n" + note
+        if draft:
+            prefix += "## Rejected draft — not approved\n\n"
+            prefix += (
+                markup.excerpt(draft["reason"], LIMIT // 4, "Full rejection reason in the data artifacts.") + "\n\n"
+            )
+
+            def render_output(value):
+                """Rebuild the disclosure and JSON fence around each raw output excerpt."""
+                fence = min((markup.fence(value, char) for char in ("`", "~")), key=len)
+                return markup.details("Rejected output", fence + "json\n" + value + "\n" + fence)
+
+            excerpt = markup.excerpt(
+                draft["output"],
+                LIMIT - len((prefix + footer).encode()),
+                "Full rejected output in the data artifacts.",
+                render=render_output,
+            )
+        else:
+            footer += "\n\n" + markup.details(
+                "Diagnostics", "Plan: " + markup.code(state["plan_id"]) + "\n\nBase: " + markup.code(state["base"])
+            )
+            excerpt = markup.excerpt(
+                state["plan"]["summary"], LIMIT - len((prefix + footer).encode()), "Full plan in the data artifacts."
+            )
+        return prefix + excerpt + footer
 
     def write(self, existing, kind, body):
         """Write and read back one version; reject changed snapshots and ambiguous responses."""

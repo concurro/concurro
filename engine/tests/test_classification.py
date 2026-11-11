@@ -38,13 +38,11 @@ class ContractTests(unittest.TestCase):
             assessment(risk="critical"),
             assessment(unknowns="bad"),
             assessment(rationale="\ud800"),
-            assessment(rationale="<details>" * 20000, unknowns=["a" * 900] * 50),
         ):
             with self.subTest(value=type(value).__name__):
                 report = intake(classification=value)
                 validate_qc(report, "intake")
                 normalized = ratings.normalize(value)
-                self.assertLessEqual(ratings.size(normalized), ratings.MAX_BYTES)
                 self.assertIn("diagnostic", normalized)
                 self.assertEqual(ratings.core(report), intake())
         with self.assertRaisesRegex(Blocked, "fields"):
@@ -57,8 +55,7 @@ class ContractTests(unittest.TestCase):
         report["rationale"] = "x" * (5999 - len(json.dumps(report)) + len(report["rationale"]))
         validate_qc({**report, "classification": assessment(rationale="x" * 50000)}, "intake")
         report["rationale"] += "xx"
-        with self.assertRaises(Blocked):
-            validate_qc(report, "intake")
+        validate_qc(report, "intake")
         review = {**APPROVE, "dispositions": []}
         review["summary"] = "x" * (MODEL_RESPONSE_LIMIT - len(json.dumps(review)) + len(review["summary"]))
         classified = {**review, "classification": assessment(rationale="x" * 100000)}
@@ -66,12 +63,11 @@ class ContractTests(unittest.TestCase):
         review["summary"] += "x"
         validate_pr_review(review, [], [])
 
-    def test_normalization_clips_evidence_and_never_trusts_provenance(self):
+    def test_normalization_preserves_evidence_and_never_trusts_provenance(self):
         value = assessment(rationale="🌍" * 1000, unknowns=["é" * 300] * 9)
         normalized = ratings.normalize(value)
-        self.assertLessEqual(ratings.size(normalized), ratings.MAX_BYTES)
-        self.assertLessEqual(len(normalized["rationale"]), 600)
-        self.assertLessEqual(len(normalized["unknowns"]), 5)
+        self.assertEqual(normalized["rationale"], value["rationale"])
+        self.assertEqual(normalized["unknowns"], value["unknowns"])
         report = intake(classification={**value, "source": {"agent": "forged"}})
         state = {"operation": {"id": "op", "attempt": "attempt"}, "requirements": {}, "base": "base"}
         result = ratings.attach(report, state, {"profile": "real"}, "intake", 4096)

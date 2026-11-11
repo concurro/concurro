@@ -212,10 +212,7 @@ class GuardContractTests(ConsensusFixture, unittest.TestCase):
 
     def test_reviewed_retry_refusals_remain_unconsumed(self):
         """The reviewed-repair path deliberately does not use consume-on-refusal."""
-        for failure, message in (
-            ("size", "repair feedback exceeds 4000 bytes; provide a shorter writer comment"),
-            ("rounds", "writer-requested repair allowance exhausted"),
-        ):
+        for failure, message in (("rounds", "writer-requested repair allowance exhausted"),):
             with self.subTest(failure=failure):
                 controller = self.loaded()
                 before = controller.state["command_id"]

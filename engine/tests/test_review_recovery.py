@@ -17,7 +17,7 @@ from controller import Controller
 from fakes import CONFIG, FakeAgents, FakeGitHub, decision, design_report, sized_report
 from pipeline_fixtures import PipelineFixture
 from policy import Blocked, approval_valid, validate_qc
-from repository import Repository, source_lines
+from repository import source_lines
 
 
 class ReviewEvidenceTests(unittest.TestCase):
@@ -73,8 +73,7 @@ class ReviewEvidenceTests(unittest.TestCase):
         self.assertIn("# Never enable merging", parts)
         self.assertNotIn("Validation:", parts)
         request["discussion"] = [{"body": str(i)} for i in range(35)]
-        with self.assertRaises(Blocked):
-            design.criteria(request)
+        self.assertGreater(len(design.criteria(request)), 32)
 
     def test_large_review_is_allowed_but_schema_and_actual_byte_bounds_apply(self):
         """Thirteen useful criteria can exceed the old fixed cap without being invalid."""
@@ -88,9 +87,9 @@ class ReviewEvidenceTests(unittest.TestCase):
         oversized["assessments"][0]["reason"] += "x" * 10000
         design.validate_evidence(oversized, request)
         oversized["sources"][0]["id"] = "x" * 81
-        with self.assertRaises(design.ReviewError) as caught:
-            design.validate_evidence(oversized, request)
-        self.assertEqual(caught.exception.field, "sources[0].id")
+        for item in oversized["assessments"]:
+            item["sources"] = [oversized["sources"][0]["id"]]
+        design.validate_evidence(oversized, request)
         unicode_report = deepcopy(report)
         for assessment in unicode_report["assessments"]:
             assessment["reason"] = "\U0001f600" * 400
@@ -126,11 +125,10 @@ class ReviewerRepairTests(PipelineFixture, unittest.TestCase):
             target = root / path
             target.parent.mkdir()
             target.write_text(source)
-            page = Repository(root).read_file(path, offset=20000, limit=1)
-            self.assertEqual(page["lines"][0]["line"], 20001)
+            self.assertEqual(source_lines(target.read_text())[20000], "    let merge_enabled = false;")
 
         def citing(provider, stage, context):
-            """Cite the same pinned line that the MCP inspection tool returned."""
+            """Cite the same pinned line that native source inspection returned."""
             report = original(provider, stage, context)
             report["sources"][0].update(path=path, line=20001, quote="let merge_enabled = false;")
             return report

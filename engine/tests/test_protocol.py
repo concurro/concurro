@@ -56,20 +56,6 @@ class ExistingProtocolTests(unittest.TestCase):
         self.assertIsNone(actions.BLOCKED_HEADER.fullmatch(body))
         self.assertIsNone(actions.BLOCKED_HEADER.match("prefix" + body))
 
-    def test_repository_isolated_script(self):
-        """Isolated script execution reaches the existing operation dispatch without site packages."""
-        with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(
-                [sys.executable, "-I", "-S", str(ENGINE / "repository.py"), "unknown"],
-                capture_output=True,
-                text=True,
-                cwd=directory,
-                check=False,
-            )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("ValueError: unknown repository operation", result.stderr)
-        self.assertNotIn("ModuleNotFoundError", result.stderr)
-
     def test_repository_import_does_not_change_path(self):
         """Importing repository in-process must leave the caller's search path intact."""
         script = (

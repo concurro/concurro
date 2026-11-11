@@ -53,6 +53,23 @@ class GitHubIOContractTests(unittest.TestCase):
         self.gh = GitHub("owner/repo")
         self.gh.api = Mock()
 
+    def test_outcome_window_uses_multiple_pages_above_one_hundred(self):
+        """Operator retrieval budgets are honored beyond GitHub's page capacity."""
+
+        def response(path, *args):
+            """Return 150 issues and record each outcome-comment lookup."""
+            if "/issues?" in path:
+                first = 1 if path.endswith("page=1") else 101
+                return [{"number": i} for i in range(first, min(first + 100, 151))]
+            return []
+
+        self.gh.api.side_effect = response
+        issues = self.gh.outcome_candidates(125)
+        self.assertEqual([number for number, _ in issues], list(range(1, 126)))
+        pages = [c.args[0] for c in self.gh.api.call_args_list if "/issues?" in c.args[0]]
+        self.assertEqual(len(pages), 2)
+        self.assertTrue(all("per_page=100" in p for p in pages))
+
     def test_cli_request_bytes(self):
         """The gh input remains default JSON, including empty and Unicode bodies."""
         for data, body in [(None, None), ({}, "{}"), ([], "[]"), ({"é": "雪"}, '{"\\u00e9": "\\u96ea"}')]:
@@ -88,22 +105,15 @@ class GitHubIOContractTests(unittest.TestCase):
                     [((f"repos/owner/repo/{path}{sep}per_page={size}&page={p}", "GET", None),) for p in (1, 2)],
                 )
 
-    def test_rest_pagination_bounds(self):
-        """A full last page raises; a short last page succeeds at the same bound."""
-        for path, size, bound in [("issues/7/artifacts", 10, 1000), ("issues", 100, 100)]:
-            for final in (size - 1, size):
-                with self.subTest(path=path, final=final):
-                    self.gh.api.reset_mock()
-                    self.gh.api.side_effect = [[0] * size for _ in range(bound - 1)] + [[0] * final]
-                    if final == size:
-                        with self.assertRaisesRegex(RuntimeError, "^pagination exceeded safety bound$"):
-                            self.gh.pages(path)
-                    else:
-                        self.assertEqual(len(self.gh.pages(path)), size * (bound - 1) + final)
-                    self.assertEqual(self.gh.api.call_count, bound)
-                    self.assertEqual(
-                        self.gh.api.call_args.args[0], f"repos/owner/repo/{path}?per_page={size}&page={bound}"
-                    )
+    def test_rest_pagination_past_old_bounds(self):
+        """A complete listing traverses beyond the old 10,000-entry ceiling."""
+        for path, size, pages in [("issues/7/artifacts", 10, 1001), ("issues", 100, 101)]:
+            self.gh.api.reset_mock()
+            self.gh.api.side_effect = [[0] * size for _ in range(pages)] + [["last"]]
+            result = self.gh.pages(path)
+            self.assertEqual(len(result), size * pages + 1)
+            self.assertEqual(result[-1], "last")
+            self.assertEqual(self.gh.api.call_count, pages + 1)
 
     def test_thread_requests_and_mapping(self):
         """Both documents and cursor bodies stay exact; only review_threads maps comments."""
@@ -156,20 +166,19 @@ class GitHubIOContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.args, ("comments",))
         self.assertEqual(self.gh.api.call_count, 1)
 
-    def test_thread_errors_and_bounds(self):
-        """Errors take precedence over malformed data, and both traversals stop at 100 pages."""
+    def test_thread_errors_and_long_traversal(self):
+        """Errors retain their meaning; valid cursors continue past 100 pages."""
         for name in ("review_threads", "threads"):
-            with self.subTest(name=name):
-                self.gh.api.reset_mock()
-                self.gh.api.return_value = {"errors": ["bad"], "data": True}
-                with self.assertRaisesRegex(RuntimeError, "^cannot establish review-thread state$"):
-                    getattr(self.gh, name)(7)
-                self.assertEqual(self.gh.api.call_count, 1)
-                self.gh.api.reset_mock()
-                self.gh.api.return_value = thread_page([], True, "next")
-                with self.assertRaisesRegex(RuntimeError, "^review-thread pagination exceeded safety bound$"):
-                    getattr(self.gh, name)(7)
-                self.assertEqual(self.gh.api.call_count, 100)
+            self.gh.api.reset_mock(side_effect=True)
+            self.gh.api.return_value = {"errors": ["bad"], "data": True}
+            with self.assertRaisesRegex(RuntimeError, "^cannot establish review-thread state$"):
+                getattr(self.gh, name)(7)
+            self.gh.api.reset_mock()
+            self.gh.api.side_effect = [thread_page([], True, str(i)) for i in range(101)] + [
+                thread_page([], False, None)
+            ]
+            self.assertEqual(getattr(self.gh, name)(7), [])
+            self.assertEqual(self.gh.api.call_count, 102)
 
     def test_graphql_confirmation_table(self):
         """Readiness raises on nonconfirmation; resolution returns False; their error order differs."""

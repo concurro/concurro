@@ -12,7 +12,7 @@ EFFORTS = {
 }
 LEGACY_ROLES = {"triage": "qc", "planner": "planner", "implementer": "implementer", "pr_reviewers": "reviewers"}
 LEGACY_FIELDS = {"qc", "qc_model", "planner", "implementer", "reviewers"}
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 def default_effort(provider):
@@ -86,7 +86,7 @@ def _parse(serialized):
         provider, model, effort = (value[k] for k in ("provider", "model", "effort"))
         if not isinstance(provider, str) or provider not in HARNESSES:
             raise ValueError("unknown model provider")
-        if not isinstance(model, str) or not model.strip() or model != model.strip() or len(model) > 200:
+        if not isinstance(model, str) or not model.strip() or model != model.strip():
             raise ValueError("model profile requires an explicit model ID")
         if not isinstance(effort, str) or effort not in EFFORTS[provider]:
             raise ValueError("unsupported effort for model provider")

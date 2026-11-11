@@ -28,7 +28,6 @@ import feedback
 import file_inventory
 import implementation_bundle
 import markup
-import pr_description
 import pr_template
 import protocol
 import readiness
@@ -69,6 +68,7 @@ from policy import (
 )
 from publication import INLINE_BLOB_LIMIT as INLINE_BLOB_LIMIT, PR_TITLE_LIMIT as PR_TITLE_LIMIT, Publication
 from repository_reader import RepositoryReader
+from runtime_defaults import DEFAULT_RETAINED_BYTES, DEFAULT_TURN_SECONDS
 from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 
 # Correct malformed intake and planner output without spending a semantic design-revision round.
@@ -98,19 +98,18 @@ BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 COMMIT = re.compile(protocol.SHA_PATTERN)
 
 
-def strings(value, limit=32):
-    """Return whether a value is a bounded list of distinct non-empty strings."""
+def strings(value):
+    """Return whether a value is a list of distinct non-empty strings."""
     return (
         isinstance(value, list)
-        and len(value) <= limit
-        and all(isinstance(v, str) and v.strip() and len(v) <= 240 for v in value)
+        and all(isinstance(v, str) and v.strip() for v in value)
         and len(set(value)) == len(value)
     )
 
 
-def _bounded_int(value, low, high, message):
-    """Reject non-integers (including bools) and values outside an existing budget range."""
-    if type(value) is not int or not low <= value <= high:
+def _budget_int(value, low, message):
+    """Reject non-integers (including bools) and values below a setting's minimum."""
+    if type(value) is not int or value < low:
         raise Blocked(message)
 
 
@@ -166,14 +165,14 @@ def validate_config(config):
             raise Blocked("invalid autonomy or QC configuration")
         if config["autonomous"] and config["qc"] == config["planner"]:
             raise Blocked("QC must use a different provider from the planner")
-    _bounded_int(config["max_plan_revisions"], 0, 3, "invalid plan revision budget")
-    _bounded_int(config.get("max_review_repairs"), 0, 8, "invalid review repair budget")
+    _budget_int(config["max_plan_revisions"], 0, "invalid plan revision budget")
+    _budget_int(config.get("max_review_repairs"), 0, "invalid review repair budget")
     if "agents" not in config and (
         set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values())
     ):
         raise Blocked("model map must name each provider")
     documents = config["policy_documents"]
-    if not strings(documents, 10) or not all(
+    if not strings(documents) or not all(
         not PurePosixPath(p).is_absolute() and ".." not in p.split("/") for p in documents
     ):
         raise Blocked("policy documents must be relative repository paths")
@@ -184,7 +183,7 @@ def validate_config(config):
     allowed = PATH_POLICY if legacy else (PATH_POLICY - {"editable_extensions"}) | {"protected_extensions"}
     if (
         (set(paths) != allowed if legacy else not {"protected_extensions"} <= set(paths) <= allowed)
-        or not all(strings(v, 32) for v in paths.values())
+        or not all(strings(v) for v in paths.values())
         or legacy
         and not paths["editable_extensions"]
         or not all(
@@ -202,11 +201,17 @@ def validate_config(config):
         or any(value is not None and (type(value) is not int or value < 1) for value in bounds.values())
     ):
         raise Blocked("limits must contain known keys with positive integers or null")
-    if not 0 <= config["max_fix_rounds"] <= 3 or not 1 <= config["max_model_calls"] <= 64:
-        raise Blocked("invalid budget")
-    _bounded_int(config["max_design_reopens"], 0, 3, "invalid design reopen budget")
-    if not 1 <= config["max_outcome_issues"] <= 10 or not 1 <= config["max_outcome_lessons"] <= 3:
-        raise Blocked("invalid outcome retrieval bound")
+    _budget_int(config["max_fix_rounds"], 0, "invalid fix-round budget")
+    _budget_int(config["max_model_calls"], 1, "invalid model-call budget")
+    _budget_int(config["max_design_reopens"], 0, "invalid design reopen budget")
+    for name in ("max_outcome_issues", "max_outcome_lessons"):
+        _budget_int(config[name], 1, "invalid outcome retrieval bound")
+    timeout = config.get("turn_timeout_seconds", DEFAULT_TURN_SECONDS)
+    if timeout is not None:
+        _budget_int(timeout, 1, "turn_timeout_seconds must be a positive integer or null")
+    retained = config.get("max_retained_bytes", DEFAULT_RETAINED_BYTES)
+    if retained is not None:
+        _budget_int(retained, 1, "max_retained_bytes must be a positive integer or null")
     if "engine" in config and not (isinstance(config["engine"], str) and COMMIT.fullmatch(config["engine"])):
         raise Blocked("engine must name a full engine commit")
 
@@ -984,7 +989,7 @@ class Controller:
         return self._command_handler().extend_plan_revisions(comment, amount, comments)
 
     def invalidate_design(self, reason):
-        """Archive bounded judgment evidence and invalidate all approval generations."""
+        """Archive complete judgment evidence and invalidate all approval generations."""
         state = self.state
         self.remember_legacy_pr_body()
         if state.get("plan_id"):
@@ -992,9 +997,9 @@ class Controller:
                 {
                     "generation": state["design_generation"],
                     "plan": state["plan_id"],
-                    "summary": state["plan"]["summary"][:500],
+                    "summary": state["plan"]["summary"],
                     "parent": state.get("head"),
-                    "reason": reason[:1000],
+                    "reason": reason,
                     "candidate_digest": digest(state.get("candidate")),
                     "votes": [
                         {
@@ -1055,7 +1060,7 @@ class Controller:
         self.save()
 
     def record_outcome(self):
-        """Persist bounded outcome evidence in the bot-owned GitHub state, without policy edits."""
+        """Persist complete outcome evidence in the bot-owned GitHub state, without policy edits."""
         state = self.state
         if state["stage"] not in ("merged", "observed_merged", "rejected", "escalated", "blocked", "stopped"):
             return
@@ -1063,9 +1068,9 @@ class Controller:
             "version": 1,
             "status": state["stage"],
             "issue": state["issue"],
-            "title": state["requirements"]["title"][:200],
-            "reason": state.get("reason", "")[:1000],
-            "plan_summary": state.get("plan", {}).get("summary", "")[:500],
+            "title": state["requirements"]["title"],
+            "reason": state.get("reason", ""),
+            "plan_summary": state.get("plan", {}).get("summary", ""),
             "goals": sorted(
                 {
                     goal
@@ -1093,7 +1098,6 @@ class Controller:
             history[-1] = outcome
         elif not history or history[-1] != outcome:
             history.append(outcome)
-            del history[:-6]
 
     def retrieve_outcomes(self):
         """Read a fixed GitHub window and select related, explicitly untrusted lessons."""
@@ -1419,7 +1423,7 @@ class Controller:
             "stage": stage,
             "decision": report["decision"],
             "risk": report["risk"],
-            "rationale": report["rationale"][:500],
+            "rationale": report["rationale"],
             "report_digest": digest(report),
             "base": state["base"],
             "requirements_digest": digest(state["requirements"]),
@@ -1446,7 +1450,7 @@ class Controller:
             state = self._accept_intake_report(report, stage, provider)
             if state is None:
                 return
-        limit = context["review_output_budget"]["max_json_bytes"] if member else 6000
+        limit = context["review_output_budget"]["max_json_bytes"] if member else MODEL_RESPONSE_LIMIT
         report = self.classify(report, provider, stage, limit, member)
         response = review_state.operation(state).get("response")
         if isinstance(response, dict):
@@ -1622,16 +1626,10 @@ class Controller:
                 return True
 
     def rejected_output(self, value, reason, key):
-        """Bound a rejected JSON excerpt against the remaining durable checkpoint capacity."""
+        """Retain complete rejected output; artifact storage bounds its publication views."""
         attempt = self.state.get(key, {}).get("attempt", 0) + 1
         output = json.dumps(value, indent=2, ensure_ascii=True)
-        saved = deepcopy(self.state)
-        saved.pop(key, None)
-        saved.get("operation", {}).pop("response", None)
-        # JSON string escaping can double the excerpt; reserve publication and dashboard metadata.
-        room = max(0, (CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(saved).encode()) - 4000) // 2)
-        limit = min(20000, room)
-        return {"output": output[:limit], "truncated": len(output) > limit, "reason": reason, "attempt": attempt}
+        return {"output": output, "truncated": False, "reason": reason, "attempt": attempt}
 
     def repair_intake(self, report, reason, provider):
         """Archive invalid intake output before scheduling at most two paid corrections."""
@@ -1845,15 +1843,27 @@ class Controller:
             for provider in assigned(self.config, "pr_reviewers")
         ]
         if description and description.get("description"):
-            parts = pr_description.sections(
-                {**description, "head": "0" * 40},
-                "0" * 40,
-                self.state["plan"].get("publication", {}).get("review_focus", []),
-            )
+            prospective = {
+                **self.state,
+                "head": "0" * 40,
+                "pending": {"head": "0" * 40},
+                "candidate": {
+                    **description,
+                    "head": "0" * 40,
+                    "changed_files": sorted(after),
+                    "dependencies": dependencies,
+                },
+            }
+            body = Publication(
+                self.code,
+                self.pulls,
+                self.config,
+                prospective,
+                self.checkpoints.plan if self.checkpoints else None,
+                self.reader,
+            ).pr_body()
             for _, context in contexts:
-                context["published_pr_body"] = (
-                    pr_template.render(parts, self.state.get("pr_template"), self.state["base"]) + " " * 1024
-                )
+                context["published_pr_body"] = body
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         over = [
             f"{name} ({size} of {limit} bytes)"
@@ -1978,7 +1988,7 @@ class Controller:
         return self._publication().publish(self.save, self.checkpoints.preflight)
 
     def pr_title(self):
-        """The plan's headline, or its summary's first sentence, as plain text within 72 characters."""
+        """The plan's headline, or its summary's first sentence, as plain text within the publication title capacity."""
         return self._publication().pr_title()
 
     def pr_body(self):

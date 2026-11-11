@@ -32,13 +32,14 @@ implementation.
 
 ## Report and publication
 
-Return the supplied [response contract](../../schemas/plan.json), within 20,000 JSON characters.
+Return the supplied [response contract](../../schemas/plan.json). Response transport capacity
+still applies; no fixed per-field prose allowance applies.
 
-- `headline`: imperative change summary under 60 characters, used as the PR title; no `Plan:`
+- `headline`: concise imperative change summary, used as the PR title; no `Plan:`
   prefix. Keep the plan summary about the design, without earlier verdicts or approval claims.
 - `publication.changes`: concise changes since the previous version.
 - `publication.review_focus`: points needing reviewer attention.
 
-Each publication list has 1–5 non-empty bullets of at most 300 characters. These appear in the
-chronological issue comment; the full plan belongs in its artifact. Do not repeat full steps
-or tests in publication lists.
+Keep publication lists brief but include every necessary item; no fixed bullet count applies.
+These appear in the chronological issue comment; the full plan belongs in its artifact.
+Do not repeat full steps or tests in publication lists.

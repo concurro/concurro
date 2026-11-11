@@ -216,8 +216,8 @@ class BundleSplitTests(unittest.TestCase):
         self.assertNotEqual(bundle.identity, Bundle(ROOT, charter_text=charter).identity)
         with self.assertRaises(Blocked):
             Bundle(ROOT, charter_text=charter, instruction_texts={"../untrusted.md": "x"})
-        with self.assertRaises(Blocked):
-            Bundle(ROOT, charter_text=charter, instruction_texts={".concurro/instructions/shared.md": "x" * 24001})
+        large = Bundle(ROOT, charter_text=charter, instruction_texts={".concurro/instructions/shared.md": "x" * 24001})
+        self.assertEqual(large.instructions("plan")["target"]["shared"], "x" * 24001)
 
 
 if __name__ == "__main__":

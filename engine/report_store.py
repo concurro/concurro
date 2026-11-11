@@ -14,9 +14,22 @@ from storage_helpers import graft_slot, owned
 
 MARKER = "<!-- concurro:report-data:v1:"
 CHUNK = 16000
-MAX_PARTS = 128
 INLINE = 12000
-FIELDS = {
+FORMAT = 7
+EXTENDED_FIELDS = {
+    "plan",
+    "plan_draft",
+    "intake_draft",
+    "charter",
+    "pr_template",
+    "implementation_feedback",
+    "requirements",
+    "conversation",
+    "candidate",
+    "outcomes",
+    "prior_outcomes",
+}
+FIELDS = EXTENDED_FIELDS | {
     "qc",
     "qc_history",
     "design_votes",
@@ -29,8 +42,6 @@ FIELDS = {
     "findings",
     "pr_outbox",
     "reason",
-    "outcomes",
-    "prior_outcomes",
     "reopen_history",
     "resume_history",
     "invalidations",
@@ -99,18 +110,23 @@ def packed(state):
                 collect(child)
 
     roots = {key: state[key] for key in sorted(FIELDS) if key in state}
-    if state.get("operation", {}).get("stage") in ("plan_qc", "review") and "response" in state["operation"]:
+    if "response" in state.get("operation", {}):
         roots["operation"] = {"response": state["operation"]["response"]}
     collect(roots)
     detached = []
 
     def visit(value, path):
-        """Detach reports or large leaves, never a mutable history collection."""
+        """Detach canonical reports, large state roots and large leaves."""
         if (
             path == ["review_draft"]
             or path[0] == "review_batch"
             and (path[-1] == "review_draft" or path[-2:] == ["operation", "response"] and not is_report(value))
         ):
+            detached.append({"path": path, "digest": digest(value), "value": value, "select": [], "annotations": {}})
+            return None
+        if (path == ["operation", "response"] or len(path) == 1 and path[0] in EXTENDED_FIELDS) and len(
+            json.dumps(value).encode()
+        ) > INLINE:
             detached.append({"path": path, "digest": digest(value), "value": value, "select": [], "annotations": {}})
             return None
         if is_report(value):
@@ -320,8 +336,6 @@ class Store:
         footer = "\nReferences:\n" + footer if footer else ""
         encoded = json.dumps(record, sort_keys=True, indent=2)
         parts = [encoded[i : i + CHUNK] for i in range(0, len(encoded), CHUNK)]
-        if len(parts) > MAX_PARTS:
-            raise ReportDataError("Review data exceeds the storage transport capacity.")
         numbers = []
         for index, part in enumerate(parts, 1):
             prefix = f"{MARKER}{key}:{index}:"
@@ -365,7 +379,7 @@ class Store:
             raise ReportDataError("Invalid review data reference.")
         if numbers is not None and (
             not isinstance(numbers, list)
-            or not 1 <= len(numbers) <= MAX_PARTS
+            or not numbers
             or any(type(n) is not int or n <= 0 for n in numbers)
             or len(set(numbers)) != len(numbers)
         ):
@@ -420,7 +434,7 @@ class Store:
             if not match:
                 raise ReportDataError("Malformed review data part.")
             index, total = int(match[1]), int(match[2])
-            if not 1 <= index <= total <= MAX_PARTS or count not in (None, total) or index in chunks:
+            if not 1 <= index <= total or count not in (None, total) or index in chunks:
                 raise ReportDataError("Duplicate or inconsistent review data parts.")
             count, chunks[index], identities[index] = total, match[4], item["number"]
         if count is None or set(chunks) != set(range(1, count + 1)):

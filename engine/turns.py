@@ -283,9 +283,7 @@ def command():
 
 def _validated_timeout(request, timeout):
     """Validate the stage's optional execution limit before preparing a workspace."""
-    if not (timeout is None and runner_bound(request.get("stage"))) and (
-        type(timeout) is not int or not 60 <= timeout <= 7200
-    ):
+    if timeout is not None and (type(timeout) is not int or timeout < 1):
         raise TurnError("invalid turn timeout")
     return timeout
 

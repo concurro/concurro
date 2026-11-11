@@ -267,9 +267,7 @@ class NativeCleanupTests(unittest.TestCase):
 
     def test_invalid_timeout_precedes_workspace_setup(self):
         for stage in ("develop", "review", "plan"):
-            for timeout in (False, True, 59, 7201, 60.0, "60", None):
-                if timeout is None and stage != "plan":
-                    continue
+            for timeout in (False, True, 0, -1, 60.0, "60"):
                 with self.subTest(stage=stage, timeout=timeout), tempfile.TemporaryDirectory() as directory:
                     with self.assertRaisesRegex(turns.TurnError, "^invalid turn timeout$"):
                         turns.execute(

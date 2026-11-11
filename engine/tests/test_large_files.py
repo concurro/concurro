@@ -10,7 +10,7 @@ import turns
 from controller import DIFF_TRUNCATED, DISPATCH_ALLOWANCE, MAX_DIFF, changes, diff_preview, sha256, transport_size
 from fakes import PLAN, FakeAgents
 from policy import Blocked, validate_edits
-from repository import Repository
+from repository import source_lines
 from review_fixtures import Harness
 from runner_fixtures import Workspace
 
@@ -140,10 +140,7 @@ class WorkspaceTests(Workspace, unittest.TestCase):
     def test_large_snapshot_extraction_paging_and_deletion(self):
         root = self.prepare(candidate={"files": {"docs/guide.md": SOURCE}})
         work = root / "work"
-        repository = Repository(work)
-        page = repository.read_file("docs/guide.md", offset=199999, limit=2)
-        self.assertEqual([v["line"] for v in page["lines"]], [200000, 200001])
-        self.assertIsNone(page["next_offset"])
+        self.assertEqual(len(source_lines((work / "docs/guide.md").read_text())), 200001)
         (work / "docs/guide.md").write_text(SOURCE + "changed\n")
         extracted = turns.extract(work, root / "pristine.git", root)
         self.assertEqual(extracted["edits"], [{"path": "docs/guide.md", "content": SOURCE + "changed\n"}])

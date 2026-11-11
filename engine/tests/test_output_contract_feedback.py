@@ -78,7 +78,7 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
     def invalid_plan(self):
         """Reproduce the independent violations discovered across #33's three outputs."""
         plan = deepcopy(PLAN)
-        plan["publication"]["changes"] = ["x" * 301]
+        plan["publication"]["changes"] = [""]
         plan["files"] = [f"docs/{i}.md" for i in range(9)] + ["docs/rpc/openapi.yaml"]
         plan["scope"] = {"paths": [f"docs/{i}.md" for i in range(11)], "max_files": 12}
         return plan
@@ -88,7 +88,7 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
         with self.assertRaises(Blocked) as caught:
             validate_plan(self.invalid_plan(), self.config)
         reason = str(caught.exception)
-        for part in ("publication.changes[0]", "300", "limits.primary_files", "files[9]", "scope paths"):
+        for part in ("publication.changes[0]", "limits.primary_files", "files[9]", "scope paths"):
             self.assertIn(part, reason)
         self.assertNotIn("x" * 301, reason)
 
@@ -139,7 +139,7 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(contract["limits"]["primary_files"], 8)
         self.assertEqual(contract["limits"]["scope_paths"], 8)
         self.assertEqual(contract["limits"]["changed_files"], 32)
-        self.assertEqual(contract["publication_item_characters_max"], 300)
+        self.assertNotIn("publication_item_characters_max", contract)
         self.assertEqual(contract["edit_policy"]["paths"], self.config["paths"])
         self.assertEqual(contract, contexts[1]["plan_output_contract"])
         self.assertIn("files[9]", contexts[1]["plan_validation_feedback"]["reason"])
@@ -149,13 +149,15 @@ class PlannerFeedbackTests(PipelineFixture, unittest.TestCase):
         self.assertEqual(accepted.state["plan_revisions"], 0)
 
     def test_publication_schema_matches_runtime_boundaries(self):
-        """Schema constraints prevent the 301-character summary failure seen in the pilot."""
+        """Nonempty publication prose remains valid beyond the old length ceiling."""
         props = json.loads((ROOT / "bundle/schemas/plan.json").read_text())["properties"]
         for name in ("changes", "review_focus"):
             field = props["publication"]["properties"][name]
-            self.assertEqual((field["minItems"], field["maxItems"]), (1, 5))
-            self.assertEqual((field["items"]["minLength"], field["items"]["maxLength"]), (1, 300))
-            for length, valid in ((0, False), (300, True), (301, False)):
+            self.assertEqual(field["minItems"], 1)
+            self.assertNotIn("maxItems", field)
+            self.assertEqual(field["items"]["minLength"], 1)
+            self.assertNotIn("maxLength", field["items"])
+            for length, valid in ((0, False), (300, True), (301, True), (10000, True)):
                 report = deepcopy(PLAN)
                 report["publication"][name] = ["x" * length]
                 if valid:

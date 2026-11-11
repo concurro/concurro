@@ -1,4 +1,4 @@
-"""Bounded implementer descriptions and conservative ownership of published PR bodies."""
+"""Structured implementer descriptions and conservative ownership of published PR bodies."""
 
 import re
 
@@ -7,22 +7,17 @@ import protocol
 from policy import Blocked, digest
 
 TYPES = ("feat", "fix", "docs", "refactor", "perf", "test", "build", "ci", "chore", "revert")
-FIELDS = {"problem": (1, 4), "changes": (1, 6), "compatibility": (0, 4)}
+FIELDS = {"problem": 1, "changes": 1, "compatibility": 0}
 
 
-def sentence(value, maximum=200):
-    """Recognize a nonempty single-line field bounded in characters."""
-    return (
-        isinstance(value, str)
-        and bool(value.strip())
-        and len(value) <= maximum
-        and not any(c in value for c in "\r\n\x00")
-    )
+def sentence(value):
+    """Recognize a nonempty single-line field."""
+    return isinstance(value, str) and bool(value.strip()) and not any(c in value for c in "\r\n\x00")
 
 
-def bullets(value, minimum, maximum):
-    """Recognize a bounded list of inline content fields."""
-    return isinstance(value, list) and minimum <= len(value) <= maximum and all(sentence(v) for v in value)
+def bullets(value, minimum):
+    """Recognize a list of inline content fields with the required minimum."""
+    return isinstance(value, list) and minimum <= len(value) and all(sentence(v) for v in value)
 
 
 def validate(report):
@@ -36,12 +31,12 @@ def validate(report):
         not isinstance(description, dict)
         or set(description) != {"lead", *FIELDS}
         or not sentence(description["lead"])
-        or any(not bullets(description[k], *bounds) for k, bounds in FIELDS.items())
+        or any(not bullets(description[k], minimum) for k, minimum in FIELDS.items())
         or not isinstance(commit, dict)
         or set(commit) != {"subject", "type", "changes"}
-        or not sentence(commit["subject"], 72)
+        or not sentence(commit["subject"])
         or commit["type"] not in TYPES
-        or not bullets(commit["changes"], 1, 6)
+        or not bullets(commit["changes"], 1)
     ):
         raise Blocked("invalid implementation description or commit metadata")
 
@@ -137,9 +132,7 @@ def commit_message(state, config, metadata):
         return f"fix(concurro): address issue #{state['issue']} (round {state['round']})"
     subject = metadata["subject"] if state.get("head") else state["plan"].get("headline") or state["plan"]["summary"]
     prefix = metadata["type"] + ": " if config.get("conventional_commits", False) else ""
-    subject = prefix + markup.short_title(
-        inert(markup.one_line(subject).strip(), preserve_code=False), 72 - len(prefix)
-    )
+    subject = prefix + inert(markup.one_line(subject).strip(), preserve_code=False)
     changes = "\n".join("- " + inert(v, preserve_code=False) for v in metadata["changes"])
     issue = (
         f"#{state['issue']}"

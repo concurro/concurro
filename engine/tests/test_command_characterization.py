@@ -313,8 +313,8 @@ class CommandCharacterizationTests(PipelineFixture, unittest.TestCase):
         """A raised refusal ends the tick but its consumed ID cannot wedge the next command."""
         c = self.restore("autonomous/escalated_waiting")
         before = deepcopy(c.state)
-        refused = self.apply(c, ["extend_4", "extend_1"])
-        self.assertEqual(refused["blocked"], "Grant between 1 and 3 additional plan revisions per command.")
+        refused = self.apply(c, ["extend_0", "extend_1"])
+        self.assertEqual(refused["blocked"], "Grant a positive integer number of additional plan revisions.")
         self.assertEqual(refused["saves"], [["escalated", 1001, "plan", {"stage": "plan"}]])
         c.suspend("blocked", refused["blocked"], outboxes=False)
         restored = self.loaded()

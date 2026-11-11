@@ -190,6 +190,8 @@ class RestBackend:
             return [{"name": name} for name in sorted(self.repository_labels)]
         if base.startswith("commits/") and base.endswith("/status"):
             return {"statuses": []}
+        if base.startswith("issues?"):
+            return []  # no prior outcomes in the default fixture
         return self.fake.pages(base)
 
     def query(self, data):

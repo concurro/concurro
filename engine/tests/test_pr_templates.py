@@ -97,8 +97,9 @@ class TemplateTests(unittest.TestCase):
             pr_template.pin({"base": "b" * 40}, config, Mock(return_value={pr_template.PATH: None}), save)
         with self.assertRaisesRegex(Blocked, "Configured PR template is missing"):
             pr_template.pin({"base": "a" * 40, "pr_template": missing}, config, read, save)
-        with self.assertRaisesRegex(Blocked, "16000"):
-            pr_template.pin({"base": "b" * 40}, config, Mock(return_value={pr_template.PATH: "x" * 16001}), save)
+        large = {"base": "b" * 40}
+        pr_template.pin(large, config, Mock(return_value={pr_template.PATH: TEMPLATE + "x" * 16001}), save)
+        self.assertEqual(large["pr_template"]["text"], TEMPLATE + "x" * 16001)
 
     def test_pipeline_renders_template_from_approved_base(self):
         config = {**deepcopy(CONFIG), "autonomous": True, "pr_template_sections": MAPPING}

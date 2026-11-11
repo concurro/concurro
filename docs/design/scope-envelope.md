@@ -25,8 +25,8 @@ envelope. New plans do not choose a file-count budget.
 Without `scope`, the primary files remain the exact allowed file set.
 
 The planner receives `plan_output_contract` on every attempt: these limits, the
-target's edit policy and the publication limits (1–5 bullets per list, at most 300
-characters each). The whole plan is limited to 20,000 JSON characters. Validation
+target's edit policy and required publication fields. Publication bullets should be concise;
+there is no fixed bullet count or per-field prose allowance. Aggregate response transport still applies. Validation
 reports independent violations together where the report shape permits it, so one
 correction can address publication, primary-file and scope problems. Questions may
 leave the envelope incomplete; they stop implementation rather than grant permission.

@@ -72,4 +72,23 @@ def build(mirror, root, refs, head, candidate=None):
     mirror.borrow(root.name, "main", sorted(set(refs.values())))
     root.mkdir(parents=True, exist_ok=True)
     repository.snapshot({"refs": refs, "head": head, "candidate": candidate}, root=root, mirror=mirror.path)
-    return repository.Repository(root)
+    return Snapshot(root)
+
+
+class Snapshot:
+    """Inspect a real test snapshot through the same native filesystem and Git tools as agents."""
+
+    def __init__(self, root):
+        """Bind inspection to the prepared checkout."""
+        self.root = root
+
+    def read(self, path):
+        """Read a fixture's UTF-8 text."""
+        return self.root.joinpath(path).read_text()
+
+    def git(self, args):
+        """Run native Git against the snapshot without normalizing its output bytes."""
+        result = subprocess.run(
+            ["git", *args], cwd=self.root, env=repository.git_environment(self.root), capture_output=True, check=True
+        )
+        return {"output": result.stdout.decode(), "exit_code": result.returncode}

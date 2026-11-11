@@ -118,7 +118,7 @@ PR-thread replies do **not** automatically enter the repair loop. Thread-state w
 wake observation, and unresolved threads can prevent readiness, but there is no admission
 protocol that converts a human thread reply into a model instruction.
 
-To request a bounded repair, a writer posts fresh feedback on the issue (up to 4,000 bytes)
+To request a repair, a writer posts fresh feedback on the issue
 and then `/concurro retry`. The latest new writer comment supplies the feedback. Without
 new feedback, retry rechecks readiness. Changed requirements can reopen the design.
 Direct commits to the controller's branch require reconciliation; suggested-change
@@ -137,9 +137,10 @@ write credentials remain central; reviewer jobs hold only their own runner/infer
 
 ## PR description and commit messages
 
-New implementer results supply a bounded `description`: one lead sentence, 1–4 problem
-bullets, 1–6 change bullets naming files/functions, and 0–4 compatibility bullets, at most
-200 characters per field. It describes the whole approved-base-to-candidate diff and is
+New implementer results supply a structured `description`: a lead sentence, problem and
+change bullets naming files/functions, and optional compatibility bullets. Brevity is
+guidance; item counts and prose lengths have no fixed ceiling. The description covers the
+whole approved-base-to-candidate diff and is
 stored on that candidate. Testing comes only from `validation`, labelled agent-reported
 and naming its candidate commit. Review focus comes from the approved plan. The footer
 retains the implementation plan, dependency summaries and the correct issue closing link.
@@ -153,8 +154,8 @@ fields keep their original body and commit behavior.
 
 The first new implementation commit uses the plan headline. Repair subjects and all
 commit-body bullets describe that round's changes, followed by `Refs #N` (or the full issue
-URL across repositories). Subjects fit 72 characters including any conventional prefix;
-long subjects end at a word boundary with an ellipsis. Set optional
+URL across repositories). Subjects preserve the model wording without a fixed length
+convention. Set optional
 `conventional_commits: true` in the target configuration to add the model-selected type
 prefix; the default is false. Commit metadata is separate from the whole-PR description.
 
@@ -216,3 +217,7 @@ so a later structured candidate can refresh it. A mismatched body remains human-
 Malformed implementation descriptions receive bounded model repair feedback. New response
 schemas require nonempty description and commit objects, including on design reopens
 (where those fields are not published).
+
+New reviews use rendering format 5 with a conservative 60,000 UTF-8 byte body capacity.
+An oversized finding table links back to the full report archive. Formats 1–4 retain their
+original rendering so an interrupted publication can reconcile already-published text.

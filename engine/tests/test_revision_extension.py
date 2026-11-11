@@ -244,7 +244,7 @@ class RevisionExtensionTests(ConsensusFixture, unittest.TestCase):
                 self.assertNotIn("plan_revision_extra", restored.state)
 
     def test_invalid_amount_or_changed_authority_refuses_without_grant(self):
-        for failure in ("zero", "large", "config", "requirements", "bundle", "pending", "head"):
+        for failure in ("zero", "config", "requirements", "bundle", "pending", "head"):
             with self.subTest(failure=failure):
                 self.setUp()
                 prior = self.exhausted()

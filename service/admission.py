@@ -9,6 +9,7 @@ from checkpoints import MARKER as STATUS_MARKER
 from conversation import MARKER as EVENT_MARKER
 from github import MARK_READY, RESOLVE_THREAD
 from policy import task_branch
+from protocol import PUBLICATION_BODY_BYTES
 
 NUMBER = r"[1-9][0-9]*"
 # Writes whose results the engine reconstructs from GitHub on its next tick; any other write is
@@ -93,7 +94,7 @@ def allowed(key, method, path, body):
                     isinstance(body, dict)
                     and set(body) == {"body"}
                     and isinstance(body["body"], str)
-                    and len(body["body"].encode()) <= 60000
+                    and len(body["body"].encode()) <= PUBLICATION_BODY_BYTES
                 )
             for shape, fields in PR_BODIES:
                 if shape.fullmatch(relative):

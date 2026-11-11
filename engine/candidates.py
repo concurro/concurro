@@ -41,7 +41,6 @@ def development(report):
         or not isinstance(report["summary"], str)
         or not report["summary"].strip()
         or not isinstance(report["validation"], str)
-        or len(report["validation"].encode()) > 4000
     ):
         raise Blocked("invalid implementation response")
     pr_description.validate(report)

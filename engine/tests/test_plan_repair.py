@@ -105,8 +105,8 @@ class PlanRepairTests(PipelineFixture, unittest.TestCase):
         for report in (
             [],
             {**deepcopy(PLAN), "responses": [{"id": [], "response": "x"}]},
-            {**deepcopy(PLAN), "summary": "```\n<details>\n" * 10000},
-            {**deepcopy(PLAN), "summary": "`" * 30000},
+            {**deepcopy(PLAN), "questions": None, "summary": "```\n<details>\n" * 10000},
+            {**deepcopy(PLAN), "questions": None, "summary": "`" * 30000},
         ):
             with self.subTest(report_type=type(report)):
                 self.setUp()
@@ -116,9 +116,10 @@ class PlanRepairTests(PipelineFixture, unittest.TestCase):
                 body = self.artifact()["artifact"]["body"]
                 self.assertIn("Rejected draft", body)
                 self.assertLessEqual(len(controller.checkpoints.audit_body(controller.state).encode()), LIMIT)
-                if len(json.dumps(report)) > 20000:
-                    self.assertTrue(controller.state["plan_draft"]["truncated"])
-                    self.assertIn("Output excerpted", body)
+                draft = controller.state["plan_draft"]
+                self.assertFalse(draft["truncated"])
+                self.assertEqual(json.loads(draft["output"]), report)
+                self.assertEqual(self.loaded().state["plan_draft"], draft)
 
     def test_completed_result_recovers_without_duplicate_dispatch_or_attempt(self):
         """Crash before saving the rejection reuses the retained model response once."""

@@ -199,22 +199,23 @@ class ConfigBoundaryTests(unittest.TestCase):
     """Keep exact integer policy, including legacy fields that still accept bools."""
 
     def test_integer_boundaries(self):
+        """Budgets retain individual minima and reject booleans, without upper ceilings."""
         from support import CONFIG
 
-        cases = (
-            ("max_plan_revisions", 0, 3, "invalid plan revision budget", False),
-            ("max_review_repairs", 0, 8, "invalid review repair budget", False),
-            ("max_design_reopens", 0, 3, "invalid design reopen budget", False),
-            ("max_fix_rounds", 0, 3, "invalid budget", True),
-            ("max_model_calls", 1, 64, "invalid budget", True),
-        )
-        for key, low, high, message, accepts_bool in cases:
-            for value in (low, high, low - 1, high + 1, True, False):
+        for key, low in (
+            ("max_plan_revisions", 0),
+            ("max_review_repairs", 0),
+            ("max_design_reopens", 0),
+            ("max_fix_rounds", 0),
+            ("max_model_calls", 1),
+            ("max_outcome_issues", 1),
+            ("max_outcome_lessons", 1),
+        ):
+            for value in (low, 1000, low - 1, True, False, 1.0, "1"):
                 with self.subTest(key=key, value=value):
                     config = {**deepcopy(CONFIG), key: value}
-                    valid = low <= value <= high and (type(value) is int or accepts_bool)
-                    if valid:
+                    if type(value) is int and value >= low:
                         validate_config(config)
                     else:
-                        with self.assertRaisesRegex(Blocked, "^" + message + "$"):
+                        with self.assertRaises(Blocked):
                             validate_config(config)

@@ -1,5 +1,8 @@
 """Dependency-free GitHub URL and protocol vocabulary shared by engine modules."""
 
+# Conservative UTF-8 capacity for GitHub publication bodies, below the character ceiling.
+PUBLICATION_BODY_BYTES = 60000
+
 EVENT_MARKER = "<!-- concurro:event:v1:"
 DIGEST_PATTERN = r"[a-f0-9]{64}"
 SHA_PATTERN = r"[0-9a-f]{40}"

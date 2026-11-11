@@ -833,7 +833,7 @@ class BundleTests(unittest.TestCase):
 
     def test_resource_traversal_symlink_and_manifest_injection_rejected(self):
         """Candidate-controlled files cannot add or redirect instruction resources."""
-        for mode in ("traversal", "symlink", "directory_link", "role", "oversized", "charter"):
+        for mode in ("traversal", "symlink", "directory_link", "role"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 copy_roots(root)
@@ -854,12 +854,6 @@ class BundleTests(unittest.TestCase):
                     manifest = json.loads(path.read_text())
                     manifest["roles"]["plan"]["skill"] = "bundle/skills/other/SKILL.md"
                     path.write_text(json.dumps(manifest))
-                elif mode == "charter":
-                    with self.assertRaises(Blocked):
-                        Bundle(root, charter_text="x" * 24001)
-                    continue
-                else:
-                    (root / "bundle/instructions.md").write_text("x" * 24001)
                 with self.assertRaises(Blocked):
                     Bundle(root, root)
 

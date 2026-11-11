@@ -8,7 +8,6 @@ import pr_description
 from policy import Blocked
 
 PATH = ".github/PULL_REQUEST_TEMPLATE.md"
-MAX_BYTES = 16000
 FIELDS = {"lead", "problem", "changes", "compatibility", "testing", "review_focus"}
 HEADING = re.compile(r"^ {0,3}(#{1,6} [^\r\n]+?)\s*$")
 CHECKED = re.compile(r"^(\s*(?:[-+*]|\d+[.)])\s+)\[[xX]\]")
@@ -24,7 +23,6 @@ def validate(mapping):
     for heading, fields in mapping.items():
         if (
             not isinstance(heading, str)
-            or len(heading) > 120
             or not HEADING.fullmatch(heading)
             or not isinstance(fields, list)
             or not fields
@@ -49,8 +47,6 @@ def pin(state, config, read, save):
     template = read(state["base"], [PATH], inspection=True)[PATH]
     if template is None:
         raise Blocked(f"Configured PR template is missing at {PATH}")
-    if len(template.encode()) > MAX_BYTES:
-        raise Blocked("PR template exceeds the 16000-byte limit")
     snapshot = {"base": state["base"], "sections": deepcopy(mapping), "text": template}
     # Validate headings now, before creating candidate Git objects.
     render({field: "" for field in FIELDS}, snapshot, state["base"])
