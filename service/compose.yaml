@@ -13,6 +13,7 @@ services:
     volumes:
       - /etc/concurro/service:/etc/concurro/service:ro
       - /var/lib/concurro/service:/var/lib/concurro/service
+      - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
     networks:
       edge:
         aliases:
@@ -29,6 +30,36 @@ services:
     stop_grace_period: 15m
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+    restart: unless-stopped
+
+  # The backoffice API and web app, at /concurro/ on the edge (gateway/concurro.caddy). It reads
+  # the diagnostics directory the service writes; settings and the OAuth client secret are its own.
+  backoffice:
+    image: concurro-backoffice:local
+    build:
+      context: ..
+      dockerfile: backoffice/Dockerfile
+    volumes:
+      - /etc/concurro/backoffice:/etc/concurro/backoffice:ro
+      - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
+      - /srv/concurro-backoffice:/srv/concurro-backoffice:ro
+    networks:
+      edge:
+        aliases:
+          - concurro-backoffice
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/health', timeout=5)"]
       interval: 60s
       timeout: 10s
     restart: unless-stopped

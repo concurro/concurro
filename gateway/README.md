@@ -16,9 +16,13 @@ The gateway runs from a Git clone; everything host-specific lives under `/etc` a
 | Gateway host override (state mounts, other host specifics) | `/etc/concurro/gateway/compose.host.yaml` |
 | Provider secrets (0600) | `/etc/concurro/gateway/secrets.env` |
 | The service's operator token (0600) | `/etc/concurro/gateway/exchange.env`, as `EXCHANGE_OPERATOR_TOKEN` |
-| Gateway state | `/var/lib/concurro/gateway/{inference,exchange}` |
+| Gateway state | `/var/lib/concurro/gateway/{inference,exchange,vault}` |
+| Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
+| Backoffice settings and OAuth client secret (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, `client-secret` (see `backoffice/README.md`) |
+| Backoffice web app (static build) | `/srv/concurro-backoffice` |
+| Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Edge Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
 | Edge certificate | `/etc/edge/tls`, refreshed by `edge/renewal-hook.sh` |
@@ -31,6 +35,55 @@ The service reaches the exchange's operator API at the same base URL with the op
 token; runner jobs reach it with their OIDC token and then their session's runner token.
 The service's image holds the clone's commit, which it serves; runner sessions must run
 the same commit, so deploy the service and the `deployed` workflow ref together. Ordinary `main` pushes do not change the deployed release.
+
+## Credentials vault
+
+[`vault/`](vault/vault.py) stores per-user provider credentials
+([proposal §5](../docs/proposals/per-user-credentials.md#5-vault)). It has no Caddy route
+and publishes no port: other `edge` services, such as the backoffice API, reach it as
+`http://concurro-vault:8090`. Every request except `GET /health` carries
+`Authorization: Bearer <GitHub user token>`; the vault resolves the user with
+`GET https://api.github.com/user` (cached for five minutes by token SHA-256) and answers
+401 for a rejected token.
+
+| Request | Result |
+| ---- | ---- |
+| `GET /credentials` | `[{route, status, fingerprint, version, updated}]`, latest version per route |
+| `PUT /credentials/{route}` `{"secret": "..."}` | Validates with the provider, stores a new version, returns its entry; 422 if rejected, 502 if the provider gives no verdict |
+| `DELETE /credentials/{route}` | Marks it `revoked` and destroys its ciphertext; returns its entry |
+| `GET /health` | `{"status": "ok"}` |
+
+Routes are `anthropic-api-key` and `openai-api-key`. `status` is `valid`, `invalid` or
+`revoked`; `fingerprint` is the secret's last 4 characters and the first 8 hex characters
+of its SHA-256. Secrets are never returned or logged. Each version is sealed with its own
+AES-256-GCM data key, which the master key wraps; only the latest version keeps
+ciphertext. Records live in SQLite (WAL) at `/data/vault.db`. Injecting stored
+credentials into agentgateway is not implemented yet.
+
+The vault refuses to start unless its master key file holds 64 hex characters and is a
+regular file owned by uid 65532 with no group or other access. Losing the key loses every
+stored secret, so back it up with owner-only access. Create it and the state directory
+once, before the first `gw up -d`:
+
+```bash
+sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/concurro/gateway/vault-master-key'
+sudo chown 65532:65532 /etc/concurro/gateway/vault-master-key
+sudo chmod 0400 /etc/concurro/gateway/vault-master-key
+sudo install -d -m 0700 -o 65532 -g 65532 /var/lib/concurro/gateway/vault
+```
+
+Mount that state directory in `compose.host.yaml` as the other gateway state:
+
+```yaml
+services:
+  vault:
+    volumes:
+      - /var/lib/concurro/gateway/vault:/data
+```
+
+`VAULT_LISTEN`, `VAULT_STATE_DIR` and `VAULT_MASTER_KEY_FILE` are set in
+[`compose.yaml`](compose.yaml); the key file is mounted read-only at
+`/run/secrets/vault-master-key`.
 
 ## Target and App prerequisites
 
@@ -249,6 +302,7 @@ svc exec service python3 -m service --settings /etc/concurro/service/settings.js
 svc logs -f service
 gw exec -T exchange python3 -I /app/exchange.py list
 gw exec -T exchange python3 -I /app/exchange.py turns
+gw ps vault
 ```
 
 An end-to-end pilot should show native setup and model turns, a fork branch link, an

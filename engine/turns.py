@@ -35,6 +35,9 @@ MAX_RETAINED = 24 * 1024 * 1024
 # Transport/memory bounds, independent of operator file-count policy. Together with the
 # base64 retained archive these leave room inside the exchange's 48 MiB result envelope.
 MAX_EXTRACT_BYTES = 8 * 1024 * 1024
+# A fresh turn's diagnostics transcript (base64), kept small so results stay well inside the
+# exchange's shared body budget; a larger one is dropped, never the result.
+MAX_TRANSCRIPT = 8 * 1024 * 1024
 MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
 # Codex's regenerable state (extracted marketplaces, plugin syncs, catalogs, diagnostic logs),
 # relative to the retained root; resuming needs only its transcript and thread state.
@@ -246,6 +249,15 @@ def pack(directory):
     return base64.b64encode(data).decode()
 
 
+def transcript(directory):
+    """A fresh turn's CLI homes and scratch files for diagnostics, or None when too large to send."""
+    try:
+        archive = pack(directory)
+    except TurnError:
+        return None
+    return archive if len(archive) <= MAX_TRANSCRIPT else None
+
+
 def largest(directory, count=5):
     """The biggest archived entries two levels down, by escaped path and size, to diagnose an oversized archive."""
     root = Path(directory)
@@ -402,6 +414,8 @@ def execute(turn, key, mirror, root, stopped=None):
             "workspace": None,
             "retained": pack(root / "retained") if session else None,
         }
+        if not session:
+            reply["transcript"] = transcript(root / "scratch")
         if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
             reply["termination_reason"] = _termination(code, stopped)
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)
