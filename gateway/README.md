@@ -30,7 +30,8 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Bundled edge route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
-| Bundled edge certificate | `/etc/edge/tls/{fullchain,privkey}.pem` |
+| Bundled edge certificates | `/etc/edge/tls/{fullchain,privkey}.pem`; a domain name's in `/etc/edge/tls/<name>/` |
+| Bundled edge domain sites | `/etc/edge/domains/<name>.caddy` |
 
 The gateway joins the external `edge` network as `concurro-gateway`, the service as
 `concurro-service`; neither publishes ports. Clients use `https://<host>/concurro` as
@@ -573,7 +574,7 @@ in `edge/compose.yaml`, preserving host-specific networks, ports and mounts. Run
 restarts the shared proxy; Concurro's services and saved state remain in place.
 
 ```bash
-sudo install -d /etc/edge/sites
+sudo install -d /etc/edge/sites /etc/edge/domains
 sudo install -d -m 0750 /etc/edge/tls
 sudo install -m 0644 ~/concurro/gateway/edge/compose.yaml ~/concurro/gateway/edge/Caddyfile /etc/edge/
 sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.caddy
@@ -582,8 +583,8 @@ sudo docker compose -f /etc/edge/compose.yaml up -d
 
 Put `fullchain.pem` and `privkey.pem` in `/etc/edge/tls` first.
 [`edge/renewal-hook.sh`](edge/renewal-hook.sh) is a certbot deploy hook that copies a renewed
-certificate there and reloads Caddy. It acts only on the certbot certificate named in
-`/etc/edge/certificate-name`:
+certificate there and reloads Caddy. It acts only on the certbot certificates listed in
+`/etc/edge/certificate-name`, one per line; the first is the default certificate:
 
 ```bash
 echo CERTIFICATE_NAME | sudo tee /etc/edge/certificate-name
@@ -600,3 +601,22 @@ sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.
 sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile
 sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force
 ```
+
+### Domain names
+
+The default certificate covers the host's IP address. A domain name, with its DNS `A` record
+pointing at the host, gets its own certbot certificate and a site file that serves the same
+routes. Certbot uses port 80, which the edge leaves free. For `NAME`:
+
+```bash
+sudo certbot certonly --standalone -d NAME
+echo NAME | sudo tee -a /etc/edge/certificate-name
+sudo env RENEWED_LINEAGE=/etc/letsencrypt/live/NAME /etc/letsencrypt/renewal-hooks/deploy/60-edge
+printf 'NAME {\n\ttls /tls/NAME/fullchain.pem /tls/NAME/privkey.pem\n\n\timport routes\n}\n' | sudo tee /etc/edge/domains/NAME.caddy
+sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile
+sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force
+```
+
+An edge installed before domain sites existed needs the current `Caddyfile`, `compose.yaml`
+and hook first, and `sudo docker compose -f /etc/edge/compose.yaml up -d` to mount
+`/etc/edge/domains`.

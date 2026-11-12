@@ -1,6 +1,7 @@
 # The host's shared HTTPS entry point. Services join the `edge` network and add a route
-# file to ${EDGE_ETC}/sites; none publishes ports of its own. Installed as
-# /etc/edge/compose.yaml beside the Caddyfile; see gateway/README.md.
+# file to ${EDGE_ETC}/sites; none publishes ports of its own. Domain names get a site file
+# in ${EDGE_ETC}/domains. Installed as /etc/edge/compose.yaml beside the Caddyfile; see
+# gateway/README.md.
 name: edge
 
 services:
@@ -11,6 +12,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${EDGE_ETC:-/etc/edge}/sites:/etc/caddy/sites:ro
+      - ${EDGE_ETC:-/etc/edge}/domains:/etc/caddy/domains:ro
       - ${EDGE_ETC:-/etc/edge}/tls:/tls:ro
       - caddy-data:/data
     networks:

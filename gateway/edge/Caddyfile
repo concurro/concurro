@@ -1,16 +1,24 @@
-# The host's shared HTTPS entry point: one Caddy on 443 with the host's Let's Encrypt IP
-# certificate. Each service contributes a route file in the sites directory; anything
-# no route claims gets 404. Port 80 stays free for certbot.
+# The host's shared HTTPS entry point: one Caddy on 443 serving certbot certificates. Each
+# service contributes a route file in the sites directory; every address serves the same
+# routes, and anything no route claims gets 404. Port 80 stays free for certbot.
 {
 	auto_https off
 }
 
-:443 {
-	tls /tls/fullchain.pem /tls/privkey.pem
-
+(routes) {
 	import /etc/caddy/sites/*.caddy
 
 	handle {
 		respond 404
 	}
 }
+
+# The host's IP address, and any name without a site of its own.
+:443 {
+	tls /tls/fullchain.pem /tls/privkey.pem
+
+	import routes
+}
+
+# A site per domain name, each with its own certificate (see gateway/README.md).
+import /etc/caddy/domains/*.caddy
