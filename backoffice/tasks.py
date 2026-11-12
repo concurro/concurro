@@ -6,6 +6,7 @@ engine's audit checkpoint with `Checkpoints.load`, exactly as the controller doe
 
 import hashlib
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -29,6 +30,8 @@ STATE_ENTRIES = 256
 # Target configurations by fork, briefly.
 CONFIG_SECONDS = 120
 CONFIGS: dict[str, tuple[float, tuple[dict, str]]] = {}
+# The engine's task branches (`policy.py`): `concurro/issue-<number>-<digest>`.
+TASK_BRANCH = re.compile(r"concurro/issue-([1-9][0-9]*)-[0-9a-f]+")
 COMMANDS = ("start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
@@ -134,10 +137,57 @@ class Tasks:
 
     def listed(self, target, record: dict) -> list[dict]:
         tasks = []
+        pulls = self.pulls_by_issue(self.publication_repository(target))
         for repository in target.issue_repositories:
             for issue in self.access.task_issues(repository):
-                tasks.append(summary(repository, issue, record["mode"]))
+                task = summary(repository, issue, record["mode"])
+                if task["issue"] in pulls:
+                    task["pr"] = pulls[task["issue"]]
+                tasks.append(task)
         return sorted(tasks, key=lambda t: t["updatedAt"], reverse=True)
+
+    def task_config(self, target, repository: str) -> dict:
+        """The configuration the engine runs a task with (`service.worker.Worker.load`): the target's
+        own configuration, bound to the issue repository and the configured upstream and fork."""
+        config, _ = self.config(target.fork)
+        if not config:
+            raise TaskNotFound("the target's configuration can't be read")
+        return {**config, "repository": repository, "upstream": target.upstream, "fork": target.fork}
+
+    @staticmethod
+    def publication_repository(target) -> str:
+        """Where the engine opens pull requests: the configured upstream (`publication.pr_url`)."""
+        return target.upstream
+
+    def pulls_by_issue(self, repository: str) -> dict[int, dict]:
+        """Recent pull requests from task branches, by issue; an open one wins over closed ones.
+
+        One listing per target, without CI or line counts (a task view loads those).
+        """
+        try:
+            listing = self.access.get(repository, "pulls?state=all&sort=updated&direction=desc&per_page=100")
+        except NotFound:
+            return {}
+        found: dict[int, dict] = {}
+        for pull in listing:
+            match = TASK_BRANCH.fullmatch((pull.get("head") or {}).get("ref") or "")
+            if not match:
+                continue
+            issue, is_open = int(match[1]), pull.get("state") == "open"
+            if issue in found and (found[issue]["open"] or not is_open):
+                continue
+            found[issue] = {
+                "open": is_open,
+                "number": pull["number"],
+                "title": pull.get("title") or "",
+                "branch": pull["head"]["ref"],
+                "headSha": (pull["head"].get("sha") or "")[:7],
+                "ci": "none",
+                "additions": 0,
+                "deletions": 0,
+                "ready": is_open and not pull.get("draft"),
+            }
+        return {issue: {k: v for k, v in pull.items() if k != "open"} for issue, pull in found.items()}
 
     def overview(self) -> dict:
         targets, tasks = [], []
@@ -157,9 +207,7 @@ class Tasks:
 
     def state(self, repository: str, number: int) -> dict | None:
         target, _ = self.find_target(repository)
-        config, _ = self.config(target.fork)
-        if not config:
-            raise TaskNotFound("the target's configuration can't be read")
+        config = self.task_config(target, repository)
         github = self.access.engine(repository)
         comments = github.pages(f"issues/{number}/comments")
         author = Identities(config).author("state")
@@ -193,8 +241,7 @@ class Tasks:
         if state:
             task |= project(state, config, repository, issue)
             if state.get("pr"):
-                # PRs open where the engine publishes: `upstream` when configured, else the target repository.
-                task["pr"] = self.pull(config.get("upstream") or config.get("repository") or target.fork, state)
+                task["pr"] = self.pull(self.publication_repository(target), state)
         return {"task": task, "target": record}
 
     def pull(self, upstream: str, state: dict) -> dict:
