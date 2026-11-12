@@ -7,6 +7,10 @@ import logging
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import delegation
+from commands import CommandKind, parse as parse_command
+from sponsorship import hint as sponsor_hint
+
 from .observations import expected as comment_expectation
 
 ENROLLMENT = "concurro"
@@ -85,13 +89,40 @@ class Ingress:
             return 400, "malformed payload"
         if not keys:
             return 202, "ignored"
-        observation = event == "issue_comment" and self.ours(payload["comment"]["user"]["login"])
+        source = None
+        if event == "issue_comment":
+            previous = ((payload.get("changes") or {}).get("body") or {}).get("from")
+            comment = payload["comment"]
+            command = parse_command(comment.get("body") or "")
+            prior = parse_command(previous or "")
+            known = any(h["comment_id"] == comment.get("id") for h in self.registry.sponsor_sources(keys[0]))
+            if (
+                command
+                and command.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+                or prior
+                and prior.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+                or known
+                or payload["action"] == "edited"
+                and (command and command.kind == CommandKind.START or prior and prior.kind == CommandKind.START)
+                or self.ours(comment["user"]["login"])
+                and delegation.sponsorship_hint(comment.get("body") or "")
+            ):
+                source = sponsor_hint(comment, payload["action"], previous, (payload.get("sender") or {}).get("id"))
+        observation = event == "issue_comment" and (
+            source is not None or self.ours(payload["comment"]["user"]["login"])
+        )
         expectation = None
         if observation:
             previous = ((payload.get("changes") or {}).get("body") or {}).get("from")
             expectation = comment_expectation(payload["comment"], payload["action"], previous)
         if not self.registry.receive(
-            delivery, keys, event, ci=event in CI_EVENTS, observation=observation, expectation=expectation
+            delivery,
+            keys,
+            event,
+            ci=event in CI_EVENTS,
+            observation=observation,
+            expectation=expectation,
+            sponsorship_hint=source,
         ):
             return 200, "duplicate"
         return 202, "accepted"
@@ -174,12 +205,29 @@ class Ingress:
             or self.ours(user["login"])
         ):
             return []
-        if user["login"] != issue["user"]["login"] and comment.get("author_association") not in WRITER_ASSOCIATIONS:
+        command = parse_command(comment.get("body") or "")
+        previous = ((payload.get("changes") or {}).get("body") or {}).get("from", "")
+        prior = parse_command(previous or "")
+        known = any(
+            h["comment_id"] == comment.get("id") for h in self.registry.sponsor_sources((repository, issue["number"]))
+        )
+        sponsorship = (
+            command
+            and command.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+            or prior
+            and prior.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+            or known
+        )
+        if (
+            not sponsorship
+            and user["login"] != issue["user"]["login"]
+            and comment.get("author_association") not in WRITER_ASSOCIATIONS
+        ):
             return []
         key = (repository, issue["number"])
         labels = {item["name"] for item in issue["labels"]}
         command = comment["body"].startswith("/concurro ")
-        return [key] if command or self.tracked(key, labels) else []
+        return [key] if command or sponsorship or self.tracked(key, labels) else []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -189,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
         length = self.headers.get("Content-Length", "")
         if not length.isdecimal():
             return self.reply(411, "length required")
-        if self.path == "/actions":
+        if self.path in ("/actions", "/sponsorships"):
             return self.action(int(length))
         if int(length) > BODY_LIMIT:
             return self.reply(413, "payload too large")
@@ -213,7 +261,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply_json(413, {"error": "payload too large"})
         body = self.rfile.read(length)
         try:
-            status, payload = actions.handle(self.headers.get("Authorization", ""), body)
+            method = actions.sponsorships if self.path == "/sponsorships" else actions.handle
+            status, payload = method(self.headers.get("Authorization", ""), body)
         except Exception as error:
             log.warning("backoffice command failed: %s", type(error).__name__)
             status, payload = 503, {"error": "unavailable"}

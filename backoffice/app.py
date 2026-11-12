@@ -75,7 +75,12 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
-        return Tasks(settings, UserAccess(current.token, connection), current.user)
+        return Tasks(
+            settings,
+            UserAccess(current.token, connection),
+            current.user,
+            lambda repository: commands.sponsorships(current.token, repository),
+        )
 
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:
@@ -168,6 +173,16 @@ def create_app(
         turns = diagnostics.turns(f"{owner}/{repo}", issue)
         return {"task": view["task"], "turns": turns, "profiles": view["target"]["profiles"]}
 
+    @app.get("/api/repos/{owner}/{repo}/issues/{issue}/sponsorships")
+    def sponsorships(owner: str, repo: str, issue: int, current: Annotated[Session, Depends(session)]):
+        """Read visible pre-task issue sponsorship without inventing a checkpoint or task stage."""
+        repository = f"{owner}/{repo}"
+        reader = Tasks(settings, UserAccess(current.token, connection), current.user)
+        reader.find_target(repository)
+        reader.access.get(repository, f"issues/{issue}")
+        return commands.sponsorships(current.token, repository, issue)
+
+    @app.post("/api/repos/{owner}/{repo}/issues/{issue}/commands")
     @app.post("/api/tasks/{owner}/{repo}/{issue}/commands")
     def command(
         owner: str,

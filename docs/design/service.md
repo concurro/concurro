@@ -240,3 +240,14 @@ consumed calls and publication progress and use a compatible engine, not an olde
 Legacy `adopt`/`release` commands support old controller markers; they are not a supported
 host-execution fallback. Every session names the served engine commit, which its runner
 must run.
+
+
+## Org-funded sponsorship in shadow
+
+The service confirms explicit provider intent before enrollment and prospective slots after
+initialization; org credentials still pay every call. Configure target `credential_routes`
+and optional service `vault_metadata_url`/`vault_service_token_path` for one-time initiator
+availability. Missing history or metadata leaves shadow bookkeeping pending. The private
+`/sponsorships` API supplies issue views through existing user-authenticated command transport.
+See [phase 1](../proposals/per-user-credentials/phase-1.md) for source ordering, migrations,
+separate service-token provisioning and rollback.

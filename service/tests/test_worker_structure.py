@@ -252,6 +252,7 @@ class WorkerHelperTests(unittest.TestCase):
         worker.gateway = SimpleNamespace(stop=lambda *args: None)
         worker.registry = SimpleNamespace(acknowledge=Mock())
         worker.delegation_key = None
+        worker.sponsorship = None
         worker.make_executor = lambda *args: None
         worker.agents = lambda *args, **kwargs: None
         worker.settings = SimpleNamespace(state_dir=Path("state"), controller_id="controller")

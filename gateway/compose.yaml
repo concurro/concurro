@@ -61,9 +61,11 @@ services:
       VAULT_LISTEN: 0.0.0.0:8090
       VAULT_STATE_DIR: /data
       VAULT_MASTER_KEY_FILE: /run/secrets/vault-master-key
+      VAULT_SERVICE_TOKEN_FILE: /run/secrets/vault-service-token
     volumes:
       # Owner-only (uid 65532, mode 0400); the vault refuses to start otherwise.
       - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/vault-master-key:/run/secrets/vault-master-key:ro
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/vault-service-token:/run/secrets/vault-service-token:ro
       - vault-data:/data
     networks:
       edge:

@@ -45,6 +45,10 @@ class Operator:
     def __init__(self, gateway, token):
         self.gateway, self.token = gateway, token
 
+    def sponsorship(self, request):
+        """Publish an idempotent task/provider ownership transition on the private operator channel."""
+        return call(self.gateway, self.token, "POST", "operator/sponsorship", request)
+
     def end(self, session):
         call(self.gateway, self.token, "POST", f"operator/sessions/{session}/end", {})
 

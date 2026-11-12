@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 from functools import cached_property
 
+import delegation
 import private
 from agents import Agents, RunnerExecutor
 from checkpoint_health import sync_checkpoint_health
@@ -31,6 +32,7 @@ from .github_reads import (
     head as head,
     runner_claims as runner_claims,
 )
+from .ingress import WRITER_ASSOCIATIONS
 from .runner_diagnostics import runner_termination as runner_termination
 from .settings import CHECKOUT
 from .target_loader import Target as Target, load_target as load_target
@@ -109,6 +111,7 @@ class Worker:
         executor=None,
         diagnostics=None,
         delegation_key=None,
+        sponsorship=None,
     ):
         """`reader(repository)` returns a read transport; `agents` and `executor` are injectable.
 
@@ -126,6 +129,7 @@ class Worker:
         self.report_cache = Cache()
         self.diagnostics = diagnostics
         self.delegation_key = delegation_key
+        self.sponsorship = sponsorship
 
     def _operator(self):
         """Read the operator credential when starting runner authorization or cleanup."""
@@ -137,11 +141,35 @@ class Worker:
 
         A comment posted between the two reads was processed, so it must not look new afterwards;
         one posted after the controller's read was not, so it still wakes the task.
+        Observed projections settle scheduling; checkpoint fields separately record adopted consent.
         """
         comments = getattr(controller, "consumed_comments", None)
         if snapshot is None or comments is None:
             return snapshot
-        return {**snapshot, "comments": self.reconciler.comment_input(comments)}
+        consumed = {**snapshot, "comments": self.reconciler.comment_input(comments)}
+        projection = getattr(controller, "shadow_projection", None)
+        if projection is not None and ("sponsorship" in snapshot or projection.get("facts") or controller.state):
+            consumed["sponsorship"] = {key: projection[key] for key in ("revision", "source_revision", "status")}
+        if projection is not None and not controller.state:
+            ordinary = False
+            for comment in comments:
+                body = comment.get("body") or ""
+                login = (comment.get("user") or {}).get("login")
+                if (
+                    body.startswith("/concurro ")
+                    and body.split(" ", 2)[1] not in ("sponsor", "withdraw")
+                    and (
+                        login == controller.issue["user"]["login"]
+                        or comment.get("author_association") in WRITER_ASSOCIATIONS
+                        or controller.permissions.get(login)
+                    )
+                    or delegation.marked(body)
+                    and not delegation.sponsorship_hint(body)
+                ):
+                    ordinary = True
+                    break
+            consumed["_sponsorship_discovery"] = not ordinary
+        return consumed
 
     def _acknowledge(self, key, snapshot, controller):
         """Acknowledge the pre-tick input with the controller's resulting stage."""
@@ -361,6 +389,7 @@ class Worker:
                         key, target.config["upstream"], target.config["fork"], target.config_sha
                     ),
                     delegation_key=self.delegation_key,
+                    sponsorship=self.sponsorship,
                 )
                 outcome = controller.advance(key[1])
                 if controller.state:

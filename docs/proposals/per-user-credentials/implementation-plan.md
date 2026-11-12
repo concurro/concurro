@@ -1,6 +1,7 @@
 # Per-user credentials: implementation plan
 
-**Status: proposed implementation companion; production feature not implemented.**
+**Status: org-funded shadow sponsorship implemented; contributed inference remains proposed.**
+See [phase 1](phase-1.md) for current runtime/API behavior and migration boundaries.
 The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
 remain pending by user scope.
 This supplies the execution plan for the [epic](../per-user-credentials.md), including

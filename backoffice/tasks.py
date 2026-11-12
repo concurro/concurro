@@ -19,6 +19,7 @@ from report_store import Cache
 from vocab import Stage
 
 from .auth import User
+from .commands import CommandError
 from .github import UserAccess
 from .settings import Settings
 
@@ -32,7 +33,7 @@ CONFIG_SECONDS = 120
 CONFIGS: dict[str, tuple[float, tuple[dict, str]]] = {}
 # The engine's task branches (`policy.py`): `concurro/issue-<number>-<digest>`.
 TASK_BRANCH = re.compile(r"concurro/issue-([1-9][0-9]*)-[0-9a-f]+")
-COMMANDS = ("start", "approve", "retry", "resume", "stop", "invalidate")
+COMMANDS = ("sponsor", "withdraw", "start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
@@ -61,6 +62,10 @@ def iso_epoch(stamp) -> str | None:
 
 def command_argument(command: str, argument: str | None, state) -> str | None:
     """The command's argument: the plan to approve (the current one unless given) or a revision grant."""
+    if command in ("sponsor", "withdraw"):
+        if argument not in ("openai", "anthropic") and not (command == "sponsor" and argument is None):
+            raise ValueError("unknown sponsorship provider")
+        return argument
     if command == "approve":
         plan_id = argument or (state() or {}).get("plan_id")
         if not plan_id:
@@ -74,8 +79,10 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 class Tasks:
     """Views for one signed-in user; every GitHub read uses their token."""
 
-    def __init__(self, settings: Settings, access: UserAccess, user: User):
+    def __init__(self, settings: Settings, access: UserAccess, user: User, sponsorships=None):
         self.settings, self.access, self.user = settings, access, user
+        self.sponsorships = sponsorships
+        self.issue_intents = []
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
 
@@ -139,8 +146,46 @@ class Tasks:
         tasks = []
         pulls = self.pulls_by_issue(self.publication_repository(target))
         for repository in target.issue_repositories:
-            for issue in self.access.task_issues(repository):
+            issues = self.access.task_issues(repository)
+            try:
+                projections = (
+                    {item["issue"]: item for item in self.sponsorships(repository).get("issues", [])}
+                    if self.sponsorships
+                    else {}
+                )
+            except CommandError:
+                projections = {}
+                record["sponsorshipStatus"] = "unavailable"
+            for number in projections.keys() - {i["number"] for i in issues}:
+                try:
+                    issues.append(self.access.get(repository, f"issues/{number}"))
+                except NotFound:
+                    pass
+            for issue in issues:
                 task = summary(repository, issue, record["mode"])
+                if issue["number"] in projections:
+                    task["sponsorships"] = projections[issue["number"]]
+                    if (
+                        not stage_label(issue)
+                        and "concurro" not in {label["name"] for label in issue.get("labels", [])}
+                        and not projections[issue["number"]].get("task")
+                    ):
+                        self.issue_intents.append(
+                            {
+                                key: task[key]
+                                for key in (
+                                    "owner",
+                                    "repo",
+                                    "issue",
+                                    "title",
+                                    "author",
+                                    "labels",
+                                    "updatedAt",
+                                    "sponsorships",
+                                )
+                            }
+                        )
+                        continue
                 if task["issue"] in pulls:
                     task["pr"] = pulls[task["issue"]]
                 tasks.append(task)
@@ -193,12 +238,12 @@ class Tasks:
             targets.append(record)
             tasks += self.listed(target, record)
         tasks.sort(key=lambda t: t["updatedAt"], reverse=True)
-        return {"targets": targets, "tasks": tasks, "activity": []}
+        return {"targets": targets, "tasks": tasks, "issues": self.issue_intents, "activity": []}
 
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        return {"target": record, "tasks": self.listed(target, record), "runs": []}
+        return {"target": record, "tasks": self.listed(target, record), "issues": self.issue_intents, "runs": []}
 
     # One task
 

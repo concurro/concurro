@@ -121,6 +121,13 @@ def _budget_int(value, low, message):
 def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
     pr_template.validate(config.get("pr_template_sections"))
+    if "credential_routes" in config:
+        import sponsorship
+
+        try:
+            sponsorship.selected_routes(config)
+        except (ValueError, TypeError, KeyError):
+            raise Blocked("invalid profile credential routes") from None
     if type(config.get("conventional_commits", False)) is not bool:
         raise Blocked("conventional_commits must be a boolean")
     removed = {
@@ -330,6 +337,7 @@ class Controller:
         resume_target=None,
         resume_config=None,
         delegation_key=None,
+        sponsorship=None,
     ):
         """Inject transports so complete lifecycles can be tested without credentials.
 
@@ -342,6 +350,7 @@ class Controller:
         self.report_cache = report_cache
         self.resume_target = resume_target
         self.delegation_key = delegation_key
+        self.sponsorship = sponsorship
         self.resume_config = resume_config or (lambda state: None)
         self.comment_id = None
         self.checkpoints = None
@@ -802,6 +811,13 @@ class Controller:
             operation["uncertain"] = self.next_uncertain_count(operation)
         self.require_uncertain_budget(operation["uncertain"])
         operation.pop("timing", None)
+        if self.sponsorship:
+            import sponsorship
+
+            self.sponsorship.before_attempt(self)
+            operation["shadow_sponsorship"] = sponsorship.attribution(
+                self.state, self.config, operation["provider"], operation["stage"]
+            )
         operation.update(
             attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started", request=digest(context)
         )
@@ -840,7 +856,11 @@ class Controller:
         actor = event.get("actor") if event else None
         if not actor or event["event"] != "labeled" or not self.permitted(actor["login"]):
             return None
-        return {"actor": actor["login"], "event": event["id"]}
+        return {
+            "actor": actor["login"],
+            "event": event["id"],
+            **({"actor_id": actor["id"], "at": event.get("created_at")} if actor.get("id") else {}),
+        }
 
     def issue_digest(self):
         """Bind issue identity to its title and body, excluding discussion and metadata."""
@@ -892,6 +912,8 @@ class Controller:
         self.state.update({key: self.config[key] for key in ("upstream", "fork", "config_sha") if key in self.config})
         if "agents" in self.config:
             self.state["model_configuration"] = {key: deepcopy(self.config[key]) for key in ("models", "agents")}
+        if self.sponsorship:
+            self.sponsorship.initialize(self, comments, mode, command_id, enrollment)
         self.state["prior_outcomes"] = self.retrieve_outcomes()
         self.welcome()
         self.save()
@@ -1176,8 +1198,12 @@ class Controller:
     def refresh_autonomous(self, comments):
         """Resume clarification or invalidate stale inputs without resetting any budget."""
         state = self.state
-        if self.enrollment() != state["enrollment"]:
+        current, saved = self.enrollment(), state["enrollment"]
+        fields = ("actor_id", "event") if saved and saved.get("actor_id") else ("actor", "event")
+        if not current or not saved or any(current.get(k) != saved.get(k) for k in fields):
             raise Blocked("autonomous enrollment removed, changed or no longer authorized")
+        if not saved.get("actor_id") and current.get("actor_id"):
+            state["enrollment"] = current
         requirements = self.requirements(comments)
         changed = requirements != state["requirements"]
         if not changed:
@@ -1612,7 +1638,7 @@ class Controller:
             command = commands.parse(comment["body"])
             if command is None:
                 continue
-            if not self.permitted(comment["user"]["login"]):
+            if command.kind is not commands.CommandKind.WITHDRAW and not self.permitted(comment["user"]["login"]):
                 continue
             action = handler.dispatch(command, comment, comments)
             if action is commands.LoopAction.CONTINUE:
@@ -2305,6 +2331,8 @@ class Controller:
         self.issue = self.gh.repo(f"issues/{number}")
         if "pull_request" in self.issue:
             return False
+        if self.sponsorship:
+            self.sponsorship.begin(self)
         comments = self.consumed_comments = self.gh.pages(f"issues/{number}/comments")
         self.load(comments)
         # Verified backoffice commands stand in for their writer's own command comments.
@@ -2324,6 +2352,8 @@ class Controller:
         ):
             self.resume_config(self.state)
             return True
+        if self.sponsorship:
+            self.sponsorship.sync(self, self.consumed_comments)
         reconciled = self._reconcile_external()
         if reconciled is not None:
             return reconciled

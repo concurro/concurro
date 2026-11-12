@@ -10,14 +10,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+import delegation
+import sponsorship
 from controller import Outcome
 from policy import digest
 
 from .errors import RegistryError, RegistryFailure
-from .observations import expected
+from .observations import expected, satisfied
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -33,8 +35,18 @@ WEBHOOK_RECOVERY = "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, check
 OBSERVATIONS = """CREATE TABLE observations (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,
     due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
+SPONSOR_SOURCES = """CREATE TABLE IF NOT EXISTS issue_sponsor_sources (
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,
+    PRIMARY KEY(repository,issue,revision))"""
+SPONSOR_PROJECTIONS = """CREATE TABLE IF NOT EXISTS issue_sponsorships (
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,
+    confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))"""
 SCHEMA = (
-    OBSERVATIONS
+    SPONSOR_SOURCES
+    + ";"
+    + SPONSOR_PROJECTIONS
+    + ";"
+    + OBSERVATIONS
     + ";"
     + WEBHOOK_RECOVERY
     + ";"
@@ -178,6 +190,8 @@ def _migrate_v2(db):
     db.execute(REVIEW_INTENTS)
     db.execute(WEBHOOK_RECOVERY)
     db.execute(OBSERVATIONS)
+    db.execute(SPONSOR_SOURCES)
+    db.execute(SPONSOR_PROJECTIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -188,6 +202,8 @@ def _migrate_v3(db):
     db.execute(REVIEW_INTENTS)
     db.execute(WEBHOOK_RECOVERY)
     db.execute(OBSERVATIONS)
+    db.execute(SPONSOR_SOURCES)
+    db.execute(SPONSOR_PROJECTIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -198,8 +214,8 @@ def _mutation_record(row):
 
 
 def without_stage(snapshot):
-    """Remove saved stage metadata while retaining all observed input and CI fields."""
-    return {k: v for k, v in snapshot.items() if k != "_stage"}
+    """Remove private scheduling metadata while retaining all observed input and CI fields."""
+    return {k: v for k, v in snapshot.items() if k not in ("_stage", "_sponsorship_discovery")}
 
 
 def queue(db, key, cause, due_at):
@@ -302,12 +318,15 @@ class Registry:
                 _migrate_v2(db)
             elif meta["schema"] == "3":
                 _migrate_v3(db)
-            elif meta["schema"] not in ("4", str(SCHEMA_VERSION)):
+            elif meta["schema"] not in ("4", "5", str(SCHEMA_VERSION)):
                 raise RegistryError("registry identity or schema version mismatch")
-            if meta["schema"] == "4":
+            if meta["schema"] in ("4", "5"):
                 db.execute("BEGIN IMMEDIATE")
-                db.execute(WEBHOOK_RECOVERY)
-                db.execute(OBSERVATIONS)
+                if meta["schema"] == "4":
+                    db.execute(WEBHOOK_RECOVERY)
+                    db.execute(OBSERVATIONS)
+                db.execute(SPONSOR_SOURCES)
+                db.execute(SPONSOR_PROJECTIONS)
                 db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
                 db.execute("COMMIT")
         except (RegistryError, sqlite3.Error) as error:
@@ -382,13 +401,15 @@ class Registry:
             db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, self.clock()))
             return False
 
-    def receive(self, delivery_id, keys, event, ci=False, observation=False, expectation=None):
+    def receive(self, delivery_id, keys, event, ci=False, observation=False, expectation=None, sponsorship_hint=None):
         """Commit the delivery receipt and every affected task's wakeup together."""
         with self.transaction() as db:
             if db.execute("SELECT 1 FROM deliveries WHERE id = ?", (delivery_id,)).fetchone():
                 return False
             now = self.clock()
             for key in keys:
+                if sponsorship_hint is not None:
+                    self._sponsor_hint(db, key, sponsorship_hint)
                 if observation:
                     queue_observation(db, key, now, expectation)
                 elif ci:
@@ -398,9 +419,112 @@ class Registry:
             db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, now))
         return True
 
+    def _sponsor_hint(self, db, key, source):
+        """Commit a new source revision and invalidate its projection within the receipt transaction."""
+        result = db.execute(
+            "INSERT OR IGNORE INTO issue_sponsor_sources VALUES (?,?,?,?)",
+            (*key, source["revision"], json.dumps(source, sort_keys=True)),
+        )
+        if result.rowcount:
+            db.execute(
+                "INSERT INTO issue_sponsorships VALUES (?,?,1,0,NULL) ON CONFLICT(repository,issue) DO UPDATE SET source_revision=source_revision+1,confirmed=0",
+                key,
+            )
+
+    def sponsorship(self, key):
+        """Current issue projection, with a local source fence even before a task exists."""
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT source_revision,confirmed,document FROM issue_sponsorships WHERE repository=? AND issue=?", key
+            ).fetchone()
+        document = json.loads(row[2]) if row and row[2] else {}
+        return {
+            **document,
+            "source_revision": row[0] if row else 0,
+            "status": "confirmed" if row and row[1] else "provisional",
+        }
+
+    def sponsor_sources(self, key):
+        """Immutable webhook revision facts retained for edits/deletions and source reconstruction."""
+        with self.transaction() as db:
+            return [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT source FROM issue_sponsor_sources WHERE repository=? AND issue=? ORDER BY revision", key
+                )
+            ]
+
+    def sponsor_issues(self, repository, active=False):
+        """Poll facts/live tasks; show provisional hints until confirmation, retaining direct history reads."""
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT s.issue,s.document,EXISTS(SELECT 1 FROM outcomes o "
+                "WHERE o.repository=s.repository AND o.issue=s.issue AND o.kind='terminal'),s.confirmed "
+                "FROM issue_sponsorships s WHERE s.repository=? ORDER BY s.issue",
+                (repository,),
+            ).fetchall()
+            result = []
+            for issue, document, terminal, confirmed in rows:
+                value = json.loads(document or "{}")
+                facts, task = value.get("facts"), value.get("task")
+                visible = (
+                    not terminal and bool(facts or task)
+                    if active
+                    else bool(facts or not terminal and task or not confirmed)
+                )
+                if visible:
+                    result.append(issue)
+            return result
+
+    def confirm_sponsorship(self, key, revision, document, comments):
+        """Publish only a complete read at the captured local source revision, atomically."""
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT source_revision,document FROM issue_sponsorships WHERE repository=? AND issue=?", key
+            ).fetchone()
+            current = row[0] if row else 0
+            job = db.execute("SELECT expectations FROM observations WHERE repository=? AND issue=?", key).fetchone()
+            if current != revision or job and not satisfied(json.loads(job[0]), comments):
+                return False
+            if row is None and not document.get("facts"):
+                return True
+            old = json.loads(row[1]) if row and row[1] else {}
+            if old.get("task"):
+                document = {**document, "task": old["task"]}
+            db.execute(
+                "INSERT INTO issue_sponsorships VALUES (?,?,?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET confirmed=excluded.confirmed,document=excluded.document",
+                (*key, current, int(document.get("history_complete", True)), json.dumps(document, sort_keys=True)),
+            )
+            return True
+
+    def record_shadow(self, key, state, projection=None):
+        """Expose checkpoint-owned slots and pending acknowledgments without opening task state in the BFF."""
+        with self.transaction() as db:
+            row = db.execute("SELECT document FROM issue_sponsorships WHERE repository=? AND issue=?", key).fetchone()
+            document = json.loads(row[0]) if row and row[0] else dict(projection or {})
+            document["task"] = {
+                "funding": "org",
+                "slots": state.get("sponsorships", {}),
+                "pending": list(state.get("pending_sponsorships", {})),
+                "initialization": state.get("funding_initialization"),
+                "initialization_pending": state.get("funding_initialization_pending"),
+                "status": state.get("sponsorship_status", "pending"),
+            }
+            db.execute(
+                "INSERT INTO issue_sponsorships VALUES (?,?,?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET document=excluded.document",
+                (
+                    *key,
+                    document.get("source_revision", 0),
+                    int(document.get("status") == "confirmed"),
+                    json.dumps(document, sort_keys=True),
+                ),
+            )
+
     def request_observation(self, key, comment=None, action="created"):
         """Durably request an uncached observation, including after posting a delegated command."""
         with self.transaction() as db:
+            if comment and delegation.sponsorship_hint(comment.get("body") or ""):
+                self._sponsor_hint(db, key, sponsorship.hint(comment, action))
             queue_observation(db, key, self.clock(), expected(comment, action) if comment is not None else None)
 
     def observations(self):
@@ -691,8 +815,8 @@ class Registry:
     def observe(self, key, snapshot):
         """Enqueue a polled snapshot if it is new input; return whether it was.
 
-        New means neither acknowledged nor deferred; a terminal task wakes only when its
-        issue is reopened. The check and the enqueue share one transaction, so a tick that
+        New means neither acknowledged nor deferred; a terminal task wakes for reopening
+        or a newer durable consent source revision. The check and the enqueue share one transaction, so a tick that
         defers or acknowledges this input meanwhile cannot leave a stale poll queued.
         """
         snapshot = json.loads(json.dumps(snapshot))
@@ -704,7 +828,9 @@ class Registry:
                     acknowledged is not None
                     and acknowledged["issue"]["state"] == "closed"
                     and snapshot["issue"]["state"] == "open"
-                )
+                ) or (snapshot.get("sponsorship") or {}).get("source_revision", 0) > (
+                    (acknowledged or {}).get("sponsorship") or {}
+                ).get("source_revision", 0)
             else:
                 deferred = stored(db, "deferred", key)
                 new = human_input(snapshot) != human_input(acknowledged) and human_input(snapshot) != human_input(

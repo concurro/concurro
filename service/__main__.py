@@ -27,6 +27,7 @@ from .reconciler import Reconciler
 from .registry import Registry
 from .scheduler import Scheduler
 from .settings import CHECKOUT, SettingsError
+from .shadow import Metadata, Shadow
 from .targets import verify
 from .transport import Transport
 from .webhook_recovery import Recovery
@@ -109,20 +110,26 @@ class Daemon:
             diagnostics=diagnostics,
             delegation_key=delegation_key,
         )
+        worker.sponsorship = Shadow(
+            self.registry,
+            readers.__getitem__,
+            worker._operator,
+            Metadata(settings.vault_metadata_url, settings.vault_service_token_path)
+            if settings.vault_metadata_url
+            else None,
+            delegation_key,
+        )
         self.reconciler.cleanup = worker.cleanup_runners
         self.recovery = Recovery(self.identity, self.registry, self.reconciler, installations)
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
-        actions = (
-            Actions(
-                delegation_key,
-                self.registry,
-                readers.__getitem__,
-                writers.__getitem__,
-                issue_repositories,
-            )
-            if delegation_key
-            else None
+        actions = Actions(
+            delegation_key,
+            self.registry,
+            readers.__getitem__,
+            writers.__getitem__,
+            issue_repositories,
+            projection=worker.sponsorship.view,
         )
         self.http = ingress.server(
             ingress.Ingress(

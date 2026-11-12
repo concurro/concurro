@@ -77,7 +77,7 @@ def legacy_state(body):
         if not closing or ">" in value:
             raise ValueError("Invalid audit data comment")
         payload = json.loads(value)
-        if payload["state"]["version"] != report_store.FORMAT:
+        if payload["state"]["version"] not in report_store.READ_FORMATS:
             raise ValueError("Invalid audit encoding version")
         return payload
     return json.loads(body.rsplit(STATE_PREFIX, 1)[1].rsplit("\n```", 1)[0])
@@ -256,10 +256,17 @@ class Checkpoints:
         """Build the repository-bound envelope with commitments to detached evidence."""
         compact, inventories = file_inventory.pack(state) if external else (state, [])
         compact, detached = report_store.packed(compact) if external else (compact, [])
-        # The wire version changes; the engine's in-memory v2 state contract stays unchanged.
+        # Shadow records use v8, including pending org-funded state; bare writers retain v7.
+        wire = (
+            report_store.SPONSORSHIP_FORMAT
+            if any(
+                k.startswith(("sponsorship", "funding_initialization")) or k == "pending_sponsorships" for k in state
+            )
+            else report_store.FORMAT
+        )
         payload = {
             "repository": self.config["repository"],
-            "state": {**compact, "version": report_store.FORMAT} if external else compact,
+            "state": {**compact, "version": wire} if external else compact,
         }
         if inventories:
             payload["file_inventories"] = inventories
@@ -296,14 +303,14 @@ class Checkpoints:
         payload = self.audit_payload(state, bind_plan, external)
         body = self.render_audit(payload, legacy=not external)
         if external and len(body.encode()) > target:
-            payload["state"]["version"] = report_store.FORMAT
+            wire = payload["state"]["version"]
             key = digest(payload)
             if prepare:
                 self.reports.put(payload)
             body = self.render_audit(
                 {
                     "repository": self.config["repository"],
-                    "state": {"version": report_store.FORMAT, "issue": self.issue},
+                    "state": {"version": wire, "issue": self.issue},
                     "audit_data": {"digest": key, "artifacts": self.reports.numbers.get(key, [])},
                 }
             )
@@ -325,6 +332,7 @@ class Checkpoints:
                 BATCH_FORMAT,
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
+                report_store.SPONSORSHIP_FORMAT,
                 report_store.FORMAT,
             ):
                 raise ValueError()
@@ -333,6 +341,7 @@ class Checkpoints:
             if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
+                report_store.SPONSORSHIP_FORMAT,
                 report_store.FORMAT,
             ):
                 raise ValueError()
@@ -344,7 +353,9 @@ class Checkpoints:
                 or any(type(value) is not int or value < 1 for value in binding.values())
             ):
                 raise ValueError()
-            if ("dashboard" in payload or "plan_replacement" in payload) and state["version"] != report_store.FORMAT:
+            if ("dashboard" in payload or "plan_replacement" in payload) and state[
+                "version"
+            ] not in report_store.READ_FORMATS:
                 raise ValueError()
             self.plan_binding = binding
             self.dashboard = deepcopy(payload.get("dashboard", {}))
@@ -379,12 +390,27 @@ class Checkpoints:
         """Reject checkpoints belonging to another issue or schema."""
         if (
             state["version"]
-            not in (2, FORMAT, BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT, report_store.FORMAT)
+            not in (
+                2,
+                FORMAT,
+                BATCH_FORMAT,
+                file_inventory.FORMAT,
+                bundle_resume.FORMAT,
+                report_store.SPONSORSHIP_FORMAT,
+                report_store.FORMAT,
+            )
             or state.get("bundle_resume")
-            and state["version"] not in (bundle_resume.FORMAT, report_store.FORMAT)
+            and state["version"] not in (bundle_resume.FORMAT, report_store.SPONSORSHIP_FORMAT, report_store.FORMAT)
             or state["issue"] != self.issue
             or (state.get("review_batch_version") or state.get("review_batch"))
-            and state["version"] not in (BATCH_FORMAT, file_inventory.FORMAT, bundle_resume.FORMAT, report_store.FORMAT)
+            and state["version"]
+            not in (
+                BATCH_FORMAT,
+                file_inventory.FORMAT,
+                bundle_resume.FORMAT,
+                report_store.SPONSORSHIP_FORMAT,
+                report_store.FORMAT,
+            )
             or state.get("review_batch_version", 1) != 1
         ):
             raise CheckpointError("state_identity")

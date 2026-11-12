@@ -326,6 +326,11 @@ class Exchange:
                 budget INTEGER NOT NULL, lease REAL NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
                 session TEXT, result TEXT, created REAL NOT NULL, started REAL, finished REAL, digest TEXT,
                 staff TEXT, pin TEXT);""")
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS sponsorship (repository TEXT,issue INTEGER,provider TEXT,generation INTEGER,epoch INTEGER,slot TEXT,PRIMARY KEY(repository,issue,provider));
+            CREATE TABLE IF NOT EXISTS sponsorship_transitions (id TEXT PRIMARY KEY,digest TEXT NOT NULL,response TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS sponsorship_revocations (repository TEXT,issue INTEGER,provider TEXT,actor TEXT,through_epoch INTEGER,reason TEXT,PRIMARY KEY(repository,issue,provider,actor));
+        """)
         # Columns added since a table was first created; older databases gain them in place.
         self.add_columns(
             "sessions",
@@ -341,6 +346,130 @@ class Exchange:
         self.add_columns(
             "turns", (("digest", "TEXT"), ("staff", "TEXT"), ("pin", "TEXT"), ("binding", "TEXT"), ("staffing", "TEXT"))
         )
+
+    def sponsorship(self, request):
+        """Apply replay-safe provider fences/cutoffs atomically; org-funded sessions are untouched."""
+        requests = request.get("transitions", [request])
+        if not isinstance(requests, list) or not requests or len(requests) > 2:
+            raise ValueError("invalid sponsorship transitions")
+        fields = {
+            "repository",
+            "issue",
+            "provider",
+            "generation",
+            "expected_epoch",
+            "slot",
+            "reason",
+            "actor",
+            "cutoff",
+            "transition",
+        }
+        for value in requests:
+            if not isinstance(value, dict) or set(value) != fields:
+                raise ValueError("invalid sponsorship transition")
+            slot = value["slot"]
+            if (
+                not isinstance(value["repository"], str)
+                or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", value["repository"])
+                or type(value["issue"]) is not int
+                or value["issue"] < 1
+                or value["provider"] not in ("openai", "anthropic")
+                or type(value["generation"]) is not int
+                or value["generation"] < 1
+                or type(value["expected_epoch"]) is not int
+                or value["expected_epoch"] < -1
+                or not isinstance(slot, dict)
+                or type(slot.get("epoch")) is not int
+                or slot["epoch"] < 0
+                or slot.get("status") not in ("active", "unassigned", "withdrawn")
+                or slot.get("sponsor_id") is not None
+                and (not isinstance(slot["sponsor_id"], str) or not slot["sponsor_id"].isdecimal())
+                or slot.get("status") == "active"
+                and (not slot.get("sponsor_id") or not re.fullmatch(r"[0-9a-f]{64}", slot.get("grant_id", "")))
+                or value["reason"] not in ("initialize", "sponsor", "withdraw", "permission_loss", "cutover")
+                or not isinstance(value["transition"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", value["transition"])
+                or value["cutoff"] is not None
+                and (
+                    type(value["cutoff"]) is not int
+                    or value["cutoff"] < 0
+                    or not isinstance(value["actor"], str)
+                    or not value["actor"].isdecimal()
+                )
+            ):
+                raise ValueError("invalid sponsorship transition")
+        with self.locked():
+            replies = []
+            with self._transaction():
+                for value in requests:
+                    encoded = json.dumps(value, sort_keys=True)
+                    digest = hashlib.sha256(encoded.encode()).hexdigest()
+                    old = self.db.execute(
+                        "SELECT digest,response FROM sponsorship_transitions WHERE id=?", (value["transition"],)
+                    ).fetchone()
+                    if old:
+                        if old[0] != digest:
+                            raise Refused(409, "sponsorship transition identity conflict")
+                        replies.append(json.loads(old[1]))
+                        continue
+                    key = value["repository"], value["issue"], value["provider"]
+                    row = self.db.execute(
+                        "SELECT generation,epoch,slot FROM sponsorship WHERE repository=? AND issue=? AND provider=?",
+                        key,
+                    ).fetchone()
+                    expected = row[1] if row else -1
+                    slot = value["slot"]
+                    if expected != value["expected_epoch"] or row and value["generation"] < row[0]:
+                        raise Refused(409, "sponsorship fence conflict")
+                    if expected == -1:
+                        valid = value["reason"] == "initialize" and slot["epoch"] == (
+                            1 if slot.get("sponsor_id") else 0
+                        )
+                    else:
+                        same = json.loads(row[2]) == slot
+                        valid = (
+                            slot["epoch"] == expected + 1 or same and value["reason"] in ("withdraw", "permission_loss")
+                        )
+                    if not valid or value["cutoff"] is not None and value["cutoff"] > max(expected, 0):
+                        raise Refused(409, "sponsorship epoch conflict")
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO sponsorship VALUES (?,?,?,?,?,?)",
+                        (*key, value["generation"], slot["epoch"], json.dumps(slot, sort_keys=True)),
+                    )
+                    if value["cutoff"] is not None:
+                        self.db.execute(
+                            "INSERT INTO sponsorship_revocations VALUES (?,?,?,?,?,?) ON CONFLICT(repository,issue,provider,actor) DO UPDATE SET through_epoch=MAX(through_epoch,excluded.through_epoch),reason=excluded.reason",
+                            (*key, value["actor"], value["cutoff"], value["reason"]),
+                        )
+                    reply = {"transition": value["transition"], "epoch": slot["epoch"]}
+                    self.db.execute(
+                        "INSERT INTO sponsorship_transitions VALUES (?,?,?)",
+                        (value["transition"], digest, json.dumps(reply)),
+                    )
+                    replies.append(reply)
+            # Later contributed bindings may use these cutoffs. Current org bindings carry
+            # no personal payer, and a prospective sponsor never retires their work.
+            for identifier, binding in self.db.execute(
+                "SELECT id,binding FROM sessions WHERE ended IS NULL AND binding IS NOT NULL"
+            ).fetchall():
+                bound = json.loads(binding)
+                if bound.get("funding") != "contributed":
+                    continue
+                revoked = self.db.execute(
+                    "SELECT through_epoch FROM sponsorship_revocations WHERE repository=? AND issue=? AND provider=? AND actor=?",
+                    (
+                        bound.get("repository"),
+                        bound.get("issue"),
+                        bound.get("sponsorship_provider"),
+                        bound.get("sponsor"),
+                    ),
+                ).fetchone()
+                if revoked and bound.get("epoch", -1) <= revoked[0]:
+                    try:
+                        self.retire(identifier, self.row(identifier), _now(None))
+                    except Refused:
+                        pass  # Durable retirement and ordinary key reconciliation already exist.
+            return {"transitions": replies}
 
     def add_columns(self, table, columns):
         present = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
@@ -928,6 +1057,8 @@ class Handler(BaseHTTPRequestHandler):
     def operator(self, method, path, query, body):
         # Deliberately reject empty/percent-encoded wait values; URL-decoding would widen admission.
         wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
+        if method == "POST" and path == "sponsorship":
+            return self.server.exchange.sponsorship(body)
         if method == "POST" and path == "turns":
             return self.server.exchange.submit(
                 body.get("turn"),

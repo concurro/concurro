@@ -1,0 +1,696 @@
+"""Issue-source confirmation and checkpoint-backed prospective sponsorship; no payer selection."""
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from copy import deepcopy
+from datetime import datetime
+
+import conversation
+import delegation
+import private
+import sponsorship
+from commands import CommandKind, parse
+from github import NotFound, Transient
+from policy import Blocked, digest
+from relay import ExchangeError
+
+from .failures import backoff
+from .reconciler import pages
+from .settings import CHECKOUT
+
+
+class Metadata:
+    """Read allow-listed vault metadata using a dedicated private service credential."""
+
+    def __init__(self, url, token_path):
+        """Keep token bytes outside configuration, checkpoints and exceptions."""
+        self.url, self.token_path = url.rstrip("/"), token_path
+
+    def read(self, actor, at=None):
+        """Return status/model evidence at the initiation boundary, never secret-bearing provider output."""
+        try:
+            token = bytes.fromhex(private.read(self.token_path, (CHECKOUT,)).decode().strip())
+            if len(token) != 32:
+                raise ValueError()
+            token = token.hex()
+            request = urllib.request.Request(
+                self.url + "/metadata/" + str(int(actor)) + ("?" + urllib.parse.urlencode({"at": at}) if at else ""),
+                headers={"Authorization": "Bearer " + token},
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                value = json.load(response)
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("history_complete"), bool)
+                or not isinstance(value.get("credentials"), list)
+                or any(
+                    not isinstance(record, dict) or record.get("user_id") != str(actor)
+                    for record in value.get("credentials", [])
+                )
+            ):
+                raise ValueError()
+            keys = {"record_id", "user_id", "route", "version", "status", "models", "created", "updated"}
+            return [
+                {key: record.get(key) for key in keys} for record in value["credentials"] if isinstance(record, dict)
+            ]
+        except (Blocked, OSError, ValueError, urllib.error.URLError):
+            raise Transient("sponsorship metadata unavailable") from None
+
+
+class Shadow:
+    """Reuse registry observations and controller persistence for org-funded shadow grants."""
+
+    def __init__(self, registry, reader, operator, metadata=None, key=None):
+        """Inject existing GitHub reads, operator transitions and optional vault metadata."""
+        self.registry, self.reader, self.operator, self.metadata, self.key = registry, reader, operator, metadata, key
+
+    def writer(self, repository, actor, login):
+        """Resolve a stable actor and verify current collaborator permission without login-cache reuse."""
+        reader = self.reader(repository)
+        try:
+            user = reader.request("GET", f"user/{actor}")
+            if (
+                not isinstance(user, dict)
+                or str(user.get("id")) != str(actor)
+                or not isinstance(user.get("login"), str)
+            ):
+                raise Transient("sponsorship actor lookup incomplete")
+            login = user["login"]
+            permission = reader.request(
+                "GET", f"repos/{repository}/collaborators/{urllib.parse.quote(login, safe='')}/permission"
+            )
+        except NotFound:
+            return False
+        if not isinstance(permission, dict) or permission.get("permission") not in (
+            "admin",
+            "maintain",
+            "write",
+            "read",
+            "none",
+            "triage",
+        ):
+            raise Transient("sponsorship permission lookup incomplete")
+        if isinstance(permission.get("user"), dict) and str(permission["user"].get("id")) != str(actor):
+            raise Transient("sponsorship actor lookup incomplete")
+        return permission["permission"] in ("admin", "maintain", "write")
+
+    def begin(self, controller):
+        """Capture the registry fence before the controller starts its uncached comment read."""
+        key = controller.config["repository"], controller.issue["number"]
+        controller.shadow_source_revision = self.registry.sponsorship(key)["source_revision"]
+
+    def coverage(self, routes, slots):
+        """Read current nonsecret coverage separately from historical initiation availability."""
+        metadata = {}
+        for actor in {slot.get("sponsor_id") for slot in slots.values()} - {None}:
+            try:
+                metadata[actor] = self.metadata.read(actor) if self.metadata else None
+            except Transient:
+                metadata[actor] = None
+        return sponsorship.coverage(routes, slots, metadata)
+
+    def view(self, key):
+        """Refresh coverage on a read without advancing a task or changing confirmed consent."""
+        projection = self.registry.sponsorship(key)
+        if projection.get("task") and projection["task"]["slots"]:
+            projection["source_slots"] = projection.get("slots", {})
+            projection["slots"] = projection["task"]["slots"]
+            projection["pending"] = projection["task"]["pending"]
+        routes = projection.get("routes")
+        if routes:
+            slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
+            projection["coverage"] = self.coverage(routes, slots)
+        projection["task_status"] = projection.get("task", {}).get("status")
+        slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
+        projection["badges"] = [
+            {
+                "provider": p,
+                "label": ("OpenAI" if p == "openai" else "Anthropic") + " sponsored",
+                "status": projection["status"],
+                "sponsor_id": slot["sponsor_id"],
+                "login": slot.get("login"),
+            }
+            for p, slot in slots.items()
+            if slot.get("sponsor_id")
+        ]
+        return projection
+
+    def before_attempt(self, controller):
+        """Mark racing shadow evidence pending without blocking or rebinding an org-paid attempt."""
+        key = controller.config["repository"], controller.issue["number"]
+        latest = self.registry.sponsorship(key)
+        adopted = getattr(controller, "shadow_projection", None)
+        if not adopted or latest["status"] != "confirmed" or latest.get("revision") != adopted["revision"]:
+            controller.state["sponsorship_status"] = "pending"
+
+    def confirm(self, key, comments, events, author, revision=None, config=None):
+        """Confirm complete source history against known revisions and the local observation fence."""
+        previous = self.registry.sponsorship(key)
+        if revision is not None and revision != previous["source_revision"]:
+            raise Transient("sponsorship source changed during read")
+        revision = previous["source_revision"]
+        hints = self.registry.sponsor_sources(key)
+        old = {f["grant_id"]: f for f in previous.get("facts", [])}
+        current = {c["id"]: c for c in comments}
+        verified = {}
+        permissions = {}
+        complete = True
+
+        def authorized(actor, login):
+            """One fresh ID-bound permission read per actor in this source observation."""
+            if actor not in permissions:
+                permissions[actor] = self.writer(key[0], actor, login)
+            return permissions[actor]
+
+        for raw in comments:
+            delegated = delegation.resolve(raw, self.key, *key, author)
+            comment = delegated or raw
+            if comment.get("user", {}).get("login") == author:
+                continue
+            item = sponsorship.fact(comment, authorized)
+            if item is None:
+                continue
+            revisions = [
+                h
+                for h in hints
+                if h["comment_id"] == raw["id"]
+                and h["action"] == "edited"
+                and h["body_digest"] == digest(raw.get("body") or "")
+                and h["updated_at"] == raw.get("updated_at")
+            ]
+            if not delegated and (revisions or raw.get("created_at") != raw.get("updated_at")):
+                if not any(h.get("editor_id") == comment.get("user", {}).get("id") for h in revisions):
+                    if not revisions or any(h.get("editor_id") is None for h in revisions):
+                        complete = False
+                    continue
+            if item:
+                verified[item["grant_id"]] = item
+                created, updated = raw.get("created_at"), raw.get("updated_at")
+                if (
+                    created
+                    and updated
+                    and created != updated
+                    and not any(
+                        h["comment_id"] == raw["id"]
+                        and (
+                            h["action"] == "created"
+                            or h["action"] == "edited"
+                            and h.get("previous_digest")
+                            and h.get("previous") is None
+                        )
+                        for h in hints
+                    )
+                ):
+                    complete = False
+        for source in hints:
+            raw = {
+                "id": source["comment_id"],
+                "body": source["body"],
+                "user": {"id": source["actor_id"], "login": source["login"]},
+                "created_at": source["created_at"],
+                "updated_at": source["updated_at"],
+            }
+            delegated = delegation.resolve(raw, self.key, *key, author)
+            comment = delegated or raw
+            if comment.get("user", {}).get("login") == author:
+                continue
+            item = sponsorship.fact(comment, authorized)
+            if item is None:
+                continue
+            if not delegated and source["action"] == "edited" and source.get("editor_id") != source["actor_id"]:
+                if source.get("editor_id") is None:
+                    complete = False
+                continue
+            if item:
+                old[item["grant_id"]] = item
+        facts = {**old, **verified}
+        # Source removal cannot erase a durable withdrawal. Its own timestamp is used only
+        # when an edit is observed; an unprovable deletion is ordered after initialization.
+        for item in list(facts.values()):
+            observed = current.get(item["source_id"])
+            effective = delegation.resolve(observed, self.key, *key, author) or observed if observed else None
+            removed = effective is None or digest(effective.get("body") or "") != item["body_digest"]
+            if removed and item["command"] == "sponsor":
+                when = (observed or {}).get("updated_at") or "9999-12-31T23:59:59Z"
+                value = {
+                    **item,
+                    "command": "withdraw",
+                    "removed_source": item["source_id"],
+                    "source_order": [when, item["source_id"], -1],
+                }
+                value["grant_id"] = digest(value)
+                facts[value["grant_id"]] = value
+        for item in facts.values():
+            raw = current.get(item["source_id"])
+            observed = (delegation.resolve(raw, self.key, *key, author) or raw) if raw else None
+            if (
+                observed
+                and item["command"] == "sponsor"
+                and item["body_digest"] != digest(observed.get("body") or "")
+                and item["source_order"][0] == observed.get("updated_at")
+            ):
+                related = [h for h in hints if h["comment_id"] == item["source_id"]]
+                if not any(
+                    h.get("previous") is not None and digest(h["previous"]) == item["body_digest"] for h in related
+                ):
+                    complete = False
+                item["source_order"][2] = -2
+                item["grant_id"] = digest({k: v for k, v in item.items() if k != "grant_id"})
+        ordered = sorted(facts.values(), key=lambda f: f["source_order"])
+        document = {
+            "facts": ordered,
+            **sponsorship.project(ordered),
+            "history_complete": complete,
+            "source_digest": digest(
+                [[(c["id"], digest(c.get("body") or ""), c.get("updated_at")) for c in comments], events]
+            ),
+            "permissions": {str(k): v for k, v in permissions.items()},
+            "funding": "org",
+        }
+        document["revision"] = digest([revision, document])
+        document["digest"] = digest(document)
+        if config is not None:
+            document["routes"] = sponsorship.selected_routes(config)
+            document["coverage"] = self.coverage(sponsorship.selected_routes(config), document["slots"])
+        if not self.registry.confirm_sponsorship(key, revision, document, comments):
+            raise Transient("sponsorship source changed during observation")
+        return {**document, "status": "confirmed" if complete else "provisional", "source_revision": revision}
+
+    def usage(self, controller, comments):
+        """Reply to a pre-task bare command once by its exact App-authored source marker."""
+        for raw in comments:
+            effective = (
+                delegation.resolve(
+                    raw,
+                    self.key,
+                    controller.config["repository"],
+                    controller.issue["number"],
+                    controller.identities.author("state"),
+                )
+                or raw
+            )
+            command = parse(effective.get("body") or "")
+            if command is None or command.kind != CommandKind.SPONSOR or command.argument is not None:
+                continue
+            user = effective.get("user") or {}
+            if not user.get("id") or not self.writer(controller.config["repository"], user["id"], user["login"]):
+                continue
+            marker = f"<!-- concurro:sponsorship-usage:{raw['id']} -->"
+            if any(
+                c.get("user", {}).get("login") == controller.identities.author("state")
+                and marker in (c.get("body") or "")
+                for c in comments
+            ):
+                continue
+            body = (
+                marker
+                + "\nUse `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor your own future contributed calls. Use `/concurro withdraw <provider>` to withdraw your consent. Current calls remain org-funded."
+            )
+            controller.gh.repo(f"issues/{controller.issue['number']}/comments", "POST", {"body": body})
+
+    def sync(self, controller, raw_comments):
+        """Project intent without creating a task; apply acknowledged transitions on existing tasks."""
+        key = (controller.config["repository"], controller.issue["number"])
+        controller.shadow_projection = None
+        try:
+            events = pages(self.reader(key[0]), f"repos/{key[0]}/issues/{key[1]}/events")
+            projection = self.confirm(
+                key,
+                raw_comments,
+                events,
+                controller.identities.author("state"),
+                getattr(controller, "shadow_source_revision", None),
+                controller.config,
+            )
+            controller.shadow_projection = projection
+            if not controller.state:
+                self.usage(controller, raw_comments)
+                return
+            if not projection["history_complete"]:
+                raise ValueError("sponsorship source history incomplete")
+            if not controller.state.get("funding_initialization") and not controller.state.get(
+                "funding_initialization_pending"
+            ):
+                self.initialize(controller, [], "legacy")
+            self.flush(controller)
+            if controller.state.get("funding_initialization_pending"):
+                self.initialize(controller, raw_comments, controller.state["mode"])
+            self.apply(controller, projection)
+            self.permissions(controller, projection)
+            if controller.state.get("funding_initialization"):
+                controller.state["sponsorship_projection_revision"] = projection["revision"]
+                controller.state["sponsorship_projection_source_revision"] = projection["source_revision"]
+                if not controller.state.get("pending_sponsorships"):
+                    changed = (
+                        controller.state.get("sponsorship_status") != "confirmed"
+                        or "sponsorship_retry_attempts" in controller.state
+                    )
+                    controller.state["sponsorship_status"] = "confirmed"
+                    controller.state.pop("sponsorship_retry_attempts", None)
+                    if changed:
+                        controller.save()
+        except (Transient, ExchangeError, ValueError) as error:
+            if controller.state:
+                self.defer(controller, error)
+        finally:
+            if controller.state:
+                self.registry.record_shadow(key, controller.state, getattr(controller, "shadow_projection", None))
+
+    def initialize(self, controller, comments, mode, command_id=0, enrollment=None):
+        """Keep unavailable shadow history/metadata separate from org-paid execution."""
+        try:
+            self._initialize(controller, comments, mode, command_id, enrollment)
+        except (Transient, ExchangeError, ValueError) as error:
+            self.defer(controller, error)
+        finally:
+            key = controller.config["repository"], controller.state["issue"]
+            self.registry.record_shadow(key, controller.state, getattr(controller, "shadow_projection", None))
+
+    def defer(self, controller, error):
+        """Retry transient shadow I/O through the existing queue/backoff, independently of org work."""
+        state = controller.state
+        changed = state.get("sponsorship_status") != "pending"
+        state["sponsorship_status"] = "pending"
+        if (
+            isinstance(error, Transient)
+            or isinstance(error, ExchangeError)
+            and (error.status in (0, 429) or error.status >= 500)
+        ):
+            attempt = state.get("sponsorship_retry_attempts", 0)
+            state["sponsorship_retry_attempts"] = attempt + 1
+            controller.save()
+            self.registry.enqueue(
+                (controller.config["repository"], state["issue"]),
+                "shadow-reconcile",
+                self.registry.clock() + backoff(attempt),
+            )
+        elif changed:
+            controller.save()
+
+    def _initialize(self, controller, comments, mode, command_id=0, enrollment=None):
+        """Persist the first source boundary even when shadow metadata/history is temporarily unavailable."""
+        state = controller.state
+        if state.get("funding_initialization"):
+            return
+        boundary = state.get("funding_initialization_pending")
+        if boundary is None:
+            if mode == "manual":
+                comment = next((c for c in comments if c["id"] == command_id), None)
+                if not comment:
+                    return
+                boundary = {
+                    "source_id": command_id,
+                    "actor_id": str(comment["user"].get("id", "")),
+                    "login": comment["user"]["login"],
+                    "at": comment.get("updated_at") or comment.get("created_at"),
+                    "provenance": "task_start",
+                }
+                raw = next((c for c in controller.consumed_comments if c["id"] == command_id), comment)
+                edited = raw.get("created_at") != raw.get("updated_at") or any(
+                    h["comment_id"] == command_id and h["action"] == "edited"
+                    for h in self.registry.sponsor_sources((controller.config["repository"], state["issue"]))
+                )
+                if edited:
+                    boundary["initiator_revision"] = {
+                        "body_digest": digest(raw.get("body") or ""),
+                        "delegated": bool(
+                            delegation.resolve(
+                                raw,
+                                self.key,
+                                controller.config["repository"],
+                                state["issue"],
+                                controller.identities.author("state"),
+                            )
+                        ),
+                    }
+            elif mode == "autonomous":
+                boundary = {
+                    "source_id": enrollment["event"],
+                    "actor_id": str(enrollment.get("actor_id", "")),
+                    "login": enrollment["actor"],
+                    "at": enrollment.get("at"),
+                    "provenance": "label",
+                }
+            else:
+                boundary = {
+                    "source_id": None,
+                    "actor_id": None,
+                    "login": None,
+                    "at": "9999-12-31T23:59:59Z",
+                    "provenance": "legacy",
+                }
+            state["funding_initialization_pending"] = deepcopy(boundary)
+        projection = getattr(controller, "shadow_projection", None)
+        if not projection or not projection["history_complete"]:
+            return
+        if boundary["provenance"] == "legacy":
+            routes, metadata = [], []
+        else:
+            if not boundary["at"] or not boundary["actor_id"]:
+                return
+            routes = sponsorship.selected_routes(controller.config)
+            earlier = sponsorship.project([f for f in projection["facts"] if f["source_order"][0] <= boundary["at"]])
+            needs_fill = any(
+                not slot.get("sponsor_id") and boundary["actor_id"] not in earlier["tombstones"][provider]
+                for provider, slot in earlier["slots"].items()
+            )
+            initiator = boundary.get("initiator_revision")
+            if (
+                needs_fill
+                and initiator
+                and not initiator["delegated"]
+                and not any(
+                    h["comment_id"] == boundary["source_id"]
+                    and h["action"] == "edited"
+                    and h["updated_at"] == boundary["at"]
+                    and h["body_digest"] == initiator["body_digest"]
+                    and str(h.get("editor_id")) == boundary["actor_id"]
+                    for h in self.registry.sponsor_sources((controller.config["repository"], state["issue"]))
+                )
+            ):
+                return
+            if needs_fill and (not self.metadata or any(r["route"] is None for r in routes)):
+                return
+            metadata = self.metadata.read(boundary["actor_id"], boundary["at"]) if needs_fill else []
+            selected = {
+                r["route"] for r in routes if r["provider"] and not earlier["slots"][r["provider"]].get("sponsor_id")
+            }
+            metadata = [record for record in metadata if record["route"] in selected]
+            if any(
+                record.get("status") == "unknown" or record.get("status") == "valid" and record.get("models") is None
+                for record in metadata
+            ):
+                raise ValueError("sponsorship credential history incomplete")
+        latest = self.registry.sponsorship((controller.config["repository"], state["issue"]))
+        if latest["source_revision"] != projection["source_revision"] or (
+            latest.get("revision") is not None
+            and (latest["status"] != "confirmed" or latest["revision"] != projection["revision"])
+        ):
+            raise Transient("sponsorship source changed during metadata read")
+        frozen = sponsorship.initialize(projection, boundary, routes, metadata)
+        frozen["observed_sources"] = [f["grant_id"] for f in projection["facts"]]
+        state["funding_initialization"] = frozen
+        conversation.queue(
+            state,
+            "Provider sponsorship is org-funded",
+            "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment.",
+        )
+        state["sponsorship_projection_revision"] = projection["revision"]
+        state["sponsorship_projection_source_revision"] = projection["source_revision"]
+        state.pop("funding_initialization_pending", None)
+        state["sponsorships"] = {}
+        state["sponsorship_applied"] = list(frozen["applied"])
+        state["sponsorship_sources"] = {
+            str(f["source_id"]): f["grant_id"] for f in projection["facts"] if f["grant_id"] in frozen["applied"]
+        }
+        for provider, slot in frozen["slots"].items():
+            self.pending(
+                controller,
+                provider,
+                {**slot, "epoch": 1 if slot.get("sponsor_id") else 0},
+                -1,
+                "initialize",
+                save=False,
+            )
+        controller.save()
+        self.flush(controller)
+        self.apply(controller, projection)
+
+    def pending(self, controller, provider, slot, expected, reason, source=None, actor=None, cutoff=None, save=True):
+        """Persist one exact transition before any Exchange I/O, retaining replay identity across crashes."""
+        state = controller.state
+        body = {
+            "repository": controller.config["repository"],
+            "issue": state["issue"],
+            "provider": provider,
+            "generation": controller.gh.generation,
+            "expected_epoch": expected,
+            "slot": deepcopy(slot),
+            "reason": reason,
+            "actor": actor,
+            "cutoff": cutoff,
+        }
+        body["transition"] = digest(body)
+        state.setdefault("pending_sponsorships", {})[provider] = {"request": body, "source": source}
+        if save:
+            controller.save()
+
+    def flush(self, controller):
+        """Acknowledge only a durably accepted provider transition before consuming its source."""
+        state = controller.state
+        while state.get("pending_sponsorships"):
+            provider, pending = next(iter(state["pending_sponsorships"].items()))
+            group = [
+                (p, value)
+                for p, value in state["pending_sponsorships"].items()
+                if p == provider
+                or pending["request"]["reason"] == "permission_loss"
+                and value["request"]["reason"] == "permission_loss"
+                and value["request"]["actor"] == pending["request"]["actor"]
+            ]
+            self.operator().sponsorship({"transitions": [value["request"] for _, value in group]})
+            for provider, pending in group:
+                state["sponsorships"][provider] = deepcopy(pending["request"]["slot"])
+                state.setdefault("sponsorship_history", []).append(pending["request"])
+                if pending["source"]:
+                    source = pending["source"]
+                    state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                    state.setdefault("sponsorship_sources", {})[str(source["source_id"])] = source["grant_id"]
+                del state["pending_sponsorships"][provider]
+            state["sponsorship_status"] = "confirmed"
+            controller.save()
+
+    def apply(self, controller, projection):
+        """Apply each new source once; late evidence never rewrites a charged org attempt."""
+        state = controller.state
+        if not state.get("funding_initialization"):
+            return
+        for source in projection["facts"]:
+            if source["grant_id"] in state.get("sponsorship_applied", []):
+                continue
+            provider = source["provider"]
+            cutoff = state.get("sponsorship_authority_revoked", {}).get(source["actor_id"])
+            if (
+                cutoff is not None
+                and datetime.fromisoformat(source["source_order"][0].replace("Z", "+00:00")).timestamp()
+                <= cutoff["observed_at"]
+            ):
+                continue
+            if provider in state.get("pending_sponsorships", {}):
+                continue
+            if str(source["source_id"]) in state.get("sponsorship_sources", {}) and source["grant_id"] not in state[
+                "funding_initialization"
+            ].get("observed_sources", []):
+                continue  # Adopted source is immutable; edits/deletions cannot rewrite consent.
+            frozen = state["funding_initialization"]
+            if source["source_order"][0] <= frozen["boundary"]["at"] and source["grant_id"] not in frozen.get(
+                "observed_sources", []
+            ):
+                state.setdefault("sponsorship_ordering_diagnostics", []).append(
+                    {
+                        "source": source["grant_id"],
+                        "adopted_revision": frozen["projection_revision"],
+                        "calls_already_charged": state["calls"],
+                        "recorded_grant": state["sponsorships"][provider].get("grant_id"),
+                    }
+                )
+            if (
+                source.get("removed_source")
+                and state["sponsorships"][provider].get("source_id") != source["removed_source"]
+            ):
+                state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                controller.save()
+                continue
+            if source["command"] == "withdraw" and any(
+                f["command"] == "sponsor"
+                and f["actor_id"] == source["actor_id"]
+                and f["provider"] == provider
+                and f["source_order"] > source["source_order"]
+                and f["grant_id"] in state.get("sponsorship_applied", [])
+                for f in projection["facts"]
+            ):
+                state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                controller.save()
+                continue
+            slot = state["sponsorships"][provider]
+            if source["command"] == "sponsor":
+                if slot.get("source_order", []) > source["source_order"] and slot.get("provenance") not in (
+                    "task_start",
+                    "label",
+                ):
+                    state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                    controller.save()
+                    continue
+                new = {
+                    **deepcopy(source),
+                    "sponsor_id": source["actor_id"],
+                    "status": "active",
+                    "epoch": slot["epoch"] + 1,
+                }
+                cutoff = None
+            else:
+                new = (
+                    {
+                        "sponsor_id": None,
+                        "status": "withdrawn",
+                        "epoch": slot["epoch"] + 1,
+                        "source_order": source["source_order"],
+                        "grant_id": source["grant_id"],
+                    }
+                    if slot.get("sponsor_id") == source["actor_id"]
+                    else deepcopy(slot)
+                )
+                cutoff = slot["epoch"]
+            self.pending(
+                controller, provider, new, slot["epoch"], source["command"], source, source["actor_id"], cutoff
+            )
+            self.flush(controller)
+
+    def permissions(self, controller, projection):
+        """Writer loss publishes all that user's task/provider cutoffs together, leaving org work alone."""
+        state = controller.state
+        revoked = state.setdefault("sponsorship_authority_revoked", {})
+        slots = state.get("sponsorships", {})
+        identities = {item["actor_id"]: item["login"] for item in projection["facts"]}
+        identities.update({slot["sponsor_id"]: slot["login"] for slot in slots.values() if slot.get("sponsor_id")})
+        for actor, login in identities.items():
+            owns = any(slot.get("sponsor_id") == actor for slot in slots.values())
+            if actor in revoked and not owns:
+                continue
+            if self.writer(controller.config["repository"], actor, login):
+                continue
+            for provider, slot in slots.items():
+                new = (
+                    {
+                        "sponsor_id": None,
+                        "status": "withdrawn",
+                        "epoch": slot["epoch"] + 1,
+                        "source_order": slot.get("source_order", []),
+                        "authority_revoked": True,
+                    }
+                    if slot.get("sponsor_id") == actor
+                    else deepcopy(slot)
+                )
+                self.pending(
+                    controller,
+                    provider,
+                    new,
+                    slot["epoch"],
+                    "permission_loss",
+                    actor=actor,
+                    cutoff=slot["epoch"],
+                    save=False,
+                )
+            observed = max(
+                [self.registry.clock()]
+                + [
+                    datetime.fromisoformat(f["source_order"][0].replace("Z", "+00:00")).timestamp()
+                    for f in projection["facts"]
+                    if not f.get("removed_source")
+                ]
+            )
+            revoked[actor] = {"observed_at": observed, "source_revision": projection["source_revision"]}
+            controller.save()
+            self.flush(controller)

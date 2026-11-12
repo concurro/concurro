@@ -7,6 +7,7 @@ No endpoint returns a secret, and secrets and tokens are never logged.
 """
 
 import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -169,13 +170,32 @@ class Validator:
         self.transport, self.routes = transport, routes
 
     def valid(self, route: str, secret: str) -> bool:
+        return self.models(route, secret)[0]
+
+    def models(self, route: str, secret: str) -> tuple[bool, list[str] | None]:
+        """Validate once and retain only provider-published model identifiers as coverage evidence."""
         target = self.routes[route]
-        status, _ = self.transport(target.url, target.headers(secret))
-        if 200 <= status < 300:
-            return True
+        status, body = self.transport(target.url, target.headers(secret))
         if status in (401, 403):
-            return False
-        raise Unavailable(f"provider validation returned {status}")
+            return False, None
+        if not 200 <= status < 300:
+            raise Unavailable(f"provider validation returned {status}")
+        try:
+            values = json.loads(body).get("data")
+            models = (
+                sorted(
+                    {
+                        v["id"]
+                        for v in values
+                        if isinstance(v, dict) and isinstance(v.get("id"), str) and secret not in v["id"]
+                    }
+                )
+                if isinstance(values, list)
+                else None
+            )
+        except (ValueError, TypeError, AttributeError):
+            models = None
+        return True, models
 
 
 @dataclass(frozen=True)
@@ -241,6 +261,9 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA secure_delete=ON")
         self.db.execute(SCHEMA)
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS credential_metadata (user_id INTEGER, route TEXT, version INTEGER, models TEXT, retired TEXT, PRIMARY KEY(user_id,route,version))"
+        )
         self.lock = threading.Lock()
 
     def close(self) -> None:
@@ -255,7 +278,7 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def put(self, user: User, route: str, secret: str) -> dict[str, object]:
+    def put(self, user: User, route: str, secret: str, models: list[str] | None = None) -> dict[str, object]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         with self.lock, self.transaction():
             latest = self.db.execute(
@@ -278,6 +301,10 @@ class Store:
                     now,
                     now,
                 ),
+            )
+            self.db.execute(
+                "INSERT INTO credential_metadata VALUES (?, ?, ?, ?, NULL)",
+                (user.id, route, version, json.dumps(models)),
             )
             return self.entry(user.id, route, version)
 
@@ -307,7 +334,57 @@ class Store:
             ).fetchone()
         return (row["version"], Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"])) if row else None
 
+    def metadata(self, user_id: int, at: str | None = None) -> dict:
+        """Service-only status/model history; never read fingerprints or sealed columns."""
+        if at is not None:
+            try:
+                cutoff = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                if cutoff.tzinfo is None:
+                    raise ValueError()
+            except ValueError:
+                raise VaultError(422, "invalid metadata timestamp") from None
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired, "
+                "c.ciphertext IS NOT NULL AS usable FROM credentials c LEFT JOIN credential_metadata m "
+                "ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version WHERE c.user_id=? ORDER BY c.version",
+                (user_id,),
+            ).fetchall()
+        latest = {}
+        for row in rows:
+            if at and datetime.fromisoformat(row["created"].replace("Z", "+00:00")) > cutoff:
+                continue
+            status = row["status"]
+            if at:
+                if row["retired"]:
+                    status = (
+                        "valid" if cutoff < datetime.fromisoformat(row["retired"].replace("Z", "+00:00")) else "revoked"
+                    )
+                elif not row["usable"]:
+                    status = "unknown"
+            elif not row["usable"]:
+                status = "revoked"
+            latest[row["route"]] = {
+                "record_id": digest(f"{user_id}/{row['route']}/{row['version']}"),
+                "user_id": str(user_id),
+                "route": row["route"],
+                "version": row["version"],
+                "status": status,
+                "models": json.loads(row["models"]) if row["models"] else None,
+                "created": row["created"],
+                "updated": row["updated"],
+            }
+        return {
+            "history_complete": all(record["status"] != "unknown" for record in latest.values()),
+            "credentials": list(latest.values()),
+        }
+
     def destroy(self, user_id: int, route: str) -> None:
+        """Retire prior metadata before destroying its ciphertext; preserve immutable validation evidence."""
+        self.db.execute(
+            "UPDATE credential_metadata SET retired = COALESCE(retired, ?) WHERE user_id=? AND route=?",
+            (datetime.now(UTC).isoformat(timespec="seconds"), user_id, route),
+        )
         self.db.execute(
             "UPDATE credentials SET wrapped_key = NULL, nonce = NULL, ciphertext = NULL WHERE user_id = ? AND route = ?",
             (user_id, route),
@@ -335,7 +412,7 @@ class SecretBody(BaseModel):
     secret: str
 
 
-def create_app(store: Store, identity: Identity, validator: Validator) -> FastAPI:
+def create_app(store: Store, identity: Identity, validator: Validator, service_token: str | None = None) -> FastAPI:
     app = FastAPI(title="Concurro credentials vault", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.exception_handler(VaultError)
@@ -352,6 +429,8 @@ def create_app(store: Store, identity: Identity, validator: Validator) -> FastAP
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             raise VaultError(401, "missing bearer token")
+        if service_token and hmac.compare_digest(token.strip().encode(), service_token.encode()):
+            raise VaultError(401, "service credential is metadata-only")
         return identity.resolve(token.strip())
 
     def known(route: str) -> str:
@@ -362,6 +441,17 @@ def create_app(store: Store, identity: Identity, validator: Validator) -> FastAP
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metadata/{user_id}")
+    def metadata(user_id: int, at: str | None = None, authorization: Annotated[str | None, Header()] = None) -> dict:
+        """Read nonsecret metadata only with the separately configured service bearer."""
+        if not service_token or not hmac.compare_digest(
+            (authorization or "").encode(), ("Bearer " + service_token).encode()
+        ):
+            raise VaultError(401, "invalid service credential")
+        if user_id < 1:
+            raise VaultError(422, "invalid user identity")
+        return store.metadata(user_id, at)
 
     @app.get("/credentials")
     def list_credentials(caller: Annotated[User, Depends(user)]) -> list[dict[str, object]]:
@@ -375,9 +465,10 @@ def create_app(store: Store, identity: Identity, validator: Validator) -> FastAP
         # Keys go into request headers: only printable ASCII without whitespace is a plausible key.
         if not secret or not all(33 <= ord(c) <= 126 for c in secret):
             raise VaultError(422, "secret is empty or has unsupported characters")
-        if not validator.valid(route, secret):
+        valid, models = validator.models(route, secret)
+        if not valid:
             raise VaultError(422, "provider rejected the secret")
-        return store.put(caller, route, secret)
+        return store.put(caller, route, secret, models)
 
     @app.delete("/credentials/{route}")
     def revoke_credential(
@@ -400,11 +491,13 @@ def main() -> None:
     host, _, port = os.environ.get("VAULT_LISTEN", "0.0.0.0:8090").rpartition(":")
     try:
         envelope = Envelope(load_master_key(key_file))
+        service_path = os.environ.get("VAULT_SERVICE_TOKEN_FILE")
+        service_token = load_master_key(service_path).hex() if service_path else None
     except ConfigError as error:
         raise SystemExit(f"vault: {error}") from None
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     store = Store(state / "vault.db", envelope)
-    app = create_app(store, Identity(http_get), Validator(http_get))
+    app = create_app(store, Identity(http_get), Validator(http_get), service_token)
     uvicorn.run(app, host=host, port=int(port), server_header=False)
 
 

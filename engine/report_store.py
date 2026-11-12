@@ -23,7 +23,14 @@ INLINE = 12000
 # Fixed entry positions keep later blocks reusable when older metadata grows.
 BLOCK_ENTRIES = 8
 FORMAT = 7
+SPONSORSHIP_FORMAT = 8
+READ_FORMATS = (FORMAT, SPONSORSHIP_FORMAT)
 EXTENDED_FIELDS = {
+    "funding_initialization",
+    "sponsorship_history",
+    "sponsorship_applied",
+    "sponsorship_sources",
+    "sponsorship_ordering_diagnostics",
     "plan",
     "plan_draft",
     "intake_draft",
@@ -331,9 +338,9 @@ def restore(state, refs, store):
                 {"path", "digest", "artifacts", "select", "annotations", "draft"},
             )
             or "draft" in ref
-            and (state.get("version") != FORMAT or ref.get("select"))
+            and (state.get("version") not in READ_FORMATS or ref.get("select"))
             or "history" in ref
-            and (state.get("version") != FORMAT or ref.get("select") or ref.get("annotations"))
+            and (state.get("version") not in READ_FORMATS or ref.get("select") or ref.get("annotations"))
             or not allowed_path(ref["path"])
             or not isinstance(ref["select"], list)
             or len(ref["select"]) > 32
@@ -446,7 +453,7 @@ def audit_envelope(payload, store, repository, issue):
     ref = payload["audit_data"]
     if (
         set(payload) != {"repository", "state", "audit_data"}
-        or payload["state"] != {"version": FORMAT, "issue": issue}
+        or payload["state"] not in ({"version": v, "issue": issue} for v in READ_FORMATS)
         or not isinstance(ref, dict)
         or set(ref) != {"digest", "artifacts"}
     ):
@@ -458,7 +465,7 @@ def audit_envelope(payload, store, repository, issue):
         or restored.get("repository") != repository
         or not isinstance(restored.get("state"), dict)
         or restored["state"].get("issue") != issue
-        or restored["state"].get("version") != FORMAT
+        or restored["state"].get("version") not in READ_FORMATS
     ):
         raise ValueError("Invalid audit metadata identity")
     return restored

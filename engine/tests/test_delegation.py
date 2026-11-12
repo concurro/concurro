@@ -34,7 +34,9 @@ class RenderingTests(unittest.TestCase):
         body = self.body("/concurro approve " + "a" * 64)
         self.assertTrue(body.startswith("@writer approved plan `aaaaaaaaaaaa` from the Concurro backoffice."))
         resolved = self.resolve(self.comment(body))
-        self.assertEqual(resolved, {"id": 5, "user": {"login": "writer"}, "body": "/concurro approve " + "a" * 64})
+        self.assertEqual(
+            resolved, {"id": 5, "user": {"login": "writer", "id": 42}, "body": "/concurro approve " + "a" * 64}
+        )
 
     def test_descriptions_cover_every_command(self):
         for command in ("start", "stop", "resume", "retry", "invalidate"):

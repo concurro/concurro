@@ -620,3 +620,14 @@ sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --confi
 An edge installed before domain sites existed needs the current `Caddyfile`, `compose.yaml`
 and hook first, and `sudo docker compose -f /etc/edge/compose.yaml up -d` to mount
 `/etc/edge/domains`.
+
+## Shadow sponsorship metadata
+
+The vault privately serves `GET /metadata/{user_id}?at=<ISO timestamp>` to a separately
+authenticated service bearer, with status/model/version evidence only. User credential
+endpoints reject that bearer before GitHub lookup. Configure `VAULT_SERVICE_TOKEN_FILE`
+with a dedicated owner-only 32-byte hex token; the service needs its own owner-only copy
+and `vault_metadata_url`/`vault_service_token_path`. Provision the vault mount before
+deploying updated Compose. Subscription registration and contributed inference remain
+disabled; org inference bindings are unchanged. Migration and rollback details:
+[phase 1](../docs/proposals/per-user-credentials/phase-1.md).

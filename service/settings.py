@@ -30,8 +30,10 @@ FIELDS = {
     "gateway",
     "diagnostics_dir",
     "delegation_key_path",
+    "vault_metadata_url",
+    "vault_service_token_path",
 }
-OPTIONAL = {"engine", "diagnostics_dir", "delegation_key_path"}
+OPTIONAL = {"engine", "diagnostics_dir", "delegation_key_path", "vault_metadata_url", "vault_service_token_path"}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
 WORKFLOW_REF = re.compile(
@@ -86,6 +88,8 @@ class Settings:
     diagnostics_dir: Path | None = None
     # Signs commands the backoffice delivers (`engine/delegation.py`); without it they are refused.
     delegation_key_path: Path | None = None
+    vault_metadata_url: str | None = None  # Private nonsecret metadata listener.
+    vault_service_token_path: Path | None = None  # Separate service bearer, never a user token.
 
 
 def require(condition, field):
@@ -169,6 +173,16 @@ def load(path):
         delegation, delegation_identity = secret(data["delegation_key_path"], "delegation_key_path")
         require(delegation_identity not in identities, "delegation_key_path")
         identities.add(delegation_identity)
+    metadata_url, metadata_token = data.get("vault_metadata_url"), None
+    require((metadata_url is None) == (data.get("vault_service_token_path") is None), "vault metadata")
+    if metadata_url is not None:
+        require(
+            isinstance(metadata_url, str) and re.fullmatch(r"https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?", metadata_url),
+            "vault_metadata_url",
+        )
+        metadata_token, metadata_identity = secret(data["vault_service_token_path"], "vault_service_token_path")
+        require(metadata_identity not in identities, "vault_service_token_path")
+        identities.add(metadata_identity)
     gateway = gateway_settings(data["gateway"], identities)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
@@ -187,6 +201,8 @@ def load(path):
         gateway=gateway,
         diagnostics_dir=absolute(data["diagnostics_dir"], "diagnostics_dir") if "diagnostics_dir" in data else None,
         delegation_key_path=delegation,
+        vault_metadata_url=metadata_url,
+        vault_service_token_path=metadata_token,
     )
 
 

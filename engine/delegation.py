@@ -23,6 +23,8 @@ FIELDS = ("actor", "actor_id", "command", "nonce")
 NONCE = re.compile(r"[0-9a-f]{16,64}")
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 DESCRIPTIONS = {
+    commands.CommandKind.SPONSOR: "sponsored {argument} for future contributed calls on this issue",
+    commands.CommandKind.WITHDRAW: "withdrew their {argument} sponsorship",
     commands.CommandKind.START: "started this task",
     commands.CommandKind.APPROVE: "approved plan `{argument}`",
     commands.CommandKind.STOP: "stopped this task",
@@ -35,7 +37,9 @@ DESCRIPTIONS = {
 
 def command_text(kind, argument=None):
     """The exact `/concurro` command for a kind and its argument, or ValueError if the grammar refuses it."""
-    if kind == "approve":
+    if kind in ("sponsor", "withdraw") and argument is not None:
+        text = f"/concurro {kind} {argument}"
+    elif kind == "approve":
         text = f"/concurro approve {argument}"
     elif kind == "retry" and argument is not None:
         text = f"/concurro retry --plan-revisions {argument}"
@@ -60,12 +64,31 @@ def render(key, repository, issue, actor, actor_id, command, nonce):
     fields = {"actor": actor, "actor_id": actor_id, "command": command, "nonce": nonce}
     marker = json.dumps({**fields, "signature": signature(key, repository, issue, fields)}, sort_keys=True)
     line = DESCRIPTIONS[parsed.kind].format(argument=str(parsed.argument if parsed.argument is not None else "")[:12])
-    return f"@{actor} {line} from the Concurro backoffice.\n\n{MARKER}{marker} -->"
+    if parsed.kind == commands.CommandKind.SPONSOR and parsed.argument is None:
+        line = "requested sponsorship status; use /concurro sponsor openai or /concurro sponsor anthropic"
+    notice = (
+        " Current calls remain org-funded."
+        if parsed.kind in (commands.CommandKind.SPONSOR, commands.CommandKind.WITHDRAW)
+        else ""
+    )
+    return f"@{actor} {line} from the Concurro backoffice.{notice}\n\n{MARKER}{marker} -->"
 
 
 def marked(body):
     """Whether a body has the shape of a delegated command; a cheap wake-up hint, not verification."""
     return f"\n\n{MARKER}" in body and body.endswith(" -->")
+
+
+def sponsorship_hint(body):
+    """Recognize provider-command wakeup candidates; signature verification remains in resolve()."""
+    if not marked(body):
+        return False
+    try:
+        data = json.loads(body.rsplit(MARKER, 1)[1].removesuffix(" -->"))
+        command = commands.parse(data["command"])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return command is not None and command.kind in (commands.CommandKind.SPONSOR, commands.CommandKind.WITHDRAW)
 
 
 def resolve(comment, key, repository, issue, author):
@@ -82,7 +105,11 @@ def resolve(comment, key, repository, issue, author):
     # The rendering embeds the signature, so an exact match also verifies it.
     if body != expected:
         return None
-    return {**comment, "user": {**comment["user"], "login": fields["actor"]}, "body": fields["command"]}
+    return {
+        **comment,
+        "user": {**comment["user"], "login": fields["actor"], "id": fields["actor_id"]},
+        "body": fields["command"],
+    }
 
 
 def effective(comments, key, repository, issue, author):

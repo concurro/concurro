@@ -60,14 +60,47 @@ def github_user(token, connection=transport.connect):
     return user["login"], user["id"]
 
 
+def github_visible(token, repository, issue=None, connection=transport.connect):
+    """Verify issue/repository visibility with the caller's own token and fixed error text."""
+    path = "/repos/" + repository + (f"/issues/{issue}" if issue is not None else "")
+    try:
+        response = transport.exchange(
+            connection,
+            transport.API,
+            "GET",
+            path,
+            {**transport.headers(), "Authorization": "Bearer " + token},
+            None,
+            USER_LIMIT,
+            30,
+        )
+    except (OSError, ValueError):
+        raise Refused(503, "GitHub is unavailable; try again") from None
+    if not response.sent or response.status >= 500 or response.status in (403, 429):
+        raise Refused(503, "GitHub visibility is unavailable; try again")
+    return response.status == 200
+
+
 class Actions:
     """Verify a writer's command, post it as the App's delegated command comment and enqueue the task."""
 
-    def __init__(self, key, registry, reader, writer, issue_repositories, user=github_user, clock=time.time):
+    def __init__(
+        self,
+        key,
+        registry,
+        reader,
+        writer,
+        issue_repositories,
+        user=github_user,
+        clock=time.time,
+        visible=github_visible,
+        projection=None,
+    ):
         """`reader(repository)`/`writer(repository)` return that repository's transports."""
         self.key, self.registry, self.reader, self.writer = key, registry, reader, writer
         self.issue_repositories = {r.lower(): r for r in issue_repositories}
-        self.user, self.clock = user, clock
+        self.user, self.clock, self.visible = user, clock, visible
+        self.projection = projection or (lambda key: registry.sponsorship(key))
 
     def handle(self, authorization, body):
         """`(status, payload)` for one request; never raises for a refused or failed request."""
@@ -77,6 +110,8 @@ class Actions:
             return error.status, {"error": error.reason}
 
     def act(self, authorization, body):
+        if not self.key:
+            raise Refused(503, "backoffice commands are not configured")
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             raise Refused(401, "missing bearer token")
@@ -96,7 +131,9 @@ class Actions:
         if user is None:
             raise Refused(401, "GitHub did not accept the sign-in token")
         login, user_id = user
-        if not self.writable(repository, login):
+        if kind == "withdraw" and not self.visible(token.strip(), repository, issue):
+            raise Refused(404, "issue not visible")
+        if kind != "withdraw" and not self.writable(repository, login):
             raise Refused(403, f"@{login} does not have write access to {repository}")
         text = delegation.render(self.key, repository, issue, login, user_id, command, secrets.token_hex(16))
         key, path = (repository, issue), f"repos/{repository}/issues/{issue}/comments"
@@ -124,6 +161,40 @@ class Actions:
         url = payload.get("html_url") if isinstance(payload, dict) else None
         log.info("delegated command %s#%d by %s: %s", repository, issue, login, kind)
         return {"posted": command, "actor": login, "url": url}
+
+    def sponsorships(self, authorization, body):
+        """Return issue-addressed nonsecret projections after independent user visibility verification."""
+        try:
+            scheme, _, token = (authorization or "").partition(" ")
+            if scheme.lower() != "bearer" or not token.strip() or self.user(token.strip()) is None:
+                raise Refused(401, "GitHub did not accept the sign-in token")
+            try:
+                request = json.loads(body)
+                repository = self.issue_repositories[str(request["repository"]).lower()]
+                issue = request.get("issue")
+            except (ValueError, KeyError, TypeError):
+                raise Refused(400, "invalid issue repository") from None
+            if issue is not None and (type(issue) is not int or issue < 1):
+                raise Refused(400, "invalid issue")
+            if not self.visible(token.strip(), repository, issue):
+                raise Refused(404, "issue not visible")
+            if issue is None:
+                return 200, {
+                    "issues": [
+                        {"issue": number, **self.projection((repository, number))}
+                        for number in self.registry.sponsor_issues(repository)
+                    ]
+                }
+            projection = self.projection((repository, issue))
+            if projection["status"] != "confirmed":
+                self.registry.request_observation((repository, issue))
+            return 200, {
+                "funding": "org",
+                "consent": "Explicit sponsorship authorizes future contributed calls; current calls remain org-funded.",
+                **projection,
+            }
+        except Refused as error:
+            return error.status, {"error": error.reason}
 
     def writable(self, repository, login):
         """The same writer check the engine applies (`GitHub.permitted`)."""

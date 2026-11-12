@@ -163,7 +163,7 @@ class SpikeTests(unittest.TestCase):
             return activated(key)
 
         with patch.object(self.gateway, "activated", side_effect=activation):
-            grant = self.exchange.key(session, token)
+            grant = self.exchange.key(session, token, engine=BINDING["engine"])
         if revoke_at == "before_next":
             self.state.records[session]["revoked"] = True
         self.exchange.next(session, grant["token"], 1, 0)
@@ -400,6 +400,7 @@ class SpikeTests(unittest.TestCase):
                 ref="refs/heads/concurro/runs/" + grant["session"],
                 run_id="77",
             ),
+            engine=BINDING["engine"],
         )
         self.assertEqual(reclaimed["key"], grant["key"])
         self.assertGreaterEqual(self.call(grant)[0], 400)
@@ -722,6 +723,7 @@ def main():
         "cli_pins": CLI_VERSIONS,
         "engine_command_builder_sha256": file_digest(ROOT / "engine/agent_entry.py"),
         "workflow_sha256": file_digest(ROOT / ".github/workflows/agent.yml"),
+        "agent_clients_sha256": file_digest(ROOT / "engine/agent-clients.txt"),
         "production_gateway_config_sha256": file_digest(ROOT / "gateway/agentgateway.yaml"),
         "schema": {
             "url": "https://raw.githubusercontent.com/agentgateway/agentgateway/v1.7.0/schema/config.json",
@@ -737,9 +739,9 @@ def main():
         },
         "live_account_validation": "pending; explicitly outside this isolated-only run",
     }
-    workflow = (ROOT / ".github/workflows/agent.yml").read_text()
-    assert "CODEX_VERSION: " + CLI_VERSIONS["codex"] in workflow
-    assert "CLAUDE_VERSION: " + CLI_VERSIONS["claude"] in workflow
+    clients = (ROOT / "engine/agent-clients.txt").read_text().splitlines()
+    assert "@openai/codex@" + CLI_VERSIONS["codex"] in clients
+    assert "@anthropic-ai/claude-code@" + CLI_VERSIONS["claude"] in clients
     assert IMAGE in (ROOT / "gateway/compose.yaml").read_text()
     manifest["working_tree_status"] = subprocess.run(
         ["git", "status", "--porcelain"], cwd=ROOT, check=True, capture_output=True, text=True

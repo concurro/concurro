@@ -59,3 +59,14 @@ the web app (built with base path `/concurro`) from this process, for running wi
 python3 -m pip install -r service/requirements.txt -r backoffice/requirements.txt
 python3 -m backoffice --settings /path/to/settings.json --listen 127.0.0.1:8788
 ```
+
+## Shadow sponsorship API
+
+Issue-addressed sponsorship reads and commands work before a checkpoint exists:
+`GET /api/repos/{owner}/{repo}/issues/{issue}/sponsorships` and
+`POST /api/repos/{owner}/{repo}/issues/{issue}/commands`. Commands use the existing CSRF
+header and a `command` (`sponsor` or `withdraw`) with an `argument` (`openai` or `anthropic`).
+Explicit sponsorship authorizes future contributed calls; current calls remain org-funded.
+Target/overview responses include known unenrolled intents in `issues`, without task
+stages/budgets. This repo supplies API/badge data; the separate frontend has no new rendered
+controls in this changeset. See [phase 1](../docs/proposals/per-user-credentials/phase-1.md).

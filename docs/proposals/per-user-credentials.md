@@ -1,6 +1,7 @@
 # Proposal: per-user provider credentials
 
-**Status: proposal (epic), not implemented.** Revised after two Codex reviews against
+**Status: org-funded shadow sponsorship implemented; contributed inference remains proposed.**
+Current behavior and remaining boundaries are recorded in [phase 1](per-user-credentials/phase-1.md). Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
 The [implementation plan](per-user-credentials/implementation-plan.md) records the current

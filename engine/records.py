@@ -80,6 +80,7 @@ class Operation(TypedDict, total=False):
     attempt: int
     timing: Timing
     resume_rebind: str
+    shadow_sponsorship: Document  # Prospective attribution; actual payment remains org.
 
 
 class Session(TypedDict, total=False):

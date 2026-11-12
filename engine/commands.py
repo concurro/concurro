@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 class CommandKind(StrEnum):
     """Supported writer command kinds; revision grants are distinct from retries."""
 
+    SPONSOR = "sponsor"
+    WITHDRAW = "withdraw"
     START = "start"
     APPROVE = "approve"
     STOP = "stop"
@@ -60,7 +62,7 @@ def parse(body: str) -> Command | None:
     """Parse only the existing exact command grammar, ignoring surrounding whitespace."""
     body = body.strip()
     if not re.fullmatch(
-        r"/concurro (start|approve "
+        r"/concurro (sponsor(?: (?:openai|anthropic))?|withdraw (?:openai|anthropic)|start|approve "
         + protocol.DIGEST_PATTERN
         + r"|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
         body,
@@ -98,6 +100,8 @@ class CommandHandler:
     def dispatch(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Dispatch one already-authorized command and return its loop action."""
         handlers = {
+            CommandKind.SPONSOR: self.sponsorship,
+            CommandKind.WITHDRAW: self.sponsorship,
             CommandKind.START: self.start,
             CommandKind.APPROVE: self.approve,
             CommandKind.STOP: self.stop,
@@ -107,6 +111,22 @@ class CommandHandler:
             CommandKind.INVALIDATE: self.invalidate,
         }
         return handlers[command.kind](command, comment, comments)
+
+    def sponsorship(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
+        """Source reconciliation applies provider grants independently of the lifecycle cursor."""
+        if (
+            command.argument is None
+            and self.controller.state
+            and comment["id"] not in self.controller.state.get("sponsorship_usage_comments", [])
+        ):
+            self.controller.state.setdefault("sponsorship_usage_comments", []).append(comment["id"])
+            conversation.queue(
+                self.controller.state,
+                "Provider sponsorship",
+                "Use `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor future contributed calls; `/concurro withdraw <provider>` withdraws only your own consent. Current calls remain org-funded.",
+            )
+            self.controller.save()
+        return LoopAction.CONTINUE
 
     def start(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Start a manual assessment or consume a refusal without changing the pause."""

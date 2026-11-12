@@ -74,12 +74,20 @@ class Reconciler:
             if cached:
                 with self.guard:
                     self.hints[key] = (hint, self.clock() + HINT_SECONDS, comments, enrollment)
-        return {
+        snapshot = {
             "issue": {"state": issue["state"], "requirements": digest([issue["title"], issue["body"]])},
             "comments": comments,
             "enrollment": enrollment,
             "pull": self.pull(reader, root, key),
         }
+        projection = self.registry.sponsorship(key)
+        if projection.get("revision") or projection["source_revision"] or projection.get("task"):
+            snapshot["sponsorship"] = {
+                "revision": projection.get("revision"),
+                "source_revision": projection["source_revision"],
+                "status": projection["status"],
+            }
+        return snapshot
 
     def pull(self, reader, root, key):
         """The linked pull request's head, merge state, reviews and check runs, or None."""
@@ -129,10 +137,19 @@ class Reconciler:
         }
 
     def candidates(self, repository):
-        """Open enrolled issues, plus every task the registry still holds active (its label may be gone)."""
+        """Poll enrolled tasks, intent facts and existing command watches; skip pure discovery reads."""
         enrolled = pages(self.reader(repository), f"repos/{repository}/issues?state=open&labels={ENROLLMENT}")
         keys = {(repository, issue["number"]) for issue in enrolled if "pull_request" not in issue}
-        return sorted(keys | set(self.registry.active(repository)))
+        active = set()
+        for key in self.registry.active(repository):
+            previous = self.registry.acknowledged(key) or {}
+            if (
+                not previous.get("_sponsorship_discovery")
+                or self.registry.binding(key) is not None
+                or previous.get("_stage") is not None
+            ):
+                active.add(key)
+        return sorted(keys | active | {(repository, n) for n in self.registry.sponsor_issues(repository, active=True)})
 
     def poll(self, repositories=None, *, strict=False):
         """Enqueue every candidate whose inputs changed; reads only, so no model call without a change."""

@@ -259,7 +259,7 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         raw = legacy_state(body)
         self.assertEqual(raw["state"]["version"], 7)
         self.assertEqual(c.checkpoints.decode({"body": body}), c.state)
-        for version in (2, 3, 8):
+        for version in (2, 3, 9):
             broken = deepcopy(raw)
             broken["state"]["version"] = version
             with self.assertRaises(CheckpointError):

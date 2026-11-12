@@ -25,6 +25,21 @@ class ServiceCommands:
         self.url = (url or DEFAULT_URL).rstrip("/")
         self.client = client or httpx.Client(timeout=60)
 
+    def sponsorships(self, token: str, repository: str, issue: int | None = None) -> dict:
+        """Read issue intents from the daemon without opening its registry database."""
+        try:
+            response = self.client.post(
+                self.url + "/sponsorships",
+                headers={"Authorization": "Bearer " + token},
+                json={"repository": repository, "issue": issue},
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            raise CommandError(503, "sponsorship status unavailable") from None
+        if response.status_code != 200 or not isinstance(payload, dict):
+            raise CommandError(response.status_code, "sponsorship status unavailable")
+        return payload
+
     def send(self, token: str, repository: str, issue: int, command: str, argument: str | None) -> dict:
         """`{posted, actor, url}` once the service has posted the command comment."""
         body = {"repository": repository, "issue": issue, "command": command, "argument": argument}
