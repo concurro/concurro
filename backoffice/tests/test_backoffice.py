@@ -16,12 +16,13 @@ sys.path.insert(0, str(ROOT))
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backoffice import app as app_module, tasks as tasks_module  # noqa: E402
+from backoffice import app as app_module, github as github_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import AuthError, Sessions, User, challenge  # noqa: E402
 from backoffice.commands import CommandError, ServiceCommands  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
 from backoffice.settings import Settings  # noqa: E402
 from backoffice.turns import Diagnostics, normalize  # noqa: E402
+from github import NotFound, Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
 from service.targets import Target  # noqa: E402
 
@@ -324,35 +325,111 @@ class RosterTests(unittest.TestCase):
 
 class PullListingTests(unittest.TestCase):
     def test_task_branches_map_to_issues_and_open_pulls_win(self):
-        def pull(number, ref, state="open", draft=False):
+        def pull(number, ref, open=True, draft=False, runs=None, lines=(None, None)):
             return {
                 "number": number,
                 "title": f"PR {number}",
-                "state": state,
+                "open": open,
                 "draft": draft,
-                "head": {"ref": ref, "sha": "a" * 40},
+                "ref": ref,
+                "sha": "a" * 40,
+                "additions": lines[0],
+                "deletions": lines[1],
+                "runs": runs,
             }
 
+        green = [{"status": "completed", "conclusion": "success"}]
         listing = [
-            pull(42, "concurro/issue-35-b716ab5519d2", draft=True),
-            pull(41, "concurro/issue-36-22ba309e9891"),
-            pull(37, "chore/concurro-rpc-pilot-ci", state="closed"),
-            pull(20, "concurro/issue-36-0123456789ab", state="closed"),
-            pull(19, "concurro/issue-12-0123456789ab", state="closed"),
+            pull(42, "concurro/issue-35-b716ab5519d2", draft=True, runs=[], lines=(3, 1)),
+            pull(41, "concurro/issue-36-22ba309e9891", runs=green, lines=(120, 7)),
+            pull(37, "chore/concurro-rpc-pilot-ci", open=False),
+            pull(20, "concurro/issue-36-0123456789ab", open=False),
+            pull(19, "concurro/issue-12-0123456789ab", open=False),
         ]
 
         class Access:
-            def get(self, repository, path):
-                assert repository == "up/project" and path.startswith("pulls?state=all")
+            def pull_requests(self, repository):
+                assert repository == "up/project"
                 return listing
 
         reader = tasks_module.Tasks(settings(), Access(), USER)  # type: ignore[arg-type]
         pulls = reader.pulls_by_issue("up/project")
         self.assertEqual(sorted(pulls), [12, 35, 36])
-        self.assertEqual((pulls[35]["number"], pulls[35]["ready"]), (42, False))
-        self.assertEqual((pulls[36]["number"], pulls[36]["ready"]), (41, True))
-        self.assertEqual((pulls[12]["number"], pulls[12]["ready"]), (19, False))
+        self.assertEqual((pulls[35]["number"], pulls[35]["ready"], pulls[35]["ci"]), (42, False, "none"))
+        self.assertEqual(
+            (pulls[36]["number"], pulls[36]["ready"], pulls[36]["ci"], pulls[36]["additions"], pulls[36]["deletions"]),
+            (41, True, "passing", 120, 7),
+        )
+        self.assertEqual((pulls[12]["number"], pulls[12]["ready"], pulls[12]["additions"]), (19, False, None))
         self.assertNotIn("open", pulls[36])
+
+    def test_one_query_lists_line_counts_and_check_runs_with_a_rest_fallback(self):
+        """List metadata survives GraphQL failures; hidden repositories stay hidden."""
+        node = {
+            "number": 41,
+            "title": "PR 41",
+            "state": "OPEN",
+            "isDraft": False,
+            "headRefName": "concurro/issue-36-22ba309e9891",
+            "headRefOid": "b" * 40,
+            "additions": 120,
+            "deletions": 7,
+            "commits": {
+                "nodes": [
+                    {
+                        "commit": {
+                            "statusCheckRollup": {
+                                "contexts": {
+                                    "nodes": [
+                                        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+                                        {"__typename": "StatusContext"},
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+        }
+        queries = []
+
+        class Engine:
+            def __init__(self, result):
+                self.result = result
+
+            def api(self, path, method="GET", data=None):
+                queries.append((path, method, data["variables"]))
+                if isinstance(self.result, Exception):
+                    raise self.result
+                return self.result
+
+        access = github_module.UserAccess("token")
+        access.engine = lambda repository: Engine({"data": {"repository": {"pullRequests": {"nodes": [node]}}}})  # type: ignore[method-assign]
+        [pull] = access.pull_requests("up/project")
+        self.assertEqual(queries, [("graphql", "POST", {"owner": "up", "name": "project"})])
+        self.assertEqual(
+            (pull["open"], pull["ref"], pull["additions"], pull["deletions"]),
+            (True, "concurro/issue-36-22ba309e9891", 120, 7),
+        )
+        self.assertEqual(pull["runs"], [{"status": "completed", "conclusion": "failure"}])
+        self.assertEqual(tasks_module.ci(pull["runs"]), "failing")
+
+        rest = [{"number": 41, "title": "PR 41", "state": "open", "draft": True, "head": {"ref": "x", "sha": "c" * 40}}]
+        access.get = lambda repository, path: rest  # type: ignore[method-assign]
+        for failure in (
+            RuntimeError("HTTP 502"),
+            Transient("throttled", 60),
+            {"errors": [{"message": "refused"}]},
+            {"data": {"repository": None}},
+        ):
+            with self.subTest(failure=failure):
+                access.engine = lambda repository: Engine(failure)  # type: ignore[method-assign]
+                [pull] = access.pull_requests("up/project")
+                self.assertEqual((pull["draft"], pull["additions"], pull["runs"]), (True, None, None))
+
+        access.engine = lambda repository: Engine(NotFound("hidden"))  # type: ignore[method-assign]
+        with self.assertRaises(NotFound):
+            access.pull_requests("up/project")
 
 
 class TaskConfigTests(unittest.TestCase):
@@ -398,6 +475,30 @@ class ProjectionTests(unittest.TestCase):
     def test_summary_uses_the_stage_label(self):
         task = tasks_module.summary("up/project", self.ISSUE, "manual")
         self.assertEqual((task["stage"], task["labels"]), ("review", ["bug"]))
+
+    def test_plan_versions_are_unique_and_keep_the_current_plan_in_full(self):
+        """Repeated review generations cannot duplicate a plan's UI identity."""
+        for history_ids, expected in (
+            (["a", "b", "c"], ["a", "b", "c"]),
+            (["a", "a", "b"], ["a", "b", "c"]),
+            (["c", "b", "c"], ["b", "c"]),
+            ([], ["c"]),
+        ):
+            with self.subTest(history=history_ids):
+                state = {
+                    "stage": "escalated",
+                    "plan_id": "c",
+                    "plan": {"headline": "Current plan", "summary": "Full summary", "steps": ["Do the work"]},
+                    "plan_revisions": 2,
+                    "design_history": [{"plan": plan_id, "summary": "Historical summary"} for plan_id in history_ids],
+                }
+                task = tasks_module.project(state, {}, "up/project", self.ISSUE)
+                plans = task["plans"]
+                self.assertEqual([plan["id"] for plan in plans], expected)
+                self.assertEqual([plan["version"] for plan in plans], list(range(1, len(expected) + 1)))
+                self.assertEqual(plans[-1]["summary"], "Current plan")
+                self.assertEqual(plans[-1]["body"], "Full summary\n\n### Steps\n- Do the work")
+                self.assertTrue(all(plan["body"] == "Historical summary" for plan in plans[:-1]))
 
     def test_checkpoint_state_projects_into_the_task(self):
         member = {"id": "m1", "model": "claude-opus", "effort": "high", "agent": {"profile": "opus-high"}}

@@ -9,6 +9,8 @@ see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
   everyone out. The user's token stays server-side.
 - **Reads** use the signed-in user's token, so GitHub decides what they see. Task state is the
   engine's own audit checkpoint (`Checkpoints.load`); lists use the `concurro` opt-in and stage labels.
+  PR lists load line counts and head-commit check runs in one GraphQL query. If that fails,
+  a REST listing supplies the PRs with unknown (`null`) line counts and no CI information.
 - **Diagnostics** come from the service's `diagnostics_dir` (`service/diagnostics.py`), read-only.
 - **Commands** go to the service (`POST <service_url>/actions` with the user's sign-in token),
   which verifies the writer and posts the command as Concurro's own signed comment. The
@@ -26,7 +28,7 @@ see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
 | GET | `/api/targets/{owner}/{repo}` | `{target, tasks, runs}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
-| POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, url}` |
+| POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}` |
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |

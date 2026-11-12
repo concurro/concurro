@@ -14,6 +14,23 @@ REPOSITORY_SECONDS = 60
 REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
+# The 100 most recently updated pull requests with line counts and their head commit's check runs.
+PULL_REQUESTS = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number title state isDraft headRefName headRefOid additions deletions
+        commits(last: 1) {
+          nodes { commit { statusCheckRollup { contexts(first: 100) {
+            nodes { __typename ... on CheckRun { status conclusion } }
+          } } } }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 class UserGitHub(GitHub):
@@ -61,6 +78,24 @@ class UserAccess:
         REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)
         return found
 
+    def pull_requests(self, repository: str) -> list[dict]:
+        """Recently updated pull requests: `number`, `title`, `open`, `draft`, `ref`, `sha`, `additions`,
+        `deletions` and the head commit's check `runs` (`status`/`conclusion`, as REST spells them).
+
+        One GraphQL query; if GitHub refuses it, the REST listing, with counts and runs `None`.
+        """
+        owner, name = repository.split("/")
+        try:
+            result = self.engine(repository).api(
+                "graphql", "POST", {"query": PULL_REQUESTS, "variables": {"owner": owner, "name": name}}
+            )
+            return [graphql_pull(node) for node in result["data"]["repository"]["pullRequests"]["nodes"]]
+        except NotFound:
+            raise
+        except (RuntimeError, LookupError, TypeError, AttributeError):
+            listing = self.get(repository, "pulls?state=all&sort=updated&direction=desc&per_page=100")
+            return [rest_pull(pull) for pull in listing]
+
     def task_issues(self, repository: str) -> list[dict]:
         """Recently updated issues opted in with the `concurro` label (pull requests excluded)."""
         found = []
@@ -76,3 +111,41 @@ class UserAccess:
         reader = self.transport(fork)
         branch, sha = default_branch(reader, fork)
         return read_remote(lambda path: content(reader, fork, path, sha)), branch
+
+
+def graphql_pull(node: dict) -> dict:
+    """Normalize a GraphQL pull request and its check runs for task lists."""
+    commits = (node.get("commits") or {}).get("nodes") or []
+    rollup = (commits[-1]["commit"].get("statusCheckRollup") or {}) if commits else {}
+    contexts = (rollup.get("contexts") or {}).get("nodes") or []
+    return {
+        "number": node["number"],
+        "title": node.get("title") or "",
+        "open": node.get("state") == "OPEN",
+        "draft": bool(node.get("isDraft")),
+        "ref": node.get("headRefName") or "",
+        "sha": node.get("headRefOid") or "",
+        "additions": node.get("additions"),
+        "deletions": node.get("deletions"),
+        "runs": [
+            {"status": (c.get("status") or "").lower(), "conclusion": (c.get("conclusion") or "").lower() or None}
+            for c in contexts
+            if c.get("__typename") == "CheckRun"
+        ],
+    }
+
+
+def rest_pull(pull: dict) -> dict:
+    """Normalize a REST listing without inventing unavailable counts or check runs."""
+    head = pull.get("head") or {}
+    return {
+        "number": pull["number"],
+        "title": pull.get("title") or "",
+        "open": pull.get("state") == "open",
+        "draft": bool(pull.get("draft")),
+        "ref": head.get("ref") or "",
+        "sha": head.get("sha") or "",
+        "additions": None,
+        "deletions": None,
+        "runs": None,
+    }

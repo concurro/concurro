@@ -160,32 +160,29 @@ class Tasks:
         return target.upstream
 
     def pulls_by_issue(self, repository: str) -> dict[int, dict]:
-        """Recent pull requests from task branches, by issue; an open one wins over closed ones.
-
-        One listing per target, without CI or line counts (a task view loads those).
-        """
+        """Recent pull requests from task branches, by issue; an open one wins over closed ones."""
         try:
-            listing = self.access.get(repository, "pulls?state=all&sort=updated&direction=desc&per_page=100")
+            listing = self.access.pull_requests(repository)
         except NotFound:
             return {}
         found: dict[int, dict] = {}
         for pull in listing:
-            match = TASK_BRANCH.fullmatch((pull.get("head") or {}).get("ref") or "")
+            match = TASK_BRANCH.fullmatch(pull["ref"])
             if not match:
                 continue
-            issue, is_open = int(match[1]), pull.get("state") == "open"
-            if issue in found and (found[issue]["open"] or not is_open):
+            issue = int(match[1])
+            if issue in found and (found[issue]["open"] or not pull["open"]):
                 continue
             found[issue] = {
-                "open": is_open,
+                "open": pull["open"],
                 "number": pull["number"],
-                "title": pull.get("title") or "",
-                "branch": pull["head"]["ref"],
-                "headSha": (pull["head"].get("sha") or "")[:7],
-                "ci": "none",
-                "additions": 0,
-                "deletions": 0,
-                "ready": is_open and not pull.get("draft"),
+                "title": pull["title"],
+                "branch": pull["ref"],
+                "headSha": pull["sha"][:7],
+                "ci": ci(pull["runs"]) if pull["runs"] is not None else "none",
+                "additions": pull["additions"],
+                "deletions": pull["deletions"],
+                "ready": pull["open"] and not pull["draft"],
             }
         return {issue: {k: v for k, v in pull.items() if k != "open"} for issue, pull in found.items()}
 
@@ -439,30 +436,27 @@ def item_text(item) -> str:
 
 
 def plan_versions(state: dict, at: str) -> list[dict]:
-    """Earlier design generations' plans (summaries only), then the current plan in full."""
-    versions = []
+    """Distinct historical plans (summaries only), then the current plan in full."""
+    versions = {}
     for n, entry in enumerate(state.get("design_history") or [], start=1):
-        versions.append(
-            {
-                "id": entry.get("plan") or f"g{n}",
-                "version": n,
-                "createdAt": at,
-                "summary": entry.get("summary", ""),
-                "body": entry.get("summary", ""),
-            }
-        )
+        plan_id = entry.get("plan") or f"g{n}"
+        versions[plan_id] = {
+            "id": plan_id,
+            "createdAt": at,
+            "summary": entry.get("summary", ""),
+            "body": entry.get("summary", ""),
+        }
     plan = state.get("plan")
     if isinstance(plan, dict):
-        versions.append(
-            {
-                "id": state.get("plan_id") or "current",
-                "version": len(versions) + state.get("plan_revisions", 0) + 1,
-                "createdAt": at,
-                "summary": plan.get("headline") or (plan.get("summary") or "")[:200],
-                "body": plan_markdown(plan),
-            }
-        )
-    return versions
+        plan_id = state.get("plan_id") or "current"
+        versions.pop(plan_id, None)
+        versions[plan_id] = {
+            "id": plan_id,
+            "createdAt": at,
+            "summary": plan.get("headline") or (plan.get("summary") or "")[:200],
+            "body": plan_markdown(plan),
+        }
+    return [{**plan, "version": n} for n, plan in enumerate(versions.values(), start=1)]
 
 
 def member_label(identity: dict) -> tuple[str, str]:
