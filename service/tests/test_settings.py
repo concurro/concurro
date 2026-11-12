@@ -86,6 +86,17 @@ class SettingsTests(unittest.TestCase):
         del unpinned["engine"]
         self.assertIsNone(self.load(unpinned).engine, "resolved to the checkout's HEAD at startup")
 
+    def test_optional_delegation_key(self):
+        """The backoffice delegation key is an optional, distinct owner-only secret."""
+        self.assertIsNone(self.load(self.data).delegation_key_path)
+        key = self.private("delegation", "k" * 64)
+        self.assertEqual(self.load({**self.data, "delegation_key_path": str(key)}).delegation_key_path, key)
+        with self.assertRaises(settings.SettingsError):
+            self.load({**self.data, "delegation_key_path": self.data["webhook_secret_path"]})
+        key.chmod(0o644)
+        with self.assertRaises(settings.SettingsError):
+            self.load({**self.data, "delegation_key_path": str(key)})
+
     def test_older_settings_move_to_the_gateway(self):
         """Provider credentials and the engine pin go; the result must validate before it replaces the file."""
         path = self.root / "settings.json"

@@ -77,7 +77,7 @@ class OwnershipTests(OwnershipFixture, ManualPipelineFixture, unittest.TestCase)
         self.ready()
         self.transfer(SERVICE)
         controller, advanced, writes = self.mutations(SERVICE)
-        self.assertEqual(advanced.kind, "wait-until")
+        self.assertEqual(advanced.kind, "await-human")
         self.assertTrue(controller.state["handoff_ready"])
         self.assertTrue(writes)
 

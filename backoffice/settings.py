@@ -7,7 +7,16 @@ from urllib.parse import urlsplit
 
 from service.targets import Target
 
-FIELDS = {"public_url", "client_id", "client_secret_path", "targets", "diagnostics_dir", "vault_url", "static_dir"}
+FIELDS = {
+    "public_url",
+    "client_id",
+    "client_secret_path",
+    "targets",
+    "diagnostics_dir",
+    "vault_url",
+    "static_dir",
+    "service_url",
+}
 REQUIRED = {"public_url", "client_id", "client_secret_path", "targets"}
 
 
@@ -26,6 +35,8 @@ class Settings:
     diagnostics_dir: Path | None = None
     vault_url: str | None = None
     static_dir: Path | None = None
+    # The service's internal address for commands; defaults to `http://concurro-service:8787`.
+    service_url: str | None = None
 
     @property
     def base_path(self) -> str:
@@ -73,5 +84,6 @@ def load(path: str | Path) -> Settings:
         client_secret=secret,
         targets=tuple(targets),
         vault_url=data.get("vault_url") or None,
+        service_url=data.get("service_url") or None,
         **optional_path,
     )

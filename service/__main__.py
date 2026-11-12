@@ -12,10 +12,12 @@ import threading
 import time
 from dataclasses import replace
 
+import delegation
 import private
 from policy import Blocked
 
 from . import control, ingress, settings as settings_module
+from .actions import Actions
 from .cutover import Cutover
 from .diagnostics import Store
 from .errors import GatewayStop, RegistryError
@@ -27,6 +29,7 @@ from .scheduler import Scheduler
 from .settings import CHECKOUT, SettingsError
 from .targets import verify
 from .transport import Transport
+from .webhook_recovery import Recovery
 from .worker import Worker
 
 POLL_SECONDS = 300
@@ -89,17 +92,49 @@ class Daemon:
         writers = {r: Transport(r, self.identity.credential(r, "write"), time.time) for r in repositories}
         self.registry = Registry.open(settings.state_dir, settings.registry_id, initialize=self.initialize)
         gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__, bot_login)
-        self.reconciler = Reconciler(self.registry, readers.__getitem__, issue_repositories, {bot_login})
+        self.reconciler = Reconciler(
+            self.registry, readers.__getitem__, issue_repositories, {bot_login}, command_comment=delegation.marked
+        )
         diagnostics = Store(settings.diagnostics_dir) if settings.diagnostics_dir else None
+        delegation_key = (
+            private.read(settings.delegation_key_path, (CHECKOUT,)).strip() if settings.delegation_key_path else None
+        )
         worker = Worker(
-            settings, gateway, self.registry, self.reconciler, readers.__getitem__, bot_login, diagnostics=diagnostics
+            settings,
+            gateway,
+            self.registry,
+            self.reconciler,
+            readers.__getitem__,
+            bot_login,
+            diagnostics=diagnostics,
+            delegation_key=delegation_key,
         )
         self.reconciler.cleanup = worker.cleanup_runners
+        self.recovery = Recovery(self.identity, self.registry, self.reconciler, installations)
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
+        actions = (
+            Actions(
+                delegation_key,
+                self.registry,
+                readers.__getitem__,
+                writers.__getitem__,
+                issue_repositories,
+            )
+            if delegation_key
+            else None
+        )
         self.http = ingress.server(
-            ingress.Ingress(secret, self.registry, installations, {bot_login}, issue_repositories=issue_repositories),
+            ingress.Ingress(
+                secret,
+                self.registry,
+                installations,
+                {bot_login},
+                issue_repositories=issue_repositories,
+                command_comment=delegation.marked,
+            ),
             *self.listen,
+            actions=actions,
         )
         self.control = control.server(
             control.Control(self.registry, self.reconciler, cutover, worker.evaluate, gateway), settings.state_dir
@@ -109,13 +144,18 @@ class Daemon:
         log.info("serving %d repositories as %s on %s:%d", len(repositories), bot_login, *self.listen)
 
     def run(self):
-        """Dispatch due work and poll for missed input until asked to stop."""
-        poller, next_poll = None, 0.0
+        """Dispatch due work and recover missed webhook deliveries until asked to stop."""
+        poller, observer, next_poll = None, None, 0.0
         try:
             while not self.stopping.wait(DISPATCH_SECONDS):
                 self.scheduler.dispatch()
+                if not (observer and observer.is_alive()) and self.registry.observations():
+                    observer = threading.Thread(
+                        target=self.reconciler.observe_pending, name="observations", daemon=True
+                    )
+                    observer.start()
                 if time.monotonic() >= next_poll and not (poller and poller.is_alive()):
-                    poller = threading.Thread(target=self.reconciler.poll, name="poll", daemon=True)
+                    poller = threading.Thread(target=self.recovery.poll, name="webhook-recovery", daemon=True)
                     poller.start()
                     next_poll = time.monotonic() + self.poll_seconds
         except GatewayStop as error:
@@ -158,7 +198,7 @@ def parser():
     serve_command = commands.add_parser("serve", help="run the daemon")
     serve_command.add_argument("--initialize", action="store_true", help="create a new, empty registry")
     serve_command.add_argument("--listen", default=LISTEN, help="webhook address, HOST:PORT")
-    serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
+    serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS, help="App webhook recovery interval")
     commands.add_parser("status", help="show every task the registry knows")
     commands.add_parser("reconcile-once", help="poll every target now")
     adopt = commands.add_parser("adopt", help="move tasks from the Actions controller to this service")

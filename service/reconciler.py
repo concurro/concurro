@@ -4,9 +4,12 @@ import logging
 import threading
 import time
 
-from github import paginate
+from github import Transient, paginate
 from policy import digest
 from readiness import ci_refs
+
+from .failures import backoff
+from .observations import satisfied
 
 ENROLLMENT = "concurro"
 # A cached comment and label-event scan is reused while the issue's `updated_at` is unchanged,
@@ -24,7 +27,7 @@ def pages(reader, path, key=None):
 class Reconciler:
     """Snapshot task inputs through read tokens; compare with what the last completed tick acknowledged."""
 
-    def __init__(self, registry, reader, repositories, identities, clock=time.time, cleanup=None):
+    def __init__(self, registry, reader, repositories, identities, clock=time.time, cleanup=None, command_comment=None):
         """`reader(repository)` returns that repository's read transport; `identities` are Concurro logins."""
         self.registry, self.reader, self.clock = registry, reader, clock
         self.repositories = tuple(repositories)
@@ -32,26 +35,34 @@ class Reconciler:
         self.guard = threading.Lock()
         self.hints = {}
         self.cleanup = cleanup
+        self.command_comment = command_comment
 
     def ours(self, login):
-        """Whether a login is a Concurro identity, whose writes are never task input."""
+        """Whether a login belongs to Concurro; only marked commands become comment input."""
         return login in self.identities
 
-    def snapshot(self, key):
-        """The task's inputs only: Concurro's own comments, label events and the issue's `updated_at` are excluded."""
+    def comment_input(self, comments):
+        """The snapshot form of issue comments: everyone's but Concurro's, plus marked commands."""
+        return sorted(
+            [c["id"], digest(c["body"])]
+            for c in comments
+            if not self.ours(c["user"]["login"]) or self.command_comment and self.command_comment(c["body"] or "")
+        )
+
+    def snapshot(self, key, cached=True, comments_read=None):
+        """Task inputs, including marked commands but excluding other App-authored changes."""
         reader, root = self.reader(key[0]), f"repos/{key[0]}/"
         issue = reader.request("GET", root + f"issues/{key[1]}")
         hint = issue.get("updated_at")
         with self.guard:
-            cached = self.hints.get(key)
-        if hint and cached and cached[0] == hint and cached[1] > self.clock():
-            comments, enrollment = cached[2], cached[3]
+            entry = self.hints.get(key) if cached else None
+        if hint and entry and entry[0] == hint and entry[1] > self.clock():
+            comments, enrollment = entry[2], entry[3]
         else:
-            comments = sorted(
-                [c["id"], digest(c["body"])]
-                for c in pages(reader, root + f"issues/{key[1]}/comments")
-                if not self.ours(c["user"]["login"])
-            )
+            all_comments = pages(reader, root + f"issues/{key[1]}/comments")
+            if comments_read is not None:
+                comments_read.extend(all_comments)
+            comments = self.comment_input(all_comments)
             enrollment = [
                 [e["id"], e["event"], e["actor"]["login"]]
                 for e in pages(reader, root + f"issues/{key[1]}/events")
@@ -60,8 +71,9 @@ class Reconciler:
                 and e.get("actor")
                 and not self.ours(e["actor"]["login"])
             ]
-            with self.guard:
-                self.hints[key] = (hint, self.clock() + HINT_SECONDS, comments, enrollment)
+            if cached:
+                with self.guard:
+                    self.hints[key] = (hint, self.clock() + HINT_SECONDS, comments, enrollment)
         return {
             "issue": {"state": issue["state"], "requirements": digest([issue["title"], issue["body"]])},
             "comments": comments,
@@ -104,6 +116,8 @@ class Reconciler:
             "number": number,
             "head": head,
             "merge_head": pr.get("merge_commit_sha"),
+            "base_ref": (pr.get("base") or {}).get("ref"),
+            "base": (pr.get("base") or {}).get("sha"),
             "state": pr.get("state"),
             "draft": pr.get("draft"),
             "merged": bool(pr.get("merged")),
@@ -120,7 +134,7 @@ class Reconciler:
         keys = {(repository, issue["number"]) for issue in enrolled if "pull_request" not in issue}
         return sorted(keys | set(self.registry.active(repository)))
 
-    def poll(self, repositories=None):
+    def poll(self, repositories=None, *, strict=False):
         """Enqueue every candidate whose inputs changed; reads only, so no model call without a change."""
         if self.cleanup is not None:
             self.cleanup()
@@ -129,14 +143,42 @@ class Reconciler:
             try:
                 keys = self.candidates(repository)
             except Exception as error:
+                if strict:
+                    raise
                 log.warning("poll of %s failed: %s", repository, type(error).__name__)
                 continue
             for key in keys:
                 try:
                     snapshot = self.snapshot(key)
                 except Exception as error:
+                    if strict:
+                        raise
                     log.warning("snapshot of %s#%s failed: %s", *key, type(error).__name__)
                     continue
                 if self.registry.observe(key, snapshot):
                     enqueued.append(key)
         return enqueued
+
+    def observe(self, key, cached=True):
+        """Observe one task; failures propagate so durable callers can retry."""
+        return self.registry.observe(key, self.snapshot(key, cached=cached))
+
+    def observe_pending(self):
+        """Drain durable observations without bypassing engine retry deadlines."""
+        for key, version, attempts, expectations in self.registry.observations():
+            try:
+                comments = []
+                snapshot = self.snapshot(key, cached=False, comments_read=comments)
+                self.registry.observe(key, snapshot)
+                if not satisfied(expectations, comments):
+                    raise Transient("comment observation incomplete")
+            except Exception as error:
+                delay = (
+                    error.retry_after
+                    if isinstance(error, Transient) and error.retry_after is not None
+                    else backoff(attempts)
+                )
+                self.registry.finish_observation(key, version, retry_after=delay)
+                log.warning("observation of %s#%s failed: %s", *key, type(error).__name__)
+            else:
+                self.registry.finish_observation(key, version)

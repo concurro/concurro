@@ -245,12 +245,13 @@ class WorkerHelperTests(unittest.TestCase):
         trace = []
         worker.guard, worker.failures = Guard(trace), Counters(trace)
         worker.renewing = lambda *args: nullcontext()
-        worker.reconciler = SimpleNamespace(snapshot=lambda key: {"input": 1})
+        worker.reconciler = SimpleNamespace(snapshot=lambda key, cached=True: {"input": 1})
         config = {"fork": "fork/repo", "upstream": "up/repo"}
         worker.load = lambda *args: SimpleNamespace(config=config, bundle="bundle")
         worker.reader = lambda repo: trace.append(("read", repo)) or "reader:" + repo
         worker.gateway = SimpleNamespace(stop=lambda *args: None)
         worker.registry = SimpleNamespace(acknowledge=Mock())
+        worker.delegation_key = None
         worker.make_executor = lambda *args: None
         worker.agents = lambda *args, **kwargs: None
         worker.settings = SimpleNamespace(state_dir=Path("state"), controller_id="controller")

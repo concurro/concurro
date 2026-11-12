@@ -22,6 +22,7 @@ import classification
 import commands
 import conversation
 import dashboard_runs
+import delegation
 import design
 import design_batch
 import design_eligibility
@@ -328,6 +329,7 @@ class Controller:
         report_cache=None,
         resume_target=None,
         resume_config=None,
+        delegation_key=None,
     ):
         """Inject transports so complete lifecycles can be tested without credentials.
 
@@ -339,6 +341,7 @@ class Controller:
         self.enroll = enroll or (lambda: None)
         self.report_cache = report_cache
         self.resume_target = resume_target
+        self.delegation_key = delegation_key
         self.resume_config = resume_config or (lambda state: None)
         self.comment_id = None
         self.checkpoints = None
@@ -2183,6 +2186,8 @@ class Controller:
     def advance(self, number):
         """Advance one stage and classify what the task waits for next."""
         self.foreign = False
+        # The issue comments this tick acted on, so the service acknowledges exactly that input.
+        self.consumed_comments = None
         return self.outcome(self.step(number))
 
     def outcome(self, progressed):
@@ -2200,6 +2205,8 @@ class Controller:
             return Outcome("await-human", progressed)
         if progressed:
             return Outcome("continue", True)
+        if stage == "gates" and self.controller_id != ACTIONS:
+            return Outcome("await-human")
         return Outcome("wait-until", retry_after=WAIT_SECONDS)
 
     def _reconcile_external(self):
@@ -2286,8 +2293,12 @@ class Controller:
         self.issue = self.gh.repo(f"issues/{number}")
         if "pull_request" in self.issue:
             return False
-        comments = self.gh.pages(f"issues/{number}/comments")
+        comments = self.consumed_comments = self.gh.pages(f"issues/{number}/comments")
         self.load(comments)
+        # Verified backoffice commands stand in for their writer's own command comments.
+        comments = delegation.effective(
+            comments, self.delegation_key, self.config["repository"], number, self.identities.author("state")
+        )
         if self.state and self.state.get("controller", ACTIONS) != self.controller_id:
             # Another controller owns this task: no label, comment, artifact or health write.
             # Dropping the state also keeps the caller's health and failure paths silent.

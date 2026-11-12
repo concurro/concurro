@@ -15,6 +15,7 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+import delegation
 from controller import Outcome
 from service import ingress
 from service.ingress import Ingress
@@ -150,6 +151,16 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         )
         self.assertEqual(self.queued(), [KEY])
 
+    def test_delegated_commands_schedule_an_observation_not_a_tick(self):
+        """A signed command's webhook is observed against acknowledged input, never queued directly."""
+        self.ingress.command_comment = delegation.marked  # as the daemon wires it
+        body = delegation.render(b"k" * 32, KEY[0], 7, "writer", 42, "/concurro stop", "0" * 32)
+        data = comment(body=body, login=BOT, kind="Bot")
+        data["comment"]["id"] = 5
+        self.deliver("issue_comment", {**data, "sender": {"login": BOT}})
+        self.assertEqual(self.queued(), [])
+        self.assertEqual([key for key, *_ in self.registry.observations()], [KEY])
+
     def test_publication_repository_does_not_implicitly_enroll_issues(self):
         """PR access to upstream does not enable upstream issue enrollment when only fork issues are selected."""
         self.ingress = Ingress(
@@ -201,7 +212,7 @@ class IngressTests(ServiceFixture, unittest.TestCase):
             self.gateway.release(KEY, generation, None)
 
     def test_other_events_are_ignored(self):
-        self.assertEqual(self.deliver("push", payload()), 202)
+        self.assertEqual(self.deliver("release", payload()), 202)
         self.assertEqual(self.deliver("ping", {}), 200)
         self.assertEqual(self.queued(), [])
 

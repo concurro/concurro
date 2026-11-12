@@ -14,9 +14,10 @@ from controller import Outcome
 from policy import digest
 
 from .errors import RegistryError, RegistryFailure
+from .observations import expected
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -28,8 +29,16 @@ BINDINGS = """CREATE TABLE bindings (
 RUNNER_SESSIONS = """CREATE TABLE runner_sessions (
     id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,
     config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)"""
+WEBHOOK_RECOVERY = "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
+OBSERVATIONS = """CREATE TABLE observations (
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,
+    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
 SCHEMA = (
-    REVIEW_INTENTS
+    OBSERVATIONS
+    + ";"
+    + WEBHOOK_RECOVERY
+    + ";"
+    + REVIEW_INTENTS
     + ";"
     + BINDINGS
     + ";"
@@ -167,6 +176,8 @@ def _migrate_v2(db):
     db.execute(BINDINGS)
     db.execute(RUNNER_SESSIONS)
     db.execute(REVIEW_INTENTS)
+    db.execute(WEBHOOK_RECOVERY)
+    db.execute(OBSERVATIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -175,6 +186,8 @@ def _migrate_v3(db):
     """Add review recovery records without changing existing write outcomes."""
     db.execute("BEGIN IMMEDIATE")
     db.execute(REVIEW_INTENTS)
+    db.execute(WEBHOOK_RECOVERY)
+    db.execute(OBSERVATIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -197,6 +210,26 @@ def queue(db, key, cause, due_at):
         "INSERT OR REPLACE INTO queue VALUES (?, ?, ?, ?)",
         (*key, json.dumps(causes), min(row[1], due_at) if row else due_at),
     )
+
+
+def queue_observation(db, key, now, expectation=None):
+    """Coalesce expected changes while retaining a revision for in-flight races."""
+    row = db.execute("SELECT expectations FROM observations WHERE repository = ? AND issue = ?", key).fetchone()
+    expectations = json.loads(row[0]) if row else []
+    if expectation is not None and expectation not in expectations:
+        expectations.append(expectation)
+    db.execute(
+        "INSERT INTO observations VALUES (?, ?, 1, ?, 0, ?) ON CONFLICT(repository, issue) "
+        "DO UPDATE SET version = version + 1, due_at = min(due_at, excluded.due_at), expectations = excluded.expectations",
+        (*key, now, json.dumps(expectations)),
+    )
+
+
+def queue_ci(db, key, now):
+    """Wake readiness for CI without bypassing a deferred failure."""
+    snapshot = stored(db, "snapshots", key)
+    if (snapshot or {}).get("_stage") == "gates" and stored(db, "deferred", key) is None:
+        queue(db, key, "ci", now)
 
 
 def human_input(snapshot):
@@ -269,8 +302,14 @@ class Registry:
                 _migrate_v2(db)
             elif meta["schema"] == "3":
                 _migrate_v3(db)
-            elif meta["schema"] != str(SCHEMA_VERSION):
+            elif meta["schema"] not in ("4", str(SCHEMA_VERSION)):
                 raise RegistryError("registry identity or schema version mismatch")
+            if meta["schema"] == "4":
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(WEBHOOK_RECOVERY)
+                db.execute(OBSERVATIONS)
+                db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
+                db.execute("COMMIT")
         except (RegistryError, sqlite3.Error) as error:
             if db is not None:
                 db.close()
@@ -325,6 +364,14 @@ class Registry:
                 queue(db, tuple(key), "restart", now)
             db.execute("UPDATE ownership SET live = 0 WHERE live = 1")
 
+    def webhook_check(self, scope, checked=None):
+        """Read or advance delivery-history coverage for this App and target configuration."""
+        with self.transaction() as db:
+            if checked is not None:
+                db.execute("INSERT OR REPLACE INTO webhook_recovery VALUES (?, ?)", (scope, checked))
+            row = db.execute("SELECT checked FROM webhook_recovery WHERE scope = ?", (scope,)).fetchone()
+            return row[0] if row else None
+
     # Delivery de-duplication
 
     def seen(self, delivery_id):
@@ -335,6 +382,61 @@ class Registry:
             db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, self.clock()))
             return False
 
+    def receive(self, delivery_id, keys, event, ci=False, observation=False, expectation=None):
+        """Commit the delivery receipt and every affected task's wakeup together."""
+        with self.transaction() as db:
+            if db.execute("SELECT 1 FROM deliveries WHERE id = ?", (delivery_id,)).fetchone():
+                return False
+            now = self.clock()
+            for key in keys:
+                if observation:
+                    queue_observation(db, key, now, expectation)
+                elif ci:
+                    queue_ci(db, key, now)
+                else:
+                    queue(db, key, "webhook:" + event, now)
+            db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, now))
+        return True
+
+    def request_observation(self, key, comment=None, action="created"):
+        """Durably request an uncached observation, including after posting a delegated command."""
+        with self.transaction() as db:
+            queue_observation(db, key, self.clock(), expected(comment, action) if comment is not None else None)
+
+    def observations(self):
+        """Due targeted observations with revisions and previous failure counts."""
+        with self.transaction() as db:
+            return [
+                ((repo, issue), version, attempts, json.loads(expectations))
+                for repo, issue, version, attempts, expectations in db.execute(
+                    "SELECT repository, issue, version, attempts, expectations FROM observations WHERE due_at <= ? ORDER BY due_at",
+                    (self.clock(),),
+                )
+            ]
+
+    def finish_observation(self, key, version, retry_after=None):
+        """Finish only the observed revision; newer deliveries always retain their job."""
+        with self.transaction() as db:
+            if retry_after is None:
+                db.execute(
+                    "DELETE FROM observations WHERE repository = ? AND issue = ? AND version = ?", (*key, version)
+                )
+            else:
+                db.execute(
+                    "UPDATE observations SET attempts = attempts + 1, due_at = ? "
+                    "WHERE repository = ? AND issue = ? AND version = ?",
+                    (self.clock() + retry_after, *key, version),
+                )
+
+    def observed_comment(self, key, identifier):
+        """Whether an acknowledged or deferred snapshot included this command comment."""
+        with self.transaction() as db:
+            return any(
+                identifier == comment[0]
+                for table in ("snapshots", "deferred")
+                for comment in (stored(db, table, key) or {}).get("comments", [])
+            )
+
     # Queue
 
     def enqueue(self, key, cause, due_at):
@@ -342,12 +444,29 @@ class Registry:
         with self.transaction() as db:
             queue(db, key, cause, due_at)
 
+    def enqueue_unscheduled(self, key, cause, due_at):
+        """Queue a cause only for a task with no outcome, no live tick and no deferred retry.
+
+        Such a task has no retry deadline the cause could shorten; the cause backs up a command
+        observation the service could not request before stopping.
+        The check shares a transaction with `grant`, `defer` and `end`, so a first tick either
+        consumes the cause or is already live. Return whether it was queued.
+        """
+        with self.transaction() as db:
+            for query in (
+                "SELECT 1 FROM outcomes WHERE repository = ? AND issue = ?",
+                "SELECT 1 FROM ownership WHERE repository = ? AND issue = ? AND live = 1",
+                "SELECT 1 FROM deferred WHERE repository = ? AND issue = ?",
+            ):
+                if db.execute(query, key).fetchone():
+                    return False
+            queue(db, key, cause, due_at)
+            return True
+
     def enqueue_ci(self, key):
         """CI may wake completed reviews, never a model stage or a deferred failure."""
         with self.transaction() as db:
-            snapshot = stored(db, "snapshots", key)
-            if (snapshot or {}).get("_stage") == "gates" and stored(db, "deferred", key) is None:
-                queue(db, key, "ci", self.clock())
+            queue_ci(db, key, self.clock())
 
     def due(self, now):
         """Work items due by `now`, oldest first."""
@@ -773,6 +892,23 @@ class Registry:
                     (json.loads(row[2]).get("pull") or {}).get("head"),
                     (json.loads(row[2]).get("pull") or {}).get("merge_head"),
                 )
+            ]
+
+    def base_tasks(self, repository, ref):
+        """Wake PRs whose base branch moved; legacy snapshots lack a branch and are included."""
+        if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
+            return []
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT p.repository, p.issue, s.snapshot FROM pulls p "
+                "LEFT JOIN snapshots s USING(repository, issue) WHERE p.pull_repository = ?",
+                (repository,),
+            ).fetchall()
+            return [
+                (repo, issue)
+                for repo, issue, snapshot in rows
+                if ((json.loads(snapshot).get("pull") or {}).get("base_ref") if snapshot else None)
+                in (None, ref.removeprefix("refs/heads/"))
             ]
 
     def active(self, repository):

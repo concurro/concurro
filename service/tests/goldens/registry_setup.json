@@ -27,6 +27,16 @@
     ],
     [
       "execute",
+      "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)",
+      []
+    ],
+    [
+      "execute",
       "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
       []
     ],
@@ -95,7 +105,7 @@
         ],
         [
           "schema",
-          "4"
+          "5"
         ]
       ]
     ],
@@ -154,7 +164,9 @@
     "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
-    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))"
+    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)",
+    "observations": "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"
   },
   "migrate": [
     [
@@ -229,9 +241,19 @@
     ],
     [
       "execute",
+      "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
       "UPDATE meta SET value = ? WHERE name = 'schema'",
       [
-        "4"
+        "5"
       ]
     ],
     [
@@ -279,7 +301,9 @@
     "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
-    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))"
+    "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)",
+    "observations": "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"
   },
   "open": [
     [

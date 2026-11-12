@@ -24,7 +24,7 @@ LIMITS = (
     (re.compile(r"git/trees/[^/?#]+\?recursive=1"), 16 * MB),
 )
 # Headers kept for settlement and redirects; nothing else leaves the transport.
-KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location")
+KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location", "link")
 # A secondary rate limit without a requested delay: GitHub asks for at least a minute.
 SECONDARY_SECONDS = 60
 API_VERSION = "2022-11-28"

@@ -10,8 +10,9 @@ see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
 - **Reads** use the signed-in user's token, so GitHub decides what they see. Task state is the
   engine's own audit checkpoint (`Checkpoints.load`); lists use the `concurro` opt-in and stage labels.
 - **Diagnostics** come from the service's `diagnostics_dir` (`service/diagnostics.py`), read-only.
-- **Commands** are posted as the user's `/concurro` issue comments; the engine applies its usual
-  writer check.
+- **Commands** go to the service (`POST <service_url>/actions` with the user's sign-in token),
+  which verifies the writer and posts the command as Concurro's own signed comment. The
+  backoffice never writes to GitHub.
 - **Credentials** are forwarded to the vault with the user's token; the vault resolves the user itself.
 - Writes need the `X-Concurro-Request: 1` header.
 
@@ -42,7 +43,8 @@ see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
   "targets": [{"upstream": "owner/repo", "fork": "owner/fork", "issues": "fork"}],
   "diagnostics_dir": "/var/lib/concurro/diagnostics",
   "vault_url": "http://concurro-vault:8090",
-  "static_dir": "/srv/concurro-backoffice"
+  "static_dir": "/srv/concurro-backoffice",
+  "service_url": "http://concurro-service:8787"
 }
 ```
 
