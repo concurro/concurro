@@ -564,6 +564,14 @@ authorization still applies.
 [`edge/`](edge/) is a ready proxy: Caddy on port 443, serving the certificate files in
 `/etc/edge/tls` and every route file in `/etc/edge/sites`. It does not obtain certificates.
 
+Use Caddy 2.11.7 or later: 2.11.6 [cuts HTTP/1.1 POST streams off after one
+minute](https://github.com/caddyserver/caddy/issues/8103), interrupting model responses.
+For an existing edge, update only its installed Compose image to the version and digest
+in `edge/compose.yaml`, preserving host-specific networks, ports and mounts. Run
+`sudo docker compose -f /etc/edge/compose.yaml pull caddy`, then
+`sudo docker compose -f /etc/edge/compose.yaml up -d --no-deps caddy`. This briefly
+restarts the shared proxy; Concurro's services and saved state remain in place.
+
 ```bash
 sudo install -d /etc/edge/sites
 sudo install -d -m 0750 /etc/edge/tls
