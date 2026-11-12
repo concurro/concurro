@@ -99,7 +99,7 @@ class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
     def test_scheduler_preserves_unknown_stage_fallback(self):
         """Unknown persisted stages still yield the scheduler's existing continuation."""
         controller = Controller.__new__(Controller)
-        controller.foreign, controller.issue = False, {}
+        controller.foreign, controller.queued_commands, controller.issue = False, False, {}
         controller.controller_id = ACTIONS
         controller.state = {"stage": "legacy-future-stage"}
         result = controller.outcome(False)
@@ -108,7 +108,7 @@ class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
     def test_scheduler_stage_groups(self):
         """Terminal completion, retryable decisions and human waits are distinct concepts."""
         controller = Controller.__new__(Controller)
-        controller.foreign, controller.issue = False, {}
+        controller.foreign, controller.queued_commands, controller.issue = False, False, {}
         controller.controller_id = ACTIONS
         expected = {
             "intake": "wait-until",

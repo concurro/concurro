@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
+from controller import Controller
 from fakes import decision
-from pipeline_fixtures import ConsensusFixture
+from pipeline_fixtures import ISSUE, ConsensusFixture
 from policy import Blocked, approval_valid
 
 
@@ -80,6 +81,49 @@ class RevisionExtensionTests(ConsensusFixture, unittest.TestCase):
         self.assertTrue(all(o["resolved"] for o in state["objections"]))
         self.assertEqual(state["design_phase"], "fresh")
         self.assertGreater(state["calls"], prior["calls"])
+
+    def advance(self):
+        """One full controller tick; the durable state and the scheduling outcome."""
+        controller = Controller(self.gh, self.agents, self.config)
+        outcome = controller.advance(ISSUE)
+        return controller.state, outcome
+
+    def test_a_grant_queued_behind_resume_runs_on_a_continuation(self):
+        """Both commands arrived before one tick; the grant must not wait for unrelated input."""
+        self.exhausted()
+        self.gh.comment("/concurro resume")
+        self.gh.comment("/concurro retry --plan-revisions 1")
+        grant = self.gh.comments[-1]["id"]
+        state, outcome = self.advance()
+        self.assertEqual(state["stage"], "escalated", "the resume waits for revision capacity")
+        self.assertNotIn("plan_revision_grant", state)
+        self.assertEqual(outcome.kind, "continue")
+        state, _ = self.advance()
+        self.assertEqual(state["plan_revision_grant"]["added"], 1)
+        self.assertEqual(state["plan_revision_grant"]["comment"], grant)
+
+    def test_an_unauthorized_trailing_command_does_not_continue(self):
+        self.exhausted()
+        self.gh.comment("/concurro resume")
+        self.gh.comment("/concurro retry --plan-revisions 1", login="outsider")
+        state, outcome = self.advance()
+        self.assertEqual((state["stage"], outcome.kind), ("escalated", "blocked"))
+        self.assertNotIn("plan_revision_grant", state)
+
+    def test_continuations_drain_several_stopping_commands_in_order(self):
+        self.exhausted()
+        calls = len(self.agents.calls)
+        for text in ("/concurro resume", "/concurro retry --plan-revisions 1", "/concurro stop"):
+            self.gh.comment(text)
+        stop = self.gh.comments[-1]["id"]
+        kinds = []
+        for _ in range(3):
+            state, outcome = self.advance()
+            kinds.append(outcome.kind)
+        self.assertEqual(kinds, ["continue", "continue", "blocked"])
+        self.assertEqual(state["plan_revision_grant"]["added"], 1)
+        self.assertEqual((state["stage"], state["command_id"]), ("stopped", stop))
+        self.assertEqual(len(self.agents.calls), calls, "no model stage runs between queued commands")
 
     def test_legacy_stall_resumes_the_recorded_design_revision(self):
         prior = self.exhausted(legacy=True)

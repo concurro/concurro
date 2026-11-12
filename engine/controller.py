@@ -354,6 +354,7 @@ class Controller:
         self.bundle = bundle or Bundle(bundle_root, target_root)
         self.stage_synced = None
         self.foreign = False
+        self.queued_commands = False
         self.consuming = None
         self.stage_sync_warned = False
         self.stage_fallback = False
@@ -1617,6 +1618,12 @@ class Controller:
             if action is commands.LoopAction.CONTINUE:
                 continue
             if action is commands.LoopAction.RETURN_TRUE:
+                self.queued_commands = any(
+                    later["id"] > comment["id"]
+                    and commands.parse(later["body"]) is not None
+                    and self.permitted(later["user"]["login"])
+                    for later in comments
+                )
                 return True
 
     def rejected_output(self, value, reason, key):
@@ -2188,6 +2195,8 @@ class Controller:
         self.foreign = False
         # The issue comments this tick acted on, so the service acknowledges exactly that input.
         self.consumed_comments = None
+        # Set when a command ended this tick's command loop before later writer commands.
+        self.queued_commands = False
         return self.outcome(self.step(number))
 
     def outcome(self, progressed):
@@ -2199,6 +2208,9 @@ class Controller:
         stage = self.state["stage"]
         if stage in TERMINAL_STAGES:
             return Outcome("terminal", progressed)
+        if self.queued_commands:
+            # Its input was already delivered, so only a continuation processes the next command.
+            return Outcome("continue", True)
         if stage in ("blocked", "stopped", "rejected", "escalated"):
             return Outcome("blocked", progressed)
         if stage in ("planned", "clarify"):
