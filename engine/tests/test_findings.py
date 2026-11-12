@@ -222,6 +222,8 @@ class LifecycleTests(Harness, unittest.TestCase):
         state = self.run_to(Reviewers({"claude"}), "gates").state
         self.assertFalse([r for r in self.reasons(state) if "review" in r or "approval" in r])
         stale = {**state, "input_revision": state["input_revision"] + 1}
+        self.assertNotIn("claude approval missing or stale", self.reasons(stale))
+        stale = {**state, "requirements": {"body": "Changed requirement"}}
         self.assertIn("claude approval missing or stale", self.reasons(stale))
         reopened = deepcopy(state)
         reopened["findings"][0]["status"] = "open"

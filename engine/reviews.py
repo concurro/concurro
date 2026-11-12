@@ -9,12 +9,57 @@ import pending_reviews
 import reason_guidance
 from github import Transient
 from markup import block, code, link, table, text
-from policy import Blocked, digest
+from model_config import assigned
+from policy import Blocked, agent_identity, digest
 from protocol import PUBLICATION_BODY_BYTES as REVIEW_BODY_LIMIT
 
 # A closed finding's text is excerpted once its review event is published.
 EXCERPT = 300
 ELIDED = "… [Full text in the published issue conversation.]"
+
+
+def binding(state, config, provider):
+    """Identify reviewed inputs independently of workflow rounds and resume counters."""
+    return {
+        "base": state.get("base"),
+        "head": state.get("head"),
+        "requirements": digest(state.get("requirements")),
+        "plan": state.get("plan_id"),
+        "config": state.get("config_digest"),
+        "bundle": state.get("bundle_id"),
+        "plan_content": digest(state.get("plan")),
+        "agent": agent_identity(config, provider, "review"),
+    }
+
+
+def current(state, config, provider, report):
+    """Check report provenance; old reports retain their original evidence and attribution."""
+    if not isinstance(report, dict) or report.get("head") != state.get("head"):
+        return False
+    expected = binding(state, config, provider)
+    if "review_binding" in report:
+        return report["review_binding"] == digest(expected)
+    source = (report.get("classification") or {}).get("source", {})
+    if "binding" in source:
+        prior = source["binding"]
+        return (
+            isinstance(prior, dict)
+            and prior.get("stage") == "review"
+            and all(prior.get(k) == v for k, v in expected.items() if k not in ("agent", "plan_content"))
+            and source.get("agent") == expected["agent"]
+        )
+    # Pre-provenance reports cannot establish equivalence across a changed revision.
+    return report.get("input_revision") == state.get("input_revision", 0)
+
+
+def current_reports(state, config):
+    """Select the roster's applicable reports for dispatch, display and readiness."""
+    roster = assigned(config, "pr_reviewers")
+    return {
+        provider: report
+        for provider, report in state.get("reviews", {}).items()
+        if provider in roster and current(state, config, provider, report)
+    }
 
 
 def ledger(state):

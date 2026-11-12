@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 import design_eligibility
+import reviews
 import revisions
 import sessions
 from bundle import SKILLS
@@ -108,6 +109,9 @@ def adopt(controller, comment, config, bundle, config_digest, *, reassess=False)
         if stage == "gates":
             stage = "review"
             state["handoff_ready"] = False
+    if stage == "gates" and len(reviews.current_reports(state, config)) != len(assigned(config, "pr_reviewers")):
+        stage = "review"
+        state["handoff_ready"] = False
     controller.config, controller.bundle = config, bundle
     if hasattr(controller.agents, "config"):
         controller.agents.config = config

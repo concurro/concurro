@@ -52,6 +52,7 @@ from policy import (
     Blocked,
     RunnerTerminated,
     SessionFailure,
+    agent_identity,
     approval_binding,
     approval_valid,
     bound_design_roster,
@@ -465,16 +466,7 @@ class Controller:
         review_state.operation(remaining).pop("response", None)
         room = CHECKPOINT_LIMIT - len(self.checkpoints.audit_body(remaining).encode()) - 12000 - 4 * core_size
         allowance = min(limit - core_size - 50, room // 6)
-        if provider == "copilot" and "agents" not in self.config:
-            agent = {
-                "profile": provider,
-                "harness": provider,
-                "provider": None,
-                "model": (reviewer or {}).get("model") or selected_model(self.config, provider, stage),
-                "effort": None,
-            }
-        else:
-            agent = resolve(self.config, provider, stage, reviewer).record()
+        agent = agent_identity(self.config, provider, stage, reviewer)
         return classification.attach(report, self.state, agent, stage, allowance)
 
     def refresh_classification(self):
@@ -1225,6 +1217,7 @@ class Controller:
             head=state["head"],
             model=selected_model(self.config, provider, "review") or "CLI default",
             input_revision=state.get("input_revision", 0),
+            review_binding=digest(review_rules.binding(state, self.config, provider)),
             sequence=sequence,
             finding_ids=identifiers,
         )
@@ -2023,7 +2016,13 @@ class Controller:
     def review(self):
         """Continue one reviewer's private session against the current immutable change."""
         state = self.state
-        provider = next((p for p in assigned(self.config, "pr_reviewers") if p not in state["reviews"]), None)
+        current = review_rules.current_reports(state, self.config)
+        stale = {p: r for p, r in state["reviews"].items() if p not in current}
+        if stale:
+            state.setdefault("review_history", []).append(stale)
+            state["reviews"] = current
+            self.save()
+        provider = next((p for p in assigned(self.config, "pr_reviewers") if p not in current), None)
         if provider:
             changed = state["changed_files"]
             context = self.pr_review_context(
@@ -2063,8 +2062,9 @@ class Controller:
                 self.reopen_design(report["design_issue"], "pr_review:" + provider)
                 return
             self.save()
-        if len(state["reviews"]) == len(assigned(self.config, "pr_reviewers")):
-            if all(r["verdict"] == "approve" for r in state["reviews"].values()):
+        current = review_rules.current_reports(state, self.config)
+        if len(current) == len(assigned(self.config, "pr_reviewers")):
+            if all(r["verdict"] == "approve" for r in current.values()):
                 # A reason at the gates is always the gates' own; an earlier stage's is stale.
                 state.pop("reason", None)
                 state["stage"] = "gates"

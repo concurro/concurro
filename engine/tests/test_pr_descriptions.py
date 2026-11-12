@@ -9,6 +9,8 @@ from support import CONFIG, ROOT, setUpModule as setUpModule, tearDownModule as 
 
 import candidates
 import pr_description
+import prompts
+from bundle import Bundle
 from controller import Controller, validate_config
 from fakes import FakeAgents, FakeGitHub
 from policy import Blocked, digest
@@ -123,6 +125,47 @@ class DescriptionTests(unittest.TestCase):
             with self.assertRaises(Blocked):
                 candidates.development(changed)
 
+    def test_implementer_prompt_requires_final_description_check(self):
+        """The existing implementation turn checks its final description and discloses refinements."""
+        request = {
+            "stage": "develop",
+            "context": {"repository_commit": "a" * 40, "repository": {"refs": {}, "head": ""}},
+        }
+        prompt = json.loads(prompts.prompt_for(request, Bundle()))
+        instructions = " ".join(prompt["instructions"]["skill"].split())
+        for requirement in (
+            "Before returning your final report in this turn",
+            "complete base-to-head diff and actual validation results",
+            "Correct stale names, omitted changes and unsupported claims",
+            "Highlight deviations from the plan in `description.review_focus`",
+            "requirements, acceptance criteria, architecture or scope must change",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, instructions)
+
+    def test_reviewer_prompt_distinguishes_refinements_from_design_changes(self):
+        """The delivered review policy permits equivalent details without waiving design commitments."""
+        request = {
+            "stage": "review",
+            "context": {"repository_commit": "a" * 40, "repository": {"refs": {}, "head": ""}},
+        }
+        prompt = json.loads(prompts.prompt_for(request, Bundle()))
+        instructions = " ".join(prompt["instructions"]["skill"].split())
+        for requirement in (
+            "Accept implementation refinements that preserve requirements, acceptance criteria and approved design intent",
+            "renamed helpers, equivalent implementation choices and corrected description wording",
+            "Do not reopen solely because such details differ from the plan",
+            "substantive departure from approved requirements, acceptance criteria, architecture or scope",
+            "return `reopen` with structured `design_issue` evidence",
+            "Request changes for implementation defects",
+            "Check `published_pr_body`",
+            "Raise a finding for a materially misleading or incomplete description",
+            "Reopen only if the underlying change requires it, not solely because disclosure is missing",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, instructions)
+        self.assertNotIn("drift from the approved design even within scope", instructions)
+
     def test_pipeline_reviewers_receive_actual_published_body(self):
         config = {**self.config, "autonomous": True}
         gh, agents = FakeGitHub(config), DescribedAgents()
@@ -135,7 +178,8 @@ class DescriptionTests(unittest.TestCase):
         self.assertEqual(controller.state["candidate"]["description"], DESCRIPTION)
         self.assertIn("### Testing", gh.pr["body"])
         contexts = [c for _, stage, c in agents.calls if stage == "review"]
-        self.assertTrue(contexts)
+        self.assertEqual(len(contexts), len(config["reviewers"]))
+        self.assertTrue(all(c["plan"] == controller.state["plan"] for c in contexts))
         self.assertTrue(all(c["published_pr_body"] == gh.pr["body"] for c in contexts))
         gh.pr["body"] = "Human's actual description"
         context = controller.pr_review_context("claude", {}, {}, controller.state["head"])

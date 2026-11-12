@@ -65,7 +65,16 @@ class ReportDataError(Blocked):
     """Missing or changed durable review data must never authorise new work."""
 
 
-ANNOTATIONS = {"classification", "agent", "head", "model", "input_revision", "sequence", "finding_ids"}
+ANNOTATIONS = {
+    "classification",
+    "agent",
+    "head",
+    "model",
+    "input_revision",
+    "sequence",
+    "finding_ids",
+    "review_binding",
+}
 
 ARCHIVE_JSON = re.compile(r"\n(`{3,})json\n(.*)\n\1$", re.S)
 

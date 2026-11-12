@@ -272,7 +272,7 @@ class GuardContractTests(ConsensusFixture, unittest.TestCase):
                 self.assertEqual(controller.state["command_id"], before)
 
     def test_review_agent_record_is_optional_and_keeps_field_order(self):
-        """Legacy reports stay unchanged; profiles attach identity before review metadata."""
+        """Profiles attach display identity before the common provenance and review metadata."""
         for named in (False, True):
             with self.subTest(named=named):
                 controller = self.loaded()
@@ -286,7 +286,7 @@ class GuardContractTests(ConsensusFixture, unittest.TestCase):
                     list(report),
                     original_keys
                     + (["agent"] if named else [])
-                    + ["head", "model", "input_revision", "sequence", "finding_ids"],
+                    + ["head", "model", "input_revision", "review_binding", "sequence", "finding_ids"],
                 )
                 if named:
                     self.assertEqual(

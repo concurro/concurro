@@ -28,13 +28,21 @@ outcomes and unrun checks in `validation` as agent-reported evidence, not a cont
 ## Feedback and reopening
 
 Address `implementation_feedback`, prior PR reviews and open findings. If requirements,
-architecture or scope must change, return `design_issue` with evidence; workspace changes are
-discarded. Another call site inside the envelope does not require reopening.
+acceptance criteria, architecture or scope must change, return `design_issue` with evidence;
+workspace changes are discarded. Implementation refinements that preserve these commitments
+and approved design intent do not require reopening, including renamed helpers, equivalent
+implementation choices or another call site inside the envelope.
 
 ## Report
 
 Return the supplied [response contract](../../schemas/develop.json). The runner extracts edits;
 do not include a separate edit list.
+
+Before returning your final report in this turn, compare the PR description and validation claims
+with the complete base-to-head diff and actual validation results, including earlier repairs.
+Correct stale names, omitted changes and unsupported claims. Highlight deviations from the plan
+in `description.review_focus`, explaining why any implementation refinements preserve its goals
+and commitments. Report substantive design changes through `design_issue`, not as accepted deviations.
 
 - `description` covers the entire base-to-head PR diff, including earlier repairs: a concise lead
   sentence, problem bullets, change bullets naming files/functions, and compatibility bullets
@@ -42,7 +50,7 @@ do not include a separate edit list.
   review focus as a starting point; correct stale names or wording in this description without
   editing or reopening the approved plan. A description-only repair requires no workspace edits,
   empty commit, or new tests: keep the code unchanged and return the corrected description.
-  Reopen only for a change to requirements, architecture or scope, not publication wording.
+  Reopen only for a change to requirements, acceptance criteria, architecture or scope, not publication wording.
   Keep fields concise, without headings or line breaks. Testing claims belong
   only in `validation`.
 - `commit` covers this round: a concise subject following target conventions without a prefix,

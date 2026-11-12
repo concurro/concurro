@@ -1,6 +1,7 @@
 """Current-head review and CI eligibility for marking a draft PR ready."""
 
 import reason_guidance
+import reviews
 from model_config import assigned
 from policy import approval_valid, in_scope, path_allowed
 
@@ -35,14 +36,10 @@ def review_reasons(state, pr, files, threads, config):
         reasons.append(reason_guidance.CHANGED_BASE_BRANCH)
     if not approval_valid(state, config):
         reasons.append("approved plan missing or stale")
+    current = reviews.current_reports(state, config)
     for provider in assigned(config, "pr_reviewers"):
-        report = state.get("reviews", {}).get(provider, {})
-        if (
-            report.get("head") != state.get("head")
-            or report.get("verdict") != "approve"
-            or report.get("findings")
-            or report.get("input_revision") != state.get("input_revision", 0)
-        ):
+        report = current.get(provider, {})
+        if report.get("verdict") != "approve" or report.get("findings"):
             reasons.append(provider + " approval missing or stale")
     if state.get("pr_outbox") or state.get("conversation", {}).get("pending"):
         reasons.append("review publication incomplete")

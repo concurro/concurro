@@ -30,6 +30,11 @@ unfinished review team starts new judgments and archives superseded reports; cha
 the PR team repeats its review without deleting findings. Restarted design sessions lose
 first-pass eligibility. Previously accepted work is not automatically reassessed.
 
+PR approvals remain applicable when their reviewed inputs and reviewer identity match;
+administrative input revisions do not expire them. Ordinary resume can finish handoff
+after a description repair without repeating an unaffected review. It routes genuinely
+stale reports back to review, preserving the old evidence and all spent budgets.
+
 A proposed team must retain the owners of open or withdrawn PR findings and unresolved
 design objections. Otherwise resume is consumed with a notice naming the records, leaving
 settings and the pause reason unchanged. PR ownership follows the profile name; design
@@ -49,6 +54,10 @@ existing reconciliation semantics; resume does not assume that an unknown write 
 `/concurro invalidate` remains the explicit request to restart assessment.
 
 ## Recovering a mistaken description-only reopen
+
+This legacy recovery option is only for an outstanding erroneous design reopen. Normal
+description repairs, and tasks already recovered by this option, use ordinary resume.
+Resume does not infer from model prose that a genuine design objection can be discarded.
 
 A writer can use `/concurro resume --description-only` when publication wording was
 mistakenly escalated into a design reopen. This explicitly identifies the reopen as

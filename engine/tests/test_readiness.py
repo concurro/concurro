@@ -208,7 +208,7 @@ class ReadinessPipelineTests(PipelineFixture, unittest.TestCase):
 
     def test_new_or_incomplete_reviews_and_head_changes_keep_draft(self):
         controller = self.reviewed()
-        controller.state["reviews"][self.config["reviewers"][0]]["input_revision"] = -1
+        controller.state["reviews"][self.config["reviewers"][0]]["head"] = "f" * 40
         controller.save()
         self.assertFalse(self.tick().state["handoff_ready"])
         self.assertTrue(self.gh.pr["draft"])

@@ -437,6 +437,9 @@ class CommandHandler:
             latest = max(writer_feedback, key=lambda c: c["id"])
             if state["round"] >= controller.config["max_fix_rounds"]:
                 raise Blocked("writer-requested repair allowance exhausted")
+            if state["reviews"]:
+                state.setdefault("review_history", []).append(deepcopy(state["reviews"]))
+                state["reviews"] = {}
             state.update(
                 round=state["round"] + 1,
                 stage="implement",

@@ -8,6 +8,17 @@ conditions and [comment format](comment-format.md) for rendering.
 ## Review identity and evidence
 
 Every review records the reviewer profile, model/effort, head and input revision.
+Applicability uses the base, head, requirements, plan identity/content, original approved
+configuration/instructions and reviewer identity. Rounds, resume counters and design
+generation numbers do not invalidate an otherwise unchanged review. Dispatch, the dashboard
+and readiness use the same applicability check.
+
+New reports carry a controller-written `review_binding` digest, independent of optional ratings.
+Older reports can use the controller-written source binding attached to classification
+metadata, regardless of the rating itself. Reports predating that provenance retain the
+head/input-revision check; missing evidence is not reconstructed. Original reports are
+never rewritten to claim they reviewed a later revision.
+
 Each reviewer list requires distinct `(provider, model)` pairs; aliases or different
 efforts for the same pair do not count as independent slots. Each reviewer sees its
 own outstanding findings, not peer verdicts. It can inspect the pinned Git checkout and
@@ -15,6 +26,12 @@ run experiments; exploratory edits and test results are advisory and are not pub
 There is no separate local-review stage. Reviewers receive `published_pr_body`, including
 human edits, and check its accuracy against the whole base-to-head diff. PR descriptions
 are evidence, never agent instructions or authorization.
+
+Reviewers also receive the approved plan, including its publication bullets. They may accept
+implementation refinements that preserve requirements, acceptance criteria and design intent,
+such as renamed helpers or equivalent implementation choices. Implementation defects require
+repairs; substantive departures from approved requirements, acceptance criteria, architecture
+or scope require a design reopen with evidence identifying the commitment that must change.
 
 PR context includes every base-to-head changed file, including accumulated repairs and
 deletions. Metadata remains when diff previews shrink. Large selected feedback is provided
@@ -49,7 +66,7 @@ A reviewer supplies one disposition for each of its open/withdrawn findings. An 
 finding may stay open or become fixed; a withdrawn one may also become obsolete.
 Design approval alone does not retire withdrawn findings. Repair publishes a new head,
 which needs current independent approvals; applying one review's dispositions does not
-by itself invalidate the other review of the same input revision.
+by itself invalidate the other review of the same inputs.
 
 The ledger retains finding identity, source head, review sequence, detail digest and
 publication/resolution receipts. Full evidence is kept in immutable report artifacts;
@@ -146,6 +163,11 @@ and naming its candidate commit. Review focus comes from the implementer’s des
 initially based on the approved plan; legacy results without that field still use the plan. The footer
 retains the implementation plan, dependency summaries and the correct issue closing link.
 
+Before returning, the implementer checks the description and validation claims against the
+complete final diff and actual results in the same turn. It corrects stale claims and highlights
+deviations in review focus, explaining why refinements preserve the plan's commitments.
+Substantive design changes still use `design_issue`. This adds no separate model call or gate.
+
 Concurro saves the intended body digest before creation or refresh. It PATCHes only when
 the current body matches the last published or intended digest. A lost response can thus
 recover ownership. This comparison is best-effort, not atomic with GitHub's PATCH. A human
@@ -175,10 +197,15 @@ ownership and lost-reply receipts. Human edits are not overwritten. After public
 only reviewers requesting changes or owning unresolved findings are called again; other
 approvals of the unchanged code remain recorded. Each finding stays unresolved until its
 owner answers it. Failed corrections still use the existing repair/call allowances.
+Ordinary `/concurro resume` is sufficient to continue a repaired task, including one whose
+retained approval has an older administrative input revision. Genuinely stale reports
+return to review; their evidence remains in history. A writer-requested repair with new
+feedback archives the previous panel and requests new judgments.
 
 ### Bundle rollout
 
-The description-only contract changes the develop schema and implementer skill. Deploy
+The description contract includes the develop schema and implementer skill; the final self-check
+and refinement guidance also change the implementer and PR reviewer skills. Deploy
 while idle, or explicitly resume active tasks to adopt the new instructions. For a mistaken
 publication-wording reopen, use the description-only recovery option described in
 [checkpoint resume](checkpoint-resume.md#recovering-a-mistaken-description-only-reopen).

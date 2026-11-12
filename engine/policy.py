@@ -86,6 +86,19 @@ def selected_model(config, provider, stage):
     return config["models"][provider]
 
 
+def agent_identity(config, provider, stage, reviewer=None):
+    """Record the configured reviewer identity, including legacy Copilot attribution."""
+    if provider == "copilot" and "agents" not in config:
+        return {
+            "profile": provider,
+            "harness": provider,
+            "provider": None,
+            "model": (reviewer or {}).get("model") or selected_model(config, provider, stage),
+            "effort": None,
+        }
+    return model_config.resolve(config, provider, stage, reviewer).record()
+
+
 class OutsideScope(Blocked):
     """An implementation proposal edits paths outside the approved envelope; refused whole, as feedback."""
 

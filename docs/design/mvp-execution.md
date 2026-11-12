@@ -269,7 +269,7 @@ reviewers can inspect history and run their own experiments. A new head invalida
 previous approvals. A failed or conflicting publication remains visible and bounded.
 
 The review-complete predicate requires current plan authorization,
-expected published head, all configured reviewers approving that head/input revision,
+expected published head, all configured reviewers approving its current review inputs,
 no outstanding findings requiring action, and no pending publication. Preserve existing
 manual exits for unresolved/reopened engine threads; never resolve a human thread.
 These are Concurro's agent approvals, not GitHub's required human approvals.

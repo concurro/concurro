@@ -7,9 +7,11 @@ from unittest.mock import patch
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 import commands
+import reviews
 import test_bundle_lifecycle as lifecycle
+from fakes import named_config
 from github import Transient
-from policy import Blocked, approval_valid, digest
+from policy import Blocked, agent_identity, approval_valid, digest
 from test_pr_descriptions import COMMIT, DESCRIPTION, DescribedAgents
 
 
@@ -110,6 +112,170 @@ class DescriptionRepairTests(unittest.TestCase):
         self.assertEqual(c.state["findings"][0]["status"], "fixed")
         self.assertEqual(self.agents.calls[-1][:2], ("claude", "review"))
         self.assertEqual(c.state["reviews"]["codex"], before["reviews"]["codex"])
+        c.gates()
+        self.assertTrue(c.state["handoff_ready"], c.state.get("reason"))
+
+    def test_35_already_recovered_legacy_approval_resumes_through_handoff(self):
+        """An old retained vote survives administrative revisions without another paid call."""
+        c, _ = self.reopen()
+        self.gh.comment("/concurro resume --description-only")
+        c.commands(self.gh.comments)
+        self.implement(c)
+        c.publish()
+        c.review()
+        for report in c.state["reviews"].values():
+            report.pop("review_binding", None)
+        before = deepcopy(c.state)
+        calls = len(self.agents.calls)
+        self.assertNotEqual(c.state["reviews"]["codex"]["input_revision"], c.state["input_revision"])
+        c.save()
+        c = self.loaded()
+        self.gh.comment("/concurro resume")
+        c.commands(self.gh.comments)
+        c.gates()
+        self.assertTrue(c.state["handoff_ready"], c.state.get("reason"))
+        self.assertFalse(self.gh.pr["draft"])
+        self.assertEqual(len(self.agents.calls), calls)
+        for key in ("reviews", "approval", "head", "findings", "calls", "credentials", "plan_revisions", "round"):
+            self.assertEqual(c.state.get(key), before.get(key), key)
+        c = self.loaded()
+        c.commands(self.gh.comments)
+        c.gates()
+        self.assertEqual(self.gh.ready_calls, 1)
+
+    def test_review_scheduling_and_readiness_reject_changed_review_inputs(self):
+        """Changed requirements cannot reuse a same-head vote merely because its slot exists."""
+        c = self.ready()
+        c.state["stage"] = "review"
+        c.state["requirements"]["body"] = "Different requirements"
+        calls = len(self.agents.calls)
+        c.review()
+        self.assertEqual(len(self.agents.calls), calls + 1)
+        self.assertEqual(c.state["stage"], "review")
+
+    def test_ordinary_resume_requeues_stale_reports_instead_of_sticking_at_gates(self):
+        """A genuinely changed review input leads to review work, not a permanent readiness refusal."""
+        c = self.reach("gates")
+        c.state["reviews"]["claude"]["head"] = "f" * 40
+        old = deepcopy(c.state["reviews"]["claude"])
+        self.gh.comment("/concurro resume")
+        c.commands(self.gh.comments)
+        self.assertEqual(c.state["stage"], "review")
+        c.review()
+        self.assertTrue(any(h.get("claude") == old for h in c.state["review_history"]))
+        c.gates()
+        self.assertTrue(c.state["handoff_ready"], c.state.get("reason"))
+
+    def test_review_validity_uses_inputs_not_round_or_classification_rating(self):
+        """Administrative counters and optional ratings do not replace the reviewed inputs."""
+        c = self.reach("gates")
+        original = deepcopy(c.state)
+        report = deepcopy(c.state["reviews"]["codex"])
+        report.pop("classification", None)
+        c.state.update(input_revision=900, round=50, design_generation=60)
+        self.assertTrue(reviews.current(c.state, c.config, "codex", report))
+        for field in ("head", "base", "requirements", "plan_id", "plan", "config_digest", "bundle_id"):
+            with self.subTest(field=field):
+                changed = deepcopy(original)
+                changed[field] = {"changed": True} if isinstance(changed.get(field), dict) else "changed"
+                self.assertFalse(reviews.current(changed, c.config, "codex", report))
+        new_config = deepcopy(c.config)
+        new_config["models"]["codex"] = "different-model"
+        self.assertFalse(reviews.current(original, new_config, "codex", report))
+
+    def test_legacy_provenance_is_checked_without_rewriting_the_report(self):
+        """Old controller-authored sources prove equivalence; missing sources keep the old rule."""
+        c = self.reach("gates")
+        report = deepcopy(c.state["reviews"]["codex"])
+        report.pop("review_binding", None)
+        before = deepcopy(report)
+        c.state["input_revision"] += 1
+        self.assertTrue(reviews.current(c.state, c.config, "codex", report))
+        self.assertEqual(report, before)
+        for field in ("head", "base", "requirements", "plan", "config", "bundle"):
+            with self.subTest(field=field):
+                changed = deepcopy(report)
+                changed["classification"]["source"]["binding"][field] = "different"
+                self.assertFalse(reviews.current(c.state, c.config, "codex", changed))
+        report.pop("classification")
+        self.assertFalse(reviews.current(c.state, c.config, "codex", report))
+        c.state["input_revision"] = report["input_revision"]
+        self.assertTrue(reviews.current(c.state, c.config, "codex", report))
+
+    def test_legacy_named_profile_approval_checks_model_and_effort(self):
+        """A stored named-profile source, as on #35, is valid independently of its old counter."""
+        c = self.reach("gates")
+        report = deepcopy(c.state["reviews"]["codex"])
+        report.pop("review_binding")
+        config = named_config()
+        report["classification"]["source"]["agent"] = agent_identity(config, "sol-high", "review")
+        c.state["input_revision"] += 1
+        self.assertTrue(reviews.current(c.state, config, "sol-high", report))
+        for field, value in (("model", "different-model"), ("effort", "medium")):
+            with self.subTest(field=field):
+                changed = deepcopy(config)
+                changed["models"]["sol-high"][field] = value
+                self.assertFalse(reviews.current(c.state, changed, "sol-high", report))
+
+    def test_resume_keeps_a_genuine_reopen_pending(self):
+        """Ordinary resume does not reinterpret an unresolved design objection as editorial."""
+        c, _ = self.reopen()
+        spent = c.state["plan_revisions"]
+        self.gh.comment("/concurro resume")
+        c.commands(self.gh.comments)
+        self.assertFalse(approval_valid(c.state, c.config))
+        self.assertEqual(c.state["plan_revisions"], spent)
+        self.assertNotEqual(c.state["stage"], "implement")
+
+    def test_stale_review_is_not_displayed_as_complete(self):
+        """Display and scheduling use the same applicability predicate as readiness."""
+        c = self.reach("gates")
+        c.state["reviews"]["codex"]["head"] = "f" * 40
+        self.assertNotIn("| Code review | ✅", c.summary_body())
+        c.state["stage"] = "review"
+        self.assertIn("codex", c.activity_line())
+
+    def test_ordinary_resume_lost_save_reuses_reviews_even_at_call_limit(self):
+        """Replay does not spend a call or require another review after the recovery receipt was saved."""
+        c = self.reach("gates")
+        c.state.update(input_revision=50, calls=c.config["max_model_calls"])
+        votes = deepcopy(c.state["reviews"])
+        self.gh.comment("/concurro resume")
+        save = c.save
+
+        def lose_reply(*args, **kwargs):
+            """Persist the resume, then lose only its acknowledgement."""
+            save(*args, **kwargs)
+            raise Transient("response_lost")
+
+        with patch.object(c, "save", side_effect=lose_reply), self.assertRaises(Transient):
+            c.commands(self.gh.comments)
+        c = self.loaded()
+        calls = len(self.agents.calls)
+        c.commands(self.gh.comments)
+        c.gates()
+        self.assertTrue(c.state["handoff_ready"], c.state.get("reason"))
+        self.assertEqual(c.state["reviews"], votes)
+        self.assertEqual(c.state["calls"], c.config["max_model_calls"])
+        self.assertEqual(len(self.agents.calls), calls)
+
+    def test_writer_feedback_requests_review_even_when_repair_changes_only_description(self):
+        """Explicit new writer evidence is not mistaken for an administrative counter change."""
+        c = self.reach("gates")
+        previous = deepcopy(c.state["reviews"])
+        self.gh.comment("Clarify the target check in the review focus.")
+        self.gh.comment("/concurro retry")
+        c.commands(self.gh.comments)
+        self.assertEqual(c.state["reviews"], {})
+        self.assertIn(previous, c.state["review_history"])
+        self.implement(c)
+        c.publish()
+        calls = len(self.agents.calls)
+        c.review()
+        c.review()
+        self.assertEqual([p for p, stage, _ in self.agents.calls[calls:] if stage == "review"], ["claude", "codex"])
+        c.gates()
+        self.assertTrue(c.state["handoff_ready"], c.state.get("reason"))
 
     def test_lost_body_reply_replays_without_new_commit_or_model_call(self):
         c = self.ready()

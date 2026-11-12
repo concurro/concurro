@@ -255,7 +255,8 @@ mode-only edits are refused. The controller checks complete cumulative changes a
 builds Git objects itself. Agent validation is reported, never represented as trusted CI.
 
 The PR is created upstream as a draft. All configured agent reviewers must approve the
-current head and input revision, with no open findings or pending publication. CI must
+current code, requirements and plan under their recorded review identities, with no
+open findings or pending publication. Administrative input revisions do not expire approvals. CI must
 have at least one successful result and no failed or pending result. Skipped/neutral
 results alone are insufficient. Concurro also reads statuses on a verified current test-
 merge commit. It does not inspect branch protection or maintain an ignored-check list.

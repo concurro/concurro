@@ -316,13 +316,21 @@ class DiagnosticsTests(PipelineFixture, unittest.TestCase):
         controller.state["design_votes"][roster[0]["id"]] = {"report": {"decision": "approve"}}
         self.assertNotIn("`" + roster[0]["provider"] + "`", controller.activity_line())
         self.assertIn("`" + roster[1]["provider"] + "`", controller.activity_line())
-        controller.state.update(stage="review", reviews={})
+        controller.state.update(stage="review", reviews={}, head="a" * 40)
         for provider in self.config["reviewers"]:
             self.assertIn("`" + provider + "`", controller.activity_line())
-        controller.state["reviews"][self.config["reviewers"][0]] = {"verdict": "approve"}
+        controller.state["reviews"][self.config["reviewers"][0]] = {
+            "verdict": "approve",
+            "head": controller.state["head"],
+            "input_revision": controller.state.get("input_revision", 0),
+        }
         self.assertNotIn("`" + self.config["reviewers"][0] + "`", controller.activity_line())
         self.assertIn("`" + self.config["reviewers"][1] + "`", controller.activity_line())
-        controller.state["reviews"][self.config["reviewers"][1]] = {"verdict": "approve"}
+        controller.state["reviews"][self.config["reviewers"][1]] = {
+            "verdict": "approve",
+            "head": controller.state["head"],
+            "input_revision": controller.state.get("input_revision", 0),
+        }
         self.assertIn("Checking review findings", controller.activity_line())
 
     def test_alert_severity_distinguishes_decisions_from_failures(self):

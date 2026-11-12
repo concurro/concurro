@@ -13,6 +13,7 @@ import protocol
 import reason_guidance
 import review_state
 import review_timing
+import reviews as review_rules
 from actions import BUNDLE_REASON
 from checkpoints import MARKER
 from markup import code, link, text
@@ -257,7 +258,8 @@ class Dashboard:
 
     def _review_activity(self) -> str:
         """List all PR reviewers whose current-head results are still outstanding."""
-        providers = [p for p in assigned(self.config, "pr_reviewers") if p not in self.state.get("reviews", {})]
+        current = review_rules.current_reports(self.state, self.config)
+        providers = [p for p in assigned(self.config, "pr_reviewers") if p not in current]
         names = " and ".join(markup.code(p) for p in providers)
         return (
             f"We're waiting for {names} to review the pull request."
@@ -326,7 +328,11 @@ class Dashboard:
         if stage in ("blocked", "escalated") and state.get("retry_stage") in STAGE_STEP:
             return STAGE_STEP[state["retry_stage"]]
         if state.get("pr"):
-            return 4 if len(state.get("reviews", {})) < len(assigned(self.config, "pr_reviewers")) else 5
+            return (
+                4
+                if len(review_rules.current_reports(state, self.config)) < len(assigned(self.config, "pr_reviewers"))
+                else 5
+            )
         if state.get("local_status") or state.get("approval"):
             return 3
         if (
@@ -382,10 +388,14 @@ class Dashboard:
             status = "✅ Candidate published" if done else "▶️ In progress"
             detail = "Agent-reported validation; independent reviews and CI follow" if candidate else ""
         elif name == "Code review":
-            reviews = state.get("reviews", {})
+            reviews = review_rules.current_reports(state, self.config)
             approve = sum(r["verdict"] == "approve" for r in reviews.values())
             total = len(assigned(self.config, "pr_reviewers"))
-            status = f"✅ {approve} of {total} approve" if done else f"▶️ {len(reviews)} of {total} reviewed"
+            status = (
+                f"✅ {approve} of {total} approve"
+                if done and approve == total
+                else f"▶️ {len(reviews)} of {total} reviewed"
+            )
             open_findings = sum(f["status"] in ("open", "withdrawn") for f in state.get("findings", []))
             pr = link(f"PR #{state['pr']}", self.pr_url(state["pr"])) if state.get("pr") else ""
             detail = " · ".join(
