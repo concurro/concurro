@@ -30,11 +30,13 @@ TURN_ID = "12345678-1234-1234-1234-123456789abc"
 
 def settings(public_url="https://host.invalid/concurro", **extra) -> Settings:
     return Settings(
-        public_url=public_url,
-        client_id="client",
-        client_secret="secret",
-        targets=(Target("up/project", "owner/project", "fork"),),
-        **extra,
+        **{
+            "public_url": public_url,
+            "client_id": "client",
+            "client_secret": "secret",
+            "targets": (Target("up/project", "owner/project", "fork"),),
+            **extra,
+        }
     )
 
 
@@ -265,6 +267,68 @@ class RosterTests(unittest.TestCase):
             [r["role"] for r in roster], ["planner", "plan_reviewer", "implementer", "pr_reviewer", "pr_reviewer"]
         )
         self.assertEqual({p["name"]: p["provider"] for p in profiles}, {"claude": "anthropic", "codex": "openai"})
+
+
+class PullListingTests(unittest.TestCase):
+    def test_task_branches_map_to_issues_and_open_pulls_win(self):
+        def pull(number, ref, state="open", draft=False):
+            return {
+                "number": number,
+                "title": f"PR {number}",
+                "state": state,
+                "draft": draft,
+                "head": {"ref": ref, "sha": "a" * 40},
+            }
+
+        listing = [
+            pull(42, "concurro/issue-35-b716ab5519d2", draft=True),
+            pull(41, "concurro/issue-36-22ba309e9891"),
+            pull(37, "chore/concurro-rpc-pilot-ci", state="closed"),
+            pull(20, "concurro/issue-36-0123456789ab", state="closed"),
+            pull(19, "concurro/issue-12-0123456789ab", state="closed"),
+        ]
+
+        class Access:
+            def get(self, repository, path):
+                assert repository == "up/project" and path.startswith("pulls?state=all")
+                return listing
+
+        reader = tasks_module.Tasks(settings(), Access(), USER)  # type: ignore[arg-type]
+        pulls = reader.pulls_by_issue("up/project")
+        self.assertEqual(sorted(pulls), [12, 35, 36])
+        self.assertEqual((pulls[35]["number"], pulls[35]["ready"]), (42, False))
+        self.assertEqual((pulls[36]["number"], pulls[36]["ready"]), (41, True))
+        self.assertEqual((pulls[12]["number"], pulls[12]["ready"]), (19, False))
+        self.assertNotIn("open", pulls[36])
+
+
+class TaskConfigTests(unittest.TestCase):
+    def test_tasks_run_with_the_workers_merged_configuration(self):
+        target = Target("up/project", "owner/project", "upstream")
+        reader = tasks_module.Tasks(settings(targets=(target,)), None, USER)  # type: ignore[arg-type]
+        reader.configs["owner/project"] = ({"repository": "owner/project", "bot_login": "bot"}, "main")
+        config = reader.task_config(target, "up/project")
+        self.assertEqual(
+            (config["repository"], config["upstream"], config["fork"]), ("up/project", "up/project", "owner/project")
+        )
+        self.assertEqual(reader.publication_repository(target), "up/project")
+
+    def test_engine_refusals_are_readable(self):
+        from checkpoints import CheckpointError
+
+        class Failing(tasks_module.Tasks):
+            def overview(self):
+                raise CheckpointError("checkpoint_format")
+
+        sessions = Sessions()
+        sid = sessions.create("token", USER, 60)
+        original = app_module.Tasks
+        app_module.Tasks = Failing  # type: ignore[misc]
+        self.addCleanup(setattr, app_module, "Tasks", original)
+        client = TestClient(app_module.create_app(settings(), oauth=FakeOAuth(), vault=Vault(None), sessions=sessions))  # type: ignore[arg-type]
+        response = client.get("/api/overview", cookies={app_module.SESSION_COOKIE: sid})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("checkpoint_format", response.json()["detail"])
 
 
 class ProjectionTests(unittest.TestCase):

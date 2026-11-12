@@ -12,7 +12,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from checkpoints import CheckpointError
 from github import NotFound, Transient
+from policy import Blocked
 
 from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
 from .credentials import Vault, VaultError
@@ -75,6 +77,13 @@ def create_app(
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=404)
+
+    @app.exception_handler(Blocked)
+    async def refused(_: Request, error: Blocked) -> JSONResponse:
+        # Engine refusals carry public text; checkpoint errors render a fixed code and description.
+        detail = error.public_detail() if isinstance(error, CheckpointError) else str(error)
+        log.warning("engine refused a read: %s", detail)
+        return JSONResponse({"detail": "Concurro's task state could not be read: " + detail}, status_code=502)
 
     @app.exception_handler(Transient)
     async def unavailable(_: Request, __: Transient) -> JSONResponse:
