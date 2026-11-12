@@ -8,7 +8,7 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 
 1. Sign in with GitHub.
 2. Manage your own provider credentials, bound to your stable GitHub user ID, so sponsored
-   tasks are paid by the sponsor.
+   calls are paid by the task/provider-slot sponsor, with explicit issue-comment sponsors ahead of initiator fill.
 3. Helicopter view of targets → issues/PRs/Actions, joined with Concurro task state, scoped
    to what the signed-in user can see.
 4. Deep-dive into a task's runs: prompts, transcripts, raw responses, validation and runner
@@ -86,7 +86,7 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 | ---- | ---- | ---- |
 | Self | Signed-in user ID | Credentials, own usage, sponsorships, preferences |
 | Reader | Read access to the issue repository | Task summary, plan, reviews, reports, readiness, run diagnostics, raw audit |
-| Writer | Same check as `controller.permitted` | Commands, write intents |
+| Writer | Same check as `controller.permitted` | Commands, write intents; own sponsorship withdrawal is identity-based self-revocation |
 | Operator | Deployment-configured user IDs | Registry status, write resolution, exchange/gateway health, evaluations |
 
 Exposing diagnostics to readers changes the current "transcripts are stored privately"
@@ -119,9 +119,8 @@ Token refresh (8 h expiry, rotating refresh token) stays server-side.
 | PUT | `/me/credentials/{route}` | Add or replace (write-only); validated with a cheap provider call before acceptance; returns version + fingerprint |
 | POST | `/me/credentials/{route}/validate` | Re-validate an existing credential |
 | DELETE | `/me/credentials/{route}` | Revoke; retires sessions per the [vault rules](per-user-credentials.md#5-vault) |
-| POST | `/me/credentials/{route}/login` | Subscription login flow (proposal phase 5) |
 | GET | `/me/coverage?target=` | Which roles of each target's roster your credentials cover; what's missing |
-| GET | `/me/sponsorships` | Tasks you sponsor, epoch, state (highlights `awaiting_credentials`) |
+| GET | `/me/sponsorships` | Issue/task provider slots you sponsor, projection revision before adoption or independent epochs afterwards, source/provenance, provisional/confirmed state and missing coverage |
 | GET | `/me/usage?from&to&group_by=task\|route\|model` | Calls and tokens charged to your account |
 
 ### 3. Overview and targets
@@ -137,7 +136,9 @@ Token refresh (8 h expiry, rotating refresh token) stays server-side.
 
 | Method | Path | Purpose |
 | ---- | ---- | ---- |
-| GET | `/repos/{owner}/{repo}/issues?state&label&enrolled&q` | Issues with task stage/sponsor badge where enrolled |
+| GET | `/repos/{owner}/{repo}/issues?state&label&enrolled&q` | Visible issues, including known unenrolled sponsorship intents with pending/confirmed provider badges; no fabricated task stage |
+| GET | `/repos/{owner}/{repo}/issues/{n}/sponsorships` | Issue-level provider slots/source/coverage, even without task/checkpoint; BFF reads a daemon projection after GitHub visibility check |
+| POST | `/repos/{owner}/{repo}/issues/{n}/commands` | Same command+argument transport to `ServiceCommands`/`Actions` for pre-enrollment sponsor/withdraw comments |
 | GET | `/repos/{owner}/{repo}/pulls?state&q` | PRs with linked task, CI rollup, agent approval count, open findings |
 | GET | `/repos/{owner}/{repo}/pulls/{n}` | PR detail: checks/statuses, reviews and threads (finding markers resolved to finding IDs), linked task |
 | GET | `/repos/{owner}/{repo}/actions/runs?kind=executor\|ci` | Workflow runs; executor runs mapped to session → task/role via `concurro/runs/<session>` refs |
@@ -150,7 +151,7 @@ Use GraphQL for list views and ETags for detail views; user tokens have their ow
 | Method | Path | Purpose |
 | ---- | ---- | ---- |
 | GET | `/tasks?target&stage&sponsor=me&needs=me` | Task list |
-| GET | `/tasks/{t}` | Stage, mode, sponsor/enrollment, binding (upstream, fork, branch, `config_sha`), PR/head, plan ID, current activity (dashboard alert), scheduler state (due time, last outcome, retry-after, lease), pending human actions |
+| GET | `/tasks/{t}` | Stage, mode, provider sponsorship slots (owner/epoch/consent/pending/coverage), enrollment, binding (upstream, fork, branch, `config_sha`), PR/head, plan ID, current activity (dashboard alert), scheduler state (due time, last outcome, retry-after, lease), pending human actions |
 | GET | `/tasks/{t}/timeline` | Ordered events: enrollment, commands + actors, stage changes, model calls, publications, reviews, CI, blockers, invalidations/resumes |
 | GET | `/tasks/{t}/display-runs` | Invalidation boundaries (`dashboard_runs.boundaries`) |
 | GET | `/tasks/{t}/assessment` | Intake decision, concerns, complexity/risk/confidence |
@@ -173,11 +174,21 @@ Use GraphQL for list views and ETags for detail views; user tokens have their ow
 | POST | `/tasks/{t}/commands/resume` | `/concurro resume` |
 | POST | `/tasks/{t}/commands/stop` | `/concurro stop` |
 | POST | `/tasks/{t}/commands/invalidate` | `/concurro invalidate` (UI warns about reassessment) |
-| POST | `/tasks/{t}/commands/sponsor` | `/concurro sponsor` (proposal; not implemented) |
+| POST | `/tasks/{t}/commands` | Existing command transport: `{command:"sponsor", argument:"openai"}` or `anthropic`; explicit caller-only consent. `{command:"withdraw", argument:provider}` withdraws caller's own task/provider grant/work. |
 | POST | `/tasks/{t}/answers` | Reply to an Input-needed request |
 
 Each returns the comment ID; the outcome is observed through the task endpoints/SSE.
 Pre-validation (e.g. config drift, revision limit) is advisory; the engine decides.
+Sponsor/withdraw actions reuse the existing command+argument transport and signed App
+comment, including provider in the signature. Before first start/label assignment,
+reconcile explicit issue sponsors; fill only absent providers covered by the initiator's
+available route credentials. Active explicit grants retain priority even without
+credentials. Evaluate fill at the start/label event: later removals never broaden its
+payer scope. A withdrawal before that boundary blocks reassigning that person, even with
+no prior grant, but not another initiator's first grant; after enrollment withdrawal/failure/retry/relabel never fill again.
+Self-withdrawal checks authenticated owner identity even after writer loss; it grants no
+execution authority. Subscription tokens are pasted after local CLI login through the
+existing credential PUT, with manual replacement; no provider-login endpoint is needed.
 
 ### 7. Run diagnostics (reader)
 

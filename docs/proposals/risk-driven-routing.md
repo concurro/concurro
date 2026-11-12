@@ -76,7 +76,12 @@ routing:
   tiers.
 - Every panel keeps distinct provider/model pairs. Lineage problems are warnings only.
 - Lineage, harness and gateway route are separate: a new lineage such as GLM still needs
-  its own route and credential coverage.
+  its own route and credential coverage. The trusted route declares the canonical
+  sponsorship provider; routing never infers one from lineage, harness or model name.
+  Initial start/label fills absent providers only after explicit issue sponsors are
+  reconciled and only where the initiator has selected-route coverage. A provider
+  introduced later stays unassigned pending explicit sponsorship;
+  coverage aggregates the selected profiles across independent provider-slot owners.
 
 ### From ratings to a class
 

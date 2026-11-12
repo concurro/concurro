@@ -16,7 +16,7 @@ in the design and operator docs.
 | Proposal | Kind | Summary |
 | ---- | ---- | ---- |
 | [Demo target policy](demo-target-policy.md) | Approved direction | Default-open text edits, explicit protections and configurable workload limits; rollout requires engine support and replacement tasks. |
-| [Per-user provider credentials](per-user-credentials.md) | Epic | Each person's own provider credentials pay for the work they trigger. |
+| [Per-user provider credentials](per-user-credentials.md) | Epic | Provider slots let different people fund OpenAI and Anthropic; explicit issue sponsors take precedence over initiator fill. [Implementation plan](per-user-credentials/implementation-plan.md): user-pasted CLI subscription tokens and manual replacement. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
 | [Backoffice API surface](backoffice-api.md) | Epic (inventory) | Endpoints for a GitHub-authenticated backoffice: own credentials, task overview, commands and run diagnostics. |
@@ -33,15 +33,35 @@ The completed brief is retained here for release review.
 These apply wherever the proposals meet:
 
 - **One frozen admission record per admitted attempt.** The routing and profile identity
-  with its assignment revision, the sponsor and credential version, and the attempt are
+  with its assignment revision, canonical provider slot, consenting sponsor, slot epoch
+  and credential version, and the attempt are
   fixed when the attempt is admitted (`RunnerExecutor.binding`, `sessions.prepare`,
-  `design_batch.Design.reserve`). A later assignment or sponsor change never rebinds an
+  `design_batch.Design.reserve`). Only the selected slot enters its binding; another
+  provider's transfer/withdrawal never changes that session. A later change never rebinds an
   admitted attempt.
   - **Replay** of that attempt preserves the record; it is never recomputed from current
     state.
   - **A new, charged retry** is a new attempt and gets a new record.
   - Nothing here recovers an old exchange result across ownership generations, which
     current recovery deliberately avoids (`Design.open`).
+- **Provider grants are source-bound and task-local.** Confirm explicit issue-comment
+  sponsors before initial start/label fills uncovered slots from the initiator's
+  available route credentials. Existing explicit sponsors keep priority even with missing
+  credentials. Persist pre-enrollment intents; reconcile source order, not webhook arrival,
+  before charging. Fill uses the start/label event boundary: later removals cannot make
+  the initiator pay more. An earlier withdrawal prevents only that actor's auto-
+  reassignment (even without a previous grant), not another initiator's own grant.
+  Afterwards withdrawal/failure/retry/relabel never trigger automatic fallback.
+  `sponsor <provider>` assigns the caller; self `withdraw <provider>` retires only their
+  selected-provider work. Independent epochs/tombstones survive; required batch coverage
+  spans all owners, optional missing coverage takes the deterministic path.
+- **Funding-mode changes preserve consent.** Org-era starter/label grants are historical
+  attribution, not permission to start charging that person when contributed funding is
+  enabled. Explicit sponsor commands authorize future contributed calls; show that scope
+  alongside org-funded status. Existing attempts keep their recorded mode and payer.
+- **Provider pauses preserve unrelated admitted work.** Stop new admissions and drain
+  unaffected reviewers while their authority remains valid; then suspend. Task-authority
+  loss or work invalidation still follows whole-batch cancellation.
 - **Approval identity and payment identity are separate.** The approval describes what was
   reviewed; the sponsor describes who paid for it.
 - **Finding ownership is authoritative.** The owner is the reviewer **seat**: today a
