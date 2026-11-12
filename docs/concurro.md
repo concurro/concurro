@@ -291,6 +291,16 @@ status is unchanged; automatic conversion back to draft is deferred. Refused
 invalidation commands are consumed; retrying invalidation requires a new command.
 Input-needed comments describe the applicable continuation.
 
+Writers can also give these commands from the backoffice. The service resolves the writer
+from their GitHub sign-in, checks their write permission and posts the command as the App's
+own comment ("@writer approved plan … from the Concurro backoffice."), signed with the
+service's delegation key (`engine/delegation.py`). The controller applies a verified comment
+as that writer's own command comment, with the same ordering, replay protection, approval
+binding and writer re-check. The service and the comment's own webhook request a durable
+observation of the exact comment, which wakes the task only with new input, so retry backoff
+holds; webhook recovery covers a lost response or a restart. Without a delegation key,
+backoffice commands are refused.
+
 When a plan revision exhausts its allowance, a writer can resume that revision with
 `/concurro retry --plan-revisions N` (a positive number of additional revisions). The grant
 extends the pinned allowance; it never resets spent revisions or model calls. It keeps

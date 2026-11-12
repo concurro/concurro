@@ -9,6 +9,7 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+import delegation
 from controller import Outcome
 from service.reconciler import HINT_SECONDS
 
@@ -23,6 +24,7 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
         self.registry.enqueue(KEY, "test", self.clock())
         self.drain()
         self.bot = self.config["bot_login"]
+        self.reconciler.command_comment = delegation.marked  # as the daemon wires it
 
     def settle(self):
         """Acknowledge current input, as a completed tick would."""
@@ -132,6 +134,31 @@ class ReconcilerTests(ServiceFixture, unittest.TestCase):
         )
         self.fake.issue["labels"].append({"name": "concurro:stage:plan"})
         self.assertEqual(self.reconciler.poll(), [])
+
+    def test_a_delegated_command_from_concurro_wakes_the_task(self):
+        """A backoffice command Concurro posted is found even if nothing enqueued it."""
+        body = delegation.render(b"k" * 32, KEY[0], 7, "writer", 42, "/concurro stop", "0" * 32)
+        self.fake.comment(body, self.bot)
+        self.assertEqual(self.reconciler.poll(), [KEY])
+
+    def test_observing_a_command_a_tick_already_saw_does_not_wake_the_task(self):
+        """The backoffice's wake after posting must not repeat a tick that polling already started."""
+        body = delegation.render(b"k" * 32, KEY[0], 7, "writer", 42, "/concurro stop", "0" * 32)
+        self.fake.comment(body, self.bot)
+        snapshot = self.reconciler.snapshot(KEY)
+        self.registry.defer(KEY, snapshot)
+        self.assertFalse(self.reconciler.observe(KEY), "deferred: the retry keeps its backoff")
+        self.registry.acknowledge(KEY, snapshot)
+        self.assertFalse(self.reconciler.observe(KEY), "acknowledged")
+        self.assertEqual(self.registry.due(self.clock()), [])
+
+    def test_a_fresh_observation_leaves_the_hint_cache_alone(self):
+        """An incomplete fresh read right after posting must not be reused by later polls."""
+        self.reconciler.snapshot(KEY)
+        cached = dict(self.reconciler.hints)
+        self.fake.comment("A reply.", "writer")
+        self.reconciler.observe(KEY, cached=False)
+        self.assertEqual(self.reconciler.hints, cached)
 
     def test_updated_at_is_only_a_hint(self):
         """An `updated_at` change alone enqueues nothing; while unchanged, scans are reused until the hint expires."""

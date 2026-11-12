@@ -108,10 +108,12 @@ class Worker:
         renew_seconds=RENEW_SECONDS,
         executor=None,
         diagnostics=None,
+        delegation_key=None,
     ):
         """`reader(repository)` returns a read transport; `agents` and `executor` are injectable.
 
         `diagnostics`, a `service.diagnostics.Store`, records every runner turn when given.
+        `delegation_key` verifies backoffice commands (`engine/delegation.py`).
         """
         self.settings, self.gateway, self.registry, self.reconciler = settings, gateway, registry, reconciler
         self.reader, self.bot_login, self.engine_root = reader, bot_login, engine_root
@@ -123,11 +125,23 @@ class Worker:
         self.claims = {}
         self.report_cache = Cache()
         self.diagnostics = diagnostics
+        self.delegation_key = delegation_key
 
     def _operator(self):
         """Read the operator credential when starting runner authorization or cleanup."""
         gateway = self.settings.gateway
         return Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+
+    def consumed(self, snapshot, controller):
+        """The pre-tick snapshot with the comments the controller actually read, when it read them.
+
+        A comment posted between the two reads was processed, so it must not look new afterwards;
+        one posted after the controller's read was not, so it still wakes the task.
+        """
+        comments = getattr(controller, "consumed_comments", None)
+        if snapshot is None or comments is None:
+            return snapshot
+        return {**snapshot, "comments": self.reconciler.comment_input(comments)}
 
     def _acknowledge(self, key, snapshot, controller):
         """Acknowledge the pre-tick input with the controller's resulting stage."""
@@ -305,12 +319,14 @@ class Worker:
         """Advance the task once; return its outcome, or the stop that ended the tick.
 
         The snapshot taken first is acknowledged only when the tick completed or blocked
-        durably, so input arriving during the tick is never acknowledged unseen.
+        durably, so input arriving during the tick is never acknowledged unseen. It is read
+        afresh, and its comments are replaced by those the controller consumed: otherwise input
+        the engine processed could be missing, and its late observation would wake the task again.
         """
         with self.renewing(key, generation):
             controller = snapshot = None
             try:
-                snapshot = self.reconciler.snapshot(key)
+                snapshot = self.reconciler.snapshot(key, cached=False)
                 target = self.load(key[0], key[1])
                 facade = self._facade(key[0], key[1], generation)
                 code = self._facade(target.config["fork"], key[1], generation, task_key=key)
@@ -342,6 +358,7 @@ class Worker:
                     enroll=lambda: self.registry.bind(
                         key, target.config["upstream"], target.config["fork"], target.config_sha
                     ),
+                    delegation_key=self.delegation_key,
                 )
                 outcome = controller.advance(key[1])
                 if controller.state:
@@ -349,11 +366,11 @@ class Worker:
                     if controller.state.get("pr"):
                         self.registry.link(key, controller.state["pr"], target.config["upstream"])
             except (Exception, GatewayStop) as error:
-                return self.failed(key, generation, error, controller, snapshot)
+                return self.failed(key, generation, error, controller, self.consumed(snapshot, controller))
             stop = self.gateway.stop(key, generation)
             if stop is not None:
                 return stop
-            self._acknowledge(key, snapshot, controller)
+            self._acknowledge(key, self.consumed(snapshot, controller), controller)
             with self.guard:
                 self.failures.pop(key, None)
             return outcome

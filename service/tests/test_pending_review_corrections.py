@@ -216,8 +216,10 @@ class RecoveryCorrections(PendingWrites):
         self.registry.close()
         with sqlite3.connect(Path(self.directory.name) / DATABASE) as db:
             db.execute("DROP TABLE review_intents")
+            db.execute("DROP TABLE webhook_recovery")
+            db.execute("DROP TABLE observations")
             db.execute("UPDATE meta SET value='3' WHERE name='schema'")
         self.registry = self.open()
         self.assertEqual(self.registry.mutation(record).status, "unknown")
         self.assertIsNone(self.registry.review_intent(record))
-        self.assertEqual(self.registry.db.execute("SELECT value FROM meta WHERE name='schema'").fetchone(), ("4",))
+        self.assertEqual(self.registry.db.execute("SELECT value FROM meta WHERE name='schema'").fetchone(), ("5",))

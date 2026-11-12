@@ -1,0 +1,26 @@
+{
+  "before": {
+    "tasks": 13,
+    "periods": 12,
+    "measured_single_task_rest": 662,
+    "measured_single_task_graphql": 12,
+    "fleet_rest": 8462,
+    "fleet_graphql": 156,
+    "fleet_artifact_reads": 312,
+    "app_delivery_requests": 0,
+    "model_calls": 0,
+    "writes": 0
+  },
+  "after": {
+    "tasks": 13,
+    "periods": 12,
+    "measured_single_task_rest": 0,
+    "measured_single_task_graphql": 0,
+    "fleet_rest": 0,
+    "fleet_graphql": 0,
+    "fleet_artifact_reads": 0,
+    "app_delivery_requests": 12,
+    "model_calls": 0,
+    "writes": 0
+  }
+}

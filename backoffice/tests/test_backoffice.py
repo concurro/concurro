@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backoffice import app as app_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import AuthError, Sessions, User, challenge  # noqa: E402
+from backoffice.commands import CommandError, ServiceCommands  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
 from backoffice.settings import Settings  # noqa: E402
 from backoffice.turns import Diagnostics, normalize  # noqa: E402
@@ -136,17 +137,69 @@ class SessionTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
-    def test_command_text_matches_the_engine_grammar(self):
-        from commands import parse
+    def test_arguments_resolve_to_commands_the_engine_accepts(self):
+        from delegation import command_text
 
-        self.assertEqual(tasks_module.command_text("stop", None, lambda: None), "/concurro stop")
-        approve = tasks_module.command_text("approve", None, lambda: {"plan_id": "a" * 64})
-        self.assertEqual(approve, "/concurro approve " + "a" * 64)
-        retry = tasks_module.command_text("retry", "2", lambda: None)
-        for text in ("/concurro stop", approve, retry):
-            self.assertIsNotNone(parse(text), text)
+        approve = tasks_module.command_argument("approve", None, lambda: {"plan_id": "a" * 64})
+        self.assertEqual(approve, "a" * 64)
+        self.assertEqual(command_text("approve", approve), "/concurro approve " + "a" * 64)
+        self.assertIsNone(tasks_module.command_argument("stop", None, lambda: None))
+        self.assertEqual(
+            command_text("retry", tasks_module.command_argument("retry", "2", lambda: None)),
+            "/concurro retry --plan-revisions 2",
+        )
         with self.assertRaises(tasks_module.TaskNotFound):
-            tasks_module.command_text("approve", None, lambda: {})
+            tasks_module.command_argument("approve", None, lambda: {})
+
+    def test_commands_go_to_the_service_with_the_sign_in_token(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path, request.headers["authorization"], json.loads(request.content)))
+            if json.loads(request.content)["command"] == "stop":
+                return httpx.Response(
+                    201, json={"posted": "/concurro stop", "actor": "octo", "url": "https://github.invalid/c/1"}
+                )
+            return httpx.Response(403, json={"error": "@octo does not have write access to up/project"})
+
+        service = ServiceCommands("http://service.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
+        sessions = Sessions()
+        sid = sessions.create("user-token", USER, 60)
+        client = TestClient(
+            app_module.create_app(
+                settings(), oauth=FakeOAuth(), vault=Vault(None), sessions=sessions, commands=service
+            ),  # type: ignore[arg-type]
+            cookies={app_module.SESSION_COOKIE: sid},
+        )
+        headers = {app_module.CSRF_HEADER: "1"}
+        posted = client.post("/api/tasks/up/project/7/commands", json={"command": "stop"}, headers=headers)
+        self.assertEqual((posted.status_code, posted.json()["posted"]), (200, "/concurro stop"))
+        self.assertEqual(seen[0][:2], ("/actions", "Bearer user-token"))
+        self.assertEqual(seen[0][2], {"repository": "up/project", "issue": 7, "command": "stop", "argument": None})
+        invalid = client.post(
+            "/api/tasks/up/project/7/commands", json={"command": "retry", "argument": "x"}, headers=headers
+        )
+        self.assertEqual(invalid.status_code, 422)
+        refused = client.post("/api/tasks/up/project/7/commands", json={"command": "resume"}, headers=headers)
+        self.assertEqual(
+            (refused.status_code, refused.json()["detail"]), (403, "@octo does not have write access to up/project")
+        )
+
+    def test_only_failures_before_delivery_say_nothing_was_posted(self):
+        for error, status, text in (
+            (httpx.ConnectError("refused"), 503, "nothing was posted"),
+            (httpx.ReadTimeout("slow"), 502, "may or may not have been posted"),
+            (httpx.RemoteProtocolError("closed"), 502, "may or may not have been posted"),
+        ):
+
+            def handler(request: httpx.Request, error=error) -> httpx.Response:
+                raise error
+
+            service = ServiceCommands("http://service.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
+            with self.subTest(type(error).__name__), self.assertRaises(CommandError) as failed:
+                service.send("user-token", "up/project", 7, "stop", None)
+            self.assertEqual(failed.exception.status, status)
+            self.assertIn(text, failed.exception.reason)
 
 
 class CredentialTests(unittest.TestCase):

@@ -17,10 +17,11 @@ from github import NotFound, Transient
 from policy import Blocked
 
 from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
+from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
 from .github import UserAccess
 from .settings import Settings
-from .tasks import COMMANDS, TaskNotFound, Tasks, command_text
+from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
 from .turns import Diagnostics
 
 log = logging.getLogger("concurro.backoffice")
@@ -45,12 +46,14 @@ def create_app(
     oauth: GitHubOAuth | None = None,
     vault: Vault | None = None,
     sessions: Sessions | None = None,
+    commands: ServiceCommands | None = None,
     connection=None,
 ) -> FastAPI:
-    """`oauth`, `vault`, `sessions` and the GitHub `connection` are injectable for tests."""
+    """`oauth`, `vault`, `sessions`, `commands` and the GitHub `connection` are injectable for tests."""
     app = FastAPI(title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
+    commands = commands or ServiceCommands(settings.service_url)
     sessions = sessions or Sessions()
     diagnostics = Diagnostics(settings.diagnostics_dir)
     cookie_path = settings.base_path or "/"
@@ -92,6 +95,10 @@ def create_app(
     @app.exception_handler(NotFound)
     async def missing(_: Request, __: NotFound) -> JSONResponse:
         return JSONResponse({"detail": "not found, or not visible to your GitHub account"}, status_code=404)
+
+    @app.exception_handler(CommandError)
+    async def command_refused(_: Request, error: CommandError) -> JSONResponse:
+        return JSONResponse({"detail": error.reason}, status_code=error.status)
 
     @app.exception_handler(VaultError)
     async def vault_refused(_: Request, error: VaultError) -> JSONResponse:
@@ -173,9 +180,11 @@ def create_app(
             raise HTTPException(422, "unknown command")
         reader = Tasks(settings, UserAccess(current.token, connection), current.user)
         repository = f"{owner}/{repo}"
-        text = command_text(body.command, body.argument, lambda: reader.state(repository, issue))
-        posted = reader.access.comment(repository, issue, text)
-        return {"posted": text, "url": posted.get("html_url")}
+        try:
+            argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
+        except ValueError:
+            raise HTTPException(422, "invalid command argument") from None
+        return commands.send(current.token, repository, issue, body.command, argument)
 
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):

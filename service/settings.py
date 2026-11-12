@@ -29,8 +29,9 @@ FIELDS = {
     "limits",
     "gateway",
     "diagnostics_dir",
+    "delegation_key_path",
 }
-OPTIONAL = {"engine", "diagnostics_dir"}
+OPTIONAL = {"engine", "diagnostics_dir", "delegation_key_path"}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
 WORKFLOW_REF = re.compile(
@@ -83,6 +84,8 @@ class Settings:
     gateway: Gateway
     # Run diagnostics are recorded here when set (see `service.diagnostics`).
     diagnostics_dir: Path | None = None
+    # Signs commands the backoffice delivers (`engine/delegation.py`); without it they are refused.
+    delegation_key_path: Path | None = None
 
 
 def require(condition, field):
@@ -161,6 +164,11 @@ def load(path):
         enrollment(targets)
     except ValueError:
         raise SettingsError("invalid settings field: targets") from None
+    delegation = None
+    if "delegation_key_path" in data:
+        delegation, delegation_identity = secret(data["delegation_key_path"], "delegation_key_path")
+        require(delegation_identity not in identities, "delegation_key_path")
+        identities.add(delegation_identity)
     gateway = gateway_settings(data["gateway"], identities)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
@@ -178,6 +186,7 @@ def load(path):
         limits=Limits(total, limits["per_repository"]),
         gateway=gateway,
         diagnostics_dir=absolute(data["diagnostics_dir"], "diagnostics_dir") if "diagnostics_dir" in data else None,
+        delegation_key_path=delegation,
     )
 
 

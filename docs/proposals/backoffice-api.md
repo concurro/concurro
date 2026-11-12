@@ -72,10 +72,10 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 - **Task endpoints read GitHub with the user's token,** so GitHub enforces visibility;
   diagnostics endpoints read the diagnostics store. Registry state (queue, leases, write
   intents) needs a daemon read API, deferred with the operator endpoints.
-- **Commands are posted as issue comments with the user's token.** The sender is the user
-  (not a Concurro identity, so `ingress.ours` doesn't drop it) and the engine's existing
-  `permitted` check, audit and replay protection apply unchanged. No second authorization
-  path.
+- **Commands are delivered to the service, never posted with the user's token.** The
+  service verifies the writer and posts a signed, App-authored command comment, which the
+  controller applies as the writer's own command (`engine/delegation.py`); the engine's
+  `permitted` check, audit and replay protection apply unchanged.
 - **Visibility caveat:** a GitHub App user-to-server token sees only repositories where the
   App is installed *and* the user has access. That matches Concurro's scope (configured
   targets); showing unrelated repos would need a classic OAuth App and is not proposed.
@@ -162,7 +162,7 @@ Use GraphQL for list views and ETags for detail views; user tokens have their ow
 | GET | `/tasks/{t}/readiness` | CI rollup, approvals vs. current head, open findings, pending publication, blocking reasons |
 | GET | `/tasks/{t}/budget` | Model calls used/max, fix rounds, plan revisions, design reopens, per-credential ledger |
 
-### 6. Task actions (writer, posted as the user's issue comment)
+### 6. Task actions (writer, posted by the service as a signed delegated command)
 
 | Method | Path | Maps to |
 | ---- | ---- | ---- |

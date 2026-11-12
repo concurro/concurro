@@ -59,16 +59,16 @@ def iso_epoch(stamp) -> str | None:
     return datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z")
 
 
-def command_text(command: str, argument: str | None, state) -> str:
-    """The exact `/concurro` comment the engine parses (`commands.parse`)."""
+def command_argument(command: str, argument: str | None, state) -> str | None:
+    """The command's argument: the plan to approve (the current one unless given) or a revision grant."""
     if command == "approve":
         plan_id = argument or (state() or {}).get("plan_id")
         if not plan_id:
             raise TaskNotFound("this task has no plan to approve")
-        return f"/concurro approve {plan_id}"
+        return plan_id
     if command == "retry" and argument:
-        return f"/concurro retry --plan-revisions {int(argument)}"
-    return f"/concurro {command}"
+        return str(int(argument))
+    return None
 
 
 class Tasks:

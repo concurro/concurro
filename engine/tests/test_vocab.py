@@ -8,7 +8,7 @@ from support import CONFIG, setUpModule as setUpModule, tearDownModule as tearDo
 import actions
 import bundle
 from agents import Agents
-from controller import Controller
+from controller import ACTIONS, Controller
 from github import STAGES
 from policy import Blocked, SessionFailure
 from runner_fixtures import TURN, ExecutorFixture
@@ -100,6 +100,7 @@ class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
         """Unknown persisted stages still yield the scheduler's existing continuation."""
         controller = Controller.__new__(Controller)
         controller.foreign, controller.issue = False, {}
+        controller.controller_id = ACTIONS
         controller.state = {"stage": "legacy-future-stage"}
         result = controller.outcome(False)
         self.assertEqual((result.kind, result.progressed, result.retry_after), ("wait-until", False, 300))
@@ -108,6 +109,7 @@ class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
         """Terminal completion, retryable decisions and human waits are distinct concepts."""
         controller = Controller.__new__(Controller)
         controller.foreign, controller.issue = False, {}
+        controller.controller_id = ACTIONS
         expected = {
             "intake": "wait-until",
             "clarify": "await-human",

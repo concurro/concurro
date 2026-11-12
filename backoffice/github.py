@@ -1,4 +1,4 @@
-"""GitHub reads and comment writes as the signed-in user, so GitHub decides what each user may see."""
+"""GitHub reads as the signed-in user, so GitHub decides what each user may see; the backoffice never writes."""
 
 import hashlib
 import re
@@ -76,12 +76,3 @@ class UserAccess:
         reader = self.transport(fork)
         branch, sha = default_branch(reader, fork)
         return read_remote(lambda path: content(reader, fork, path, sha)), branch
-
-    def comment(self, repository: str, issue: int, body: str) -> dict:
-        """Post an issue comment as the user; returns the created comment."""
-        response = self.transport(repository).send(
-            "POST", f"repos/{repository}/issues/{issue}/comments", {"body": body}
-        )
-        if not response.sent or response.status != 201:
-            raise RuntimeError(f"GitHub refused the comment (HTTP {response.status})")
-        return response.json()

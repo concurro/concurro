@@ -73,7 +73,7 @@ class Identity:
         self.jwt = None
         self.bot_login = None
 
-    def api(self, method, path, token, data=None):
+    def api(self, method, path, token, data=None, *, with_headers=False):
         """One App API call with in-memory credentials and sanitized errors."""
         headers = {"Authorization": "Bearer " + token, **transport.headers()}
         body = None
@@ -91,7 +91,8 @@ class Identity:
         if not 200 <= response.status < 300:
             raise IdentityError(f"GitHub App request failed (HTTP {response.status})")
         try:
-            return response.json()
+            payload = response.json()
+            return (payload, response.headers) if with_headers else payload
         except ValueError:
             raise IdentityError("GitHub App response unreadable") from None
 

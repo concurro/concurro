@@ -22,6 +22,7 @@ The gateway runs from a Git clone; everything host-specific lives under `/etc` a
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
 | Backoffice settings and OAuth client secret (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, `client-secret` (see `backoffice/README.md`) |
 | Backoffice web app (static build) | `/srv/concurro-backoffice` |
+| Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Edge Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
@@ -195,8 +196,20 @@ The permission remedy is verified live. The probe branches were deleted and veri
 absent, all diagnostic tokens were revoked, and no deployment or pilot retry occurred.
 
 Subscribe to issues, issue comments, pull requests, pull request reviews, pull request
-review comments, pull request review threads, check runs, check suites and commit statuses.
-The webhook URL is `https://<host>/concurro/webhook`. Periodic polling covers lost events.
+review comments, pull request review threads, check runs, check suites, workflow runs,
+commit statuses and pushes. Verify the added Workflow runs and Push subscriptions before
+shipping webhook-driven idle handling; this change does not alter live App settings.
+The webhook URL is `https://<host>/concurro/webhook`. App-wide delivery recovery runs every
+five minutes; unchanged idle PRs are not polled. Bootstrap and gaps beyond GitHub's
+three-day delivery history use state reconciliation. The existing App JWT signs recovery
+requests; no installation-token permission expansion is required.
+
+This release upgrades the local service registry to schema 5 (coverage and observation
+jobs). Back up the stopped registry first; earlier service builds cannot read that schema.
+When combining with delegated backoffice commands, wire the command predicate and durable
+post-observation callback and run their combined regressions before release. See
+[service scheduling](../docs/design/service.md) and the
+[request measurements](../docs/reports/webhook-recovery/README.md).
 Upstream may require a maintainer to approve the first fork PR's workflow runs; Concurro
 shows that wait and does not bypass it.
 

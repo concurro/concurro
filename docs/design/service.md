@@ -26,6 +26,7 @@ operator-requested design evaluation. There is no host executor or build workben
 | `service/identity.py`, `targets.py` | Mint and verify repository-specific installation tokens |
 | `service/registry.py` | Durable queue, ownership, mutation intents and observations |
 | `service/control.py`, `cutover.py` | Owner-only operator channel and legacy controller migration |
+| `service/actions.py` | Backoffice commands (`POST /actions`, internal network only): resolve the writer, check write permission, post the signed delegated command comment and enqueue the task. The comment is posted directly, not through the mutation gateway: it changes no task state until a tick applies it as a command |
 
 | State | Authority and recovery |
 | ---- | ---- |
@@ -92,19 +93,49 @@ Leases last 15 minutes and are renewed every five minutes independently of GitHu
 | `await-human` / `blocked` | Wait for relevant input or operator action |
 | `terminal` | Stop ordinary polling; reopening can make the issue relevant again |
 
-The ingress checks HMAC, installation and enabled repository before enqueueing. It handles
-issues, issue comments, PRs, PR reviews, review comments/threads, check suites/runs and
-commit statuses. Unrelated deliveries and Concurro-authored events are ignored; accepted
-delivery IDs are deduplicated. Check events map by recorded PR or head SHA and wake
-readiness only, not a paused model stage. Subscribe the App to the relevant events as
-well as granting permissions; otherwise progress depends on polling.
+The ingress verifies HMAC, installation and enabled repository. It handles issues,
+issue comments (including deletions), PR/review/thread events, check runs/suites,
+workflow runs, commit statuses and base-branch pushes. Receipt and wakeup are committed
+in one registry transaction before returning 202. CI events wake readiness only and do
+not bypass deferred engine retries. Internal CI events may omit a sender.
 
-The reconciler polls every five minutes by default, including tracked issues whose
-enrollment label was removed. Snapshots cover relevant human discussion, issue content,
-enrollment and PR/CI state. The worker acknowledges the snapshot taken before its tick,
-so input arriving during the tick is not lost. A failed tick defers its observed snapshot;
-an unchanged poll or CI event does not bypass failure backoff. An issue `updated_at`
-change is a rescan hint, not evidence that new model work is needed.
+Service-owned readiness tasks wait for external events, including after handoff; they
+no longer schedule five-minute controller ticks. Actions-owned tasks retain their timer.
+Active work, incomplete publication and transient failures keep their existing scheduling.
+
+Every five minutes (`serve --poll-seconds`), App-authenticated recovery lists retained
+webhook delivery summaries, following every cursor page. Attempts are grouped by GUID:
+a success suppresses retries; pending or unrecognized outcomes remain unresolved;
+HTTP failures and explicit transport failures are candidates for redelivery. A detail
+read verifies the enabled repository and installation before requesting redelivery.
+Ordinary idle tasks cause no issue, PR, CI or artifact reads. Listing cost depends on
+retained delivery volume (100 summaries per page), not task count.
+
+The registry records coverage separately for each App/target set. Full reconciliation
+runs for bootstrap, a changed target set, or a coverage gap of three days (GitHub's
+retention window); `reconcile-once` remains available. Failed scans do not establish
+coverage. Unresolved deliveries hold the prior coverage time, so persistent failure
+cannot silently age out. Successful exceptional reconciliation establishes a new
+coverage point. Reconciliation reads tracked tasks even if their enrollment label was
+removed; failure must propagate before that coverage is recorded.
+
+Snapshots cover discussion, enrollment, requirements and PR/CI state. The worker
+acknowledges its pre-tick snapshot, read without the hint cache, with the comments its
+controller actually consumed. Changed input can wake work; unchanged input and CI
+cannot bypass a deferred failure. Issue `updated_at` is only a cache hint.
+
+Backoffice commands (`service/actions.py`) are App-authored comments recognized by the
+`command_comment` predicate, `delegation.marked`, on `Ingress` and `Reconciler`. App-authored
+command events schedule durable observations, not engine ticks. Edits/deletions also
+match prior-body evidence or previously observed comment IDs. Each job retains expected
+comment identity, body digest and edit/deletion evidence. An uncached snapshot goes
+through `registry.observe`; a successful but stale HTTP response leaves the job pending.
+Jobs retry with backoff, survive restart, and retain newer events arriving during a read.
+After a successful or uncertain post, the service calls
+`registry.request_observation(key, comment=...)` with the exact nonce-bearing body and the
+returned ID when available. Before posting, a task with no outcome, live tick or deferred
+retry also gets a delayed `backoffice:<kind>` queue entry (`Registry.enqueue_unscheduled`).
+
 
 ## Ownership and writes
 
@@ -179,9 +210,9 @@ The gateway admits it only if every prior submit for that review ID definitely f
 with no manual resolution. Uncertain same-ID retry is not enabled.
 
 A confirmed create stores the returned review ID atomically with its successful receipt.
-Registry schema 4 adds durable review identity and compensation progress, migrated
-transactionally from schema 3. Back up the stopped registry before upgrading; older code
-cannot open schema 4. Recovery timing is an operator decision, not evidence that a lost
+Registry schema 5 adds webhook coverage and durable observation jobs, preserving review
+identity and compensation progress. Schemas 2–4 migrate transactionally. Back up the
+stopped registry before upgrading; earlier services cannot open schema 5. Recovery timing is an operator decision, not evidence that a lost
 request has finished. All compensating writes retain normal ownership and pacing checks.
 
 
