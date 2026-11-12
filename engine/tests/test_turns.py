@@ -679,7 +679,7 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
         runners = []
         for session in dispatched:
             client = Runner(self.url, session)
-            client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session))
+            client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session), TASK["engine"])
             runners.append(client)
         a, b = runners
         self.assertEqual([t["id"] for t in a.next(8, 0)], [first.identifier])
@@ -714,7 +714,9 @@ class RelayEndToEndTests(Workspace, unittest.TestCase):
         def dispatch(session, labels):
             def serve():
                 client = Runner(self.url, session)
-                grant = client.key(self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session))
+                grant = client.key(
+                    self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + session), TASK["engine"]
+                )
                 loop = runner.Loop(client, grant["key"], self.mirror, self.tmp / "runner", 0)
                 loop.serve()
                 client.end()
@@ -816,11 +818,13 @@ class SetupLifecycleTests(unittest.TestCase):
             with (
                 patch.object(sys, "argv", args),
                 patch.object(runner, "oidc_token", return_value="jwt"),
-                patch.object(runner.Runner, "key", return_value=grant),
+                patch.object(runner, "engine_commit", return_value=TASK["engine"]),
+                patch.object(runner.Runner, "key", return_value=grant) as claim,
                 patch.object(runner.subprocess, "Popen") as start,
             ):
                 start.return_value.pid = 42
                 runner.main()
+            claim.assert_called_once_with("jwt", TASK["engine"])
             self.assertEqual(json.loads((root / "grant.json").read_text()), grant)
             self.assertEqual((root / "grant.json").stat().st_mode & 0o777, 0o600)
             self.assertTrue(start.call_args.kwargs["start_new_session"])

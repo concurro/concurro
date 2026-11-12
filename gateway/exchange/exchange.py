@@ -45,13 +45,16 @@ POLL_SECONDS = 1
 START_SECONDS, HEARTBEAT_SECONDS = 1200, 180
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 SESSION_PATH = re.compile(
-    rf"/exchange/sessions/(?P<session>{UUID})/(?:(?P<action>key|end|next)|turns/(?P<turn>{UUID}))"
+    rf"/exchange/sessions/(?P<session>{UUID})/(?:(?P<action>engine|key|end|next)|turns/(?P<turn>{UUID}))"
 )
 OPERATOR_PATH = re.compile(rf"(?P<kind>sessions|turns)/(?P<id>{UUID})(?:/(?P<action>end))?")
 # Mirrors engine.protocol.DIGEST_PATTERN; this image ships as a single file.
 RUNNER_TOKEN = re.compile(r"[0-9a-f]{64}")
 LABEL = re.compile(r"[A-Za-z0-9._:/#-]{1,200}")
-EXPECTED = ("repository_id", "repository_owner_id", "job_workflow_ref", "job_workflow_sha", "event_name", "ref")
+# The launcher workflow is authenticated by its ref; its commit is free to differ from the engine's.
+EXPECTED = ("repository_id", "repository_owner_id", "job_workflow_ref", "event_name", "ref")
+OPTIONAL_EXPECTED = {"actor_id", "job_workflow_sha"}
+SHA = re.compile(r"[0-9a-f]{40}")  # Mirrors engine.protocol.SHA_PATTERN.
 
 
 class Refused(Exception):
@@ -232,10 +235,10 @@ class Gateway:
 
 
 def _expected_claims(expected):
-    """Require known string claims, with actor_id optional and empty strings permitted."""
+    """Require known string claims, with actor_id and a launcher commit optional and empty strings permitted."""
     if (
         not isinstance(expected, dict)
-        or set(expected) - set(EXPECTED) - {"actor_id"}
+        or set(expected) - set(EXPECTED) - OPTIONAL_EXPECTED
         or not set(EXPECTED) <= set(expected)
         or not all(isinstance(v, str) for v in expected.values())
     ):
@@ -243,12 +246,16 @@ def _expected_claims(expected):
 
 
 def session_binding(value):
-    """Validate the controller-issued task, role and immutable setup/code binding."""
+    """Validate the controller-issued task, role and immutable setup/code binding.
+
+    `engine` is the commit the runner must run; sessions stored before it existed lack it and
+    cannot be claimed.
+    """
     fields = {"repository", "issue", "role", "generation", "config_sha", "upstream", "fork", "base", "phase"}
     repo = r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+"
     if (
         not isinstance(value, dict)
-        or set(value) != fields
+        or set(value) - {"engine"} != fields
         or type(value["issue"]) is not int
         or value["issue"] < 1
         or type(value["generation"]) is not int
@@ -257,10 +264,9 @@ def session_binding(value):
             not isinstance(value[k], str) or re.fullmatch(repo, value[k]) is None
             for k in ("repository", "upstream", "fork")
         )
-        # Mirrors engine.protocol.SHA_PATTERN; keep the single-file exchange independent.
         or any(
-            not isinstance(value[k], str) or re.fullmatch(r"[0-9a-f]{40}", value[k]) is None
-            for k in ("base", "config_sha")
+            not isinstance(value[k], str) or SHA.fullmatch(value[k]) is None
+            for k in {"base", "config_sha", "engine"} & set(value)
         )
         or not isinstance(value["role"], str)
         or re.fullmatch(r"(intake|plan|plan_qc|develop|review):(claude|codex)", value["role"]) is None
@@ -453,13 +459,36 @@ class Exchange:
             self.db.execute("UPDATE sessions SET run_id = ? WHERE id = ? AND run_id IS NULL", (run, session))
         return record
 
-    def key(self, session, token, now=None):
-        """The session's key and runner token, minted on first request; a retry from the bound run gets the same."""
+    def bound_engine(self, session, record):
+        """The engine commit the session's runner must run."""
+        if not record["binding"]:
+            raise Refused(403, "session has no task/role binding")
+        engine = json.loads(record["binding"]).get("engine")
+        if not engine:
+            self.refuse(session, 403, "session has no engine binding")
+        return engine
+
+    def engine(self, session, token, now=None):
+        """Where an authenticated launcher finds the engine to run: its own repository, at the session's commit."""
         now = _now(now)
         with self.locked():
             record = self.authorize(session, token, now)
-            if not record["binding"]:
-                raise Refused(403, "session has no task/role binding")
+            engine = self.bound_engine(session, record)
+            # The run is bound from here on, so this is its first heartbeat: the claim follows the download.
+            self.db.execute("UPDATE sessions SET seen = ? WHERE id = ?", (now, session))
+            workflow = json.loads(record["expected"])["job_workflow_ref"]
+            return {"repository": "/".join(workflow.split("/")[:2]), "engine": engine}
+
+    def key(self, session, token, engine=None, now=None):
+        """The session's key and runner token, minted on first request; a retry from the bound run gets the same.
+
+        `engine` is the commit the runner states it runs; any but the session's is refused.
+        """
+        now = _now(now)
+        with self.locked():
+            record = self.authorize(session, token, now)
+            if self.bound_engine(session, record) != engine:
+                self.refuse(session, 403, "runner engine differs from the session's")
             key, runner = record["key"], record["token"] or secrets.token_hex(32)
             self.db.execute("UPDATE sessions SET token = ?, seen = ? WHERE id = ?", (runner, now, session))
             reply = {
@@ -882,8 +911,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(500, {"error": "internal error"})
 
     def runner(self, session, action, turn, bearer, body):
+        if action == "engine":
+            return self.server.exchange.engine(session, bearer)
         if action == "key":
-            return self.server.exchange.key(session, bearer)
+            return self.server.exchange.key(session, bearer, body.get("engine"))
         if action == "end":
             # A runner token is 64 hex characters; anything else is an OIDC token.
             runner = RUNNER_TOKEN.fullmatch(bearer)

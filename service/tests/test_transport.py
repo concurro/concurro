@@ -340,9 +340,7 @@ class ReadTests(unittest.TestCase):
             ),
         )
         self.net.route("GET", "users/concurro%5Bbot%5D", reply(200, {"id": 33, "login": "concurro[bot]"}))
-        claims = runner_claims(
-            self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", SHA, "concurro[bot]"
-        )
+        claims = runner_claims(self.reader, KEY[0], "o/r/.github/workflows/agent.yml@refs/heads/main", "concurro[bot]")
         self.assertEqual(
             (claims["repository_id"], claims["repository_owner_id"], claims["actor_id"], claims["ref"]),
             ("11", "22", "33", ""),

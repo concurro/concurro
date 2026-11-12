@@ -199,6 +199,7 @@ def parser():
     serve_command.add_argument("--initialize", action="store_true", help="create a new, empty registry")
     serve_command.add_argument("--listen", default=LISTEN, help="webhook address, HOST:PORT")
     serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS, help="App webhook recovery interval")
+    commands.add_parser("initialize", help="create a new, empty registry and exit, without starting the daemon")
     commands.add_parser("status", help="show every task the registry knows")
     commands.add_parser("reconcile-once", help="poll every target now")
     adopt = commands.add_parser("adopt", help="move tasks from the Actions controller to this service")
@@ -234,6 +235,10 @@ def main():
         settings = settings_module.load(arguments.settings)
         if arguments.command == "serve":
             return serve(arguments, settings)
+        if arguments.command == "initialize":
+            Registry.open(settings.state_dir, settings.registry_id, initialize=True).close()
+            print("initialized the registry in", settings.state_dir)
+            return 0
         reply = control.request(settings.state_dir, command(arguments))
     except (SettingsError, StartupError, RegistryError, IdentityError, Blocked, ConnectionError) as error:
         print(str(error), file=sys.stderr)

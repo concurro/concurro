@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "exchange"))
-from exchange_fixtures import AUDIENCE, BINDING, EXPECTED, NOW, TURN, ExchangeFixture, segment
+from exchange_fixtures import AUDIENCE, BINDING, ENGINE, EXPECTED, NOW, TURN, ExchangeFixture, segment
 
 import exchange
 from exchange import Exchange, Keys, Refused, server
@@ -23,7 +23,7 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
     def test_unbound_session_cannot_mint_a_key(self):
         unbound = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600)
         with self.assertRaisesRegex(Refused, "no task/role binding"):
-            self.exchange.key(unbound, self.signer.token(ref=EXPECTED["ref"]), now=NOW)
+            self.exchange.key(unbound, self.signer.token(ref=EXPECTED["ref"]), engine=ENGINE, now=NOW)
         self.assertEqual(self.gateway.list(), [])
 
     def test_a_valid_token_mints_a_scoped_key_once(self):
@@ -65,7 +65,7 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
             ("no algorithm", self.signer.token(header={"alg": "none", "kid": "test-kid"})),
         ):
             with self.subTest(name=name), self.assertRaises(Refused) as raised:
-                self.exchange.key(self.session, value, now=NOW)
+                self.exchange.key(self.session, value, engine=ENGINE, now=NOW)
             self.assertEqual(raised.exception.status, 401)
         self.assertEqual(self.gateway.list(), [])
 
@@ -74,7 +74,6 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
             ("repository", {"repository_id": "9"}),
             ("owner", {"repository_owner_id": "9"}),
             ("workflow", {"job_workflow_ref": "x/y/.github/workflows/z.yml@main"}),
-            ("commit", {"job_workflow_sha": "b" * 40}),
             ("event", {"event_name": "push"}),
             ("ref", {"ref": "refs/heads/other"}),
             ("self-hosted", {"runner_environment": "self-hosted"}),
@@ -87,11 +86,54 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
         with self.assertRaisesRegex(Refused, "another run"):
             self.mint(run_id="78")
 
+    def test_a_launcher_at_any_commit_is_served_the_sessions_engine(self):
+        launcher = {"job_workflow_sha": "b" * 40}
+        self.assertEqual(
+            self.exchange.engine(self.session, self.signer.token(**launcher), now=NOW),
+            {"repository": "concurro/concurro", "engine": ENGINE},
+        )
+        self.assertEqual(self.mint(**launcher)["binding"]["engine"], ENGINE)
+
+    def test_only_the_sessions_workflow_learns_its_engine(self):
+        for name, overrides in (
+            ("repository", {"repository_id": "9"}),
+            ("workflow", {"job_workflow_ref": "x/y/.github/workflows/agent.yml@refs/heads/main"}),
+            (
+                "fork of the launcher",
+                {"job_workflow_ref": "x/concurro/.github/workflows/gateway-proof.yml@refs/heads/main"},
+            ),
+            ("ref", {"ref": "refs/heads/other"}),
+            ("self-hosted", {"runner_environment": "self-hosted"}),
+        ):
+            with self.subTest(name=name), self.assertRaises(Refused) as raised:
+                self.exchange.engine(self.session, self.signer.token(**overrides), now=NOW)
+            self.assertEqual(raised.exception.status, 403)
+
+    def test_a_runner_on_another_engine_cannot_claim(self):
+        for stated in (None, "b" * 40):
+            with self.subTest(engine=stated), self.assertRaisesRegex(Refused, "runner engine differs"):
+                self.exchange.key(self.session, self.signer.token(), engine=stated, now=NOW)
+        self.assertEqual(self.gateway.list(), [])
+        self.assertIn("runner engine differs", self.refusal())
+        self.mint()
+
+    def test_a_session_without_an_engine_cannot_be_claimed(self):
+        legacy = {k: v for k, v in BINDING.items() if k != "engine"}
+        session = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600, binding=legacy)
+        token = lambda: self.signer.token(ref="refs/heads/concurro/runs/" + session)
+        with self.assertRaisesRegex(Refused, "no engine binding"):
+            self.exchange.engine(session, token(), now=NOW)
+        with self.assertRaisesRegex(Refused, "no engine binding"):
+            self.exchange.key(session, token(), engine=None, now=NOW)
+
+    def refusal(self):
+        return self.exchange.db.execute("SELECT refusal FROM sessions WHERE id = ?", (self.session,)).fetchone()[0]
+
     def test_a_token_is_used_once(self):
         token = self.signer.token(jti="once")
-        self.exchange.key(self.session, token, now=NOW)
+        self.exchange.key(self.session, token, engine=ENGINE, now=NOW)
         with self.assertRaisesRegex(Refused, "already used"):
-            self.exchange.key(self.session, token, now=NOW)
+            self.exchange.key(self.session, token, engine=ENGINE, now=NOW)
 
     def test_ending_deletes_the_key_and_the_session_stays_ended(self):
         self.mint()
@@ -105,7 +147,7 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
         self.mint()
         live = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 7200, binding=BINDING)
         live_key = self.exchange.key(
-            live, self.signer.token(run_id="90", ref="refs/heads/concurro/runs/" + live), now=NOW
+            live, self.signer.token(run_id="90", ref="refs/heads/concurro/runs/" + live), engine=ENGINE, now=NOW
         )["key"]
         self.gateway.create("sk-agw-orphan", "unknown", ["*"], 1)
         # The live session's runner keeps calling; the first session's has stopped.
@@ -115,7 +157,7 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
         self.assertEqual([r["value"]["key"] for r in self.gateway.list()], [live_key])
         later = {"iat": NOW + 4990, "nbf": NOW + 4990, "exp": NOW + 5300}
         with self.assertRaisesRegex(Refused, "ended"):
-            self.exchange.key(self.session, self.signer.token(**later), now=NOW + 5000)
+            self.exchange.key(self.session, self.signer.token(**later), engine=ENGINE, now=NOW + 5000)
 
     def test_a_partial_creation_is_adopted_or_completed(self):
         self.exchange.db.execute("UPDATE sessions SET key = 'sk-agw-pending' WHERE id = ?", (self.session,))
@@ -125,9 +167,9 @@ class ExchangeTests(ExchangeFixture, unittest.TestCase):
         other = self.exchange.issue(dict(EXPECTED), ["gpt-*"], 10, 3600, binding=BINDING)
         self.exchange.db.execute("UPDATE sessions SET key = 'sk-agw-lost' WHERE id = ?", (other,))
         self.assertEqual(
-            self.exchange.key(other, self.signer.token(run_id="91", ref="refs/heads/concurro/runs/" + other), now=NOW)[
-                "key"
-            ],
+            self.exchange.key(
+                other, self.signer.token(run_id="91", ref="refs/heads/concurro/runs/" + other), engine=ENGINE, now=NOW
+            )["key"],
             "sk-agw-lost",
         )
         self.assertIsNotNone(self.gateway.find("sk-agw-lost"))
@@ -206,6 +248,7 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
         return self.exchange.key(
             session,
             self.signer.token(**{**self.expected, "ref": "refs/heads/concurro/runs/" + session, **overrides}),
+            engine=ENGINE,
             now=NOW,
         )
 
@@ -366,13 +409,33 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
             self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
 
     def test_invalid_binding_and_workbench_are_refused(self):
-        for changes in ({"issue": 0}, {"role": "local_review:claude"}, {"generation": 0}, {"config_sha": "main"}):
+        for changes in (
+            {"issue": 0},
+            {"role": "local_review:claude"},
+            {"generation": 0},
+            {"config_sha": "main"},
+            {"engine": "main"},
+        ):
             with self.assertRaises(ValueError):
                 self.submit(binding={**BINDING, **changes})
         with self.assertRaises(ValueError):
             self.submit(payload={"kind": "bench", "op": "open"})
         with self.assertRaises(ValueError):
             self.submit(payload={"request": {"stage": "review", "provider": "claude"}})
+
+    def test_a_long_queued_job_stays_live_between_engine_discovery_and_claim(self):
+        """Discovery binds the run; polling and cleanup before the claim must not replace or end it."""
+        queued = self.submit(binding={**BINDING, "role": "review:claude"})
+        session, later = queued["dispatch"], NOW + 240
+        self.assertGreater(later - NOW, exchange.HEARTBEAT_SECONDS)
+        token = lambda: self.signer.token(**{**self.expected, "ref": "refs/heads/concurro/runs/" + session})
+        self.exchange.engine(session, token(), now=later)
+        self.assertIsNone(self.exchange.poll(queued["turn"], 0, now=later + 60)["dispatch"])
+        self.exchange.reconcile(now=later + 60)
+        self.assertIsNone(self.exchange.row(session)["ended"])
+        self.assertTrue(self.exchange.key(session, token(), engine=ENGINE, now=later + 60)["key"])
+        replaced = self.exchange.poll(queued["turn"], 0, now=later + 60 + exchange.HEARTBEAT_SECONDS + 1)
+        self.assertIsNotNone(replaced.get("dispatch"), "a runner silent after discovery is still replaced")
 
     def test_legacy_turns_are_preserved_but_never_served(self):
         self.exchange.db.execute(
@@ -412,7 +475,11 @@ class HttpTests(ExchangeFixture, unittest.TestCase):
             return error.code, json.loads(error.read())
 
     def test_key_and_end_over_http(self):
-        status, body = self.post(f"/exchange/sessions/{self.session}/key", self.signer.token())
+        status, body = self.post(f"/exchange/sessions/{self.session}/engine", self.signer.token())
+        self.assertEqual((status, body), (200, {"repository": "concurro/concurro", "engine": ENGINE}))
+        self.assertEqual(self.post(f"/exchange/sessions/{self.session}/engine")[0], 401)
+        self.assertEqual(self.post(f"/exchange/sessions/{self.session}/key", self.signer.token())[0], 403)
+        status, body = self.post(f"/exchange/sessions/{self.session}/key", self.signer.token(), {"engine": ENGINE})
         self.assertEqual(status, 200)
         self.assertTrue(body["key"].startswith("sk-agw-"))
         self.assertEqual(self.post(f"/exchange/sessions/{self.session}/key")[0], 401)
@@ -438,6 +505,7 @@ class HttpTests(ExchangeFixture, unittest.TestCase):
         runner = self.post(
             f"/exchange/sessions/{self.session}/key",
             self.signer.token(actor_id="3003", ref="refs/heads/concurro/runs/" + self.session),
+            {"engine": ENGINE},
         )[1]["token"]
         status, served = self.post(f"/exchange/sessions/{self.session}/next", runner, {"capacity": 1, "wait": 0})
         self.assertEqual((status, [t["id"] for t in served["turns"]]), (200, [queued["turn"]]))

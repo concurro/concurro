@@ -164,7 +164,7 @@ class Worker:
         with self.guard:
             claims = self.claims.get(fork)
         if claims is None:
-            claims = runner_claims(self.reader(fork), fork, gateway.workflow_ref, self.settings.engine, self.bot_login)
+            claims = runner_claims(self.reader(fork), fork, gateway.workflow_ref, self.bot_login)
             with self.guard:
                 self.claims[fork] = claims
         task = {
@@ -174,6 +174,8 @@ class Worker:
             "upstream": binding.upstream,
             "fork": fork,
             "config_sha": binding.config_sha,
+            # The exchange hands this commit to the launcher and refuses a runner on any other.
+            "engine": self.settings.engine,
         }
         return RunnerExecutor(
             operator,

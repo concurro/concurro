@@ -14,7 +14,7 @@ target-version = "py312"
 line-length = 120
 # Flat engine and test modules are first-party alongside the service package.
 src = [".", "engine", "engine/tests", "service/tests", "gateway/exchange", "gateway/vault", "gateway/tests"]
-include = ["engine/**/*.py", "service/**/*.py", "gateway/**/*.py", "backoffice/**/*.py"]
+include = ["engine/**/*.py", "service/**/*.py", "gateway/**/*.py", "backoffice/**/*.py", "deploy/**/*.py"]
 
 [lint]
 select = ["F", "E9", "PLE", "B", "SIM", "I"]

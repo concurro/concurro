@@ -21,11 +21,33 @@ from service.errors import OwnershipLost
 class CliRequestTests(unittest.TestCase):
     """The parser and builder retain field order, defaults and fallback requests."""
 
+    def test_initialize_creates_the_registry_without_starting_the_daemon(self):
+        self.enterContext(patch.object(cli.logging, "basicConfig"))
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory).chmod(0o700)
+            settings = SimpleNamespace(state_dir=Path(directory), registry_id="test")
+            for expected in (0, 1):  # a second run refuses to initialize over the first
+                with (
+                    self.subTest(expected=expected),
+                    patch.object(sys, "argv", ["service", "--settings", "settings.json", "initialize"]),
+                    patch.object(cli.settings_module, "load", return_value=settings),
+                    patch.object(cli, "Daemon") as daemon,
+                    patch.object(cli.control, "request") as request,
+                    redirect_stdout(io.StringIO()),
+                    redirect_stderr(io.StringIO()) as stderr,
+                ):
+                    self.assertEqual(cli.main(), expected)
+                    daemon.assert_not_called()
+                    request.assert_not_called()
+            self.assertIn("refusing to initialize", stderr.getvalue())
+            cli.Registry.open(directory, "test").close()
+
     def test_request_table(self):
         """Every parsed subcommand produces literal pinned JSON, without parser-only fields."""
         cases = [
             (["serve"], b'{"command": "serve"}'),
             (["serve", "--initialize", "--listen", "localhost:1234", "--poll-seconds", "9"], b'{"command": "serve"}'),
+            (["initialize"], b'{"command": "initialize"}'),
             (["status"], b'{"command": "status"}'),
             (["reconcile-once"], b'{"command": "reconcile-once"}'),
             (["adopt", "owner/repo"], b'{"command": "adopt", "repository": "owner/repo", "issues": []}'),

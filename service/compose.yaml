@@ -1,12 +1,13 @@
 # The Concurro service on the gateway's host: webhooks arrive through the shared edge Caddy
 # (`/concurro/webhook` in gateway/concurro.caddy), all model turns run natively on the
 # targets' GitHub-hosted runners. Settings and secrets, and the state directory, are mounted at the
-# same paths as on the host, so the paths in settings.json hold in both. See gateway/README.md.
+# same paths as on the host, so the paths in settings.json hold in both. CI publishes the images;
+# the release variables come from the host's release file. See gateway/README.md.
 name: concurro-service
 
 services:
   service:
-    image: concurro-service:local
+    image: ghcr.io/concurro/service:${CONCURRO_RELEASE:?}
     build:
       context: ..
       dockerfile: service/Dockerfile
@@ -34,17 +35,16 @@ services:
       timeout: 10s
     restart: unless-stopped
 
-  # The backoffice API and web app, at /concurro/ on the edge (gateway/concurro.caddy). It reads
+  # The backoffice API, at /concurro/api and /concurro/auth on the edge (gateway/concurro.caddy). It reads
   # the diagnostics directory the service writes; settings and the OAuth client secret are its own.
   backoffice:
-    image: concurro-backoffice:local
+    image: ghcr.io/concurro/backoffice-api:${CONCURRO_RELEASE:?}
     build:
       context: ..
       dockerfile: backoffice/Dockerfile
     volumes:
       - /etc/concurro/backoffice:/etc/concurro/backoffice:ro
       - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
-      - /srv/concurro-backoffice:/srv/concurro-backoffice:ro
     networks:
       edge:
         aliases:
@@ -61,6 +61,29 @@ services:
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/health', timeout=5)"]
       interval: 60s
+      timeout: 10s
+    restart: unless-stopped
+
+  # The backoffice web app (github.com/concurro/concurro-backoffice), released on its own.
+  web:
+    image: ghcr.io/concurro/backoffice-web:${CONCURRO_WEB_RELEASE:?}
+    networks:
+      edge:
+        aliases:
+          - concurro-backoffice-web
+    read_only: true
+    tmpfs:
+      - /config:size=8m,uid=65532,gid=65532
+      - /data:size=8m,uid=65532,gid=65532
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
       timeout: 10s
     restart: unless-stopped
 

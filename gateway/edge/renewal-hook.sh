@@ -1,10 +1,12 @@
 #!/bin/sh
-# Certbot deploy hook: give the edge Caddy the renewed IP certificate and reload it.
-# Installed as /etc/letsencrypt/renewal-hooks/deploy/60-edge.
+# Certbot deploy hook: give the edge Caddy its renewed certificate and reload it.
+# Installed as /etc/letsencrypt/renewal-hooks/deploy/60-edge. /etc/edge/certificate-name
+# holds the name of the certbot certificate the edge serves; other renewals are ignored.
 set -eu
 EDGE_COMPOSE="${EDGE_COMPOSE:-/etc/edge/compose.yaml}"
-LINEAGE="${RENEWED_LINEAGE:-/etc/letsencrypt/live/sbgh-fleet-ip}"
-[ "${LINEAGE##*/}" = "sbgh-fleet-ip" ] || exit 0
+NAME=$(cat "${EDGE_CERTIFICATE_NAME_FILE:-/etc/edge/certificate-name}")
+LINEAGE="${RENEWED_LINEAGE:-/etc/letsencrypt/live/$NAME}"
+[ "${LINEAGE##*/}" = "$NAME" ] || exit 0
 install -d -m 0750 /etc/edge/tls
 install -m 0644 "$LINEAGE/fullchain.pem" /etc/edge/tls/fullchain.pem
 install -m 0600 "$LINEAGE/privkey.pem" /etc/edge/tls/privkey.pem

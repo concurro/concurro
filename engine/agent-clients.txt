@@ -1,0 +1,2 @@
+@openai/codex@0.163.0
+@anthropic-ai/claude-code@2.1.301

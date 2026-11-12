@@ -12,7 +12,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from exchange_fixtures import AUDIENCE, BINDING, EXPECTED, TURN, FakeGateway
+from exchange_fixtures import AUDIENCE, BINDING, ENGINE, EXPECTED, TURN, FakeGateway
 
 import exchange
 from exchange import Exchange, Refused
@@ -75,7 +75,7 @@ class StateFixture:
 
     def claim(self, session, instance=None):
         """Bind a runner and mint its key using the real lifecycle path."""
-        return (instance or self.exchange).key(session, self.token(session), now=NOW)["token"]
+        return (instance or self.exchange).key(session, self.token(session), engine=ENGINE, now=NOW)["token"]
 
     def running(self):
         """One admitted and claimed turn with a live runner."""
@@ -294,7 +294,10 @@ class HttpLifecycleTests(StateFixture, HttpFixture, unittest.TestCase):
         queued = json.loads(raw)
         session = queued["dispatch"]
         root = f"/exchange/sessions/{session}"
-        status, raw = self.request(host, root + "/key", self.token(session))
+        status, raw = self.request(host, root + "/engine", self.token(session))
+        self.assertEqual((status, json.loads(raw)), (200, {"repository": "concurro/concurro", "engine": ENGINE}))
+        claim = json.dumps({"engine": ENGINE}).encode()
+        status, raw = self.request(host, root + "/key", self.token(session), body=claim)
         self.assertEqual(status, 200)
         runner = json.loads(raw)["token"]
         status, raw = self.request(host, root + "/next", runner)
@@ -590,7 +593,7 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                 self.assertEqual(events, KEY_TRACE[:boundary])
                 restarted = self.open()
                 stored = restarted.row(session)["key"]
-                reply = restarted.key(session, self.token(session), now=NOW)
+                reply = restarted.key(session, self.token(session), engine=ENGINE, now=NOW)
                 if stored:
                     self.assertEqual(reply["key"], stored)
                 self.assertEqual(restarted.row(session)["key_id"], self.gateway.find(reply["key"]))
@@ -624,7 +627,7 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         stored = self.exchange.row(session)["key"]
         with self.trace(5), self.assertRaises(Crash):
             self.claim(session)
-        self.assertEqual(self.open().key(session, self.token(session), now=NOW)["key"], stored)
+        self.assertEqual(self.open().key(session, self.token(session), engine=ENGINE, now=NOW)["key"], stored)
 
     def test_end_order_and_atomic_retirement_recovery(self):
         """Before commit a live session survives; after commit turn loss is already durable."""

@@ -41,7 +41,8 @@ The exchange verifies the signature against GitHub's keys and requires:
 | ---- | ---- |
 | Issuer, audience and timestamps | GitHub issuer, configured audience and fresh token |
 | Repository and owner IDs | The controller-issued target fork |
-| Reusable workflow ref and SHA | The configured workflow and served engine commit |
+| Reusable workflow ref | The configured launcher workflow; its commit is not constrained |
+| Stated engine (claim body) | The served engine commit in the session's binding |
 | Event and ref | `workflow_dispatch` on `refs/heads/concurro/runs/<session-id>` |
 | Actor | The controller App's bot identity |
 | Runner environment | `github-hosted` |

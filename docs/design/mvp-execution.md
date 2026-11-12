@@ -41,16 +41,16 @@ must match the recorded SHA; never force-update it to recover a conflict.
 
 Validate GitHub signature, issuer, audience, timestamps and one-time token identity,
 then require the recorded fork/owner IDs, App actor, `workflow_dispatch`, exact session
-ref, GitHub-hosted runner, run attempt 1 and expected reusable-workflow ref/commit.
+ref, GitHub-hosted runner, run attempt 1 and expected reusable-workflow ref.
 Atomically bind the first authorized run ID; a second run or another session's token
 gets no credential. The grant returns the stored role, base, configuration and task
 identity. Workflow inputs are not proof of authorization.
 
-The caller uses `concurro/concurro/.github/workflows/agent.yml@deployed`. This release
-ref moves with service deployments, not ordinary pushes to `main`. Its resolved
-`job_workflow_sha` must still equal the served engine commit. Pause dispatch while
-updating the service and ref; resume only when they match. A mismatch fails visibly
-rather than silently running different engine code.
+The caller uses `concurro/concurro/.github/workflows/agent.yml@main`, a launcher whose
+commit is independent of the engine. Each session's binding names the served engine
+commit; the launcher obtains it from the exchange with its OIDC token, runs it, and the
+claim states the commit it runs. A mismatch is refused visibly rather than silently
+running different engine code. See [launcher and engine](../../gateway/README.md#launcher-and-engine).
 
 Keep dispatch writes inside the mutation gateway. An unknown dispatch outcome follows
 its existing operator-resolution path; do not blindly create a replacement run. Ended
@@ -80,7 +80,8 @@ summary step runs after cleanup, including on failure; a lost runner cannot publ
 Unreadable or malformed receipts produce a short notice; summary I/O failures do not
 fail execution or cleanup. Clickable task/PR links use plain GitHub issue/PR URLs.
 
-1. Fetch Concurro at the workflow's verified engine commit under `$RUNNER_TEMP/concurro`.
+1. Ask the exchange for the session's engine commit and fetch Concurro at it under
+   `$RUNNER_TEMP/concurro`.
 2. Claim the session. Store the grant in an owner-only temporary file and start the
    heartbeat immediately, including through long toolchain installation.
 3. Materialize the fork's trusted configuration at `config_sha` in a separate directory

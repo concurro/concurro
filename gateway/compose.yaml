@@ -8,7 +8,7 @@ name: concurro-gateway
 services:
   # Gives the distroless gateway (uid 65532) its data volume.
   init:
-    image: concurro-exchange:local
+    image: ghcr.io/concurro/exchange:${CONCURRO_RELEASE:?}
     build: ./exchange
     user: "0:0"
     entrypoint: ["chown", "65532:65532", "/gateway-data"]
@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
 
   exchange:
-    image: concurro-exchange:local
+    image: ghcr.io/concurro/exchange:${CONCURRO_RELEASE:?}
     build: ./exchange
     network_mode: "service:gateway"
     environment:
@@ -55,7 +55,7 @@ services:
     restart: unless-stopped
 
   vault:
-    image: concurro-vault:local
+    image: ghcr.io/concurro/vault:${CONCURRO_RELEASE:?}
     build: ./vault
     environment:
       VAULT_LISTEN: 0.0.0.0:8090

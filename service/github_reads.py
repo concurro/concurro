@@ -34,9 +34,9 @@ def head(reader, repository):
     return default_branch(reader, repository)[1]
 
 
-def runner_claims(reader, repository, workflow_ref, engine, bot_login):
-    """The OIDC claims a runner session of this target must present: the target, the pinned agent
-    workflow at the served engine commit, a dispatch by the App's bot on the default branch."""
+def runner_claims(reader, repository, workflow_ref, bot_login):
+    """The OIDC claims a runner session of this target must present: the target, the launcher
+    workflow at its configured ref, a dispatch by the App's bot on the default branch."""
     owner, name = repository.split("/")
     response = reader.request(
         "POST", "graphql", {"query": RUNNER_IDENTITY, "variables": {"owner": owner, "name": name}}
@@ -59,7 +59,6 @@ def runner_claims(reader, repository, workflow_ref, engine, bot_login):
         "repository_id": str(found["databaseId"]),
         "repository_owner_id": str(found["owner"]["databaseId"]),
         "job_workflow_ref": workflow_ref,
-        "job_workflow_sha": engine,
         "event_name": "workflow_dispatch",
         "ref": "",
         "actor_id": str(bot["id"]),

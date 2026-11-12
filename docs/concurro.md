@@ -17,7 +17,7 @@ it fetches source anonymously and does not give GitHub write credentials to runn
 In the fork's default branch, install:
 
 - `.concurro/config.yaml` (or `config.json`, never both) and `.concurro/charter.json`, adapted from the example.
-- `.github/workflows/concurro-executor.yml`, calling `agent.yml@deployed` with its
+- `.github/workflows/concurro-executor.yml`, calling `agent.yml@main` with its
   centrally issued session ID and display-only task, operation and agent labels. Explicitly
   forward the repository secret `CONCURRO_GATEWAY_URL`. Store the deployment URL in that secret, not in source or
   workflow inputs. Both jobs must specify `cache-mode: read`.

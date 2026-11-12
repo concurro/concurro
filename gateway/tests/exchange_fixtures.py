@@ -23,7 +23,6 @@ EXPECTED = {
     "repository_id": "1001",
     "repository_owner_id": "2002",
     "job_workflow_ref": "concurro/concurro/.github/workflows/gateway-proof.yml@refs/heads/main",
-    "job_workflow_sha": "a" * 40,
     "event_name": "workflow_dispatch",
     "ref": "refs/heads/main",
 }
@@ -39,7 +38,9 @@ BINDING = {
     "upstream": "upstream/project",
     "fork": "owner/project",
     "phase": "cooperative",
+    "engine": "e" * 40,
 }
+ENGINE = BINDING["engine"]
 
 
 TURN = {"request": {"provider": "claude", "stage": "plan"}}
@@ -83,6 +84,8 @@ class Signer:
             "runner_environment": "github-hosted",
             "run_id": "77",
             "run_attempt": "1",
+            # The launcher's own commit, unrelated to the engine it runs.
+            "job_workflow_sha": "a" * 40,
             **EXPECTED,
             "ref": getattr(self, "ref", EXPECTED["ref"]),
         }
@@ -148,4 +151,4 @@ class ExchangeFixture:
         self.signer.ref = "refs/heads/concurro/runs/" + self.session
 
     def mint(self, **overrides):
-        return self.exchange.key(self.session, self.signer.token(**overrides), now=NOW)
+        return self.exchange.key(self.session, self.signer.token(**overrides), engine=ENGINE, now=NOW)

@@ -33,6 +33,18 @@ def oidc_token():
         return json.load(response)["value"]
 
 
+def engine_commit():
+    """The commit of the checkout this runner runs from."""
+    return subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=git_environment(),
+        timeout=30,
+    ).stdout.strip()
+
+
 def log(message):
     """Write lifecycle diagnostics without payloads or credentials."""
     print(time.strftime("%H:%M:%S"), message, flush=True)
@@ -195,8 +207,8 @@ def renew_before_serve(client):
             time.sleep(5)
 
 
-def main():
-    """Workflow entry points; claim starts the setup heartbeat before tool installation."""
+def arguments():
+    """The launcher's command line; released launchers keep calling it, so only ever extend it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("claim", "heartbeat", "prepare", "serve", "end", "summary"))
     parser.add_argument("--session", required=True)
@@ -205,13 +217,19 @@ def main():
     parser.add_argument("--config")
     parser.add_argument("--base")
     parser.add_argument("--idle", type=int, default=600)
+    return parser
+
+
+def main():
+    """Workflow entry points; claim starts the setup heartbeat before tool installation."""
+    parser = arguments()
     args = parser.parse_args()
     root, client = Path(args.root).resolve(), Runner(args.gateway, args.session)
     if args.command == "summary":
         run_display.summary(root / "turns")
         return
     if args.command == "claim":
-        grant = client.key(oidc_token())
+        grant = client.key(oidc_token(), engine_commit())
         if not grant.get("binding"):
             client.end()
             raise ValueError("session has no task/role binding")

@@ -238,5 +238,5 @@ require format 6. Older engines reject unknown
 formats. Rollback must preserve
 consumed calls and publication progress and use a compatible engine, not an older audit.
 Legacy `adopt`/`release` commands support old controller markers; they are not a supported
-host-execution fallback. Deployment requires the served engine and `deployed` workflow
-ref to agree before new sessions are dispatched.
+host-execution fallback. Every session names the served engine commit, which its runner
+must run.

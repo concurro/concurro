@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import settings as settings_module
 
-WORKFLOW_REF = "concurro/concurro/.github/workflows/agent.yml@refs/heads/deployed"
+WORKFLOW_REF = "concurro/concurro/.github/workflows/agent.yml@refs/heads/main"
 
 
 def migrate(

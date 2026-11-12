@@ -1,18 +1,23 @@
 # Host deployment: gateway and service
 
-agentgateway plus Concurro's key exchange, and the Concurro service, behind the host's
-shared edge Caddy. The host only coordinates and proxies inference: model turns and the
-exploratory builds run on the targets' GitHub-hosted runners. Design:
+agentgateway plus Concurro's key exchange, and the Concurro service, behind an HTTPS
+reverse proxy on the same host (the edge). The host only coordinates and proxies inference:
+model turns and the exploratory builds run on the targets' GitHub-hosted runners. Design:
 [MVP execution](../docs/design/mvp-execution.md).
+
+An installation is independent of every other: it runs the published images with its own
+GitHub App, host, secrets and targets, and needs neither a fork of this repository nor
+write access to it. Set one up with [New installation](#new-installation).
 
 ## Host layout
 
-The gateway runs from a Git clone; everything host-specific lives under `/etc` and
-`/var/lib`, so updating is a pull.
+The host runs CI-published images, with Compose files and gateway configuration from a Git
+clone; everything host-specific lives under `/etc` and `/var/lib`.
 
 | Item | Location |
 | ---- | ---- |
-| Source (clone) | `~/concurro`; Compose projects `concurro-gateway` and `concurro-service` |
+| Compose files and configuration (clone) | `~/concurro`; Compose projects `concurro-gateway` and `concurro-service` |
+| Image tags Compose runs | `~/concurro-release.env`: `CONCURRO_RELEASE`, `CONCURRO_WEB_RELEASE`; written by `deploy/host.sh` |
 | Gateway host override (state mounts, other host specifics) | `/etc/concurro/gateway/compose.host.yaml` |
 | Provider secrets (0600) | `/etc/concurro/gateway/secrets.env` |
 | The service's operator token (0600) | `/etc/concurro/gateway/exchange.env`, as `EXCHANGE_OPERATOR_TOKEN` |
@@ -21,21 +26,232 @@ The gateway runs from a Git clone; everything host-specific lives under `/etc` a
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
 | Backoffice settings and OAuth client secret (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, `client-secret` (see `backoffice/README.md`) |
-| Backoffice web app (static build) | `/srv/concurro-backoffice` |
 | Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
-| Edge Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
-| Route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
-| Edge certificate | `/etc/edge/tls`, refreshed by `edge/renewal-hook.sh` |
-| Renewal hook | `/etc/letsencrypt/renewal-hooks/deploy/60-edge` |
+| Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
+| Bundled edge route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
+| Bundled edge certificate | `/etc/edge/tls/{fullchain,privkey}.pem` |
 
 The gateway joins the external `edge` network as `concurro-gateway`, the service as
 `concurro-service`; neither publishes ports. Clients use `https://<host>/concurro` as
 the base URL, and the GitHub App delivers webhooks to `https://<host>/concurro/webhook`.
 The service reaches the exchange's operator API at the same base URL with the operator
 token; runner jobs reach it with their OIDC token and then their session's runner token.
-The service's image holds the clone's commit, which it serves; runner sessions must run
-the same commit, so deploy the service and the `deployed` workflow ref together. Ordinary `main` pushes do not change the deployed release.
+The service's image holds the release's commit, which it serves. Every runner session names
+that commit and the launcher workflow runs it, so a deployment changes nothing on GitHub and
+ordinary `main` pushes do not change the engine a deployment runs.
+
+## New installation
+
+For a host that has never run Concurro. This sequence follows the scripts, Compose files
+and settings loaders but has not been run end to end on a fresh host.
+
+**Fixed by the published images and scripts:**
+
+- The host is Linux on amd64, with Docker and its Compose plugin, Git and `flock`.
+- The deploying user can run `sudo -n docker` and owns the clone at `~/concurro`.
+- Everything is served under `https://<host>/concurro`: `concurro.caddy` routes that prefix
+  and the web image is built for it.
+- Services join an external Docker network named `edge` and publish no ports.
+- Images come from `ghcr.io/concurro`, built from `main` of this repository and of
+  concurro-backoffice. Running your own builds means changing the image names in both
+  Compose files and in `deploy/host.sh`, and the repositories in `deploy/deploy.sh`.
+
+**1. Clone and create directories**
+
+```bash
+git clone https://github.com/concurro/concurro.git ~/concurro
+```
+
+```bash
+sudo install -d -m 0700 /etc/concurro/gateway
+sudo install -d -m 0700 -o 65533 -g 65533 /etc/concurro/service /etc/concurro/backoffice \
+  /var/lib/concurro/service /var/lib/concurro/diagnostics
+```
+
+**2. Edge**
+
+Provide HTTPS for `<host>` on the `edge` network as described in [HTTPS edge](#https-edge),
+and start it before the first deployment.
+
+**3. Gateway**
+
+| File in `/etc/concurro/gateway` | Content |
+| ---- | ---- |
+| `secrets.env` (0600) | The provider variables [`agentgateway.yaml`](agentgateway.yaml) references: `OPENAI_API_KEY`, `CLAUDE_OAUTH_TOKEN`, `CHATGPT_ACCESS_TOKEN`, `CHATGPT_ACCOUNT_ID` |
+| `exchange.env` (0600) | `EXCHANGE_OPERATOR_TOKEN=<token>`; generate the token with `openssl rand -hex 32` |
+| `compose.host.yaml` | Required. Mounts gateway state from `/var/lib/concurro/gateway`, as shown for the vault; `services: {}` keeps the named volumes of `compose.yaml` instead |
+| `vault-master-key` | See [Credentials vault](#credentials-vault) |
+
+**4. GitHub App**
+
+Create an App owned by the account that operates the installation, with the permissions
+and event subscriptions in [Target and App prerequisites](#target-and-app-prerequisites):
+
+- Webhook URL `https://<host>/concurro/webhook`, with a generated webhook secret.
+- Callback URL `https://<host>/concurro/auth/callback`, for backoffice sign-in.
+- Install it on each upstream and fork.
+
+**5. Service settings**
+
+In `/etc/concurro/service`, each a regular file owned by uid 65533 with mode 0600:
+`github-app.pem` (the App's private key), `webhook-secret`, `gateway-operator-token` (the
+token from `exchange.env`), `delegation-key` and `settings.json`. The delegation key signs
+the commands the backoffice delivers; without it they are refused with 503:
+
+```bash
+sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/concurro/service/delegation-key'
+sudo chown 65533:65533 /etc/concurro/service/delegation-key
+```
+
+```json
+{
+  "controller_id": "service:main",
+  "app_id": 123456,
+  "private_key_path": "/etc/concurro/service/github-app.pem",
+  "webhook_secret_path": "/etc/concurro/service/webhook-secret",
+  "state_dir": "/var/lib/concurro/service",
+  "registry_id": "main",
+  "targets": [{"upstream": "OWNER/UPSTREAM", "fork": "OWNER/FORK", "issues": "fork"}],
+  "limits": {"global": 4, "per_repository": 2},
+  "gateway": {
+    "url": "https://<host>/concurro",
+    "operator_token_path": "/etc/concurro/service/gateway-operator-token",
+    "executor": "runner",
+    "workflow_ref": "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
+    "models": ["claude-*", "gpt-*"],
+    "budget": 20000000,
+    "headers": {"codex": {"x-concurro-plan": "chatgpt"}}
+  },
+  "diagnostics_dir": "/var/lib/concurro/diagnostics",
+  "delegation_key_path": "/etc/concurro/service/delegation-key"
+}
+```
+
+`headers.codex` selects the ChatGPT subscription route; use `"headers": {}` with an OpenAI
+API key. `issues` is `upstream`, `fork` or `both`. Omit `engine`: the service then serves
+the release it was deployed with. Backoffice settings are in
+[`backoffice/README.md`](../backoffice/README.md#settings).
+
+**6. Targets**
+
+Prepare each fork as in [Target and App prerequisites](#target-and-app-prerequisites): the
+caller workflow, `.concurro/` and the `CONCURRO_GATEWAY_URL` secret.
+
+**7. Registry**
+
+Create the empty task registry once, with the release you are about to deploy. The command
+validates the settings, creates the registry and exits; it contacts nothing and starts no
+task processing, and refuses to run over an existing registry:
+
+```bash
+sudo docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
+  --volume /var/lib/concurro/service:/var/lib/concurro/service \
+  ghcr.io/concurro/service:FULL_COMMIT_SHA initialize
+```
+
+**8. Deploy**
+
+Deploy `web`, then `service`, as in [Releases](#releases). Check the result with the
+commands in [Operation and pilot](#operation-and-pilot).
+
+## Releases
+
+CI publishes an image per component to GHCR for every `main` commit, tagged with the full
+commit SHA. Nothing is built on the host.
+
+| Image | Source |
+| ---- | ---- |
+| `ghcr.io/concurro/service` | `service/Dockerfile`; holds the commit's checkout with its history |
+| `ghcr.io/concurro/backoffice-api` | `backoffice/Dockerfile` |
+| `ghcr.io/concurro/exchange`, `ghcr.io/concurro/vault` | `gateway/exchange`, `gateway/vault` |
+| `ghcr.io/concurro/backoffice-web` | [concurro-backoffice](https://github.com/concurro/concurro-backoffice), released on its own |
+
+The packages must be public, or the host's root Docker logged in to `ghcr.io` with a
+`read:packages` token. Deploy from a workstation with `gh` and SSH access to the host:
+
+```bash
+export CONCURRO_DEPLOY_HOST=<ssh name>
+```
+
+```bash
+bash deploy/deploy.sh web FULL_COMMIT_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+```
+
+```bash
+bash deploy/deploy.sh service FULL_COMMIT_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+```
+
+- **`web`** takes a concurro-backoffice commit: it waits for that commit's CI, records
+  `CONCURRO_WEB_RELEASE`, then pulls and restarts only the web app. The service keeps running.
+  A host that has never deployed images only records the release; the first `service`
+  deployment needs it and starts the web app.
+- **`service`** takes a commit of this repository: it waits for its CI, checks out the
+  release's Compose files, stops the service, pulls and verifies the images, starts the
+  gateway and the service with the backoffice, and checks health and the served commit. It
+  refuses a release that does not include the one recorded. A failure after stopping can
+  leave the service stopped; fix the reported problem and rerun. Nothing is rolled back,
+  migrated or retried, and nothing is written to GitHub.
+
+Host Docker commands use non-interactive `sudo docker` only. Never source either script.
+The `build` sections in the Compose files remain for local builds, for example
+`CONCURRO_RELEASE=$(git rev-parse HEAD) docker compose -f gateway/compose.yaml build`.
+
+## Launcher and engine
+
+Target callers reference the launcher, `concurro/concurro/.github/workflows/agent.yml@main`,
+and `gateway.workflow_ref` in the service settings names the same workflow and ref. The
+launcher's commit is independent of the engine a deployment runs:
+
+1. The service puts its served commit in each session's binding (`engine`).
+2. The launcher presents its job's OIDC token to `POST <gateway>/exchange/sessions/<id>/engine`.
+   The exchange authenticates it exactly as a claim (target repository and owner, launcher
+   workflow ref, bot dispatch, session ref, hosted runner, first run) and answers
+   `{"repository", "engine"}`: the launcher's own repository and the session's commit.
+3. The launcher fetches that commit by SHA and runs `engine/runner.py` from it.
+4. `runner.py claim` states its checkout's commit. The exchange issues the key and runner
+   token only if it equals the session's; any other runner is refused and the refusal recorded.
+
+A target's optional `engine` pin is checked by the service: without one the target runs
+whatever engine the operator deployed; with one, any other served commit blocks the task
+with "target pins another engine commit". Upgrading a deployment therefore needs no change
+in target repositories, no engine fork and no write access to `concurro/concurro`.
+
+### Launcher contract
+
+The launcher on `main` serves every supported release, so these only ever grow:
+
+- The exchange's `engine` action above.
+- `engine/runner.py claim|prepare|serve|end|summary --session --gateway --root`, with
+  `--config` and `--base` for `prepare`.
+- `engine/agent-clients.txt`: the npm packages the launcher installs, one pinned spec per line.
+- The target's optional `.concurro/setup` action, given `base`.
+
+`engine/tests/test_launcher.py` runs the workflow's own steps against the exchange. A
+launcher change that needs something new from the engine must keep working with releases
+that lack it. An operator who wants launcher changes only on their own schedule can name a
+tag in `gateway.workflow_ref` and the callers instead of `main`.
+
+### Migrating from the `deployed` ref
+
+Releases before this one loaded the engine from the launcher's own commit and moved a
+shared `deployed` branch on every deployment. Once, per deployment:
+
+1. Stop the service and let active runner jobs finish. Sessions issued before the upgrade
+   cannot be claimed afterwards.
+2. Set `gateway.workflow_ref` in `/etc/concurro/service/settings.json` to
+   `concurro/concurro/.github/workflows/agent.yml@refs/heads/main` (back the file up first).
+3. Deploy this release with `deploy/deploy.sh service`.
+4. In each target fork, change the caller's `uses:` from `agent.yml@deployed` to
+   `agent.yml@main` on the default branch.
+5. Tasks keep the caller commit they started with. Give each in-flight task `/concurro resume`
+   so it adopts the updated caller; until then its runs present the old workflow ref and are
+   refused.
+
+To defer steps 4 and 5, leave `gateway.workflow_ref` and the callers on `deployed` and
+fast-forward that branch one last time to this release or later; it then serves as the
+launcher ref and later deployments leave it alone. A caller still reaching a launcher from
+before this release is refused with "runner engine differs from the session's".
 
 ## Credentials vault
 
@@ -89,7 +305,7 @@ services:
 ## Target and App prerequisites
 
 The target fork needs the [caller workflow](../examples/stacks-core/.github/workflows/concurro-executor.yml)
-on its default branch, calling `agent.yml@deployed`, and the current `.concurro/` config
+on its default branch, calling `agent.yml@main`, and the current `.concurro/` config
 and charter. The upstream and fork must be public and in the same fork network. No new
 fork is created. Optional setup is a composite action at `.concurro/setup/action.yml`.
 The caller passes the repository secret `CONCURRO_GATEWAY_URL` explicitly to the reusable
@@ -110,24 +326,21 @@ and do not use `secrets: inherit`.
 
 When upgrading from a session-only caller:
 
-1. Pause dispatch and finish active runner jobs before moving `deployed`. The service's
-   expected OIDC workflow SHA must match that ref; moving it while the old service still
-   dispatches can prevent new runners from claiming their sessions.
-2. While dispatch remains paused, update `deployed`, the fork caller and the service to
-   the matching release. Old callers reject the new inputs; the updated caller needs a
-   reusable workflow that declares the labels.
-3. Verify the service and `deployed` match, then explicitly resume affected tasks against
-   the updated configuration before allowing further dispatch. Updating the default
-   branch alone does not change a task's pinned caller commit.
+1. Pause dispatch and finish active runner jobs.
+2. While dispatch remains paused, update the fork caller and the service. Old callers
+   reject the new inputs; the updated caller needs a reusable workflow that declares the
+   labels.
+3. Explicitly resume affected tasks against the updated configuration before allowing
+   further dispatch. Updating the default branch alone does not change a task's pinned
+   caller commit.
 
 Optional label defaults still support session-only manual dispatch. No additional App
 permissions are required for these display fields.
 
 For the secret-interface migration, finish active tasks and runner jobs, then stop the
 service before landing the updated fork caller. Keep dispatch stopped while deploying the
-matching engine and moving `deployed`; restart only after both sides are updated. A new
-caller forwarding an undeclared secret and an old caller omitting a required secret are
-both incompatible. Ordinary pushes to Concurro's `main` do not move `deployed`.
+matching engine; restart only after both sides are updated. A new caller forwarding an
+undeclared secret and an old caller omitting a required secret are both incompatible.
 
 Secret forwarding requires the updated caller in the task's pinned configuration commit.
 Changing the default branch does not update existing task pins; reconcile those explicitly
@@ -218,8 +431,8 @@ a permitted test upstream for the pilot; the target's contribution policy still 
 
 ## Upgrade from the workbench release
 
-Commit and push the reviewed source before building the service: it refuses a dirty
-checkout. The following are operator-run deployment instructions, not automatic actions.
+Commit and push the reviewed source first: CI builds the service image from it, and the
+service refuses a dirty checkout. The following are operator-run deployment instructions, not automatic actions.
 No step runs a controller, model or build agent on a Mac.
 
 1. Stop dispatch by stopping the service on the Linux host. Let its active ticks finish,
@@ -236,32 +449,32 @@ No step runs a controller, model or build agent on a Mac.
    review its path policy and replace the config in the fork. Remove an old optional
    target `engine` pin, or update it to the reviewed release. Custom profiles require
    manual translation to setup, instructions and protected/generated paths.
-4. Build the new server images and migrate service settings as shown below. The target
+4. Pull the new server images and migrate service settings as shown below. The target
    settings now use `{upstream, fork, issues}`; execution-image and per-target credential
    settings are gone. Preserve all service secrets, state paths and `registry_id`.
-5. While the service remains stopped, move Concurro's `deployed` branch to the same
-   reviewed engine commit. Start the gateway and service; verify the logged served SHA
-   equals that release ref. Only then enroll a fresh pilot issue.
+5. Start the gateway and service; verify the logged served SHA equals the release. Only
+   then enroll a fresh pilot issue.
 
 Use the existing host mounts and Compose project names:
 
 ```bash
-gw() { sudo docker compose -p concurro-gateway -f ~/concurro/gateway/compose.yaml -f /etc/concurro/gateway/compose.host.yaml "$@"; }
-svc() { sudo docker compose -f ~/concurro/service/compose.yaml "$@"; }
+gw() { sudo docker compose --env-file ~/concurro-release.env -p concurro-gateway -f ~/concurro/gateway/compose.yaml -f /etc/concurro/gateway/compose.host.yaml "$@"; }
+svc() { sudo docker compose --env-file ~/concurro-release.env -f ~/concurro/service/compose.yaml "$@"; }
 ```
 
-After stopping/backing up and checking out the committed release:
+After stopping/backing up, checking out the committed release and recording it as
+`CONCURRO_RELEASE` in `~/concurro-release.env`:
 
 ```bash
-gw build
-svc build
+gw pull
+svc pull
 svc run --rm --volume /etc/concurro/service:/etc/concurro/service:rw \
   --entrypoint python3 service -m service.use_gateway \
   --settings /etc/concurro/service/settings.json \
-  --url https://gateway.example.com/concurro \
+  --url https://<host>/concurro \
   --operator-token /etc/concurro/service/gateway-operator-token \
-  --upstream stacks-network/stacks-core \
-  --fork cylewitruk/stacks-core-autobot --issues fork
+  --upstream OWNER/UPSTREAM \
+  --fork OWNER/FORK --issues fork
 ```
 
 The one-off command overrides the normally read-only settings mount. It runs as the
@@ -269,11 +482,9 @@ service's uid 65533, validates a private temporary file, then atomically replace
 The running service keeps its read-only mount. Multi-target settings must be edited
 explicitly; the helper refuses to guess their pairs. Back up settings before replacing them.
 
-With the host checkout at the reviewed commit and dispatch still stopped, an authorized
-operator updates the release ref (this is a GitHub write):
+With the host checkout at the reviewed commit:
 
 ```bash
-git -C ~/concurro push origin HEAD:refs/heads/deployed
 gw up -d
 svc up -d
 svc logs --tail 30 service
@@ -304,7 +515,7 @@ Do not restore older task checkpoints to bypass this requirement: that loses spe
 and publication progress.
 
 For rollback, stop the new service and jobs first. Restore the matching backed-up stores,
-settings and old committed server release together, then align its workflow ref. Do not
+settings and old committed server release together. Do not
 run old code against a newer registry schema or discard unknown-write records.
 
 ## Operation and pilot
@@ -329,26 +540,55 @@ Optional design evaluation uses the normal runner dispatch path and model budget
 
 ```bash
 svc exec service python3 -m service --settings /etc/concurro/service/settings.json \
-  evaluate cylewitruk/stacks-core-autobot 123 codex
+  evaluate OWNER/FORK ISSUE codex
 ```
 
 Use an idle configured task. Results remain under `/var/lib/concurro/service/evaluations/`.
 
-## Shared edge
+## HTTPS edge
 
-Keep the existing edge and SBGH routes. Concurro publishes no host ports; its route file
-serves only `/concurro/*`. The gateway's unauthenticated admin listener remains on shared
-loopback with the exchange, not the edge network. Other edge services can reach the
-inference/exchange listeners, whose key/operator/OIDC authorization still applies.
+Concurro needs one HTTPS reverse proxy that:
 
-When a route or renewal hook changes, install only Concurro's reviewed file and validate
-before reloading; do not replace unrelated route files:
+- Holds a certificate GitHub and its hosted runners accept for `<host>`.
+- Is attached to the Docker network `edge`. Create the network with `sudo docker network
+  create edge` if the proxy's own Compose project does not.
+- Routes `/concurro/*` as [`concurro.caddy`](concurro.caddy) does, stripping the prefix and
+  streaming `/v1/*` responses unbuffered.
+
+Concurro publishes no host ports and its routes claim only `/concurro/*`, so the proxy can
+serve other applications too. The gateway's unauthenticated admin listener stays on the
+loopback it shares with the exchange, not the `edge` network. Other containers on that
+network can reach the inference and exchange listeners, whose key, operator and OIDC
+authorization still applies.
+
+[`edge/`](edge/) is a ready proxy: Caddy on port 443, serving the certificate files in
+`/etc/edge/tls` and every route file in `/etc/edge/sites`. It does not obtain certificates.
+
+```bash
+sudo install -d /etc/edge/sites
+sudo install -d -m 0750 /etc/edge/tls
+sudo install -m 0644 ~/concurro/gateway/edge/compose.yaml ~/concurro/gateway/edge/Caddyfile /etc/edge/
+sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.caddy
+sudo docker compose -f /etc/edge/compose.yaml up -d
+```
+
+Put `fullchain.pem` and `privkey.pem` in `/etc/edge/tls` first.
+[`edge/renewal-hook.sh`](edge/renewal-hook.sh) is a certbot deploy hook that copies a renewed
+certificate there and reloads Caddy. It acts only on the certbot certificate named in
+`/etc/edge/certificate-name`:
+
+```bash
+echo CERTIFICATE_NAME | sudo tee /etc/edge/certificate-name
+sudo install -m 0755 ~/concurro/gateway/edge/renewal-hook.sh /etc/letsencrypt/renewal-hooks/deploy/60-edge
+```
+
+A host whose installed hook predates that file must create it before reinstalling the hook.
+
+When a route changes, install only Concurro's file and validate before reloading; leave
+other route files alone:
 
 ```bash
 sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.caddy
 sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile
 sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force
 ```
-
-The existing `60-edge` renewal hook handles `sbgh-fleet-ip`; port 80 stays with certbot.
-This refactor does not require changing certificates, SBGH's listener or its routes.

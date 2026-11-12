@@ -460,16 +460,15 @@ class ExecutorTests(unittest.TestCase):
         registry.bind(("owner/one", 7), "owner/one", "owner/one", "b" * 40)
         return Worker(settings, None, registry, None, lambda repository: self.Reader(), "concurro[bot]")
 
-    def test_runner_claims_name_the_target_workflow_commit_and_bot(self):
+    def test_runner_claims_name_the_target_launcher_ref_and_bot_but_no_launcher_commit(self):
         self.assertEqual(
             runner_claims(
-                self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main", "e" * 40, "concurro[bot]"
+                self.Reader(), "owner/one", "o/r/.github/workflows/agent.yml@refs/heads/main", "concurro[bot]"
             ),
             {
                 "repository_id": "11",
                 "repository_owner_id": "22",
                 "job_workflow_ref": "o/r/.github/workflows/agent.yml@refs/heads/main",
-                "job_workflow_sha": "e" * 40,
                 "event_name": "workflow_dispatch",
                 "ref": "",
                 "actor_id": "33",
@@ -480,9 +479,8 @@ class ExecutorTests(unittest.TestCase):
         github = type("GitHub", (), {"key": ("owner/one", 7), "generation": 1})()
         runner = self.worker("runner").executor("owner/one", github)
         self.assertIsInstance(runner, RunnerExecutor)
-        self.assertEqual(
-            (runner.expected["job_workflow_sha"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000)
-        )
+        self.assertEqual((runner.task["engine"], runner.models, runner.budget), ("e" * 40, ["claude-*"], 1000))
+        self.assertNotIn("job_workflow_sha", runner.expected)
         self.assertEqual(runner.operator.token, "operator-secret")
         self.assertEqual(
             runner.gateway,

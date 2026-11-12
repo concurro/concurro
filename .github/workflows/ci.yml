@@ -11,8 +11,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Per commit outside pull requests: every main commit publishes its images.
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   engine:
@@ -26,9 +27,9 @@ jobs:
           persist-credentials: false
       - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
       - name: Lint Python
-        run: ruff check engine service gateway backoffice
+        run: ruff check engine service gateway backoffice deploy
       - name: Check Python formatting
-        run: ruff format --check engine service gateway backoffice
+        run: ruff format --check engine service gateway backoffice deploy
       - name: Check extracted engine types
         run: pyright --project pyrightconfig.json
       - run: python3 -m unittest discover -s engine/tests -v
@@ -36,5 +37,63 @@ jobs:
       - run: python3 -m unittest discover -s gateway/tests -v
       - run: python3 -m unittest discover -s backoffice/tests -v
       - run: python3 -m compileall -q engine service gateway/exchange gateway/vault backoffice
+      - run: python3 -m unittest discover -s deploy/tests -v
+      - run: shellcheck deploy/*.sh
       - name: Verify trusted role, skill, schema and example charter packaging
         run: python3 engine/bundle.py examples/stacks-core
+
+  # Release images, tagged with the commit. Hosts pull them; see gateway/README.md.
+  images:
+    name: Image (${{ matrix.image }})
+    needs: engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: service
+            context: .
+            dockerfile: service/Dockerfile
+          - image: backoffice-api
+            context: .
+            dockerfile: backoffice/Dockerfile
+          - image: exchange
+            context: gateway/exchange
+            dockerfile: gateway/exchange/Dockerfile
+          - image: vault
+            context: gateway/vault
+            dockerfile: gateway/vault/Dockerfile
+    env:
+      RELEASE: ${{ github.event.pull_request.head.sha || github.sha }}
+      IMAGE: ghcr.io/concurro/${{ matrix.image }}:${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The service image holds the checkout with its history.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build
+        env:
+          BUILD_CONTEXT: ${{ matrix.context }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          docker build --tag "$IMAGE" --file "$DOCKERFILE" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$RELEASE" "$BUILD_CONTEXT"
+      - name: Verify the service image serves this commit
+        if: matrix.image == 'service'
+        run: |
+          docker run --rm --entrypoint sh "$IMAGE" -c \
+            'test "$(git rev-parse HEAD)" = "$1" && test -z "$(git status --porcelain)"' sh "$RELEASE"
+      - name: Publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+          docker push "$IMAGE"

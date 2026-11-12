@@ -79,8 +79,9 @@ class Runner:
     def __init__(self, gateway, session):
         self.gateway, self.session, self.token = gateway, session, None
 
-    def key(self, oidc):
-        grant = call(self.gateway, oidc, "POST", f"sessions/{self.session}/key", {})
+    def key(self, oidc, engine):
+        """Claim the session, stating the engine commit this runner runs."""
+        grant = call(self.gateway, oidc, "POST", f"sessions/{self.session}/key", {"engine": engine})
         self.token = grant["token"]
         return grant
 

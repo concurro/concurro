@@ -1,8 +1,8 @@
 # Backoffice API
 
-Serves the [backoffice web app](https://github.com/concurro/concurro-backoffice) and its API at
-`https://<host>/concurro/` (everything under `/concurro/` that isn't `webhook`, `exchange` or `v1`;
-see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
+The API of the [backoffice web app](https://github.com/concurro/concurro-backoffice), at
+`https://<host>/concurro/api` and `/concurro/auth`; the edge sends the rest of `/concurro/` to
+the web app's own container (see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
 
 - **Sign-in:** GitHub App user-to-server web flow on the existing App, with one-use `state` and PKCE
   bound to the starting browser by an HTTP-only cookie. Sessions are in memory: a restart signs
@@ -45,13 +45,12 @@ see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
   "targets": [{"upstream": "owner/repo", "fork": "owner/fork", "issues": "fork"}],
   "diagnostics_dir": "/var/lib/concurro/diagnostics",
   "vault_url": "http://concurro-vault:8090",
-  "static_dir": "/srv/concurro-backoffice",
   "service_url": "http://concurro-service:8787"
 }
 ```
 
-`targets` matches the service's settings. `static_dir` holds the web app's static build (built
-with base path `/concurro`); without it, only the API is served. The App's callback URL must be
+`targets` matches the service's settings. An optional `static_dir` also serves a static build of
+the web app (built with base path `/concurro`) from this process, for running without the edge. The App's callback URL must be
 `https://<host>/concurro/auth/callback`.
 
 ## Run locally

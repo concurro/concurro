@@ -122,6 +122,7 @@ TASK = {
     "config_sha": "b" * 40,
     "upstream": "up/project",
     "fork": "owner/project",
+    "engine": "e" * 40,
 }
 
 

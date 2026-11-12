@@ -29,7 +29,7 @@ jobs:
     permissions:
       id-token: write
     cache-mode: read
-    uses: concurro/concurro/.github/workflows/agent.yml@deployed
+    uses: concurro/concurro/.github/workflows/agent.yml@main
     secrets:
       CONCURRO_GATEWAY_URL: ${{ secrets.CONCURRO_GATEWAY_URL }}
     with:

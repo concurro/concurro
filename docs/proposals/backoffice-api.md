@@ -219,7 +219,7 @@ Fed by the daemon (tick outcomes, ingress deliveries) and exchange turn transiti
 | POST | `/admin/reconcile` | Control `reconcile-once` |
 | POST | `/admin/writes/{intent}/resolve` | Control `resolve` (disposition, evidence, operator = signed-in user) |
 | POST | `/admin/reviews/{intent}/recover` | `recover-review` |
-| GET | `/admin/deployment` | Served engine SHA vs. `deployed` workflow ref; bundle drift per task |
+| GET | `/admin/deployment` | Served engine SHA and launcher workflow ref; bundle drift per task |
 | GET | `/admin/exchange/sessions`, `/admin/exchange/turns` | Live sessions/turns, staffing, refusals |
 | POST | `/admin/exchange/sessions/{id}/end` | Exchange operator `end` |
 | GET | `/admin/gateway` | Health, active keys, budget consumption |
