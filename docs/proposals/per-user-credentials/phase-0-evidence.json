@@ -1,0 +1,512 @@
+{
+  "scope": "isolated pinned gateway and native CLIs, fake upstream accounts only; live checks pending by user direction",
+  "raw_artifacts": "/private/tmp/concurro-phase0-final07",
+  "manifest": {
+    "source": "0328670c200339fde8da28edd529de2bfb15ba0e",
+    "image": "cr.agentgateway.dev/agentgateway:v1.7.0@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b",
+    "python": "3.13.0 (v3.13.0:60403a5409f, Oct  7 2024, 00:37:40) [Clang 15.0.0 (clang-1500.3.9.4)]",
+    "cli_pins": {
+      "codex": "0.163.0",
+      "claude": "2.1.301"
+    },
+    "engine_command_builder_sha256": "b94d6f07a49daeea82dfcf25b3f4a45a5037feb31f74f7bcb8ec2471899aa39d",
+    "workflow_sha256": "7bd5b037470b75c10c5267f9f075eabef66db62a8555ea87d0f6a6e9050b6fa5",
+    "production_gateway_config_sha256": "04c17408ba2afca4a8013fa9f7c01d0100402e2df38fb24c6c10e93d310df650",
+    "schema": {
+      "url": "https://raw.githubusercontent.com/agentgateway/agentgateway/v1.7.0/schema/config.json",
+      "sha256": "8d757c092bc30a5ed5fd38a07a47d72602941c8344203c2d1f86e02d6dbb2bd3"
+    },
+    "fixture_hashes": {
+      "sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+      "spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+      "spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab"
+    },
+    "live_account_validation": "pending; explicitly outside this isolated-only run",
+    "working_tree_status": " M docs/proposals/per-user-credentials/implementation-plan.md\n?? docs/proposals/per-user-credentials/phase-0-evidence.json\n?? docs/proposals/per-user-credentials/phase-0.md\n?? gateway/tests/spike_fixtures.py\n?? gateway/tests/spike_observer.py\n?? gateway/tests/sponsorship_spike.py\n?? gateway/tests/test_spike_observer.py\n",
+    "source_hashes": {
+      "gateway/exchange/exchange.py": "5107da5bba2abfedc3aa20863a865e70aaf0c0e5a67588ec72224ad7e69a87af",
+      "gateway/tests/exchange_fixtures.py": "debb167e707fe1ebd7be0d92141e2b0c8cdf278d86295ecb3db6424166881856",
+      "engine/turns.py": "aafc07901aa1db5c7a8ee79c659ac9b4f05f5799168522c47e52d71f5587137e",
+      "engine/processes.py": "fcdbc6e328922a0247eb3646b89540feea7014875215f5350681b37e68786c4e",
+      "gateway/compose.yaml": "43715523bfd95677d7332c08984738bbd56ec436fbec5b8983144cb624afcbf5",
+      "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+    },
+    "config_hashes": {
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/gateway.json": "25d0ab12b75404b68246c4a8dfd85488b88d81fbc21b21b20a6ed153df7ea3bf",
+      "test_observer_multiple_requests_keep_one_exchange_turn/gateway.json": "4fe24c21f26c99d1587200b0f1b1ed351232104ec5fb415f128bacc54bc3e9e4",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/gateway.json": "f6a5eaca7b835cc864b8e4e77490a86e777c4d1dd94421de8c88b1663d9bfdde",
+      "test_observer_parallel_isolation_and_spoofed_headers/gateway.json": "f07e151099c61c599466a9948b5d25bf26f00c009711167b9b1db95b724a8262",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.json": "9256dce10c9b9108e812373f701a65bd10c6a427c91212e89472798f60843568",
+      "test_observer_client_cancellation_bounds_upstream_work/gateway.json": "57568971ef83471188ee25faf83253236c90ba61188b26a2381c93729767ec74",
+      "test_delayed_stream_keeps_authorization_snapshot/gateway.json": "ea62341c2c2eb0596287e3a8f38457c35f27df523238e9db8dde5de243533bd9",
+      "test_error_stream_usage_and_log_attribution/gateway.json": "fd198bb85d223c46237648090b2e64f8998eead587fdeb409ce1a016451fda29",
+      "test_observer_structured_errors_streaming_and_native_budget/gateway.json": "cc84e7767443f51b6ea1ccc6d46af1a2e382a248016145551ff414b8d9e91700",
+      "test_parallel_isolation_and_spoofed_headers/gateway.json": "a4082d5dba3afab1109a31f92d9a93766f268580b24e9f68892938d596326afd",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/gateway.json": "e02a898b3086ad257fd767b0d6807db2875d6dd0820b4edc62c77b3380799895",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/gateway.json": "3f428385941d60b98e85ffce2776c40da2ea3db18c56b275d9575dfd27aaa53e",
+      "test_retirement_partial_deletion_restart_and_inflight/gateway.json": "7e7e5fb99f9c0f3ef5fd1d6e0ff8052cb802b9d97453c3464680189c8a39240c",
+      "test_resolver_denial_outage_missing_and_expiry/gateway.json": "b584669411c56d8282a4f0a9f236d1a37ef2aa42ae7be74463f273626eb3de9f",
+      "test_candidate_account_and_route_validation/gateway.json": "653f50264757535ca6f3927a9ad14ae1c01d52c7150f9af92632234c85629317"
+    },
+    "artifact_hashes": {
+      "tests.log": "ec3a96492f21da74b843240e1ad9365874a04bcaa466a4faaa6523d2ab8fc528",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/gateway.log": "f0bfac4bc022ef4f8fc5271f177166c11481152520ff73f7a3b5d4bebfbc26e3",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/trace.json": "161232e5fded52a80268cecf76d4cd0152be9eb87ae47aa06473007ec2d8cc9b",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/secret-scan.json": "b3e9e1a7664d90ace5ac65ba470886d59e7b4f831dbba14fa0333b6067036c13",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/gateway.json": "25d0ab12b75404b68246c4a8dfd85488b88d81fbc21b21b20a6ed153df7ea3bf",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/exchange.db": "23b95c86a6aac457780bc478fab2fc9709d9a173363f9e866b2f0609d0e5e0f9",
+      "test_revocation_before_key_activation_and_next_documents_existing_gap/boundary-gaps.json": "25e1df519f107590020e1cc485f52a703da80d8ba971d2590a37275f79fd8fea",
+      "test_observer_multiple_requests_keep_one_exchange_turn/gateway.log": "176a8ae4986bead429b450f75bb7de12f49254fa676c0d51dc09c111f093c4ee",
+      "test_observer_multiple_requests_keep_one_exchange_turn/trace.json": "7ebd75ee34180a416eb0c333167a22e7132947463b2313a20be8616b5a8992bd",
+      "test_observer_multiple_requests_keep_one_exchange_turn/requests.db-wal": "129b7bc0baa62583365b8c544e5385e9f4a02efa553a9bf7d2d901e5f8ff42da",
+      "test_observer_multiple_requests_keep_one_exchange_turn/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_multiple_requests_keep_one_exchange_turn/requests.db-shm": "76082940a1baad077aab0b052e2e22fb04bf583c2f4ae2d42edfcc5213b27ca2",
+      "test_observer_multiple_requests_keep_one_exchange_turn/secret-scan.json": "9ea16735b5beec09341ead6159019d3cded6fbc41f5a3e7cf798cbd72794ec54",
+      "test_observer_multiple_requests_keep_one_exchange_turn/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_multiple_requests_keep_one_exchange_turn/gateway.json": "4fe24c21f26c99d1587200b0f1b1ed351232104ec5fb415f128bacc54bc3e9e4",
+      "test_observer_multiple_requests_keep_one_exchange_turn/exchange.db": "ab9ef6453bcfc56e722daae83683b3143a6c52d0f57a23c308b6b04e664a0eda",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/gateway.log": "df28c6f57eb57782c210287dd0ec43c3406adee9a9f408ea8042114803712db3",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/cli-versions.json": "ea472e5fa9dcf268688e36617eb089ba25bd9ae5e299f5ceefd3919fc203d9ac",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/trace.json": "83ea262e66a47eab376ecc0d423dacf81f91c58cb64af92d4d1179d95dff3b47",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/secret-scan.json": "84cbf1f9cdd57395807497777368a61f2801ff99316539d44a4c9d52b7362661",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/gateway.json": "f6a5eaca7b835cc864b8e4e77490a86e777c4d1dd94421de8c88b1663d9bfdde",
+      "test_pinned_native_fresh_resume_and_fake_account_transfer/exchange.db": "68986249bdb6dcf3de20f2558aff8572392f6a042fdb2b4766f78bc570803b80",
+      "test_observer_parallel_isolation_and_spoofed_headers/gateway.log": "21dd64f584a7b7c65a431dcbc56f933b3ac7482afc543c216c27722d3da4e40d",
+      "test_observer_parallel_isolation_and_spoofed_headers/trace.json": "3b21eddf530aa16a81749f6e49190662d4b50130d818a97561e65b2e942e716c",
+      "test_observer_parallel_isolation_and_spoofed_headers/requests.db-wal": "e5967779f628329d30dd17c55117489ef736973b2c9c7cdac8e40fae5f00a2ed",
+      "test_observer_parallel_isolation_and_spoofed_headers/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_parallel_isolation_and_spoofed_headers/requests.db-shm": "6bd553fe22639c20666eb36d88f0cc2a24bfd92b528a0739b9bba8e5c5378df3",
+      "test_observer_parallel_isolation_and_spoofed_headers/secret-scan.json": "d5778caa011ff249c7e6d4c48fc1e584e05eeead2a1a993649b818fb7a4e8d40",
+      "test_observer_parallel_isolation_and_spoofed_headers/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_parallel_isolation_and_spoofed_headers/gateway.json": "f07e151099c61c599466a9948b5d25bf26f00c009711167b9b1db95b724a8262",
+      "test_observer_parallel_isolation_and_spoofed_headers/exchange.db": "cad08ba4524a863d396eee4a80c06e169d35204a1c7644f782326760495abecd",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.log": "c29da47450bc2e385a4bbf209908c8d9a159b73e44136386da99bfe532459686",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/trace.json": "2ea5e5ab5ab78b08bee498582d9493ce3ca6034c067f9f2f7bfc56ed64a43aed",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/requests.db-wal": "2405c8b4508d11c2b81824b640b366dd3f85814dcc061a78cb8cbc82d47e156e",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/requests.db-shm": "b3892b9a264acc487882204df451395abe52b3bf70d53a4dfa84c0403a5570e7",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/secret-scan.json": "f17bdf602cffc075c4d9c033c2e62c6d7ff5d2c0a61f8793dd5fbc042ac3a663",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.json": "9256dce10c9b9108e812373f701a65bd10c6a427c91212e89472798f60843568",
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot/exchange.db": "006ca00476fc160d0057cfb0728f6955d7a2a20da29461b15d2febe2c295d00e",
+      "test_observer_client_cancellation_bounds_upstream_work/gateway.log": "2d2a0fae51ae4932865ad05c98d32202050f6c322607f1aec6ff579c55042f12",
+      "test_observer_client_cancellation_bounds_upstream_work/trace.json": "e7f2fee5fceb839f2f450b23e30ce8092f2c221f86be4bc8fada23e083cd8c7e",
+      "test_observer_client_cancellation_bounds_upstream_work/cancellation.json": "0743805251fc2b6b55ff43ba591debbffd0af26b69387ba3b301c05444256fea",
+      "test_observer_client_cancellation_bounds_upstream_work/requests.db-wal": "9432f75c4c9d94284c54069bf741917e4780f78d74dc00ec22162a5a262a3d79",
+      "test_observer_client_cancellation_bounds_upstream_work/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_client_cancellation_bounds_upstream_work/requests.db-shm": "d76055532da841e4d58d4a67c2100f00e801e6b8f5eb2e42d512e3c5374447fe",
+      "test_observer_client_cancellation_bounds_upstream_work/secret-scan.json": "067603deeac02afcebab61b4a2d02d91d05861f35926e5a3a7a8839595fe8d85",
+      "test_observer_client_cancellation_bounds_upstream_work/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_client_cancellation_bounds_upstream_work/gateway.json": "57568971ef83471188ee25faf83253236c90ba61188b26a2381c93729767ec74",
+      "test_observer_client_cancellation_bounds_upstream_work/exchange.db": "b1512311b343513c1a30ba3354839034d6861e215c42e3dd60d4681b241ddaf6",
+      "test_delayed_stream_keeps_authorization_snapshot/gateway.log": "06b28edf51452e426a193a42672dd5d2b1b0c2d2d1ecf691db4da211dbcfa1b3",
+      "test_delayed_stream_keeps_authorization_snapshot/trace.json": "259794289c88da9d385c3275c83c07c86573a7fd65f5df9d0167bed453c2a9de",
+      "test_delayed_stream_keeps_authorization_snapshot/secret-scan.json": "23854417122e036214aa640ae0811b7393f5ee2ed2e7dfb88a21562ef3e44c12",
+      "test_delayed_stream_keeps_authorization_snapshot/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_delayed_stream_keeps_authorization_snapshot/gateway.json": "ea62341c2c2eb0596287e3a8f38457c35f27df523238e9db8dde5de243533bd9",
+      "test_delayed_stream_keeps_authorization_snapshot/exchange.db": "4716d058247b0b794add2a1c6d3975cafca50b6408f109cfcae909eab90dd8ba",
+      "test_error_stream_usage_and_log_attribution/gateway.log": "98e7c0877e4a6d39e7c3fc6122f2195b51444665272c46244c6f3190371f04f1",
+      "test_error_stream_usage_and_log_attribution/trace.json": "933a93ee5a14abd768661cb10c69045f91bf127e6bd7fb788275c6062063d4be",
+      "test_error_stream_usage_and_log_attribution/outcomes.json": "5631ac95ab967360573413b61846bb2bee1dc721520268f590fbef5a80687a85",
+      "test_error_stream_usage_and_log_attribution/secret-scan.json": "b3e9e1a7664d90ace5ac65ba470886d59e7b4f831dbba14fa0333b6067036c13",
+      "test_error_stream_usage_and_log_attribution/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_error_stream_usage_and_log_attribution/gateway.json": "fd198bb85d223c46237648090b2e64f8998eead587fdeb409ce1a016451fda29",
+      "test_error_stream_usage_and_log_attribution/exchange.db": "9e427a508217ec5b3ed59c1b01e108b50696018b676a16d9bff99f018f9974bd",
+      "test_observer_structured_errors_streaming_and_native_budget/gateway.log": "b0b4709dad2eddbb5f8abde03fa9c4e0a2f1a2d98dc039699d9a60247f1725fe",
+      "test_observer_structured_errors_streaming_and_native_budget/trace.json": "69f5b36c119d0cede277ba684076ecf9764eca0bf4a748cb3c45859ce46fb962",
+      "test_observer_structured_errors_streaming_and_native_budget/requests.db-wal": "9915e324826fee6f6f300cd78583a0ec75731425af41e583418fb0161d6fd332",
+      "test_observer_structured_errors_streaming_and_native_budget/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_structured_errors_streaming_and_native_budget/requests.db-shm": "3c474ac62cc0c02b11ee8245d1e0c3a7675c0f4436661327e3b457c86c6a1327",
+      "test_observer_structured_errors_streaming_and_native_budget/secret-scan.json": "f0152cdf06d78864a546c92d5fd8686a5bdce4eec6b6c038f03a98afb61aa99b",
+      "test_observer_structured_errors_streaming_and_native_budget/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_structured_errors_streaming_and_native_budget/gateway.json": "cc84e7767443f51b6ea1ccc6d46af1a2e382a248016145551ff414b8d9e91700",
+      "test_observer_structured_errors_streaming_and_native_budget/exchange.db": "68d2578eb7438a37b8905ffde2ac941297cb20a681d1b2f0ef1656f911137649",
+      "test_parallel_isolation_and_spoofed_headers/gateway.log": "669099d6f9c14726e2bf9a47239dfc9743681e7e10b54a75d95cc4541864deb3",
+      "test_parallel_isolation_and_spoofed_headers/trace.json": "3ffc5dc06797d276230e9a2ed12bd6eb60b1c38c6a465189984faf4040efd0d3",
+      "test_parallel_isolation_and_spoofed_headers/secret-scan.json": "23854417122e036214aa640ae0811b7393f5ee2ed2e7dfb88a21562ef3e44c12",
+      "test_parallel_isolation_and_spoofed_headers/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_parallel_isolation_and_spoofed_headers/gateway.json": "a4082d5dba3afab1109a31f92d9a93766f268580b24e9f68892938d596326afd",
+      "test_parallel_isolation_and_spoofed_headers/exchange.db": "211c84248f57f701331f4fd86d592839e7bdcb84c0a5f0cb8a088e81dbb07ce8",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/gateway.log": "1616392517e3b7f0140b4a3e2d13400709dfe389c9c775e95ada1d41695c7170",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/cli-versions.json": "ea472e5fa9dcf268688e36617eb089ba25bd9ae5e299f5ceefd3919fc203d9ac",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/trace.json": "7ccafbcdb4ac0a5ca5d2ff88b63ff019b26b9424ec29944342239d2de6f4f671",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/requests.db-wal": "931f8a6cf9db4bebaffc2b1a629a978664ebbd6d02d751b8eaa7a37dc9a87d63",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/requests.db": "f1c1d714b195aa1795c50ed2db1795613d868a07340cbf0b1a563384fdfebdcf",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/requests.db-shm": "dd111fb23349dbc7ffd51fd497923bd77663b82f9070d26a52080629a2ce59b8",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/secret-scan.json": "88d8a5b2a8c0108867d620ba5a5eaa291c5dcb1fa28664b854d0592d5cfbc38f",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/gateway.json": "e02a898b3086ad257fd767b0d6807db2875d6dd0820b4edc62c77b3380799895",
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer/exchange.db": "2aa518c43770262a0ab5c1eaad63e8d6d856c827cc2b483d2607473e39ef48e2",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/gateway.log": "16cc3dc4b43147619c04b2cadb8201a44c1308d81c8744b807785fa1e05c4157",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/trace.json": "33d8d73593c9361933c8e259fa4c6967d77498f561aa355fbf433b807e85d7e9",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/budget.json": "e57b09f2bd78948b6ec58047ff43de76a4198afaa00379737087defc84b71a97",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/secret-scan.json": "b3e9e1a7664d90ace5ac65ba470886d59e7b4f831dbba14fa0333b6067036c13",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/gateway.json": "3f428385941d60b98e85ffce2776c40da2ea3db18c56b275d9575dfd27aaa53e",
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim/exchange.db": "9c2db65c2017b45b1068d0b91631ed3c2082cb129859b041c9a90f1c10d13c85",
+      "test_retirement_partial_deletion_restart_and_inflight/gateway.log": "9893dc1a0479b8d7b4f7ab6d2fef8b2629722652faff679b7b1007c92f2330db",
+      "test_retirement_partial_deletion_restart_and_inflight/trace.json": "038f9f6d87f749b1c8c53d1e5515254c8eba491caa32967750d9677eb35d5c17",
+      "test_retirement_partial_deletion_restart_and_inflight/secret-scan.json": "23854417122e036214aa640ae0811b7393f5ee2ed2e7dfb88a21562ef3e44c12",
+      "test_retirement_partial_deletion_restart_and_inflight/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_retirement_partial_deletion_restart_and_inflight/gateway.json": "7e7e5fb99f9c0f3ef5fd1d6e0ff8052cb802b9d97453c3464680189c8a39240c",
+      "test_retirement_partial_deletion_restart_and_inflight/exchange.db": "bff5951826c286019cc0e2bd9dce4bdc6d87adf9ce6507d60fff3cf011a7975f",
+      "test_resolver_denial_outage_missing_and_expiry/gateway.log": "043764e526ba0aca2695e46defaef7629b3374b21edf36af6bf1c214bd25ae2b",
+      "test_resolver_denial_outage_missing_and_expiry/trace.json": "d0b0be7556ab3ec5b4187812c640c4ed06ef6609bcadf6b5aa108ff12b1b775c",
+      "test_resolver_denial_outage_missing_and_expiry/secret-scan.json": "b3e9e1a7664d90ace5ac65ba470886d59e7b4f831dbba14fa0333b6067036c13",
+      "test_resolver_denial_outage_missing_and_expiry/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_resolver_denial_outage_missing_and_expiry/gateway.json": "b584669411c56d8282a4f0a9f236d1a37ef2aa42ae7be74463f273626eb3de9f",
+      "test_resolver_denial_outage_missing_and_expiry/exchange.db": "fc2a5391e9da24ef6af3f61c95327247c34dc77f993eef5e4d48c8e9d7a0e25b",
+      "test_resolver_denial_outage_missing_and_expiry/denial-statuses.json": "d7c04c3a6a4dc13188b6ba88493100d31bcd4eaef92d592c3a66c4310f2b1b0f",
+      "test_candidate_account_and_route_validation/gateway.log": "d25cfde724dd11aa7d34c67cb43c765c26276cc3d2f9f6c20e3523c6d7c2720c",
+      "test_candidate_account_and_route_validation/trace.json": "3e049eff4bb08a70dcbceb986cabf41e815658f13ad6a87bbde80256d3657fd4",
+      "test_candidate_account_and_route_validation/secret-scan.json": "23854417122e036214aa640ae0811b7393f5ee2ed2e7dfb88a21562ef3e44c12",
+      "test_candidate_account_and_route_validation/gateway.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_candidate_account_and_route_validation/gateway.json": "653f50264757535ca6f3927a9ad14ae1c01d52c7150f9af92632234c85629317",
+      "test_candidate_account_and_route_validation/exchange.db": "fdc03f4a206958e1942e44b87f2e443c0b63c07cc7e318180317725dd0cdd110"
+    },
+    "cases": {
+      "test_revocation_before_key_activation_and_next_documents_existing_gap": {
+        "provider_requests": 0,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 5,
+          "leaks": [],
+          "request_database_rows": null
+        },
+        "boundary-gaps": {
+          "before_key": {
+            "existing_exchange_issued_key": true,
+            "existing_next_returned_turn": true,
+            "activation_probe_statuses": [
+              403
+            ],
+            "resolver_inference_status": 403,
+            "upstream_calls": 0
+          },
+          "activation": {
+            "existing_exchange_issued_key": true,
+            "existing_next_returned_turn": true,
+            "activation_probe_statuses": [
+              403
+            ],
+            "resolver_inference_status": 403,
+            "upstream_calls": 0
+          },
+          "before_next": {
+            "existing_exchange_issued_key": true,
+            "existing_next_returned_turn": true,
+            "activation_probe_statuses": [
+              200
+            ],
+            "resolver_inference_status": 403,
+            "upstream_calls": 0
+          }
+        }
+      },
+      "test_observer_multiple_requests_keep_one_exchange_turn": {
+        "provider_requests": 3,
+        "observations": 3,
+        "observation_categories": [
+          null
+        ],
+        "secret_scan": {
+          "files_scanned": 7,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 4,
+            "request_log_payloads": 0
+          }
+        }
+      },
+      "test_pinned_native_fresh_resume_and_fake_account_transfer": {
+        "provider_requests": 4,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 173,
+          "leaks": [],
+          "request_database_rows": null
+        },
+        "cli-versions": {
+          "codex": "codex-cli 0.163.0",
+          "claude": "2.1.301 (Claude Code)"
+        }
+      },
+      "test_observer_parallel_isolation_and_spoofed_headers": {
+        "provider_requests": 5,
+        "observations": 5,
+        "observation_categories": [
+          null
+        ],
+        "secret_scan": {
+          "files_scanned": 7,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 9,
+            "request_log_payloads": 0
+          }
+        }
+      },
+      "test_observer_stream_arrives_before_completion_and_keeps_snapshot": {
+        "provider_requests": 2,
+        "observations": 2,
+        "observation_categories": [
+          null
+        ],
+        "secret_scan": {
+          "files_scanned": 7,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 3,
+            "request_log_payloads": 0
+          }
+        }
+      },
+      "test_observer_client_cancellation_bounds_upstream_work": {
+        "provider_requests": 1,
+        "observations": 1,
+        "observation_categories": [
+          "unknown"
+        ],
+        "secret_scan": {
+          "files_scanned": 8,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 2,
+            "request_log_payloads": 0
+          }
+        },
+        "cancellation": {
+          "chunks_written": 19,
+          "offered_chunks": 2050,
+          "chunk_bytes": 16384,
+          "termination": "BrokenPipeError",
+          "elapsed_seconds": 0.002
+        }
+      },
+      "test_delayed_stream_keeps_authorization_snapshot": {
+        "provider_requests": 2,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 4,
+          "leaks": [],
+          "request_database_rows": null
+        }
+      },
+      "test_error_stream_usage_and_log_attribution": {
+        "provider_requests": 7,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 5,
+          "leaks": [],
+          "request_database_rows": null
+        }
+      },
+      "test_observer_structured_errors_streaming_and_native_budget": {
+        "provider_requests": 15,
+        "observations": 15,
+        "observation_categories": [
+          null,
+          "auth",
+          "quota_exhausted",
+          "rate_limited",
+          "unknown"
+        ],
+        "secret_scan": {
+          "files_scanned": 7,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 19,
+            "request_log_payloads": 0
+          }
+        }
+      },
+      "test_parallel_isolation_and_spoofed_headers": {
+        "provider_requests": 5,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 4,
+          "leaks": [],
+          "request_database_rows": null
+        }
+      },
+      "test_observer_pinned_native_fresh_resume_and_fake_account_transfer": {
+        "provider_requests": 4,
+        "observations": 4,
+        "observation_categories": [
+          null
+        ],
+        "secret_scan": {
+          "files_scanned": 176,
+          "leaks": [],
+          "request_database_rows": {
+            "_agentgateway_request_log_migrations": 2,
+            "request_logs": 8,
+            "request_log_payloads": 0
+          }
+        },
+        "cli-versions": {
+          "codex": "codex-cli 0.163.0",
+          "claude": "2.1.301 (Claude Code)"
+        }
+      },
+      "test_budget_is_native_and_has_no_refill_on_key_reclaim": {
+        "provider_requests": 1,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 5,
+          "leaks": [],
+          "request_database_rows": null
+        },
+        "budget": {
+          "limit": 4,
+          "reported_total": 5,
+          "next_status": 429
+        }
+      },
+      "test_retirement_partial_deletion_restart_and_inflight": {
+        "provider_requests": 2,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 4,
+          "leaks": [],
+          "request_database_rows": null
+        }
+      },
+      "test_resolver_denial_outage_missing_and_expiry": {
+        "provider_requests": 5,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 5,
+          "leaks": [],
+          "request_database_rows": null
+        },
+        "denial-statuses": {
+          "revoked": 403,
+          "expired": 403,
+          "outage": 503,
+          "missing": 403
+        }
+      },
+      "test_candidate_account_and_route_validation": {
+        "provider_requests": 3,
+        "observations": 0,
+        "observation_categories": [],
+        "secret_scan": {
+          "files_scanned": 4,
+          "leaks": [],
+          "request_database_rows": null
+        }
+      }
+    },
+    "image_identity": {
+      "Id": "sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b",
+      "RepoDigests": [
+        "cr.agentgateway.dev/agentgateway@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b"
+      ],
+      "Architecture": "arm64",
+      "Os": "linux"
+    },
+    "result": {
+      "run": 15,
+      "failures": 0,
+      "errors": 0,
+      "successful": true
+    }
+  },
+  "checks": {
+    "gateway_unittest": {
+      "result": "pass",
+      "artifact": "/private/tmp/concurro-phase0-gateway_unittest-final07.log",
+      "sha256": "9280872cfe6da1b18e3c1d349176a9ec697616b76ec65142e58123da9d6c940e",
+      "source_hashes": {
+        "gateway/tests/sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+        "gateway/tests/spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab",
+        "gateway/tests/spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+        "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+      }
+    },
+    "ruff": {
+      "result": "pass",
+      "artifact": "/private/tmp/concurro-phase0-ruff-final07.log",
+      "sha256": "d210d2128239d45d68bdca4ea55aed5abc9d2bec38f83fc5e478a388020e818b",
+      "source_hashes": {
+        "gateway/tests/sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+        "gateway/tests/spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab",
+        "gateway/tests/spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+        "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+      }
+    },
+    "ruff_format": {
+      "result": "pass",
+      "artifact": "/private/tmp/concurro-phase0-ruff_format-final07.log",
+      "sha256": "ea96b51aa5c867b6392874fe71327c69a5e5519dfa3aa5634b753455d70e7b03",
+      "source_hashes": {
+        "gateway/tests/sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+        "gateway/tests/spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab",
+        "gateway/tests/spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+        "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+      }
+    },
+    "pyright": {
+      "result": "pass",
+      "artifact": "/private/tmp/concurro-phase0-pyright-final07.log",
+      "sha256": "697ed4fb32c3230f6736859105858a808a6fb5aecd0c772796a26338df524e27",
+      "source_hashes": {
+        "gateway/tests/sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+        "gateway/tests/spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab",
+        "gateway/tests/spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+        "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+      }
+    }
+  },
+  "negative_architecture_evidence": {
+    "source_provenance": "Deprecated response.body probes predate frozen source; exact source revision was not retained. Config/log/trace artifacts are hashed below, not represented as final-source reproductions.",
+    "artifact_hashes": {
+      "/private/tmp/concurro-phase0-run06-cancel": {
+        "manifest.json": "2f878a96b447ba52ab3a54418e6c2eb8ba2ed4e69198af7f3ef5608a40afcb84",
+        "tests.log": "999458eb7450a58386c00a90ab9ffef2d831e7bf3eb111d5bad0a3ad44713007",
+        "test_observer_client_cancellation_bounds_upstream_work/gateway.log": "0ad44834a5c94c16594142b16e5a332706442f5d1041e5a3e3cf9aa8bb55bf2a",
+        "test_observer_client_cancellation_bounds_upstream_work/trace.json": "d7d3ec714ae1d184eaad9e03c3f43014ede22e45e0e729f833f56347a2c6e8a0",
+        "test_observer_client_cancellation_bounds_upstream_work/gateway.json": "de154d66cb4266e1d6ecc329763a1faeb02ca0a8e14d83099c551dc4f04ddf60"
+      },
+      "/private/tmp/concurro-phase0-run07-delay": {
+        "manifest.json": "809c2df42c8970bfb2f0c5e3f0bcbff251b4824c7572964bd8f1dfc4fa985c86",
+        "tests.log": "2b6f9c1637465b41eaba6fc380aae63dd45e90a8ab2d8b634e61830ab2d006a9",
+        "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.log": "6429f55b03bf4c1c8b843da1aed6ace0524198f98b009db1975bd9dd9dafc482",
+        "test_observer_stream_arrives_before_completion_and_keeps_snapshot/trace.json": "26dbcd6dcec43a3c0a394188d705b9fd295a9f1de6874880a703780c8c3c5a19",
+        "test_observer_stream_arrives_before_completion_and_keeps_snapshot/gateway.json": "445ce4ebb6b2876ee3391a02f17de859fb4447c7cf1bd3c8cb54e07a094cb242"
+      }
+    },
+    "observation": "response.body extAuthz metadata caused main-response buffering;2050/2050 offered chunks consumed and delayed observer hit timeout",
+    "source": "agentgateway 26f5aebe99a36a037fe54f8080a608aca5547e15 crates/agentgateway/src/http/ext_authz.rs:1076-1081",
+    "resolution": "Private resolver response.headers metadata; final cancellation/stream-first tests pass"
+  },
+  "pending": [
+    "Real subscription token/account-header authorization",
+    "Real provider error taxonomy",
+    "Real provider-account transcript portability",
+    "Production vault authentication,durable observation/event transport and provider-grant lifecycle integration",
+    "Durable native budget-denial to attempt observation mapping"
+  ],
+  "source_files": {
+    "gateway/tests/sponsorship_spike.py": "51b3c2f7dae4f52fae828011bd7102a3c3b8ca8d54747199c5103cb24e53ed9b",
+    "gateway/tests/spike_observer.py": "9796c1d0855feaf0d0744563f4455cbcbd8af0014996929d5d607eae839e94ab",
+    "gateway/tests/spike_fixtures.py": "1fc75d626b861d2d866fcf69ea2ae255ebe8151dcd1711075c109a94fb32263d",
+    "gateway/tests/test_spike_observer.py": "d5fdbd03ad5a0e7d29963d57a2fb5f9b7421d05abcb4bfc5b0d0f84d45e3e869"
+  }
+}

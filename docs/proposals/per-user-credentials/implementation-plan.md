@@ -1,6 +1,8 @@
 # Per-user credentials: implementation plan
 
-**Status: proposed implementation companion; not implemented or live-verified.**
+**Status: proposed implementation companion; production feature not implemented.**
+The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
+remain pending by user scope.
 This supplies the execution plan for the [epic](../per-user-credentials.md), including
 subscription connections. The epic and [cross-cutting contracts](../README.md#cross-cutting-rules)
 remain authoritative unless a decision below explicitly calls out a change. The
@@ -464,6 +466,12 @@ returning; a partial creation still adopts its recorded key and budget. Host ses
 
 ## Gateway selection and empirical phase 0
 
+The [isolated result and reproduction](phase-0.md), with [hashed evidence](phase-0-evidence.json),
+select native header-derived resolver metadata plus a narrow response-observation hop.
+The fixtures use the exact pinned image and CLIs; production integration is later work.
+Do not use `response.body` metadata expressions here: measured v1.7.0 behavior buffers
+the main provider stream. Private resolver response headers avoid that side effect.
+
 Recommended first choice: agentgateway authenticates the virtual key, then a resolver in
 the gateway zone maps the key's `concurro.session` to the session's frozen binding in the
 Exchange database and supplies request-local backend auth.
@@ -680,8 +688,9 @@ design-batch/command tests, `gateway/tests/test_exchange*.py`, `test_vault.py`,
 `backoffice/tests/test_backoffice.py`. Use fake clocks/SSE and independent exchange
 instances for races. Existing Python CI runs component `unittest discover`, Ruff,
 Pyright, compileall and bundle packaging; run affected suites and full CI before release.
-No application tests were run for this documentation-only plan. Phase-0 and live
-acceptance are future work, not results implied by this proposal.
+The original documentation review ran no application tests. Isolated phase-0 tests and
+limitations are now recorded in [phase-0.md](phase-0.md); real-account acceptance remains
+pending and is not implied by fake-provider results.
 
 ## Migration, operation and rollback
 
@@ -739,8 +748,9 @@ no live login, provider spend, permission change, task retry or deployment.
 
 ## Remaining technical evidence
 
-- **Gateway mechanism:** prove pinned-image resolver metadata, no fallback and trusted
-  streaming observations; dynamic resources/proxy remain fallbacks.
+- **Gateway integration:** the isolated spike proves native header-based resolver injection
+  and a narrow response observer. Production authentication, durable observation transport
+  and deployment integration remain; see [phase-0.md](phase-0.md).
 - **CLI token instructions:** document the existing local Codex token-retrieval procedure
   without inventing an export flag; help establishes device login, not token export.
 - **Route/account validation:** prove both CLI-token model probes against current backends
