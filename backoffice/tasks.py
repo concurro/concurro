@@ -234,7 +234,7 @@ class Tasks:
         if state is None and not stage_label(issue):
             raise TaskNotFound(f"{repository}#{number} is not enrolled in Concurro")
         config, _ = self.config(target.fork)
-        task = summary(repository, issue, record["mode"])
+        task = summary(repository, issue, record["mode"]) | {"body": issue.get("body") or ""}
         if state:
             task |= project(state, config, repository, issue)
             if state.get("pr"):
@@ -325,6 +325,7 @@ def summary(repository: str, issue: dict, mode: str) -> dict:
         "atStage": stage,
         "mode": mode,
         "alert": alert(stage, {}),
+        "intake": [],
         "plans": [],
         "designReview": [],
         "rounds": [],
@@ -344,6 +345,7 @@ def project(state: dict, config: dict, repository: str, issue: dict) -> dict:
         "atStage": parked_at(state),
         "mode": state.get("mode") or "manual",
         "alert": alert(stage, state),
+        "intake": intake_rounds(state),
         "plans": plans,
         "approvedPlanId": (state.get("approval") or {}).get("plan"),
         "designReview": design_reviews(state),
@@ -457,6 +459,33 @@ def plan_versions(state: dict, at: str) -> list[dict]:
             "body": plan_markdown(plan),
         }
     return [{**plan, "version": n} for n, plan in enumerate(versions.values(), start=1)]
+
+
+def intake_rounds(state: dict) -> list[dict]:
+    """Recorded triage assessments, oldest first; the current one carries its concerns."""
+    rounds = []
+    for entry in state.get("qc_history") or []:
+        if entry.get("stage") != "intake":
+            continue
+        agent = entry.get("agent") if isinstance(entry.get("agent"), dict) else {}
+        name, profile = member_label(
+            {"model": entry.get("model"), **agent, "agent": agent or None, "provider": entry.get("provider")}
+        )
+        rounds.append(
+            {
+                "agent": name,
+                "profile": profile,
+                "decision": entry.get("decision") or "",
+                "risk": entry.get("risk") or "",
+                "rationale": entry.get("rationale") or "",
+                "concerns": [],
+                "at": entry.get("at") or "",
+            }
+        )
+    current = (state.get("qc") or {}).get("intake")
+    if rounds and isinstance(current, dict):
+        rounds[-1]["concerns"] = [c for c in current.get("concerns") or [] if isinstance(c, str)]
+    return rounds
 
 
 def member_label(identity: dict) -> tuple[str, str]:

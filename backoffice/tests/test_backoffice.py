@@ -537,6 +537,30 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(task["budgets"]["modelCalls"], {"used": 9, "max": 40})
         self.assertEqual(task["completion"]["handedOff"], False)
         self.assertEqual(len(task["timeline"]), 2)
+        self.assertEqual(task["intake"], [])
+
+    def test_intake_rounds_list_triage_assessments_with_current_concerns(self):
+        agent = {"profile": "sonnet-high", "model": "claude-sonnet", "effort": "high"}
+        intake = {"stage": "intake", "decision": "proceed", "risk": "high", "rationale": "Why", "at": "T1"}
+        state = {
+            "qc_history": [
+                {**intake, "provider": "claude", "model": "claude-sonnet"},
+                {"stage": "plan_qc", "decision": "approve", "at": "T2"},
+                {**intake, "rationale": "Again", "agent": agent, "at": "T3"},
+            ],
+            "qc": {"intake": {"decision": "proceed", "concerns": ["Reproduce first"]}},
+        }
+        rounds = tasks_module.intake_rounds(state)
+        self.assertEqual(
+            [(r["agent"], r["profile"], r["at"]) for r in rounds],
+            [
+                ("claude", "claude-sonnet", "T1"),
+                ("sonnet-high", "claude-sonnet · high", "T3"),
+            ],
+        )
+        self.assertEqual([r["concerns"] for r in rounds], [[], ["Reproduce first"]])
+        self.assertEqual(rounds[1]["rationale"], "Again")
+        self.assertEqual(tasks_module.summary("up/project", self.ISSUE, "manual")["intake"], [])
 
 
 if __name__ == "__main__":
