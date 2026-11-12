@@ -278,6 +278,8 @@ Issue commands require the existing writer permissions. `/concurro start` starts
 resumes manual planning; `/concurro approve <plan-id>` authorizes the recorded plan;
 `/concurro retry` retries blocked work with current requirements/feedback;
 `/concurro resume` continues validated work without renewing allowances;
+`/concurro resume --description-only` recovers a mistaken publication-wording reopen from
+its original approval evidence, retaining findings and all spent budgets;
 `/concurro stop` suspends it. `/concurro invalidate` is a separate writer-authorized
 operation: it accepts the current bundle/charter and restarts intake and planning,
 retaining the PR, published head, base and spent budgets. Old approvals, votes and

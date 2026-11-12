@@ -130,6 +130,24 @@ class Publication:
         )
         return commit
 
+    def publish_description(self, save: Callable[[], None]) -> None:
+        """Refresh only PR presentation, then ask outstanding reviewers to resolve their findings."""
+        state, update = self.state, self.state["description_update"]
+        if not approval_valid(state, self.config) or update["head"] != state.get("head"):
+            raise Blocked("description update does not match its approved candidate")
+        pr = self.pulls.repo(f"pulls/{state['pr']}")
+        if pr["state"] != "open" or pr.get("merged") or pr["head"]["sha"] != update["head"]:
+            raise Blocked("PR closed or head changed before description publication")
+        pr_description.refresh(state, self.pulls, pr, update["body"], save, self.pr_body(legacy=True))
+        owners = {f["provider"] for f in state.get("findings", []) if f["status"] in ("open", "withdrawn")}
+        retry = {p for p, r in state["reviews"].items() if r["verdict"] != "approve"} | owners
+        if retry:
+            state.setdefault("review_history", []).append(deepcopy(state["reviews"]))
+            state["reviews"] = {p: r for p, r in state["reviews"].items() if p not in retry}
+        state.update(stage="review", input_revision=state.get("input_revision", 0) + 1)
+        del state["description_update"]
+        save()
+
     def publish(self, save: Callable[[], None], preflight: Callable[[list[TaskState]], None]) -> None:
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
         state, pending, reader = self.state, self.state["pending"], self.reader
@@ -270,7 +288,9 @@ class Publication:
         parts = pr_description.sections(
             candidate,
             head,
-            self.state["plan"].get("publication", {}).get("review_focus", []),
+            candidate.get("description", {}).get(
+                "review_focus", self.state["plan"].get("publication", {}).get("review_focus", [])
+            ),
             self.config.get("fork", self.config["repository"]),
         )
         attention = ""

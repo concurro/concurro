@@ -10,6 +10,16 @@ if TYPE_CHECKING:
     from records import Config, TaskState
 
 
+def next_generation(state: TaskState) -> int:
+    """Allocate beyond every used identity, including generations abandoned by recovery."""
+    return max(state.get("design_generation", 0), state.get("design_generation_high", 0)) + 1
+
+
+def advance_generation(state: TaskState) -> None:
+    """Advance the current design and its durable generation high-water mark together."""
+    state["design_generation"] = state["design_generation_high"] = next_generation(state)
+
+
 class RevisionBudget:
     """Track spent revisions and writer grants on the current task state."""
 

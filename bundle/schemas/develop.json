@@ -76,13 +76,22 @@
             "minLength": 1,
             "pattern": "^(?=.*\\S)[^\\r\\n\\u0000]+$"
           }
+        },
+        "review_focus": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=.*\\S)[^\\r\\n\\u0000]+$"
+          }
         }
       },
       "required": [
         "lead",
         "problem",
         "changes",
-        "compatibility"
+        "compatibility",
+        "review_focus"
       ],
       "additionalProperties": false
     },

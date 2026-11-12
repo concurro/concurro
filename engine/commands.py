@@ -12,6 +12,7 @@ import actions
 import bundle_resume
 import conversation
 import dashboard_runs
+import description_repair
 import implementation_bundle
 import protocol
 import sessions
@@ -61,7 +62,7 @@ def parse(body: str) -> Command | None:
     if not re.fullmatch(
         r"/concurro (start|approve "
         + protocol.DIGEST_PATTERN
-        + r"|stop|resume|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
+        + r"|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
         body,
     ):
         return None
@@ -226,6 +227,14 @@ class CommandHandler:
             )
             controller.save()
             return LoopAction.CONTINUE
+        if command.argument == "--description-only":
+            try:
+                description_repair.recover(controller, comment)
+            except Blocked as error:
+                controller.state["command_id"] = comment["id"]
+                conversation.queue(controller.state, "Resume not applied", str(error))
+                controller.save()
+                return LoopAction.CONTINUE
         reassess = controller.state["stage"] in JUDGED_STAGES and not output_repair_pending(controller.state)
         bundle_resume.adopt(controller, comment, config, bundle, self.config_digest(config), reassess=reassess)
         if reassess and not self.reassess_judgment(comment, comments, settings_adopted=True):
@@ -238,6 +247,12 @@ class CommandHandler:
                 "Using the current configuration and instructions to reassess the updated issue through intake. "
                 if reassess
                 else "Using the current configuration and instructions, continuing from saved progress. "
+            )
+            + (
+                "The recorded design approval is retained for a description-only repair; "
+                "outstanding findings still require their owners' review. "
+                if command.argument == "--description-only"
+                else ""
             )
             + "Completed work, findings and spent budgets are retained.",
         )

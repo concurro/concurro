@@ -48,8 +48,30 @@ Repeated reads of a consumed command do not reapply it. Uncertain writes retain 
 existing reconciliation semantics; resume does not assume that an unknown write failed.
 `/concurro invalidate` remains the explicit request to restart assessment.
 
+## Recovering a mistaken description-only reopen
+
+A writer can use `/concurro resume --description-only` when publication wording was
+mistakenly escalated into a design reopen. This explicitly identifies the reopen as
+editorial; the controller does not guess from model prose. It reads bot-written audit
+history and restores the original valid approval and votes for the unchanged plan,
+requirements and PR head. It never manufactures an approval or rolls back the whole task.
+If that evidence is no longer available, recovery leaves the task paused with a notice.
+The approval retains its original generation. A separate high-water mark records the
+highest used generation, so later reopens and resume-driven reassessments skip abandoned numbers.
+Published withdrawal markers and dashboard rounds are never reused for a new generation.
+
+Withdrawn findings return to their previous status, with the same owners and identities;
+none are resolved by the command. Existing PR reviews remain recorded. Calls, credential
+charges, repair attempts, revision grants and spent revision/reopen counters stay unchanged.
+The failed reopen and obsolete feedback remain in history. The command adopts current
+settings as ordinary resume does, then continues implementation with the new description
+contract. The correction's owning reviewer still verifies it before handoff.
+
 ## Rollback
 
 A checkpoint with a resume receipt uses format **6**. Rollback needs an engine that can
 read every format already saved; an older engine refuses format 6. Do not restore an
 older checkpoint to erase spent calls or publication progress.
+
+After description-only recovery, a rollback engine must also honor the generation
+high-water mark; older engines could reuse already-published review identities.

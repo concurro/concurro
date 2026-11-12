@@ -268,6 +268,7 @@ class TaskState(TypedDict, total=False):
     issue: int
     pr: int
     pr_description: Document
+    description_update: Document
     pr_template: Document
     base: str
     branch: str
@@ -297,6 +298,7 @@ class TaskState(TypedDict, total=False):
     session_epoch: int
     sessions: dict[str, Session]
     design_generation: int
+    design_generation_high: int
     design_phase: str
     design_votes: dict[str, Document]
     design_feedback: list[Document]

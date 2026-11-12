@@ -30,7 +30,7 @@ def validate(before, after, plan, config):
 
 
 def development(report):
-    """Require an explanation, agent-reported validation and either edits or a design-reopen request."""
+    """Validate an implementation, description-only repair or design-reopen response."""
     if (
         not isinstance(report, dict)
         or set(report)

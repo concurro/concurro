@@ -142,7 +142,8 @@ change bullets naming files/functions, and optional compatibility bullets. Brevi
 guidance; item counts and prose lengths have no fixed ceiling. The description covers the
 whole approved-base-to-candidate diff and is
 stored on that candidate. Testing comes only from `validation`, labelled agent-reported
-and naming its candidate commit. Review focus comes from the approved plan. The footer
+and naming its candidate commit. Review focus comes from the implementer’s description,
+initially based on the approved plan; legacy results without that field still use the plan. The footer
 retains the implementation plan, dependency summaries and the correct issue closing link.
 
 Concurro saves the intended body digest before creation or refresh. It PATCHes only when
@@ -159,13 +160,30 @@ convention. Set optional
 `conventional_commits: true` in the target configuration to add the model-selected type
 prefix; the default is false. Commit metadata is separate from the whole-PR description.
 
+### Description-only repairs
+
+The implementer can correct PR wording, including stale function names in review focus,
+without changing the approved plan. An existing candidate with no workspace edits and a
+valid description publishes only a body update at the same head. It preserves original
+validation evidence, design approvals, findings and spent budgets; it creates no commit
+and triggers no new CI run. Initial implementations still require code edits.
+Description-only repairs use the same prospective review-context size check against the
+full existing diff and retained validation, returning repair feedback before publication.
+
+The controller saves the rendered body before publication and uses the existing body
+ownership and lost-reply receipts. Human edits are not overwritten. After publication,
+only reviewers requesting changes or owning unresolved findings are called again; other
+approvals of the unchanged code remain recorded. Each finding stays unresolved until its
+owner answers it. Failed corrections still use the existing repair/call allowances.
+
 ### Bundle rollout
 
-This changes the develop schema, implementer skill, PR-review skill and shared instructions.
-Deploy during an idle window after active tasks finish. Otherwise arrange explicit writer
-recovery with `/concurro invalidate`; the implementer-only `/concurro retry` exception does
-not apply to this bundle change. Do not rewrite existing approval bindings. Already-retained
-legacy implementation results remain readable, but that does not bypass bundle authorization.
+The description-only contract changes the develop schema and implementer skill. Deploy
+while idle, or explicitly resume active tasks to adopt the new instructions. For a mistaken
+publication-wording reopen, use the description-only recovery option described in
+[checkpoint resume](checkpoint-resume.md#recovering-a-mistaken-description-only-reopen).
+Original approval bindings remain unchanged. Retained legacy implementation results without
+review-focus fields remain readable and use the plan’s review focus.
 
 ### Repository PR templates
 

@@ -38,7 +38,12 @@ do not include a separate edit list.
 
 - `description` covers the entire base-to-head PR diff, including earlier repairs: a concise lead
   sentence, problem bullets, change bullets naming files/functions, and compatibility bullets
-  where relevant. Keep fields concise, without headings or line breaks. Testing claims belong
+  where relevant, plus review-focus bullets describing the actual implementation. Use the plan's
+  review focus as a starting point; correct stale names or wording in this description without
+  editing or reopening the approved plan. A description-only repair requires no workspace edits,
+  empty commit, or new tests: keep the code unchanged and return the corrected description.
+  Reopen only for a change to requirements, architecture or scope, not publication wording.
+  Keep fields concise, without headings or line breaks. Testing claims belong
   only in `validation`.
 - `commit` covers this round: a concise subject following target conventions without a prefix,
   a conventional commit type, and concise change bullets covering the round. Concurro uses the plan headline

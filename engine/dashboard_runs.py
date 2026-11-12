@@ -1,6 +1,7 @@
 """Presentation boundaries for explicit invalidations, independent of approval counters."""
 
 import markup
+import revisions
 
 INVALIDATED = "Writer explicitly invalidated the design and requested reassessment."
 EMPTY = {"artifact": 0, "generation": 0, "review_round": 0, "plan_revisions": 0}
@@ -19,7 +20,7 @@ def start(state):
     """Capture the next run's display offsets before invalidation changes task state."""
     return {
         "artifact": max((r["artifact"] for r in state.get("reports", [])), default=0),
-        "generation": state.get("design_generation", 0) + 1,
+        "generation": revisions.next_generation(state),
         "review_round": state.get("round", 0),
         "plan_revisions": state.get("plan_revisions", 0),
     }

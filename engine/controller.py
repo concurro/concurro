@@ -1013,7 +1013,7 @@ class Controller:
             )
         if not state.get("review_batch", {}).get("active"):
             state.pop("review_batch", None)
-        state["design_generation"] += 1
+        revisions.advance_generation(state)
         state["input_revision"] = state.get("input_revision", 0) + 1
         withdrawn = review_rules.withdraw(state)
         if state.get("pr"):
@@ -1777,6 +1777,8 @@ class Controller:
                 implementation_feedback=repair_feedback,
                 design_authorization=self.design_authorization(),
                 conventional_commits=self.config.get("conventional_commits", False),
+                current_description=state.get("candidate", {}).get("description"),
+                current_validation=state.get("candidate", {}).get("validation"),
             )
             report = self.ask(assigned(self.config, "implementer"), "develop", context)
             extraction_error = report.get("workspace_error")
@@ -1802,6 +1804,18 @@ class Controller:
             try:
                 if extraction_error:
                     raise Blocked(extraction_error)
+                if report["edits"] == [] and state.get("pr") and state.get("head") and report.get("description"):
+                    # Presentation repairs leave the reviewed candidate and its validation evidence intact.
+                    evidence = {**state["candidate"], "description": deepcopy(report["description"])}
+                    changed = state["changed_files"]
+                    before = self.files(state["base"], changed, inspection=True)
+                    after = self.files(parent, changed, inspection=True)
+                    over = self.oversized(
+                        None, before, after, dependencies=evidence.get("dependencies"), description=evidence
+                    )
+                    if over:
+                        raise Blocked(over)
+                    return proposal, evidence
                 originals = self.files(parent, readable, inspection=True)
                 edits = validate_edits(proposal, state["plan"], originals, self.config)
                 all_paths = sorted(set(readable) | set(state.get("changed_files", [])))
@@ -1945,28 +1959,34 @@ class Controller:
         if developed is None:
             return
         result, evidence = developed
-        edits = validate_edits(
-            result,
-            state["plan"],
-            self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
-            self.config,
-        )
-        commit = self._publication().build_commit(parent, edits, self.tree, INLINE_BLOB_LIMIT, evidence.get("commit"))
-        state["pending"] = {
-            "head": commit["sha"],
-            "parent": parent,
-            "summary": result["summary"],
-            "initial": "head" not in state,
-        }
-        state["candidate"] = {
-            **evidence,
-            "summary": result["summary"],
-            "head": commit["sha"],
-            "parent": parent,
-            "base": state["base"],
-            "plan": state["plan_id"],
-        }
-        file_inventory.compact_candidate(state["candidate"])
+        if result["edits"] == []:
+            state["candidate"] = {**evidence, "summary": result["summary"]}
+            state["description_update"] = {"head": state["head"], "body": self.pr_body()}
+        else:
+            edits = validate_edits(
+                result,
+                state["plan"],
+                self.files(parent, [e["path"] for e in result["edits"]], inspection=True),
+                self.config,
+            )
+            commit = self._publication().build_commit(
+                parent, edits, self.tree, INLINE_BLOB_LIMIT, evidence.get("commit")
+            )
+            state["pending"] = {
+                "head": commit["sha"],
+                "parent": parent,
+                "summary": result["summary"],
+                "initial": "head" not in state,
+            }
+            state["candidate"] = {
+                **evidence,
+                "summary": result["summary"],
+                "head": commit["sha"],
+                "parent": parent,
+                "base": state["base"],
+                "plan": state["plan_id"],
+            }
+            file_inventory.compact_candidate(state["candidate"])
         state["stage"] = "publish"
         conversation.queue(
             state,
@@ -1983,7 +2003,10 @@ class Controller:
 
     def publish(self):
         """Reconcile interrupted publication without overwriting a foreign branch tip."""
-        return self._publication().publish(self.save, self.checkpoints.preflight)
+        publication = self._publication()
+        if self.state.get("description_update"):
+            return publication.publish_description(self.save)
+        return publication.publish(self.save, self.checkpoints.preflight)
 
     def pr_title(self):
         """The plan's headline, or its summary's first sentence, as plain text within the publication title capacity."""

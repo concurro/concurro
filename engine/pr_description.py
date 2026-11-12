@@ -29,7 +29,8 @@ def validate(report):
         return
     if (
         not isinstance(description, dict)
-        or set(description) != {"lead", *FIELDS}
+        or set(description) not in ({"lead", *FIELDS}, {"lead", *FIELDS, "review_focus"})
+        or ("review_focus" in description and not bullets(description["review_focus"], 0))
         or not sentence(description["lead"])
         or any(not bullets(description[k], minimum) for k, minimum in FIELDS.items())
         or not isinstance(commit, dict)

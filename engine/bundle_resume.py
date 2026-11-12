@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 import design_eligibility
+import revisions
 import sessions
 from bundle import SKILLS
 from model_config import assigned, resolve
@@ -94,7 +95,7 @@ def adopt(controller, comment, config, bundle, config_digest, *, reassess=False)
         for field in ("design_votes", "review_batch", "review_repair", "design_eligibility"):
             retire(state, field, "Review context changed on resume")
         state["design_votes"] = {}
-        state["design_generation"] = state.get("design_generation", 0) + 1
+        revisions.advance_generation(state)
         if state.get("operation", {}).get("stage") == "plan_qc":
             retire(state, "operation", "Review context changed on resume")
     if not complete and changed_charter:
