@@ -515,19 +515,32 @@ def member_label(identity: dict) -> tuple[str, str]:
 
 def design_reviews(state: dict) -> list[dict]:
     generations = []
+    recorded = quality_times(state, "plan_qc")
     for entry in state.get("design_history") or []:
+        generation = entry.get("generation", len(generations) + 1)
         reviews = []
-        for vote in entry.get("votes") or []:
+        for n, vote in enumerate(entry.get("votes") or [], start=1):
             identity = vote.get("identity")
             name, profile = member_label(identity) if isinstance(identity, dict) else (str(identity or ""), "")
             reviews.append(
-                {"agent": name, "profile": profile, "verdict": vote.get("decision") or "pending", "objections": []}
+                {
+                    "agent": name,
+                    "profile": profile,
+                    "verdict": vote.get("decision") or "pending",
+                    # Historical concern text; the ledger's current status for it is not projected.
+                    "objections": [
+                        {"id": f"g{generation}-{n}-{i}", "text": text}
+                        for i, text in enumerate(vote.get("concerns") or [], start=1)
+                        if isinstance(text, str) and text
+                    ],
+                }
             )
         generations.append(
             {
-                "generation": entry.get("generation", len(generations) + 1),
+                "generation": generation,
                 "planId": entry.get("plan") or "",
-                "at": "",
+                "at": recorded.get(generation + 1, ""),
+                "reason": entry.get("reason") or "",
                 "reviews": reviews,
             }
         )
@@ -548,16 +561,27 @@ def design_reviews(state: dict) -> list[dict]:
                     ],
                 }
             )
+        generation = state.get("design_generation", len(generations) + 1)
         history = state.get("qc_history") or []
         generations.append(
             {
-                "generation": state.get("design_generation", len(generations) + 1),
+                "generation": generation,
                 "planId": state.get("plan_id") or "",
-                "at": history[-1].get("at", "") if history else "",
+                "at": recorded.get(generation + 1) or (history[-1].get("at", "") if history else ""),
+                "reason": "",
                 "reviews": reviews,
             }
         )
     return generations
+
+
+def quality_times(state: dict, stage: str) -> dict[int, str]:
+    """The last recorded time of each review round; `_quality_history` numbers a round one past its generation."""
+    times: dict[int, str] = {}
+    for entry in state.get("qc_history") or []:
+        if entry.get("stage") == stage and entry.get("at") and type(entry.get("round")) is int:
+            times[entry["round"]] = max(entry["at"], times.get(entry["round"], ""))
+    return times
 
 
 def review_rounds(state: dict) -> list[dict]:

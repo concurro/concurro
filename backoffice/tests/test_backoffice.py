@@ -533,6 +533,44 @@ class ProjectionTests(unittest.TestCase):
                 self.assertEqual(plans[-1]["body"], "Full summary\n\n### Steps\n- Do the work")
                 self.assertTrue(all(plan["body"] == "Historical summary" for plan in plans[:-1]))
 
+    def test_archived_generations_keep_their_concerns_and_times(self):
+        """A revised generation's concerns are the only record of what the reviewer asked for."""
+        member = {"id": "m1", "model": "claude-opus", "agent": {"profile": "opus55"}}
+        other = {"id": "m2", "model": "gpt-6.1", "agent": {"profile": "sol61"}}
+        state = {
+            "design_generation": 2,
+            "design_history": [
+                {
+                    "generation": 1,
+                    "plan": "p1",
+                    "reason": "Design reviewers require a revision.",
+                    "votes": [
+                        {"identity": member, "decision": "approve", "concerns": []},
+                        {"identity": other, "decision": "revise", "concerns": ["Define a staleness bound.", ""]},
+                    ],
+                }
+            ],
+            "design_votes": {"m1": {"identity": member, "report": {"decision": "approve"}}},
+            "objections": [{"id": "O1-m1", "reviewer": "m1", "text": "edge case", "resolved": True}],
+            "qc_history": [
+                {"stage": "plan_qc", "round": 2, "at": "2026-11-13T10:00:00Z"},
+                {"stage": "plan_qc", "round": 2, "at": "2026-11-13T10:05:00Z"},
+                {"stage": "intake", "round": 3, "at": "2026-11-13T11:00:00Z"},
+                {"stage": "plan_qc", "round": 3, "at": "2026-11-13T12:00:00Z"},
+            ],
+        }
+        archived, current = tasks_module.design_reviews(state)
+        self.assertEqual((archived["generation"], archived["at"]), (1, "2026-11-13T10:05:00Z"))
+        self.assertEqual(archived["reason"], "Design reviewers require a revision.")
+        self.assertEqual([o["text"] for o in archived["reviews"][1]["objections"]], ["Define a staleness bound."])
+        self.assertNotIn(
+            "resolved", archived["reviews"][1]["objections"][0], "an archived concern has no ledger status"
+        )
+        self.assertEqual(archived["reviews"][0]["objections"], [], "an approval records none")
+        self.assertEqual((current["generation"], current["at"], current["reason"]), (2, "2026-11-13T12:00:00Z", ""))
+        self.assertTrue(current["reviews"][0]["objections"][0]["resolved"])
+        self.assertEqual(tasks_module.design_reviews({"design_history": [{"generation": 1, "votes": []}]})[0]["at"], "")
+
     def test_checkpoint_state_projects_into_the_task(self):
         member = {"id": "m1", "model": "claude-opus", "effort": "high", "agent": {"profile": "opus-high"}}
         state = {
