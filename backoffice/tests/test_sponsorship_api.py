@@ -20,6 +20,21 @@ from github import STAGE_LABEL_PREFIX, Transient
 class SponsorshipApiTests(unittest.TestCase):
     """Verify user-token forwarding, issue visibility, CSRF and exact provider arguments."""
 
+    def test_discovery_service_outage_keeps_safe_http_status(self):
+        """A temporary service failure is visible to the portal, not silently rendered as no consent."""
+        sessions = Sessions()
+        sid = sessions.create("user-token", USER, 60)
+        reader = Mock()
+        reader.my_sponsorships.side_effect = CommandError(503, "sponsorship service unavailable")
+        with patch.object(app_module, "Tasks", return_value=reader):
+            client = TestClient(
+                app_module.create_app(settings(), oauth=FakeOAuth(), vault=Vault(None), sessions=sessions),
+                cookies={app_module.SESSION_COOKIE: sid},
+            )
+            response = client.get("/api/me/sponsorships")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "sponsorship service unavailable"})
+
     def test_issue_view_and_command_do_not_require_a_checkpoint(self):
         """Read a visible issue and post self-sponsorship through existing command transport."""
         seen = []
@@ -40,6 +55,9 @@ class SponsorshipApiTests(unittest.TestCase):
         sessions = Sessions()
         sid = sessions.create("user-token", USER, 60)
         reader = Mock()
+        reader.issue_view.side_effect = lambda repository, issue: {
+            "issue": {"sponsorships": service.sponsorships("user-token", repository, issue)}
+        }
         with patch.object(app_module, "Tasks", return_value=reader):
             client = TestClient(
                 app_module.create_app(
@@ -50,7 +68,7 @@ class SponsorshipApiTests(unittest.TestCase):
             response = client.get("/api/repos/owner/project/issues/7/sponsorships")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["funding"], "org")
-            reader.access.get.assert_called_with("owner/project", "issues/7")
+            reader.issue_view.assert_called_with("owner/project", 7)
             reader.task_view.assert_not_called()
             reader.state.assert_not_called()
             path = "/api/repos/owner/project/issues/7/commands"
@@ -90,7 +108,7 @@ class SponsorshipApiTests(unittest.TestCase):
             settings(),
             access,
             USER,
-            lambda repository: {
+            sponsorships=lambda repository: {
                 "issues": [{"issue": 7, "status": "confirmed", "slots": {"openai": {"sponsor_id": "42"}}}]
             },
         )
@@ -109,7 +127,9 @@ class PortalProjectionTests(unittest.TestCase):
 
     def test_unavailable_projection_never_invents_organization_funding(self):
         """An outage cannot claim that an unknown current payer is the org pool."""
-        reader = Tasks(settings(), Mock(), USER, Mock(side_effect=CommandError(503, "service unavailable")))
+        reader = Tasks(
+            settings(), Mock(), USER, sponsorships=Mock(side_effect=CommandError(503, "service unavailable"))
+        )
         self.assertEqual(
             reader.sponsorship_view("owner/project", 7), {"funding": "unknown", "status": "unavailable", "slots": {}}
         )
@@ -117,7 +137,7 @@ class PortalProjectionTests(unittest.TestCase):
     def test_issue_view_and_my_list_use_stable_actor_and_no_checkpoint(self):
         """Pre-task views retain pending state; matching a login is insufficient for ownership."""
         access = Mock()
-        access.get.return_value = {
+        access.transport.return_value.request.return_value = access.get.return_value = {
             "number": 7,
             "title": "Intent",
             "body": "Description",
@@ -128,9 +148,9 @@ class PortalProjectionTests(unittest.TestCase):
         }
         projection = {"status": "provisional", "slots": {"openai": {"sponsor_id": str(USER.id), "login": USER.login}}}
         fetch = Mock(return_value=projection)
-        reader = Tasks(settings(), access, USER, fetch)
+        reader = Tasks(settings(), access, USER, sponsorships=fetch)
         with (
-            patch.object(reader, "find_target", return_value=(object(), {})),
+            patch.object(reader, "find_target", return_value=(SimpleNamespace(upstream="owner/project"), {})),
             patch.object(reader, "target_record", return_value={"mode": "manual"}),
             patch.object(reader, "state") as checkpoint,
         ):
@@ -150,9 +170,9 @@ class PortalProjectionTests(unittest.TestCase):
             self.assertEqual([i["issue"] for i in reader.my_sponsorships()], [7, 9])
 
     def test_issue_permission_is_independent_of_the_target_fork(self):
-        """Portal sponsorship follows issue write authority in both fork/upstream directions."""
+        """Portal sponsorship follows upstream authority independently of fork permissions."""
         access = Mock()
-        access.get.return_value = {
+        access.transport.return_value.request.return_value = access.get.return_value = {
             "number": 7,
             "title": "Intent",
             "body": "",
@@ -164,15 +184,20 @@ class PortalProjectionTests(unittest.TestCase):
         access.config.return_value = ({}, "main")
         for fork_writer, issue_writer in ((False, True), (True, False)):
             access.repository.return_value = {"permissions": {"push": issue_writer}}
+            access.writable.return_value = issue_writer
             reader = Tasks(settings(), access, USER)
             with (
-                patch.object(reader, "find_target", return_value=(Mock(fork="fork/repo"), {})),
+                patch.object(
+                    reader,
+                    "find_target",
+                    return_value=(SimpleNamespace(fork="fork/repo", upstream="upstream/repo"), {}),
+                ),
                 patch.object(reader, "target_record", return_value={"mode": "manual", "writer": fork_writer}),
                 patch.object(reader, "state", return_value=None),
             ):
                 self.assertEqual(reader.issue_view("upstream/repo", 7)["issueWriter"], issue_writer)
                 self.assertEqual(reader.task_view("upstream/repo", 7)["issueWriter"], issue_writer)
-            access.repository.assert_called_with("upstream/repo")
+            access.writable.assert_called_with("upstream/repo", USER.login, USER.id)
 
     def test_stale_intent_issue_statuses_do_not_hide_unrelated_issues_or_outages(self):
         """Only moved/gone issues are skipped; permission errors and transient failures stay visible."""
@@ -198,7 +223,7 @@ class PortalProjectionTests(unittest.TestCase):
                 if path == "issues/7"
                 else issue
             )
-            reader = Tasks(settings(), access, USER, projection)
+            reader = Tasks(settings(), access, USER, sponsorships=projection)
             with patch.object(reader, "pulls_by_issue", return_value={}):
                 if status == 403:
                     with self.assertRaises(RuntimeError):

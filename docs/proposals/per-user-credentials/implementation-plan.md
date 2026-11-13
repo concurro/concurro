@@ -1,5 +1,9 @@
 # Per-user credentials: implementation plan
 
+The current [main integration](main-integration.md) uses configured upstream writer authority
+for new consent/control/admission, while preserving identity-bound self-withdrawal and own
+consent reads after writer loss. Historical phase reviews retain their original evidence.
+
 **Status: phases 1–6 implemented; optional credential refresh remains deferred.**
 See [phase 1](phase-1.md), [phase 2](phase-2.md) and [phase 3](phase-3.md) for shipped runtime/API behavior and migration boundaries.
 Phase 3 froze admissions on actual org paths and exercised contributed enforcement with isolated adapters. Phase 4 now supplies configured production injection and observation; see its runtime record below.

@@ -130,7 +130,7 @@ class Daemon:
             self.registry,
             readers.__getitem__,
             writers.__getitem__,
-            issue_repositories,
+            settings.targets,
             projection=worker.sponsorship.view,
         )
         self.http = ingress.server(

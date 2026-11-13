@@ -328,28 +328,7 @@ class Checkpoints:
             if payload["repository"] != self.config["repository"]:
                 raise ValueError()
             self.validate_state(state)
-            refs = payload.get("report_data", [])
-            if refs and state["version"] not in (
-                FORMAT,
-                BATCH_FORMAT,
-                file_inventory.FORMAT,
-                bundle_resume.FORMAT,
-                report_store.SPONSORSHIP_FORMAT,
-                report_store.ADMISSION_FORMAT,
-                report_store.FORMAT,
-            ):
-                raise ValueError()
-            report_store.restore(state, refs, self.reports)
-            inventories = payload.get("file_inventories", [])
-            if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
-                file_inventory.FORMAT,
-                bundle_resume.FORMAT,
-                report_store.SPONSORSHIP_FORMAT,
-                report_store.ADMISSION_FORMAT,
-                report_store.FORMAT,
-            ):
-                raise ValueError()
-            file_inventory.restore(state, inventories, self.reader)
+            self.hydrate(state, payload)
             binding = payload.get("plan_artifact")
             if binding is not None and (
                 not isinstance(binding, dict)
@@ -382,13 +361,42 @@ class Checkpoints:
                     ):
                         raise ValueError()
                 self.preserved_plans = deepcopy(intent["preserved"])
-            self.reports.bind_receipts(state)
             state["version"] = 2
             return state
         except report_store.ReportDataError:
             raise CheckpointError("report_data") from None
         except (KeyError, IndexError, TypeError, ValueError):
             raise CheckpointError("checkpoint_format") from None
+
+    def restore_reports(self, state, payload, *, fields=None):
+        """Validate the checkpoint format and restore selected or complete report evidence."""
+        refs = payload.get("report_data", [])
+        if refs and state["version"] not in (
+            FORMAT,
+            BATCH_FORMAT,
+            file_inventory.FORMAT,
+            bundle_resume.FORMAT,
+            report_store.SPONSORSHIP_FORMAT,
+            report_store.ADMISSION_FORMAT,
+            report_store.FORMAT,
+        ):
+            raise ValueError()
+        report_store.restore(state, refs, self.reports, fields=fields)
+
+    def hydrate(self, state, payload):
+        """Restore the full checkpoint evidence needed by the controller."""
+        self.restore_reports(state, payload)
+        inventories = payload.get("file_inventories", [])
+        if (inventories or state.get("candidate", {}).get("file_inventory")) and state["version"] not in (
+            file_inventory.FORMAT,
+            bundle_resume.FORMAT,
+            report_store.SPONSORSHIP_FORMAT,
+            report_store.ADMISSION_FORMAT,
+            report_store.FORMAT,
+        ):
+            raise ValueError()
+        file_inventory.restore(state, inventories, self.reader)
+        self.reports.bind_receipts(state)
 
     def validate_state(self, state):
         """Reject checkpoints belonging to another issue or schema."""

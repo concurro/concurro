@@ -1,5 +1,5 @@
-# The Concurro backoffice API: FastAPI on uvicorn, reading tasks with each signed-in user's GitHub
-# token and run diagnostics from the service's diagnostics directory. Built from the repository
+# The Concurro backoffice API: FastAPI on uvicorn, reading tasks with the read-only Backoffice App's
+# tokens and run diagnostics from the service's diagnostics directory. Built from the repository
 # root, like the service, because it reuses the engine's and service's decoders.
 FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 COPY service/requirements.txt /tmp/service-requirements.txt
@@ -11,6 +11,8 @@ COPY bundle /opt/concurro/bundle
 COPY service /opt/concurro/service
 COPY backoffice /opt/concurro/backoffice
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV CONCURRO_READ_CACHE_DIR=/var/lib/concurro/backoffice
+RUN mkdir -p /var/lib/concurro/backoffice && chown 65533:65533 /var/lib/concurro/backoffice
 WORKDIR /opt/concurro
 USER 65533:65533
 ENTRYPOINT ["python3", "-m", "backoffice", "--settings", "/etc/concurro/backoffice/settings.json"]

@@ -1,6 +1,7 @@
 # Sponsorship: current operation and deployment readiness
 
-Phases 0–6 are implemented. Baselines are signed backend
+The [main integration](main-integration.md) supersedes this review's App, visibility and
+release-entrypoint guidance; earlier evidence below remains historical. Phases 0–6 are implemented. Baselines are signed backend
 `abd891415407358527734ed84fe91ea840852f61` and portal
 `3ad054413292c8e47242e5c5f88c273e530ab89a`; final review corrections require their own
 committed release. Nothing in this guide deploys or retries a live task. Optional provider
@@ -37,8 +38,8 @@ routes never fall back to them.
 | Private network | `deploy/host.sh` uses gateway base Compose plus `/etc/concurro/gateway/compose.host.yaml`. Merge `gateway/compose.private.yaml` into that existing host override, preserving existing state binds. Only gateway/Exchange and vault join `credential-private`; vault binds 8091 on its private alias. Merely retaining the optional file in Git does not activate it. |
 | Vault persistence | Preserve owner-private `/data/vault.db` with WAL, `VAULT_MASTER_KEY_FILE` and any named keyring. Schema 3 migrates forward. Back up consistent SQLite state and escrow wrapping keys separately; do not recreate the store or delete volumes. Unknown historical validation/expiry remains unknown. |
 | Service/task authority | Preserve Registry identity/state (schema 8), source policy intervals, pending transitions and checkpoints (format 9 on charged saves). `delegation_key_path` is needed for portal-posted signed commands. Service and backoffice must name matching target repositories and enrollment destination. Existing App callback/permission/subscription contracts still apply. |
-| Backoffice/portal | Use `public_url=https://<host>/concurro`, matching App callback `/concurro/auth/callback`, App client secret, `service_url=http://concurro-service:8787` and `vault_url=http://concurro-vault:8090`. Build portal in live mode at `/concurro`; it has no provider/privileged gateway secret. GitHub login proves identity; issue-repository writer checks still authorize sponsorship. |
-| Optional durable logout | Only when configuring both `auth_state_dir` and `auth_key_path`: provision uid-65533 state/key and merge `service/compose.portal.yaml` into `/etc/concurro/compose.service.host.yaml`. The helper includes this optional override on every service/web operation, preserving the state mount. Without it/configuration, base-only behavior and truthful best-effort cleanup remain. This is unrelated to provider refresh. |
+| Backoffice/portal | Use `public_url=https://<host>/concurro`, matching Sign-in OAuth App callback `/concurro/auth/callback`, its client secret, separately provisioned `reader.app_id`/`reader.private_key_path`, `service_url=http://concurro-service:8787` and `vault_url=http://concurro-vault:8090`. Build portal in live mode at `/concurro`; it has no provider/privileged gateway secret. GitHub login proves identity; configured-upstream writer checks authorize new sponsorship. Reader App installation credentials are separate from the scope-free Sign-in identity. |
+| Optional durable logout | Only when configuring both `auth_state_dir` and `auth_key_path`: provision uid-65533 host state/key, set container `auth_state_dir=/var/lib/concurro/backoffice-auth`, and merge `service/compose.portal.yaml` into `/etc/concurro/compose.service.host.yaml`. The helper includes this optional override on every service/web operation, preserving the state mount. Without it/configuration, base-only behavior and truthful best-effort cleanup remain. This is unrelated to provider refresh. |
 
 Host overrides remain outside Git. Keep the nonsecret service override at the traversable
 `/etc/concurro/compose.service.host.yaml`, not inside private uid-65533 settings. Render the **actual** base-plus-host Compose inputs with

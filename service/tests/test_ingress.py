@@ -151,6 +151,16 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         )
         self.assertEqual(self.queued(), [KEY])
 
+    def test_upstream_only_writer_commands_wake_without_fork_association(self):
+        """Signed ingestion wakes all human control commands; controller owns upstream authorization."""
+        for command in ("start", "approve plan-id", "retry", "resume", "stop", "invalidate"):
+            with self.subTest(command=command):
+                data = comment(body="/concurro " + command, login="upstream-writer", association="NONE", labels=())
+                self.assertEqual(self.ingress.comment(KEY[0], "created", data), [KEY])
+                self.assertEqual(self.deliver("issue_comment", data), 202)
+        self.assertEqual(self.queued(), [KEY])
+        self.assertEqual(self.agents.calls, [])
+
     def test_delegated_commands_schedule_an_observation_not_a_tick(self):
         """A signed command's webhook is observed against acknowledged input, never queued directly."""
         self.ingress.command_comment = delegation.marked  # as the daemon wires it

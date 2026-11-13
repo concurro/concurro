@@ -3,4 +3,4 @@
 services:
   backoffice:
     volumes:
-      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice
+      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice-auth

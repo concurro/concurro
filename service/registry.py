@@ -567,6 +567,7 @@ class Registry:
                 "funding": funding,
                 "last_failure": state.get("provider_failure"),
                 "slots": state.get("sponsorships", {}),
+                "history": state.get("sponsorship_history", []),
                 "pending": list(state.get("pending_sponsorships", {})),
                 "initialization": state.get("funding_initialization"),
                 "initialization_pending": state.get("funding_initialization_pending"),

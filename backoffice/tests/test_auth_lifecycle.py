@@ -379,16 +379,20 @@ class AuthLifecycleTests(unittest.TestCase):
     def test_optional_auth_settings_startup_and_pair_validation(self):
         """Configured state/key wiring is real; legacy omission stays optional and incomplete pairs fail safely."""
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root)
+            directory = Path(root).resolve()
             key, secret = directory / "auth-key", directory / "client-secret"
             key.write_text("ab" * 32)
             key.chmod(0o600)
             secret.write_text("synthetic-client-secret")
+            reader_key = directory / "reader.pem"
+            reader_key.write_text("synthetic-reader-private-key")
+            reader_key.chmod(0o600)
             config = directory / "settings.json"
             data = {
                 "public_url": "http://testserver",
                 "client_id": "app",
                 "client_secret_path": str(secret),
+                "reader": {"app_id": 1, "private_key_path": str(reader_key)},
                 "targets": [{"upstream": "up/project", "fork": "owner/project", "issues": "fork"}],
                 "auth_state_dir": str(directory / "state"),
                 "auth_key_path": str(key),

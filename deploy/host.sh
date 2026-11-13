@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Server half of deploy.sh. `service` stops dispatch, pulls a release's images and starts them;
-# `web` moves the backoffice web app on its own.
+# `web` moves the backoffice web app on its own; `all` updates both release tags together.
 set -euo pipefail
 phase=${1:?Missing phase}
 release=${2:?Missing release}
-[[ "$phase" == service || "$phase" == web ]]
+[[ "$phase" == service || "$phase" == web || "$phase" == all ]]
 [[ "$release" =~ ^[0-9a-f]{40}$ ]]
+web_release=${3:-}
+if [[ "$phase" == all ]]; then
+  [[ "$web_release" =~ ^[0-9a-f]{40}$ ]]
+fi
 cd "$HOME/concurro"
 exec 9>"$HOME/.local/lib/concurro-deploy/lock"
 flock -n 9 || { echo 'Another deployment phase is running.' >&2; exit 1; }
@@ -48,7 +52,7 @@ fi
 [[ -z "$(git status --porcelain)" ]] || { echo 'Server checkout has local changes; refusing to overwrite them.' >&2; exit 1; }
 git fetch origin main
 git merge-base --is-ancestor "$release" origin/main
-grep -q '^CONCURRO_WEB_RELEASE=' "$releases" || { echo 'No web release recorded; run "deploy.sh web FULL_COMMIT_SHA" first.' >&2; exit 1; }
+[[ "$phase" == all ]] || grep -q '^CONCURRO_WEB_RELEASE=' "$releases" || { echo 'No web release recorded; run "deploy.sh web FULL_COMMIT_SHA" first.' >&2; exit 1; }
 # Older releases cannot open a newer registry.
 current=$(sed -n 's/^CONCURRO_RELEASE=//p' "$releases")
 if [[ -n "$current" ]] && ! git merge-base --is-ancestor "$current" "$release"; then
@@ -61,6 +65,9 @@ sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concu
   --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
   'import json, sys; s=json.load(open("/etc/concurro/service/settings.json")); assert s.get("engine") in (None, sys.argv[1]), "Service settings have a different engine pin; update it explicitly before deploying."' "$release"
 git switch --detach "$release"
+if [[ "$phase" == all ]]; then
+  record CONCURRO_WEB_RELEASE "$web_release"
+fi
 record CONCURRO_RELEASE "$release"
 svc stop service
 gw config --quiet

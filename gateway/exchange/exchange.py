@@ -1135,13 +1135,13 @@ class Exchange:
         status, created, started, finished, session = self.db.execute(
             "SELECT status, created, started, finished, session FROM turns WHERE id = ?", (turn,)
         ).fetchone()
-        runner = self.row(session) if session and status in ("lost", "cancelled") else None
+        runner = self.row(session) if session else None
         failure = self.inference.failure(turn)
         if failure and status == "done":
             result = self.db.execute("SELECT result FROM turns WHERE id=?", (turn,)).fetchone()[0]
             if result and json.loads(result).get("outcome") == "ok":
                 failure = None
-        ended_binding = json.loads(runner["binding"] or "{}") if runner else {}
+        ended_binding = json.loads(runner["binding"] or "{}") if runner and status in ("lost", "cancelled") else {}
         funding_ended = ended_binding.get("funding") == "contributed" and not self.allowed(ended_binding)
         return {
             **({"funding_ended": ended_binding} if funding_ended else {}),

@@ -320,6 +320,7 @@ class HttpLifecycleTests(StateFixture, HttpFixture, unittest.TestCase):
                         "created": NOW,
                         "started": NOW,
                         "finished": NOW,
+                        "runner": {"session": session, "run_id": "77/1"},
                         "result": {"ok": True},
                     }
                 ).encode(),
@@ -1056,7 +1057,7 @@ class DataContractTests(StateFixture, unittest.TestCase):
                     "started": NOW + 1,
                     "finished": NOW + 2,
                 }
-                if assigned and status in ("lost", "cancelled"):
+                if assigned:
                     expected["runner"] = {"session": session, "run_id": "77/1"}
                 self.assertEqual(list(self.exchange.observation(queued["turn"]).items()), list(expected.items()))
 

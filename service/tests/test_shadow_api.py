@@ -11,6 +11,8 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 import delegation
 from controller import Outcome
 from service.actions import Actions
+from service.shadow import Shadow
+from service.targets import Target
 from service.transport import Response
 
 
@@ -30,7 +32,7 @@ class ShadowApiTests(ServiceFixture, unittest.TestCase):
             self.registry,
             lambda repo: reader,
             lambda repo: self.poster,
-            [KEY[0]],
+            [Target(KEY[0], KEY[0], "both")],
             user=lambda token: ("alice", 202) if token == "user-token" else None,
             visible=lambda token, repo, issue: visible,
             clock=self.clock,
@@ -50,8 +52,9 @@ class ShadowApiTests(ServiceFixture, unittest.TestCase):
         )
         body = json.dumps({"repository": KEY[0], "issue": 7}).encode()
         status, payload = self.actions().sponsorships("Bearer user-token", body)
-        self.assertEqual((status, payload["status"], payload["funding"]), (200, "confirmed", "org"))
-        self.assertIn("future contributed", payload["consent"])
+        self.assertEqual((status, payload["status"], payload["scope"]), (200, "confirmed", "own"))
+        self.assertNotIn("funding", payload)
+        self.assertNotIn("calls", payload)
         self.assertEqual(self.poster.send.call_count, 0)
         self.assertEqual(self.actions(False).sponsorships("Bearer user-token", body)[0], 404)
         self.assertEqual(self.actions().sponsorships("Bearer bad", body)[0], 401)
@@ -105,4 +108,38 @@ class ShadowApiTests(ServiceFixture, unittest.TestCase):
         body = json.dumps({"repository": KEY[0], "issue": 7}).encode()
         status, value = self.actions().sponsorships("Bearer user-token", body)
         self.assertEqual(status, 200)
-        self.assertIn("task", value)
+        self.assertNotIn("task", value)
+        self.assertEqual(value["scope"], "own")
+
+    def test_task_only_initializer_and_takeover_are_redacted_without_privileged_reads(self):
+        """Actual Registry task slots survive own discovery; another owner's transitions never leak."""
+        self.registry.confirm_sponsorship(KEY, 0, {"slots": {}, "facts": []}, [])
+        initial = {"sponsor_id": "202", "login": "alice", "epoch": 1, "origin": "task_start"}
+        state = {
+            "sponsorships": {"openai": initial, "anthropic": {"sponsor_id": "303", "epoch": 1}},
+            "sponsorship_history": [{"provider": "openai", "actor": None, "reason": "initialize", "slot": initial}],
+        }
+        self.registry.record_shadow(KEY, state)
+        shadow = Shadow(self.registry, Mock(), Mock())
+        self.assertEqual(shadow.view(KEY)["slots"]["openai"], initial)
+        actions = self.actions()
+        actions.projection = Mock(side_effect=AssertionError("nonwriter must not read coverage or observations"))
+        body = json.dumps({"repository": KEY[0], "issue": 7}).encode()
+        status, own = actions.sponsorships("Bearer user-token", body)
+        self.assertEqual((status, own["slots"]["openai"]), (200, initial))
+        self.assertIsNone(own["slots"]["anthropic"]["sponsor_id"])
+        self.assertEqual(own["history"][0]["reason"], "initialize")
+        state["sponsorships"]["openai"] = {"sponsor_id": "303", "epoch": 2}
+        state["sponsorship_history"] += [
+            {"provider": "openai", "actor": "303", "reason": "permission_lost", "cutoff": 9, "slot": initial},
+            {"provider": "openai", "actor": "202", "reason": "withdraw", "cutoff": 1, "slot": {"sponsor_id": "303"}},
+        ]
+        self.registry.record_shadow(KEY, state)
+        status, own = actions.sponsorships("Bearer user-token", body)
+        self.assertIsNone(own["slots"]["openai"]["sponsor_id"])
+        self.assertEqual([r["reason"] for r in own["history"]], ["initialize", "withdraw"])
+        self.assertEqual(own["history"][-1]["cutoff"], 1)
+        self.assertNotIn("303", json.dumps(own))
+        status, listing = actions.sponsorships("Bearer user-token", json.dumps({"repository": KEY[0]}).encode())
+        self.assertEqual((status, len(listing["issues"])), (200, 1))
+        actions.projection.assert_not_called()

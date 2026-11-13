@@ -21,9 +21,11 @@ from urllib.parse import quote
 
 import delegation
 from github import NotFound, Transient
+from sponsorship import own_consent, own_consent_present
 
 from . import transport
 from .settlement import settle
+from .targets import enrollment
 
 log = logging.getLogger("concurro.service")
 
@@ -90,7 +92,7 @@ class Actions:
         registry,
         reader,
         writer,
-        issue_repositories,
+        targets,
         user=github_user,
         clock=time.time,
         visible=github_visible,
@@ -98,7 +100,8 @@ class Actions:
     ):
         """`reader(repository)`/`writer(repository)` return that repository's transports."""
         self.key, self.registry, self.reader, self.writer = key, registry, reader, writer
-        self.issue_repositories = {r.lower(): r for r in issue_repositories}
+        self.targets = enrollment(targets)
+        self.issue_repositories = {r.lower(): r for r in self.targets}
         self.user, self.clock, self.visible = user, clock, visible
         self.projection = projection or (lambda key: registry.sponsorship(key))
 
@@ -133,8 +136,9 @@ class Actions:
         login, user_id = user
         if kind == "withdraw" and not self.visible(token.strip(), repository, issue):
             raise Refused(404, "issue not visible")
-        if kind != "withdraw" and not self.writable(repository, login):
-            raise Refused(403, f"@{login} does not have write access to {repository}")
+        upstream = self.targets[repository].upstream
+        if kind != "withdraw" and not self.writable(upstream, login):
+            raise Refused(403, f"@{login} does not have write access to {upstream}")
         text = delegation.render(self.key, repository, issue, login, user_id, command, secrets.token_hex(16))
         key, path = (repository, issue), f"repos/{repository}/issues/{issue}/comments"
         # Unscheduled, so no poll may find it and no backoff can be shortened: recover it durably.
@@ -166,7 +170,8 @@ class Actions:
         """Return issue-addressed nonsecret projections after independent user visibility verification."""
         try:
             scheme, _, token = (authorization or "").partition(" ")
-            if scheme.lower() != "bearer" or not token.strip() or self.user(token.strip()) is None:
+            user = self.user(token.strip()) if scheme.lower() == "bearer" and token.strip() else None
+            if user is None:
                 raise Refused(401, "GitHub did not accept the sign-in token")
             try:
                 request = json.loads(body)
@@ -178,21 +183,27 @@ class Actions:
                 raise Refused(400, "invalid issue")
             if not self.visible(token.strip(), repository, issue):
                 raise Refused(404, "issue not visible")
+            writer = self.writable(self.targets[repository].upstream, user[0])
             if issue is None:
-                return 200, {
-                    "issues": [
-                        {"issue": number, **self.projection((repository, number))}
-                        for number in self.registry.sponsor_issues(repository)
-                    ]
-                }
-            projection = self.projection((repository, issue))
+                issues = []
+                for number in self.registry.sponsor_issues(repository):
+                    projection = (
+                        self.projection((repository, number))
+                        if writer
+                        else self.registry.sponsorship((repository, number))
+                    )
+                    if not writer:
+                        projection = own_consent(projection, str(user[1]))
+                        if not own_consent_present(projection):
+                            continue
+                    issues.append({"issue": number, **projection})
+                return 200, {"issues": issues}
+            projection = (
+                self.projection((repository, issue)) if writer else self.registry.sponsorship((repository, issue))
+            )
             if projection["status"] != "confirmed":
                 self.registry.request_observation((repository, issue))
-            return 200, {
-                "funding": "org",
-                "consent": "Explicit sponsorship authorizes future contributed calls; current calls remain org-funded.",
-                **projection,
-            }
+            return 200, projection if writer else own_consent(projection, str(user[1]))
         except Refused as error:
             return error.status, {"error": error.reason}
 

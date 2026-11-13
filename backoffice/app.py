@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
@@ -21,13 +21,16 @@ import private
 from checkpoints import CheckpointError
 from github import NotFound, Transient
 from policy import Blocked
+from service.identity import Identity
 from service.settings import CHECKOUT
 
 from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
 from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
-from .github import UserAccess
+from .github import Access
+from .read_cache import ReadCache
 from .revocations import RevocationError, Revocations
+from .runs import Runs
 from .settings import Settings
 from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
 from .turns import Diagnostics
@@ -62,12 +65,20 @@ def create_app(
     commands: ServiceCommands | None = None,
     connection=None,
     revocations: Revocations | None = None,
+    identity: Identity | None = None,
 ) -> FastAPI:
-    """`oauth`, `vault`, `sessions`, `commands` and the GitHub `connection` are injectable for tests."""
+    """Inject external clients, session/logout state and the separate Reader identity for tests."""
+    try:
+        read_cache = ReadCache(settings.read_cache_dir) if settings.read_cache_dir else None
+    except (OSError, sqlite3.Error):
+        log.warning("issue read cache unavailable at startup; reading GitHub directly")
+        read_cache = None
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
     commands = commands or ServiceCommands(settings.service_url)
     sessions = sessions or Sessions()
+    # One Reader identity, so its token cache serves every request.
+    reader_app = identity or Identity(settings.reader, **({"connection": connection} if connection else {}))
     sessions.oauth = oauth
     owned_revocations = False
     if revocations is None and settings.auth_state_dir and settings.auth_key_path:
@@ -94,6 +105,8 @@ def create_app(
         try:
             yield
         finally:
+            if read_cache is not None:
+                read_cache.close()
             stopped.set()
             if thread:
                 thread.join(timeout=5)
@@ -136,9 +149,11 @@ def create_app(
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
         return Tasks(
             settings,
-            UserAccess(current.token, connection, current.credential),
+            Access(reader_app, current.token, connection, current.credential),
             current.user,
-            lambda repository, issue=None: commands.sponsorships(
+            diagnostics=diagnostics,
+            read_cache=read_cache,
+            sponsorships=lambda repository, issue=None: commands.sponsorships(
                 current.credential or current.token, repository, issue
             ),
         )
@@ -300,20 +315,39 @@ def create_app(
     def task(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.task_view(f"{owner}/{repo}", issue)
 
+    @app.get("/api/tasks/{owner}/{repo}/{issue}/sections/{section}")
+    def task_section(
+        owner: str,
+        repo: str,
+        issue: int,
+        section: Literal["summary", "intake", "plan", "design", "implement", "review", "handoff", "timeline", "pull"],
+        reader: Annotated[Tasks, Depends(tasks)],
+    ):
+        """Load one issue section without unrelated report evidence or live PR enrichment."""
+        return reader.task_view(f"{owner}/{repo}", issue, section)
+
     @app.get("/api/tasks/{owner}/{repo}/{issue}/turns")
     def turns(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         view = reader.task_view(f"{owner}/{repo}", issue)
         turns = diagnostics.turns(f"{owner}/{repo}", issue)
         return {"task": view["task"], "turns": turns, "profiles": view["target"]["profiles"]}
 
+    @app.get("/api/tasks/{owner}/{repo}/{issue}/turns/{identifier}/runs")
+    def turn_runs(owner: str, repo: str, issue: int, identifier: str, reader: Annotated[Tasks, Depends(tasks)]):
+        """Read Actions evidence for a recorded turn after checking both target repositories."""
+        repository = f"{owner}/{repo}"
+        target, _ = reader.find_target(repository)
+        row = next((row for row in diagnostics.rows(repository, issue) if row["id"] == identifier), None)
+        if row is None:
+            raise HTTPException(404, "turn not found")
+        return Runs(reader.access.transport(target.fork), target.fork).for_turn(row)
+
     @app.get("/api/repos/{owner}/{repo}/issues/{issue}/sponsorships")
     def sponsorships(owner: str, repo: str, issue: int, current: Annotated[Session, Depends(session)]):
         """Read visible pre-task issue sponsorship without inventing a checkpoint or task stage."""
         repository = f"{owner}/{repo}"
-        reader = Tasks(settings, UserAccess(current.token, connection, current.credential), current.user)
-        reader.find_target(repository)
-        reader.access.get(repository, f"issues/{issue}")
-        return commands.sponsorships(current.credential or current.token, repository, issue)
+        reader = tasks(current)
+        return reader.issue_view(repository, issue)["issue"]["sponsorships"]
 
     @app.post("/api/repos/{owner}/{repo}/issues/{issue}/commands")
     @app.post("/api/tasks/{owner}/{repo}/{issue}/commands")
@@ -326,13 +360,22 @@ def create_app(
     ):
         if body.command not in COMMANDS:
             raise HTTPException(422, "unknown command")
-        reader = Tasks(settings, UserAccess(current.token, connection, current.credential), current.user)
+        reader = tasks(current)
         repository = f"{owner}/{repo}"
+        reader.find_target(repository, require_writer=body.command != "withdraw")
         try:
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
         except ValueError:
             raise HTTPException(422, "invalid command argument") from None
-        return commands.send(current.credential or current.token, repository, issue, body.command, argument)
+        try:
+            result = commands.send(current.credential or current.token, repository, issue, body.command, argument)
+        except CommandError as error:
+            if error.may_have_posted and read_cache is not None:
+                read_cache.invalidate(repository, issue)
+            raise
+        if read_cache is not None:
+            read_cache.invalidate(repository, issue)
+        return result
 
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):

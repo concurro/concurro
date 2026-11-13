@@ -1,0 +1,51 @@
+{
+  "parents": {
+    "main": {
+      "commit": "f7a3d70b24536f6ec32524f6dba4328f870e5bb7",
+      "schema": "5",
+      "versions": [
+        "7"
+      ],
+      "files": {
+        "registry.sql": {
+          "file": "main-registry.sql.gz",
+          "raw_sha256": "bc0a7d025b4862ce2e82a1cf619bb16c1309c4296dff3900c766ff68df7101b1",
+          "sha256": "a079337b09350d17aa321536769cecbce5c6dc6d8156d6d49fe4141cce09c754"
+        },
+        "checkpoints.json": {
+          "file": "main-checkpoints.json.gz",
+          "raw_sha256": "6e9c2aded332221b08700b280aaf9a5a9d217ba42e3a9b8a1b3e4c458b6739dc",
+          "sha256": "3f1e903712d2c253d51522198c10360f339a9e32af3b88ca974aea90d89e9fb8"
+        },
+        "cache.sql": {
+          "file": "main-cache.sql.gz",
+          "raw_sha256": "b34bb4f7e4723e5c5e9600f1bf75bdcee7abc94af0598f3ba7c51a68723f66ca",
+          "sha256": "dbbc63d009e6b90ec58cb493606a7e52618e0371da598b77eb2b5fdeaa690b48"
+        }
+      }
+    },
+    "sponsorship": {
+      "commit": "57a6442aef58c4006de34f7f0428747c0b7f379b",
+      "schema": "8",
+      "versions": [
+        "7",
+        "8",
+        "9"
+      ],
+      "files": {
+        "registry.sql": {
+          "file": "sponsorship-registry.sql.gz",
+          "raw_sha256": "cd9a2b4b221021ad4a11551ba6b278ca39c5a51e8ee5c12b36b7d8f1b754a768",
+          "sha256": "8ef46be6db61437e4117f1a88c001124db855fbe2740940c787be23c8f628c11"
+        },
+        "checkpoints.json": {
+          "file": "sponsorship-checkpoints.json.gz",
+          "raw_sha256": "32a96275704079a6e175dc58b6ff63144ea21f1e269560fb4254934e3360bfde",
+          "sha256": "cbf7b1d60e7b74152acd33571a95253ddf1ca86ce2c04080dd1b0f026d8b66fa"
+        }
+      }
+    }
+  },
+  "producer": "generate.py",
+  "producer_sha256": "bd0c8d02ca5b1b99e510dd047c066c0e979c5e54169af2000664d24e752adec0"
+}

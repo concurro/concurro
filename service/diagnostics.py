@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS turns (
     termination_reason TEXT,
     elapsed_seconds REAL,
     runner_sessions TEXT NOT NULL DEFAULT '[]',
+    runner TEXT,
     request TEXT NOT NULL,
     prompt TEXT,
     feedback TEXT,
@@ -71,6 +72,8 @@ def connect(root, readonly=False):
         db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         db.execute("PRAGMA journal_mode=WAL")
         db.executescript(SCHEMA)
+        if "runner" not in {row[1] for row in db.execute("PRAGMA table_info(turns)")}:
+            db.execute("ALTER TABLE turns ADD COLUMN runner TEXT")
     db.row_factory = sqlite3.Row
     return db
 
@@ -156,19 +159,20 @@ class Store:
                 f"INSERT OR IGNORE INTO turns ({columns}) VALUES ({', '.join('?' * len(row))})", tuple(row.values())
             )
 
-    def observed(self, identifier, status, timing, sessions):
+    def observed(self, identifier, status, timing, sessions, runner=None):
         """Record an exchange observation: status, timings and the runner sessions staffed for it."""
         timing = timing or {}
         with self.lock:
             self.db.execute(
                 "UPDATE turns SET status = ?, created = coalesce(?, created), started = coalesce(?, started), "
-                "finished = coalesce(?, finished), runner_sessions = ? WHERE id = ?",
+                "finished = coalesce(?, finished), runner_sessions = ?, runner = coalesce(?, runner) WHERE id = ?",
                 (
                     status,
                     timing.get("created"),
                     timing.get("started"),
                     timing.get("finished"),
                     json.dumps(sorted(sessions)),
+                    encoded({k: runner.get(k) for k in ("session", "run_id")}) if isinstance(runner, dict) else None,
                     identifier,
                 ),
             )
@@ -216,8 +220,8 @@ class Recorder:
     def submitted(self, identifier, turn):
         self._safely("submitted", identifier, turn, self.task)
 
-    def observed(self, identifier, status, timing, sessions):
-        self._safely("observed", identifier, status, timing, sessions)
+    def observed(self, identifier, status, timing, sessions, runner=None):
+        self._safely("observed", identifier, status, timing, sessions, runner)
 
     def finished(self, identifier, result):
         self._safely("finished", identifier, result)

@@ -3,11 +3,14 @@
 import base64
 import io
 import json
+import shutil
+import sqlite3
 import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,7 +23,7 @@ from backoffice import app as app_module, github as github_module, tasks as task
 from backoffice.auth import AuthError, Sessions, User, challenge  # noqa: E402
 from backoffice.commands import CommandError, ServiceCommands  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
-from backoffice.settings import Settings  # noqa: E402
+from backoffice.settings import Reader, Settings, SettingsError, load  # noqa: E402
 from backoffice.turns import Diagnostics, normalize  # noqa: E402
 from github import NotFound, Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
@@ -31,12 +34,14 @@ TURN_ID = "12345678-1234-1234-1234-123456789abc"
 
 
 def settings(public_url="https://host.invalid/concurro", **extra) -> Settings:
+    targets = (Target("up/project", "owner/project", "fork"),)
     return Settings(
         **{
             "public_url": public_url,
             "client_id": "client",
             "client_secret": "secret",
-            "targets": (Target("up/project", "owner/project", "fork"),),
+            "targets": targets,
+            "reader": Reader(1, Path("/unused"), targets),
             **extra,
         }
     )
@@ -82,6 +87,7 @@ class SignInTests(unittest.TestCase):
         query = parse_qs(urlsplit(response.headers["location"]).query)
         self.assertEqual(query["redirect_uri"], ["https://host.invalid/auth/callback"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertNotIn("scope", query, "sign-in requests no OAuth scopes: identity only")
         return query["state"][0], query["code_challenge"][0]
 
     def test_sign_in_binds_state_and_pkce_to_the_browser(self):
@@ -119,12 +125,121 @@ class SignInTests(unittest.TestCase):
         self.assertEqual(unknown.status_code, 422)
 
 
+class SectionTests(unittest.TestCase):
+    """Issue sections share normal authentication and dispatch only the requested read."""
+
+    def test_section_endpoint_requires_sign_in_and_selects_one_section(self):
+        """Neither unauthenticated requests nor section routing fall back to a full task read."""
+        sessions = Sessions()
+        client = TestClient(
+            app_module.create_app(settings("https://host.invalid"), oauth=FakeOAuth(), sessions=sessions)
+        )
+        path = "/api/tasks/up/project/7/sections/summary"
+        with patch.object(tasks_module.Tasks, "task_view", return_value={"task": {"title": "summary"}}) as view:
+            self.assertEqual(client.get(path).status_code, 401)
+            view.assert_not_called()
+            client.cookies.set(app_module.SESSION_COOKIE, sessions.create("token", USER, 60))
+            self.assertEqual(client.get(path).json(), {"task": {"title": "summary"}})
+            view.assert_called_once_with("up/project", 7, "summary")
+            client.get(path.replace("summary", "pull"))
+            view.assert_called_with("up/project", 7, "pull")
+
+    def test_unavailable_cache_does_not_stop_api_startup(self):
+        """An optional cache mount failure leaves authentication and direct endpoints available."""
+        with patch.object(app_module, "ReadCache", side_effect=sqlite3.DatabaseError("corrupt")):
+            with TestClient(app_module.create_app(settings(read_cache_dir=Path("/unused")))) as client:
+                self.assertEqual(client.get("/api/health").status_code, 200)
+
+    def test_nonwriters_cannot_read_targets_tasks_or_diagnostics_or_send_commands(self):
+        """Deny direct API access before any task/config/cache/diagnostic reads or service forwarding."""
+        sessions = Sessions()
+        sid = sessions.create("reader-token", USER, 60)
+        access, cache, commands, diagnostics = Mock(), Mock(), Mock(), Mock()
+        access.writable.return_value = False
+        with (
+            patch.object(app_module, "Access", return_value=access),
+            patch.object(app_module, "ReadCache", return_value=cache),
+            patch.object(app_module, "Diagnostics", return_value=diagnostics),
+            TestClient(
+                app_module.create_app(settings(read_cache_dir=Path("/unused")), sessions=sessions, commands=commands),
+                cookies={app_module.SESSION_COOKIE: sid},
+            ) as client,
+        ):
+            self.assertEqual(
+                client.get("/api/overview").json(), {"targets": [], "tasks": [], "issues": [], "activity": []}
+            )
+            for repository in ("up/project", "owner/project"):
+                task = f"/api/tasks/{repository}/7"
+                for path in (
+                    f"/api/targets/{repository}",
+                    task,
+                    task + "/turns",
+                    task + "/turns/turn-id/runs",
+                    *(task + "/sections/" + section for section in tasks_module.SECTION_FIELDS),
+                ):
+                    with self.subTest(path=path):
+                        self.assertEqual(client.get(path).status_code, 404)
+                for command in (c for c in tasks_module.COMMANDS if c != "withdraw"):
+                    self.assertEqual(
+                        client.post(
+                            task + "/commands", json={"command": command}, headers={app_module.CSRF_HEADER: "1"}
+                        ).status_code,
+                        404,
+                    )
+            self.assertTrue(access.writable.call_count)
+            self.assertTrue(
+                all(call.args == ("up/project", USER.login, USER.id) for call in access.writable.call_args_list)
+            )
+            for method in (
+                access.repository,
+                access.get,
+                access.config,
+                access.engine,
+                access.transport,
+                cache.read,
+                commands.send,
+                diagnostics.turns,
+                diagnostics.rows,
+                diagnostics.for_sessions,
+            ):
+                method.assert_not_called()
+
+
 class SettingsTests(unittest.TestCase):
     def test_paths_derive_from_the_public_url(self):
         configured = settings()
         self.assertEqual(configured.base_path, "/concurro")
         self.assertEqual(configured.callback_url, "https://host.invalid/concurro/auth/callback")
         self.assertTrue(configured.secure)
+
+    def test_the_reader_app_needs_an_id_and_an_owner_only_key(self):
+        root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, root)
+        secret, key = root / "client-secret", root / "reader.pem"
+        for path in (secret, key):
+            path.write_text("x")
+            path.chmod(0o600)
+        target = {"upstream": "up/project", "fork": "owner/project", "issues": "fork"}
+
+        def loaded(**reader):
+            path = root / "settings.json"
+            body = {"public_url": "https://host.invalid/concurro", "client_id": "client", "targets": [target]}
+            path.write_text(json.dumps({**body, "client_secret_path": str(secret), "reader": reader}))
+            return load(path)
+
+        configured = loaded(app_id=7, private_key_path=str(key))
+        self.assertEqual((configured.reader.app_id, configured.reader.private_key_path), (7, key))
+        self.assertEqual(configured.reader.targets, configured.targets)
+        with patch.dict("os.environ", {"CONCURRO_READ_CACHE_DIR": str(root / "reads")}):
+            self.assertEqual(loaded(app_id=7, private_key_path=str(key)).read_cache_dir, root / "reads")
+        key.chmod(0o644)
+        for reader, field in (
+            ({"app_id": 7, "private_key_path": str(key)}, "reader.private_key_path"),
+            ({"app_id": "7", "private_key_path": str(key)}, "reader.app_id"),
+            ({"app_id": 7}, "reader"),
+        ):
+            with self.subTest(field=field), self.assertRaisesRegex(SettingsError, field + "$"):
+                loaded(**reader)
 
 
 class SessionTests(unittest.TestCase):
@@ -153,6 +268,7 @@ class CommandTests(unittest.TestCase):
             tasks_module.command_argument("approve", None, lambda: {})
 
     def test_commands_go_to_the_service_with_the_sign_in_token(self):
+        self.enterContext(patch.object(tasks_module.Tasks, "find_target"))
         seen = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -166,15 +282,22 @@ class CommandTests(unittest.TestCase):
         service = ServiceCommands("http://service.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
         sessions = Sessions()
         sid = sessions.create("user-token", USER, 60)
-        client = TestClient(
-            app_module.create_app(
-                settings(), oauth=FakeOAuth(), vault=Vault(None), sessions=sessions, commands=service
-            ),  # type: ignore[arg-type]
-            cookies={app_module.SESSION_COOKIE: sid},
-        )
+        cache = Mock()
+        with patch.object(app_module, "ReadCache", return_value=cache):
+            client = TestClient(
+                app_module.create_app(
+                    settings(read_cache_dir=Path("/unused")),
+                    oauth=FakeOAuth(),
+                    vault=Vault(None),
+                    sessions=sessions,
+                    commands=service,
+                ),  # type: ignore[arg-type]
+                cookies={app_module.SESSION_COOKIE: sid},
+            )
         headers = {app_module.CSRF_HEADER: "1"}
         posted = client.post("/api/tasks/up/project/7/commands", json={"command": "stop"}, headers=headers)
         self.assertEqual((posted.status_code, posted.json()["posted"]), (200, "/concurro stop"))
+        cache.invalidate.assert_called_once_with("up/project", 7)
         self.assertEqual(seen[0][:2], ("/actions", "Bearer user-token"))
         self.assertEqual(seen[0][2], {"repository": "up/project", "issue": 7, "command": "stop", "argument": None})
         invalid = client.post(
@@ -185,6 +308,26 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(
             (refused.status_code, refused.json()["detail"]), (403, "@octo does not have write access to up/project")
         )
+
+        cache.invalidate.assert_called_once_with("up/project", 7)
+
+    def test_uncertain_command_delivery_invalidates_display_data(self):
+        """A lost service response may follow a posted command and must invalidate old snapshots."""
+        self.enterContext(patch.object(tasks_module.Tasks, "find_target"))
+        sessions = Sessions()
+        sid = sessions.create("user-token", USER, 60)
+        cache, commands = Mock(), Mock()
+        commands.send.side_effect = CommandError(502, "uncertain", may_have_posted=True)
+        with patch.object(app_module, "ReadCache", return_value=cache):
+            with TestClient(
+                app_module.create_app(settings(read_cache_dir=Path("/unused")), sessions=sessions, commands=commands),
+                cookies={app_module.SESSION_COOKIE: sid},
+            ) as client:
+                reply = client.post(
+                    "/api/tasks/up/project/7/commands", json={"command": "stop"}, headers={app_module.CSRF_HEADER: "1"}
+                )
+                self.assertEqual(reply.status_code, 502)
+                cache.invalidate.assert_called_once_with("up/project", 7)
 
     def test_only_failures_before_delivery_say_nothing_was_posted(self):
         for error, status, text in (
@@ -201,6 +344,7 @@ class CommandTests(unittest.TestCase):
                 service.send("user-token", "up/project", 7, "stop", None)
             self.assertEqual(failed.exception.status, status)
             self.assertIn(text, failed.exception.reason)
+            self.assertEqual(failed.exception.may_have_posted, status == 502)
 
 
 class CredentialTests(unittest.TestCase):
@@ -268,6 +412,8 @@ class DiagnosticsTests(unittest.TestCase):
             (result["n"], result["stage"], result["role"], result["outcome"]), (1, "implement", "implementer", "ok")
         )
         self.assertEqual((result["queuedMs"], result["durationMs"]), (2000, 8000))
+        self.assertEqual(result["tokens"], {"input": None, "cached": None, "output": None})
+        self.assertIsNone(result["run"]["id"])
         self.assertEqual([item["kind"] for item in result["transcript"]], ["assistant", "tool_call", "tool_result"])
         self.assertIn("=== a.py", result["diff"])
         self.assertIn("b.py (removed)", result["diff"])
@@ -403,7 +549,7 @@ class PullListingTests(unittest.TestCase):
                     raise self.result
                 return self.result
 
-        access = github_module.UserAccess("token")
+        access = github_module.Access(None, "user-token")  # type: ignore[arg-type]
         access.engine = lambda repository: Engine({"data": {"repository": {"pullRequests": {"nodes": [node]}}}})  # type: ignore[method-assign]
         [pull] = access.pull_requests("up/project")
         self.assertEqual(queries, [("graphql", "POST", {"owner": "up", "name": "project"})])
@@ -499,6 +645,44 @@ class ProjectionTests(unittest.TestCase):
                 self.assertEqual(plans[-1]["summary"], "Current plan")
                 self.assertEqual(plans[-1]["body"], "Full summary\n\n### Steps\n- Do the work")
                 self.assertTrue(all(plan["body"] == "Historical summary" for plan in plans[:-1]))
+
+    def test_archived_generations_keep_their_concerns_and_times(self):
+        """A revised generation's concerns are the only record of what the reviewer asked for."""
+        member = {"id": "m1", "model": "claude-opus", "agent": {"profile": "opus55"}}
+        other = {"id": "m2", "model": "gpt-6.1", "agent": {"profile": "sol61"}}
+        state = {
+            "design_generation": 2,
+            "design_history": [
+                {
+                    "generation": 1,
+                    "plan": "p1",
+                    "reason": "Design reviewers require a revision.",
+                    "votes": [
+                        {"identity": member, "decision": "approve", "concerns": []},
+                        {"identity": other, "decision": "revise", "concerns": ["Define a staleness bound.", ""]},
+                    ],
+                }
+            ],
+            "design_votes": {"m1": {"identity": member, "report": {"decision": "approve"}}},
+            "objections": [{"id": "O1-m1", "reviewer": "m1", "text": "edge case", "resolved": True}],
+            "qc_history": [
+                {"stage": "plan_qc", "round": 2, "at": "2026-11-13T10:00:00Z"},
+                {"stage": "plan_qc", "round": 2, "at": "2026-11-13T10:05:00Z"},
+                {"stage": "intake", "round": 3, "at": "2026-11-13T11:00:00Z"},
+                {"stage": "plan_qc", "round": 3, "at": "2026-11-13T12:00:00Z"},
+            ],
+        }
+        archived, current = tasks_module.design_reviews(state)
+        self.assertEqual((archived["generation"], archived["at"]), (1, "2026-11-13T10:05:00Z"))
+        self.assertEqual(archived["reason"], "Design reviewers require a revision.")
+        self.assertEqual([o["text"] for o in archived["reviews"][1]["objections"]], ["Define a staleness bound."])
+        self.assertNotIn(
+            "resolved", archived["reviews"][1]["objections"][0], "an archived concern has no ledger status"
+        )
+        self.assertEqual(archived["reviews"][0]["objections"], [], "an approval records none")
+        self.assertEqual((current["generation"], current["at"], current["reason"]), (2, "2026-11-13T12:00:00Z", ""))
+        self.assertTrue(current["reviews"][0]["objections"][0]["resolved"])
+        self.assertEqual(tasks_module.design_reviews({"design_history": [{"generation": 1, "votes": []}]})[0]["at"], "")
 
     def test_checkpoint_state_projects_into_the_task(self):
         member = {"id": "m1", "model": "claude-opus", "effort": "high", "agent": {"profile": "opus-high"}}

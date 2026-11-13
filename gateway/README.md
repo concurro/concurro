@@ -27,7 +27,7 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
-| Backoffice settings and OAuth client secret (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, `client-secret` (see `backoffice/README.md`) |
+| Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in OAuth App's `client-secret`, the Backoffice App's `reader-app.pem` (see `backoffice/README.md`) |
 | Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
@@ -95,8 +95,11 @@ Create an App owned by the account that operates the installation, with the perm
 and event subscriptions in [Target and App prerequisites](#target-and-app-prerequisites):
 
 - Webhook URL `https://<host>/concurro/webhook`, with a generated webhook secret.
-- Callback URL `https://<host>/concurro/auth/callback`, for backoffice sign-in.
 - Install it on each upstream and fork.
+
+Backoffice sign-in uses a separate OAuth App; repository reads use a separate read-only
+GitHub App. Configure both as described in [Backoffice settings](../backoffice/README.md#settings).
+The service App needs no backoffice callback URL.
 
 **5. Service settings**
 
@@ -158,7 +161,7 @@ sudo docker run --rm --network none --volume /etc/concurro/service:/etc/concurro
 
 **8. Deploy**
 
-Deploy `web`, then `service`, as in [Releases](#releases). Check the result with the
+Install the host updater and deploy both releases as in [Releases](#releases). Check the result with the
 commands in [Operation and pilot](#operation-and-pilot).
 
 ## Releases
@@ -174,34 +177,86 @@ commit SHA. Nothing is built on the host.
 | `ghcr.io/concurro/backoffice-web` | [concurro-backoffice](https://github.com/concurro/concurro-backoffice), released on its own |
 
 The packages must be public, or the host's root Docker logged in to `ghcr.io` with a
-`read:packages` token. Deploy from a workstation with `gh` and SSH access to the host:
+`read:packages` token. Normal releases run directly in an already-open terminal on the host.
+
+### One-time command installation
+
+From a checkout containing these deployment helpers, on the host:
 
 ```bash
-export CONCURRO_DEPLOY_HOST=<ssh name>
+bash ~/concurro/deploy/install.sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+The installer copies the command to `~/.local/bin/update-concurro.sh` and its helpers to
+`~/.local/lib/concurro-deploy/`. It changes no services or settings. Keep `~/.local/bin` on
+PATH in the host's shell configuration. Run the installer again only when intentionally
+updating the deployment helpers. The updater needs Python 3.10+ in addition to the host's
+existing Bash, Git, Docker Compose, `flock` and noninteractive Docker sudo access.
+
+### Normal release
+
+After merging and pushing the changes, run on the host:
 
 ```bash
-bash deploy/deploy.sh web FULL_COMMIT_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+update-concurro.sh || printf '\nUpdate failed; inspect the output above.\n'
 ```
+
+The command selects the current `main` commit of **both** repositories once, prints their
+full SHAs, and waits for successful push CI at those exact commits, including image
+publication. It waits if GitHub has not registered a new run yet. A failed CI run stops the
+update before deployment. Later pushes do not change the selected pair during that wait.
+Public GitHub API reads need no login; an optional `GH_TOKEN` supplies authenticated API
+quota. Neither `gh` nor SSH is used by this host command.
+
+After CI succeeds, one deployment lock covers the combined update. The helper checks out
+the service release's Compose files, records both image tags, stops service dispatch, pulls
+all images, starts the gateway and service components, and verifies health and the served
+service commit. This includes the service, backoffice API, backoffice web, exchange, vault,
+and the gateway image pinned by that release's Compose configuration. Nothing is built on
+the host. Separate edge/Caddy infrastructure is not part of an application release.
+
+To deploy a previously selected pair, or repeat a failed update with the same pair:
 
 ```bash
-bash deploy/deploy.sh service FULL_COMMIT_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+update-concurro.sh SERVICE_FULL_SHA WEB_FULL_SHA || printf '\nUpdate failed; inspect the output above.\n'
 ```
 
-- **`web`** takes a concurro-backoffice commit: it waits for that commit's CI, records
-  `CONCURRO_WEB_RELEASE`, then pulls and restarts only the web app. The service keeps running.
-  A host that has never deployed images only records the release; the first `service`
-  deployment needs it and starts the web app.
-- **`service`** takes a commit of this repository: it waits for its CI, checks out the
-  release's Compose files, stops the service, pulls and verifies the images, starts the
-  gateway and the service with the backoffice, and checks health and the served commit. It
-  refuses a release that does not include the one recorded. A failure after stopping can
-  leave the service stopped; fix the reported problem and rerun. Nothing is rolled back,
-  migrated or retried, and nothing is written to GitHub.
+Explicit pairs still require successful main push CI. The service release must include the
+recorded release. If deployment fails after stopping the service, correct the reported
+problem and rerun; recovery always moves forward. No pilot retries or GitHub writes occur.
 
-Host Docker commands use non-interactive `sudo docker` only. Never source either script.
-The `build` sections in the Compose files remain for local builds, for example
-`CONCURRO_RELEASE=$(git rev-parse HEAD) docker compose -f gateway/compose.yaml build`.
+### Release-specific preparation
+
+New installations, configuration or secret changes, App permission approvals, infrastructure
+changes, and release-specific migrations remain explicit preparation steps. Follow the
+release's instructions **before** the normal update. The updater neither modifies settings
+nor runs arbitrary migration hooks. Updating the installed deployment helpers is also an
+explicit installer operation, separate from pulling application images.
+
+### Individual component deployments from a workstation
+
+The existing workstation helper remains available for a selected service or web release.
+Install the host helpers as above first; normal calls reuse them through one SSH connection
+and never upload scripts. For upgrades, deploy the API/service before the web when using
+individual commands; the combined updater above is preferred. On a first installation only,
+record the web release first (without starting a service), then deploy the service to start
+the selected pair.
+
+```bash
+export CONCURRO_DEPLOY_HOST=<ssh-name>
+bash deploy/deploy.sh service SERVICE_FULL_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+bash deploy/deploy.sh web WEB_FULL_SHA || printf '\nDeployment failed; this terminal remains open.\n'
+```
+
+- **`web`** waits for its commit's CI and updates only the web image. Before the first
+  service deployment, it records the web release for that first startup.
+- **`service`** waits for its commit's CI and updates the service, API and gateway images,
+  retaining the recorded web release. It uses the same host deployment checks as the
+  combined updater.
+
+Host Docker commands use non-interactive `sudo docker` only. Execute the scripts; never
+source them. The Compose `build` sections remain for local builds.
 
 ## Launcher and engine
 
@@ -686,3 +741,12 @@ acceptance remains pending. [Phase 6](../docs/proposals/per-user-credentials/pha
 adds service-principal nonsecret event polling and eligible automatic recovery. Registry
 schema 8 migrates forward; preserve vault event sequence and Registry state when moving
 services. No new secret or recovery enablement setting is required.
+
+### Backoffice issue read cache
+
+The backoffice image uses `/var/lib/concurro/backoffice` for rebuildable issue metadata and
+verified checkpoint summaries. Compose retains it in the `backoffice-data` named volume,
+separately from the service registry and diagnostics. The image seeds directory ownership for
+uid 65533. `read_cache_dir` in backoffice settings overrides `CONCURRO_READ_CACHE_DIR`; custom
+paths need a corresponding writable mount. See [issue-page loading](../backoffice/README.md#issue-page-loading)
+for refresh and invalidation behavior. This cache does not alter engine checkpoint formats.

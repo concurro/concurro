@@ -29,8 +29,8 @@ KEPT = ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "location",
 SECONDARY_SECONDS = 60
 API_VERSION = "2022-11-28"
 USER_AGENT = "concurro-service"
-# A user or App bot login, as `users/<login>` (the bot suffix percent-encoded).
-PROFILE = re.compile(r"users/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:%5Bbot%5D)?")
+# A public account by login (percent-encoded bot suffix) or stable positive numeric ID.
+PROFILE = re.compile(r"(?:users/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:%5Bbot%5D)?|user/[1-9][0-9]*)")
 
 
 def headers():

@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from copy import deepcopy
@@ -93,6 +94,28 @@ class StoreTests(unittest.TestCase):
         self.store.finished(TURN_ID, {"outcome": "failed", "response": None, "retained": None, "transcript": encoded})
         self.assertEqual(self.row()["transcript"], hashlib.sha256(ARCHIVE).hexdigest())
 
+    def test_old_database_migrates_and_preserves_the_assigned_runner(self):
+        """Opening a pre-run-identity database retains old turns and records reused sessions."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        db = sqlite3.connect(root / diagnostics.DATABASE)
+        db.executescript(diagnostics.SCHEMA.replace("    runner TEXT,\n", ""))
+        db.execute(
+            "INSERT INTO turns (id, repository, issue, stage, submitted, status, request) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (TURN_ID, "owner/project", 7, "plan", 1.0, "queued", "{}"),
+        )
+        db.commit()
+        db.close()
+        store = diagnostics.Store(root)
+        self.addCleanup(store.close)
+        store.submitted(TURN_ID, deepcopy(TURN), TASK)
+        runner = {"session": TURN_ID, "run_id": "77/1", "secret": "never record"}
+        store.observed(TURN_ID, "running", {}, set(), runner)
+        store.observed(TURN_ID, "done", {}, set())
+        row = store.db.execute("SELECT * FROM turns").fetchone()
+        self.assertEqual(json.loads(row["runner"]), {"session": TURN_ID, "run_id": "77/1"})
+        self.assertEqual(json.loads(row["runner_sessions"]), [])
+        self.assertEqual((row["repository"], row["submitted"]), ("owner/project", 1.0))
+
     def test_recorder_failures_never_reach_the_turn(self):
         recorder = diagnostics.Recorder(self.store, TASK)
         self.store.close()
@@ -111,7 +134,17 @@ class ExecutorRecordingTests(unittest.TestCase):
         observation = {"turn": TURN_ID, "status": "queued", "created": 5.0, "dispatch": "s-1"}
         result = {"outcome": "ok", "response": {"done": True}, "retained": None, "workspace": None}
         operator = FakeOperator(
-            [observation, {**observation, "status": "done", "started": 6.0, "finished": 9.0, "result": result}]
+            [
+                observation,
+                {
+                    **observation,
+                    "status": "done",
+                    "started": 6.0,
+                    "finished": 9.0,
+                    "result": result,
+                    "runner": {"session": TURN_ID, "run_id": "77/1"},
+                },
+            ]
         )
         executor = RunnerExecutor(
             operator,
@@ -129,6 +162,7 @@ class ExecutorRecordingTests(unittest.TestCase):
         self.assertEqual((row["id"], row["status"], row["outcome"]), (TURN_ID, "done", "ok"))
         self.assertEqual((row["created"], row["started"], row["finished"]), (5.0, 6.0, 9.0))
         self.assertEqual(json.loads(row["runner_sessions"]), ["s-1"])
+        self.assertEqual(json.loads(row["runner"]), {"session": TURN_ID, "run_id": "77/1"})
 
 
 if __name__ == "__main__":

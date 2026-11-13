@@ -1,32 +1,40 @@
 """Project targets, issues and engine checkpoint state into the frontend's `Target` and `Task` shapes.
 
-List views use stage labels only (one GitHub call per target); a task view loads and verifies the
-engine's audit checkpoint with `Checkpoints.load`, exactly as the controller does.
+List views use stage labels. Full task views load the engine checkpoint; section views verify
+the same audit identity and restore only the evidence needed by the selected display.
 """
 
 import hashlib
 import json
+import logging
 import re
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import UTC, datetime
 
-from checkpoints import MARKER, Checkpoints
+import report_store
+from checkpoints import MARKER, CheckpointError, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
 from report_store import Cache
-from sponsorship import selected_routes
+from sponsorship import own_consent, own_consent_present, selected_routes
+from storage_helpers import owned
 from vocab import Stage
 
+from . import activity
 from .auth import User
 from .commands import CommandError
-from .github import UserAccess
+from .github import Access
+from .runs import Runs
 from .settings import Settings
+
+log = logging.getLogger("concurro.backoffice")
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
 REPORTS = Cache()
-# Decoded checkpoint states by (repository, issue, checkpoint comment digest), oldest evicted first.
+# Decoded states by (repository, issue, checkpoint comment digest, evidence fields), oldest evicted first.
 STATES: dict[tuple, dict] = {}
 STATE_ENTRIES = 256
 # Target configurations by fork, briefly.
@@ -38,11 +46,68 @@ COMMANDS = ("sponsor", "withdraw", "start", "approve", "retry", "resume", "stop"
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
+EMPTY_RUNS = {"runs": [], "message": None}
+# Evidence roots consumed by each independently loaded issue section.
+SECTION_FIELDS = {
+    "summary": {"reason", "requests"},
+    "intake": {"qc_history", "qc"},
+    "plan": {"plan", "design_history"},
+    "design": {"design_history", "design_votes", "objections", "qc_history"},
+    "implement": set(),
+    "review": {"review_history", "reviews", "findings"},
+    "handoff": {"review_history", "reviews", "findings"},
+    "timeline": {"reports", "qc_history"},
+    "pull": set(),
+}
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
+
+
+def gone_issue(error: RuntimeError) -> bool:
+    """Recognize only GitHub's moved/deleted issue responses, preserving outages and other failures."""
+    return isinstance(error, NotFound) or str(error).endswith(("(HTTP 301)", "(HTTP 410)"))
 
 
 class ReadCheckpoints(Checkpoints):
     """The engine's checkpoint loader without the rendered plan artifact, which only writers compare against."""
+
+    def __init__(self, *args, fields=None, **kwargs):
+        """Select display evidence without changing the controller's full-state loader."""
+        super().__init__(*args, **kwargs)
+        self.fields = fields
+
+    def hydrate(self, state, payload):
+        """Verify selected report bodies; display views never consume file inventories."""
+        if self.fields is None:
+            return super().hydrate(state, payload)
+        self.restore_reports(state, payload, fields=self.fields)
+        refs = payload.get("report_data", [])
+        self.trim(state, refs)
+
+    def trim(self, state, refs=()):
+        """Keep section evidence and phase-presence metadata, including detached roots."""
+        present = {key for key, value in state.items() if value}
+        present.update(ref["path"][0] for ref in refs)
+        state.setdefault(
+            "_phaseRecords",
+            [
+                bool(present & {"qc", "qc_history"}),
+                bool(present & {"plan", "plan_id", "design_history"}),
+                bool(present & {"design_history", "design_votes"}),
+                bool(state.get("pr")),
+                bool(present & {"review_history", "reviews"}),
+                False,
+            ],
+        )
+        for key in report_store.FIELDS - self.fields:
+            state.pop(key, None)
+
+    def load(self, comments):
+        """Apply the same display projection to legacy inline checkpoints."""
+        state = super().load(comments)
+        if state is not None and self.fields is not None:
+            self.trim(state)
+            state["_audit"] = self.reference() if self.audit else None
+        return state
 
     def read(self, number, kind):
         return None if kind == "plan" else super().read(number, kind)
@@ -78,23 +143,33 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 
 
 class Tasks:
-    """Views for one signed-in user; every GitHub read uses their token."""
+    """Views for one signed-in upstream writer, read with the Reader App."""
 
-    def __init__(self, settings: Settings, access: UserAccess, user: User, sponsorships=None):
+    def __init__(
+        self, settings: Settings, access: Access, user: User, diagnostics=None, read_cache=None, sponsorships=None
+    ):
+        """Share cached display reads and live consent projection without loading unrelated evidence."""
         self.settings, self.access, self.user = settings, access, user
-        self.sponsorships = sponsorships
+        self.diagnostics, self.read_cache, self.sponsorships = diagnostics, read_cache, sponsorships
         self.issue_intents = []
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
 
     # Targets
 
+    def target_access(self, target, *, require_writer=True) -> dict | None:
+        """Return fork metadata only for upstream writers who can see both target repositories."""
+        if require_writer and not self.access.writable(target.upstream, self.user.login, self.user.id):
+            return None
+        seen = {repository: self.access.repository(repository) for repository in target.repositories}
+        return seen[target.fork] if all(seen.values()) else None
+
     def visible_targets(self) -> list[tuple]:
-        """Configured targets whose fork this user can see, with that repository's metadata (once per request)."""
+        """Configured targets this upstream writer may access, with the fork's metadata."""
         if self.visible is None:
             self.visible = []
             for target in self.settings.targets:
-                fork = self.access.repository(target.fork)
+                fork = self.target_access(target)
                 if fork is not None:
                     self.visible.append((target, fork))
         return self.visible
@@ -133,17 +208,19 @@ class Tasks:
             "credentialRequirements": requirements,
             "profiles": profiles,
             "config": "\n".join(f"{k}: {v}" for k, v in limits.items()),
-            "writer": bool((fork.get("permissions") or {}).get("push")),
+            "writer": self.access.writable(target.upstream, self.user.login, self.user.id),
         }
 
-    def find_target(self, repository: str):
-        """The configured target an issue repository belongs to, if this user can see it."""
-        for target, fork in self.visible_targets():
+    def find_target(self, repository: str, *, require_writer=True):
+        """The configured target an issue repository belongs to, if this user is an upstream writer."""
+        for target in self.settings.targets:
             if repository.lower() in (r.lower() for r in target.issue_repositories) or repository.lower() in (
                 target.upstream.lower(),
                 target.fork.lower(),
             ):
-                return target, fork
+                fork = self.target_access(target, require_writer=require_writer)
+                if fork is not None:
+                    return target, fork
         raise TaskNotFound(f"{repository} is not a Concurro target visible to your account")
 
     # Lists
@@ -168,7 +245,7 @@ class Tasks:
                 except NotFound:
                     pass
                 except RuntimeError as error:
-                    if not str(error).endswith(("(HTTP 301)", "(HTTP 410)")):
+                    if not gone_issue(error):
                         raise
             for issue in issues:
                 task = summary(repository, issue, record["mode"])
@@ -247,45 +324,80 @@ class Tasks:
             targets.append(record)
             tasks += self.listed(target, record)
         tasks.sort(key=lambda t: t["updatedAt"], reverse=True)
-        return {"targets": targets, "tasks": tasks, "issues": self.issue_intents, "activity": []}
+        repositories = [r for target, _ in self.visible_targets() for r in target.issue_repositories]
+        return {
+            "targets": targets,
+            "tasks": tasks,
+            "issues": self.issue_intents,
+            "activity": activity.feed(self.recorded(repositories)),
+        }
 
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        return {"target": record, "tasks": self.listed(target, record), "issues": self.issue_intents, "runs": []}
+        lookup = self.diagnostics.for_sessions if self.diagnostics else None
+        found = EMPTY_RUNS
+        if lookup:
+            reader = Runs(self.access.transport(target.fork), target.fork)
+            found = reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions))
+        tasks = self.listed(target, record)
+        return {
+            "target": record,
+            "tasks": tasks,
+            "issues": self.issue_intents,
+            "runs": found["runs"],
+            "runsMessage": found["message"],
+        }
+
+    def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
+        """The newest recorded turns of these repositories; none without a diagnostics directory."""
+        return self.diagnostics.recent(repositories, limit) if self.diagnostics and repositories else []
 
     # One task
 
-    def state(self, repository: str, number: int) -> dict | None:
-        target, _ = self.find_target(repository)
-        config = self.task_config(target, repository)
+    def state(
+        self, repository: str, number: int, section: str | None = None, *, comments=None, config=None, refresh=False
+    ) -> dict | None:
+        """Load verified evidence for a full task or one display section."""
+        if config is None:
+            target, _ = self.find_target(repository)
+            config = self.task_config(target, repository)
         github = self.access.engine(repository)
-        comments = github.pages(f"issues/{number}/comments")
+        if comments is None:
+            comments = github.pages(f"issues/{number}/comments")
         author = Identities(config).author("state")
-        # The checkpoint comment pins the audit artifact by digest: the same comment means the same state.
-        pins = [c["body"] for c in comments if (c.get("user") or {}).get("login") == author and MARKER in c["body"]]
-        key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest())
-        if pins and key in STATES:
+        # A cached view retains its verified audit identity; explicit refreshes re-read the mutable audit.
+        pins = [c["body"] for c in owned(comments, author, MARKER, "user")]
+        fields = None if section is None else frozenset(SECTION_FIELDS["summary"] | SECTION_FIELDS[section])
+        key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest(), fields)
+        if pins and key in STATES and not refresh:
             return deepcopy(STATES[key])
-        state = ReadCheckpoints(github, config, number, report_cache=REPORTS).load(comments)
+        state = ReadCheckpoints(github, config, number, report_cache=REPORTS, fields=fields).load(comments)
+        if state is not None and section is not None:
+            state["_revision"] = hashlib.sha256(
+                json.dumps([key[2], state.get("_audit")], sort_keys=True).encode()
+            ).hexdigest()
         if pins and state is not None:
             STATES[key] = deepcopy(state)
             while len(STATES) > STATE_ENTRIES:
                 STATES.pop(next(iter(STATES)))
         return state
 
-    def issue_view(self, repository: str, number: int) -> dict:
-        """Read a visible issue and its current intent without requiring or fabricating task state."""
-        target, fork = self.find_target(repository)
-        issue = self.access.get(repository, f"issues/{number}")
-        projection = self.sponsorship_view(repository, number)
-        record = summary(repository, issue, self.target_record(target, fork)["mode"])
+    def issue_view(self, repository: str, number: int, projection=None) -> dict:
+        """Read full writer consent or only the caller's own evidence, never checkpoint data."""
+        target, fork = self.find_target(repository, require_writer=False)
+        issue = self.access.transport(repository, as_user=True).request("GET", f"repos/{repository}/issues/{number}")
+        writer = self.access.writable(target.upstream, self.user.login, self.user.id)
+        projection = self.sponsorship_view(repository, number) if projection is None else projection
+        record = summary(repository, issue, "manual")
         value = {key: record[key] for key in ("owner", "repo", "issue", "title", "author", "labels", "updatedAt")}
-        value.update(body=issue.get("body") or "", sponsorships=projection)
+        value["sponsorships"] = projection if writer else own_consent(projection, str(self.user.id))
+        if writer:
+            value["body"] = issue.get("body") or ""
         return {
             "issue": value,
-            "target": self.target_record(target, fork),
-            "issueWriter": bool(((self.access.repository(repository) or {}).get("permissions") or {}).get("push")),
+            "issueWriter": writer,
+            **({"target": self.target_record(target, fork)} if writer else {}),
         }
 
     def sponsorship_view(self, repository: str, number: int) -> dict:
@@ -298,56 +410,128 @@ class Tasks:
         return {"funding": "unknown", "status": "unavailable", "slots": {}}
 
     def my_sponsorships(self) -> list[dict]:
-        """List visible task and pre-task current/provisional grants for this stable GitHub actor."""
+        """Discover current and historical own consent even after upstream writer loss."""
         overview = self.overview()
         actor = str(self.user.id)
-        return [
+        result = [
             item
             for item in overview["tasks"] + overview["issues"]
-            if any(
-                slot.get("sponsor_id") == actor for slot in (item.get("sponsorships", {}).get("slots") or {}).values()
-            )
-            or any(fact.get("actor_id") == actor for fact in item.get("sponsorships", {}).get("facts", []))
+            if own_consent_present(own_consent(item.get("sponsorships", {}), actor))
         ]
+        if self.sponsorships:
+            for target in self.settings.targets:
+                if (
+                    self.access.writable(target.upstream, self.user.login, self.user.id)
+                    or self.target_access(target, require_writer=False) is None
+                ):
+                    continue
+                for repository in target.issue_repositories:
+                    for projection in self.sponsorships(repository).get("issues", []):
+                        own = own_consent(projection, actor)
+                        if not own_consent_present(own):
+                            continue
+                        try:
+                            result.append(self.issue_view(repository, projection["issue"], projection)["issue"])
+                        except RuntimeError as error:
+                            if not gone_issue(error):
+                                raise
+        return result
 
-    def task_view(self, repository: str, number: int) -> dict:
-        target, fork = self.find_target(repository)
-        record = self.target_record(target, fork)
+    def snapshot(self, repository, number, config):
+        """Fetch issue metadata and only owned checkpoint comments, then verify the lightweight state."""
         with ThreadPoolExecutor(2) as pool:
             issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
-            state_read = pool.submit(self.state, repository, number)
+            comments = self.access.engine(repository).pages(f"issues/{number}/comments")
+            issue = issue_read.result()
+        author = Identities(config).author("state")
+        comments = owned(comments, author, MARKER, "user")
+        state = self.state(repository, number, "summary", comments=comments, config=config, refresh=True)
+        return {"issue": issue, "comments": comments, "state": state}
+
+    def task_view(self, repository: str, number: int, section: str | None = None) -> dict:
+        """Read a full legacy task or one independently rendered section."""
+        target, fork = self.find_target(repository)
+        self.config(target.fork)
+        cache_status = None
+        if self.read_cache is not None and section is not None:
+            config = self.task_config(target, repository)
+            scope = hashlib.sha256(
+                json.dumps([1, self.settings.reader.app_id, config], sort_keys=True).encode()
+            ).hexdigest()
+            load = lambda: self.snapshot(repository, number, config)
             try:
-                issue = issue_read.result()
-            except NotFound:
-                raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
-            state = state_read.result()
+                snapshot, cache_status = self.read_cache.read(scope, repository, number, load)
+                if SECTION_FIELDS[section] <= SECTION_FIELDS["summary"]:
+                    state = snapshot["state"]
+                else:
+                    try:
+                        state = self.state(repository, number, section, comments=snapshot["comments"], config=config)
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit") and not cache_status[
+                            "error"
+                        ]:
+                            state = self.state(
+                                repository, number, section, comments=snapshot["comments"], config=config, refresh=True
+                            )
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit"):
+                            raise CheckpointError("concurrent_change")
+                    except CheckpointError:
+                        if cache_status["error"]:
+                            raise
+                        # The audit artifact can advance before a cached checkpoint pointer is refreshed.
+                        snapshot, cache_status = self.read_cache.read(scope, repository, number, load, refresh=True)
+                        if cache_status["error"]:
+                            raise
+                        state = self.state(
+                            repository, number, section, comments=snapshot["comments"], config=config, refresh=True
+                        )
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit"):
+                            raise CheckpointError("concurrent_change")
+                issue = snapshot["issue"]
+                record = self.target_record(target, fork) if section == "summary" else None
+            except (sqlite3.Error, OSError):
+                log.warning("issue read cache unavailable; reading GitHub directly")
+                cache_status = None
+        if cache_status is None:
+            with ThreadPoolExecutor(3) as pool:
+                issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
+                state_read = pool.submit(self.state, repository, number, section)
+                record_read = pool.submit(self.target_record, target, fork) if section in (None, "summary") else None
+                try:
+                    issue = issue_read.result()
+                except NotFound:
+                    raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
+                state = state_read.result()
+                record = record_read.result() if record_read else None
         if state is None and not stage_label(issue):
             raise TaskNotFound(f"{repository}#{number} is not enrolled in Concurro")
         config, _ = self.config(target.fork)
-        task = summary(repository, issue, record["mode"]) | {"body": issue.get("body") or ""}
+        task = summary(repository, issue, "autonomous" if config.get("autonomous") else "manual")
+        if section in (None, "intake"):
+            task["body"] = issue.get("body") or ""
         if state:
-            task |= project(state, config, repository, issue)
+            task |= project(state, config, repository, issue, section)
             if state.get("pr"):
-                task["pr"] = self.pull(self.publication_repository(target), state)
-        task["sponsorships"] = self.sponsorship_view(repository, number)
+                task["pr"] = (
+                    self.pull(self.publication_repository(target), state)
+                    if section in (None, "pull")
+                    else pull_summary(state)
+                )
+        if section is not None:
+            task["revision"] = hashlib.sha256(
+                json.dumps([(state or {}).get("_revision"), issue["updated_at"]]).encode()
+            ).hexdigest()
+        if section in (None, "summary"):
+            task["sponsorships"] = self.sponsorship_view(repository, number)
         return {
             "task": task,
-            "target": record,
-            "issueWriter": bool(((self.access.repository(repository) or {}).get("permissions") or {}).get("push")),
+            "issueWriter": self.access.writable(target.upstream, self.user.login, self.user.id),
+            **({"target": record} if record is not None else {}),
+            **({"cache": cache_status} if cache_status else {}),
         }
 
     def pull(self, upstream: str, state: dict) -> dict:
         number = state["pr"]
-        result = {
-            "number": number,
-            "title": "",
-            "branch": state.get("branch") or "",
-            "headSha": (state.get("head") or "")[:7],
-            "ci": "none",
-            "additions": 0,
-            "deletions": 0,
-            "ready": bool(state.get("handoff_ready")),
-        }
+        result = pull_summary(state)
         try:
             pull = self.access.get(upstream, f"pulls/{number}")
             result |= {
@@ -362,6 +546,20 @@ class Tasks:
         except (NotFound, KeyError, TypeError):
             pass
         return result
+
+
+def pull_summary(state: dict) -> dict:
+    """Checkpoint-backed PR identity; live CI and line counts are initially unknown."""
+    return {
+        "number": state["pr"],
+        "title": "",
+        "branch": state.get("branch") or "",
+        "headSha": (state.get("head") or "")[:7],
+        "ci": "unknown",
+        "additions": None,
+        "deletions": None,
+        "ready": bool(state.get("handoff_ready")),
+    }
 
 
 HARNESS_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
@@ -432,20 +630,25 @@ def summary(repository: str, issue: dict, mode: str) -> dict:
     }
 
 
-def project(state: dict, config: dict, repository: str, issue: dict) -> dict:
+def project(state: dict, config: dict, repository: str, issue: dict, section: str | None = None) -> dict:
+    """Project summary metadata and only the requested phase evidence."""
     stage = state.get("stage") or "intake"
-    plans = plan_versions(state, issue["updated_at"])
+    plans = (
+        plan_versions(state, issue["updated_at"], metadata_only=section == "design")
+        if section in (None, "plan", "design")
+        else []
+    )
     task = {
         "stage": stage,
         "atStage": parked_at(state),
         "mode": state.get("mode") or "manual",
         "alert": alert(stage, state),
-        "intake": intake_rounds(state),
+        "intake": intake_rounds(state) if section in (None, "intake") else [],
         "plans": plans,
         "approvedPlanId": (state.get("approval") or {}).get("plan"),
-        "designReview": design_reviews(state),
-        "rounds": review_rounds(state),
-        "findings": findings(state),
+        "designReview": design_reviews(state) if section in (None, "design") else [],
+        "rounds": review_rounds(state) if section in (None, "review", "handoff") else [],
+        "findings": findings(state) if section in (None, "review", "handoff") else [],
         "budgets": {
             "modelCalls": {"used": state.get("calls", 0), "max": config.get("max_model_calls", 48)},
             "fixRounds": {"used": state.get("round", 0), "max": config.get("max_fix_rounds", 2)},
@@ -454,8 +657,12 @@ def project(state: dict, config: dict, repository: str, issue: dict) -> dict:
                 "max": config.get("max_plan_revisions", 2) + state.get("plan_revision_extra", 0),
             },
         },
-        "timeline": timeline(state, repository, issue),
+        "timeline": timeline(state, repository, issue) if section in (None, "timeline") else [],
     }
+    if "_phaseRecords" in state:
+        task["phaseRecords"] = state["_phaseRecords"]
+    if state.get("plan_id"):
+        task["currentPlan"] = {"id": state["plan_id"]}
     questions = open_questions(state)
     if questions:
         task["question"] = questions
@@ -483,7 +690,7 @@ def parked_at(state: dict) -> str:
             return candidate
     if stage in ("merged", "observed_merged"):
         return "gates"
-    return "plan" if state.get("plan") else "intake"
+    return "plan" if state.get("plan") or state.get("plan_id") else "intake"
 
 
 def alert(stage: str, state: dict) -> dict:
@@ -539,26 +746,27 @@ def item_text(item) -> str:
     return str(item)
 
 
-def plan_versions(state: dict, at: str) -> list[dict]:
-    """Distinct historical plans (summaries only), then the current plan in full."""
+def plan_versions(state: dict, at: str, *, metadata_only: bool = False) -> list[dict]:
+    """Historical plan summaries and the current plan, or identities for design-review labels."""
     versions = {}
     for n, entry in enumerate(state.get("design_history") or [], start=1):
         plan_id = entry.get("plan") or f"g{n}"
         versions[plan_id] = {
             "id": plan_id,
             "createdAt": at,
-            "summary": entry.get("summary", ""),
-            "body": entry.get("summary", ""),
+            "summary": "" if metadata_only else entry.get("summary", ""),
+            "body": "" if metadata_only else entry.get("summary", ""),
         }
     plan = state.get("plan")
-    if isinstance(plan, dict):
+    if isinstance(plan, dict) or metadata_only and state.get("plan_id"):
+        plan = plan or {}
         plan_id = state.get("plan_id") or "current"
         versions.pop(plan_id, None)
         versions[plan_id] = {
             "id": plan_id,
             "createdAt": at,
             "summary": plan.get("headline") or (plan.get("summary") or "")[:200],
-            "body": plan_markdown(plan),
+            "body": "" if metadata_only else plan_markdown(plan),
         }
     return [{**plan, "version": n} for n, plan in enumerate(versions.values(), start=1)]
 
@@ -600,19 +808,32 @@ def member_label(identity: dict) -> tuple[str, str]:
 
 def design_reviews(state: dict) -> list[dict]:
     generations = []
+    recorded = quality_times(state, "plan_qc")
     for entry in state.get("design_history") or []:
+        generation = entry.get("generation", len(generations) + 1)
         reviews = []
-        for vote in entry.get("votes") or []:
+        for n, vote in enumerate(entry.get("votes") or [], start=1):
             identity = vote.get("identity")
             name, profile = member_label(identity) if isinstance(identity, dict) else (str(identity or ""), "")
             reviews.append(
-                {"agent": name, "profile": profile, "verdict": vote.get("decision") or "pending", "objections": []}
+                {
+                    "agent": name,
+                    "profile": profile,
+                    "verdict": vote.get("decision") or "pending",
+                    # Historical concern text; the ledger's current status for it is not projected.
+                    "objections": [
+                        {"id": f"g{generation}-{n}-{i}", "text": text}
+                        for i, text in enumerate(vote.get("concerns") or [], start=1)
+                        if isinstance(text, str) and text
+                    ],
+                }
             )
         generations.append(
             {
-                "generation": entry.get("generation", len(generations) + 1),
+                "generation": generation,
                 "planId": entry.get("plan") or "",
-                "at": "",
+                "at": recorded.get(generation + 1, ""),
+                "reason": entry.get("reason") or "",
                 "reviews": reviews,
             }
         )
@@ -633,16 +854,27 @@ def design_reviews(state: dict) -> list[dict]:
                     ],
                 }
             )
+        generation = state.get("design_generation", len(generations) + 1)
         history = state.get("qc_history") or []
         generations.append(
             {
-                "generation": state.get("design_generation", len(generations) + 1),
+                "generation": generation,
                 "planId": state.get("plan_id") or "",
-                "at": history[-1].get("at", "") if history else "",
+                "at": recorded.get(generation + 1) or (history[-1].get("at", "") if history else ""),
+                "reason": "",
                 "reviews": reviews,
             }
         )
     return generations
+
+
+def quality_times(state: dict, stage: str) -> dict[int, str]:
+    """The last recorded time of each review round; `_quality_history` numbers a round one past its generation."""
+    times: dict[int, str] = {}
+    for entry in state.get("qc_history") or []:
+        if entry.get("stage") == stage and entry.get("at") and type(entry.get("round")) is int:
+            times[entry["round"]] = max(entry["at"], times.get(entry["round"], ""))
+    return times
 
 
 def review_rounds(state: dict) -> list[dict]:

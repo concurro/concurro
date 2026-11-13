@@ -230,3 +230,61 @@ def coverage(routes, slots, metadata):
             status = "available" if route["model"] in record["models"] else "missing_model"
         result[provider].append({**route, "status": status, "version": record.get("version") if record else None})
     return result
+
+
+def own_consent(projection: dict, actor: str) -> dict:
+    """Expose only this actor's consent evidence; omit task state, other owners and accounting."""
+    result = {"scope": "own", "status": projection.get("status", "unavailable"), "slots": {}}
+    for provider in ("openai", "anthropic"):
+        slot = (projection.get("task", {}).get("slots") or projection.get("slots") or {}).get(provider) or {}
+        result["slots"][provider] = (
+            deepcopy(slot) if slot.get("sponsor_id") == actor else {"status": "not shown", "sponsor_id": None}
+        )
+    result["facts"] = [deepcopy(f) for f in projection.get("facts", []) if f.get("actor_id") == actor]
+    result["tombstones"] = {
+        p: {actor: rows[actor]} for p, rows in (projection.get("tombstones") or {}).items() if actor in rows
+    }
+    result["history"] = []
+    history = projection.get("history", projection.get("task", {}).get("history", []))
+    initialized = {
+        (row.get("provider"), row["slot"]["grant_id"])
+        for row in history
+        if row.get("reason") == "initialize"
+        and row.get("actor") in (None, actor)
+        and row.get("slot", {}).get("sponsor_id") == actor
+        and row["slot"].get("grant_id")
+    }
+    for row in history:
+        retired = row.get("cutover_from") or row.get("slot", {}).get("cutover_from")
+        if (
+            row.get("actor") is None
+            and row.get("reason") == "cutover"
+            and (row.get("provider"), retired) in initialized
+        ):
+            result["history"].append(
+                {
+                    **{k: deepcopy(row[k]) for k in ("transition", "provider", "reason") if k in row},
+                    "cutover_from": retired,
+                }
+            )
+            continue
+        if row.get("actor") != actor and not (
+            row.get("actor") is None and row.get("slot", {}).get("sponsor_id") == actor
+        ):
+            continue
+        receipt = {
+            k: deepcopy(row[k])
+            for k in ("transition", "provider", "reason", "actor", "cutoff", "expected_epoch")
+            if k in row
+        }
+        if row.get("slot", {}).get("sponsor_id") == actor:
+            receipt["slot"] = deepcopy(row["slot"])
+        result["history"].append(receipt)
+    return result
+
+
+def own_consent_present(view: dict) -> bool:
+    """Select own history for discovery; this is never a prerequisite for withdrawal."""
+    return any(view.get(k) for k in ("facts", "history", "tombstones")) or any(
+        slot.get("sponsor_id") for slot in view.get("slots", {}).values()
+    )

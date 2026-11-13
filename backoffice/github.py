@@ -1,11 +1,17 @@
-"""GitHub reads as the signed-in user, so GitHub decides what each user may see; the backoffice never writes."""
+"""GitHub reads with the Reader App's read-only tokens, for repositories the signed-in user can see.
+
+The user's own token (an OAuth App token with no scopes) only decides visibility; the backoffice never writes.
+"""
 
 import hashlib
 import re
 import time
+from urllib.parse import quote
 
 from github import GitHub, NotFound
+from service.actions import WRITER_PERMISSIONS
 from service.github_reads import content, default_branch
+from service.identity import Identity
 from service.target_config import read_remote
 from service.transport import StaticCredential, Transport
 
@@ -14,6 +20,8 @@ from .auth import TokenCredential
 # Repository metadata (visibility and permissions) per user token, briefly.
 REPOSITORY_SECONDS = 60
 REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
+# Upstream writer access for display reads; the service authorizes submitted commands afresh.
+PERMISSIONS: dict[tuple[int, int, str, str], tuple[float, bool]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 # The 100 most recently updated pull requests with line counts and their head commit's check runs.
@@ -35,8 +43,8 @@ query($owner: String!, $name: String!) {
 """
 
 
-class UserGitHub(GitHub):
-    """The engine's GitHub client for one repository, read-only, with the user's token."""
+class ReadOnlyGitHub(GitHub):
+    """The engine's GitHub client for one repository, refusing every write."""
 
     def __init__(self, repository: str, transport: Transport):
         super().__init__(repository)
@@ -48,38 +56,57 @@ class UserGitHub(GitHub):
         raise PermissionError("the backoffice reads task state; it never writes it")
 
 
-class UserAccess:
-    """Per-repository transports for one user token."""
+class Access:
+    """One request's GitHub reads: the Reader App's token per repository, and the user's own for visibility."""
 
-    def __init__(self, token: str, connection=None, credential: TokenCredential | None = None):
-        self.token, self.connection = token, connection
-        self.credential = credential or StaticCredential(token)
-        self.transports: dict[str, Transport] = {}
+    def __init__(self, identity: Identity, user_token: str, connection=None, credential: TokenCredential | None = None):
+        """Keep Reader installation access separate from the refreshable sign-in identity."""
+        self.identity, self.user_token, self.connection = identity, user_token, connection
+        self.credential = credential or StaticCredential(user_token)
+        self.transports: dict[tuple[str, bool], Transport] = {}
 
-    def transport(self, repository: str) -> Transport:
-        if repository not in self.transports:
+    def transport(self, repository: str, as_user: bool = False) -> Transport:
+        if (repository, as_user) not in self.transports:
             options = {"connection": self.connection} if self.connection else {}
-            self.transports[repository] = Transport(repository, self.credential, time.time, **options)
-        return self.transports[repository]
+            credential = self.credential if as_user else self.identity.credential(repository, "read")
+            self.transports[repository, as_user] = Transport(repository, credential, time.time, **options)
+        return self.transports[repository, as_user]
 
-    def engine(self, repository: str) -> UserGitHub:
-        return UserGitHub(repository, self.transport(repository))
+    def engine(self, repository: str) -> ReadOnlyGitHub:
+        return ReadOnlyGitHub(repository, self.transport(repository))
 
     def get(self, repository: str, path: str = ""):
         return self.transport(repository).request("GET", f"repos/{repository}" + ("/" + path if path else ""))
 
     def repository(self, repository: str) -> dict | None:
-        """The repository as this user sees it, or None when it is hidden from them; cached briefly per user."""
-        key = (hashlib.sha256(self.token.encode()).hexdigest(), repository.lower())
+        """The repository as the user's own token sees it, or None when hidden from them; cached briefly per user.
+
+        A token without scopes sees public repositories only, so private targets stay hidden.
+        """
+        key = (hashlib.sha256(self.credential.get().encode()).hexdigest(), repository.lower())
         cached = REPOSITORIES.get(key)
         if cached and cached[0] > time.monotonic():
             return cached[1]
         try:
-            found = self.get(repository)
+            found = self.transport(repository, as_user=True).request("GET", f"repos/{repository}")
         except NotFound:
             found = None
         REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)
         return found
+
+    def writable(self, repository: str, login: str, user_id: int) -> bool:
+        """Share a verified user's writer decision across sessions; the service rechecks every command."""
+        key = (self.identity.app_id, user_id, repository.lower(), login.lower())
+        cached = PERMISSIONS.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        try:
+            found = self.get(repository, f"collaborators/{quote(login, safe='')}/permission")
+            allowed = isinstance(found, dict) and found.get("permission") in WRITER_PERMISSIONS
+        except NotFound:
+            allowed = False
+        PERMISSIONS[key] = (time.monotonic() + REPOSITORY_SECONDS, allowed)
+        return allowed
 
     def pull_requests(self, repository: str) -> list[dict]:
         """Recently updated pull requests: `number`, `title`, `open`, `draft`, `ref`, `sha`, `additions`,

@@ -274,7 +274,7 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
         self.assertNotIn("runner", queued)
         self.exchange.next(self.session, self.runner, 1, 0, now=NOW)
         running = self.exchange.poll(queued["turn"], 0, now=NOW)
-        self.assertNotIn("runner", running)
+        self.assertEqual(running["runner"], {"session": self.session, "run_id": "77/1"})
         lost = self.exchange.poll(queued["turn"], 0, now=NOW + 181)
         self.assertEqual(lost["status"], "lost")
         self.assertEqual(lost["runner"], {"session": self.session, "run_id": "77/1"})
@@ -326,6 +326,7 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
                 "created": NOW,
                 "started": NOW,
                 "finished": NOW,
+                "runner": {"session": self.session, "run_id": "77/1"},
             },
         )
         [turn] = self.exchange.next(self.session, self.runner, 8, 0, now=NOW)["turns"]
@@ -351,6 +352,7 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
                 "created": NOW,
                 "started": NOW,
                 "finished": NOW,
+                "runner": {"session": self.session, "run_id": "77/1"},
             },
         )
         late = str(uuid.uuid4())
@@ -525,6 +527,7 @@ class HttpTests(ExchangeFixture, unittest.TestCase):
                     "created": NOW,
                     "started": NOW,
                     "finished": NOW,
+                    "runner": {"session": self.session, "run_id": "77/1"},
                 },
             ),
         )

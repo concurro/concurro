@@ -220,6 +220,7 @@ class Ingress:
         )
         if (
             not sponsorship
+            and not comment["body"].startswith("/concurro ")
             and user["login"] != issue["user"]["login"]
             and comment.get("author_association") not in WRITER_ASSOCIATIONS
         ):

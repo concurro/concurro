@@ -128,6 +128,25 @@ class ReadTests(unittest.TestCase):
         self.reader = Transport(KEY[0], self.credential, lambda: 1_000_000, self.net.connect)
         self.root = f"repos/{KEY[0]}/"
 
+    def test_numeric_profile_is_read_only_and_narrowly_scoped(self):
+        """Stable IDs permit only one public account read, never user mutations or extra paths."""
+        self.net.route("GET", "user/202", reply(200, {"id": 202, "login": "alice"}))
+        self.assertEqual(self.reader.request("GET", "user/202")["id"], 202)
+        for path in (
+            "user",
+            "user/0",
+            "user/-1",
+            "user/alice",
+            "user/202/repos",
+            "user/202?private=true",
+            "repos/other/project/issues",
+        ):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.reader.check(path, read=True)
+        with self.assertRaises(ValueError):
+            self.reader.check("user/202", read=False)
+        self.assertEqual(len(self.net.seen()), 1)
+
     def test_statuses(self):
         """404 is `NotFound`; 5xx, 408, throttling and dropped connections are `Transient`; others name the status."""
         cases = [

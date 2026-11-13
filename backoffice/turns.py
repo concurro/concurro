@@ -49,6 +49,45 @@ class Diagnostics:
         finally:
             db.close()
 
+    def for_sessions(self, repositories, sessions) -> list:
+        """Every recorded turn of these repositories that ran on one of these runner sessions.
+
+        Attribution must not depend on a recency window: a run GitHub still lists can be older
+        than any fixed number of recent turns. A turn an already-running runner picked up has no
+        dispatch of its own, so the assignment is searched as well as the dispatches.
+        """
+        sessions = [s for s in dict.fromkeys(sessions) if isinstance(s, str) and s]
+        if not sessions:
+            return []
+        # Both columns hold JSON: an array of dispatched sessions, and the assignment object.
+        clause = " OR ".join(["runner_sessions LIKE ? OR runner LIKE ?"] * len(sessions))
+        values = [f'%"{session}"%' for session in sessions for _ in range(2)]
+        return self.query(repositories, f"({clause})", values)
+
+    def recent(self, repositories, limit: int) -> list:
+        """The newest turns across several repositories, each row carrying its per-task turn number."""
+        # Newest by what the feed shows, so a long turn that just finished leads it.
+        return self.query(
+            repositories, "1", [], order="coalesce(finished, started, submitted) DESC, id DESC", limit=limit
+        )
+
+    def query(self, repositories, condition: str, values: list, order: str = "turn", limit: int | None = None) -> list:
+        """Recorded turns of these repositories, each row carrying its per-task turn number."""
+        repositories = list(dict.fromkeys(repositories))
+        if not self.root or not repositories or not (self.root / diagnostics.DATABASE).exists():
+            return []
+        db = diagnostics.connect(self.root, readonly=True)
+        try:
+            return db.execute(
+                "SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
+                "(PARTITION BY repository, issue ORDER BY submitted, id) AS turn FROM turns "
+                f"WHERE repository IN ({','.join('?' * len(repositories))})) "
+                f"WHERE {condition} ORDER BY {order}" + (" LIMIT ?" if limit is not None else ""),
+                (*repositories, *values, *([limit] if limit is not None else [])),
+            ).fetchall()
+        finally:
+            db.close()
+
     def turns(self, repository: str, issue: int, detail: bool = True) -> list[dict]:
         return [self.turn(n, row, detail) for n, row in enumerate(self.rows(repository, issue), start=1)]
 
@@ -79,13 +118,13 @@ class Diagnostics:
             "durationMs": round((finished - started) * 1000)
             if finished and started
             else round((row["elapsed_seconds"] or 0) * 1000),
-            "tokens": {"input": 0, "cached": 0, "output": 0},
+            "tokens": {"input": None, "cached": None, "output": None},
             "run": {
-                "id": 0,
-                "attempt": 1,
-                "workflow": "agent.yml",
+                "id": None,
+                "attempt": None,
+                "workflow": None,
                 "runner": sessions[-1] if sessions else "",
-                "jobs": [],
+                "jobs": None,
                 **({"diagnosis": diagnosis(row)} if row["termination_reason"] else {}),
             },
             "session": {"scope": row["session_scope"], "turn": row["session_turn"]} if row["session_scope"] else None,

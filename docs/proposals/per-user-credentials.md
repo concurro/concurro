@@ -1,5 +1,9 @@
 # Proposal: per-user provider credentials
 
+The current [main integration](per-user-credentials/main-integration.md) uses configured upstream writer authority
+for new consent/control/admission, while preserving identity-bound self-withdrawal and own
+consent reads after writer loss. Historical phase reviews retain their original evidence.
+
 **Status: phases 1–6 implemented; optional credential refresh remains deferred.**
 Current operation and deployment prerequisites are recorded in the
 [readiness guide](per-user-credentials/deployment-readiness.md). Historical phase boundaries

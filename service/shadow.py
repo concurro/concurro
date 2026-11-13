@@ -432,7 +432,7 @@ class Shadow:
                         f"{detail}: provider requires current contributed sponsorship", requirement
                     )
                 if actor not in owners:
-                    owners[actor] = self.writer(key[0], actor, slot.get("login"))
+                    owners[actor] = self.writer(controller.config.get("upstream", key[0]), actor, slot.get("login"))
                     if not owners[actor]:
                         self.revoke_authority(controller, projection, actor)
                         raise CredentialsUnavailable(
@@ -561,7 +561,7 @@ class Shadow:
         def authorized(actor, login):
             """One fresh ID-bound permission read per actor in this source observation."""
             if actor not in permissions:
-                permissions[actor] = self.writer(key[0], actor, login)
+                permissions[actor] = self.writer(config.get("upstream", key[0]) if config else key[0], actor, login)
             return permissions[actor]
 
         for raw in comments:
@@ -695,7 +695,9 @@ class Shadow:
             if command is None or command.kind != CommandKind.SPONSOR or command.argument is not None:
                 continue
             user = effective.get("user") or {}
-            if not user.get("id") or not self.writer(controller.config["repository"], user["id"], user["login"]):
+            if not user.get("id") or not self.writer(
+                controller.config.get("upstream", controller.config["repository"]), user["id"], user["login"]
+            ):
                 continue
             marker = f"<!-- concurro:sponsorship-usage:{raw['id']} -->"
             if any(
@@ -1107,7 +1109,7 @@ class Shadow:
             owns = any(slot.get("sponsor_id") == actor for slot in slots.values())
             if actor in revoked and not owns:
                 continue
-            if self.writer(controller.config["repository"], actor, login):
+            if self.writer(controller.config.get("upstream", controller.config["repository"]), actor, login):
                 continue
             self.revoke_authority(controller, projection, actor)
 

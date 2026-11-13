@@ -17,9 +17,11 @@ UNKNOWN = "the command may or may not have been posted; check the issue before r
 class CommandError(Exception):
     """The service refused or failed; `status` is the HTTP status to return, `reason` is safe to show."""
 
-    def __init__(self, status: int, reason: str):
+    def __init__(self, status: int, reason: str, *, may_have_posted: bool = False):
+        """Retain delivery uncertainty so display caches can refresh after a lost response."""
         super().__init__(reason)
         self.status, self.reason = status, reason
+        self.may_have_posted = may_have_posted
 
 
 class ServiceCommands:
@@ -52,12 +54,16 @@ class ServiceCommands:
         except NOT_DELIVERED:
             raise CommandError(503, "Concurro is unavailable; nothing was posted") from None
         except httpx.HTTPError:
-            raise CommandError(502, UNKNOWN) from None
+            raise CommandError(502, UNKNOWN, may_have_posted=True) from None
         try:
             payload = response.json()
         except ValueError:
             payload = None
         if response.status_code != 201 or not isinstance(payload, dict):
             reason = payload.get("error") if isinstance(payload, dict) else None
-            raise CommandError(response.status_code, reason if isinstance(reason, str) else "the command failed")
+            raise CommandError(
+                response.status_code,
+                reason if isinstance(reason, str) else "the command failed",
+                may_have_posted=response.status_code >= 500 or response.status_code == 201,
+            )
         return payload

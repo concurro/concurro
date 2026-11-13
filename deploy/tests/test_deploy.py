@@ -47,6 +47,9 @@ class DeployTests(unittest.TestCase):
         self.assertLess(
             trace.index("--repo concurro/concurro --workflow ci.yml"), trace.index(f"host.sh service {SHA}")
         )
+        self.assertEqual(sum(line.startswith("ssh ") for line in trace.splitlines()), 1)
+        self.assertNotIn("scp ", trace)
+        self.assertNotIn("mkdir ", trace)
         self.assertNotIn(" push origin", trace)
         self.assertNotIn("deployed", trace)
 
@@ -73,7 +76,10 @@ class DeployTests(unittest.TestCase):
 HOST_MOCK = r"""#!/bin/bash
 name=${0##*/}
 printf '%s %s\n' "$name" "$*" >> "$TRACE"
-if [[ "$name" == sudo ]]; then
+if [[ "$name" == python3 ]]; then
+  [[ "$FAIL" != ci ]] || exit 1
+  echo "$SHA $WEB_SHA"
+elif [[ "$name" == sudo ]]; then
   [[ "$1" == -n && "$2" == docker ]] || { echo 'Would request a password' >&2; exit 90; }
   [[ "$FAIL" != sudo ]] || { echo 'sudo: a password is required' >&2; exit 1; }
   # Compose refuses the release's files until its image tag is recorded.
@@ -97,7 +103,9 @@ WEB = "CONCURRO_WEB_RELEASE=" + "1" * 40 + "\n"
 class HostTests(unittest.TestCase):
     """Run the server helper against passwordless-Docker-only sudo, without a server."""
 
-    def run_host(self, phase, failure="", releases=WEB, service_override=False, private_settings=False):
+    def run_host(
+        self, phase, failure="", releases=WEB, service_override=False, private_settings=False, installed=False
+    ):
         """Return helper output, calls and the release file from an isolated fake host."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -106,7 +114,7 @@ class HostTests(unittest.TestCase):
             (root / "concurro-release.env").write_text(releases)
             commands = root / "bin"
             commands.mkdir()
-            for command in ("sudo", "git", "flock"):
+            for command in ("sudo", "git", "flock", "python3"):
                 path = commands / command
                 path.write_text(HOST_MOCK)
                 path.chmod(0o700)
@@ -116,6 +124,7 @@ class HostTests(unittest.TestCase):
                 PATH=f"{commands}:/usr/bin:/bin",
                 TRACE=str(root / "trace"),
                 SHA=SHA,
+                WEB_SHA="3" * 40,
                 FAIL=failure,
             )
             private = root / "private-service"
@@ -124,7 +133,7 @@ class HostTests(unittest.TestCase):
             override = root / "compose.service.host.yaml"
             if service_override:
                 override.write_text(
-                    "services:\n  backoffice:\n    volumes:\n      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice\n"
+                    "services:\n  backoffice:\n    volumes:\n      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice-auth\n"
                 )
                 private_override.write_text(override.read_text())
             if private_settings:
@@ -139,10 +148,67 @@ class HostTests(unittest.TestCase):
                 .replace("/etc/concurro/service/compose.host.yaml", str(private_override))
                 .replace("/etc/concurro/compose.service.host.yaml", str(override))
             )
-            result = subprocess.run(["bash", str(helper), phase, SHA], env=env, text=True, capture_output=True)
+            command = ["bash", str(helper), phase, SHA]
+            if phase == "all":
+                command.append(env["WEB_SHA"])
+            if installed:
+                setup = subprocess.run(["bash", str(DEPLOY / "install.sh")], env=env, text=True, capture_output=True)
+                self.assertEqual(setup.returncode, 0, setup.stderr)
+                self.assertNotIn("sudo", (root / "trace").read_text())
+                installed_host = root / ".local/lib/concurro-deploy/host.sh"
+                installed_host.write_text(
+                    installed_host.read_text().replace("/etc/concurro/compose.service.host.yaml", str(override))
+                )
+                (root / "trace").write_text("")
+                command = [str(root / ".local/bin/update-concurro.sh")]
+            result = subprocess.run(command, env=env, text=True, capture_output=True)
             private.chmod(0o700)
             trace = root / "trace"
             return result, trace.read_text() if trace.exists() else "", (root / "concurro-release.env").read_text()
+
+    def test_all_updates_both_releases_under_one_lock_and_restart(self):
+        """A combined update includes web in the service rollout instead of restarting it separately."""
+        result, trace, releases = self.run_host("all", releases="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(releases, f"CONCURRO_WEB_RELEASE={'3' * 40}\nCONCURRO_RELEASE={SHA}\n")
+        self.assertEqual(trace.count("flock -n 9"), 1)
+        self.assertEqual(trace.count(" stop service"), 1)
+        self.assertNotIn(" pull web", trace)
+        self.assertIn(" --wait-timeout 180", trace)
+
+    def test_combined_preflight_failure_does_not_change_either_release(self):
+        """Service authorization failure leaves both recorded tags and the running service untouched."""
+        before = WEB + f"CONCURRO_RELEASE={'2' * 40}\n"
+        result, trace, releases = self.run_host("all", "backward", releases=before)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(releases, before)
+        self.assertNotIn("sudo ", trace)
+
+    def test_installed_command_runs_locally_and_stops_before_deployment_on_ci_failure(self):
+        """Installation creates a standalone host command; failed release resolution never invokes Docker."""
+        for failure in ("", "ci"):
+            with self.subTest(failure=failure):
+                result, trace, releases = self.run_host(
+                    "all", failure, releases="", installed=True, service_override=True
+                )
+                self.assertEqual(result.returncode == 0, not failure, result.stderr)
+                self.assertNotIn("ssh ", trace)
+                self.assertNotIn("scp ", trace)
+                self.assertIn("python3 ", trace)
+                if failure:
+                    self.assertNotIn("sudo ", trace)
+                    self.assertNotIn("flock ", trace)
+                    self.assertEqual(releases, "")
+                else:
+                    self.assertIn("Deployment verified:", result.stdout)
+                    self.assertEqual(trace.count(" stop service"), 1)
+                    calls = [
+                        line
+                        for line in trace.splitlines()
+                        if "docker compose" in line and "/concurro/service/compose.yaml" in line
+                    ]
+                    self.assertTrue(calls)
+                    self.assertTrue(all("compose.service.host.yaml" in line for line in calls))
 
     def test_every_phase_only_uses_noninteractive_docker_sudo(self):
         deployed = WEB + f"CONCURRO_RELEASE={SHA}\n"
@@ -158,7 +224,7 @@ class HostTests(unittest.TestCase):
 
     def test_service_override_persists_for_service_and_web_releases(self):
         """Every service-stack Compose action retains an explicitly installed host volume overlay."""
-        for phase in ("service", "web"):
+        for phase in ("service", "web", "all"):
             with self.subTest(phase=phase):
                 result, trace, _ = self.run_host(
                     phase, releases=WEB + f"CONCURRO_RELEASE={SHA}\n", service_override=True
