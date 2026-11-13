@@ -18,6 +18,7 @@ from identities import Identities
 from report_store import Cache
 from vocab import Stage
 
+from . import activity
 from .auth import User
 from .github import Access
 from .settings import Settings
@@ -74,8 +75,10 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 class Tasks:
     """Views for one signed-in user: targets their own token can see, read with the Reader App."""
 
-    def __init__(self, settings: Settings, access: Access, user: User):
+    def __init__(self, settings: Settings, access: Access, user: User, diagnostics=None):
+        """`diagnostics` supplies the recorded turns behind the activity feed and run lists."""
         self.settings, self.access, self.user = settings, access, user
+        self.diagnostics = diagnostics
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
 
@@ -194,12 +197,18 @@ class Tasks:
             targets.append(record)
             tasks += self.listed(target, record)
         tasks.sort(key=lambda t: t["updatedAt"], reverse=True)
-        return {"targets": targets, "tasks": tasks, "activity": []}
+        repositories = [r for target, _ in self.visible_targets() for r in target.issue_repositories]
+        return {"targets": targets, "tasks": tasks, "activity": activity.feed(self.recorded(repositories))}
 
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        return {"target": record, "tasks": self.listed(target, record), "runs": []}
+        runs = activity.runs(self.recorded(target.issue_repositories, activity.TARGET_RUNS * 2))
+        return {"target": record, "tasks": self.listed(target, record), "runs": runs}
+
+    def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
+        """The newest recorded turns of these repositories; none without a diagnostics directory."""
+        return self.diagnostics.recent(repositories, limit) if self.diagnostics else []
 
     # One task
 

@@ -49,6 +49,23 @@ class Diagnostics:
         finally:
             db.close()
 
+    def recent(self, repositories, limit: int) -> list:
+        """The newest turns across several repositories, each row carrying its per-task turn number."""
+        repositories = list(dict.fromkeys(repositories))
+        if not self.root or not repositories or not (self.root / diagnostics.DATABASE).exists():
+            return []
+        db = diagnostics.connect(self.root, readonly=True)
+        try:
+            return db.execute(
+                "SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
+                "(PARTITION BY repository, issue ORDER BY submitted, id) AS turn FROM turns "
+                f"WHERE repository IN ({','.join('?' * len(repositories))})) "
+                "ORDER BY submitted DESC, id DESC LIMIT ?",
+                (*repositories, limit),
+            ).fetchall()
+        finally:
+            db.close()
+
     def turns(self, repository: str, issue: int, detail: bool = True) -> list[dict]:
         return [self.turn(n, row, detail) for n, row in enumerate(self.rows(repository, issue), start=1)]
 

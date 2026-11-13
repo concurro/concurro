@@ -81,7 +81,7 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
-        return Tasks(settings, Access(reader_app, current.token, connection), current.user)
+        return Tasks(settings, Access(reader_app, current.token, connection), current.user, diagnostics)
 
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:

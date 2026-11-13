@@ -423,8 +423,8 @@ requests; no installation-token permission expansion is required.
 
 This release upgrades the local service registry to schema 5 (coverage and observation
 jobs). Back up the stopped registry first; earlier service builds cannot read that schema.
-When combining with delegated backoffice commands, wire the command predicate and durable
-post-observation callback and run their combined regressions before release. See
+Delegated backoffice commands are part of this path: the ingress and reconciler treat a signed
+command comment as writer input, and each posted command gets a durable observation. See
 [service scheduling](../docs/design/service.md) and the
 [request measurements](../docs/reports/webhook-recovery/README.md).
 Upstream may require a maintainer to approve the first fork PR's workflow runs; Concurro
