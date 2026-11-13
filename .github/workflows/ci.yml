@@ -65,7 +65,7 @@ jobs:
             context: .
             dockerfile: gateway/exchange/Dockerfile
           - image: vault
-            context: gateway/vault
+            context: .
             dockerfile: gateway/vault/Dockerfile
     env:
       RELEASE: ${{ github.event.pull_request.head.sha || github.sha }}

@@ -63,7 +63,9 @@ services:
 
   vault:
     image: ghcr.io/concurro/vault:${CONCURRO_RELEASE:?}
-    build: ./vault
+    build:
+      context: ..
+      dockerfile: gateway/vault/Dockerfile
     environment:
       VAULT_LISTEN: 0.0.0.0:8090
       VAULT_STATE_DIR: /data

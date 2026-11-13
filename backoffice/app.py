@@ -15,7 +15,7 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import private
 from checkpoints import CheckpointError
@@ -47,7 +47,11 @@ class CommandBody(BaseModel):
 
 
 class SecretBody(BaseModel):
+    """Write-only credential candidate and selected validation models."""
+
     secret: str
+    models: list[str] | None = Field(default=None, description="Models selected from configured route requirements.")
+    account_id: str | None = Field(default=None, description="Supplied ChatGPT account header for this token.")
 
 
 def create_app(
@@ -336,7 +340,7 @@ def create_app(
 
     @app.put("/api/me/credentials/{route}")
     def put_credential(route: str, body: SecretBody, current: Annotated[Session, Depends(writer)]):
-        return vault.put(current.credential or current.token, route, body.secret)
+        return vault.put(current.credential or current.token, route, body.secret, body.models, body.account_id)
 
     @app.delete("/api/me/credentials/{route}")
     def revoke_credential(route: str, current: Annotated[Session, Depends(writer)]):

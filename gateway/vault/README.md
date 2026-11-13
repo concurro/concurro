@@ -1,17 +1,22 @@
 # Personal credential vault
 
-The owner API stores and validates API keys for prospective sponsorship. Production inference
-still uses org credentials. Subscription record formats exist privately; subscription user PUTs
-remain 404 until configured-route validators land. No CLI login, provider refresh, remote provider
-revoke or Exchange event consumption is enabled here.
+The owner API validates API keys and pasted CLI subscription tokens for personal sponsorship.
+Configured contributed tasks resolve exact admitted versions; org-funded tasks retain org
+credentials. Both subscription PUTs now accept an explicit selected model set; ChatGPT also
+requires its account header. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
+No CLI login, provider refresh or remote provider revoke runs in this service.
 
 ## Records and events
 
-SQLite schema 2 adds lifecycle metadata and a monotonic, paginated nonsecret event log to the
+SQLite schema 3 retains lifecycle metadata and a monotonic, paginated nonsecret event log to the
 existing owner/route/version rows. Migration preserves original ciphertext/AAD and unknown
 legacy model/validation evidence. Each accepted replacement atomically retires the prior version,
 destroys its usable material and emits retirement/validation events. Rejected validation leaves
-that version unchanged. Revoke is idempotent. Destruction is logical; encrypted backups/WAL may
+that version unchanged. Public revoke events are idempotent. A private owner/route revision advances on every revoke,
+including an empty slot, and accepted replacement. Candidate validation captures that revision
+before probing and CAS checks it in the replacement transaction. A delayed candidate cannot
+undo a concurrent replacement/revoke. Schema 2 migrates forward without changing records or
+public events; no version-zero events are introduced. Destruction is logical; encrypted backups/WAL may
 retain old bytes and must remain protected with their keys.
 
 API-key model discovery follows provider cursor pages; incomplete/malformed or cyclic
@@ -41,9 +46,11 @@ before GitHub identity lookup.
 | `POST /resolve` | `{user_id: integer, route, record_id, version: integer}` identifies exactly one usable record; no latest-version selection or fallback. Returns token/account metadata with `Cache-Control: no-store`. Only the gateway principal may call it. |
 | `GET /events?after=N` | At most 100 immutable nonsecret events, `next` and `more`; consumers persist acknowledgments after durable processing. Replaying a cursor is safe. |
 
-This listener does not establish an admitted session's authority. Phase 3 must bind selection
-to the authenticated session and consume retirement events before contributed inference.
-No production resolver caller is configured in phase 2. The metadata principal cannot resolve.
+This listener does not establish an admitted session's authority. The configured Exchange
+binds exact selection to authenticated sessions and consumes retirement events. Its private
+inference hook resolves token/account metadata for each request. ChatGPT's sealed account map
+uses `chatgpt_account_id`; the hook extracts only that header. Missing/malformed account
+material fails closed without operator defaults. The metadata principal cannot resolve.
 
 ## Wrapping-key rotation and recovery
 

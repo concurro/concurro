@@ -9,8 +9,10 @@ Public endpoints never return secrets. Only the separately authenticated gateway
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
+import runpy
 import socket
 import sqlite3
 import stat
@@ -21,12 +23,12 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
-from urllib.parse import urlencode
+from typing import Annotated, BinaryIO
+from urllib.parse import urlencode, urlsplit
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -34,6 +36,17 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+PROTOCOL_PATH = Path(__file__).with_name("provider_protocol.py")
+if not PROTOCOL_PATH.exists():
+    PROTOCOL_PATH = Path(__file__).resolve().parents[1] / "provider_protocol.py"
+PROTOCOL = runpy.run_path(str(PROTOCOL_PATH))
+SUBSCRIPTIONS = {route for route, value in PROTOCOL["ROUTES"].items() if value["kind"] == "subscription"}
+MAX_EVENT = PROTOCOL["MAX_EVENT"]
+VALIDATION_SECONDS = PROTOCOL["VALIDATION_SECONDS"]
+# One fixed-origin streaming candidate response, closed after validation.
+ProbeTransport = Callable[[str, Mapping[str, str], dict], AbstractContextManager[tuple[int, str, BinaryIO]]]
+
 
 GITHUB_USER = "https://api.github.com/user"
 IDENTITY_TTL = 300
@@ -72,6 +85,58 @@ def http_get(url: str, headers: Mapping[str, str]) -> tuple[int, bytes]:
         return error.code, error.read()
     except (urllib.error.URLError, TimeoutError, OSError):
         raise Unavailable("upstream unreachable") from None
+
+
+@contextmanager
+def http_probe(url: str, headers: Mapping[str, str], body: dict) -> Iterator[tuple[int, str, BinaryIO]]:
+    """Bound connected reads; late DNS/TCP/TLS completion cannot send a token or publish material."""
+    target = urlsplit(url)
+    connection_type = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(target.hostname, target.port, timeout=VALIDATION_SECONDS)
+    deadline = time.monotonic() + VALIDATION_SECONDS
+    expired, channel = threading.Event(), []
+
+    def expire():
+        """Interrupt a slow header or partial-line read without waiting for socket inactivity."""
+        expired.set()
+        if channel:
+            try:
+                channel[0].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    timer = threading.Timer(VALIDATION_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        connection.connect()
+        channel.append(connection.sock)
+        if expired.is_set():
+            raise TimeoutError
+        connection.request(
+            "POST",
+            target.path + (("?" + target.query) if target.query else ""),
+            json.dumps(body).encode(),
+            {"User-Agent": "concurro-vault", **headers},
+        )
+        with connection.getresponse() as reply:
+            yield reply.status, reply.getheader("Content-Type", ""), reply
+        if expired.is_set() or time.monotonic() >= deadline:
+            raise TimeoutError
+    except (TimeoutError, OSError, http.client.HTTPException):
+        raise Unavailable("provider validation unavailable") from None
+    finally:
+        timer.cancel()
+        connection.close()
+
+
+@dataclass(frozen=True)
+class Validated:
+    """Material proven by validation; account identity and expiry remain unverified."""
+
+    models: list[str] | None  # Exact models proved, or legacy unknown API coverage.
+    account: dict | None = None  # Account header material sealed with this token/version.
+    account_label: str | None = None  # Opaque owner-visible hint, never authenticated identity.
 
 
 def digest(value: str) -> str:
@@ -207,8 +272,66 @@ ROUTES = {
 class Validator:
     """Checks a secret against its provider: 2xx is valid, 401/403 invalid, anything else unavailable."""
 
-    def __init__(self, transport: Transport, routes: Mapping[str, Route] = ROUTES):
-        self.transport, self.routes = transport, routes
+    def __init__(self, transport: Transport, routes: Mapping[str, Route] = ROUTES, probe: ProbeTransport = http_probe):
+        self.transport, self.routes, self.probe = transport, routes, probe
+
+    def validate(
+        self, route: str, secret: str, models: list[str] | None = None, account_id: str | None = None
+    ) -> Validated:
+        """Validate the entire candidate before publishing any replacement or model coverage."""
+        if route not in SUBSCRIPTIONS:
+            valid, available = self.models(route, secret)
+            if not valid:
+                raise VaultError(422, "provider rejected the secret")
+            return Validated(available)
+        if not models or any(not isinstance(model, str) or not model.strip() or secret in model for model in models):
+            raise VaultError(422, "select models to validate")
+        selected = list(dict.fromkeys(model.strip() for model in models))
+        account = None
+        if route == "chatgpt-subscription":
+            if not account_id or not all(33 <= ord(c) <= 126 for c in account_id):
+                raise VaultError(422, "ChatGPT account ID is required and must be a valid header value")
+            account = {"chatgpt_account_id": account_id}
+        elif account_id is not None:
+            raise VaultError(422, "this route does not use an account ID")
+        for model in selected:
+            url, headers, body = PROTOCOL["probe_request"](route, model, secret, account_id)
+            deadline = time.monotonic() + VALIDATION_SECONDS
+            try:
+                with self.probe(url, headers, body) as (status, media, response):
+                    if status in (400, 401, 403, 404, 422):
+                        raise VaultError(422, "provider rejected the candidate or selected model")
+                    if not 200 <= status < 300:
+                        raise Unavailable("provider validation unavailable")
+                    observation = PROTOCOL["Observation"](route, status)
+                    if "text/event-stream" not in media.lower():
+                        raw = response.read(MAX_EVENT + 1)
+                        if len(raw) > MAX_EVENT:
+                            raise Unavailable("provider validation did not complete")
+                        observation.accept(json.loads(raw))
+                    else:
+                        frame = bytearray()
+                        while chunk := response.readline(MAX_EVENT + 1):
+                            if time.monotonic() >= deadline:
+                                raise Unavailable("provider validation did not complete")
+                            frame.extend(chunk)
+                            if len(frame) > MAX_EVENT:
+                                raise Unavailable("provider validation did not complete")
+                            if chunk not in (b"\n", b"\r\n"):
+                                continue
+                            value, error = PROTOCOL["event_value"](frame)
+                            if observation.accept(value) or error:
+                                raise Unavailable("provider validation did not complete")
+                            frame.clear()
+                        if frame:
+                            observation.ambiguous = True
+                    result = observation.finish()
+                    if time.monotonic() >= deadline or not result["completed"] or result["category"] is not None:
+                        raise Unavailable("provider validation did not complete")
+            except (ValueError, UnicodeError, TimeoutError, OSError, http.client.HTTPException):
+                raise Unavailable("provider validation did not complete") from None
+        label = "Supplied ChatGPT account " + digest(account_id)[:8] if account_id else None
+        return Validated(selected, account, label)
 
     def valid(self, route: str, secret: str) -> bool:
         return self.models(route, secret)[0]
@@ -359,7 +482,7 @@ class Store:
             )
             self.db.execute("CREATE TABLE IF NOT EXISTS vault_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
             schema = self.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()
-            if schema and schema[0] != "2":
+            if schema and schema[0] not in ("2", "3"):
                 raise ConfigError("unsupported vault schema")
             legacy = (
                 self.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version").fetchall()
@@ -384,7 +507,15 @@ class Store:
                     "legacy_snapshot",
                     "migration:" + record_id(row["user_id"], row["route"], row["version"]),
                 )
-            self.db.execute("INSERT OR IGNORE INTO vault_meta VALUES('schema','2')")
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS credential_fences(user_id INTEGER NOT NULL,route TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(user_id,route))"
+            )
+            self.db.execute(
+                "INSERT OR IGNORE INTO credential_fences SELECT user_id,route,MAX(sequence) FROM credential_events GROUP BY user_id,route"
+            )
+            self.db.execute(
+                "INSERT INTO vault_meta VALUES('schema','3') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
 
     def now(self) -> str:
         """A UTC instant from the injected clock."""
@@ -432,6 +563,21 @@ class Store:
             ).fetchall()
             return [self.entry(user_id, row["route"], row["version"]) for row in rows]
 
+    def revision(self, user_id: int, route: str) -> int:
+        """Read the owner/route mutation fence before any candidate validation I/O."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT revision FROM credential_fences WHERE user_id=? AND route=?", (user_id, route)
+            ).fetchone()
+            return row[0] if row else 0
+
+    def advance_revision(self, user_id: int, route: str) -> None:
+        """Fence older candidates inside the current replacement/revoke transaction."""
+        self.db.execute(
+            "INSERT INTO credential_fences VALUES(?,?,1) ON CONFLICT(user_id,route) DO UPDATE SET revision=revision+1",
+            (user_id, route),
+        )
+
     def put(
         self,
         user: User,
@@ -444,6 +590,7 @@ class Store:
         verified_account: str | None = None,
         expires_at: str | None = None,
         expiry_known=False,
+        expected_revision: int | None = None,
     ) -> dict[str, object]:
         """Store already-validated material; replacement retires only this owner's previous route version."""
         if route not in ROUTE_KINDS:
@@ -455,6 +602,9 @@ class Store:
             raise VaultError(422, "credential is already expired")
         now = self.now()
         with self.lock, self.transaction():
+            if expected_revision is not None and self.revision(user.id, route) != expected_revision:
+                raise VaultError(409, "credential changed during validation; refresh status before retrying")
+            self.advance_revision(user.id, route)
             version = self.db.execute(
                 "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
             ).fetchone()[0]
@@ -501,6 +651,7 @@ class Store:
     def revoke(self, user_id: int, route: str) -> dict[str, object] | None:
         """Atomically revoke the latest version and destroy material; replay creates no second event."""
         with self.lock, self.transaction():
+            self.advance_revision(user_id, route)
             row = self.db.execute(
                 "SELECT version,status,ciphertext FROM credentials WHERE user_id=? AND route=?"
                 " ORDER BY version DESC LIMIT 1",
@@ -730,7 +881,13 @@ class Store:
 
 
 class SecretBody(BaseModel):
+    """An owner-supplied candidate; no owner, URL, refresh or trusted-expiry fields."""
+
     secret: str
+    models: list[str] | None = Field(
+        default=None, description="Selected model set, each probed once before replacement."
+    )
+    account_id: str | None = Field(default=None, description="Candidate ChatGPT account header, not verified identity.")
 
 
 def create_app(
@@ -757,7 +914,7 @@ def create_app(
         return identity.resolve(token.strip())
 
     def known(route: str) -> str:
-        if route not in validator.routes:
+        if route not in validator.routes and route not in SUBSCRIPTIONS:
             raise VaultError(404, "unknown route")
         return route
 
@@ -788,10 +945,17 @@ def create_app(
         # Keys go into request headers: only printable ASCII without whitespace is a plausible key.
         if not secret or not all(33 <= ord(c) <= 126 for c in secret):
             raise VaultError(422, "secret is empty or has unsupported characters")
-        valid, models = validator.models(route, secret)
-        if not valid:
-            raise VaultError(422, "provider rejected the secret")
-        return store.put(caller, route, secret, models)
+        revision = store.revision(caller.id, route)
+        validated = validator.validate(route, secret, body.models, body.account_id)
+        return store.put(
+            caller,
+            route,
+            secret,
+            validated.models,
+            account=validated.account,
+            account_label=validated.account_label,
+            expected_revision=revision,
+        )
 
     @app.delete("/credentials/{route}")
     def revoke_credential(

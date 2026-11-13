@@ -40,8 +40,8 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
         for secret in (OPENAI, OPENAI + "2", ALICE):
             self.assertNotIn(secret, json.dumps(final))
 
-    def test_secret_and_account_are_one_exact_subscription_version_without_registration(self):
-        """Future subscription schemas do not enable public PUT or split token/account ownership."""
+    def test_secret_and_account_are_one_exact_subscription_version_without_candidate_metadata(self):
+        """A candidate missing validation metadata cannot split or replace an existing token/account version."""
         token, account = "synthetic-cli-access", {"chatgpt_account_id": "synthetic-account-a"}
         entry = self.store.put(
             vault.User(101, "alice"), "chatgpt-subscription", token, ["gpt-fixture"], account=account
@@ -50,7 +50,7 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
         self.assertEqual((value["secret"], value["account"]), (token, account))
         with self.assertRaises(vault.VaultError):
             self.store.resolve(202, "chatgpt-subscription", entry["record_id"], entry["version"])
-        self.assertEqual(self.put("chatgpt-subscription", token).status_code, 404)
+        self.assertEqual(self.put("chatgpt-subscription", token).status_code, 422)
         for text in (
             json.dumps(self.store.listing(101)),
             json.dumps(self.store.metadata(101)),

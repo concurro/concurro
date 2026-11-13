@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import runpy
 import socket
 import sqlite3
 import threading
@@ -14,13 +15,14 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-# These are explicit protocol endpoints, never caller-selected URLs or fallback credentials.
-UPSTREAMS = {
-    "openai-api-key": "https://api.openai.com/v1",
-    "chatgpt-subscription": "https://chatgpt.com/backend-api/codex",
-    "anthropic-api-key": "https://api.anthropic.com/v1",
-    "claude-subscription": "https://api.anthropic.com/v1",
-}
+PROTOCOL_PATH = Path(__file__).with_name("provider_protocol.py")
+if not PROTOCOL_PATH.exists():
+    PROTOCOL_PATH = Path(__file__).resolve().parents[1] / "provider_protocol.py"
+PROTOCOL = runpy.run_path(str(PROTOCOL_PATH))
+UPSTREAMS, MAX_EVENT = PROTOCOL["UPSTREAMS"], PROTOCOL["MAX_EVENT"]
+Observation, category, tokens = PROTOCOL["Observation"], PROTOCOL["category"], PROTOCOL["tokens"]
+event_value = PROTOCOL["event_value"]
+
 PRIVATE = ("x-concurro-", "x-phase0-", "x-internal-")
 HOP = {
     "host",
@@ -34,101 +36,6 @@ HOP = {
     "upgrade",
 }
 ERRORS = frozenset({"auth", "quota_exhausted", "rate_limited", "budget_denied"})
-# A bounded transport event/result, independent of any task spending policy.
-MAX_EVENT = 8 * 1024 * 1024
-
-
-def category(value, route):
-    """Classify documented API structured codes; subscription taxonomy remains unverified."""
-    if not isinstance(value, dict):
-        return None
-    error = value.get("error")
-    if value.get("type") == "response.failed":
-        response = value.get("response")
-        error = response.get("error") if isinstance(response, dict) else None
-    if not isinstance(error, dict):
-        return None
-    code, kind = error.get("code"), error.get("type")
-    code = code if isinstance(code, str) else None
-    kind = kind if isinstance(kind, str) else None
-    if route == "openai-api-key":
-        return {
-            "invalid_api_key": "auth",
-            "insufficient_quota": "quota_exhausted",
-            "credit_balance_exhausted": "quota_exhausted",
-            "organization_spend_limit_exceeded": "quota_exhausted",
-            "project_spend_limit_exceeded": "quota_exhausted",
-            "organization_usage_limit_exceeded": "quota_exhausted",
-            "rate_limit_exceeded": "rate_limited",
-            "slow_down": "rate_limited",
-        }.get(code)
-    if route == "anthropic-api-key" and kind == "authentication_error":
-        return "auth"
-    # Anthropic rate_limit_error also covers spending limits; HTTP429 alone is ambiguous.
-    return None
-
-
-def tokens(value):
-    """Keep nonnegative integral token counts without converting missing usage to zero."""
-    if not isinstance(value, dict):
-        return None
-    fields = ("input_tokens", "output_tokens")
-    return {k: value[k] for k in fields} if all(type(value.get(k)) is int and value[k] >= 0 for k in fields) else None
-
-
-class Observation:
-    """Parse bounded structured results without retaining arbitrary provider error text."""
-
-    def __init__(self, route, status, delay=None):
-        """Bind a parser to its trusted route and numeric provider retry hint."""
-        self.route = route
-        self.result = {"status": status, "category": None, "usage": None, "completed": False, "retry_after": None}
-        self.delay = int(delay) if delay and delay.isascii() and delay.isdecimal() and len(delay) <= 9 else None
-        self.input_tokens = None
-        self.ambiguous = False
-
-    def accept(self, value):
-        """Inspect one JSON value and identify events whose detail must be suppressed."""
-        if not isinstance(value, dict):
-            self.ambiguous = True
-            return False
-        kind = value.get("type")
-        if kind in ("error", "response.failed") or value.get("error") is not None:
-            self.result["category"] = category(value, self.route) or "unknown"
-            if self.result["category"] == "rate_limited":
-                self.result["retry_after"] = self.delay
-            return True
-        response = value.get("response", value) if kind == "response.completed" else value
-        if not isinstance(response, dict):
-            self.ambiguous = True
-            return False
-        if kind == "response.completed" or value.get("object") == "response" and value.get("status") == "completed":
-            self.result.update(completed=True, usage=tokens(response.get("usage")))
-        if kind == "message" and value.get("stop_reason"):
-            self.result.update(completed=True, usage=tokens(value.get("usage")))
-        if kind == "message_start":
-            message = value.get("message")
-            usage = message.get("usage") if isinstance(message, dict) else None
-            self.input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
-        if kind == "message_delta":
-            self.result["usage"] = tokens(
-                {
-                    "input_tokens": self.input_tokens,
-                    "output_tokens": value["usage"].get("output_tokens")
-                    if isinstance(value.get("usage"), dict)
-                    else None,
-                }
-            )
-        if kind == "message_stop":
-            self.result["completed"] = True
-        return False
-
-    def finish(self):
-        """Leave truncated, unsupported and incomplete usage unknown."""
-        if self.ambiguous or not self.result["completed"]:
-            self.result["category"] = self.result["category"] or "unknown"
-            self.result["usage"] = None
-        return self.result
 
 
 class Inference:
@@ -265,6 +172,8 @@ class Inference:
         ):
             raise ex.refusal_type(503, "resolver identity incomplete")
         account = material.get("account") or ""
+        if isinstance(account, dict) and bound["route"] == "chatgpt-subscription":
+            account = account.get("chatgpt_account_id")
         if (
             not isinstance(account, str)
             or any(c in account for c in "\r\n")
@@ -565,18 +474,11 @@ class Handler(BaseHTTPRequestHandler):
                     break  # Opaque bytes can contain errors; never leak uninspected detail.
                 if chunk not in (b"\n", b"\r\n"):
                     continue
-                payload = b"\n".join(line[5:].strip() for line in event.splitlines() if line.startswith(b"data:"))
-                if payload == b"[DONE]":
-                    value = {}
-                else:
-                    try:
-                        value = json.loads(payload) if payload else {}
-                    except (ValueError, UnicodeError):
-                        observer.ambiguous = True
-                        break
-                error_event = any(
-                    line.startswith(b"event:") and line[6:].strip() == b"error" for line in event.splitlines()
-                )
+                try:
+                    value, error_event = event_value(event)
+                except (ValueError, UnicodeError):
+                    observer.ambiguous = True
+                    break
                 if observer.accept(value) or error_event:
                     observer.result["category"] = observer.result["category"] or "unknown"
                     error = {

@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /data && chown 65532:65532 /data
 COPY gateway/exchange/exchange.py gateway/exchange/inference.py /app/
+COPY gateway/provider_protocol.py /app/provider_protocol.py
 COPY engine/credential_routes.py /app/credential_routes.py
 USER 65532:65532
 ENTRYPOINT ["python3", "-I", "/app/exchange.py"]

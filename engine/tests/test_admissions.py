@@ -105,6 +105,7 @@ class AdmissionTests(unittest.TestCase):
             target = Path(directory)
             shutil.copy2(root / "gateway/exchange/exchange.py", target / "exchange.py")
             shutil.copy2(root / "gateway/exchange/inference.py", target / "inference.py")
+            shutil.copy2(root / "gateway/provider_protocol.py", target / "provider_protocol.py")
             shutil.copy2(root / "engine/credential_routes.py", target / "credential_routes.py")
             result = subprocess.run(
                 [sys.executable, "-I", str(target / "exchange.py"), "--help"], capture_output=True, timeout=10

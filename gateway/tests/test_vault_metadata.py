@@ -83,10 +83,10 @@ class MetadataTests(VaultFixture, unittest.TestCase):
         self.assertEqual(result["credentials"][0]["status"], "unknown")
 
     def test_malformed_metadata_and_subscription_writes_never_echo_inputs(self):
-        """Keep existing subscription rejection and sanitized validation/error responses."""
+        """Reject missing candidate metadata and preserve sanitized validation/error responses."""
         for path in ("/metadata/not-a-user", "/metadata/101?at=synthetic-sensitive-input"):
             response = self.request("GET", path, token=SERVICE)
             self.assertEqual(response.status_code, 422)
             self.assertNotIn("synthetic-sensitive-input", response.text)
         for route in ("chatgpt-subscription", "claude-subscription"):
-            self.assertEqual(self.put(route, OPENAI).status_code, 404)
+            self.assertEqual(self.put(route, OPENAI).status_code, 422)

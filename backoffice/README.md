@@ -63,15 +63,19 @@ python3 -m pip install -r service/requirements.txt -r backoffice/requirements.tx
 python3 -m backoffice --settings /path/to/settings.json --listen 127.0.0.1:8788
 ```
 
-## Shadow sponsorship API
+## Sponsorship and credentials API
 
 Issue-addressed sponsorship reads and commands work before a checkpoint exists:
 `GET /api/repos/{owner}/{repo}/issues/{issue}/sponsorships` and
 `POST /api/repos/{owner}/{repo}/issues/{issue}/commands`. Commands use the existing CSRF
 header and a `command` (`sponsor` or `withdraw`) with an `argument` (`openai` or `anthropic`).
-Explicit sponsorship authorizes future contributed calls; current calls remain org-funded.
+Explicit sponsorship authorizes contributed calls when the target enables that funding mode.
+Org-funded targets keep org credentials and prospective sponsor attribution.
 Target/overview responses include known unenrolled intents in `issues`, without task
 stages/budgets. The companion frontend supplies provider controls and pre-task views.
 See [phase 2](../docs/proposals/per-user-credentials/phase-2.md) for lifecycle behavior, optional
 encrypted logout retry settings, migration and roll-forward recovery. GitHub refresh pairs remain server-only;
-unknown expiry is not invented. Subscription registration remains unavailable.
+unknown expiry is not invented. Both subscription routes now accept local CLI token paste
+with an explicit model set and ChatGPT account ID through the existing authenticated PUT.
+The portal derives default models from target requirements and existing validated coverage;
+all selected models validate before replacement. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).

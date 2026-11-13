@@ -259,7 +259,7 @@ before this release is refused with "runner engine differs from the session's".
 [`vault/`](vault/vault.py) stores per-user provider credentials
 ([proposal §5](../docs/proposals/per-user-credentials.md#5-vault)). It has no Caddy route
 and publishes no port: other `edge` services, such as the backoffice API, reach it as
-`http://concurro-vault:8090`. Every request except `GET /health` carries
+`http://concurro-vault:8090`. Owner credential requests carry
 `Authorization: Bearer <GitHub user token>`; the vault resolves the user with
 `GET https://api.github.com/user` (cached for five minutes by token SHA-256) and answers
 401 for a rejected token.
@@ -271,12 +271,18 @@ and publishes no port: other `edge` services, such as the backoffice API, reach 
 | `DELETE /credentials/{route}` | Marks it `revoked` and destroys its ciphertext; returns its entry |
 | `GET /health` | `{"status": "ok"}` |
 
-Routes are `anthropic-api-key` and `openai-api-key`. `status` is `valid`, `invalid` or
+Routes are `anthropic-api-key`, `openai-api-key`, `chatgpt-subscription` and
+`claude-subscription`. Subscription PUTs also carry a `models` array; ChatGPT requires
+`account_id`. Each distinct selected model is probed with the supplied token before one
+atomic replacement. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
+`status` is `valid`, `invalid` or
 `revoked`; `fingerprint` is the secret's last 4 characters and the first 8 hex characters
 of its SHA-256. Secrets are never returned or logged. Each version is sealed with its own
 AES-256-GCM data key, which the master key wraps; only the latest version keeps
-ciphertext. Records live in SQLite (WAL) at `/data/vault.db`. Injecting stored
-credentials into agentgateway is not implemented yet.
+ciphertext. Records live in SQLite (WAL) at `/data/vault.db`. Configured contributed
+inference resolves exact admitted versions through the separate private listener; org-funded
+work keeps org credentials. The service metadata principal never receives secrets. See the
+[vault lifecycle/private-listener guide](vault/README.md).
 
 The vault refuses to start unless its master key file holds 64 hex characters and is a
 regular file owned by uid 65532 with no group or other access. Losing the key loses every

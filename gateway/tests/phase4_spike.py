@@ -897,6 +897,7 @@ def main():
     source_paths = [
         "gateway/exchange/exchange.py",
         "gateway/exchange/inference.py",
+        "gateway/provider_protocol.py",
         "gateway/agentgateway.yaml",
         "gateway/tests/phase4_spike.py",
         "gateway/tests/spike_fixtures.py",

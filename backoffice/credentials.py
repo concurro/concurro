@@ -5,18 +5,20 @@ The vault resolves the user itself; the backoffice never stores or reads back a 
 
 import httpx
 
+from credential_routes import VALIDATION_SECONDS
+
 from .auth import BearerAuth, TokenCredential
 
-# The UI's route identifiers, the vault's, and their labels. Subscriptions aren't stored yet.
+# Stable UI identifiers map to exact fixed vault/provider routes.
 ROUTES = (
     ("anthropic_api", "anthropic-api-key", "Anthropic API", "anthropic", "API key"),
-    ("claude_subscription", None, "Claude subscription", "anthropic", "Subscription"),
+    ("claude_subscription", "claude-subscription", "Claude subscription", "anthropic", "Subscription"),
     ("openai_api", "openai-api-key", "OpenAI API", "openai", "API key"),
-    ("chatgpt_subscription", None, "ChatGPT subscription", "openai", "Subscription"),
+    ("chatgpt_subscription", "chatgpt-subscription", "ChatGPT subscription", "openai", "Subscription"),
 )
 VAULT_ROUTES = {ui: vault for ui, vault, *_ in ROUTES if vault}
 STATUS = {"valid": "valid", "invalid": "invalid", "revoked": "revoked"}
-UNUSED = "Stored and validated; runs don't use personal credentials yet."
+USAGE = "Configured contributed tasks use validated models from this personal version. Organization-funded tasks keep their organization credentials."
 
 
 class VaultError(Exception):
@@ -32,11 +34,25 @@ class Vault:
         self.url = url.rstrip("/") if url else None
         self.client = client or httpx.Client(timeout=30)
 
-    def call(self, method: str, path: str, token: str | TokenCredential, body: dict | None = None):
+    def call(
+        self,
+        method: str,
+        path: str,
+        token: str | TokenCredential,
+        body: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ):
         if not self.url:
             raise VaultError(503, "the credentials vault is not configured")
         try:
-            response = self.client.request(method, self.url + path, auth=BearerAuth(token), json=body)
+            response = self.client.request(
+                method,
+                self.url + path,
+                auth=BearerAuth(token),
+                json=body,
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
         except httpx.HTTPError:
             raise VaultError(503, "the credentials vault is unavailable") from None
         try:
@@ -53,9 +69,21 @@ class Vault:
         stored = {entry["route"]: entry for entry in self.call("GET", "/credentials", token) or []}
         return [route(ui, stored.get(vault) if vault else None) for ui, vault, *_ in ROUTES]
 
-    def put(self, token: str | TokenCredential, ui_route: str, secret: str) -> dict:
+    def put(
+        self,
+        token: str | TokenCredential,
+        ui_route: str,
+        secret: str,
+        models: list[str] | None = None,
+        account_id: str | None = None,
+    ) -> dict:
+        """Forward only this owner's candidate and route metadata; never retain the secret."""
+        body = {"secret": secret}
+        if ui_route in ("chatgpt_subscription", "claude_subscription"):
+            body.update(models=models, account_id=account_id)
+        timeout = max(30, VALIDATION_SECONDS * len(models or []) + 15)
         return route(
-            ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, {"secret": secret})
+            ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, body, timeout=timeout)
         )
 
     def revoke(self, token: str | TokenCredential, ui_route: str) -> dict:
@@ -81,7 +109,7 @@ def route(ui_route: str, entry: dict | None) -> dict:
     }
     if entry is None:
         result["status"] = "missing"
-        result["note"] = UNUSED if vault else "Subscription credentials aren't supported yet."
+        result["note"] = USAGE if vault else "Subscription credentials aren't supported yet."
         return result
     result["status"] = (
         "expired" if entry.get("status_reason") == "expired" else STATUS.get(entry.get("status"), "invalid")
@@ -94,5 +122,7 @@ def route(ui_route: str, entry: dict | None) -> dict:
     result["models"] = entry.get("models")
     result["version"] = entry.get("version")
     result["statusReason"] = entry.get("status_reason")
-    result["note"] = UNUSED
+    result["accountLabel"] = entry.get("account_label")
+    result["accountVerified"] = bool(entry.get("verified_account"))
+    result["note"] = USAGE
     return result

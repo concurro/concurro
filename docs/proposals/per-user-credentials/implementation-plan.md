@@ -1,6 +1,6 @@
 # Per-user credentials: implementation plan
 
-**Status: phases 1–4 implemented; subscription registration and automatic recovery remain later phases.**
+**Status: phases 1–5 implemented; optional refresh and automatic recovery remain later phases.**
 See [phase 1](phase-1.md), [phase 2](phase-2.md) and [phase 3](phase-3.md) for shipped runtime/API behavior and migration boundaries.
 Phase 3 froze admissions on actual org paths and exercised contributed enforcement with isolated adapters. Phase 4 now supplies configured production injection and observation; see its runtime record below.
 The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
@@ -11,7 +11,7 @@ remain authoritative unless a decision below explicitly calls out a change. The
 [review record](review.md) includes the original Claude review and the CLI-token
 follow-up, plus the review and repairs for provider-specific sponsorship and explicit-first initiation.
 
-The current [phase-4 runtime](phase-4.md) supplies native contributed injection, trusted request observations and credential pauses. Earlier phase records describe their shipped historical boundaries.
+The current [phase-4 runtime](phase-4.md) supplies native contributed injection, trusted request observations and credential pauses. [Phase 5](phase-5.md) adds both CLI-token forms, atomic selected-model validation and manual replacement. Earlier phase records describe historical boundaries.
 
 ## What this plan delivers
 
@@ -85,9 +85,9 @@ The chosen baseline is the user's existing CLI-login/token procedure, extended f
 operator-owned tokens to one versioned credential per person and route. Local help was
 checked without logging in, reading credential files or calling providers:
 
-| CLI | Observed local help (2026-11-12) | Portal instructions |
+| CLI | Observed local help | Portal instructions |
 | ---- | ---- | ---- |
-| Codex 0.167.1 | `codex login --device-auth` is available. Help exposes no token-export command. | Complete device login locally, obtain the issued access token using the existing operator procedure, then paste it. Do not claim that the login command itself prints a token or invent an export flag. |
+| Codex 0.163.0 (runner pin rechecked 2026-11-13) | `codex login --device-auth` is available. Help exposes no token-export command. | Complete device login locally, obtain the issued access token using the existing operator procedure, then paste it. Do not claim that the login command itself prints a token or invent an export flag. |
 | Claude Code 2.1.301 | `claude setup-token` creates a long-lived subscription authentication token; `claude auth login --claudeai` signs in through the Claude account flow. No device-auth flag is shown. | Use `claude setup-token` and paste its resulting token, or the existing locally obtained Claude subscription token. Call this CLI/browser login, not a literal device-code flow. |
 
 No login runs in a Concurro job. The portal does not ask for a provider password, initiate
@@ -102,7 +102,7 @@ Extend `backoffice/credentials.py:ROUTES` so `chatgpt_subscription` maps to
 `PUT /api/me/credentials/{route}` → BFF → vault `PUT /credentials/{route}` path and GitHub
 user-token forwarding. `vault.Identity.resolve` independently establishes the stable owner;
 a submitted user ID never chooses whose slot is written. Extend `SecretBody` and
-`backoffice.credentials.Vault.put` (which forwards only `{"secret": ...}` today) for route metadata
+`backoffice.credentials.Vault.put` for route metadata
 such as ChatGPT account ID; update `route()`'s "Subscription credentials aren't supported yet."
 note, `UNUSED`, and expiry/account fields in the same PR. Subscription writes remain write-only.
 
@@ -123,7 +123,10 @@ header; a 2xx that ignores it must not be described as verified account identity
 substitute the operator's account ID when metadata is missing or rejected.
 
 Validate both providers with the same configured-route adapter used for sponsored inference,
-including the selected model, request shape, headers and stream completion. The probe carries only
+including the selected model set, fixed request shape, headers and stream completion. Validate
+each distinct selected model once and publish the entire set atomically; a failed member
+preserves the previous complete version. Portal defaults reuse target route requirements
+and previous validated models, without a separate operator model catalog. The probe carries only
 the candidate token and account metadata and never traverses a gateway model entry that injects
 `$CHATGPT_ACCESS_TOKEN`, `$CHATGPT_ACCOUNT_ID`, `$CLAUDE_OAUTH_TOKEN` or `$OPENAI_API_KEY`; a 2xx
 obtained with operator credentials is not validation.
@@ -752,13 +755,15 @@ no live login, provider spend, permission change, task retry or deployment.
 ## Remaining technical evidence
 
 - **Gateway integration:** the isolated spike proves native header-based resolver injection
-  and a narrow response observer. Production authentication, durable observation transport
-  and deployment integration remain; see [phase-0.md](phase-0.md).
+  and a narrow response observer. Production request identity, private authentication and
+  durable observations are implemented in phase 4; deployment remains separately authorized.
 - **CLI token instructions:** document the existing local Codex token-retrieval procedure
-  without inventing an export flag; help establishes device login, not token export.
+  without inventing an export flag; pinned help establishes device login, not token export.
+  The portal uses the approved existing local retrieval procedure; Concurro reads no CLI cache.
 - **Route/account validation:** prove both CLI-token model probes against current backends
   and how ChatGPT authenticates the supplied account header. Record known token expiry
-  when trustworthy and display unknown otherwise. No provider calls were made here.
+  when trustworthy and display unknown otherwise. Phase 5 proves isolated fake-provider
+  journeys only; real backend/account-header/transfer acceptance remains pending by user scope.
 - **Optional refresh/revoke:** discover only the supplied CLI grant's usable material and
   demonstrated behavior; token-only manual replacement already completes the baseline.
 - **Transcript portability:** preserve scope on takeover by default. If the account-transfer
