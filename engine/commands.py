@@ -9,6 +9,7 @@ from enum import Enum, StrEnum, auto
 from typing import TYPE_CHECKING
 
 import actions
+import admissions
 import bundle_resume
 import conversation
 import dashboard_runs
@@ -89,6 +90,11 @@ def output_repair_pending(state: TaskState) -> object:
     )
 
 
+def acknowledge_provider_pause(state: TaskState) -> None:
+    """A successful writer recovery acknowledges the pause, retaining pending session cleanup."""
+    state.pop("provider_pause_pending", None)
+
+
 class CommandHandler:
     """Apply commands through controller operations without owning persistence or state."""
 
@@ -123,7 +129,8 @@ class CommandHandler:
             conversation.queue(
                 self.controller.state,
                 "Provider sponsorship",
-                "Use `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor future contributed calls; `/concurro withdraw <provider>` withdraws only your own consent. Current calls remain org-funded.",
+                "Use `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor future contributed calls; `/concurro withdraw <provider>` withdraws only your own consent. "
+                + admissions.funding_notice(self.controller.config),
             )
             self.controller.save()
         return LoopAction.CONTINUE
@@ -136,7 +143,13 @@ class CommandHandler:
             return LoopAction.CONTINUE
         if controller.config["autonomous"]:
             return LoopAction.CONTINUE
-        if controller.state and controller.state["stage"] not in ("clarify", "blocked", "stopped"):
+        if controller.state and controller.state["stage"] not in (
+            "clarify",
+            "blocked",
+            "stopped",
+            "awaiting_credentials",
+            "budget_exhausted",
+        ):
             return LoopAction.CONTINUE
         if controller.continue_planner_clarification(comments, comment["id"]):
             return LoopAction.CONTINUE
@@ -171,6 +184,7 @@ class CommandHandler:
             if not controller.revise_plan("intake", "Writer requested reassessment.", save_exhausted=False):
                 controller.refuse_revision_command(comment, exhausted=True)
                 return LoopAction.CONTINUE
+            acknowledge_provider_pause(controller.state)
             base = controller.pulls.repo("git/ref/heads/" + controller.config["base"])["object"]["sha"]
             controller.state.update(
                 base=base,
@@ -257,6 +271,7 @@ class CommandHandler:
                 return LoopAction.CONTINUE
         reassess = controller.state["stage"] in JUDGED_STAGES and not output_repair_pending(controller.state)
         bundle_resume.adopt(controller, comment, config, bundle, self.config_digest(config), reassess=reassess)
+        acknowledge_provider_pause(controller.state)
         if reassess and not self.reassess_judgment(comment, comments, settings_adopted=True):
             controller.resume_config(controller.state)
             return LoopAction.RETURN_TRUE
@@ -302,6 +317,7 @@ class CommandHandler:
                     return LoopAction.CONTINUE
             else:
                 controller.state.update(stage=controller.state.pop("retry_stage"), command_id=comment["id"])
+            acknowledge_provider_pause(controller.state)
             controller.state.pop("reason", None)
             if controller.state.get("plan_draft") and controller.state["stage"] == "plan":
                 controller.state["plan_draft"]["attempt"] = 0
@@ -387,7 +403,7 @@ class CommandHandler:
         state: TaskState = controller.state
         stage = controller.waiting_revision()
         if (
-            state["stage"] not in ("blocked", "stopped", "escalated")
+            state["stage"] not in ("blocked", "stopped", "awaiting_credentials", "budget_exhausted", "escalated")
             or stage is None
             or state["plan_revisions"] < controller.plan_revision_limit()
         ):
@@ -417,6 +433,7 @@ class CommandHandler:
         state["command_id"] = comment["id"]
         # The failed revision already archived votes and invalidated approval. Do not do it twice.
         controller.revise_plan(stage, "Writer granted additional plan revision capacity.", invalidate=False)
+        acknowledge_provider_pause(state)
         for key in ("operation", "retry_stage", "reason"):
             state.pop(key, None)
         conversation.queue(
@@ -558,6 +575,7 @@ class CommandHandler:
                 request["state"] = "superseded"
                 actions.edit(request, "↪️ **Superseded**: a writer requested a new assessment.")
         controller.invalidate_design(dashboard_runs.INVALIDATED)
+        acknowledge_provider_pause(state)
         if state.get("reviews"):
             state.setdefault("review_history", []).append(state["reviews"])
         state.update(

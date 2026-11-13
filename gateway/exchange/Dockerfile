@@ -3,7 +3,7 @@ FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fb
 RUN apt-get update && apt-get install -y --no-install-recommends openssl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /data && chown 65532:65532 /data
-COPY gateway/exchange/exchange.py /app/exchange.py
+COPY gateway/exchange/exchange.py gateway/exchange/inference.py /app/
 COPY engine/credential_routes.py /app/credential_routes.py
 USER 65532:65532
 ENTRYPOINT ["python3", "-I", "/app/exchange.py"]

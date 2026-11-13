@@ -171,6 +171,8 @@ class Dashboard:
         stage = self.state["stage"]
         paused = {
             "clarify": "Waiting for your answers before continuing.",
+            "awaiting_credentials": "Paused — required provider credentials need attention. A writer may retry after correction.",
+            "budget_exhausted": "Paused — the admitted gateway session reached its token budget.",
             "blocked": "Paused — a blocker needs attention.",
             "escalated": "Paused — the task needs attention before it can continue.",
             "rejected": "This issue was not accepted for implementation.",
@@ -190,7 +192,7 @@ class Dashboard:
         message = paused[stage] if stage in paused else handlers.get(stage, self._default_activity)()
         alert = (
             "CAUTION"
-            if stage == "blocked"
+            if stage in ("blocked", "awaiting_credentials", "budget_exhausted")
             else "WARNING"
             if stage in ("planned", "clarify", "escalated", "rejected")
             or stage == "gates"
@@ -325,7 +327,10 @@ class Dashboard:
             return len(STEPS)
         if stage in STAGE_STEP:
             return STAGE_STEP[stage]
-        if stage in ("blocked", "escalated") and state.get("retry_stage") in STAGE_STEP:
+        if (
+            stage in ("blocked", "awaiting_credentials", "budget_exhausted", "escalated")
+            and state.get("retry_stage") in STAGE_STEP
+        ):
             return STAGE_STEP[state["retry_stage"]]
         if state.get("pr"):
             return (
@@ -352,6 +357,8 @@ class Dashboard:
             return name, "Pending", ""
         paused = {
             "clarify": ("❓", "Input needed"),
+            "awaiting_credentials": (markup.BLOCKED, "Awaiting credentials"),
+            "budget_exhausted": (markup.BLOCKED, "Budget exhausted"),
             "blocked": (markup.BLOCKED, "Blocked"),
             "escalated": (markup.ESCALATED, "Escalated"),
             "rejected": (markup.BLOCKED, "Rejected"),
@@ -426,6 +433,8 @@ class Dashboard:
             url = protocol.comment_url(self.config["repository"], state["issue"], open_request["comment"])
             return f"**Action needed:** {link('answer the questions', url)}."
         needs = {
+            "awaiting_credentials": "provider credential correction and a writer retry",
+            "budget_exhausted": "a writer to review the exhausted session budget before retrying",
             "blocked": "a fix and a retry",
             "escalated": "a decision",
             "rejected": "an edit and a retry",
@@ -450,6 +459,8 @@ class Dashboard:
             return ""
         line = f"**Action needed:** {needs}" + (f" ({link('details', url)})." if url else ".")
         paused = {
+            "awaiting_credentials": (markup.BLOCKED, "Awaiting credentials"),
+            "budget_exhausted": (markup.BLOCKED, "Budget exhausted"),
             "blocked": (markup.BLOCKED, "Blocked"),
             "escalated": (markup.ESCALATED, "Escalated"),
             "rejected": (markup.BLOCKED, "Rejected"),

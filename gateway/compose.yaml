@@ -47,11 +47,14 @@ services:
     environment:
       EXCHANGE_AUDIENCE: concurro-gateway
       EXCHANGE_LISTEN: 0.0.0.0:8080
+      EXCHANGE_PRIVATE_LISTEN: 127.0.0.1:8081
+      EXCHANGE_NATIVE_LOG: /gateway-data/requests.db
     # EXCHANGE_OPERATOR_TOKEN: the Concurro service's credential for minting keys and queueing turns.
     env_file:
       - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/exchange.env
     volumes:
       - exchange-data:/data
+      - gateway-data:/gateway-data:ro
     depends_on:
       - gateway
     mem_limit: 1g

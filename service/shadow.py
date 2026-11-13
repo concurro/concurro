@@ -18,7 +18,7 @@ from controller import config_digest
 from credentials import Credential
 from github import NotFound, Transient
 from model_config import resolve
-from policy import Blocked, digest
+from policy import Blocked, CredentialsUnavailable, ProviderFailure, digest
 from relay import ExchangeError
 
 from .failures import backoff
@@ -149,7 +149,17 @@ class Shadow:
             slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
             projection["coverage"] = self.coverage(routes, slots)
         projection["task_status"] = projection.get("task", {}).get("status")
+        if projection.get("task"):
+            projection["funding"] = projection["task"]["funding"]
+            projection["observations"] = projection["task"].get("observations", [])
         slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
+        if projection.get("funding") == "contributed":
+            try:
+                projection["observations"] = self.operator().observations(*key).get("events", [])
+                projection["observations_status"] = "available"
+            except ExchangeError:
+                projection["observations"] = None
+                projection["observations_status"] = "unknown"
         projection["badges"] = [
             {
                 "provider": p,
@@ -163,31 +173,108 @@ class Shadow:
         ]
         return projection
 
+    def retire_pending(self, controller):
+        """Confirm exact failed-session retirement before any replacement admission."""
+        pending = controller.state.get("provider_retire_sessions", [])
+        for session in list(pending):
+            self.operator().end(session)
+            pending.remove(session)
+            controller.save()
+
     def preflight(self, controller, requests):
         """Select all required frozen payer versions before any reservation is charged."""
         try:
             key = controller.config["repository"], controller.state["issue"]
+            controller.state.pop("provider_observations", None)  # The durable outbox owns full history.
+            self.retire_pending(controller)
+            if controller.state.get("provider_pause_pending"):
+                raise ProviderFailure(controller.state["provider_failure"])
+            if hasattr(self.operator(), "observations"):
+                observation_reply = self.operator().observations(*key)
+                if observation_reply.get("pending"):
+                    raise Transient("native request observations pending")
+                observed = observation_reply.get("events", [])
+                seen = controller.state.get("provider_observation", 0)
+                fresh = [event for event in observed if event["sequence"] > seen]
+                failures = [
+                    event
+                    for event in observed
+                    if event.get("category") in ("auth", "quota_exhausted", "rate_limited", "budget_denied")
+                    and event.get("turn") not in controller.state.get("provider_paused_turns", [])
+                ]
+                if fresh or failures:
+                    controller.state["provider_observation"] = max([seen] + [e["sequence"] for e in fresh])
+                    if failures:
+                        controller.state["provider_failure"] = failures[0]
+                        controller.state["provider_pause_pending"] = True
+                        paused = controller.state.setdefault("provider_paused_turns", [])
+                        paused.extend(event["turn"] for event in failures if event["turn"] not in paused)
+                        retiring = controller.state.setdefault("provider_retire_sessions", [])
+                        retiring.extend(
+                            event["session"] for event in failures if event.get("session") not in (None, *retiring)
+                        )
+                    controller.save()
+                    if failures:
+                        self.retire_pending(controller)
+                        error = ProviderFailure(failures[0])
+                        error.observations = failures
+                        raise error
             capabilities = self.operator().capabilities()
             routes = controller.config.get("credential_routes", {})
             selected = []
             for profile, stage, context in requests:
                 route = routes.get(profile)
-                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
-                    raise Blocked("contributed credential route adapter is unavailable")
                 agent = resolve(controller.config, profile, stage, context.get("reviewer_identity"))
+                role = next((name for name, value in sponsorship.ROLES.items() if value == stage), stage)
+                requirement = {
+                    "provider": agent.profile.provider,
+                    "route": route,
+                    "role": role,
+                    "profile": profile,
+                    "model": agent.profile.model,
+                }
+                detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
+                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
+                    raise CredentialsUnavailable(
+                        f"{detail}: contributed credential route adapter is unavailable", requirement
+                    )
                 provider = sponsorship.ROUTES[route]["sponsorship_provider"]
                 if agent.profile.provider != provider:
-                    raise Blocked("credential route does not support selected profile")
-                selected.append((route, provider, agent.profile))
+                    raise CredentialsUnavailable(
+                        f"{detail}: credential route does not support selected profile", requirement
+                    )
+                selected.append((route, provider, agent.profile, role, profile))
+            requested_count = len(selected)
+            # Every configured role is required in the current pipeline. No optional evaluator
+            # participates in admission; the separate design_eval tool is diagnostic only.
+            for requirement in sponsorship.selected_routes(controller.config):
+                route = requirement["route"]
+                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
+                    detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
+                    raise CredentialsUnavailable(
+                        f"{detail}: required role credential route adapter is unavailable", requirement
+                    )
+                agent = resolve(controller.config, requirement["profile"], sponsorship.ROLES[requirement["role"]])
+                selected.append(
+                    (route, requirement["provider"], agent.profile, requirement["role"], requirement["profile"])
+                )
             projection = getattr(controller, "shadow_projection", None)
             self.source_fence(key, projection)
-            self.flush(controller, {p for _, p, _ in selected})
-            self.cutover(controller, {p for _, p, _ in selected})
-            self.apply(controller, projection, {p for _, p, _ in selected})
+            self.flush(controller, {p for _, p, _, _, _ in selected})
+            self.cutover(controller, {p for _, p, _, _, _ in selected})
+            self.apply(controller, projection, {p for _, p, _, _, _ in selected})
             owners, metadata, choices = {}, {}, []
-            for route, provider, profile in selected:
+            for route, provider, profile, role, profile_name in selected:
+                requirement = {
+                    "provider": provider,
+                    "route": route,
+                    "role": role,
+                    "profile": profile_name,
+                    "model": profile.model,
+                }
+                detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
                 if provider in controller.state.get("pending_sponsorships", {}):
-                    raise Blocked("provider sponsorship transition is pending")
+                    raise CredentialsUnavailable(f"{detail}: provider sponsorship transition is pending", requirement)
                 slot = controller.state.get("sponsorships", {}).get(provider, {})
                 actor = slot.get("sponsor_id")
                 if (
@@ -199,35 +286,41 @@ class Shadow:
                         and slot.get("source_funding_mode") == "contributed"
                     )
                 ):
-                    raise Blocked("provider requires current contributed sponsorship")
+                    raise CredentialsUnavailable(
+                        f"{detail}: provider requires current contributed sponsorship", requirement
+                    )
                 if actor not in owners:
                     owners[actor] = self.writer(key[0], actor, slot.get("login"))
                     if not owners[actor]:
                         self.revoke_authority(controller, projection, actor)
-                        raise Blocked("provider sponsor no longer has repository write permission")
+                        raise CredentialsUnavailable(
+                            f"{detail}: provider sponsor no longer has repository write permission", requirement
+                        )
                     metadata[actor] = self.metadata.read(actor) if self.metadata else None
                 rows = metadata[actor]
                 if rows is None:
-                    raise Transient("sponsorship metadata unavailable")
+                    raise Transient(f"{detail}: sponsorship metadata unavailable")
                 record = next((m for m in rows if m.get("route") == route), None)
                 if (
                     record is None
                     or record.get("status") != "valid"
                     or record.get("kind") != sponsorship.ROUTES[route]["kind"]
                 ):
-                    raise Blocked("provider credential is unavailable")
+                    raise CredentialsUnavailable(f"{detail}: provider credential is unavailable", requirement)
                 if not isinstance(record.get("models"), list) or any(
                     not isinstance(model, str) for model in record["models"]
                 ):
-                    raise Transient("sponsorship model coverage unknown")
+                    raise Transient(f"{detail}: sponsorship model coverage unknown")
                 if profile.model not in record["models"]:
-                    raise Blocked("provider credential does not cover selected model")
+                    raise CredentialsUnavailable(
+                        f"{detail}: provider credential does not cover selected model", requirement
+                    )
                 if record.get("expiry_known") and (
                     not isinstance(record.get("expires_at"), str)
                     or datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp()
                     <= self.registry.clock()
                 ):
-                    raise Blocked("provider credential expired")
+                    raise CredentialsUnavailable(f"{detail}: provider credential expired", requirement)
                 credential = Credential(
                     digest(["contributed", actor, route, record.get("record_id"), record.get("version")]),
                     profile.harness,
@@ -244,7 +337,7 @@ class Shadow:
             self.source_fence(key, projection)
             if getattr(controller.agents, "executor", None):
                 controller.agents.executor.check_owner()
-            return choices
+            return choices[:requested_count]
         except ExchangeError as error:
             if retryable(error):
                 raise Transient("sponsorship exchange unavailable") from None
@@ -421,7 +514,7 @@ class Shadow:
                 [[(c["id"], digest(c.get("body") or ""), c.get("updated_at")) for c in comments], events]
             ),
             "permissions": {str(k): v for k, v in permissions.items()},
-            "funding": "org",
+            "funding": admissions.mode(config) if config is not None else "unknown",
         }
         document["revision"] = digest([revision, document])
         document["digest"] = digest(document)
@@ -460,7 +553,8 @@ class Shadow:
                 continue
             body = (
                 marker
-                + "\nUse `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor your own future contributed calls. Use `/concurro withdraw <provider>` to withdraw your consent. Current calls remain org-funded."
+                + "\nUse `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor your own future contributed calls. Use `/concurro withdraw <provider>` to withdraw your consent. "
+                + admissions.funding_notice(controller.config)
             )
             controller.gh.repo(f"issues/{controller.issue['number']}/comments", "POST", {"body": body})
 
@@ -510,7 +604,12 @@ class Shadow:
                 self.defer(controller, error)
         finally:
             if controller.state:
-                self.registry.record_shadow(key, controller.state, getattr(controller, "shadow_projection", None))
+                self.registry.record_shadow(
+                    key,
+                    controller.state,
+                    getattr(controller, "shadow_projection", None),
+                    funding=admissions.mode(controller.config),
+                )
 
     def initialize(self, controller, comments, mode, command_id=0, enrollment=None):
         """Keep unavailable shadow history/metadata separate from org-paid execution."""
@@ -520,7 +619,12 @@ class Shadow:
             self.defer(controller, error)
         finally:
             key = controller.config["repository"], controller.state["issue"]
-            self.registry.record_shadow(key, controller.state, getattr(controller, "shadow_projection", None))
+            self.registry.record_shadow(
+                key,
+                controller.state,
+                getattr(controller, "shadow_projection", None),
+                funding=admissions.mode(controller.config),
+            )
 
     def defer(self, controller, error):
         """Retry transient shadow I/O through the existing queue/backoff, independently of org work."""
@@ -660,9 +764,7 @@ class Shadow:
             "Provider sponsorship is org-funded"
             if admissions.mode(controller.config) == "org"
             else "Provider sponsorship recorded",
-            "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment."
-            if admissions.mode(controller.config) == "org"
-            else "This task uses contributed funding when its configured route adapter and selected sponsor credentials are available. There is no organization fallback.",
+            admissions.funding_notice(controller.config),
         )
         state["sponsorship_projection_revision"] = projection["revision"]
         state["sponsorship_projection_source_revision"] = projection["source_revision"]

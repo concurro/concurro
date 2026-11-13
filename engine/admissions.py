@@ -19,6 +19,15 @@ def mode(config):
     return value
 
 
+def funding_notice(config):
+    """Describe actual configured funding without promising unavailable coverage."""
+    return (
+        "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment."
+        if mode(config) == "org"
+        else "This task uses contributed funding when its configured route adapter and selected sponsor credentials are available. There is no organization fallback."
+    )
+
+
 def selection(credential, provider=None, slot=None):
     """Snapshot one selected provider grant without copying the whole task's slot map."""
     slot = slot or {}

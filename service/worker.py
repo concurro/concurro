@@ -451,9 +451,32 @@ class Worker:
         """Suspend a failed tick, reporting display failures before reclassifying them."""
         reason = str(error) if isinstance(error, Blocked) else "Transport or schema failure; inspect service health."
         try:
+            requirement = getattr(error, "requirement", None)
+            if requirement:
+                controller.state["credential_requirement"] = requirement
+            observations = getattr(error, "observations", [])
+            if observations:
+                controller.state["provider_failure"] = observations[0]
+            for observation in observations:
+                controller.state.pop("provider_observations", None)
+                controller.state["provider_pause_pending"] = True
+                retiring = controller.state.setdefault("provider_retire_sessions", [])
+                if observation.get("session") not in (None, *retiring):
+                    retiring.append(observation["session"])
+                turn = observation.get("turn")
+                paused = controller.state.setdefault("provider_paused_turns", [])
+                if turn and turn not in paused:
+                    paused.append(turn)
+                if observation.get("sequence"):
+                    controller.state["provider_observation"] = max(
+                        controller.state.get("provider_observation", 0), observation["sequence"]
+                    )
             # The Blocked comment is posted now; a publication failure has the health notice instead.
             controller.suspend(
-                "blocked", reason, outboxes=False, publish_events=not isinstance(error, PublicationError)
+                getattr(error, "pause_stage", "blocked"),
+                reason,
+                outboxes=False,
+                publish_events=not isinstance(error, PublicationError),
             )
         except Exception as display_error:
             diagnostic = (

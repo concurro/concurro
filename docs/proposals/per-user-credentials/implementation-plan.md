@@ -1,8 +1,8 @@
 # Per-user credentials: implementation plan
 
-**Status: phases 1–3 implemented; production contributed injection and subscription acceptance remain later phases.**
+**Status: phases 1–4 implemented; subscription registration and automatic recovery remain later phases.**
 See [phase 1](phase-1.md), [phase 2](phase-2.md) and [phase 3](phase-3.md) for shipped runtime/API behavior and migration boundaries.
-Phase 3 freezes admissions on actual org paths and exercises contributed enforcement with isolated adapters; production capability remains org-only.
+Phase 3 froze admissions on actual org paths and exercised contributed enforcement with isolated adapters. Phase 4 now supplies configured production injection and observation; see its runtime record below.
 The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
 remain pending by user scope.
 This supplies the execution plan for the [epic](../per-user-credentials.md), including
@@ -10,6 +10,8 @@ subscription connections. The epic and [cross-cutting contracts](../README.md#cr
 remain authoritative unless a decision below explicitly calls out a change. The
 [review record](review.md) includes the original Claude review and the CLI-token
 follow-up, plus the review and repairs for provider-specific sponsorship and explicit-first initiation.
+
+The current [phase-4 runtime](phase-4.md) supplies native contributed injection, trusted request observations and credential pauses. Earlier phase records describe their shipped historical boundaries.
 
 ## What this plan delivers
 

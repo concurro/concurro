@@ -62,6 +62,12 @@ class Operator:
         """Read implemented funding adapters before the controller reserves a charge."""
         return call(self.gateway, self.token, "GET", "operator/capabilities")
 
+    def observations(self, repository, issue):
+        """Read the durable sanitized task outbox, including late native request observations."""
+        return call(
+            self.gateway, self.token, "POST", "operator/observations", {"repository": repository, "issue": issue}
+        )
+
     def sponsorship(self, request):
         """Publish an idempotent task/provider ownership transition on the private operator channel."""
         return call(self.gateway, self.token, "POST", "operator/sponsorship", request)

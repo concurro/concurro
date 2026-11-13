@@ -1,7 +1,7 @@
 # Proposal: per-user provider credentials
 
-**Status: phases 1–3 implemented; production contributed injection and subscription acceptance remain later phases.**
-Current behavior and remaining boundaries are recorded in [phase 1](per-user-credentials/phase-1.md). Revised after two Codex reviews against
+**Status: phases 1–4 implemented; subscription registration and automatic recovery remain later phases.**
+Current behavior and remaining boundaries are recorded in [phase 4](per-user-credentials/phase-4.md). Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
 The [implementation plan](per-user-credentials/implementation-plan.md) records the current
@@ -390,4 +390,4 @@ Requirements for any of them:
 
 Phase 2 now implements [portal and vault lifecycle](per-user-credentials/phase-2.md).
 Phase 3 implements [frozen admission and provider fences](per-user-credentials/phase-3.md),
-including isolated contributed adapters. Production contributed injection and subscription registration remain later phases.
+including isolated contributed adapters. [Phase 4](per-user-credentials/phase-4.md) now implements configured production native injection, trusted observations and credential pauses; subscription registration remains phase5.

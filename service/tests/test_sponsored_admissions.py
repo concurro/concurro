@@ -23,7 +23,7 @@ from controller import config_digest
 from design_batch import Design
 from exchange import Refused
 from github import Transient
-from policy import Blocked, SessionFailure, design_roster, digest
+from policy import Blocked, ProviderFailure, SessionFailure, design_roster, digest
 from relay import ExchangeError
 from service import failures
 from test_exchange_funding import FundedGateway, org_turn
@@ -126,6 +126,153 @@ class AdmissionTests(ShadowTests):
             self.assertEqual(controller.state["calls"], calls)
             self.assertEqual(controller.state["sponsorships"]["anthropic"]["sponsor_id"], "303")
 
+    def test_initial_serial_call_preflights_every_required_role_before_charge(self):
+        """Even an OpenAI-only first call pauses when a required Anthropic route lacks coverage."""
+        self.sponsors()
+        self.metadata = [row for row in self.metadata if row["route"] != "anthropic-api-key"]
+        with self.current() as controller:
+            calls = controller.state["calls"]
+            with self.assertRaisesRegex(Blocked, "credential") as error:
+                controller.ask("codex", "intake", {"purpose": "aggregate required roster"})
+            self.assertEqual(error.exception.pause_stage, "awaiting_credentials")
+            self.assertEqual(error.exception.requirement["provider"], "anthropic")
+            self.assertEqual(error.exception.requirement["route"], "anthropic-api-key")
+            self.assertEqual(error.exception.requirement["model"], self.config["models"]["claude"])
+            self.assertIn("role=", str(error.exception))
+            self.assertIn("profile=claude", str(error.exception))
+            self.assertEqual(controller.state["calls"], calls)
+            self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 0)
+
+    def test_pause_acknowledges_old_turn_failures_without_copying_outbox_history(self):
+        """Late same-turn rows do not re-pause a writer retry or inflate checkpoints with full history."""
+        self.sponsors()
+        with self.current() as controller:
+            binding = {"sponsorship_provider": "openai"}
+            events = [
+                {
+                    "sequence": index,
+                    "turn": "old-turn",
+                    "category": "auth" if index in (1, 2, 501) else None,
+                    "binding": binding,
+                }
+                for index in range(1, 501)
+            ]
+            with patch.object(self.exchange, "observations", return_value={"events": events, "pending": False}):
+                with self.assertRaisesRegex(Blocked, "auth"):
+                    controller.select_admissions([("codex", "intake", {})])
+            self.assertEqual(controller.state["provider_observation"], 500)
+            self.assertEqual(controller.state["provider_paused_turns"], ["old-turn"])
+            self.assertNotIn("provider_observations", controller.state)
+            self.assertTrue(controller.state["provider_pause_pending"])
+            # This is the same acknowledgment successful writer retry/resume performs.
+            controller.state.pop("provider_pause_pending")
+            events.append({"sequence": 501, "turn": "old-turn", "category": "auth", "binding": binding})
+            with patch.object(self.exchange, "observations", return_value={"events": events, "pending": False}):
+                choices = controller.select_admissions([("codex", "intake", {})])
+            self.assertEqual(len(choices), 1)
+            self.assertEqual(controller.state["provider_observation"], 501)
+            self.assertNotIn("provider_observations", controller.state)
+            controller.save()
+
+    def test_all_worker_failures_acknowledge_turns_and_retire_sessions_once(self):
+        """One explicit retry covers all drained failures, including evidence below the observed cursor."""
+        self.sponsors()
+        self.service()
+        with self.current() as controller:
+            events = [
+                {
+                    "sequence": i,
+                    "turn": "failure-" + str(i),
+                    "session": "session-" + str(i),
+                    "category": "budget_denied",
+                    "binding": {"sponsorship_provider": "openai"},
+                }
+                for i in (1, 2)
+            ]
+            error = ProviderFailure(events[0])
+            error.observations = events
+            self.worker._suspend_failure(controller, controller.issue, error, {"kind": "suspend"}, 0)
+            self.assertEqual(controller.state["provider_paused_turns"], [e["turn"] for e in events])
+            self.assertEqual(controller.state["provider_retire_sessions"], [e["session"] for e in events])
+            self.assertEqual(controller.state["provider_observation"], 2)
+            controller.commands([comment(90, "/concurro retry")])
+            with (
+                patch.object(self.exchange, "end") as ended,
+                patch.object(self.exchange, "observations", return_value={"events": events, "pending": False}),
+            ):
+                self.assertEqual(len(controller.select_admissions([("codex", "intake", {})])), 1)
+                self.assertEqual([c.args[0] for c in ended.call_args_list], [e["session"] for e in events])
+            self.assertEqual(controller.state["provider_retire_sessions"], [])
+            # A worker may have advanced the cursor for another turn before reading an older row.
+            older = {**events[0], "sequence": 3, "turn": "late-old-row", "session": "late-session"}
+            controller.state["provider_observation"] = 4
+            with (
+                patch.object(self.exchange, "end") as ended,
+                patch.object(
+                    self.exchange, "observations", return_value={"events": [*events, older], "pending": False}
+                ),
+            ):
+                with self.assertRaises(ProviderFailure):
+                    controller.select_admissions([("codex", "intake", {})])
+                ended.assert_called_once_with("late-session")
+            self.assertIn("late-old-row", controller.state["provider_paused_turns"])
+
+    def test_writer_reassessment_commands_acknowledge_provider_pause(self):
+        """Successful start, invalidate and revision grants reach fresh coverage without stale failure."""
+        self.sponsors()
+        with self.current() as controller:
+            controller.config = {**controller.config, "autonomous": False}
+            baseline = deepcopy(controller.state)
+            for index, command_text in enumerate(
+                ("/concurro start", "/concurro invalidate", "/concurro retry --plan-revisions 1"), 90
+            ):
+                with self.subTest(command=command_text):
+                    controller.state = deepcopy(baseline)
+                    controller.state["config_digest"] = config_digest(controller.config)
+                    controller.state["provider_failure"] = {
+                        "category": "auth",
+                        "binding": {"sponsorship_provider": "openai"},
+                    }
+                    controller.state["provider_pause_pending"] = True
+                    controller.suspend("awaiting_credentials", "synthetic provider condition")
+                    if "--plan-revisions" in command_text:
+                        controller.state["revision_wait"] = {"stage": "intake"}
+                        controller.state["plan_revisions"] = controller.plan_revision_limit()
+                    controller.commands([*self.fake.comments, comment(index, command_text)])
+                    self.assertNotIn("provider_pause_pending", controller.state)
+                    self.assertEqual(len(controller.select_admissions([("codex", "intake", {})])), 1)
+
+    def test_bare_sponsor_notices_describe_actual_funding_mode(self):
+        """Both pre-task and enrolled GitHub replies match configured org/contributed funding."""
+        self.sponsors()
+        with self.current() as controller:
+            from commands import parse
+
+            for index, mode in enumerate(("org", "contributed"), 90):
+                controller.config = {**controller.config, "funding_mode": mode}
+                usage = comment(index, "/concurro sponsor")
+                self.shadow.usage(controller, [usage])
+                body = self.fake.comments[-1]["body"]
+                self.assertEqual("organization credentials" in body, mode == "org")
+                with patch("commands.conversation.queue") as queued:
+                    controller._command_handler().sponsorship(parse(usage["body"]), usage, [usage])
+                self.assertIn(
+                    "contributed funding" if mode == "contributed" else "organization credentials",
+                    queued.call_args.args[2],
+                )
+
+    def test_unavailable_observations_are_explicit_and_do_not_change_consent(self):
+        """A read outage is visible as unknown rather than no requests or successful usage."""
+        self.sponsors()
+        with self.current() as controller:
+            self.registry.record_shadow(KEY, controller.state, funding="contributed")
+            before = deepcopy(controller.state["sponsorships"])
+            with patch.object(self.exchange, "observations", side_effect=ExchangeError(503, "fixture outage")):
+                view = self.shadow.view(KEY)
+            self.assertEqual(view["observations_status"], "unknown")
+            self.assertIsNone(view["observations"])
+            self.assertEqual(controller.state["sponsorships"], before)
+
     def test_unsupported_production_adapter_stops_actual_ask_before_charge(self):
         """Configured contributed funding cannot reach org credential/key creation."""
         self.sponsors()
@@ -172,6 +319,18 @@ class AdmissionTests(ShadowTests):
 
     def test_real_serial_controller_runner_exchange_preserves_frozen_identity(self):
         """Run the actual serial adapters, fake only the native job and external providers."""
+        self.serial_flow()
+
+    def test_budget_retirement_outage_survives_reload_and_writer_retry(self):
+        """A failed-before-send cleanup cannot reuse the old exhausted key after explicit retry."""
+        self.serial_flow("before")
+
+    def test_budget_retirement_lost_reply_is_idempotent_after_writer_retry(self):
+        """A successful retirement with a lost response is replayed before fresh staffing."""
+        self.serial_flow("after")
+
+    def serial_flow(self, retirement=None):
+        """Exercise actual serial admissions, optionally losing an exact-session cleanup receipt."""
         self.sponsors()
         with self.current() as controller:
             expected = {**EXPECTED, "actor_id": "3003"}
@@ -238,6 +397,65 @@ class AdmissionTests(ShadowTests):
                 recovered = controller.ask("codex", "intake", {**controller.context(), "purpose": "admission identity"})
                 self.assertEqual(recovered["synthetic"], result["synthetic"])
                 self.assertEqual(controller.state["operation"]["admission"], admission)
+            if retirement is not None:
+                old_turn = responses[-1]["id"]
+                old_session = self.exchange.db.execute("SELECT session FROM turns WHERE id=?", (old_turn,)).fetchone()[
+                    0
+                ]
+                old_key = self.exchange.row(old_session)["key_id"]
+                event = {
+                    "sequence": 1,
+                    "turn": old_turn,
+                    "session": old_session,
+                    "category": "budget_denied",
+                    "binding": binding,
+                }
+                end = self.exchange.end
+                calls = controller.state["calls"]
+
+                def unavailable(session):
+                    """Choose a failure before application or after the real idempotent mutation."""
+                    if retirement == "after":
+                        end(session)
+                    raise ExchangeError(503, "synthetic retirement reply unavailable")
+
+                with (
+                    patch.object(self.exchange, "observations", return_value={"events": [event], "pending": False}),
+                    patch.object(self.exchange, "end", side_effect=unavailable),
+                ):
+                    with self.assertRaises(Transient):
+                        controller.select_admissions([("codex", "intake", {})])
+                    self.assertEqual(controller.state["calls"], calls)
+                    self.assertEqual(controller.state["provider_retire_sessions"], [old_session])
+                    controller.load(self.fake.comments)
+                    self.assertEqual(controller.state["provider_retire_sessions"], [old_session])
+                    controller.suspend("budget_exhausted", "synthetic native denial")
+                    retry = comment(90, "/concurro retry")
+                    self.fake.comments.append(retry)
+                    controller.commands(self.fake.comments)
+                    self.assertNotIn("provider_pause_pending", controller.state)
+                    self.assertEqual(controller.state["provider_retire_sessions"], [old_session])
+                    self.exchange.gateway.contributed_routes = ("openai-api-key", "anthropic-api-key")
+                    with self.assertRaises(Transient):
+                        controller.select_admissions([("codex", "intake", {})])
+                    self.assertEqual(controller.state["calls"], calls)
+                with (
+                    patch.object(self.exchange, "observations", return_value={"events": [event], "pending": False}),
+                    patch("exchange.claims", side_effect=lambda token, *args: json.loads(token)),
+                ):
+                    result = controller.ask(
+                        "codex", "intake", {**controller.context(), "purpose": "writer retry after budget"}
+                    )
+                self.assertEqual(result, {"synthetic": "completed"})
+                new_turn = responses[-1]["id"]
+                new_session = self.exchange.db.execute("SELECT session FROM turns WHERE id=?", (new_turn,)).fetchone()[
+                    0
+                ]
+                self.assertNotEqual(new_session, old_session)
+                self.assertNotEqual(self.exchange.row(new_session)["key_id"], old_key)
+                self.assertIsNotNone(self.exchange.row(old_session)["ended"])
+                self.assertEqual(controller.state["provider_retire_sessions"], [])
+                self.assertEqual(controller.state["calls"], calls + 1)
 
     def test_source_policy_interval_controls_fresh_initializer_and_never_backdates(self):
         """Contributed source evidence is produced before the event, not inferred from delayed settings."""

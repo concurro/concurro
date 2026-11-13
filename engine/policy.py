@@ -26,6 +26,43 @@ class Blocked(ValueError):
     """An input cannot safely advance the pipeline."""
 
 
+class CredentialsUnavailable(Blocked):
+    """Required contributed coverage is unavailable before a new charge."""
+
+    pause_stage = "awaiting_credentials"
+
+    def __init__(self, message, requirement=None):
+        """Retain actionable nonsecret role/route/model coverage when known."""
+        self.requirement = requirement
+        super().__init__(message)
+
+
+class ProviderFailure(CredentialsUnavailable):
+    """A trusted gateway observation prevents automatic paid or session retries."""
+
+    def __init__(self, observation):
+        """Retain sanitized frozen provider attribution and a fixed public explanation."""
+        self.observation = observation
+        self.observations = [observation]
+        self.provider = observation["binding"]["sponsorship_provider"]
+        self.category = observation["category"]
+        self.pause_stage = "budget_exhausted" if self.category == "budget_denied" else "awaiting_credentials"
+        binding = observation["binding"]
+        requirement = {
+            "provider": self.provider,
+            "route": binding.get("route"),
+            "role": binding.get("role"),
+            "model": observation.get("model"),
+            "sponsor": binding.get("sponsor"),
+            "version": binding.get("credential_version"),
+        }
+        details = ", ".join(f"{key}={value}" for key, value in requirement.items() if value is not None)
+        super().__init__(
+            f"{self.provider} credentials require attention ({self.category}; {details}); a writer may retry after correction",
+            requirement,
+        )
+
+
 class RunnerTerminated(Blocked):
     """Implementation stopped without a result; preserve uncertainty but require a writer retry."""
 

@@ -1104,7 +1104,16 @@ class Controller:
     def record_outcome(self):
         """Persist complete outcome evidence in the bot-owned GitHub state, without policy edits."""
         state = self.state
-        if state["stage"] not in ("merged", "observed_merged", "rejected", "escalated", "blocked", "stopped"):
+        if state["stage"] not in (
+            "merged",
+            "observed_merged",
+            "rejected",
+            "escalated",
+            "blocked",
+            "stopped",
+            "awaiting_credentials",
+            "budget_exhausted",
+        ):
             return
         outcome = {
             "version": 1,
@@ -2263,7 +2272,7 @@ class Controller:
         if self.queued_commands:
             # Its input was already delivered, so only a continuation processes the next command.
             return Outcome("continue", True)
-        if stage in ("blocked", "stopped", "rejected", "escalated"):
+        if stage in SUSPENDED_STAGES | JUDGED_STAGES:
             return Outcome("blocked", progressed)
         if stage in ("planned", "clarify"):
             return Outcome("await-human", progressed)
@@ -2407,6 +2416,8 @@ class Controller:
             raise Blocked("Recorded path policy differs from current settings; a writer can use /concurro resume.")
         if not self.state or self.state["stage"] in (
             "planned",
+            "awaiting_credentials",
+            "budget_exhausted",
             "blocked",
             "stopped",
             "merged",

@@ -505,13 +505,14 @@ class Registry:
             )
             return True
 
-    def record_shadow(self, key, state, projection=None):
+    def record_shadow(self, key, state, projection=None, funding="org"):
         """Expose checkpoint-owned slots and pending acknowledgments without opening task state in the BFF."""
         with self.transaction() as db:
             row = db.execute("SELECT document FROM issue_sponsorships WHERE repository=? AND issue=?", key).fetchone()
             document = json.loads(row[0]) if row and row[0] else dict(projection or {})
             document["task"] = {
-                "funding": "org",
+                "funding": funding,
+                "last_failure": state.get("provider_failure"),
                 "slots": state.get("sponsorships", {}),
                 "pending": list(state.get("pending_sponsorships", {})),
                 "initialization": state.get("funding_initialization"),

@@ -18,7 +18,16 @@ from credential_routes import ROUTES
 from credentials import Credential
 from github import Transient
 from model_config import resolve
-from policy import Blocked, RunnerTerminated, SessionFailure, UncertainOutcome, digest, runner_bound, turn_label
+from policy import (
+    Blocked,
+    ProviderFailure,
+    RunnerTerminated,
+    SessionFailure,
+    UncertainOutcome,
+    digest,
+    runner_bound,
+    turn_label,
+)
 from relay import WAIT, ExchangeError
 from runtime_defaults import DEFAULT_RETAINED_BYTES, DEFAULT_TURN_SECONDS as DEFAULT_TURN_SECONDS
 from snapshot import inspection
@@ -462,6 +471,18 @@ class RunnerExecutor:
             self.groups.setdefault(handle.group, set()).add(session)
             self.start(session, handle.turn)
         self.record("observed", handle.identifier, handle.status, handle.timing, handle.sessions)
+        if reply.get("funding_ended"):
+            raise ProviderFailure(
+                {
+                    "binding": reply["funding_ended"],
+                    "category": "authority_ended",
+                    "turn": handle.identifier,
+                    "source": "authority",
+                    "model": handle.turn.get("request", {}).get("model"),
+                }
+            )
+        if reply.get("provider_failure"):
+            raise ProviderFailure(reply["provider_failure"])
         if reply.get("refusal"):
             raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
         if reply.get("status") == "done" and "result" in reply:

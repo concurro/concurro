@@ -32,6 +32,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+INFERENCE = runpy.run_path(str(Path(__file__).with_name("inference.py")))
+Inference, InferenceHandler = INFERENCE["Inference"], INFERENCE["Handler"]
+
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"
 # Clock skew tolerated on time claims, and the oldest token accepted.
@@ -175,8 +178,10 @@ ACTIVATION_POLL_SECONDS = 0.2
 class Gateway:
     """agentgateway's admin API (loopback, unauthenticated) and its inference port, for activation checks."""
 
-    def __init__(self, admin, inference):
+    def __init__(self, admin, inference, contributed=False):
+        """Enable explicit contributed adapters only with the private inference listener wired."""
         self.admin, self.inference = admin.rstrip("/"), inference.rstrip("/")
+        self.contributed_routes = tuple(sorted(set(ROUTES) & set(INFERENCE["UPSTREAMS"]))) if contributed else ()
 
     def call(self, method, url, body=None, headers=None):
         request = urllib.request.Request(
@@ -197,15 +202,19 @@ class Gateway:
         """The gateway ID of a key value, or None."""
         return next((r["id"] for r in self.list() if r["value"].get("key") == key), None)
 
-    contributed_routes = ()  # Phase4's credential-aware adapter must explicitly implement supported routes.
+    contributed_routes = ()  # Org-only adapters advertise no contributed routes.
 
     def create(self, key, name, models, budget, binding=None):
-        """Create an org session key; contributed work cannot enter this adapter."""
-        if binding and binding.get("funding") == "contributed":
+        """Create a native model/budget key whose funding metadata is assigned only by Exchange."""
+        if binding and binding.get("funding") == "contributed" and binding.get("route") not in self.contributed_routes:
             raise Refused(503, "contributed route adapter is unavailable")
         value = {
             "key": key,
-            "metadata": {"name": name, "concurro.session": name},
+            "metadata": {
+                "name": name,
+                "concurro.session": name,
+                **({"concurro.funding": "contributed"} if binding and binding.get("funding") == "contributed" else {}),
+            },
             "allowedModels": models,
             "budgets": [
                 {"name": "session", "limit": {"unit": "Tokens", "amount": budget}, "onBudgetExceeded": "Block"}
@@ -361,7 +370,7 @@ FINISHED_RETENTION_SECONDS = 86400
 
 
 class Vault:
-    """Separate nonsecret metadata and private event credentials; no secret-resolution method exists."""
+    """Keep metadata auth separate from the isolated gateway principal used for events and resolution."""
 
     def __init__(self, metadata_url, metadata_token, events_url, events_token):
         """Use the Exchange's existing env-file secret transport with distinct private principals."""
@@ -394,6 +403,31 @@ class Vault:
             raise Refused(503, "vault metadata identity mismatch")
         return [{key: item.get(key) for key in fields} for item in value["credentials"]]
 
+    def resolve(self, binding):
+        """Use the isolated gateway principal for one exact frozen record, never metadata auth."""
+        request = urllib.request.Request(
+            self.events_url + "/resolve",
+            method="POST",
+            data=json.dumps(
+                {
+                    "user_id": int(binding["sponsor"]),
+                    "route": binding["route"],
+                    "record_id": binding["credential"],
+                    "version": binding["credential_version"],
+                }
+            ).encode(),
+            headers={"Authorization": "Bearer " + self.events_token, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise Refused(
+                error.code if error.code in (404, 410) else 503, "credential resolution unavailable"
+            ) from None
+        except (OSError, ValueError):
+            raise Refused(503, "credential resolution unavailable") from None
+
     def events(self, after):
         """Read nonsecret lifecycle events on the isolated gateway-principal listener only."""
         return self.get(self.events_url, "/events?after=" + str(after), self.events_token)
@@ -406,6 +440,8 @@ class Exchange:
     session is a key minted directly for the operator (the Concurro service). Turns are queued by
     the operator for a target and served to a live runner session of that target.
     """
+
+    refusal_type = Refused
 
     def __init__(self, database, gateway, keys, audience, vault=None):
         self.db = sqlite3.connect(database, check_same_thread=False, isolation_level=None)
@@ -448,12 +484,21 @@ class Exchange:
             "turns", (("digest", "TEXT"), ("staff", "TEXT"), ("pin", "TEXT"), ("binding", "TEXT"), ("staffing", "TEXT"))
         )
 
+        self.inference = Inference(self)
+
     def capabilities(self):
         """Advertise only implemented adapter routes with a working retirement-event channel."""
         routes = sorted(set(getattr(self.gateway, "contributed_routes", ())) & ROUTES.keys()) if self.vault else []
         if routes:
             self.consume_events()
         return {"version": 1, "org": True, "contributed_routes": routes}
+
+    def observations(self, repository, issue):
+        """Read durable task evidence and unresolved native requests without waking or retrying work."""
+        self.inference.import_native()
+        with self.locked():
+            pending = self.inference.pending(repository=repository, issue=issue)
+        return {"events": self.inference.events(repository, issue), "pending": pending}
 
     def advance_generation(self, repository, issue, generation):
         """Mirror task ownership monotonically inside the caller's transaction, never a second authority."""
@@ -1063,6 +1108,7 @@ class Exchange:
 
     def retire(self, session, record, now):
         """End a session, then delete its key; a failed deletion is retried by reconciliation."""
+        self.inference.stop(session=session)
         with self._transaction():
             self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
             self._lose_session_turns(session, now)
@@ -1089,7 +1135,16 @@ class Exchange:
             "SELECT status, created, started, finished, session FROM turns WHERE id = ?", (turn,)
         ).fetchone()
         runner = self.row(session) if session and status in ("lost", "cancelled") else None
+        failure = self.inference.failure(turn)
+        if failure and status == "done":
+            result = self.db.execute("SELECT result FROM turns WHERE id=?", (turn,)).fetchone()[0]
+            if result and json.loads(result).get("outcome") == "ok":
+                failure = None
+        ended_binding = json.loads(runner["binding"] or "{}") if runner else {}
+        funding_ended = ended_binding.get("funding") == "contributed" and not self.allowed(ended_binding)
         return {
+            **({"funding_ended": ended_binding} if funding_ended else {}),
+            **({"provider_failure": failure} if failure else {}),
             "turn": turn,
             "status": status,
             "created": created,
@@ -1110,6 +1165,13 @@ class Exchange:
         staff = found[2] and self.row(found[2])
         pending = staff and staff["run_id"] is None and self.live(staff, now)
         reply = {**self.observation(turn), "dispatch": found[2] if pending else None}
+        if (
+            found[1] == "done"
+            and json.loads(found[3]).get("outcome") != "ok"
+            and self.inference.pending(turn=turn)
+            and not self.inference.failure(turn)
+        ):
+            raise Refused(503, "native request observations pending")
         return {**reply, "result": json.loads(found[3])} if found[1] == "done" else reply
 
     def validate_admission(self, turn, binding, request, models):
@@ -1222,6 +1284,7 @@ class Exchange:
         if binding["role"] != str(request.get("stage")) + ":" + str(request.get("provider")):
             raise ValueError("turn does not match its role")
         self.validate_admission(turn, binding, request, models)
+        self.inference.import_native()
         group = staffing(expected, binding, models, budget, lease)
         now = _now(now)
         digest = hashlib.sha256(
@@ -1293,6 +1356,7 @@ class Exchange:
             raise Refused(400, "invalid wait")
         stop = time.monotonic() + wait
         while True:
+            self.inference.import_native()
             with self.locked():
                 current = _now(now)
                 found = self.db.execute(
@@ -1301,6 +1365,9 @@ class Exchange:
                 if not found:
                     raise Refused(404, "unknown turn")
                 status, session, result, expected, created, pin, group = found
+                failure = self.inference.failure(turn)
+                if failure and not (status == "done" and json.loads(result).get("outcome") == "ok"):
+                    return {**self.observation(turn), "provider_failure": failure}
                 if group is None and status in ("queued", "running"):
                     self._lose_turn(turn, current)
                     status = "lost"
@@ -1309,6 +1376,8 @@ class Exchange:
                     self._lose_turn(turn, current)
                     status = "lost"
                 if status == "done":
+                    if json.loads(result).get("outcome") != "ok" and self.inference.pending(turn=turn):
+                        raise Refused(503, "native request observations pending")
                     return {**self.observation(turn), "result": json.loads(result)}
                 if status == "running":
                     record = self.row(session)
@@ -1343,6 +1412,7 @@ class Exchange:
         """Withdraw a queued or running turn; a runner's later result for it is refused."""
         now = _now(now)
         with self.locked():
+            self.inference.stop(turn=turn)
             self.db.execute(
                 "UPDATE turns SET status = 'cancelled', finished = ? WHERE id = ? AND status IN ('queued', 'running')",
                 (now, turn),
@@ -1372,6 +1442,7 @@ class Exchange:
             ).fetchall():
                 record = self.row(session)
                 if not self.live(record, now):
+                    self.inference.stop(session=session)
                     with self._transaction():
                         self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
                         self._lose_session_turns(session, now)
@@ -1383,6 +1454,7 @@ class Exchange:
                 "SELECT id, key, deadline, ended FROM sessions WHERE key IS NOT NULL"
             ).fetchall():
                 if ended or deadline < now:
+                    self.inference.stop(session=session)
                     self.db.execute("UPDATE sessions SET ended = COALESCE(ended, ?) WHERE id = ?", (now, session))
                     retired[key] = session
                 else:
@@ -1496,6 +1568,8 @@ class Handler(BaseHTTPRequestHandler):
     def operator(self, method, path, query, body):
         # Deliberately reject empty/percent-encoded wait values; URL-decoding would widen admission.
         wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
+        if method == "POST" and path == "observations":
+            return self.server.exchange.observations(body.get("repository"), body.get("issue"))
         if method == "GET" and path == "capabilities":
             return self.server.exchange.capabilities()
         if method == "POST" and path == "sponsorship":
@@ -1610,12 +1684,25 @@ def main():
     vault = Vault(*vault_values) if any(vault_values) else None
     exchange = Exchange(
         env("EXCHANGE_DB", "/data/exchange.db"),
-        Gateway(env("EXCHANGE_ADMIN", "http://127.0.0.1:15000"), env("EXCHANGE_INFERENCE", "http://127.0.0.1:4000")),
+        Gateway(
+            env("EXCHANGE_ADMIN", "http://127.0.0.1:15000"),
+            env("EXCHANGE_INFERENCE", "http://127.0.0.1:4000"),
+            contributed=bool(env("EXCHANGE_PRIVATE_LISTEN")),
+        ),
         Keys(),
         env("EXCHANGE_AUDIENCE", "concurro-gateway"),
         vault=vault,
     )
     if args.command == "serve":
+        if env("EXCHANGE_PRIVATE_LISTEN"):
+            host, port = env("EXCHANGE_PRIVATE_LISTEN").rsplit(":", 1)
+            if host not in ("127.0.0.1", "::1"):
+                raise ValueError("inference hooks require a loopback listener")
+            exchange.inference.native_database = env("EXCHANGE_NATIVE_LOG")
+            private = Bounded((host, int(port)), InferenceHandler)
+            private.inference, private.max_body = exchange.inference, MAX_BODY
+            private.body_budget = Budget(BODY_BUDGET)
+            threading.Thread(target=private.serve_forever, daemon=True).start()
         threading.Thread(target=reconciling, args=(exchange,), daemon=True).start()
         server(exchange, env("EXCHANGE_LISTEN", "0.0.0.0:8080"), env("EXCHANGE_OPERATOR_TOKEN") or None).serve_forever()
     elif args.command == "list":

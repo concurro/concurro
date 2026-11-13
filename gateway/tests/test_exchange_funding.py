@@ -418,7 +418,7 @@ class FundingTests(StateFixture, HttpFixture, unittest.TestCase):
     def test_private_client_principals_and_sanitized_errors(self):
         """Metadata cannot resolve secrets and provider/private bearer text never enters exceptions."""
         vault = Vault("http://public", "a" * 64, "http://private", "b" * 64)
-        self.assertFalse(hasattr(vault, "resolve"))
+        self.assertTrue(callable(vault.resolve))  # Phase4 now uses the isolated gateway principal.
         with patch("exchange.urllib.request.urlopen", side_effect=OSError("synthetic-secret-marker")):
             with self.assertRaises(Refused) as caught:
                 vault.read("101")

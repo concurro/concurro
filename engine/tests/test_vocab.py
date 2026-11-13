@@ -35,6 +35,8 @@ class VocabularyCompatibilityTests(ExecutorFixture, unittest.TestCase):
                 "merged",
                 "observed_merged",
                 "closed",
+                "awaiting_credentials",
+                "budget_exhausted",
                 "blocked",
                 "stopped",
                 "rejected",
@@ -162,6 +164,8 @@ class VocabularyTests(unittest.TestCase):
                     "merged",
                     "observed_merged",
                     "closed",
+                    "awaiting_credentials",
+                    "budget_exhausted",
                     "blocked",
                     "stopped",
                     "rejected",
@@ -192,7 +196,7 @@ class VocabularyTests(unittest.TestCase):
 
         self.assertEqual(MERGED_STAGES, {"merged", "observed_merged"})
         self.assertEqual(TERMINAL_STAGES, {"merged", "observed_merged", "closed"})
-        self.assertEqual(SUSPENDED_STAGES, {"blocked", "stopped"})
+        self.assertEqual(SUSPENDED_STAGES, {"blocked", "stopped", "awaiting_credentials", "budget_exhausted"})
         self.assertEqual(JUDGED_STAGES, {"rejected", "escalated"})
         for group in (MERGED_STAGES, TERMINAL_STAGES, SUSPENDED_STAGES, JUDGED_STAGES):
             self.assertNotIn("legacy-future-stage", group)

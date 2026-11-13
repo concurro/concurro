@@ -488,6 +488,13 @@ def parked_at(state: dict) -> str:
 
 def alert(stage: str, state: dict) -> dict:
     reason = state.get("reason") or ""
+    if stage in ("awaiting_credentials", "budget_exhausted"):
+        return {
+            "tone": "caution",
+            "title": "Awaiting credentials" if stage == "awaiting_credentials" else "Budget exhausted",
+            "body": reason
+            or "Correct the provider condition, then a writer may retry. Completed work and spending are preserved.",
+        }
     if stage == "blocked":
         return {"tone": "caution", "title": "Blocked", "body": reason or "The task is blocked; a writer can retry."}
     if stage == "stopped":

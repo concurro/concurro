@@ -640,3 +640,17 @@ Phase 3 adds [frozen admissions and provider retirement fences](../docs/proposal
 The production adapter remains org-only; configured contributed calls stop before charge.
 Charged tasks use checkpoint format 9 and Registry schema 7. Optional Exchange metadata/event
 principals, build context changes and forward-migration requirements are documented in that phase note.
+
+## Contributed inference
+
+[Phase 4](../docs/proposals/per-user-credentials/phase-4.md) describes the configured
+four-route injection/observation path and its isolated evidence. Deploy gateway configuration,
+Exchange and Compose together as a roll-forward release. Exchange’s new loopback-only
+`EXCHANGE_PRIVATE_LISTEN=127.0.0.1:8081` serves pre-budget request attribution, exact-version
+resolution and the narrow streaming provider hop; expose no Caddy route for it. Native request
+logs use `/data/requests.db`, metadata only. Exchange reads them from the read-only gateway-data
+mount at `EXCHANGE_NATIVE_LOG=/gateway-data/requests.db`; preserve both databases during recovery.
+The existing separate private vault principal supplies events and material, while metadata auth
+still cannot resolve secrets. Default task funding stays organization-owned; contributed tasks
+require confirmed consent and complete required-route coverage, with no organization fallback.
+Subscription user registration is still unavailable; no live subscription acceptance is claimed.

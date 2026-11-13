@@ -1,23 +1,156 @@
-# yaml-language-server: $schema=https://agentgateway.dev/schema/config
-# Concurro's inference gateway. Provider credentials come from the environment
-# (secrets.env); session keys are minted by the exchange through the admin API,
-# which listens only on this container's loopback.
+# Native model/auth/budget enforcement; private hooks freeze attribution before budget checks.
 config:
-  adminAddr: "127.0.0.1:15000"
-  statsAddr: "127.0.0.1:15020"
+  adminAddr: 127.0.0.1:15000
+  statsAddr: 127.0.0.1:15020
   storage:
     mode: hybrid
   database:
-    url: "sqlite:///data/agentgateway.db"
+    url: sqlite:///data/agentgateway.db
+  logging:
+    format: json
+    level: info,agent_llm=error
+    database:
+      url: sqlite:///data/requests.db
 llm:
-  port: 4000
   policies:
     apiKey:
       mode: strict
       keys: []
+    extAuthz:
+      conditional:
+      - condition: '"concurro.funding" in apiKey && apiKey["concurro.funding"] == "contributed" && request.method
+          != "GET"'
+        host: 127.0.0.1:8081
+        protocol:
+          http:
+            path: '"/resolve"'
+            addRequestHeaders:
+              :method: '"POST"'
+              content-type: '"application/json"'
+            body: '{"session":apiKey["concurro.session"],"request":request.headers["x-concurro-request"]}'
+            metadata:
+              token: response.headers["x-concurro-token"]
+              account: response.headers["x-concurro-account"]
+              route: response.headers["x-concurro-route"]
+              request: response.headers["x-concurro-request"]
+    transformations:
+      conditional:
+      - condition: '"concurro.funding" in apiKey && apiKey["concurro.funding"] == "contributed" && request.method
+          != "GET"'
+        request:
+          set:
+            x-concurro-route: extauthz.route
+            x-concurro-plan: '"contributed"'
   models:
-  # Codex on a ChatGPT subscription, selected by the client's x-concurro-plan header.
-  - name: "gpt-*"
+  - id: contributed-openai-api-key
+    name: '*'
+    provider: openAI
+    passthrough: detect
+    matches:
+    - headers:
+      - name: x-concurro-route
+        value:
+          exact: openai-api-key
+    params:
+      baseUrl: http://127.0.0.1:8081/openai-api-key
+    auth:
+      key:
+        expression: extauthz.token
+        location:
+          header:
+            name: authorization
+            prefix: 'Bearer '
+    requestTransformation:
+      set:
+        x-concurro-request: extauthz.request
+      remove:
+      - x-concurro-plan
+      - x-concurro-route
+      - x-concurro-funding
+      - x-api-key
+  - id: contributed-chatgpt-subscription
+    name: '*'
+    provider: openAI
+    passthrough: detect
+    matches:
+    - headers:
+      - name: x-concurro-route
+        value:
+          exact: chatgpt-subscription
+    params:
+      baseUrl: http://127.0.0.1:8081/chatgpt-subscription
+    auth:
+      key:
+        expression: extauthz.token
+        location:
+          header:
+            name: authorization
+            prefix: 'Bearer '
+    requestTransformation:
+      set:
+        x-concurro-request: extauthz.request
+        chatgpt-account-id: extauthz.account
+      remove:
+      - x-concurro-plan
+      - x-concurro-route
+      - x-concurro-funding
+      - x-api-key
+  - id: contributed-anthropic-api-key
+    name: '*'
+    provider: anthropic
+    passthrough: detect
+    matches:
+    - headers:
+      - name: x-concurro-route
+        value:
+          exact: anthropic-api-key
+    params:
+      baseUrl: http://127.0.0.1:8081/anthropic-api-key
+    auth:
+      key:
+        expression: extauthz.token
+        location:
+          header:
+            name: x-api-key
+            prefix: ''
+    requestTransformation:
+      set:
+        x-concurro-request: extauthz.request
+      remove:
+      - x-concurro-plan
+      - x-concurro-route
+      - x-concurro-funding
+      - authorization
+  - id: contributed-claude-subscription
+    name: '*'
+    provider: anthropic
+    passthrough: detect
+    matches:
+    - headers:
+      - name: x-concurro-route
+        value:
+          exact: claude-subscription
+    params:
+      baseUrl: http://127.0.0.1:8081/claude-subscription
+    auth:
+      key:
+        expression: extauthz.token
+        location:
+          header:
+            name: authorization
+            prefix: 'Bearer '
+    requestTransformation:
+      set:
+        x-concurro-request: extauthz.request
+        anthropic-beta: '"anthropic-beta" in request.headers ? (type(request.headers["anthropic-beta"]) == list
+          ? request.headers["anthropic-beta"].join(",") : request.headers["anthropic-beta"]) + ",oauth-2025-04-20"
+          : "oauth-2025-04-20"'
+      remove:
+      - x-concurro-plan
+      - x-concurro-route
+      - x-concurro-funding
+      - x-api-key
+  - name: gpt-*
     provider: openAI
     passthrough: detect
     matches:
@@ -25,38 +158,99 @@ llm:
       - name: x-concurro-plan
         value:
           exact: chatgpt
+      - name: x-concurro-funding
+        value:
+          exact: org
     params:
-      baseUrl: "https://chatgpt.com/backend-api/codex"
+      baseUrl: https://chatgpt.com/backend-api/codex
     auth:
-      key: "$CHATGPT_ACCESS_TOKEN"
+      key: $CHATGPT_ACCESS_TOKEN
       location:
         header:
           name: authorization
-          prefix: "Bearer "
+          prefix: 'Bearer '
     requestTransformation:
       set:
         chatgpt-account-id: '"$CHATGPT_ACCOUNT_ID"'
       remove:
       - x-concurro-plan
-  # Codex on an OpenAI API key.
-  - name: "gpt-*"
+      - x-concurro-request
+      - x-concurro-funding
+  - name: gpt-*
     provider: openAI
     passthrough: detect
     params:
-      apiKey: "$OPENAI_API_KEY"
-  # Claude Code on a Claude subscription: the OAuth token replaces the client's credential,
-  # and the OAuth beta joins the client's own betas.
-  - name: "claude-*"
+      apiKey: $OPENAI_API_KEY
+    matches:
+    - headers:
+      - name: x-concurro-funding
+        value:
+          exact: org
+    requestTransformation:
+      remove:
+      - x-concurro-request
+      - x-concurro-funding
+  - name: claude-*
     provider: anthropic
     passthrough: detect
     auth:
-      key: "$CLAUDE_OAUTH_TOKEN"
+      key: $CLAUDE_OAUTH_TOKEN
       location:
         header:
           name: authorization
-          prefix: "Bearer "
+          prefix: 'Bearer '
     requestTransformation:
       set:
-        anthropic-beta: '"anthropic-beta" in request.headers ? request.headers["anthropic-beta"] + ",oauth-2025-04-20" : "oauth-2025-04-20"'
+        anthropic-beta: '"anthropic-beta" in request.headers ? request.headers["anthropic-beta"] + ",oauth-2025-04-20"
+          : "oauth-2025-04-20"'
       remove:
       - x-api-key
+      - x-concurro-request
+      - x-concurro-funding
+    matches:
+    - headers:
+      - name: x-concurro-funding
+        value:
+          exact: org
+  gateways:
+  - inference
+gateways:
+  inference:
+    port: 4000
+    extAuthz:
+      host: 127.0.0.1:8081
+      protocol:
+        http:
+          path: '"/start"'
+          addRequestHeaders:
+            :method: '"POST"'
+            content-type: '"application/json"'
+          body: '{"authorization": "authorization" in request.headers ? request.headers["authorization"] : "", "api_key":
+            "x-api-key" in request.headers ? request.headers["x-api-key"] : "", "method": request.method, "path":
+            request.path}'
+          metadata:
+            request: response.headers["x-concurro-request"]
+            funding: response.headers["x-concurro-funding"]
+    transformations:
+      request:
+        set:
+          x-concurro-request: extauthz.request
+          x-concurro-funding: extauthz.funding
+        remove:
+        - x-concurro-route
+        - x-concurro-sponsor
+        - x-concurro-account
+        - x-concurro-token
+        - x-concurro-turn
+        - x-internal-auth
+        - chatgpt-account-id
+frontendPolicies:
+  accessLog:
+    remove:
+    - error
+    add:
+      concurro_request: request.headers["x-concurro-request"]
+      concurro_native_budget: has(proxy.error) && proxy.error.reason == "RateLimit" && proxy.error.message == "Budget
+        exceeded"
+    database:
+      llm: metadata
