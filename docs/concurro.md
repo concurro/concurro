@@ -7,12 +7,18 @@ See [deployment and migration](../gateway/README.md) before updating an existing
 ## Target setup
 
 Configure an existing upstream/fork pair in service settings, with `issues` equal to
-`upstream`, `fork` or `both`. The App needs access to both repositories; writers in the
-selected issue repository enroll work with the `concurro` label. Verify the
+`upstream`, `fork` or `both`. The App needs access to both repositories. Upstream writers
+control enrollment and commands regardless of where the issue lives; users do not need fork
+write permission. Apply the `concurro` label on the selected issue repository to enroll work. Verify the
 [App permissions and webhook subscriptions](../gateway/README.md#target-and-app-prerequisites)
 before enrolling; granting permissions alone does not subscribe the App to events. Concurro never creates
 forks or upstream branches. The current transport supports public repositories only;
 it fetches source anonymously and does not give GitHub write credentials to runners.
+
+When upgrading from issue-repository writer authorization, check active fork-hosted tasks.
+Enrollment, approvals and writer discussion inputs are revalidated against upstream access;
+records from fork-only writers can block a task or require replanning. Re-enroll or re-approve
+with an upstream writer as applicable; deployment does not grant new authority to prior actors.
 
 In the fork's default branch, install:
 

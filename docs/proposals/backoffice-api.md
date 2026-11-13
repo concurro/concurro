@@ -85,14 +85,13 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 | Tier | Rule | Covers |
 | ---- | ---- | ---- |
 | Self | Signed-in user ID | Credentials, own usage, sponsorships, preferences |
-| Reader | Read access to the issue repository | Task summary, plan, reviews, reports, readiness, run diagnostics, raw audit |
+| Reader | Write, maintain or admin access to the target upstream; both repositories visible | Task summary, plan, reviews, reports, readiness, run diagnostics, raw audit |
 | Writer | Same check as `controller.permitted` | Commands, write intents |
 | Operator | Deployment-configured user IDs | Registry status, write resolution, exchange/gateway health, evaluations |
 
-Exposing diagnostics to readers changes the current "transcripts are stored privately"
-guidance in the [inference gateway design](../design/inference-gateway.md). Transcripts
-already must never contain session keys or provider credentials; anything else a job
-prints becomes readable by anyone who can read the issue repository.
+Diagnostics follow the upstream-writer gate, including direct task and turn URLs. Public
+repository visibility alone does not grant backoffice access. Transcripts must never contain
+session keys or provider credentials.
 
 ## Endpoints
 

@@ -132,7 +132,7 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 
 
 class Tasks:
-    """Views for one signed-in user: targets their own token can see, read with the Reader App."""
+    """Views for one signed-in upstream writer, read with the Reader App."""
 
     def __init__(self, settings: Settings, access: Access, user: User, diagnostics=None, read_cache=None):
         """`diagnostics` supplies the recorded turns behind the activity feed and run lists."""
@@ -144,15 +144,21 @@ class Tasks:
 
     # Targets
 
+    def target_access(self, target) -> dict | None:
+        """Return fork metadata only for upstream writers who can see both target repositories."""
+        if not self.access.writable(target.upstream, self.user.login, self.user.id):
+            return None
+        seen = {repository: self.access.repository(repository) for repository in target.repositories}
+        return seen[target.fork] if all(seen.values()) else None
+
     def visible_targets(self) -> list[tuple]:
-        """Configured targets whose repositories this user can see, with the fork's metadata (once per request)."""
+        """Configured targets this upstream writer may access, with the fork's metadata."""
         if self.visible is None:
             self.visible = []
             for target in self.settings.targets:
-                # The Reader App reads every repository of a target, so the user must see them all.
-                seen = {repository: self.access.repository(repository) for repository in target.repositories}
-                if all(seen.values()):
-                    self.visible.append((target, seen[target.fork]))
+                fork = self.target_access(target)
+                if fork is not None:
+                    self.visible.append((target, fork))
         return self.visible
 
     def config(self, fork: str) -> tuple[dict, str]:
@@ -184,19 +190,19 @@ class Tasks:
             "roster": roster,
             "profiles": profiles,
             "config": "\n".join(f"{k}: {v}" for k, v in limits.items()),
-            "writer": self.access.writable(target.fork, self.user.login),
+            "writer": self.access.writable(target.upstream, self.user.login, self.user.id),
         }
 
     def find_target(self, repository: str):
-        """The configured target an issue repository belongs to, if this user can see it."""
+        """The configured target an issue repository belongs to, if this user is an upstream writer."""
         for target in self.settings.targets:
             if repository.lower() in (r.lower() for r in target.issue_repositories) or repository.lower() in (
                 target.upstream.lower(),
                 target.fork.lower(),
             ):
-                seen = {name: self.access.repository(name) for name in target.repositories}
-                if all(seen.values()):
-                    return target, seen[target.fork]
+                fork = self.target_access(target)
+                if fork is not None:
+                    return target, fork
         raise TaskNotFound(f"{repository} is not a Concurro target visible to your account")
 
     # Lists
@@ -275,7 +281,7 @@ class Tasks:
 
     def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
         """The newest recorded turns of these repositories; none without a diagnostics directory."""
-        return self.diagnostics.recent(repositories, limit) if self.diagnostics else []
+        return self.diagnostics.recent(repositories, limit) if self.diagnostics and repositories else []
 
     # One task
 

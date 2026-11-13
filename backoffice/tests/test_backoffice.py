@@ -150,6 +150,58 @@ class SectionTests(unittest.TestCase):
             with TestClient(app_module.create_app(settings(read_cache_dir=Path("/unused")))) as client:
                 self.assertEqual(client.get("/api/health").status_code, 200)
 
+    def test_nonwriters_cannot_read_targets_tasks_or_diagnostics_or_send_commands(self):
+        """Deny direct API access before any task/config/cache/diagnostic reads or service forwarding."""
+        sessions = Sessions()
+        sid = sessions.create("reader-token", USER, 60)
+        access, cache, commands, diagnostics = Mock(), Mock(), Mock(), Mock()
+        access.writable.return_value = False
+        with (
+            patch.object(app_module, "Access", return_value=access),
+            patch.object(app_module, "ReadCache", return_value=cache),
+            patch.object(app_module, "Diagnostics", return_value=diagnostics),
+            TestClient(
+                app_module.create_app(settings(read_cache_dir=Path("/unused")), sessions=sessions, commands=commands),
+                cookies={app_module.SESSION_COOKIE: sid},
+            ) as client,
+        ):
+            self.assertEqual(client.get("/api/overview").json(), {"targets": [], "tasks": [], "activity": []})
+            for repository in ("up/project", "owner/project"):
+                task = f"/api/tasks/{repository}/7"
+                for path in (
+                    f"/api/targets/{repository}",
+                    task,
+                    task + "/turns",
+                    task + "/turns/turn-id/runs",
+                    *(task + "/sections/" + section for section in tasks_module.SECTION_FIELDS),
+                ):
+                    with self.subTest(path=path):
+                        self.assertEqual(client.get(path).status_code, 404)
+                for command in tasks_module.COMMANDS:
+                    self.assertEqual(
+                        client.post(
+                            task + "/commands", json={"command": command}, headers={app_module.CSRF_HEADER: "1"}
+                        ).status_code,
+                        404,
+                    )
+            self.assertTrue(access.writable.call_count)
+            self.assertTrue(
+                all(call.args == ("up/project", USER.login, USER.id) for call in access.writable.call_args_list)
+            )
+            for method in (
+                access.repository,
+                access.get,
+                access.config,
+                access.engine,
+                access.transport,
+                cache.read,
+                commands.send,
+                diagnostics.turns,
+                diagnostics.rows,
+                diagnostics.for_sessions,
+            ):
+                method.assert_not_called()
+
 
 class SettingsTests(unittest.TestCase):
     def test_paths_derive_from_the_public_url(self):
@@ -214,6 +266,7 @@ class CommandTests(unittest.TestCase):
             tasks_module.command_argument("approve", None, lambda: {})
 
     def test_commands_go_to_the_service_with_the_sign_in_token(self):
+        self.enterContext(patch.object(tasks_module.Tasks, "find_target"))
         seen = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -258,6 +311,7 @@ class CommandTests(unittest.TestCase):
 
     def test_uncertain_command_delivery_invalidates_display_data(self):
         """A lost service response may follow a posted command and must invalidate old snapshots."""
+        self.enterContext(patch.object(tasks_module.Tasks, "find_target"))
         sessions = Sessions()
         sid = sessions.create("user-token", USER, 60)
         cache, commands = Mock(), Mock()

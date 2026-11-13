@@ -75,7 +75,7 @@ class DelegatedCommandTests(ServiceFixture, unittest.TestCase):
             self.registry,
             lambda repository: Permissions(),
             lambda repository: self.writer,
-            [KEY[0]],
+            self.settings.targets,
             user=lambda token: ("writer", 42),
             clock=self.clock,
         )

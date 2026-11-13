@@ -227,6 +227,7 @@ def create_app(
             raise HTTPException(422, "unknown command")
         reader = Tasks(settings, Access(reader_app, current.token, connection), current.user)
         repository = f"{owner}/{repo}"
+        reader.find_target(repository)
         try:
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
         except ValueError:

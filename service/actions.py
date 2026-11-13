@@ -24,6 +24,7 @@ from github import NotFound, Transient
 
 from . import transport
 from .settlement import settle
+from .targets import enrollment
 
 log = logging.getLogger("concurro.service")
 
@@ -63,10 +64,11 @@ def github_user(token, connection=transport.connect):
 class Actions:
     """Verify a writer's command, post it as the App's delegated command comment and enqueue the task."""
 
-    def __init__(self, key, registry, reader, writer, issue_repositories, user=github_user, clock=time.time):
+    def __init__(self, key, registry, reader, writer, targets, user=github_user, clock=time.time):
         """`reader(repository)`/`writer(repository)` return that repository's transports."""
         self.key, self.registry, self.reader, self.writer = key, registry, reader, writer
-        self.issue_repositories = {r.lower(): r for r in issue_repositories}
+        self.targets = enrollment(targets)
+        self.issue_repositories = {r.lower(): r for r in self.targets}
         self.user, self.clock = user, clock
 
     def handle(self, authorization, body):
@@ -96,8 +98,9 @@ class Actions:
         if user is None:
             raise Refused(401, "GitHub did not accept the sign-in token")
         login, user_id = user
-        if not self.writable(repository, login):
-            raise Refused(403, f"@{login} does not have write access to {repository}")
+        upstream = self.targets[repository].upstream
+        if not self.writable(upstream, login):
+            raise Refused(403, f"@{login} does not have write access to {upstream}")
         text = delegation.render(self.key, repository, issue, login, user_id, command, secrets.token_hex(16))
         key, path = (repository, issue), f"repos/{repository}/issues/{issue}/comments"
         # Unscheduled, so no poll may find it and no backoff can be shortened: recover it durably.
