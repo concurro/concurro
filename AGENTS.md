@@ -45,8 +45,9 @@ changes need no documentation unless they make existing guidance inaccurate.
   no release compatibility certificate. Legacy implementer-only retry needs local Git
   history. Resume receipts require checkpoint format 6; include that rollback boundary
   in release instructions.
-- Verify CI for the exact release and provide the full-SHA deployment command. Use
-  `bash deploy/deploy.sh service FULL_SHA` (`web FULL_SHA` for a concurro-backoffice release)
-  with an outer `||` failure message; never put `set -e` in the user's interactive shell.
+- Verify CI for the exact releases. Normal updates run in the user's existing host terminal
+  with `update-concurro.sh`; provide `update-concurro.sh SERVICE_FULL_SHA WEB_FULL_SHA` for
+  a selected pair. The workstation `deploy/deploy.sh` remains for individual components.
+  Use an outer `||` failure message; never put `set -e` in the user's interactive shell.
   Before recommending a pilot retry, verify the running service serves that release and
   the target's caller and `gateway.workflow_ref` name the same launcher ref. Never print gateway secrets or tokens.

@@ -34,8 +34,6 @@ if [[ "$component" == service ]]; then
 fi
 await_ci "$source_repo"
 
-# A fixed helper avoids piping shell code through a terminal used for sudo prompts.
-ssh "$host" 'mkdir -p ~/.local/lib/concurro-deploy'
-scp "$script_dir/host.sh" "$host:.local/lib/concurro-deploy/host.sh"
+# The host helper is installed separately with deploy/install.sh.
 ssh -t "$host" "bash ~/.local/lib/concurro-deploy/host.sh $component $release"
 echo "Deployment verified: $component $release. No pilot retry was posted."
