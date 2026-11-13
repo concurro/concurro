@@ -922,13 +922,22 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/metadata/{user_id}")
-    def metadata(user_id: int, at: str | None = None, authorization: Annotated[str | None, Header()] = None) -> dict:
-        """Read nonsecret metadata only with the separately configured service bearer."""
+    def service(authorization: Annotated[str | None, Header()] = None):
+        """Authenticate nonsecret metadata/events without enabling the separate resolver principal."""
         if not service_token or not hmac.compare_digest(
             (authorization or "").encode(), ("Bearer " + service_token).encode()
         ):
             raise VaultError(401, "invalid service credential")
+
+    @app.get("/metadata/events", dependencies=[Depends(service)])
+    def metadata_events(after: int = 0):
+        """Expose the existing immutable nonsecret feed to the service scheduler only."""
+        return store.events(after)
+
+    @app.get("/metadata/{user_id}")
+    def metadata(user_id: int, at: str | None = None, authorization: Annotated[str | None, Header()] = None) -> dict:
+        """Read nonsecret metadata only with the separately configured service bearer."""
+        service(authorization)
         if user_id < 1:
             raise VaultError(422, "invalid user identity")
         return store.metadata(user_id, at)

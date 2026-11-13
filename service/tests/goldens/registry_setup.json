@@ -27,6 +27,16 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE IF NOT EXISTS credential_versions (\n    user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,\n    PRIMARY KEY(user_id,route))",
+      []
+    ],
+    [
+      "execute",
       "CREATE TABLE IF NOT EXISTS funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
       []
     ],
@@ -120,7 +130,7 @@
         ],
         [
           "schema",
-          "7"
+          "8"
         ]
       ]
     ],
@@ -163,12 +173,19 @@
     ],
     [
       "execute",
+      "SELECT repository,issue,document FROM issue_sponsorships",
+      []
+    ],
+    [
+      "execute",
       "COMMIT",
       []
     ]
   ],
   "fresh": {
     "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+    "credential_cursor": "CREATE TABLE credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)",
+    "credential_versions": "CREATE TABLE credential_versions (\n    user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,\n    PRIMARY KEY(user_id,route))",
     "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
     "funding_policies": "CREATE TABLE funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
@@ -285,9 +302,19 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE IF NOT EXISTS credential_versions (\n    user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,\n    PRIMARY KEY(user_id,route))",
+      []
+    ],
+    [
+      "execute",
       "UPDATE meta SET value = ? WHERE name = 'schema'",
       [
-        "7"
+        "8"
       ]
     ],
     [
@@ -319,12 +346,19 @@
     ],
     [
       "execute",
+      "SELECT repository,issue,document FROM issue_sponsorships",
+      []
+    ],
+    [
+      "execute",
       "COMMIT",
       []
     ]
   ],
   "migrated": {
     "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
+    "credential_cursor": "CREATE TABLE credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)",
+    "credential_versions": "CREATE TABLE credential_versions (\n    user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,\n    PRIMARY KEY(user_id,route))",
     "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
     "funding_policies": "CREATE TABLE funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
@@ -394,6 +428,11 @@
     [
       "execute",
       "UPDATE ownership SET live = 0 WHERE live = 1",
+      []
+    ],
+    [
+      "execute",
+      "SELECT repository,issue,document FROM issue_sponsorships",
       []
     ],
     [

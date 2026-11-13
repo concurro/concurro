@@ -1,6 +1,6 @@
 # Proposal: per-user provider credentials
 
-**Status: phases 1–5 implemented; optional refresh and automatic recovery remain later phases.**
+**Status: phases 1–6 implemented; optional credential refresh remains deferred.**
 Current behavior and remaining boundaries are recorded in [phase 4](per-user-credentials/phase-4.md). Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
@@ -302,7 +302,8 @@ Requirements for any of them:
     automatically.
   - **`auth` or `quota_exhausted`** (the credential is unusable): the task waits in
     `awaiting_credentials` and the sponsor is notified. It resumes on `/concurro retry`,
-    or automatically once the portal shows a valid credential (a later phase).
+    or automatically after a newer validated version satisfies current admission checks; see
+    [phase 6](per-user-credentials/phase-6.md).
   - **`budget_denied`** (the gateway session's token budget is spent): this is not a
     credential problem, and a valid credential doesn't fix it. The task blocks as
     `budget_exhausted`, is **never resumed automatically**, and resumes only on a writer's

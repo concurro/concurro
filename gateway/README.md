@@ -659,4 +659,8 @@ mount at `EXCHANGE_NATIVE_LOG=/gateway-data/requests.db`; preserve both database
 The existing separate private vault principal supplies events and material, while metadata auth
 still cannot resolve secrets. Default task funding stays organization-owned; contributed tasks
 require confirmed consent and complete required-route coverage, with no organization fallback.
-Subscription user registration is still unavailable; no live subscription acceptance is claimed.
+Subscription token-paste registration is implemented in phase 5; real backend/account
+acceptance remains pending. [Phase 6](../docs/proposals/per-user-credentials/phase-6.md)
+adds service-principal nonsecret event polling and eligible automatic recovery. Registry
+schema 8 migrates forward; preserve vault event sequence and Registry state when moving
+services. No new secret or recovery enablement setting is required.

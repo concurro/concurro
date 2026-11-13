@@ -118,8 +118,11 @@ class Recovery:
             if previous is None or started - previous >= HISTORY_SECONDS:
                 self.reconciler.poll(strict=True)
                 self.registry.webhook_check(self.scope, started)
-            elif self.reconciler.cleanup is not None:
-                self.reconciler.cleanup()
+            else:
+                if getattr(self.reconciler, "policy_observer", None) is not None:
+                    self.reconciler.policy_observer()
+                if self.reconciler.cleanup is not None:
+                    self.reconciler.cleanup()
             groups = self.deliveries()
             unresolved = False
             for attempts in groups.values():

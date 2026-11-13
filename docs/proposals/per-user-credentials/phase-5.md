@@ -1,5 +1,8 @@
 # Phase 5: pasted subscription credentials
 
+This records the Phase 5 boundary. [Phase 6](phase-6.md) now adds eligible automatic
+credential recovery; the manual-only recovery statements below describe the earlier release.
+
 Both subscription owner PUTs are enabled through the existing authenticated portal/BFF/vault
 path. API-key behavior remains compatible. Production contributed routing and pauses stay on
 the Phase 4 authority path; organization-funded tasks keep org credentials.

@@ -15,11 +15,12 @@ import sponsorship
 from controller import Outcome
 from policy import digest
 
+from . import credential_recovery
 from .errors import RegistryError, RegistryFailure
 from .observations import expected, satisfied
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -44,8 +45,16 @@ SPONSOR_SOURCES = """CREATE TABLE IF NOT EXISTS issue_sponsor_sources (
 SPONSOR_PROJECTIONS = """CREATE TABLE IF NOT EXISTS issue_sponsorships (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,
     confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))"""
+CREDENTIAL_CURSOR = "CREATE TABLE IF NOT EXISTS credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)"
+CREDENTIAL_VERSIONS = """CREATE TABLE IF NOT EXISTS credential_versions (
+    user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,
+    PRIMARY KEY(user_id,route))"""
 SCHEMA = (
-    FUNDING_POLICIES
+    CREDENTIAL_CURSOR
+    + ";"
+    + CREDENTIAL_VERSIONS
+    + ";"
+    + FUNDING_POLICIES
     + ";"
     + SPONSOR_SOURCES
     + ";"
@@ -198,6 +207,8 @@ def _migrate_v2(db):
     db.execute(FUNDING_POLICIES)
     db.execute(SPONSOR_SOURCES)
     db.execute(SPONSOR_PROJECTIONS)
+    db.execute(CREDENTIAL_CURSOR)
+    db.execute(CREDENTIAL_VERSIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -211,6 +222,8 @@ def _migrate_v3(db):
     db.execute(FUNDING_POLICIES)
     db.execute(SPONSOR_SOURCES)
     db.execute(SPONSOR_PROJECTIONS)
+    db.execute(CREDENTIAL_CURSOR)
+    db.execute(CREDENTIAL_VERSIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -325,9 +338,9 @@ class Registry:
                 _migrate_v2(db)
             elif meta["schema"] == "3":
                 _migrate_v3(db)
-            elif meta["schema"] not in ("4", "5", "6", str(SCHEMA_VERSION)):
+            elif meta["schema"] not in ("4", "5", "6", "7", str(SCHEMA_VERSION)):
                 raise RegistryError("registry identity or schema version mismatch")
-            if meta["schema"] in ("4", "5", "6"):
+            if meta["schema"] in ("4", "5", "6", "7"):
                 db.execute("BEGIN IMMEDIATE")
                 if meta["schema"] == "4":
                     db.execute(WEBHOOK_RECOVERY)
@@ -335,6 +348,8 @@ class Registry:
                 db.execute(FUNDING_POLICIES)
                 db.execute(SPONSOR_SOURCES)
                 db.execute(SPONSOR_PROJECTIONS)
+                db.execute(CREDENTIAL_CURSOR)
+                db.execute(CREDENTIAL_VERSIONS)
                 db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
                 db.execute("COMMIT")
         except (RegistryError, sqlite3.Error) as error:
@@ -390,6 +405,27 @@ class Registry:
             for key in db.execute("SELECT repository, issue FROM ownership WHERE live = 1").fetchall():
                 queue(db, tuple(key), "restart", now)
             db.execute("UPDATE ownership SET live = 0 WHERE live = 1")
+            for repository, issue, raw in db.execute(
+                "SELECT repository,issue,document FROM issue_sponsorships"
+            ).fetchall():
+                document = json.loads(raw or "{}")
+                task = document.get("task") or {}
+                key = repository, issue
+                acknowledged = stored(db, "snapshots", key) or {}
+                if (
+                    not task.get("recovery_bootstrapped")
+                    and not task.get("recovery")
+                    and acknowledged.get("_stage") == "awaiting_credentials"
+                    and task.get("funding") == "contributed"
+                    and any(slot.get("sponsor_id") for slot in task.get("slots", {}).values())
+                ):
+                    task["recovery_bootstrapped"] = True
+                    pending = db.execute("SELECT due_at FROM queue WHERE repository=? AND issue=?", key).fetchone()
+                    queue(db, key, "credential-bootstrap", max(now, pending[0] if pending else now))
+                    db.execute(
+                        "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
+                        (json.dumps(document, sort_keys=True), *key),
+                    )
 
     def webhook_check(self, scope, checked=None):
         """Read or advance delivery-history coverage for this App and target configuration."""
@@ -510,7 +546,24 @@ class Registry:
         with self.transaction() as db:
             row = db.execute("SELECT document FROM issue_sponsorships WHERE repository=? AND issue=?", key).fetchone()
             document = json.loads(row[0]) if row and row[0] else dict(projection or {})
+            previous = document.get("task", {}).get("recovery") or {}
+            recovery = state.get("credential_recovery")
+            if recovery and recovery.get("failure_id") == previous.get("failure_id") and "retry_not_before" in previous:
+                recovery = {**recovery, "retry_not_before": previous["retry_not_before"]}
+            if recovery and recovery.get("id") == previous.get("id"):
+                recovery = {**recovery, **{k: previous[k] for k in ("delivery", "enqueued") if k in previous}}
             document["task"] = {
+                "stage": state.get("stage"),
+                "recovery_bootstrapped": document.get("task", {}).get("recovery_bootstrapped", False),
+                "recovery": recovery,
+                "calls": state.get("calls", 0),
+                "usage": [
+                    {
+                        "id": identifier,
+                        **{k: record.get(k) for k in ("provider", "kind", "account", "route", "version", "calls")},
+                    }
+                    for identifier, record in state.get("credentials", {}).items()
+                ],
                 "funding": funding,
                 "last_failure": state.get("provider_failure"),
                 "slots": state.get("sponsorships", {}),
@@ -519,6 +572,7 @@ class Registry:
                 "initialization_pending": state.get("funding_initialization_pending"),
                 "status": state.get("sponsorship_status", "pending"),
             }
+            self.schedule_credential_recovery(db, key, document)
             db.execute(
                 "INSERT INTO issue_sponsorships VALUES (?,?,?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET document=excluded.document",
                 (
@@ -527,6 +581,77 @@ class Registry:
                     int(document.get("status") == "confirmed"),
                     json.dumps(document, sort_keys=True),
                 ),
+            )
+
+    def credential_cursor(self):
+        """Return the service metadata feed's durable acknowledgment, independent of Exchange's cursor."""
+        with self.transaction() as db:
+            row = db.execute("SELECT sequence FROM credential_cursor WHERE id=1").fetchone()
+            return row[0] if row else 0
+
+    def schedule_credential_recovery(self, db, key, document):
+        """Atomically queue one eligible receipt without shortening its recorded retry deadline."""
+        task = document.get("task") or {}
+        if task.get("funding") != "contributed" or task.get("stage") != "awaiting_credentials":
+            return
+        plan = task.get("recovery")
+        versions = {
+            (row[0], row[1]): json.loads(row[2])
+            for row in db.execute("SELECT user_id,route,document FROM credential_versions")
+        }
+        ready = credential_recovery.receipt(plan, versions)
+        if not ready:
+            return
+        outcome = db.execute(
+            "SELECT kind,retry_after,recorded FROM outcomes WHERE repository=? AND issue=?", key
+        ).fetchone()
+        retry_at = outcome[2] + (outcome[1] or 0) if outcome and outcome[0] == "wait-until" else 0
+        ready["due_at"] = max(ready["due_at"], retry_at, plan.get("retry_not_before", 0))
+        plan["retry_not_before"] = ready["due_at"]
+        if plan.get("delivery") != ready:
+            plan.update(delivery=ready, enqueued=False)
+        live = db.execute("SELECT 1 FROM ownership WHERE repository=? AND issue=? AND live=1", key).fetchone()
+        if not live and not plan.get("enqueued"):
+            queue(db, key, "credential-recovery", ready["due_at"])
+            plan["enqueued"] = True
+
+    def credential_events(self, batch):
+        """Commit nonsecret latest-version evidence, queue receipts and feed acknowledgment together."""
+        with self.transaction() as db:
+            current = db.execute("SELECT sequence FROM credential_cursor WHERE id=1").fetchone()
+            after = current[0] if current else 0
+            for event in sorted(batch["events"], key=lambda e: e["sequence"]):
+                if event["sequence"] <= after:
+                    continue
+                actor, route = str(event["user_id"]), event["route"]
+                value = dict(event)
+                if event["type"] == "validated":
+                    value["validation_sequence"] = event["sequence"]
+                elif event["type"] == "rewrapped" and event["status"] == "valid":
+                    prior = db.execute(
+                        "SELECT document FROM credential_versions WHERE user_id=? AND route=?", (actor, route)
+                    ).fetchone()
+                    old = json.loads(prior[0]) if prior else {}
+                    if old.get("version") == event["version"] and old.get("status") == "valid":
+                        value["validation_sequence"] = old.get("validation_sequence")
+                db.execute(
+                    "INSERT INTO credential_versions VALUES(?,?,?,?) ON CONFLICT(user_id,route) "
+                    "DO UPDATE SET sequence=excluded.sequence,document=excluded.document "
+                    "WHERE excluded.sequence>credential_versions.sequence",
+                    (actor, route, event["sequence"], json.dumps(value, sort_keys=True)),
+                )
+            for repository, issue, raw in db.execute(
+                "SELECT repository,issue,document FROM issue_sponsorships"
+            ).fetchall():
+                document = json.loads(raw or "{}")
+                self.schedule_credential_recovery(db, (repository, issue), document)
+                db.execute(
+                    "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
+                    (json.dumps(document, sort_keys=True), repository, issue),
+                )
+            db.execute(
+                "INSERT INTO credential_cursor VALUES(1,?) ON CONFLICT(id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+                (max(after, batch["next"]),),
             )
 
     def request_observation(self, key, comment=None, action="created"):
@@ -627,6 +752,18 @@ class Registry:
             )
             if consume:
                 db.execute("DELETE FROM queue WHERE repository = ? AND issue = ?", key)
+                row = db.execute(
+                    "SELECT document FROM issue_sponsorships WHERE repository=? AND issue=?", key
+                ).fetchone()
+                if row:
+                    document = json.loads(row[0] or "{}")
+                    recovery = document.get("task", {}).get("recovery")
+                    if recovery:
+                        recovery["enqueued"] = False
+                        db.execute(
+                            "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
+                            (json.dumps(document, sort_keys=True), *key),
+                        )
         return generation
 
     def current(self, key):
@@ -674,6 +811,14 @@ class Registry:
                     queue(db, key, "continue", now)
                 elif outcome.kind == "wait-until":
                     queue(db, key, "wait-until", now + (outcome.retry_after or 0))
+            row = db.execute("SELECT document FROM issue_sponsorships WHERE repository=? AND issue=?", key).fetchone()
+            if row:
+                document = json.loads(row[0] or "{}")
+                self.schedule_credential_recovery(db, key, document)
+                db.execute(
+                    "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
+                    (json.dumps(document, sort_keys=True), *key),
+                )
             return True
 
     def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None):

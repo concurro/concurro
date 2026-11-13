@@ -250,4 +250,18 @@ and optional service `vault_metadata_url`/`vault_service_token_path` for one-tim
 availability. Missing history or metadata leaves shadow bookkeeping pending. The private
 `/sponsorships` API supplies issue views through existing user-authenticated command transport.
 See [phase 1](../proposals/per-user-credentials/phase-1.md) for source ordering, migrations,
-separate service-token provisioning and rollback.
+separate service-token provisioning and roll-forward recovery.
+
+## Credential-event recovery
+
+Every delivery-recovery timer tick runs current-policy observation and reads the vault's
+service-authenticated nonsecret
+`/metadata/events` feed. Registry schema 8 atomically persists its cursor, latest validation
+per owner/route and matching task queue receipts. The service has no gateway resolver bearer.
+A paused task records current provider grants, failed versions and its original retry deadline.
+Only eligible `awaiting_credentials` tasks are reconsidered. The owned tick processes writer
+commands/source changes first, then current authority, all selected route coverage, versions
+and budget before any new charge. Duplicate events, wrapping-key rotation and restart do not
+reset retry clocks or make an old failed token newly valid. Other suspended/human stages stay
+writer-controlled. [Phase 6](../proposals/per-user-credentials/phase-6.md) records the exact
+recovery and forward-migration contracts.

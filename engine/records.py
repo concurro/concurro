@@ -266,6 +266,7 @@ class TaskState(TypedDict, total=False):
 
     stage: str
     retry_stage: str
+    credential_recovery: Document  # Recorded consent, validation receipt and automatic retry deadline.
     mode: str
     issue: int
     pr: int

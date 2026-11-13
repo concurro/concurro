@@ -228,5 +228,5 @@ def coverage(routes, slots, metadata):
             status = "unknown"
         else:
             status = "available" if route["model"] in record["models"] else "missing_model"
-        result[provider].append({**route, "status": status})
+        result[provider].append({**route, "status": status, "version": record.get("version") if record else None})
     return result

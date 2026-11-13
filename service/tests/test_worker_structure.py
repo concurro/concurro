@@ -61,6 +61,7 @@ class FailureSequenceTests(unittest.TestCase):
         """Build a worker with observable effects and independently injectable failures."""
         self.trace = []
         worker = Worker.__new__(Worker)
+        worker.sponsorship = None
         worker.guard, worker.failures = Guard(self.trace), Counters(self.trace)
         self.stop_count = 0
 
@@ -219,6 +220,7 @@ class WorkerHelperTests(unittest.TestCase):
     def test_operator_read_points(self):
         """Executor reads before binding validation; cleanup reads before enumerating sessions."""
         worker = Worker.__new__(Worker)
+        worker.sponsorship = None
         worker.settings = SimpleNamespace(
             gateway=SimpleNamespace(url="https://example.invalid", headers={}, operator_token_path=Path("operator"))
         )
@@ -242,6 +244,7 @@ class WorkerHelperTests(unittest.TestCase):
     def test_run_facades_and_acknowledged_stage(self):
         """All three facade calls retain reader order and only fork/upstream receive task_key."""
         worker = Worker.__new__(Worker)
+        worker.sponsorship = None
         trace = []
         worker.guard, worker.failures = Guard(trace), Counters(trace)
         worker.renewing = lambda *args: nullcontext()
@@ -278,6 +281,7 @@ class WorkerHelperTests(unittest.TestCase):
     def test_evaluation_facade_has_no_task_key(self):
         """Evaluation retains its unkeyed facade and always releases before runner cleanup."""
         worker = Worker.__new__(Worker)
+        worker.sponsorship = None
         trace = []
         worker.targets = {KEY[0]: object()}
         worker.gateway = SimpleNamespace(

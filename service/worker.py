@@ -14,7 +14,7 @@ from checkpoint_health import sync_checkpoint_health
 from checkpoints import CheckpointError
 from controller import Controller, config_digest
 from conversation import PublicationError
-from github import Transient
+from github import NotFound, Transient
 from model_config import resolve
 from policy import Blocked
 from relay import ExchangeError, Operator
@@ -174,6 +174,8 @@ class Worker:
 
     def _acknowledge(self, key, snapshot, controller):
         """Acknowledge the pre-tick input with the controller's resulting stage."""
+        if self.sponsorship and controller.state:
+            self.registry.record_shadow(key, controller.state, funding=admissions.mode(controller.config))
         self.registry.acknowledge(key, {**snapshot, "_stage": controller.state["stage"] if controller.state else None})
 
     def _facade(self, repository, issue, generation, task_key=None):
@@ -324,8 +326,13 @@ class Worker:
         for repository in self.targets:
             try:
                 self.load(repository, latest=True)
-            except (Blocked, Transient, ValueError) as error:
+            except (Blocked, NotFound, Transient, ValueError) as error:
                 log.warning("funding policy observation failed (%s)", type(error).__name__)
+        if self.sponsorship:
+            try:
+                self.sponsorship.poll_credentials()
+            except (Transient, ValueError) as error:
+                log.warning("credential recovery observation failed (%s)", type(error).__name__)
 
     def resume_config(self, key, generation, state):
         """Recover the execution pin from the durable checkpoint before any new runner dispatch."""
@@ -471,6 +478,8 @@ class Worker:
                     controller.state["provider_observation"] = max(
                         controller.state.get("provider_observation", 0), observation["sequence"]
                     )
+            if self.sponsorship:
+                self.sponsorship.prepare_recovery(controller, error)
             # The Blocked comment is posted now; a publication failure has the health notice instead.
             controller.suspend(
                 getattr(error, "pause_stage", "blocked"),

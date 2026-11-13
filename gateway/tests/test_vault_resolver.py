@@ -2,6 +2,7 @@
 
 import logging
 import socket
+import sqlite3
 import threading
 import time
 import unittest
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from vault_fixtures import ALICE, BOB, OPENAI, VaultFixture
 
 import vault
+from service.shadow import Metadata
 
 SERVICE, GATEWAY = "a" * 64, "b" * 64
 
@@ -125,3 +127,83 @@ class ResolverTests(VaultFixture, unittest.TestCase):
         for secret in (OPENAI, OPENAI + "2", ALICE, BOB, SERVICE, GATEWAY):
             self.assertNotIn(secret, response.text + str(logs.output) + str(event_page))
         self.assertEqual(private.get("/events", headers={"Authorization": "Bearer " + ALICE}).status_code, 401)
+
+    def test_service_lifecycle_feed_is_nonsecret_and_cannot_resolve(self):
+        """Scheduler feed auth stays on the metadata listener and never grants material resolution."""
+        entry = self.put("openai-api-key", OPENAI).json()
+        public = vault.create_app(self.store, self.identity, vault.Validator(self.transport), SERVICE, (GATEWAY,))
+        with (
+            listeners(public, vault.create_resolver(self.store, GATEWAY)) as (public_url, private_url),
+            httpx.Client() as client,
+        ):
+            response = client.get(
+                public_url + "/metadata/events?after=0", headers={"Authorization": "Bearer " + SERVICE}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["events"][0]["type"], "validated")
+            token_path = self.directory / "metadata-token"
+            token_path.write_text(SERVICE)
+            token_path.chmod(0o600)
+            feed = Metadata(public_url, token_path).events(0)
+            self.assertEqual(feed["events"][0]["user_id"], "101")
+            self.assertNotIn(OPENAI, response.text)
+            self.assertNotIn("fingerprint", response.text)
+            self.transport.accepted.add(OPENAI + "2")
+            replacement = self.put("openai-api-key", OPENAI + "2").json()
+            feed = Metadata(public_url, token_path).events(0)
+            self.assertEqual(
+                [(e["type"], e["status"]) for e in feed["events"]],
+                [("validated", "valid"), ("retired", "retired"), ("validated", "valid")],
+            )
+            self.assertEqual(replacement["version"], 2)
+            self.request("DELETE", "/credentials/openai-api-key")
+            revoked = Metadata(public_url, token_path).events(feed["next"])
+            self.assertEqual(
+                [(e["type"], e["version"], e["status"]) for e in revoked["events"]], [("revoked", 2, "revoked")]
+            )
+            before = len(self.transport.github_calls())
+            for token in (ALICE, GATEWAY, "wrong"):
+                self.assertEqual(
+                    client.get(
+                        public_url + "/metadata/events", headers={"Authorization": "Bearer " + token}
+                    ).status_code,
+                    401,
+                )
+            self.assertEqual(len(self.transport.github_calls()), before)
+            ref = {"user_id": 101, "route": "openai-api-key", "record_id": entry["record_id"], "version": 1}
+            self.assertEqual(
+                client.post(
+                    private_url + "/resolve", json=ref, headers={"Authorization": "Bearer " + SERVICE}
+                ).status_code,
+                401,
+            )
+            self.assertEqual(
+                client.post(
+                    public_url + "/resolve", json=ref, headers={"Authorization": "Bearer " + SERVICE}
+                ).status_code,
+                404,
+            )
+
+    def test_service_feed_accepts_actual_legacy_retired_snapshot(self):
+        """A destroyed legacy row cannot strand the new consumer before later usable credentials."""
+        path = self.directory / "legacy-retired.db"
+        with sqlite3.connect(path) as db:
+            db.execute(vault.SCHEMA)
+            db.execute(
+                "INSERT INTO credentials VALUES(101,'openai-api-key',1,'alice','valid',?,?,?,?,?,?)",
+                ("synthetic-fingerprint", None, None, None, "2000-01-01T00:00:00Z", "2000-01-01T00:00:00Z"),
+            )
+        store = vault.Store(path, self.envelope)
+        self.addCleanup(store.close)
+        public = vault.create_app(store, self.identity, vault.Validator(self.transport), SERVICE, (GATEWAY,))
+        token = self.directory / "legacy-service-token"
+        token.write_text(SERVICE)
+        token.chmod(0o600)
+        with listeners(public, vault.create_resolver(store, GATEWAY)) as (url, _):
+            feed = Metadata(url, token).events(0)
+            self.assertEqual([(e["type"], e["status"]) for e in feed["events"]], [("snapshot", "retired")])
+            store.put(vault.User(101, "alice"), "openai-api-key", OPENAI, ["synthetic-model"])
+            later = Metadata(url, token).events(feed["next"])
+            self.assertEqual(
+                [(e["type"], e["status"], e["version"]) for e in later["events"]], [("validated", "valid", 2)]
+            )

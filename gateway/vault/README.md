@@ -30,6 +30,14 @@ account headers and secrets. Known expiry makes metadata unusable immediately; p
 resolution commits destruction and one `unusable` event before denying. Unknown expiry stays
 unknown. Replacement and revoke affect personal records only; current org sessions are untouched.
 
+## Service metadata events
+
+`GET /metadata/events?after=N` exposes the existing paginated nonsecret lifecycle log on
+the metadata listener using only `VAULT_SERVICE_TOKEN_FILE`. Owner/GitHub and gateway
+bearers are refused without identity lookup. The service stores its own cursor and latest
+validation evidence; it never receives the resolver token. Private `/events` remains available
+to Exchange. See [phase 6](../../docs/proposals/per-user-credentials/phase-6.md).
+
 ## Optional private listener
 
 Existing configuration starts only the public owner/metadata listener on 8090. To expose the

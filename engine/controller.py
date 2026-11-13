@@ -2335,27 +2335,37 @@ class Controller:
             )
         )
 
-    def _validate_authority(self, comments):
+    def _validate_authority(self, comments, stage=None):
         """Check current work authority; the PR guard deliberately checks only open/head."""
         state = self.state
-        if state["stage"] == "merging":
-            state["stage"] = "gates"
+        requested_stage, initial_stage = stage, state["stage"]
+        stage = stage or state["stage"]
+        if stage == "merging":
+            state["stage"] = stage = "gates"
         if not bundle_resume.config_current(state, config_digest(self.config)):
             raise Blocked("controller configuration changed; re-plan required")
         if state.get("mode") == "autonomous":
             if not self.refresh_autonomous(comments):
                 return False
-        elif state["stage"] == "clarify":
+            if requested_stage is None:
+                stage = state["stage"]
+            elif state["stage"] != initial_stage:
+                return False
+        elif stage == "clarify":
             return False
         if state["issue_digest"] != self.issue_digest():
             raise Blocked("issue requirements changed; re-plan required")
-        if state["stage"] in ("intake", "plan", "plan_qc", "implement", "review"):
+        if stage in ("intake", "plan", "plan_qc", "implement", "review"):
             self.require_current_bundle()
         if state.get("mode") == "manual" and state.get("approval"):
             self.check_human_approval(comments)
-        if state["stage"] in ("implement", "publish", "review", "gates") and not approval_valid(state, self.config):
+            if requested_stage is None:
+                stage = state["stage"]
+            elif state["stage"] != initial_stage:
+                return False
+        if stage in ("implement", "publish", "review", "gates") and not approval_valid(state, self.config):
             raise Blocked("approved plan missing or stale")
-        if state.get("head") and state["stage"] != "publish":
+        if state.get("head") and stage != "publish":
             pr = self.pulls.repo(f"pulls/{state['pr']}")
             if pr["state"] != "open" or pr["head"]["sha"] != state["head"]:
                 raise Blocked(reason_guidance.CLOSED_OR_CHANGED_HEAD)
@@ -2414,6 +2424,8 @@ class Controller:
             return True
         if self.state and self.state.get("execution") != self.config["paths"]:
             raise Blocked("Recorded path policy differs from current settings; a writer can use /concurro resume.")
+        if self.sponsorship and self.state and self.state["stage"] == "awaiting_credentials":
+            self.sponsorship.recover(self, comments)
         if not self.state or self.state["stage"] in (
             "planned",
             "awaiting_credentials",

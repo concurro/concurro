@@ -1,6 +1,6 @@
 # Per-user credentials: implementation plan
 
-**Status: phases 1–5 implemented; optional refresh and automatic recovery remain later phases.**
+**Status: phases 1–6 implemented; optional credential refresh remains deferred.**
 See [phase 1](phase-1.md), [phase 2](phase-2.md) and [phase 3](phase-3.md) for shipped runtime/API behavior and migration boundaries.
 Phase 3 froze admissions on actual org paths and exercised contributed enforcement with isolated adapters. Phase 4 now supplies configured production injection and observation; see its runtime record below.
 The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
@@ -617,8 +617,8 @@ current status.
 
 | Category | Required-role behavior |
 | ---- | ---- |
-| Trusted `auth` / `quota_exhausted` | Pause in a new `awaiting_credentials` stage added to `SUSPENDED_STAGES`, reusing `Controller.suspend` and `CommandHandler.retry`; record the failed admission, route and model; notify the sponsor once per pause/version. No automatic credential retry initially. |
-| `rate_limited` with bounded retry-after | Initially writer retry; later a fresh charged attempt after backoff and normal admission. |
+| Trusted `auth` / `quota_exhausted` | Pause in a new `awaiting_credentials` stage added to `SUSPENDED_STAGES`, reusing `Controller.suspend` and `CommandHandler.retry`; record the failed admission, route and model; notify the sponsor once per pause/version. Phase 6 retries only after a newer validated version and current admission checks. |
+| `rate_limited` with bounded retry-after | Phase 6 schedules a fresh charged attempt after the recorded hint and normal admission. |
 | Gateway `budget_denied` | `budget_exhausted`; only a writer retry opens the normal new charged session. A valid credential never auto-resumes this. |
 | `unknown`, ambiguous stream or unattributed failure | Existing uncertainty/session handling; no raw provider text. |
 | Missing/unusable required credential before charge | `awaiting_credentials` without a charge, naming the missing provider consent or exact route, model and role. |
@@ -648,7 +648,7 @@ publication; ownership or execution-authority loss still stops optional work. Pr
 reports, findings, approvals, publication outboxes, transcripts and spent counters.
 Unfinished workspace retention remains separate work.
 
-Automatic recovery is a later release. Vault events wake only tasks paused for that
+[Phase 6](phase-6.md) implements automatic recovery. Vault events wake only tasks paused for that
 provider/sponsor/route and recorded consent, through `Registry.enqueue`; the woken tick
 rechecks current slots, withdrawal cutoffs, authority, coverage, epochs and budget before any new
 charge. Backoff survives restart and duplicate

@@ -93,6 +93,7 @@ def output_repair_pending(state: TaskState) -> object:
 def acknowledge_provider_pause(state: TaskState) -> None:
     """A successful writer recovery acknowledges the pause, retaining pending session cleanup."""
     state.pop("provider_pause_pending", None)
+    state.pop("credential_recovery", None)
 
 
 class CommandHandler:

@@ -21,6 +21,7 @@ from model_config import resolve
 from policy import Blocked, CredentialsUnavailable, ProviderFailure, digest
 from relay import ExchangeError
 
+from . import credential_recovery
 from .failures import backoff
 from .reconciler import pages
 from .settings import CHECKOUT
@@ -42,19 +43,27 @@ class Metadata:
         """Keep token bytes outside configuration, checkpoints and exceptions."""
         self.url, self.token_path = url.rstrip("/"), token_path
 
-    def read(self, actor, at=None):
-        """Return status/model evidence at the initiation boundary, never secret-bearing provider output."""
+    def get(self, path):
+        """Fetch one private nonsecret response without caching or exposing credential bytes."""
         try:
             token = bytes.fromhex(private.read(self.token_path, (CHECKOUT,)).decode().strip())
             if len(token) != 32:
                 raise ValueError()
             token = token.hex()
             request = urllib.request.Request(
-                self.url + "/metadata/" + str(int(actor)) + ("?" + urllib.parse.urlencode({"at": at}) if at else ""),
+                self.url + path,
                 headers={"Authorization": "Bearer " + token},
             )
             with urllib.request.urlopen(request, timeout=10) as response:
                 value = json.load(response)
+            return value
+        except (Blocked, OSError, ValueError, urllib.error.URLError):
+            raise Transient("sponsorship metadata unavailable") from None
+
+    def read(self, actor, at=None):
+        """Return allow-listed evidence at the initiation boundary, never provider material."""
+        try:
+            value = self.get("/metadata/" + str(int(actor)) + ("?" + urllib.parse.urlencode({"at": at}) if at else ""))
             if (
                 not isinstance(value, dict)
                 or not isinstance(value.get("history_complete"), bool)
@@ -83,6 +92,38 @@ class Metadata:
             ]
         except (Blocked, OSError, ValueError, urllib.error.URLError):
             raise Transient("sponsorship metadata unavailable") from None
+
+    def events(self, after):
+        """Read strictly typed lifecycle metadata with the existing service principal only."""
+        value = self.get("/metadata/events?after=" + str(after))
+        try:
+            rows, cursor, more = value["events"], value["next"], value["more"]
+            if not isinstance(rows, list) or type(cursor) is not int or cursor < after or type(more) is not bool:
+                raise ValueError()
+            fields = {"sequence", "id", "record_id", "user_id", "route", "version", "type", "status", "reason", "at"}
+            for row in rows:
+                if (
+                    not isinstance(row, dict)
+                    or type(row.get("sequence")) is not int
+                    or row["sequence"] < 1
+                    or row["sequence"] > cursor
+                    or type(row.get("version")) is not int
+                    or row["version"] < 1
+                    or not str(row.get("user_id", "")).isdigit()
+                    or row.get("route") not in sponsorship.ROUTES
+                    or row.get("status") not in ("valid", "invalid", "revoked", "retired")
+                    or row.get("type") not in ("validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
+                ):
+                    raise ValueError()
+            if cursor != max([after] + [row["sequence"] for row in rows]) or more and cursor == after:
+                raise ValueError()
+            return {
+                "events": [{**{k: row.get(k) for k in fields}, "user_id": str(row["user_id"])} for row in rows],
+                "next": cursor,
+                "more": more,
+            }
+        except (ValueError, TypeError, KeyError):
+            raise Transient("sponsorship events unavailable") from None
 
 
 class Shadow:
@@ -148,6 +189,22 @@ class Shadow:
         if routes:
             slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
             projection["coverage"] = self.coverage(routes, slots)
+        projection["recovery"] = projection.get("task", {}).get("recovery")
+        projection["charged_calls"] = [
+            {
+                "id": row.get("id"),
+                "kind": row.get("kind"),
+                "calls": row.get("calls"),
+                "profile": row.get("provider"),
+                "route": row.get("route"),
+                "version": row.get("version"),
+                "provider": sponsorship.ROUTES.get(row.get("route"), {}).get("sponsorship_provider"),
+                "sponsor": row.get("account") if row.get("kind") == "contributed" else None,
+            }
+            for row in projection.get("task", {}).get("usage", [])
+        ]
+        projection["calls"] = projection.get("task", {}).get("calls")
+        projection["task_stage"] = projection.get("task", {}).get("stage")
         projection["task_status"] = projection.get("task", {}).get("status")
         if projection.get("task"):
             projection["funding"] = projection["task"]["funding"]
@@ -173,6 +230,89 @@ class Shadow:
         ]
         return projection
 
+    def poll_credentials(self):
+        """Consume nonsecret pages on the existing observation poll; never resolve a token."""
+        if self.metadata is None:
+            return
+        while True:
+            after = self.registry.credential_cursor()
+            batch = self.metadata.events(after)
+            self.registry.credential_events(batch)
+            if not batch["more"]:
+                return
+            if batch["next"] <= after:
+                raise Transient("sponsorship event pagination did not advance")
+
+    def prepare_recovery(self, controller, error=None):
+        """Freeze current consent and failure requirements without changing spent work or authority."""
+        state = controller.state
+        if error is not None and getattr(error, "pause_stage", None) != "awaiting_credentials":
+            state.pop("credential_recovery", None)
+            return
+        view = state
+        if error is not None:
+            view = {
+                **state,
+                "stage": "awaiting_credentials",
+                "retry_stage": state.get("retry_stage")
+                if state["stage"] in ("awaiting_credentials", "blocked", "stopped", "budget_exhausted")
+                else state["stage"],
+            }
+        plan = credential_recovery.intent(
+            view,
+            controller.config,
+            self.registry.clock(),
+            getattr(error, "observations", []) if error is not None else None,
+        )
+        if plan is not None:
+            state["credential_recovery"] = plan
+
+    def recover(self, controller, comments):
+        """Resume only a ready recorded receipt after current authority and whole-roster coverage checks."""
+        state = controller.state
+        if not state or state.get("stage") != "awaiting_credentials":
+            return
+        prior = deepcopy(state.get("credential_recovery"))
+        self.prepare_recovery(controller)
+        if state.get("credential_recovery") != prior:
+            controller.save()
+        key = controller.config["repository"], state["issue"]
+        self.registry.record_shadow(key, state, funding=admissions.mode(controller.config))
+        plan = state.get("credential_recovery")
+        projected = self.registry.sponsorship(key).get("task", {}).get("recovery") or {}
+        delivery = projected.get("delivery")
+        if not plan or not delivery or projected.get("id") != plan["id"] or delivery["id"] == plan.get("consumed"):
+            return
+        if self.registry.clock() < delivery["due_at"]:
+            return
+        if state["calls"] >= controller.config["max_model_calls"]:
+            plan.update(consumed=delivery["id"], status="budget requires writer attention")
+            controller.save()
+            return
+        target = state["retry_stage"]
+        try:
+            self.preflight(controller, [], recovering=True)
+            if not controller._validate_authority(comments, stage=target):
+                if state.get("stage") == "awaiting_credentials":
+                    plan.update(consumed=delivery["id"], status="authority requires writer attention")
+                    controller.save()
+                return
+            if state.get("stage") != "awaiting_credentials":
+                return
+        except ProviderFailure:
+            raise
+        except CredentialsUnavailable as error:
+            state.update(stage="awaiting_credentials", reason=str(error))
+            plan.update(consumed=delivery["id"], status="coverage still unavailable")
+            controller.save()
+            return
+        state["stage"] = target
+        state.pop("provider_pause_pending", None)
+        state.pop("retry_stage", None)
+        state.pop("reason", None)
+        plan.update(consumed=delivery["id"], status="resumed")
+        controller.save()
+
     def retire_pending(self, controller):
         """Confirm exact failed-session retirement before any replacement admission."""
         pending = controller.state.get("provider_retire_sessions", [])
@@ -181,13 +321,13 @@ class Shadow:
             pending.remove(session)
             controller.save()
 
-    def preflight(self, controller, requests):
+    def preflight(self, controller, requests, *, recovering=False):
         """Select all required frozen payer versions before any reservation is charged."""
         try:
             key = controller.config["repository"], controller.state["issue"]
             controller.state.pop("provider_observations", None)  # The durable outbox owns full history.
             self.retire_pending(controller)
-            if controller.state.get("provider_pause_pending"):
+            if controller.state.get("provider_pause_pending") and not recovering:
                 raise ProviderFailure(controller.state["provider_failure"])
             if hasattr(self.operator(), "observations"):
                 observation_reply = self.operator().observations(*key)
@@ -307,6 +447,17 @@ class Shadow:
                     or record.get("kind") != sponsorship.ROUTES[route]["kind"]
                 ):
                     raise CredentialsUnavailable(f"{detail}: provider credential is unavailable", requirement)
+                if recovering:
+                    minimum = max(
+                        (
+                            item["minimum_version"]
+                            for item in controller.state["credential_recovery"]["requirements"]
+                            if item["sponsor"] == actor and item["route"] == route
+                        ),
+                        default=0,
+                    )
+                    if type(record.get("version")) is not int or record["version"] <= minimum:
+                        raise Transient(f"{detail}: validated credential version is not yet current")
                 if not isinstance(record.get("models"), list) or any(
                     not isinstance(model, str) for model in record["models"]
                 ):
