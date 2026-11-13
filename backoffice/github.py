@@ -18,6 +18,8 @@ from service.transport import StaticCredential, Transport
 # Repository metadata as each user's token sees it, briefly.
 REPOSITORY_SECONDS = 60
 REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
+# UI command affordances only; the service authorizes every submitted command afresh.
+PERMISSIONS: dict[tuple[str, str, str], tuple[float, bool]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 # The 100 most recently updated pull requests with line counts and their head commit's check runs.
@@ -89,12 +91,18 @@ class Access:
         return found
 
     def writable(self, repository: str, login: str) -> bool:
-        """Whether `login` may give writer commands: the service's and engine's check."""
+        """Briefly cache the user's command affordance; command execution rechecks permission in the service."""
+        key = (hashlib.sha256(self.user_token.encode()).hexdigest(), repository.lower(), login)
+        cached = PERMISSIONS.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
         try:
             found = self.get(repository, f"collaborators/{quote(login, safe='')}/permission")
+            allowed = isinstance(found, dict) and found.get("permission") in WRITER_PERMISSIONS
         except NotFound:
-            return False
-        return isinstance(found, dict) and found.get("permission") in WRITER_PERMISSIONS
+            allowed = False
+        PERMISSIONS[key] = (time.monotonic() + REPOSITORY_SECONDS, allowed)
+        return allowed
 
     def pull_requests(self, repository: str) -> list[dict]:
         """Recently updated pull requests: `number`, `title`, `open`, `draft`, `ref`, `sha`, `additions`,

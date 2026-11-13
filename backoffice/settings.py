@@ -1,6 +1,7 @@
 """Backoffice settings: a JSON file outside the repository, validated before anything starts."""
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,6 +16,7 @@ FIELDS = {
     "reader",
     "targets",
     "diagnostics_dir",
+    "read_cache_dir",
     "vault_url",
     "static_dir",
     "service_url",
@@ -45,6 +47,8 @@ class Settings:
     targets: tuple[Target, ...]
     reader: Reader
     diagnostics_dir: Path | None = None
+    # Rebuildable issue snapshots; separate from the service registry and diagnostics.
+    read_cache_dir: Path | None = None
     vault_url: str | None = None
     static_dir: Path | None = None
     # The service's internal address for commands; defaults to `http://concurro-service:8787`.
@@ -97,12 +101,17 @@ def load(path: str | Path) -> Settings:
     except service_settings.SettingsError as error:
         raise SettingsError(str(error)) from None
     optional_path = {k: Path(data[k]) if data.get(k) else None for k in ("diagnostics_dir", "static_dir")}
+    cache_dir = data.get("read_cache_dir", os.environ.get("CONCURRO_READ_CACHE_DIR"))
+    if cache_dir == "":
+        cache_dir = None
+    require(cache_dir is None or isinstance(cache_dir, str) and bool(cache_dir), "read_cache_dir")
     return Settings(
         public_url=url.rstrip("/"),
         client_id=data["client_id"],
         client_secret=secret,
         targets=tuple(targets),
         reader=Reader(app_id, key, tuple(targets)),
+        read_cache_dir=Path(cache_dir) if cache_dir else None,
         vault_url=data.get("vault_url") or None,
         service_url=data.get("service_url") or None,
         **optional_path,

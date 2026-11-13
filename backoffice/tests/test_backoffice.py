@@ -4,12 +4,13 @@ import base64
 import io
 import json
 import shutil
+import sqlite3
 import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +144,12 @@ class SectionTests(unittest.TestCase):
             client.get(path.replace("summary", "pull"))
             view.assert_called_with("up/project", 7, "pull")
 
+    def test_unavailable_cache_does_not_stop_api_startup(self):
+        """An optional cache mount failure leaves authentication and direct endpoints available."""
+        with patch.object(app_module, "ReadCache", side_effect=sqlite3.DatabaseError("corrupt")):
+            with TestClient(app_module.create_app(settings(read_cache_dir=Path("/unused")))) as client:
+                self.assertEqual(client.get("/api/health").status_code, 200)
+
 
 class SettingsTests(unittest.TestCase):
     def test_paths_derive_from_the_public_url(self):
@@ -169,6 +176,8 @@ class SettingsTests(unittest.TestCase):
         configured = loaded(app_id=7, private_key_path=str(key))
         self.assertEqual((configured.reader.app_id, configured.reader.private_key_path), (7, key))
         self.assertEqual(configured.reader.targets, configured.targets)
+        with patch.dict("os.environ", {"CONCURRO_READ_CACHE_DIR": str(root / "reads")}):
+            self.assertEqual(loaded(app_id=7, private_key_path=str(key)).read_cache_dir, root / "reads")
         key.chmod(0o644)
         for reader, field in (
             ({"app_id": 7, "private_key_path": str(key)}, "reader.private_key_path"),
@@ -218,15 +227,22 @@ class CommandTests(unittest.TestCase):
         service = ServiceCommands("http://service.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
         sessions = Sessions()
         sid = sessions.create("user-token", USER, 60)
-        client = TestClient(
-            app_module.create_app(
-                settings(), oauth=FakeOAuth(), vault=Vault(None), sessions=sessions, commands=service
-            ),  # type: ignore[arg-type]
-            cookies={app_module.SESSION_COOKIE: sid},
-        )
+        cache = Mock()
+        with patch.object(app_module, "ReadCache", return_value=cache):
+            client = TestClient(
+                app_module.create_app(
+                    settings(read_cache_dir=Path("/unused")),
+                    oauth=FakeOAuth(),
+                    vault=Vault(None),
+                    sessions=sessions,
+                    commands=service,
+                ),  # type: ignore[arg-type]
+                cookies={app_module.SESSION_COOKIE: sid},
+            )
         headers = {app_module.CSRF_HEADER: "1"}
         posted = client.post("/api/tasks/up/project/7/commands", json={"command": "stop"}, headers=headers)
         self.assertEqual((posted.status_code, posted.json()["posted"]), (200, "/concurro stop"))
+        cache.invalidate.assert_called_once_with("up/project", 7)
         self.assertEqual(seen[0][:2], ("/actions", "Bearer user-token"))
         self.assertEqual(seen[0][2], {"repository": "up/project", "issue": 7, "command": "stop", "argument": None})
         invalid = client.post(
@@ -237,6 +253,25 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(
             (refused.status_code, refused.json()["detail"]), (403, "@octo does not have write access to up/project")
         )
+
+        cache.invalidate.assert_called_once_with("up/project", 7)
+
+    def test_uncertain_command_delivery_invalidates_display_data(self):
+        """A lost service response may follow a posted command and must invalidate old snapshots."""
+        sessions = Sessions()
+        sid = sessions.create("user-token", USER, 60)
+        cache, commands = Mock(), Mock()
+        commands.send.side_effect = CommandError(502, "uncertain", may_have_posted=True)
+        with patch.object(app_module, "ReadCache", return_value=cache):
+            with TestClient(
+                app_module.create_app(settings(read_cache_dir=Path("/unused")), sessions=sessions, commands=commands),
+                cookies={app_module.SESSION_COOKIE: sid},
+            ) as client:
+                reply = client.post(
+                    "/api/tasks/up/project/7/commands", json={"command": "stop"}, headers={app_module.CSRF_HEADER: "1"}
+                )
+                self.assertEqual(reply.status_code, 502)
+                cache.invalidate.assert_called_once_with("up/project", 7)
 
     def test_only_failures_before_delivery_say_nothing_was_posted(self):
         for error, status, text in (
@@ -253,6 +288,7 @@ class CommandTests(unittest.TestCase):
                 service.send("user-token", "up/project", 7, "stop", None)
             self.assertEqual(failed.exception.status, status)
             self.assertIn(text, failed.exception.reason)
+            self.assertEqual(failed.exception.may_have_posted, status == 502)
 
 
 class CredentialTests(unittest.TestCase):

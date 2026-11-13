@@ -623,3 +623,12 @@ sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --confi
 An edge installed before domain sites existed needs the current `Caddyfile`, `compose.yaml`
 and hook first, and `sudo docker compose -f /etc/edge/compose.yaml up -d` to mount
 `/etc/edge/domains`.
+
+### Backoffice issue read cache
+
+The backoffice image uses `/var/lib/concurro/backoffice` for rebuildable issue metadata and
+verified checkpoint summaries. Compose retains it in the `backoffice-data` named volume,
+separately from the service registry and diagnostics. The image seeds directory ownership for
+uid 65533. `read_cache_dir` in backoffice settings overrides `CONCURRO_READ_CACHE_DIR`; custom
+paths need a corresponding writable mount. See [issue-page loading](../backoffice/README.md#issue-page-loading)
+for refresh and invalidation behavior. This cache does not alter engine checkpoint formats.

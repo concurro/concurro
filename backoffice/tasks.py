@@ -6,17 +6,20 @@ the same audit identity and restore only the evidence needed by the selected dis
 
 import hashlib
 import json
+import logging
 import re
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import UTC, datetime
 
 import report_store
-from checkpoints import MARKER, Checkpoints
+from checkpoints import MARKER, CheckpointError, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
 from report_store import Cache
+from storage_helpers import owned
 from vocab import Stage
 
 from . import activity
@@ -24,6 +27,8 @@ from .auth import User
 from .github import Access
 from .runs import Runs
 from .settings import Settings
+
+log = logging.getLogger("concurro.backoffice")
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
 REPORTS = Cache()
@@ -94,6 +99,7 @@ class ReadCheckpoints(Checkpoints):
         state = super().load(comments)
         if state is not None and self.fields is not None:
             self.trim(state)
+            state["_audit"] = self.reference() if self.audit else None
         return state
 
     def read(self, number, kind):
@@ -128,10 +134,11 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 class Tasks:
     """Views for one signed-in user: targets their own token can see, read with the Reader App."""
 
-    def __init__(self, settings: Settings, access: Access, user: User, diagnostics=None):
+    def __init__(self, settings: Settings, access: Access, user: User, diagnostics=None, read_cache=None):
         """`diagnostics` supplies the recorded turns behind the activity feed and run lists."""
         self.settings, self.access, self.user = settings, access, user
         self.diagnostics = diagnostics
+        self.read_cache = read_cache
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
 
@@ -272,42 +279,99 @@ class Tasks:
 
     # One task
 
-    def state(self, repository: str, number: int, section: str | None = None) -> dict | None:
+    def state(
+        self, repository: str, number: int, section: str | None = None, *, comments=None, config=None, refresh=False
+    ) -> dict | None:
         """Load verified evidence for a full task or one display section."""
-        target, _ = self.find_target(repository)
-        config = self.task_config(target, repository)
+        if config is None:
+            target, _ = self.find_target(repository)
+            config = self.task_config(target, repository)
         github = self.access.engine(repository)
-        comments = github.pages(f"issues/{number}/comments")
+        if comments is None:
+            comments = github.pages(f"issues/{number}/comments")
         author = Identities(config).author("state")
-        # The checkpoint comment pins the audit artifact by digest: the same comment means the same state.
-        pins = [c["body"] for c in comments if (c.get("user") or {}).get("login") == author and MARKER in c["body"]]
+        # A cached view retains its verified audit identity; explicit refreshes re-read the mutable audit.
+        pins = [c["body"] for c in owned(comments, author, MARKER, "user")]
         fields = None if section is None else frozenset(SECTION_FIELDS["summary"] | SECTION_FIELDS[section])
         key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest(), fields)
-        if pins and key in STATES:
+        if pins and key in STATES and not refresh:
             return deepcopy(STATES[key])
         state = ReadCheckpoints(github, config, number, report_cache=REPORTS, fields=fields).load(comments)
         if state is not None and section is not None:
-            state["_revision"] = key[2]
+            state["_revision"] = hashlib.sha256(
+                json.dumps([key[2], state.get("_audit")], sort_keys=True).encode()
+            ).hexdigest()
         if pins and state is not None:
             STATES[key] = deepcopy(state)
             while len(STATES) > STATE_ENTRIES:
                 STATES.pop(next(iter(STATES)))
         return state
 
+    def snapshot(self, repository, number, config):
+        """Fetch issue metadata and only owned checkpoint comments, then verify the lightweight state."""
+        with ThreadPoolExecutor(2) as pool:
+            issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
+            comments = self.access.engine(repository).pages(f"issues/{number}/comments")
+            issue = issue_read.result()
+        author = Identities(config).author("state")
+        comments = owned(comments, author, MARKER, "user")
+        state = self.state(repository, number, "summary", comments=comments, config=config, refresh=True)
+        return {"issue": issue, "comments": comments, "state": state}
+
     def task_view(self, repository: str, number: int, section: str | None = None) -> dict:
         """Read a full legacy task or one independently rendered section."""
         target, fork = self.find_target(repository)
         self.config(target.fork)
-        with ThreadPoolExecutor(3) as pool:
-            issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
-            state_read = pool.submit(self.state, repository, number, section)
-            record_read = pool.submit(self.target_record, target, fork) if section in (None, "summary") else None
+        cache_status = None
+        if self.read_cache is not None and section is not None:
+            config = self.task_config(target, repository)
+            scope = hashlib.sha256(
+                json.dumps([1, self.settings.reader.app_id, config], sort_keys=True).encode()
+            ).hexdigest()
+            load = lambda: self.snapshot(repository, number, config)
             try:
-                issue = issue_read.result()
-            except NotFound:
-                raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
-            state = state_read.result()
-            record = record_read.result() if record_read else None
+                snapshot, cache_status = self.read_cache.read(scope, repository, number, load)
+                if SECTION_FIELDS[section] <= SECTION_FIELDS["summary"]:
+                    state = snapshot["state"]
+                else:
+                    try:
+                        state = self.state(repository, number, section, comments=snapshot["comments"], config=config)
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit") and not cache_status[
+                            "error"
+                        ]:
+                            state = self.state(
+                                repository, number, section, comments=snapshot["comments"], config=config, refresh=True
+                            )
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit"):
+                            raise CheckpointError("concurrent_change")
+                    except CheckpointError:
+                        if cache_status["error"]:
+                            raise
+                        # The audit artifact can advance before a cached checkpoint pointer is refreshed.
+                        snapshot, cache_status = self.read_cache.read(scope, repository, number, load, refresh=True)
+                        if cache_status["error"]:
+                            raise
+                        state = self.state(
+                            repository, number, section, comments=snapshot["comments"], config=config, refresh=True
+                        )
+                        if (state or {}).get("_audit") != (snapshot["state"] or {}).get("_audit"):
+                            raise CheckpointError("concurrent_change")
+                issue = snapshot["issue"]
+                record = self.target_record(target, fork) if section == "summary" else None
+            except (sqlite3.Error, OSError):
+                log.warning("issue read cache unavailable; reading GitHub directly")
+                cache_status = None
+        if cache_status is None:
+            with ThreadPoolExecutor(3) as pool:
+                issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
+                state_read = pool.submit(self.state, repository, number, section)
+                record_read = pool.submit(self.target_record, target, fork) if section in (None, "summary") else None
+                try:
+                    issue = issue_read.result()
+                except NotFound:
+                    raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
+                state = state_read.result()
+                record = record_read.result() if record_read else None
         if state is None and not stage_label(issue):
             raise TaskNotFound(f"{repository}#{number} is not enrolled in Concurro")
         config, _ = self.config(target.fork)
@@ -326,7 +390,11 @@ class Tasks:
             task["revision"] = hashlib.sha256(
                 json.dumps([(state or {}).get("_revision"), issue["updated_at"]]).encode()
             ).hexdigest()
-        return {"task": task, **({"target": record} if record is not None else {})}
+        return {
+            "task": task,
+            **({"target": record} if record is not None else {}),
+            **({"cache": cache_status} if cache_status else {}),
+        }
 
     def pull(self, upstream: str, state: dict) -> dict:
         number = state["pr"]

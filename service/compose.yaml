@@ -44,6 +44,7 @@ services:
       dockerfile: backoffice/Dockerfile
     volumes:
       - /etc/concurro/backoffice:/etc/concurro/backoffice:ro
+      - backoffice-data:/var/lib/concurro/backoffice
       - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
     networks:
       edge:
@@ -91,3 +92,6 @@ networks:
   edge:
     external: true
     name: edge
+
+volumes:
+  backoffice-data:
