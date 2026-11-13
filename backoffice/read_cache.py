@@ -147,7 +147,7 @@ class ReadCache:
         except sqlite3.Error:
             raise
         except Exception as error:
-            kind, code, delay = "internal", None, 0
+            kind, code, delay = "internal", None, RETRY_SECONDS
             message = "The latest issue refresh failed."
             if isinstance(error, Transient):
                 kind, code, delay, message = (
