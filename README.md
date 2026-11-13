@@ -1,4 +1,6 @@
-# Concurro
+<h1 align="center">
+  <img src="docs/assets/concurro-banner.png" alt="Concurro: your AI team, from issue to PR" width="100%">
+</h1>
 
 Concurro takes a GitHub issue through planning, implementation and independent AI review,
 then hands a pull request to maintainers. Separate agent sessions develop the plan,
