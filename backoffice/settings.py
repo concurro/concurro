@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import private
+from service.settings import CHECKOUT
 from service.targets import Target
 
 FIELDS = {
@@ -16,6 +18,8 @@ FIELDS = {
     "vault_url",
     "static_dir",
     "service_url",
+    "auth_state_dir",
+    "auth_key_path",
 }
 REQUIRED = {"public_url", "client_id", "client_secret_path", "targets"}
 
@@ -37,6 +41,9 @@ class Settings:
     static_dir: Path | None = None
     # The service's internal address for commands; defaults to `http://concurro-service:8787`.
     service_url: str | None = None
+    # Optional encrypted GitHub logout retry state; neither field changes provider credentials.
+    auth_state_dir: Path | None = None
+    auth_key_path: Path | None = None
 
     @property
     def base_path(self) -> str:
@@ -77,7 +84,18 @@ def load(path: str | Path) -> Settings:
         require(isinstance(entry, dict) and set(entry) == {"upstream", "fork", "issues"}, "targets")
         require(entry["issues"] in ("upstream", "fork", "both"), "targets.issues")
         targets.append(Target(**entry))
-    optional_path = {k: Path(data[k]) if data.get(k) else None for k in ("diagnostics_dir", "static_dir")}
+    optional_path = {
+        k: Path(data[k]) if data.get(k) else None
+        for k in ("diagnostics_dir", "static_dir", "auth_state_dir", "auth_key_path")
+    }
+    require(bool(optional_path["auth_state_dir"]) == bool(optional_path["auth_key_path"]), "auth_state")
+    if optional_path["auth_state_dir"]:
+        try:
+            private.outside(optional_path["auth_state_dir"], (CHECKOUT,))
+            key = bytes.fromhex(private.read(optional_path["auth_key_path"], (CHECKOUT,)).decode().strip())
+            require(len(key) == 32, "auth_key_path")
+        except Exception:
+            raise SettingsError("invalid settings field: auth_state") from None
     return Settings(
         public_url=url.rstrip("/"),
         client_id=data["client_id"],

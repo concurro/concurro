@@ -22,13 +22,16 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | ---- | ---- | ---- |
 | GET | `/auth/login?next=/path` | Redirect to GitHub |
 | GET | `/auth/callback` | Session cookie, redirect to `next` |
-| POST | `/auth/logout` | Ends the session |
+| POST | `/auth/logout` | `{signedOut, remote}`; checked write header, local-first logout |
+| GET | `/auth/logout-status` | Anonymous remote cleanup status |
 | GET | `/api/me` | `{id, login, name, avatarUrl}` |
-| GET | `/api/overview` | `{targets, tasks, activity}` |
-| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, runs}` |
-| GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target}` |
+| GET | `/api/overview` | `{targets, tasks, issues, activity}` |
+| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, runs}` |
+| GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target, issueWriter}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
 | POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}` |
+| GET | `/api/repos/{owner}/{repo}/issues/{issue}` | `{issue, target, issueWriter}` without requiring a checkpoint |
+| GET | `/api/me/sponsorships` | Visible current/historical provider consent for your stable actor ID |
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |
@@ -68,5 +71,7 @@ Issue-addressed sponsorship reads and commands work before a checkpoint exists:
 header and a `command` (`sponsor` or `withdraw`) with an `argument` (`openai` or `anthropic`).
 Explicit sponsorship authorizes future contributed calls; current calls remain org-funded.
 Target/overview responses include known unenrolled intents in `issues`, without task
-stages/budgets. This repo supplies API/badge data; the separate frontend has no new rendered
-controls in this changeset. See [phase 1](../docs/proposals/per-user-credentials/phase-1.md).
+stages/budgets. The companion frontend supplies provider controls and pre-task views.
+See [phase 2](../docs/proposals/per-user-credentials/phase-2.md) for lifecycle behavior, optional
+encrypted logout retry settings, migration and rollback. GitHub refresh pairs remain server-only;
+unknown expiry is not invented. Subscription registration remains unavailable.

@@ -17,3 +17,8 @@ starlette==1.10.0
 typing-inspection==0.4.5
 typing_extensions==4.16.0
 uvicorn==0.54.0
+
+# Encrypted durable GitHub logout retries; same crypto pins as the vault.
+cffi==2.1.1
+cryptography==50.0.2
+pycparser==3.12

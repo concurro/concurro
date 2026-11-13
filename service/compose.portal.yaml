@@ -1,0 +1,6 @@
+# Optional encrypted GitHub logout retry state; settings must opt into the matching paths.
+# The existing /etc/concurro/backoffice mount holds the separately provisioned owner-only key.
+services:
+  backoffice:
+    volumes:
+      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice

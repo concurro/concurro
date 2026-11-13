@@ -631,3 +631,7 @@ and `vault_metadata_url`/`vault_service_token_path`. Provision the vault mount b
 deploying updated Compose. Subscription registration and contributed inference remain
 disabled; org inference bindings are unchanged. Migration and rollback details:
 [phase 1](../docs/proposals/per-user-credentials/phase-1.md).
+
+Phase-2 [vault lifecycle and optional private listener](vault/README.md) add versioned
+events and key rotation without enabling contributed inference. Existing deployments need no
+resolver token; `compose.private.yaml` is an opt-in private-network overlay.

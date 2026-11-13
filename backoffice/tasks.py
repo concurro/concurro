@@ -16,6 +16,7 @@ from checkpoints import MARKER, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
 from report_store import Cache
+from sponsorship import selected_routes
 from vocab import Stage
 
 from .auth import User
@@ -116,6 +117,10 @@ class Tasks:
         config, branch = self.config(target.fork)
         owner, repo = target.upstream.split("/")
         roster, profiles = roster_and_profiles(config)
+        try:
+            requirements = selected_routes(config)
+        except (ValueError, KeyError, TypeError):
+            requirements = None
         limits = {k: config.get(k, v) for k, v in DEFAULT_LIMITS.items()}
         return {
             "owner": owner,
@@ -125,6 +130,7 @@ class Tasks:
             "mode": "autonomous" if config.get("autonomous") else "manual",
             "defaultBranch": branch,
             "roster": roster,
+            "credentialRequirements": requirements,
             "profiles": profiles,
             "config": "\n".join(f"{k}: {v}" for k, v in limits.items()),
             "writer": bool((fork.get("permissions") or {}).get("push")),
@@ -161,6 +167,9 @@ class Tasks:
                     issues.append(self.access.get(repository, f"issues/{number}"))
                 except NotFound:
                     pass
+                except RuntimeError as error:
+                    if not str(error).endswith(("(HTTP 301)", "(HTTP 410)")):
+                        raise
             for issue in issues:
                 task = summary(repository, issue, record["mode"])
                 if issue["number"] in projections:
@@ -265,6 +274,42 @@ class Tasks:
                 STATES.pop(next(iter(STATES)))
         return state
 
+    def issue_view(self, repository: str, number: int) -> dict:
+        """Read a visible issue and its current intent without requiring or fabricating task state."""
+        target, fork = self.find_target(repository)
+        issue = self.access.get(repository, f"issues/{number}")
+        projection = self.sponsorship_view(repository, number)
+        record = summary(repository, issue, self.target_record(target, fork)["mode"])
+        value = {key: record[key] for key in ("owner", "repo", "issue", "title", "author", "labels", "updatedAt")}
+        value.update(body=issue.get("body") or "", sponsorships=projection)
+        return {
+            "issue": value,
+            "target": self.target_record(target, fork),
+            "issueWriter": bool(((self.access.repository(repository) or {}).get("permissions") or {}).get("push")),
+        }
+
+    def sponsorship_view(self, repository: str, number: int) -> dict:
+        """Keep unavailable source confirmation visible instead of inferring an empty provider slot."""
+        if self.sponsorships:
+            try:
+                return self.sponsorships(repository, number)
+            except CommandError:
+                pass
+        return {"funding": "org", "status": "unavailable", "slots": {}}
+
+    def my_sponsorships(self) -> list[dict]:
+        """List visible task and pre-task current/provisional grants for this stable GitHub actor."""
+        overview = self.overview()
+        actor = str(self.user.id)
+        return [
+            item
+            for item in overview["tasks"] + overview["issues"]
+            if any(
+                slot.get("sponsor_id") == actor for slot in (item.get("sponsorships", {}).get("slots") or {}).values()
+            )
+            or any(fact.get("actor_id") == actor for fact in item.get("sponsorships", {}).get("facts", []))
+        ]
+
     def task_view(self, repository: str, number: int) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
@@ -284,7 +329,12 @@ class Tasks:
             task |= project(state, config, repository, issue)
             if state.get("pr"):
                 task["pr"] = self.pull(self.publication_repository(target), state)
-        return {"task": task, "target": record}
+        task["sponsorships"] = self.sponsorship_view(repository, number)
+        return {
+            "task": task,
+            "target": record,
+            "issueWriter": bool(((self.access.repository(repository) or {}).get("permissions") or {}).get("push")),
+        }
 
     def pull(self, upstream: str, state: dict) -> dict:
         number = state["pr"]

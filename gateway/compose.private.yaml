@@ -1,0 +1,21 @@
+# Optional phase2 private resolver listener. No edge route and no production inference switch.
+# Layer over compose.yaml only after provisioning vault-resolver-token; see vault/README.md.
+services:
+  gateway:
+    networks:
+      credential-private: {}
+  vault:
+    environment:
+      VAULT_RESOLVER_TOKEN_FILE: /run/secrets/vault-resolver-token
+      # Resolve the alias to this container's private interface, not its edge address.
+      VAULT_RESOLVER_LISTEN: concurro-vault-private:8091
+    volumes:
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/vault-resolver-token:/run/secrets/vault-resolver-token:ro
+    networks:
+      credential-private:
+        aliases:
+          - concurro-vault-private
+networks:
+  credential-private:
+    name: concurro-credential-private
+    internal: true

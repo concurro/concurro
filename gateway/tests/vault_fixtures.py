@@ -33,7 +33,7 @@ class FakeTransport:
         if self.provider_status is not None:
             return self.provider_status, b""
         secret = headers.get("x-api-key") or headers["Authorization"].removeprefix("Bearer ")
-        return (200, b'{"data": []}') if secret in self.accepted else (401, b"{}")
+        return (200, b'{"data": [], "has_more": false}') if secret in self.accepted else (401, b"{}")
 
     def github_calls(self):
         return [call for call in self.calls if call[0] == GITHUB_USER]

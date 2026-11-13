@@ -66,7 +66,10 @@ class ValidationTest(VaultFixture, unittest.TestCase):
         anthropic, openai = [call for call in self.transport.calls if call[0] != vault.GITHUB_USER]
         self.assertEqual(
             anthropic,
-            ("https://api.anthropic.com/v1/models", {"x-api-key": ANTHROPIC, "anthropic-version": "2023-06-01"}),
+            (
+                "https://api.anthropic.com/v1/models?limit=1000",
+                {"x-api-key": ANTHROPIC, "anthropic-version": "2023-06-01"},
+            ),
         )
         self.assertEqual(openai, ("https://api.openai.com/v1/models", {"Authorization": f"Bearer {OPENAI}"}))
 
@@ -101,7 +104,26 @@ class ValidationTest(VaultFixture, unittest.TestCase):
 class StorageTest(VaultFixture, unittest.TestCase):
     def test_put_returns_listing_entry(self):
         entry = self.put("anthropic-api-key", ANTHROPIC).json()
-        self.assertEqual(set(entry), {"route", "status", "fingerprint", "version", "updated"})
+        self.assertEqual(
+            set(entry),
+            {
+                "route",
+                "status",
+                "fingerprint",
+                "version",
+                "updated",
+                "record_id",
+                "kind",
+                "status_reason",
+                "validated",
+                "expires_at",
+                "expiry_known",
+                "last_used",
+                "account_label",
+                "verified_account",
+                "models",
+            },
+        )
         digest = hashlib.sha256(ANTHROPIC.encode()).hexdigest()
         self.assertEqual(entry["fingerprint"], f"AAAA:{digest[:8]}")
         self.assertEqual((entry["route"], entry["status"], entry["version"]), ("anthropic-api-key", "valid", 1))

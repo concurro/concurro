@@ -4,22 +4,30 @@ Response shapes follow the frontend's domain types (`concurro-backoffice/src/lib
 """
 
 import logging
+import secrets
+import sqlite3
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+import private
 from checkpoints import CheckpointError
 from github import NotFound, Transient
 from policy import Blocked
+from service.settings import CHECKOUT
 
-from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
+from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
 from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
 from .github import UserAccess
+from .revocations import RevocationError, Revocations
 from .settings import Settings
 from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
 from .turns import Diagnostics
@@ -28,6 +36,7 @@ log = logging.getLogger("concurro.backoffice")
 
 SESSION_COOKIE = "concurro_session"
 LOGIN_COOKIE = "concurro_login"
+LOGOUT_COOKIE = "concurro_logout"
 # Writes must carry this header; browsers can't send it cross-site without a CORS grant, which we never give.
 CSRF_HEADER = "x-concurro-request"
 
@@ -48,25 +57,71 @@ def create_app(
     sessions: Sessions | None = None,
     commands: ServiceCommands | None = None,
     connection=None,
+    revocations: Revocations | None = None,
 ) -> FastAPI:
     """`oauth`, `vault`, `sessions`, `commands` and the GitHub `connection` are injectable for tests."""
-    app = FastAPI(title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
     commands = commands or ServiceCommands(settings.service_url)
     sessions = sessions or Sessions()
+    sessions.oauth = oauth
+    owned_revocations = False
+    if revocations is None and settings.auth_state_dir and settings.auth_key_path:
+        key = bytes.fromhex(private.read(settings.auth_key_path, (CHECKOUT,)).decode().strip())
+        revocations = Revocations(settings.auth_state_dir, key)
+        owned_revocations = True
+
+    @asynccontextmanager
+    async def lifespan(app):
+        """Retry encrypted logout jobs after restart without enabling any task recovery."""
+        stopped, thread = threading.Event(), None
+
+        def retry():
+            """Use the durable queue's own due times and leases, never token material in logs."""
+            while not stopped.wait(1):
+                try:
+                    revocations.drain(oauth)
+                except Exception:
+                    log.warning("GitHub logout retry state unavailable")
+
+        if revocations:
+            thread = threading.Thread(target=retry, name="github-logout", daemon=True)
+            thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            if thread:
+                thread.join(timeout=5)
+            if owned_revocations and (not thread or not thread.is_alive()):
+                revocations.close()
+
+    app = FastAPI(
+        title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json", lifespan=lifespan
+    )
     diagnostics = Diagnostics(settings.diagnostics_dir)
     cookie_path = settings.base_path or "/"
 
-    def cookie(response, name: str, value: str, max_age: int) -> None:
+    def cookie(response, name: str, value: str, max_age: int | None, same_site="lax") -> None:
         response.set_cookie(
-            name, value, max_age=max_age, path=cookie_path, secure=settings.secure, httponly=True, samesite="lax"
+            name, value, max_age=max_age, path=cookie_path, secure=settings.secure, httponly=True, samesite=same_site
         )
 
-    def session(request: Request) -> Session:
-        found = sessions.get(request.cookies.get(SESSION_COOKIE))
+    def remote_status(group):
+        """Keep cleanup storage failures distinct from absent receipts and successful revocation."""
+        if not revocations:
+            return {"remote": "none"}
+        try:
+            return revocations.status(group)
+        except (RevocationError, sqlite3.Error, OSError):
+            return {"remote": "unavailable"}
+
+    def session(request: Request, response: Response) -> Session:
+        sid = request.cookies.get(SESSION_COOKIE)
+        found = sessions.get(sid)
         if found is None:
             raise HTTPException(401, "sign in with GitHub")
+        cookie(response, SESSION_COOKIE, sid, max(1, int(found.expires - sessions.now())), "strict")
         return found
 
     def writer(request: Request, current: Annotated[Session, Depends(session)]) -> Session:
@@ -77,9 +132,11 @@ def create_app(
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
         return Tasks(
             settings,
-            UserAccess(current.token, connection),
+            UserAccess(current.token, connection, current.credential),
             current.user,
-            lambda repository: commands.sponsorships(current.token, repository),
+            lambda repository, issue=None: commands.sponsorships(
+                current.credential or current.token, repository, issue
+            ),
         )
 
     @app.exception_handler(TaskNotFound)
@@ -109,6 +166,18 @@ def create_app(
     async def vault_refused(_: Request, error: VaultError) -> JSONResponse:
         return JSONResponse({"detail": error.reason}, status_code=error.status)
 
+    @app.exception_handler(AuthError)
+    async def authentication_failed(_: Request, error: AuthError):
+        """End an unusable browser session without exposing token endpoint responses."""
+        response = JSONResponse({"detail": str(error)}, status_code=401)
+        response.delete_cookie(SESSION_COOKIE, path=cookie_path)
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def malformed(_: Request, __: RequestValidationError):
+        """Credential form validation must not echo submitted secrets."""
+        return JSONResponse({"detail": "malformed request"}, status_code=422)
+
     # Sign-in
 
     @app.get("/auth/login")
@@ -125,24 +194,74 @@ def create_app(
             pending = sessions.complete(request.cookies.get(LOGIN_COOKIE), state)
             if not code:
                 raise AuthError("GitHub didn't return a sign-in code")
-            token, lifetime = oauth.exchange(code, settings.callback_url, pending.verifier)
-            user = oauth.user(token)
+            grant = oauth.exchange(code, settings.callback_url, pending.verifier)
+            if not isinstance(grant, TokenGrant):
+                grant = TokenGrant(*grant)
+            user = oauth.user(grant.token)
         except AuthError as error:
             response = RedirectResponse(f"{settings.base_path}/signin?error={quote(str(error))}", status_code=302)
             response.delete_cookie(LOGIN_COOKIE, path=cookie_path)
             return response
         response = RedirectResponse(settings.base_path + pending.next, status_code=302)
         response.delete_cookie(LOGIN_COOKIE, path=cookie_path)
-        cookie(response, SESSION_COOKIE, sessions.create(token, user, lifetime), int(lifetime))
+        lifetime = grant.refresh_expires_in if grant.refresh_token else (grant.expires_in or DEFAULT_TOKEN_SECONDS)
+        sid = sessions.create(grant.token, user, grant.expires_in or DEFAULT_TOKEN_SECONDS, grant=grant)
+        cookie(response, SESSION_COOKIE, sid, int(lifetime), "strict")
+        response.delete_cookie(LOGOUT_COOKIE, path=cookie_path)
         log.info("signed in %s", user.login)
         return response
 
     @app.post("/auth/logout")
-    def logout(request: Request, _: Annotated[str | None, Header(alias=CSRF_HEADER)] = None):
-        sessions.end(request.cookies.get(SESSION_COOKIE))
-        response = JSONResponse({"signedOut": True})
+    def logout(request: Request, header: Annotated[str | None, Header(alias=CSRF_HEADER)] = None):
+        """End local authorization first; retry only known GitHub access tokens, not App grants."""
+        if header != "1":
+            raise HTTPException(403, "missing request header")
+        group, failed, refreshing = secrets.token_urlsafe(32), [], []
+
+        def persist(current):
+            """Journal while the session fence is held, before a late refresh can complete."""
+            refreshing.append(current.refreshing)
+            if revocations:
+                try:
+                    revocations.prepare(group, current.token, current.refreshing)
+                except RevocationError:
+                    failed.append(True)
+
+        def orphan(granted, uncertain):
+            """A late token is revoked through the same receipt and never returned to a browser."""
+            if revocations and not failed:
+                try:
+                    revocations.refreshed(group, granted, uncertain)
+                except RevocationError:
+                    revocations.uncertain(group)
+                    if granted:
+                        oauth.revoke(granted.token)
+                    log.warning("GitHub logout retry state unavailable")
+            elif granted:
+                oauth.revoke(granted.token)
+
+        current = sessions.end(request.cookies.get(SESSION_COOKIE), orphan, persist)
+        if current and revocations and not failed:
+            try:
+                revocations.drain(oauth, group)
+                status = remote_status(group)
+            except (RevocationError, sqlite3.Error, OSError):
+                status = {"remote": "unavailable"}
+        elif current:
+            done = oauth.revoke(current.token)
+            status = {"remote": "unknown" if any(refreshing) else "revoked" if done else "unavailable"}
+        else:
+            status = remote_status(request.cookies.get(LOGOUT_COOKIE))
+        response = JSONResponse({"signedOut": True, **status})
         response.delete_cookie(SESSION_COOKIE, path=cookie_path)
+        if current and revocations and not failed:
+            cookie(response, LOGOUT_COOKIE, group, None, "strict")
         return response
+
+    @app.get("/auth/logout-status")
+    def logout_status(request: Request):
+        """An opaque, HTTP-only receipt reveals only local logout's remote cleanup status."""
+        return remote_status(request.cookies.get(LOGOUT_COOKIE))
 
     # API
 
@@ -154,6 +273,16 @@ def create_app(
     def me(current: Annotated[Session, Depends(session)]):
         user = current.user
         return {"id": user.id, "login": user.login, "name": user.name, "avatarUrl": user.avatar_url}
+
+    @app.get("/api/me/sponsorships")
+    def my_sponsorships(reader: Annotated[Tasks, Depends(tasks)]):
+        """Visible current and historical provider consent, separate from actual org payment."""
+        return reader.my_sponsorships()
+
+    @app.get("/api/repos/{owner}/{repo}/issues/{issue}")
+    def issue_view(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
+        """Issue visibility and provider consent before or after enrollment."""
+        return reader.issue_view(f"{owner}/{repo}", issue)
 
     @app.get("/api/overview")
     def overview(reader: Annotated[Tasks, Depends(tasks)]):
@@ -177,10 +306,10 @@ def create_app(
     def sponsorships(owner: str, repo: str, issue: int, current: Annotated[Session, Depends(session)]):
         """Read visible pre-task issue sponsorship without inventing a checkpoint or task stage."""
         repository = f"{owner}/{repo}"
-        reader = Tasks(settings, UserAccess(current.token, connection), current.user)
+        reader = Tasks(settings, UserAccess(current.token, connection, current.credential), current.user)
         reader.find_target(repository)
         reader.access.get(repository, f"issues/{issue}")
-        return commands.sponsorships(current.token, repository, issue)
+        return commands.sponsorships(current.credential or current.token, repository, issue)
 
     @app.post("/api/repos/{owner}/{repo}/issues/{issue}/commands")
     @app.post("/api/tasks/{owner}/{repo}/{issue}/commands")
@@ -193,25 +322,25 @@ def create_app(
     ):
         if body.command not in COMMANDS:
             raise HTTPException(422, "unknown command")
-        reader = Tasks(settings, UserAccess(current.token, connection), current.user)
+        reader = Tasks(settings, UserAccess(current.token, connection, current.credential), current.user)
         repository = f"{owner}/{repo}"
         try:
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
         except ValueError:
             raise HTTPException(422, "invalid command argument") from None
-        return commands.send(current.token, repository, issue, body.command, argument)
+        return commands.send(current.credential or current.token, repository, issue, body.command, argument)
 
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):
-        return {"routes": vault.routes(current.token), "usage": []}
+        return {"routes": vault.routes(current.credential or current.token), "usage": []}
 
     @app.put("/api/me/credentials/{route}")
     def put_credential(route: str, body: SecretBody, current: Annotated[Session, Depends(writer)]):
-        return vault.put(current.token, route, body.secret)
+        return vault.put(current.credential or current.token, route, body.secret)
 
     @app.delete("/api/me/credentials/{route}")
     def revoke_credential(route: str, current: Annotated[Session, Depends(writer)]):
-        return vault.revoke(current.token, route)
+        return vault.revoke(current.credential or current.token, route)
 
     if settings.static_dir:
         mount_frontend(app, settings.static_dir)

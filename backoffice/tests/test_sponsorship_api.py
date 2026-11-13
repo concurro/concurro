@@ -14,6 +14,7 @@ from backoffice.auth import Sessions
 from backoffice.commands import ServiceCommands
 from backoffice.credentials import Vault
 from backoffice.tasks import Tasks
+from github import STAGE_LABEL_PREFIX, Transient
 
 
 class SponsorshipApiTests(unittest.TestCase):
@@ -101,3 +102,123 @@ class SponsorshipApiTests(unittest.TestCase):
         self.assertNotIn("stage", view.issue_intents[0])
         self.assertNotIn("budgets", view.issue_intents[0])
         self.assertEqual(view.issue_intents[0]["sponsorships"]["status"], "confirmed")
+
+
+class PortalProjectionTests(unittest.TestCase):
+    """Projection contracts never infer personal payment or require task state."""
+
+    def test_issue_view_and_my_list_use_stable_actor_and_no_checkpoint(self):
+        """Pre-task views retain pending state; matching a login is insufficient for ownership."""
+        access = Mock()
+        access.get.return_value = {
+            "number": 7,
+            "title": "Intent",
+            "body": "Description",
+            "user": {"login": "octo"},
+            "labels": [],
+            "created_at": "2026-01-01Z",
+            "updated_at": "2026-01-02Z",
+        }
+        projection = {"status": "provisional", "slots": {"openai": {"sponsor_id": str(USER.id), "login": USER.login}}}
+        fetch = Mock(return_value=projection)
+        reader = Tasks(settings(), access, USER, fetch)
+        with (
+            patch.object(reader, "find_target", return_value=(object(), {})),
+            patch.object(reader, "target_record", return_value={"mode": "manual"}),
+            patch.object(reader, "state") as checkpoint,
+        ):
+            result = reader.issue_view("owner/project", 7)
+            checkpoint.assert_not_called()
+        self.assertNotIn("stage", result["issue"])
+        self.assertEqual(result["issue"]["sponsorships"]["status"], "provisional")
+        fetch.assert_called_once_with("owner/project", 7)
+        own = result["issue"]
+        other = {**own, "issue": 8, "sponsorships": {"slots": {"openai": {"sponsor_id": "999", "login": USER.login}}}}
+        history = {
+            **own,
+            "issue": 9,
+            "sponsorships": {"slots": {}, "facts": [{"actor_id": str(USER.id), "command": "withdraw"}]},
+        }
+        with patch.object(reader, "overview", return_value={"tasks": [other], "issues": [own, history]}):
+            self.assertEqual([i["issue"] for i in reader.my_sponsorships()], [7, 9])
+
+    def test_issue_permission_is_independent_of_the_target_fork(self):
+        """Portal sponsorship follows issue write authority in both fork/upstream directions."""
+        access = Mock()
+        access.get.return_value = {
+            "number": 7,
+            "title": "Intent",
+            "body": "",
+            "user": {"login": "octo"},
+            "labels": [{"name": STAGE_LABEL_PREFIX + "intake"}],
+            "created_at": "2026-01-01Z",
+            "updated_at": "2026-01-02Z",
+        }
+        access.config.return_value = ({}, "main")
+        for fork_writer, issue_writer in ((False, True), (True, False)):
+            access.repository.return_value = {"permissions": {"push": issue_writer}}
+            reader = Tasks(settings(), access, USER)
+            with (
+                patch.object(reader, "find_target", return_value=(Mock(fork="fork/repo"), {})),
+                patch.object(reader, "target_record", return_value={"mode": "manual", "writer": fork_writer}),
+                patch.object(reader, "state", return_value=None),
+            ):
+                self.assertEqual(reader.issue_view("upstream/repo", 7)["issueWriter"], issue_writer)
+                self.assertEqual(reader.task_view("upstream/repo", 7)["issueWriter"], issue_writer)
+            access.repository.assert_called_with("upstream/repo")
+
+    def test_stale_intent_issue_statuses_do_not_hide_unrelated_issues_or_outages(self):
+        """Only moved/gone issues are skipped; permission errors and transient failures stay visible."""
+        issue = {
+            "number": 8,
+            "title": "Visible intent",
+            "user": {"login": "octo"},
+            "labels": [],
+            "created_at": "2026-01-01Z",
+            "updated_at": "2026-01-02Z",
+        }
+        target = SimpleNamespace(issue_repositories=("owner/project",), upstream="up/project")
+        projection = lambda repository: {
+            "issues": [{"issue": n, "status": "confirmed", "slots": {"openai": {"sponsor_id": "42"}}} for n in (7, 8)]
+        }
+        for status in (301, 410, 403):
+            access = Mock()
+            access.task_issues.return_value = []
+            access.get.side_effect = lambda repository, path: (
+                (_ for _ in ()).throw(
+                    RuntimeError(f"GitHub request failed: GET repos/{repository}/{path} (HTTP {status})")
+                )
+                if path == "issues/7"
+                else issue
+            )
+            reader = Tasks(settings(), access, USER, projection)
+            with patch.object(reader, "pulls_by_issue", return_value={}):
+                if status == 403:
+                    with self.assertRaises(RuntimeError):
+                        reader.listed(target, {"mode": "manual"})
+                else:
+                    self.assertEqual(reader.listed(target, {"mode": "manual"}), [])
+                    self.assertEqual([i["issue"] for i in reader.issue_intents], [8])
+        access.get.side_effect = Transient("unavailable")
+        with patch.object(reader, "pulls_by_issue", return_value={}):
+            with self.assertRaises(Transient):
+                reader.listed(target, {"mode": "manual"})
+
+    def test_empty_and_legacy_configurations_keep_target_listing(self):
+        """Actual model-config/policy helpers raise caught errors or resolve legacy settings, never Blocked."""
+        reader = Tasks(settings(), Mock(), USER)
+        target = SimpleNamespace(fork="owner/project", upstream="up/project")
+        with patch.object(reader, "config", return_value=({}, "main")):
+            self.assertIsNone(reader.target_record(target, {})["credentialRequirements"])
+        legacy = {
+            "qc": "claude",
+            "qc_model": None,
+            "planner": "codex",
+            "implementer": "claude",
+            "reviewers": ["codex", "claude"],
+            "models": {"codex": "model-o", "claude": "model-a"},
+        }
+        with patch.object(reader, "config", return_value=(legacy, "main")):
+            requirements = reader.target_record(target, {})["credentialRequirements"]
+            self.assertTrue(requirements)
+            self.assertEqual({route["model"] for route in requirements}, {"model-o", "model-a"})

@@ -3,31 +3,37 @@
 Callers present a GitHub user token; the vault resolves the user itself through
 `GET https://api.github.com/user`. Each secret is validated with a cheap provider call, then
 sealed with a fresh data key that the master key wraps (envelope encryption, AES-256-GCM).
-No endpoint returns a secret, and secrets and tokens are never logged.
+Public endpoints never return secrets. Only the separately authenticated gateway listener resolves exact versions.
 """
 
+import argparse
 import hashlib
 import hmac
 import json
 import os
+import socket
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 GITHUB_USER = "https://api.github.com/user"
 IDENTITY_TTL = 300
@@ -76,28 +82,63 @@ def fingerprint(secret: str) -> str:
     return f"{secret[-4:]}:{digest(secret)[:8]}"
 
 
-def load_master_key(path: str | Path) -> bytes:
-    """Read the 32-byte master key, hex-encoded in a regular file only its owner (this process) can access."""
+def private_file(path: str | Path) -> bytes:
+    """Read an owner-only regular file without following a final symlink."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        raise ConfigError(f"master key file {path} is missing") from None
-    except OSError as error:
-        raise ConfigError(f"master key file {path} cannot be opened: {error.strerror}") from None
+        raise ConfigError("private key file is missing") from None
+    except OSError:
+        raise ConfigError("private key file cannot be opened") from None
     with os.fdopen(fd, "rb") as file:
         info = os.fstat(file.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ConfigError(f"master key file {path} is not a regular file")
-        if info.st_mode & 0o077 or info.st_uid != os.geteuid():
-            raise ConfigError(f"master key file {path} must be owned by uid {os.geteuid()} with mode 0400 or 0600")
-        text = file.read().strip()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ConfigError("private key file must be owned by this process with mode 0400 or 0600 and be regular")
+        return file.read()
+
+
+def load_master_key(path: str | Path) -> bytes:
+    """Read a separately provisioned 32-byte key, encoded as 64 hex characters."""
     try:
-        key = bytes.fromhex(text.decode("ascii"))
-    except ValueError:
+        key = bytes.fromhex(private_file(path).decode("ascii").strip())
+    except (ValueError, UnicodeError):
         key = b""
     if len(key) != 32:
-        raise ConfigError(f"master key file {path} must hold 32 bytes as 64 hex characters")
+        raise ConfigError("master key file must hold 32 bytes as 64 hex characters")
     return key
+
+
+def load_envelope(master_path: str | Path, keyring_path: str | Path | None = None):
+    """Load a current wrapping key and retained decrypt keys; legacy installations need no migration file."""
+    if not keyring_path:
+        return Envelope(load_master_key(master_path))
+    try:
+        data = json.loads(private_file(keyring_path))
+        if set(data) != {"active", "keys"} or not isinstance(data["keys"], dict):
+            raise ValueError()
+        if any(not isinstance(k, str) or not k or not isinstance(v, str) for k, v in data["keys"].items()):
+            raise ValueError()
+        keys = {name: load_master_key(path) for name, path in data["keys"].items()}
+        active = data["active"]
+        return Envelope(keys[active], active, keys)
+    except (ValueError, KeyError, TypeError):
+        raise ConfigError("invalid wrapping keyring") from None
+
+
+def record_id(user_id: int, route: str, version: int) -> str:
+    """The immutable opaque identity shared by metadata, events and exact-version resolution."""
+    return digest(f"{user_id}/{route}/{version}")
+
+
+def instant(value: str) -> str:
+    """Normalize an aware timestamp without inventing expiry for opaque credentials."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError()
+        return parsed.astimezone(UTC).isoformat(timespec="seconds")
+    except (ValueError, TypeError, AttributeError):
+        raise VaultError(422, "invalid metadata timestamp") from None
 
 
 @dataclass(frozen=True)
@@ -173,29 +214,42 @@ class Validator:
         return self.models(route, secret)[0]
 
     def models(self, route: str, secret: str) -> tuple[bool, list[str] | None]:
-        """Validate once and retain only provider-published model identifiers as coverage evidence."""
+        """Validate a complete provider model listing; malformed/cyclic pagination stays unknown."""
         target = self.routes[route]
-        status, body = self.transport(target.url, target.headers(secret))
-        if status in (401, 403):
-            return False, None
-        if not 200 <= status < 300:
-            raise Unavailable(f"provider validation returned {status}")
-        try:
-            values = json.loads(body).get("data")
-            models = (
-                sorted(
-                    {
-                        v["id"]
-                        for v in values
-                        if isinstance(v, dict) and isinstance(v.get("id"), str) and secret not in v["id"]
-                    }
-                )
-                if isinstance(values, list)
-                else None
-            )
-        except (ValueError, TypeError, AttributeError):
-            models = None
-        return True, models
+        parameters: dict[str, int | str] = {"limit": 1000} if route == "anthropic-api-key" else {}
+        models, cursors = set(), set()
+        while True:
+            url = target.url + (("&" if "?" in target.url else "?") + urlencode(parameters) if parameters else "")
+            status, body = self.transport(url, target.headers(secret))
+            if status in (401, 403):
+                return False, None
+            if not 200 <= status < 300:
+                raise Unavailable(f"provider validation returned {status}")
+            try:
+                payload = json.loads(body)
+                values = payload.get("data")
+                if not isinstance(values, list) or any(
+                    not isinstance(v, dict) or not isinstance(v.get("id"), str) or not v["id"] or secret in v["id"]
+                    for v in values
+                ):
+                    return True, None
+                models.update(v["id"] for v in values)
+                more = payload.get("has_more", None if route == "anthropic-api-key" else False)
+                if more is False:
+                    return True, sorted(models)
+                cursor = payload.get("last_id")
+                if (
+                    more is not True
+                    or not isinstance(cursor, str)
+                    or not cursor
+                    or cursor in cursors
+                    or secret in cursor
+                ):
+                    return True, None
+                cursors.add(cursor)
+                parameters["after_id"] = cursor
+            except (ValueError, TypeError, AttributeError):
+                return True, None
 
 
 @dataclass(frozen=True)
@@ -206,21 +260,34 @@ class Sealed:
 
 
 class Envelope:
-    """AES-256-GCM envelope encryption; `aad` binds a ciphertext to its record."""
+    """AES-256-GCM envelope encryption with named wrapping keys and unchanged record AAD."""
 
-    def __init__(self, master: bytes):
-        self.master = AESGCM(master)
+    def __init__(self, master: bytes, key_id: str = "legacy", keys: Mapping[str, bytes] | None = None):
+        """Select a current key while retaining old keys only for opening/rewrapping existing rows."""
+        self.current = key_id
+        self.keys = {name: AESGCM(value) for name, value in (keys or {}).items()}
+        self.keys[key_id] = AESGCM(master)
+        self.master = self.keys[key_id]
 
     def seal(self, secret: str, aad: bytes) -> Sealed:
+        """Encrypt fresh material with a random data key and wrap it under the current master."""
         data_key = AESGCM.generate_key(bit_length=256)
         nonce, wrap_nonce = os.urandom(NONCE), os.urandom(NONCE)
         ciphertext = AESGCM(data_key).encrypt(nonce, secret.encode(), aad)
         return Sealed(wrap_nonce + self.master.encrypt(wrap_nonce, data_key, aad), nonce, ciphertext)
 
-    def open(self, sealed: Sealed, aad: bytes) -> str:
+    def open(self, sealed: Sealed, aad: bytes, key_id: str | None = None) -> str:
+        """Open only under the row's recorded wrapping key and owner/route/version AAD."""
         wrap_nonce, wrapped = sealed.wrapped_key[:NONCE], sealed.wrapped_key[NONCE:]
-        data_key = self.master.decrypt(wrap_nonce, wrapped, aad)
+        data_key = self.keys[key_id or self.current].decrypt(wrap_nonce, wrapped, aad)
         return AESGCM(data_key).decrypt(sealed.nonce, sealed.ciphertext, aad).decode()
+
+    def rewrap(self, sealed: Sealed, aad: bytes, key_id: str) -> Sealed:
+        """Rotate only the encrypted data key; token ciphertext and version do not change."""
+        nonce = sealed.wrapped_key[:NONCE]
+        data_key = self.keys[key_id].decrypt(nonce, sealed.wrapped_key[NONCE:], aad)
+        new_nonce = os.urandom(NONCE)
+        return Sealed(new_nonce + self.master.encrypt(new_nonce, data_key, aad), sealed.nonce, sealed.ciphertext)
 
 
 def aad(user_id: int, route: str, version: int) -> bytes:
@@ -244,51 +311,158 @@ CREATE TABLE IF NOT EXISTS credentials (
 )
 """
 
-LISTING = "route, status, fingerprint, version, updated"
+ROUTE_KINDS = {
+    "openai-api-key": "api_key",
+    "anthropic-api-key": "api_key",
+    "chatgpt-subscription": "subscription",
+    "claude-subscription": "subscription",
+}
 
 
 class Store:
-    """Versioned credential records keyed by (user_id, route) in SQLite (WAL).
+    """Versioned owner/route records, encrypted material and atomic nonsecret lifecycle events."""
 
-    Only a route's latest version keeps ciphertext; storing a new version or revoking destroys
-    older ciphertext.
-    """
-
-    def __init__(self, path: str | Path, envelope: Envelope):
-        self.envelope = envelope
+    def __init__(self, path: str | Path, envelope: Envelope, clock: Callable[[], float] = time.time):
+        """Migrate additively without guessing legacy validation or retirement evidence."""
+        self.envelope, self.clock = envelope, clock
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA secure_delete=ON")
-        self.db.execute(SCHEMA)
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS credential_metadata (user_id INTEGER, route TEXT, version INTEGER, models TEXT, retired TEXT, PRIMARY KEY(user_id,route,version))"
-        )
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        with self.transaction():
+            self.db.execute(SCHEMA)
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS credential_metadata (user_id INTEGER,route TEXT,version INTEGER,"
+                "models TEXT,retired TEXT,PRIMARY KEY(user_id,route,version))"
+            )
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(credential_metadata)")}
+            for name, definition in (
+                ("kind", "TEXT"),
+                ("account_label", "TEXT"),
+                ("verified_account", "TEXT"),
+                ("status_reason", "TEXT"),
+                ("validated", "TEXT"),
+                ("expires_at", "TEXT"),
+                ("expiry_known", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_revision", "INTEGER NOT NULL DEFAULT 1"),
+                ("last_used", "TEXT"),
+                ("key_id", "TEXT NOT NULL DEFAULT 'legacy'"),
+                ("envelope_format", "INTEGER NOT NULL DEFAULT 1"),
+            ):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE credential_metadata ADD COLUMN {name} {definition}")
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS credential_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "id TEXT NOT NULL UNIQUE,record_id TEXT NOT NULL,user_id INTEGER NOT NULL,route TEXT NOT NULL,"
+                "version INTEGER NOT NULL,type TEXT NOT NULL,status TEXT NOT NULL,reason TEXT,at TEXT NOT NULL)"
+            )
+            self.db.execute("CREATE TABLE IF NOT EXISTS vault_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            schema = self.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()
+            if schema and schema[0] != "2":
+                raise ConfigError("unsupported vault schema")
+            legacy = (
+                self.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version").fetchall()
+                if schema is None
+                else []
+            )
+            for row in legacy:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO credential_metadata(user_id,route,version,kind) VALUES(?,?,?,?)",
+                    (row["user_id"], row["route"], row["version"], ROUTE_KINDS.get(row["route"])),
+                )
+                self.db.execute(
+                    "UPDATE credential_metadata SET kind=COALESCE(kind,?) WHERE user_id=? AND route=? AND version=?",
+                    (ROUTE_KINDS.get(row["route"]), row["user_id"], row["route"], row["version"]),
+                )
+                self.event(
+                    row["user_id"],
+                    row["route"],
+                    row["version"],
+                    "snapshot",
+                    row["status"] if row["ciphertext"] is not None else "retired",
+                    "legacy_snapshot",
+                    "migration:" + record_id(row["user_id"], row["route"], row["version"]),
+                )
+            self.db.execute("INSERT OR IGNORE INTO vault_meta VALUES('schema','2')")
+
+    def now(self) -> str:
+        """A UTC instant from the injected clock."""
+        return datetime.fromtimestamp(self.clock(), UTC).isoformat(timespec="seconds")
 
     def close(self) -> None:
+        """Close this store's connection."""
         self.db.close()
 
-    def listing(self, user_id: int) -> list[dict[str, object]]:
+    def event(self, user_id, route, version, kind, status, reason=None, identifier=None):
+        """Append an immutable secret-free event in the caller's write transaction."""
+        self.db.execute(
+            "INSERT OR IGNORE INTO credential_events(id,record_id,user_id,route,version,type,status,reason,at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                identifier or uuid.uuid4().hex,
+                record_id(user_id, route, version),
+                user_id,
+                route,
+                version,
+                kind,
+                status,
+                reason,
+                self.now(),
+            ),
+        )
+
+    def events(self, after=0):
+        """Read a replayable, paginated event cursor; consumers own their acknowledgment."""
+        if type(after) is not int or not 0 <= after <= 2**63 - 1:
+            raise VaultError(422, "invalid event cursor")
         with self.lock:
             rows = self.db.execute(
-                f"SELECT {LISTING} FROM credentials c WHERE user_id = ? AND version = "
-                "(SELECT MAX(version) FROM credentials WHERE user_id = c.user_id AND route = c.route) ORDER BY route",
+                "SELECT * FROM credential_events WHERE sequence>? ORDER BY sequence LIMIT 101", (after,)
+            ).fetchall()
+        values = [dict(row) for row in rows[:100]]
+        return {"events": values, "next": values[-1]["sequence"] if values else after, "more": len(rows) > 100}
+
+    def listing(self, user_id: int) -> list[dict[str, object]]:
+        """Only the owner's latest route/version metadata, never sealed columns or account secrets."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT route,MAX(version) AS version FROM credentials WHERE user_id=? GROUP BY route ORDER BY route",
                 (user_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+            return [self.entry(user_id, row["route"], row["version"]) for row in rows]
 
-    def put(self, user: User, route: str, secret: str, models: list[str] | None = None) -> dict[str, object]:
-        now = datetime.now(UTC).isoformat(timespec="seconds")
+    def put(
+        self,
+        user: User,
+        route: str,
+        secret: str,
+        models: list[str] | None = None,
+        *,
+        account: dict | None = None,
+        account_label: str | None = None,
+        verified_account: str | None = None,
+        expires_at: str | None = None,
+        expiry_known=False,
+    ) -> dict[str, object]:
+        """Store already-validated material; replacement retires only this owner's previous route version."""
+        if route not in ROUTE_KINDS:
+            raise VaultError(422, "unsupported credential kind")
+        if expiry_known and expires_at is None or expires_at is not None and not expiry_known:
+            raise VaultError(422, "expiry requires trusted evidence")
+        expiry = instant(expires_at) if expires_at else None
+        if expiry and datetime.fromisoformat(expiry).timestamp() <= self.clock():
+            raise VaultError(422, "credential is already expired")
+        now = self.now()
         with self.lock, self.transaction():
-            latest = self.db.execute(
-                "SELECT COALESCE(MAX(version), 0) FROM credentials WHERE user_id = ? AND route = ?", (user.id, route)
+            version = self.db.execute(
+                "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
             ).fetchone()[0]
-            version = latest + 1
-            sealed = self.envelope.seal(secret, aad(user.id, route, version))
-            self.destroy(user.id, route)
+            material = json.dumps({"secret": secret, "account": account}, separators=(",", ":")) if account else secret
+            sealed = self.envelope.seal(material, aad(user.id, route, version))
+            self.destroy(user.id, route, "replaced")
             self.db.execute(
-                "INSERT INTO credentials VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO credentials VALUES(?,?,?,?,'valid',?,?,?,?,?,?)",
                 (
                     user.id,
                     route,
@@ -303,56 +477,75 @@ class Store:
                 ),
             )
             self.db.execute(
-                "INSERT INTO credential_metadata VALUES (?, ?, ?, ?, NULL)",
-                (user.id, route, version, json.dumps(models)),
+                "INSERT INTO credential_metadata(user_id,route,version,models,kind,account_label,verified_account,"
+                "status_reason,validated,expires_at,expiry_known,key_id,envelope_format)"
+                " VALUES(?,?,?,?,?,?,?,'validated',?,?,?,?,?)",
+                (
+                    user.id,
+                    route,
+                    version,
+                    json.dumps(models),
+                    ROUTE_KINDS[route],
+                    account_label,
+                    verified_account,
+                    now,
+                    expiry,
+                    int(expiry_known),
+                    self.envelope.current,
+                    2 if account else 1,
+                ),
             )
+            self.event(user.id, route, version, "validated", "valid", "validated")
             return self.entry(user.id, route, version)
 
     def revoke(self, user_id: int, route: str) -> dict[str, object] | None:
-        now = datetime.now(UTC).isoformat(timespec="seconds")
+        """Atomically revoke the latest version and destroy material; replay creates no second event."""
         with self.lock, self.transaction():
             row = self.db.execute(
-                "SELECT MAX(version) FROM credentials WHERE user_id = ? AND route = ?", (user_id, route)
+                "SELECT version,status,ciphertext FROM credentials WHERE user_id=? AND route=?"
+                " ORDER BY version DESC LIMIT 1",
+                (user_id, route),
             ).fetchone()
-            if row[0] is None:
+            if row is None:
                 return None
-            self.destroy(user_id, route)
-            self.db.execute(
-                "UPDATE credentials SET status = 'revoked', updated = ? "
-                "WHERE user_id = ? AND route = ? AND version = ? AND status != 'revoked'",
-                (now, user_id, route, row[0]),
-            )
-            return self.entry(user_id, route, row[0])
+            if row["status"] != "revoked":
+                self.destroy(user_id, route, "revoked")
+                self.db.execute(
+                    "UPDATE credentials SET status='revoked',updated=? WHERE user_id=? AND route=? AND version=?",
+                    (self.now(), user_id, route, row["version"]),
+                )
+                self.db.execute(
+                    "UPDATE credential_metadata SET status_reason='revoked' WHERE user_id=? AND route=? AND version=?",
+                    (user_id, route, row["version"]),
+                )
+                self.event(user_id, route, row["version"], "revoked", "revoked", "revoked")
+            return self.entry(user_id, route, row["version"])
 
     def sealed(self, user_id: int, route: str) -> tuple[int, Sealed] | None:
-        """The latest version's ciphertext, if it still has one."""
+        """The latest usable ciphertext, retained for migration/rotation tooling only."""
         with self.lock:
             row = self.db.execute(
-                "SELECT version, wrapped_key, nonce, ciphertext FROM credentials "
-                "WHERE user_id = ? AND route = ? AND ciphertext IS NOT NULL ORDER BY version DESC LIMIT 1",
+                "SELECT version,wrapped_key,nonce,ciphertext FROM credentials "
+                "WHERE user_id=? AND route=? AND ciphertext IS NOT NULL ORDER BY version DESC LIMIT 1",
                 (user_id, route),
             ).fetchone()
         return (row["version"], Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"])) if row else None
 
     def metadata(self, user_id: int, at: str | None = None) -> dict:
-        """Service-only status/model history; never read fingerprints or sealed columns."""
-        if at is not None:
-            try:
-                cutoff = datetime.fromisoformat(at.replace("Z", "+00:00"))
-                if cutoff.tzinfo is None:
-                    raise ValueError()
-            except ValueError:
-                raise VaultError(422, "invalid metadata timestamp") from None
+        """Private nonsecret status/model history; unknown legacy evidence stays unknown."""
+        cutoff = datetime.fromisoformat(instant(at)) if at else datetime.fromtimestamp(self.clock(), UTC)
         with self.lock:
             rows = self.db.execute(
-                "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired, "
-                "c.ciphertext IS NOT NULL AS usable FROM credentials c LEFT JOIN credential_metadata m "
-                "ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version WHERE c.user_id=? ORDER BY c.version",
+                "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired,"
+                "c.ciphertext IS NOT NULL AS usable,m.kind,m.status_reason,m.validated,m.expires_at,m.expiry_known,"
+                "m.token_revision FROM credentials c LEFT JOIN credential_metadata m "
+                "ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
+                "WHERE c.user_id=? ORDER BY c.version",
                 (user_id,),
             ).fetchall()
         latest = {}
         for row in rows:
-            if at and datetime.fromisoformat(row["created"].replace("Z", "+00:00")) > cutoff:
+            if datetime.fromisoformat(row["created"].replace("Z", "+00:00")) > cutoff:
                 continue
             status = row["status"]
             if at:
@@ -363,9 +556,11 @@ class Store:
                 elif not row["usable"]:
                     status = "unknown"
             elif not row["usable"]:
-                status = "revoked"
+                status = "revoked" if status == "revoked" else "invalid"
+            if row["expiry_known"] and row["expires_at"] and cutoff >= datetime.fromisoformat(row["expires_at"]):
+                status = "invalid"
             latest[row["route"]] = {
-                "record_id": digest(f"{user_id}/{row['route']}/{row['version']}"),
+                "record_id": record_id(user_id, row["route"], row["version"]),
                 "user_id": str(user_id),
                 "route": row["route"],
                 "version": row["version"],
@@ -373,32 +568,158 @@ class Store:
                 "models": json.loads(row["models"]) if row["models"] else None,
                 "created": row["created"],
                 "updated": row["updated"],
+                "kind": row["kind"],
+                "status_reason": row["status_reason"],
+                "validated": row["validated"],
+                "expires_at": row["expires_at"] if row["expiry_known"] else None,
+                "expiry_known": bool(row["expiry_known"]),
+                "token_revision": row["token_revision"],
             }
         return {
-            "history_complete": all(record["status"] != "unknown" for record in latest.values()),
+            "history_complete": all(r["status"] != "unknown" for r in latest.values()),
             "credentials": list(latest.values()),
         }
 
-    def destroy(self, user_id: int, route: str) -> None:
-        """Retire prior metadata before destroying its ciphertext; preserve immutable validation evidence."""
+    def destroy(self, user_id: int, route: str, reason="revoked") -> None:
+        """Retire usable versions before deleting sealed material, within the caller's transaction."""
+        versions = self.db.execute(
+            "SELECT version FROM credentials WHERE user_id=? AND route=? AND ciphertext IS NOT NULL", (user_id, route)
+        ).fetchall()
+        for row in versions:
+            self.db.execute(
+                "UPDATE credential_metadata SET retired=COALESCE(retired,?),status_reason=?"
+                " WHERE user_id=? AND route=? AND version=?",
+                (self.now(), reason, user_id, route, row["version"]),
+            )
+            if reason == "replaced":
+                self.event(user_id, route, row["version"], "retired", "retired", reason)
         self.db.execute(
-            "UPDATE credential_metadata SET retired = COALESCE(retired, ?) WHERE user_id=? AND route=?",
-            (datetime.now(UTC).isoformat(timespec="seconds"), user_id, route),
-        )
-        self.db.execute(
-            "UPDATE credentials SET wrapped_key = NULL, nonce = NULL, ciphertext = NULL WHERE user_id = ? AND route = ?",
+            "UPDATE credentials SET wrapped_key=NULL,nonce=NULL,ciphertext=NULL WHERE user_id=? AND route=?",
             (user_id, route),
         )
 
     def entry(self, user_id: int, route: str, version: int) -> dict[str, object]:
+        """Public owner metadata only; account headers remain inside the sealed payload."""
         row = self.db.execute(
-            f"SELECT {LISTING} FROM credentials WHERE user_id = ? AND route = ? AND version = ?",
+            "SELECT c.route,c.status,c.fingerprint,c.version,c.updated,m.kind,m.status_reason,m.validated,m.expires_at,"
+            "m.expiry_known,m.last_used,m.account_label,m.verified_account,m.models "
+            "FROM credentials c LEFT JOIN credential_metadata m ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version"
+            " WHERE c.user_id=? AND c.route=? AND c.version=?",
             (user_id, route, version),
         ).fetchone()
-        return dict(row)
+        value = dict(row)
+        value["record_id"] = record_id(user_id, route, version)
+        value["expiry_known"] = bool(value["expiry_known"])
+        value["models"] = json.loads(value["models"]) if value["models"] else None
+        if (
+            value["expiry_known"]
+            and value["expires_at"]
+            and self.clock() >= datetime.fromisoformat(value["expires_at"]).timestamp()
+        ):
+            value["status"], value["status_reason"] = "invalid", "expired"
+        return value
+
+    def resolve(self, user_id: int, route: str, identifier: str, version: int) -> dict:
+        """Return one exact version only to the gateway listener; no selection or fallback occurs here."""
+        if identifier != record_id(user_id, route, version) or route not in ROUTE_KINDS:
+            raise VaultError(404, "credential not found")
+        result = None
+        with self.lock, self.transaction():
+            row = self.db.execute(
+                "SELECT c.*,m.key_id,m.expires_at,m.expiry_known,m.envelope_format,m.token_revision "
+                "FROM credentials c JOIN credential_metadata m ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
+                "WHERE c.user_id=? AND c.route=? AND c.version=?",
+                (user_id, route, version),
+            ).fetchone()
+            if row is None:
+                raise VaultError(404, "credential not found")
+            if row["status"] == "valid" and row["ciphertext"] is not None:
+                expired = (
+                    row["expiry_known"]
+                    and row["expires_at"]
+                    and self.clock() >= datetime.fromisoformat(row["expires_at"]).timestamp()
+                )
+                if expired:
+                    self.db.execute(
+                        "UPDATE credentials SET status='invalid',wrapped_key=NULL,nonce=NULL,ciphertext=NULL,updated=?"
+                        " WHERE user_id=? AND route=? AND version=?",
+                        (self.now(), user_id, route, version),
+                    )
+                    self.db.execute(
+                        "UPDATE credential_metadata SET status_reason='expired',retired=COALESCE(retired,?)"
+                        " WHERE user_id=? AND route=? AND version=?",
+                        (self.now(), user_id, route, version),
+                    )
+                    self.event(user_id, route, version, "unusable", "invalid", "expired")
+                else:
+                    try:
+                        material = self.envelope.open(
+                            Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"]),
+                            aad(user_id, route, version),
+                            row["key_id"],
+                        )
+                        payload = (
+                            json.loads(material)
+                            if row["envelope_format"] == 2
+                            else {"secret": material, "account": None}
+                        )
+                    except (ValueError, UnicodeError, InvalidTag, KeyError):
+                        raise VaultError(503, "credential material unavailable") from None
+                    result = {
+                        "record_id": identifier,
+                        "user_id": str(user_id),
+                        "route": route,
+                        "version": version,
+                        "token_revision": row["token_revision"],
+                        "secret": payload["secret"],
+                        "account": payload.get("account"),
+                        "expires_at": row["expires_at"] if row["expiry_known"] else None,
+                    }
+                    self.db.execute(
+                        "UPDATE credential_metadata SET last_used=? WHERE user_id=? AND route=? AND version=?",
+                        (self.now(), user_id, route, version),
+                    )
+        if result is None:
+            raise VaultError(410, "credential unavailable")
+        return result
+
+    def rotate(self, envelope: Envelope) -> int:
+        """Atomically rewrap data keys; preserve token bytes, versions, validation and retirement evidence."""
+        changed = 0
+        with self.lock:
+            with self.transaction():
+                rows = self.db.execute(
+                    "SELECT c.user_id,c.route,c.version,c.wrapped_key,c.nonce,c.ciphertext,m.key_id FROM credentials c "
+                    "JOIN credential_metadata m ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
+                    "WHERE c.ciphertext IS NOT NULL",
+                ).fetchall()
+                for row in rows:
+                    if row["key_id"] == envelope.current:
+                        continue
+                    try:
+                        sealed = envelope.rewrap(
+                            Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"]),
+                            aad(row["user_id"], row["route"], row["version"]),
+                            row["key_id"],
+                        )
+                    except (InvalidTag, KeyError):
+                        raise ConfigError("wrapping key rotation unavailable") from None
+                    self.db.execute(
+                        "UPDATE credentials SET wrapped_key=? WHERE user_id=? AND route=? AND version=?",
+                        (sealed.wrapped_key, row["user_id"], row["route"], row["version"]),
+                    )
+                    self.db.execute(
+                        "UPDATE credential_metadata SET key_id=? WHERE user_id=? AND route=? AND version=?",
+                        (envelope.current, row["user_id"], row["route"], row["version"]),
+                    )
+                    self.event(row["user_id"], row["route"], row["version"], "rewrapped", "valid", "key_rotation")
+                    changed += 1
+            self.envelope = envelope
+        return changed
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
+        """Commit lifecycle events and material/status changes together, or roll everything back."""
         self.db.execute("BEGIN IMMEDIATE")
         try:
             yield
@@ -412,25 +733,27 @@ class SecretBody(BaseModel):
     secret: str
 
 
-def create_app(store: Store, identity: Identity, validator: Validator, service_token: str | None = None) -> FastAPI:
+def create_app(
+    store: Store,
+    identity: Identity,
+    validator: Validator,
+    service_token: str | None = None,
+    private_tokens: tuple[str, ...] = (),
+) -> FastAPI:
     app = FastAPI(title="Concurro credentials vault", docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.exception_handler(VaultError)
-    async def refused(_: Request, error: VaultError) -> JSONResponse:
-        headers = {"WWW-Authenticate": "Bearer"} if error.status == 401 else None
-        return JSONResponse({"error": error.reason}, status_code=error.status, headers=headers)
-
-    # FastAPI's default body errors echo the submitted input, which may be a secret.
-    @app.exception_handler(RequestValidationError)
-    async def malformed(_: Request, __: RequestValidationError) -> JSONResponse:
-        return JSONResponse({"error": "malformed request"}, status_code=422)
+    protect(app)
 
     def user(authorization: Annotated[str | None, Header()] = None) -> User:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             raise VaultError(401, "missing bearer token")
-        if service_token and hmac.compare_digest(token.strip().encode(), service_token.encode()):
-            raise VaultError(401, "service credential is metadata-only")
+        if any(
+            hmac.compare_digest(token.strip().encode(), value.encode())
+            for value in (service_token, *private_tokens)
+            if value
+        ):
+            raise VaultError(401, "private credential cannot act as a user")
         return identity.resolve(token.strip())
 
     def known(route: str) -> str:
@@ -482,24 +805,125 @@ def create_app(store: Store, identity: Identity, validator: Validator, service_t
     return app
 
 
-def main() -> None:
+class RecordRef(BaseModel):
+    """The frozen exact identity a future admitted gateway request supplies, never a user-selected payer."""
+
+    user_id: int = Field(gt=0, strict=True, description="Stable GitHub owner ID.")
+    route: str = Field(description="Trusted configured credential route.")
+    record_id: str = Field(pattern=r"^[0-9a-f]{64}$", description="Opaque immutable record identity.")
+    version: int = Field(gt=0, strict=True, description="Exact version frozen at admission.")
+
+
+def protect(app: FastAPI) -> None:
+    """Use the same fixed-error boundary on both listeners; request validation must never echo secrets."""
+
+    @app.exception_handler(VaultError)
+    async def refused(_: Request, error: VaultError) -> JSONResponse:
+        """Return only the vault's bounded public error vocabulary."""
+        headers = {"WWW-Authenticate": "Bearer"} if error.status == 401 else None
+        return JSONResponse({"error": error.reason}, status_code=error.status, headers=headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def malformed(_: Request, __: RequestValidationError) -> JSONResponse:
+        """Suppress submitted field values from schema errors."""
+        return JSONResponse({"error": "malformed request"}, status_code=422)
+
+
+def create_resolver(store: Store, token: str) -> FastAPI:
+    """A separate gateway-principal listener; user/metadata credentials cannot reach its material API."""
+
+    def gateway(authorization: Annotated[str | None, Header()] = None):
+        """Authenticate locally without ever forwarding a private bearer to GitHub."""
+        scheme, _, supplied = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not token or not hmac.compare_digest(supplied.encode(), token.encode()):
+            raise VaultError(401, "invalid gateway credential")
+
+    app = FastAPI(
+        title="Concurro private credential resolver",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        dependencies=[Depends(gateway)],
+    )
+    protect(app)
+
+    @app.post("/resolve")
+    def resolve(body: RecordRef):
+        """Resolve only the recorded version; responses must not be cached by intermediaries."""
+        material = store.resolve(body.user_id, body.route, body.record_id, body.version)
+        return JSONResponse(material, headers={"Cache-Control": "no-store"})
+
+    @app.get("/events")
+    def events(after: int = 0):
+        """Read nonsecret lifecycle events; the future Exchange consumer persists its own cursor."""
+        return store.events(after)
+
+    return app
+
+
+class ListenerApps:
+    """Select an API using the trusted accepted socket's port, never a client header or URL."""
+
+    def __init__(self, public, private=None, private_port=None):
+        """Bind one public application and, optionally, one separately addressed private listener."""
+        self.public, self.private, self.private_port = public, private, private_port
+
+    async def __call__(self, scope, receive, send):
+        """Lifespan belongs to the public app; neither application creates listener-specific resources."""
+        address = scope.get("server")
+        target = self.private if self.private and address and address[1] == self.private_port else self.public
+        await target(scope, receive, send)
+
+
+def main(argv=None) -> None:
+    """Serve the legacy public API, optionally a private listener, or explicitly rotate wrapping keys."""
     import uvicorn
 
+    parser = argparse.ArgumentParser(prog="concurro-vault")
+    parser.add_argument("--rotate", action="store_true", help="rewrap live records under the configured active key")
+    args = parser.parse_args(argv or [])
     os.umask(0o077)
     state = Path(os.environ.get("VAULT_STATE_DIR", "/data"))
     key_file = os.environ.get("VAULT_MASTER_KEY_FILE", "/run/secrets/vault-master-key")
-    host, _, port = os.environ.get("VAULT_LISTEN", "0.0.0.0:8090").rpartition(":")
+    keyring = os.environ.get("VAULT_KEYRING_FILE")
     try:
-        envelope = Envelope(load_master_key(key_file))
+        envelope = load_envelope(key_file, keyring)
         service_path = os.environ.get("VAULT_SERVICE_TOKEN_FILE")
         service_token = load_master_key(service_path).hex() if service_path else None
-    except ConfigError as error:
-        raise SystemExit(f"vault: {error}") from None
-    state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    store = Store(state / "vault.db", envelope)
-    app = create_app(store, Identity(http_get), Validator(http_get), service_token)
-    uvicorn.run(app, host=host, port=int(port), server_header=False)
+        gateway_path = os.environ.get("VAULT_RESOLVER_TOKEN_FILE")
+        gateway_token = load_master_key(gateway_path).hex() if gateway_path else None
+        if gateway_token and gateway_token == service_token:
+            raise ConfigError("metadata and gateway principals must differ")
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with ExitStack() as resources:
+            store = Store(state / "vault.db", envelope)
+            resources.callback(store.close)
+            if args.rotate:
+                if not keyring:
+                    raise ConfigError("rotation requires a named keyring")
+                print(json.dumps({"rewrapped": store.rotate(envelope)}))
+                return
+            public = create_app(
+                store, Identity(http_get), Validator(http_get), service_token, (gateway_token,) if gateway_token else ()
+            )
+            host, _, port = os.environ.get("VAULT_LISTEN", "0.0.0.0:8090").rpartition(":")
+            sockets = [resources.enter_context(socket.create_server((host, int(port))))]
+            private, private_port = None, None
+            if gateway_token:
+                private_host, _, value = os.environ.get("VAULT_RESOLVER_LISTEN", "127.0.0.1:8091").rpartition(":")
+                private_port = int(value)
+                if private_port == int(port):
+                    raise ConfigError("vault listener ports must differ")
+                sockets.append(resources.enter_context(socket.create_server((private_host, private_port))))
+                private = create_resolver(store, gateway_token)
+            server = uvicorn.Server(
+                uvicorn.Config(ListenerApps(public, private, private_port), server_header=False, proxy_headers=False)
+            )
+            server.run(sockets=sockets)
+    except (ConfigError, OSError, ValueError) as error:
+        reason = str(error) if isinstance(error, ConfigError) else "vault startup failed"
+        raise SystemExit("vault: " + reason) from None
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

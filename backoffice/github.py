@@ -9,6 +9,8 @@ from service.github_reads import content, default_branch
 from service.target_config import read_remote
 from service.transport import StaticCredential, Transport
 
+from .auth import TokenCredential
+
 # Repository metadata (visibility and permissions) per user token, briefly.
 REPOSITORY_SECONDS = 60
 REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
@@ -49,14 +51,15 @@ class UserGitHub(GitHub):
 class UserAccess:
     """Per-repository transports for one user token."""
 
-    def __init__(self, token: str, connection=None):
+    def __init__(self, token: str, connection=None, credential: TokenCredential | None = None):
         self.token, self.connection = token, connection
+        self.credential = credential or StaticCredential(token)
         self.transports: dict[str, Transport] = {}
 
     def transport(self, repository: str) -> Transport:
         if repository not in self.transports:
             options = {"connection": self.connection} if self.connection else {}
-            self.transports[repository] = Transport(repository, StaticCredential(self.token), time.time, **options)
+            self.transports[repository] = Transport(repository, self.credential, time.time, **options)
         return self.transports[repository]
 
     def engine(self, repository: str) -> UserGitHub:

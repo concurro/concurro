@@ -5,6 +5,8 @@ The vault resolves the user itself; the backoffice never stores or reads back a 
 
 import httpx
 
+from .auth import BearerAuth, TokenCredential
+
 # The UI's route identifiers, the vault's, and their labels. Subscriptions aren't stored yet.
 ROUTES = (
     ("anthropic_api", "anthropic-api-key", "Anthropic API", "anthropic", "API key"),
@@ -13,7 +15,7 @@ ROUTES = (
     ("chatgpt_subscription", None, "ChatGPT subscription", "openai", "Subscription"),
 )
 VAULT_ROUTES = {ui: vault for ui, vault, *_ in ROUTES if vault}
-STATUS = {"valid": "valid", "invalid": "expired", "revoked": "revoked"}
+STATUS = {"valid": "valid", "invalid": "invalid", "revoked": "revoked"}
 UNUSED = "Stored and validated; runs don't use personal credentials yet."
 
 
@@ -30,13 +32,11 @@ class Vault:
         self.url = url.rstrip("/") if url else None
         self.client = client or httpx.Client(timeout=30)
 
-    def call(self, method: str, path: str, token: str, body: dict | None = None):
+    def call(self, method: str, path: str, token: str | TokenCredential, body: dict | None = None):
         if not self.url:
             raise VaultError(503, "the credentials vault is not configured")
         try:
-            response = self.client.request(
-                method, self.url + path, headers={"Authorization": "Bearer " + token}, json=body
-            )
+            response = self.client.request(method, self.url + path, auth=BearerAuth(token), json=body)
         except httpx.HTTPError:
             raise VaultError(503, "the credentials vault is unavailable") from None
         try:
@@ -48,17 +48,17 @@ class Vault:
             raise VaultError(response.status_code, reason if isinstance(reason, str) else "vault request failed")
         return payload
 
-    def routes(self, token: str) -> list[dict]:
+    def routes(self, token: str | TokenCredential) -> list[dict]:
         """Every UI route with its stored status; routes the vault doesn't hold show as missing."""
         stored = {entry["route"]: entry for entry in self.call("GET", "/credentials", token) or []}
         return [route(ui, stored.get(vault) if vault else None) for ui, vault, *_ in ROUTES]
 
-    def put(self, token: str, ui_route: str, secret: str) -> dict:
+    def put(self, token: str | TokenCredential, ui_route: str, secret: str) -> dict:
         return route(
             ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, {"secret": secret})
         )
 
-    def revoke(self, token: str, ui_route: str) -> dict:
+    def revoke(self, token: str | TokenCredential, ui_route: str) -> dict:
         return route(ui_route, self.call("DELETE", f"/credentials/{self.vault_route(ui_route)}", token))
 
     @staticmethod
@@ -71,13 +71,28 @@ class Vault:
 def route(ui_route: str, entry: dict | None) -> dict:
     """One `CredentialRoute` as the frontend expects it."""
     _, vault, label, provider, kind = next(r for r in ROUTES if r[0] == ui_route)
-    result: dict = {"id": ui_route, "label": label, "provider": provider, "kind": kind}
+    result: dict = {
+        "id": ui_route,
+        "route": vault,
+        "label": label,
+        "provider": provider,
+        "kind": kind,
+        "registrationAvailable": vault is not None,
+    }
     if entry is None:
         result["status"] = "missing"
         result["note"] = UNUSED if vault else "Subscription credentials aren't supported yet."
         return result
-    result["status"] = STATUS.get(entry.get("status"), "expired")
+    result["status"] = (
+        "expired" if entry.get("status_reason") == "expired" else STATUS.get(entry.get("status"), "invalid")
+    )
     result["fingerprint"] = entry.get("fingerprint")
-    result["lastValidated"] = entry.get("updated")
+    result["lastValidated"] = entry.get("validated")
+    result["lastUsed"] = entry.get("last_used")
+    result["expiresAt"] = entry.get("expires_at")
+    result["expiryKnown"] = bool(entry.get("expiry_known"))
+    result["models"] = entry.get("models")
+    result["version"] = entry.get("version")
+    result["statusReason"] = entry.get("status_reason")
     result["note"] = UNUSED
     return result

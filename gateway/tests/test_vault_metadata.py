@@ -30,7 +30,22 @@ class MetadataTests(VaultFixture, unittest.TestCase):
         self.assertEqual([m["route"] for m in result["credentials"]], ["openai-api-key"])
         self.assertEqual(
             set(result["credentials"][0]),
-            {"record_id", "user_id", "route", "version", "status", "models", "created", "updated"},
+            {
+                "record_id",
+                "user_id",
+                "route",
+                "version",
+                "status",
+                "models",
+                "created",
+                "updated",
+                "kind",
+                "status_reason",
+                "validated",
+                "expires_at",
+                "expiry_known",
+                "token_revision",
+            },
         )
         self.assertEqual(result["credentials"][0]["models"], [])
         for secret in (ALICE, BOB, OPENAI, ANTHROPIC, SERVICE, vault.fingerprint(OPENAI)):

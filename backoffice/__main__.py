@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 
 import uvicorn
 
@@ -14,6 +15,7 @@ def main() -> None:
     parser.add_argument("--settings", required=True)
     parser.add_argument("--listen", default="0.0.0.0:8788")
     args = parser.parse_args()
+    os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     try:
         settings = load(args.settings)

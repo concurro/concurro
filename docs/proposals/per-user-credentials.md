@@ -387,3 +387,6 @@ Requirements for any of them:
 3. Should sponsors be able to cap their spend per task? That needs per-key usage
    aggregation, and interacts with [risk-driven routing](risk-driven-routing.md).
 4. Org pool policy: never, or opt-in per target for shared bot accounts?
+
+Phase 2 now implements [portal and vault lifecycle](per-user-credentials/phase-2.md).
+Contributed inference and subscription registration remain later phases.
