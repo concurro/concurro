@@ -110,6 +110,30 @@ class ReadCacheTests(unittest.TestCase):
         self.assertEqual(self.cache.read("s", "o/r", 1, loader, refresh=True)[0]["revision"], "current")
         self.assertEqual(loader.call_count, 2)
 
+    def test_unexpected_refresh_failure_stops_polling_until_retry_deadline(self):
+        """Polling an internal failure retains the snapshot without starting another GitHub refresh."""
+        saved, observed = self.cache.read("s", "o/r", 1, Mock(return_value={"revision": "saved"}))
+        loader = Mock(side_effect=[RuntimeError("upstream failure"), {"revision": "recovered"}])
+        with self.assertRaises(RuntimeError):
+            self.cache.read("s", "o/r", 1, loader, refresh=True)
+        for second in range(60):
+            if second:
+                self.now += 1
+            for refresh in (False, True):
+                data, meta = self.cache.read("s", "o/r", 1, loader, refresh=refresh)
+                self.assertEqual(data, saved)
+                self.assertEqual(meta["observedAt"], observed["observedAt"])
+                self.assertEqual(meta["error"], "The latest issue refresh failed.")
+                self.assertTrue(meta["stale"])
+                self.assertFalse(meta["refreshing"])
+        self.assertEqual(loader.call_count, 1)
+        self.now += 1
+        data, meta = self.cache.read("s", "o/r", 1, loader, refresh=True)
+        self.assertEqual(data, {"revision": "recovered"})
+        self.assertIsNone(meta["error"])
+        self.assertFalse(meta["refreshing"])
+        self.assertEqual(loader.call_count, 2)
+
     def test_cold_failures_do_not_retry_on_every_navigation(self):
         """A new issue under throttling returns a retryable error without repeatedly hitting GitHub."""
         loader = Mock(side_effect=Transient("throttled", retry_after=120))
