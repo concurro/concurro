@@ -58,6 +58,8 @@ def legacy(root, fresh):
     with closing(CONNECT(Path(root) / DATABASE)) as db, db:
         for name, sql in fresh.items():
             if name not in {
+                "funding_policies",
+                "sqlite_sequence",
                 "bindings",
                 "runner_sessions",
                 "pulls",
@@ -111,7 +113,7 @@ class SetupTests(unittest.TestCase):
         self.addCleanup(registry.close)
         self.assertEqual(self.trace, self.golden["initialize"])
         self.assertEqual(schema(registry.db.db), self.golden["fresh"])
-        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "6")])
+        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "7")])
         self.assertIn("\n", self.golden["fresh"]["pulls"])
 
     def test_migrated_schema_rows_and_order(self):
@@ -123,7 +125,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(schema(registry.db.db), self.golden["migrated"])
         self.assertEqual(list(registry.db.db.execute("SELECT * FROM pulls")), [("owner/repo", 7, "owner/repo", 9)])
         self.assertEqual(list(registry.db.db.execute("SELECT * FROM deliveries")), [("delivery", 123)])
-        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "6")])
+        self.assertEqual(list(registry.db.db.execute("SELECT * FROM meta")), [("registry_id", "test"), ("schema", "7")])
         self.assertNotIn("\n", self.golden["migrated"]["pulls"])
 
     def test_existing_open_order(self):

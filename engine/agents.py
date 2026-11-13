@@ -9,10 +9,12 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+import admissions
 import protocol
 import review_timing
 import run_display
 from bundle import Bundle
+from credential_routes import ROUTES
 from credentials import Credential
 from github import Transient
 from model_config import resolve
@@ -120,6 +122,8 @@ class Agents:
         context = dict(context)
         session = context.pop("controller_session", None)
         selected = context.pop("controller_credential", None)
+        admission = context.pop("controller_admission", None)
+        attempt = context.pop("controller_attempt", None)
         candidate = context.pop("controller_candidate", None)
         feedback = context.pop("controller_feedback", {})
         evaluation = context.pop("controller_evaluation", None)
@@ -131,14 +135,32 @@ class Agents:
         model = agent.profile.model
         if not model.strip():
             raise Blocked("live inference requires an explicit model ID for every participating role")
-        expected = self.credential(provider, stage, None)
-        if selected is not None and Credential.parse(selected) != expected:
+        credential = Credential.parse(selected) if selected is not None else self.credential(provider, stage, None)
+        if admissions.mode(self.config) != credential.kind:
+            raise Blocked("selected credential differs from task funding policy")
+        if credential.kind == "org":
+            valid = credential == self.credential(provider, stage, None)
+        else:
+            route = ROUTES.get(credential.route, {})
+            valid = (
+                credential.provider == agent.profile.harness
+                and credential.route == self.config.get("credential_routes", {}).get(provider)
+                and route.get("sponsorship_provider") == agent.profile.provider
+            )
+        if not valid:
             raise Blocked("selected credential belongs to another provider or route")
+        if admission is not None and admission.get("credential") != credential.record():
+            raise Blocked("admission differs from selected credential")
         if context.get("bundle_id") != self.bundle.identity:
             raise Blocked("agent transport bundle differs from the approved bundle")
         if session and not self.retained:
             raise Blocked("retained sessions need a transcript store")
         request = {
+            **(
+                {"admission": admission, "attempt": attempt}
+                if admission is not None or credential.kind == "contributed"
+                else {}
+            ),
             "provider": agent.profile.harness,
             "model": model,
             "effort": agent.profile.effort,
@@ -340,6 +362,21 @@ class RunnerExecutor:
             # Each long-running attempt gets a fresh setup/job clock.
             phase = digest([phase, identifier])
         binding = {**self.task, "base": base, "role": role, "phase": phase}
+        admission = request.get("admission")
+        if "admission" in request and admission is None:
+            raise Blocked("contributed turn lacks its frozen admission")
+        if admission is not None:
+            selected = {key: admission[key] for key in admissions.FIELDS}
+            credential = admissions.validate(selected)
+            if admission.get("version") != 1 or admission.get("owner_generation") != self.task["generation"]:
+                raise Blocked("admission differs from current task ownership")
+            binding.update(
+                version=2,
+                funding=credential.kind,
+                **{key: selected[key] for key in ("sponsorship_provider", "sponsor", "epoch", "grant_id", "route")},
+                credential=credential.record_id if credential.kind == "contributed" else credential.id,
+                credential_version=credential.version,
+            )
         return binding, model
 
     def admit(self, identifier, turn, pin=None):
@@ -364,6 +401,12 @@ class RunnerExecutor:
     def submit(self, turn, pin=None, identifier=None):
         """Admit and dispatch once; return a handle without waiting for the model."""
         self.check_owner()
+        frozen = turn.get("request", {}).get("attempt")
+        if frozen is not None:
+            expected_id = admissions.turn_id(frozen)
+            if identifier is not None and identifier != expected_id:
+                raise Blocked("turn differs from its persisted attempt")
+            identifier = expected_id
         identifier = identifier or str(uuid.uuid4())
         binding, model = self.binding(turn, identifier)
         group = digest([binding, model])

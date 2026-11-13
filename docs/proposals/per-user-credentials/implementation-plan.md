@@ -1,7 +1,8 @@
 # Per-user credentials: implementation plan
 
-**Status: org-funded shadow sponsorship implemented; contributed inference remains proposed.**
-See [phase 1](phase-1.md) for current runtime/API behavior and migration boundaries.
+**Status: phases 1–3 implemented; production contributed injection and subscription acceptance remain later phases.**
+See [phase 1](phase-1.md), [phase 2](phase-2.md) and [phase 3](phase-3.md) for shipped runtime/API behavior and migration boundaries.
+Phase 3 freezes admissions on actual org paths and exercises contributed enforcement with isolated adapters; production capability remains org-only.
 The [isolated phase-0 spike](phase-0.md) is implemented and measured; real-account checks
 remain pending by user scope.
 This supplies the execution plan for the [epic](../per-user-credentials.md), including
@@ -693,7 +694,7 @@ The original documentation review ran no application tests. Isolated phase-0 tes
 limitations are now recorded in [phase-0.md](phase-0.md); real-account acceptance remains
 pending and is not implied by fake-provider results.
 
-## Migration, operation and rollback
+## Migration, operation and roll-forward recovery
 
 1. **Back up.** Consistent vault/exchange/service databases, with the wrapping key
    escrowed separately; test restore with non-production keys. Additive, versioned
@@ -734,12 +735,11 @@ pending and is not implied by fake-provider results.
    refresh ambiguity, resolver failures, fence conflicts and unknown usage, using
    sanitized task/attempt/event IDs. After restart, reconcile vault events, sponsor
    provider fences/withdrawal cutoffs, scoped session/key retirement and usage outboxes.
-6. **Rollback** stops new contributed admissions without changing recorded payers. Drain
-   admitted work or explicitly retire it; never switch it to org. Keep compatible readers,
-   revocation, reconciliation and any shipped refresh adapter alive. Downgrading below the new
-   checkpoint format, the `awaiting_credentials` stage or the new binding needs a
-   drained window and a tested restore. Never restore an old vault snapshot over newer
-   revoked or rotated grants.
+6. **Roll forward only.** Recover with corrective releases and forward migrations;
+   deployment rollback and downgrades are not supported or required. Preserve recorded
+   payers, spent budgets, approvals, transition receipts and revocation evidence. If an
+   incident requires pausing admissions, drain or explicitly retire admitted work without
+   switching its payer to org. Continue revocation and reconciliation during recovery.
 
 Update `gateway/README.md`, `backoffice/README.md`, inference/service design and config
 docs only as behavior ships. Deployment remains separately authorized, with exact release

@@ -504,20 +504,20 @@ legacy tasks; see [recovery](../docs/concurro.md#commands-and-recovery).
 and instructions while preserving completed work and original approval bindings.
 It records explicit writer authority, without a release compatibility certificate.
 Resume receipts require at least checkpoint format 6; large inventories require format 5.
-Artifact consolidation phase 1 writes **format 7 on every checkpoint save**. After deployment,
-this applies to every task that saves, not only tasks with large reports or new storage layouts.
-Rollback must therefore use an engine supporting phase 1's comment-encoded audits and
-publication receipts for all such tasks; an earlier format-7 reader is insufficient. Tasks
+Artifact consolidation introduced format 7; shadow sponsorship introduced format 8.
+Frozen admissions now write **format 9 on every charged checkpoint save**; Registry schema 7
+is also required. This applies to ordinary calls as well as contributed-mode tests.
+Corrective releases must preserve phase 1's comment-encoded audits and publication
+receipts for all such tasks. Tasks
 writing shared artifacts additionally need the final phase-4b reader, including version-3
 nonce/attempt-tagged parts and their completion records. Ship phases 3, 4a and 4b together;
-their combined request-volume criteria passed. The checkpoint number remains 7 for this
-unreleased package. See the [closeout evidence](../docs/reports/limits-cleanup/README.md#artifact-consolidation-closeout).
+their combined request-volume criteria passed. That historical storage package used checkpoint format 7. See the [closeout evidence](../docs/reports/limits-cleanup/README.md#artifact-consolidation-closeout).
 Do not restore older task checkpoints to bypass this requirement: that loses spent budgets
 and publication progress.
 
-For rollback, stop the new service and jobs first. Restore the matching backed-up stores,
-settings and old committed server release together. Do not
-run old code against a newer registry schema or discard unknown-write records.
+Recovery is **roll-forward only**. Fix incidents with corrective releases and forward
+migrations that preserve current stores, spent budgets, approvals and unknown-write
+records. Deployment rollback and downgrades are not supported or required.
 
 ## Operation and pilot
 
@@ -629,9 +629,14 @@ endpoints reject that bearer before GitHub lookup. Configure `VAULT_SERVICE_TOKE
 with a dedicated owner-only 32-byte hex token; the service needs its own owner-only copy
 and `vault_metadata_url`/`vault_service_token_path`. Provision the vault mount before
 deploying updated Compose. Subscription registration and contributed inference remain
-disabled; org inference bindings are unchanged. Migration and rollback details:
+disabled; org inference retains its credential identity and accounting. Migration and recovery details:
 [phase 1](../docs/proposals/per-user-credentials/phase-1.md).
 
 Phase-2 [vault lifecycle and optional private listener](vault/README.md) add versioned
 events and key rotation without enabling contributed inference. Existing deployments need no
 resolver token; `compose.private.yaml` is an opt-in private-network overlay.
+
+Phase 3 adds [frozen admissions and provider retirement fences](../docs/proposals/per-user-credentials/phase-3.md).
+The production adapter remains org-only; configured contributed calls stop before charge.
+Charged tasks use checkpoint format 9 and Registry schema 7. Optional Exchange metadata/event
+principals, build context changes and forward-migration requirements are documented in that phase note.

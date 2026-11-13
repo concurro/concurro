@@ -3,6 +3,9 @@
 Keep requested changes uncommitted for review. Do not deploy, change App permissions,
 or retry live tasks unless the user authorizes those actions.
 
+Recovery is roll-forward only. Do not add deployment rollback or downgrade support;
+preserve existing state through forward migrations and corrective releases.
+
 ## Dependencies and hosts
 
 Third-party Python packages are allowed; pin exact versions in the component's
@@ -43,8 +46,8 @@ changes need no documentation unless they make existing guidance inaccurate.
   `/concurro resume` explicitly adopts current configuration and instructions while
   preserving completed work, original approval bindings and spent budgets. It requires
   no release compatibility certificate. Legacy implementer-only retry needs local Git
-  history. Resume receipts require checkpoint format 6; include that rollback boundary
-  in release instructions.
+  history. Resume receipts require checkpoint format 6; include forward-migration
+  requirements in release instructions.
 - Verify CI for the exact release and provide the full-SHA deployment command. Use
   `bash deploy/deploy.sh service FULL_SHA` (`web FULL_SHA` for a concurro-backoffice release)
   with an outer `||` failure message; never put `set -e` in the user's interactive shell.

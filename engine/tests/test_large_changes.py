@@ -117,8 +117,8 @@ class LargePublicationTests(unittest.TestCase):
         body = controller.checkpoints.audit["body"]
         self.assertNotIn("x" * 170, body)
         payload = checkpoints.legacy_state(body)
-        self.assertEqual(payload["state"]["version"], 7)
-        for version in (3, 4, 9):
+        self.assertEqual(payload["state"]["version"], 9)
+        for version in (3, 4, 10):
             payload["state"]["version"] = version
             with self.assertRaises(checkpoints.CheckpointError):
                 controller.checkpoints.decode(

@@ -1,6 +1,6 @@
 # Proposal: per-user provider credentials
 
-**Status: org-funded shadow sponsorship implemented; contributed inference remains proposed.**
+**Status: phases 1–3 implemented; production contributed injection and subscription acceptance remain later phases.**
 Current behavior and remaining boundaries are recorded in [phase 1](per-user-credentials/phase-1.md). Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
@@ -389,4 +389,5 @@ Requirements for any of them:
 4. Org pool policy: never, or opt-in per target for shared bot accounts?
 
 Phase 2 now implements [portal and vault lifecycle](per-user-credentials/phase-2.md).
-Contributed inference and subscription registration remain later phases.
+Phase 3 implements [frozen admission and provider fences](per-user-credentials/phase-3.md),
+including isolated contributed adapters. Production contributed injection and subscription registration remain later phases.

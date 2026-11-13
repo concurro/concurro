@@ -100,20 +100,19 @@ retirement/model records preserve availability at initiation; unknown legacy his
 unknown. Only selected grant evidence is copied into the task, not an owner's full inventory.
 
 Historical unknown model evidence cannot be reconstructed by later token re-registration.
-Such initialization can remain pending: later explicit claims are visible in the issue
+The phase-1 baseline allowed initialization to remain pending: later explicit claims are visible in the issue
 projection but have no adopted task epochs yet. A later contributed cutover must reconcile
 those explicit grants while preserving the unknown initializer; it must not rerun fill or
-infer historical consent from today's inventory. This phase does not implement that repair.
+infer historical consent from today's inventory. Phase 1 did not implement that repair; [phase 3](phase-3.md#source-consent-and-cutover) now adopts confirmed explicit grants while retaining unknown historical availability.
 
 Registry schema 6 adds issue sources/projections with additive migration. Every task ticked
 by the daemon gains shadow bookkeeping (including pending initialization) and moves to wire
 format 8, although payment remains org-funded. Standalone controllers without shadow fields
-still write format 7. The new reader accepts both and retains older receipts/counters;
-rollback below this daemon release cannot read its updated task checkpoints. Exchange adds provider fences, receipts and
-cutoffs. Back up databases before release. Rollback below this reader requires a drained
-window and compatible checkpoint restore; do not discard transition receipts or restore
-older consent over newer withdrawal evidence. Target route changes still require normal
-configuration adoption/resume for existing tasks.
+still write format 7. The new reader accepts both and retains older receipts/counters.
+Exchange adds provider fences, receipts and cutoffs. Recovery is roll-forward only: preserve
+these records through forward migrations and corrective releases. Backups support data
+recovery, not deployment rollback. Target route changes still require normal configuration
+adoption/resume for existing tasks.
 
 ## Backoffice API boundary
 

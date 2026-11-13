@@ -80,6 +80,7 @@ class Operation(TypedDict, total=False):
     attempt: int
     timing: Timing
     resume_rebind: str
+    admission: Document  # Frozen payer/version/call identity, distinct from prospective attribution.
     shadow_sponsorship: Document  # Prospective attribution; actual payment remains org.
 
 

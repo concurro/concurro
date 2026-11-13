@@ -49,7 +49,7 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         self.assertEqual(state["stage"], "implement")
         self.assertEqual(len(state["design_votes"]), 2)
         self.assertTrue(all(v["first_pass"] for v in state["design_votes"].values()))
-        self.assertEqual(legacy_state(self.gh.artifacts[7][1]["artifact"]["body"])["state"]["version"], 7)
+        self.assertEqual(legacy_state(self.gh.artifacts[7][1]["artifact"]["body"])["state"]["version"], 9)
         self.assertNotIn("review_batch", state)
 
     def test_insufficient_roster_budget_charges_and_submits_nothing(self):
@@ -257,9 +257,9 @@ class ParallelTests(ConsensusFixture, unittest.TestCase):
         c.checkpoint()
         body = c.checkpoints.audit_body(c.state)
         raw = legacy_state(body)
-        self.assertEqual(raw["state"]["version"], 7)
+        self.assertEqual(raw["state"]["version"], 9)
         self.assertEqual(c.checkpoints.decode({"body": body}), c.state)
-        for version in (2, 3, 9):
+        for version in (2, 3, 10):
             broken = deepcopy(raw)
             broken["state"]["version"] = version
             with self.assertRaises(CheckpointError):

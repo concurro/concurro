@@ -9,7 +9,9 @@ services:
   # Gives the distroless gateway (uid 65532) its data volume.
   init:
     image: ghcr.io/concurro/exchange:${CONCURRO_RELEASE:?}
-    build: ./exchange
+    build:
+      context: ..
+      dockerfile: gateway/exchange/Dockerfile
     user: "0:0"
     entrypoint: ["chown", "65532:65532", "/gateway-data"]
     network_mode: none
@@ -38,7 +40,9 @@ services:
 
   exchange:
     image: ghcr.io/concurro/exchange:${CONCURRO_RELEASE:?}
-    build: ./exchange
+    build:
+      context: ..
+      dockerfile: gateway/exchange/Dockerfile
     network_mode: "service:gateway"
     environment:
       EXCHANGE_AUDIENCE: concurro-gateway

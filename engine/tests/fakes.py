@@ -657,7 +657,7 @@ class BatchAgents(FakeAgents):
 
     def prepare(self, provider, stage, context):
         """Freeze the input without consuming a fake response."""
-        return {"provider": provider, "stage": stage, "context": deepcopy(context)}
+        return {"provider": provider, "stage": stage, "context": deepcopy(context), "request": {}}
 
     def submit(self, turn):
         """Record admission and return before a result is available."""

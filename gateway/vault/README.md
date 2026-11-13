@@ -45,7 +45,7 @@ This listener does not establish an admitted session's authority. Phase 3 must b
 to the authenticated session and consume retirement events before contributed inference.
 No production resolver caller is configured in phase 2. The metadata principal cannot resolve.
 
-## Wrapping-key rotation and rollback
+## Wrapping-key rotation and recovery
 
 Keep keys outside the checkout, owner-only regular files, 64 hex characters (32 bytes).
 Existing `VAULT_MASTER_KEY_FILE` remains the `legacy` key. Optional `VAULT_KEYRING_FILE` is an
@@ -62,8 +62,8 @@ provider ciphertext/version/AAD unchanged and emits `rewrapped` events. A missin
 failure rolls the transaction back; repeating completed rotation is a no-op. Retain old keys for
 backups; removing them can make those backups unreadable.
 
-Additive API-key schema changes can be read by the previous binary, but that binary cannot read
-named-key envelopes. Before rolling back, stop writes and rewrap all live records to `legacy`
-with the new binary; otherwise restore a consistent pre-upgrade database/key backup (later
-writes are lost). Future subscription envelope format 2 also requires the new binary. Do not
-open a rotated database with old code and assume successful startup proves decryption works.
+Recovery is roll-forward only. Corrective releases retain support for the current schema
+and named-key envelopes; deployment rollback and downgrade conversion are not required.
+Keep the database and keyring together through recovery, preserving newer writes and
+retirement evidence. Transaction rollback on a failed rotation remains ordinary atomicity,
+not a deployment recovery strategy.

@@ -73,5 +73,5 @@ Explicit sponsorship authorizes future contributed calls; current calls remain o
 Target/overview responses include known unenrolled intents in `issues`, without task
 stages/budgets. The companion frontend supplies provider controls and pre-task views.
 See [phase 2](../docs/proposals/per-user-credentials/phase-2.md) for lifecycle behavior, optional
-encrypted logout retry settings, migration and rollback. GitHub refresh pairs remain server-only;
+encrypted logout retry settings, migration and roll-forward recovery. GitHub refresh pairs remain server-only;
 unknown expiry is not invented. Subscription registration remains unavailable.

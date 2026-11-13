@@ -153,6 +153,8 @@ class Reconciler:
 
     def poll(self, repositories=None, *, strict=False):
         """Enqueue every candidate whose inputs changed; reads only, so no model call without a change."""
+        if getattr(self, "policy_observer", None) is not None:
+            self.policy_observer()
         if self.cleanup is not None:
             self.cleanup()
         enqueued = []

@@ -11,6 +11,7 @@ from report_store import ReportDataError, annotated, projection
 def binding(state, operation, repository):
     """Identify the already charged operation, without copying instructions or credentials."""
     return {
+        **({"admission": digest(operation["admission"])} if "admission" in operation else {}),
         "repository": repository,
         "issue": state["issue"],
         "operation": {k: operation.get(k) for k in ("id", "attempt", "provider", "stage", "request")},

@@ -256,7 +256,7 @@ class Checkpoints:
         """Build the repository-bound envelope with commitments to detached evidence."""
         compact, inventories = file_inventory.pack(state) if external else (state, [])
         compact, detached = report_store.packed(compact) if external else (compact, [])
-        # Shadow records use v8, including pending org-funded state; bare writers retain v7.
+        # Frozen admission identities need the v9 reader; older records retain their wire format.
         wire = (
             report_store.SPONSORSHIP_FORMAT
             if any(
@@ -264,6 +264,8 @@ class Checkpoints:
             )
             else report_store.FORMAT
         )
+        if state.get("admission_version"):
+            wire = report_store.ADMISSION_FORMAT
         payload = {
             "repository": self.config["repository"],
             "state": {**compact, "version": wire} if external else compact,
@@ -333,6 +335,7 @@ class Checkpoints:
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
                 report_store.SPONSORSHIP_FORMAT,
+                report_store.ADMISSION_FORMAT,
                 report_store.FORMAT,
             ):
                 raise ValueError()
@@ -342,6 +345,7 @@ class Checkpoints:
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
                 report_store.SPONSORSHIP_FORMAT,
+                report_store.ADMISSION_FORMAT,
                 report_store.FORMAT,
             ):
                 raise ValueError()
@@ -397,10 +401,17 @@ class Checkpoints:
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
                 report_store.SPONSORSHIP_FORMAT,
+                report_store.ADMISSION_FORMAT,
                 report_store.FORMAT,
             )
             or state.get("bundle_resume")
-            and state["version"] not in (bundle_resume.FORMAT, report_store.SPONSORSHIP_FORMAT, report_store.FORMAT)
+            and state["version"]
+            not in (
+                bundle_resume.FORMAT,
+                report_store.SPONSORSHIP_FORMAT,
+                report_store.ADMISSION_FORMAT,
+                report_store.FORMAT,
+            )
             or state["issue"] != self.issue
             or (state.get("review_batch_version") or state.get("review_batch"))
             and state["version"]
@@ -409,6 +420,7 @@ class Checkpoints:
                 file_inventory.FORMAT,
                 bundle_resume.FORMAT,
                 report_store.SPONSORSHIP_FORMAT,
+                report_store.ADMISSION_FORMAT,
                 report_store.FORMAT,
             )
             or state.get("review_batch_version", 1) != 1

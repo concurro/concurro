@@ -222,4 +222,4 @@ class RecoveryCorrections(PendingWrites):
         self.registry = self.open()
         self.assertEqual(self.registry.mutation(record).status, "unknown")
         self.assertIsNone(self.registry.review_intent(record))
-        self.assertEqual(self.registry.db.execute("SELECT value FROM meta WHERE name='schema'").fetchone(), ("6",))
+        self.assertEqual(self.registry.db.execute("SELECT value FROM meta WHERE name='schema'").fetchone(), ("7",))

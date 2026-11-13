@@ -362,11 +362,11 @@ class StorageLifecycleTests(unittest.TestCase):
         self.assertEqual(legacy_state(legacy)["state"]["version"], 2)
         self.assertEqual(checkpoints.decode({"body": legacy}), state)
         raw = legacy_state(checkpoints.audit_body(state))
-        self.assertEqual(raw["state"]["version"], 7)
+        self.assertEqual(raw["state"]["version"], 9)
         # This is the deployed v2 reader's admission predicate.
         self.assertNotEqual(raw["state"]["version"], 2)
         self.assertEqual(self.controller().state, state)
-        raw["state"]["version"] = 9
+        raw["state"]["version"] = 10
         body = AUDIT_MARKER + STATE_PREFIX + json.dumps(raw) + "\n```\n"
         with self.assertRaises(CheckpointError):
             checkpoints.decode({"body": body})

@@ -119,6 +119,8 @@ class Daemon:
             else None,
             delegation_key,
         )
+        self.reconciler.policy_observer = worker.observe_policies
+        worker.observe_policies()
         self.reconciler.cleanup = worker.cleanup_runners
         self.recovery = Recovery(self.identity, self.registry, self.reconciler, installations)
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)

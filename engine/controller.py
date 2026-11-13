@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
 import actions
+import admissions
 import attempt_result
 import bundle_resume
 import candidates
@@ -120,6 +121,7 @@ def _budget_int(value, low, message):
 
 def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
+    admissions.mode(config)
     pr_template.validate(config.get("pr_template_sections"))
     if "credential_routes" in config:
         import sponsorship
@@ -670,19 +672,24 @@ class Controller:
             return retained
         if self.state["calls"] >= self.config["max_model_calls"]:
             raise Blocked("model-call budget exhausted")
-        credential = self.agents.credential(
-            provider, stage, {"repository": self.config["repository"], "issue": self.state["issue"]}
-        )
         for attempt in range(2):
             if self.state["calls"] >= self.config["max_model_calls"]:
                 raise Blocked("model-call budget exhausted")
+            choice = self.select_admissions([(provider, stage, context)])[0]
+            credential = admissions.validate(choice)
             session = sessions.prepare(self.state, self.config, provider, stage, context)
             if stage == "plan_qc":
                 design_eligibility.prepare(self.state, context, session, operation)
             request = {**context, "controller_credential": credential.record()}
             if session:
                 request["controller_session"] = session
-            self.begin_attempt(operation, context)
+            frozen = admissions.freeze(
+                choice, self.state["calls"] + 1, getattr(self.agents, "generation", None), session
+            )
+            self.begin_attempt(operation, context, frozen)
+            request.update(
+                controller_admission=deepcopy(operation["admission"]), controller_attempt=operation["attempt"]
+            )
             self.charge_call(credential)
             self.save()
             try:
@@ -720,6 +727,21 @@ class Controller:
                 self.record_session_turn(session, self.state["calls"], context, response)
             self.complete(operation, response, session)
             return response
+
+    def select_admissions(self, requests):
+        """Select every required payer before any charge, shared by serial and batch reservations."""
+        if admissions.mode(self.config) == "contributed":
+            if not self.sponsorship:
+                raise Blocked("contributed admission requires confirmed provider sponsorship")
+            return self.sponsorship.preflight(self, requests)
+        return [
+            admissions.selection(
+                self.agents.credential(
+                    provider, stage, {"repository": self.config["repository"], "issue": self.state["issue"]}
+                )
+            )
+            for provider, stage, _context in requests
+        ]
 
     def charge_call(self, credential):
         """Debit the in-memory task and credential ledgers and return the assigned call number."""
@@ -805,7 +827,7 @@ class Controller:
         operation["status"] = "uncertain"
         return None
 
-    def begin_attempt(self, operation, context):
+    def begin_attempt(self, operation, context, admission=None):
         """Persist each attempt before dispatch; unresolved prior attempts count as uncertain."""
         if operation["status"] in ("started", "uncertain"):
             operation["uncertain"] = self.next_uncertain_count(operation)
@@ -821,6 +843,10 @@ class Controller:
         operation.update(
             attempts=operation["attempts"] + 1, attempt=uuid.uuid4().hex, status="started", request=digest(context)
         )
+        if admission is not None:
+            operation["admission"] = deepcopy(admission)
+            operation["call"] = admission["call"]
+            self.state["admission_version"] = 1
 
     def complete(self, operation, response, session=None):
         """Retain the result and its upload completion proof until the stage durably consumes it."""

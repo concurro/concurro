@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 from functools import cached_property
 
+import admissions
 import delegation
 import private
 from agents import Agents, RunnerExecutor
@@ -314,7 +315,17 @@ class Worker:
             "fork": target.fork,
             "config_sha": loaded.config_sha,
         }
+        if not config_sha and (latest or binding is None):
+            self.registry.activate_funding(repository, config_digest(config), admissions.mode(config))
         return Target(config, loaded.bundle, loaded.config_sha)
+
+    def observe_policies(self):
+        """Observe current policies before future starts; pinned task recovery never activates old settings."""
+        for repository in self.targets:
+            try:
+                self.load(repository, latest=True)
+            except (Blocked, Transient, ValueError) as error:
+                log.warning("funding policy observation failed (%s)", type(error).__name__)
 
     def resume_config(self, key, generation, state):
         """Recover the execution pin from the durable checkpoint before any new runner dispatch."""

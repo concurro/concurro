@@ -425,7 +425,14 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(state["enrollment"]["actor_id"], 101)
         self.assertEqual(
             state["funding_initialization"]["boundary"],
-            {"source_id": 2, "actor_id": "101", "login": "writer", "at": AT, "provenance": "label"},
+            {
+                "source_id": 2,
+                "actor_id": "101",
+                "login": "writer",
+                "at": AT,
+                "provenance": "label",
+                "source_policy": {"funding_mode": "unknown", "config_digest": None},
+            },
         )
 
     def test_actor_rename_is_resolved_by_stable_id(self):

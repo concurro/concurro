@@ -62,7 +62,7 @@ class ResumeTests(unittest.TestCase):
         self.assertTrue(approval_valid(controller.state, new))
         self.assertEqual(controller.state["bundle_resume"]["config_digest"], config_digest(new))
         controller.require_current_bundle()
-        self.assertEqual(legacy_state(controller.checkpoints.audit_body(controller.state))["state"]["version"], 7)
+        self.assertEqual(legacy_state(controller.checkpoints.audit_body(controller.state))["state"]["version"], 9)
 
     def test_exhausted_allowance_does_not_refuse_resume_or_reset_spend(self):
         """Dispatch enforces its budget normally; resume itself is not another budget gate."""

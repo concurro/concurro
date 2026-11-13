@@ -27,6 +27,11 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
+      []
+    ],
+    [
+      "execute",
       "CREATE TABLE IF NOT EXISTS issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
       []
     ],
@@ -115,7 +120,7 @@
         ],
         [
           "schema",
-          "6"
+          "7"
         ]
       ]
     ],
@@ -166,6 +171,7 @@
     "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
     "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
+    "funding_policies": "CREATE TABLE funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
     "issue_sponsor_sources": "CREATE TABLE issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
     "issue_sponsorships": "CREATE TABLE issue_sponsorships (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,\n    confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))",
     "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -178,6 +184,7 @@
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
     "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "sqlite_sequence": "CREATE TABLE sqlite_sequence(name,seq)",
     "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
   },
   "migrate": [
@@ -263,6 +270,11 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
+      []
+    ],
+    [
+      "execute",
       "CREATE TABLE IF NOT EXISTS issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
       []
     ],
@@ -275,7 +287,7 @@
       "execute",
       "UPDATE meta SET value = ? WHERE name = 'schema'",
       [
-        "6"
+        "7"
       ]
     ],
     [
@@ -315,6 +327,7 @@
     "bindings": "CREATE TABLE bindings (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,\n    config_sha TEXT NOT NULL, PRIMARY KEY (repository, issue))",
     "deferred": "CREATE TABLE deferred (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "deliveries": "CREATE TABLE deliveries (id TEXT PRIMARY KEY, received REAL NOT NULL)",
+    "funding_policies": "CREATE TABLE funding_policies (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,\n    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)",
     "issue_sponsor_sources": "CREATE TABLE issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
     "issue_sponsorships": "CREATE TABLE issue_sponsorships (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,\n    confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))",
     "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -327,6 +340,7 @@
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
     "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
+    "sqlite_sequence": "CREATE TABLE sqlite_sequence(name,seq)",
     "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
   },
   "open": [

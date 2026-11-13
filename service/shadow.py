@@ -1,4 +1,4 @@
-"""Issue-source confirmation and checkpoint-backed prospective sponsorship; no payer selection."""
+"""Issue consent, historical source policy and checkpoint-backed admission selection."""
 
 import json
 import urllib.error
@@ -7,18 +7,32 @@ import urllib.request
 from copy import deepcopy
 from datetime import datetime
 
+import admissions
 import conversation
 import delegation
 import private
 import sponsorship
+from agents import ADAPTER
 from commands import CommandKind, parse
+from controller import config_digest
+from credentials import Credential
 from github import NotFound, Transient
+from model_config import resolve
 from policy import Blocked, digest
 from relay import ExchangeError
 
 from .failures import backoff
 from .reconciler import pages
 from .settings import CHECKOUT
+
+
+def retryable(error):
+    """Whether pre-dispatch shadow or admission I/O can use the existing retry/backoff."""
+    return (
+        isinstance(error, Transient)
+        or isinstance(error, ExchangeError)
+        and (error.status in (0, 429) or error.status >= 500)
+    )
 
 
 class Metadata:
@@ -51,7 +65,19 @@ class Metadata:
                 )
             ):
                 raise ValueError()
-            keys = {"record_id", "user_id", "route", "version", "status", "models", "created", "updated"}
+            keys = {
+                "record_id",
+                "user_id",
+                "route",
+                "version",
+                "status",
+                "models",
+                "created",
+                "updated",
+                "kind",
+                "expiry_known",
+                "expires_at",
+            }
             return [
                 {key: record.get(key) for key in keys} for record in value["credentials"] if isinstance(record, dict)
             ]
@@ -60,7 +86,7 @@ class Metadata:
 
 
 class Shadow:
-    """Reuse registry observations and controller persistence for org-funded shadow grants."""
+    """Reuse registry observations and controller persistence for provider grants and admissions."""
 
     def __init__(self, registry, reader, operator, metadata=None, key=None):
         """Inject existing GitHub reads, operator transitions and optional vault metadata."""
@@ -136,6 +162,134 @@ class Shadow:
             if slot.get("sponsor_id")
         ]
         return projection
+
+    def preflight(self, controller, requests):
+        """Select all required frozen payer versions before any reservation is charged."""
+        try:
+            key = controller.config["repository"], controller.state["issue"]
+            capabilities = self.operator().capabilities()
+            routes = controller.config.get("credential_routes", {})
+            selected = []
+            for profile, stage, context in requests:
+                route = routes.get(profile)
+                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
+                    raise Blocked("contributed credential route adapter is unavailable")
+                agent = resolve(controller.config, profile, stage, context.get("reviewer_identity"))
+                provider = sponsorship.ROUTES[route]["sponsorship_provider"]
+                if agent.profile.provider != provider:
+                    raise Blocked("credential route does not support selected profile")
+                selected.append((route, provider, agent.profile))
+            projection = getattr(controller, "shadow_projection", None)
+            self.source_fence(key, projection)
+            self.flush(controller, {p for _, p, _ in selected})
+            self.cutover(controller, {p for _, p, _ in selected})
+            self.apply(controller, projection, {p for _, p, _ in selected})
+            owners, metadata, choices = {}, {}, []
+            for route, provider, profile in selected:
+                if provider in controller.state.get("pending_sponsorships", {}):
+                    raise Blocked("provider sponsorship transition is pending")
+                slot = controller.state.get("sponsorships", {}).get(provider, {})
+                actor = slot.get("sponsor_id")
+                if (
+                    slot.get("status") != "active"
+                    or not actor
+                    or not (
+                        slot.get("provenance") == "explicit_comment"
+                        or slot.get("provenance") in ("task_start", "label")
+                        and slot.get("source_funding_mode") == "contributed"
+                    )
+                ):
+                    raise Blocked("provider requires current contributed sponsorship")
+                if actor not in owners:
+                    owners[actor] = self.writer(key[0], actor, slot.get("login"))
+                    if not owners[actor]:
+                        self.revoke_authority(controller, projection, actor)
+                        raise Blocked("provider sponsor no longer has repository write permission")
+                    metadata[actor] = self.metadata.read(actor) if self.metadata else None
+                rows = metadata[actor]
+                if rows is None:
+                    raise Transient("sponsorship metadata unavailable")
+                record = next((m for m in rows if m.get("route") == route), None)
+                if (
+                    record is None
+                    or record.get("status") != "valid"
+                    or record.get("kind") != sponsorship.ROUTES[route]["kind"]
+                ):
+                    raise Blocked("provider credential is unavailable")
+                if not isinstance(record.get("models"), list) or any(
+                    not isinstance(model, str) for model in record["models"]
+                ):
+                    raise Transient("sponsorship model coverage unknown")
+                if profile.model not in record["models"]:
+                    raise Blocked("provider credential does not cover selected model")
+                if record.get("expiry_known") and (
+                    not isinstance(record.get("expires_at"), str)
+                    or datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp()
+                    <= self.registry.clock()
+                ):
+                    raise Blocked("provider credential expired")
+                credential = Credential(
+                    digest(["contributed", actor, route, record.get("record_id"), record.get("version")]),
+                    profile.harness,
+                    "contributed",
+                    ADAPTER,
+                    actor,
+                    route,
+                    record.get("record_id"),
+                    record.get("version"),
+                )
+                choice = admissions.selection(credential, provider, slot)
+                admissions.validate(choice)
+                choices.append(choice)
+            self.source_fence(key, projection)
+            if getattr(controller.agents, "executor", None):
+                controller.agents.executor.check_owner()
+            return choices
+        except ExchangeError as error:
+            if retryable(error):
+                raise Transient("sponsorship exchange unavailable") from None
+            raise
+
+    def source_fence(self, key, projection):
+        """Require the exact confirmed source projection read before payer selection."""
+        latest = self.registry.sponsorship(key)
+        if (
+            not projection
+            or not projection.get("history_complete")
+            or latest["status"] != "confirmed"
+            or any(latest.get(k) != projection.get(k) for k in ("source_revision", "revision"))
+        ):
+            raise Transient("sponsorship source changed before admission")
+
+    def cutover(self, controller, providers=None):
+        """Retire historical implicit attribution without treating it as personal payment consent."""
+        for provider, slot in list(controller.state.get("sponsorships", {}).items()):
+            if providers is not None and provider not in providers:
+                continue
+            if (
+                slot.get("sponsor_id")
+                and slot.get("provenance") in ("task_start", "label")
+                and slot.get("source_funding_mode") != "contributed"
+            ):
+                new = {
+                    "sponsor_id": None,
+                    "status": "unassigned",
+                    "epoch": slot["epoch"] + 1,
+                    "cutover_from": slot.get("grant_id"),
+                }
+                self.pending(controller, provider, new, slot["epoch"], "cutover")
+                self.flush(controller, {provider})
+
+    def source_policy(self, controller, boundary):
+        """Use authenticated effective-interval evidence, never current settings at delayed delivery."""
+        at = boundary.get("at")
+        if not at or boundary.get("provenance") == "legacy":
+            return {"funding_mode": "unknown", "config_digest": None}
+        return self.registry.funding_policy(
+            controller.config["repository"],
+            config_digest(controller.config),
+            datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp(),
+        )
 
     def before_attempt(self, controller):
         """Mark racing shadow evidence pending without blocking or rebinding an org-paid attempt."""
@@ -373,11 +527,7 @@ class Shadow:
         state = controller.state
         changed = state.get("sponsorship_status") != "pending"
         state["sponsorship_status"] = "pending"
-        if (
-            isinstance(error, Transient)
-            or isinstance(error, ExchangeError)
-            and (error.status in (0, 429) or error.status >= 500)
-        ):
+        if retryable(error):
             attempt = state.get("sponsorship_retry_attempts", 0)
             state["sponsorship_retry_attempts"] = attempt + 1
             controller.save()
@@ -441,6 +591,7 @@ class Shadow:
                     "at": "9999-12-31T23:59:59Z",
                     "provenance": "legacy",
                 }
+            boundary["source_policy"] = self.source_policy(controller, boundary)
             state["funding_initialization_pending"] = deepcopy(boundary)
         projection = getattr(controller, "shadow_projection", None)
         if not projection or not projection["history_complete"]:
@@ -452,7 +603,11 @@ class Shadow:
                 return
             routes = sponsorship.selected_routes(controller.config)
             earlier = sponsorship.project([f for f in projection["facts"] if f["source_order"][0] <= boundary["at"]])
-            needs_fill = any(
+            implicit = (
+                admissions.mode(controller.config) == "org"
+                or boundary.get("source_policy", {}).get("funding_mode") == "contributed"
+            )
+            needs_fill = implicit and any(
                 not slot.get("sponsor_id") and boundary["actor_id"] not in earlier["tombstones"][provider]
                 for provider, slot in earlier["slots"].items()
             )
@@ -474,6 +629,9 @@ class Shadow:
             if needs_fill and (not self.metadata or any(r["route"] is None for r in routes)):
                 return
             metadata = self.metadata.read(boundary["actor_id"], boundary["at"]) if needs_fill else []
+            if not implicit:
+                routes = []
+                boundary = {**boundary, "initializer_status": "unknown"}
             selected = {
                 r["route"] for r in routes if r["provider"] and not earlier["slots"][r["provider"]].get("sponsor_id")
             }
@@ -482,7 +640,10 @@ class Shadow:
                 record.get("status") == "unknown" or record.get("status") == "valid" and record.get("models") is None
                 for record in metadata
             ):
-                raise ValueError("sponsorship credential history incomplete")
+                if not any(f["command"] == "sponsor" for f in projection["facts"]):
+                    raise ValueError("sponsorship credential history incomplete")
+                routes, metadata = [], []
+                boundary = {**boundary, "initializer_status": "unknown"}
         latest = self.registry.sponsorship((controller.config["repository"], state["issue"]))
         if latest["source_revision"] != projection["source_revision"] or (
             latest.get("revision") is not None
@@ -490,12 +651,18 @@ class Shadow:
         ):
             raise Transient("sponsorship source changed during metadata read")
         frozen = sponsorship.initialize(projection, boundary, routes, metadata)
+        if boundary.get("initializer_status") == "unknown":
+            frozen.update(initializer_status="unknown", available=None, metadata=None)
         frozen["observed_sources"] = [f["grant_id"] for f in projection["facts"]]
         state["funding_initialization"] = frozen
         conversation.queue(
             state,
-            "Provider sponsorship is org-funded",
-            "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment.",
+            "Provider sponsorship is org-funded"
+            if admissions.mode(controller.config) == "org"
+            else "Provider sponsorship recorded",
+            "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment."
+            if admissions.mode(controller.config) == "org"
+            else "This task uses contributed funding when its configured route adapter and selected sponsor credentials are available. There is no organization fallback.",
         )
         state["sponsorship_projection_revision"] = projection["revision"]
         state["sponsorship_projection_source_revision"] = projection["source_revision"]
@@ -537,11 +704,16 @@ class Shadow:
         if save:
             controller.save()
 
-    def flush(self, controller):
+    def flush(self, controller, providers=None):
         """Acknowledge only a durably accepted provider transition before consuming its source."""
         state = controller.state
         while state.get("pending_sponsorships"):
-            provider, pending = next(iter(state["pending_sponsorships"].items()))
+            available = [
+                (p, v) for p, v in state["pending_sponsorships"].items() if providers is None or p in providers
+            ]
+            if not available:
+                return
+            provider, pending = available[0]
             group = [
                 (p, value)
                 for p, value in state["pending_sponsorships"].items()
@@ -550,7 +722,26 @@ class Shadow:
                 and value["request"]["reason"] == "permission_loss"
                 and value["request"]["actor"] == pending["request"]["actor"]
             ]
-            self.operator().sponsorship({"transitions": [value["request"] for _, value in group]})
+            try:
+                self.operator().sponsorship({"transitions": [value["request"] for _, value in group]})
+            except ExchangeError as error:
+                rejected = next(
+                    (value for _, value in group if value["request"]["transition"] == error.transition), None
+                )
+                if (
+                    error.status != 409
+                    or error.code != "stale_sponsorship_generation"
+                    or rejected is None
+                    or rejected["request"]["generation"] >= controller.gh.generation
+                ):
+                    raise
+                # Only this ID was proven unapplied; other group members may already have receipts.
+                request = {k: deepcopy(v) for k, v in rejected["request"].items() if k != "transition"}
+                request["generation"] = controller.gh.generation
+                request["transition"] = digest(request)
+                rejected["request"] = request
+                controller.save()
+                continue
             for provider, pending in group:
                 state["sponsorships"][provider] = deepcopy(pending["request"]["slot"])
                 state.setdefault("sponsorship_history", []).append(pending["request"])
@@ -559,10 +750,10 @@ class Shadow:
                     state.setdefault("sponsorship_applied", []).append(source["grant_id"])
                     state.setdefault("sponsorship_sources", {})[str(source["source_id"])] = source["grant_id"]
                 del state["pending_sponsorships"][provider]
-            state["sponsorship_status"] = "confirmed"
+            state["sponsorship_status"] = "pending" if state.get("pending_sponsorships") else "confirmed"
             controller.save()
 
-    def apply(self, controller, projection):
+    def apply(self, controller, projection, providers=None):
         """Apply each new source once; late evidence never rewrites a charged org attempt."""
         state = controller.state
         if not state.get("funding_initialization"):
@@ -571,6 +762,8 @@ class Shadow:
             if source["grant_id"] in state.get("sponsorship_applied", []):
                 continue
             provider = source["provider"]
+            if providers is not None and provider not in providers:
+                continue
             cutoff = state.get("sponsorship_authority_revoked", {}).get(source["actor_id"])
             if (
                 cutoff is not None
@@ -646,7 +839,7 @@ class Shadow:
             self.pending(
                 controller, provider, new, slot["epoch"], source["command"], source, source["actor_id"], cutoff
             )
-            self.flush(controller)
+            self.flush(controller, providers)
 
     def permissions(self, controller, projection):
         """Writer loss publishes all that user's task/provider cutoffs together, leaving org work alone."""
@@ -661,36 +854,43 @@ class Shadow:
                 continue
             if self.writer(controller.config["repository"], actor, login):
                 continue
-            for provider, slot in slots.items():
-                new = (
-                    {
-                        "sponsor_id": None,
-                        "status": "withdrawn",
-                        "epoch": slot["epoch"] + 1,
-                        "source_order": slot.get("source_order", []),
-                        "authority_revoked": True,
-                    }
-                    if slot.get("sponsor_id") == actor
-                    else deepcopy(slot)
-                )
-                self.pending(
-                    controller,
-                    provider,
-                    new,
-                    slot["epoch"],
-                    "permission_loss",
-                    actor=actor,
-                    cutoff=slot["epoch"],
-                    save=False,
-                )
-            observed = max(
-                [self.registry.clock()]
-                + [
-                    datetime.fromisoformat(f["source_order"][0].replace("Z", "+00:00")).timestamp()
-                    for f in projection["facts"]
-                    if not f.get("removed_source")
-                ]
+            self.revoke_authority(controller, projection, actor)
+
+    def revoke_authority(self, controller, projection, actor):
+        """Publish all of one user's task/provider cutoffs atomically after a fresh writer denial."""
+        state = controller.state
+        revoked = state.setdefault("sponsorship_authority_revoked", {})
+        slots = state.get("sponsorships", {})
+        for provider, slot in slots.items():
+            new = (
+                {
+                    "sponsor_id": None,
+                    "status": "withdrawn",
+                    "epoch": slot["epoch"] + 1,
+                    "source_order": slot.get("source_order", []),
+                    "authority_revoked": True,
+                }
+                if slot.get("sponsor_id") == actor
+                else deepcopy(slot)
             )
-            revoked[actor] = {"observed_at": observed, "source_revision": projection["source_revision"]}
-            controller.save()
-            self.flush(controller)
+            self.pending(
+                controller,
+                provider,
+                new,
+                slot["epoch"],
+                "permission_loss",
+                actor=actor,
+                cutoff=slot["epoch"],
+                save=False,
+            )
+        observed = max(
+            [self.registry.clock()]
+            + [
+                datetime.fromisoformat(f["source_order"][0].replace("Z", "+00:00")).timestamp()
+                for f in projection["facts"]
+                if not f.get("removed_source")
+            ]
+        )
+        revoked[actor] = {"observed_at": observed, "source_revision": projection["source_revision"]}
+        controller.save()
+        self.flush(controller)

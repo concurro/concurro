@@ -52,10 +52,10 @@ The SQLite queue contains encrypted GitHub access tokens, never provider keys. B
 its separate key; startup checks key continuity and refuses a wrong key. Drain pending jobs before
 changing that key; key rotation for this optional queue is an operational replacement after drain,
 not vault wrapping-key rotation. Restart preserves queued jobs but marks unresolved in-memory
-refresh cleanup unknown. To roll back the BFF, remove these optional settings and overlay; retain
-the queue/key for cleanup with the newer binary. The old binary has no durable retry worker.
-Vault schema 2/key rollback is described in its guide. No checkpoint/Exchange schema changes are
-introduced by phase 2; phase-1 checkpoint 8/schema 6 remain unchanged.
+refresh cleanup unknown. Recovery is roll-forward only: retain the queue/key and resume
+cleanup with a corrective release. Vault schema and key-rotation recovery are described in
+its guide. No checkpoint/Exchange schema changes are introduced by phase 2; phase-1
+checkpoint 8/schema 6 remain unchanged.
 
 Deploy compatible BFF and frontend releases together when authorized. The frontend's live and
 mock modes share the same API shapes. No deployment, real credentials or provider calls were
@@ -68,7 +68,7 @@ grant into personal-payment consent.
 Tests use actual vault SQLite/envelope transactions, actual separate TCP listeners with Host/
 forwarded-header spoof attempts, synthetic GitHub/provider transports and real BFF-to-vault
 requests. They cover two-owner isolation, replacement/revoke/events/restart, legacy AAD, key
-rewrap rollback, expiry, secret-free errors/metadata/events, refresh concurrency/logout races,
+rewrap transaction atomicity, expiry, secret-free errors/metadata/events, refresh concurrency/logout races,
 revocation retry leases/key continuity, pre-task visibility and stable actor filtering. Frontend
 checks/builds and light/dark browser evidence are recorded with final review provenance.
 

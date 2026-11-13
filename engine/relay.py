@@ -1,6 +1,7 @@
 """Clients of the gateway's exchange: the operator side (the service) and a runner job's side."""
 
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -13,9 +14,10 @@ SESSION_GONE = frozenset({401, 403, 409, 410})
 class ExchangeError(RuntimeError):
     """The exchange refused a call or could not be reached (`status` 0)."""
 
-    def __init__(self, status, reason):
+    def __init__(self, status, reason, code=None, transition=None):
+        """Retain only recognized private refusal metadata for safe transition recovery."""
         super().__init__(f"exchange {status}: {reason}")
-        self.status = status
+        self.status, self.code, self.transition = status, code, transition
 
 
 def call(base, token, method, path, body=None, timeout=WAIT + 30):
@@ -31,10 +33,21 @@ def call(base, token, method, path, body=None, timeout=WAIT + 30):
             return json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as error:
         try:
-            reason = json.loads(error.read()).get("error", "")
+            details = json.loads(error.read())
+            reason = details.get("error", "")
         except (ValueError, AttributeError):
-            reason = ""
-        raise ExchangeError(error.code, str(reason)[:200]) from None
+            reason, details = "", {}
+        transition = details.get("transition")
+        code = details.get("code")
+        known = (
+            error.code == 409
+            and code == "stale_sponsorship_generation"
+            and isinstance(transition, str)
+            and re.fullmatch(r"[0-9a-f]{64}", transition)
+        )
+        raise ExchangeError(
+            error.code, str(reason)[:200], code if known else None, transition if known else None
+        ) from None
     except (urllib.error.URLError, OSError, ValueError):
         raise ExchangeError(0, "unreachable") from None
 
@@ -44,6 +57,10 @@ class Operator:
 
     def __init__(self, gateway, token):
         self.gateway, self.token = gateway, token
+
+    def capabilities(self):
+        """Read implemented funding adapters before the controller reserves a charge."""
+        return call(self.gateway, self.token, "GET", "operator/capabilities")
 
     def sponsorship(self, request):
         """Publish an idempotent task/provider ownership transition on the private operator channel."""

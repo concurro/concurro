@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import re
+import runpy
 import secrets
 import sqlite3
 import subprocess
@@ -27,6 +28,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,9 +62,10 @@ SHA = re.compile(r"[0-9a-f]{40}")  # Mirrors engine.protocol.SHA_PATTERN.
 class Refused(Exception):
     """A request the exchange will not serve; `status` is its HTTP status."""
 
-    def __init__(self, status, reason):
+    def __init__(self, status, reason, code=None, transition=None):
+        """Carry a private protocol code and exact proven-unapplied transition when supplied."""
         super().__init__(reason)
-        self.status = status
+        self.status, self.code, self.transition = status, code, transition
 
 
 def b64decode(segment):
@@ -194,8 +197,12 @@ class Gateway:
         """The gateway ID of a key value, or None."""
         return next((r["id"] for r in self.list() if r["value"].get("key") == key), None)
 
-    def create(self, key, name, models, budget):
-        """Create a session key; return its gateway ID once the key is accepted for traffic."""
+    contributed_routes = ()  # Phase4's credential-aware adapter must explicitly implement supported routes.
+
+    def create(self, key, name, models, budget, binding=None):
+        """Create an org session key; contributed work cannot enter this adapter."""
+        if binding and binding.get("funding") == "contributed":
+            raise Refused(503, "contributed route adapter is unavailable")
         value = {
             "key": key,
             "metadata": {"name": name, "concurro.session": name},
@@ -252,6 +259,9 @@ def session_binding(value):
     cannot be claimed.
     """
     fields = {"repository", "issue", "role", "generation", "config_sha", "upstream", "fork", "base", "phase"}
+    versioned = isinstance(value, dict) and "version" in value
+    if versioned:
+        fields |= FUNDING_FIELDS
     repo = r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+"
     if (
         not isinstance(value, dict)
@@ -274,6 +284,33 @@ def session_binding(value):
         or not re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", value["phase"])
     ):
         raise ValueError("invalid runner task/role binding")
+    if versioned:
+        personal = ("sponsorship_provider", "sponsor", "epoch", "grant_id", "route", "credential_version")
+        if (
+            type(value["version"]) is not int
+            or value["version"] != 2
+            or value["funding"] not in ("org", "contributed")
+            or not isinstance(value["credential"], str)
+            or not value["credential"]
+        ):
+            raise ValueError("invalid funding binding")
+        if value["funding"] == "org":
+            if any(value[key] is not None for key in personal):
+                raise ValueError("organization binding cannot name a personal payer")
+        elif (
+            not isinstance(value["route"], str)
+            or ROUTES.get(value["route"], {}).get("sponsorship_provider") != value["sponsorship_provider"]
+            or not isinstance(value["sponsor"], str)
+            or not re.fullmatch(r"[1-9][0-9]*", value["sponsor"])
+            or type(value["epoch"]) is not int
+            or value["epoch"] < 1
+            or not isinstance(value["grant_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["grant_id"])
+            or not re.fullmatch(r"[0-9a-f]{64}", value["credential"])
+            or type(value["credential_version"]) is not int
+            or value["credential_version"] < 1
+        ):
+            raise ValueError("invalid contributed binding")
     return json.dumps(value, sort_keys=True)
 
 
@@ -283,6 +320,24 @@ def staffing(expected, binding, models, budget, lease):
     return hashlib.sha256(
         json.dumps([claims, binding, models, budget, float(lease)], sort_keys=True).encode()
     ).hexdigest()
+
+
+# The image copies this same leaf module; source checkouts resolve the repository copy.
+CATALOG = Path(__file__).with_name("credential_routes.py")
+if not CATALOG.is_file():
+    CATALOG = Path(__file__).resolve().parents[2] / "engine" / "credential_routes.py"
+ROUTES = runpy.run_path(str(CATALOG))["ROUTES"]
+FUNDING_FIELDS = {
+    "version",
+    "funding",
+    "sponsorship_provider",
+    "sponsor",
+    "epoch",
+    "grant_id",
+    "route",
+    "credential",
+    "credential_version",
+}
 
 
 SESSION_COLUMNS = (
@@ -305,6 +360,45 @@ MAX_WAIT_SECONDS = 50
 FINISHED_RETENTION_SECONDS = 86400
 
 
+class Vault:
+    """Separate nonsecret metadata and private event credentials; no secret-resolution method exists."""
+
+    def __init__(self, metadata_url, metadata_token, events_url, events_token):
+        """Use the Exchange's existing env-file secret transport with distinct private principals."""
+        if not all(isinstance(v, str) and v for v in (metadata_url, metadata_token, events_url, events_token)):
+            raise ValueError("incomplete Exchange vault configuration")
+        if (
+            any(not re.fullmatch(r"[0-9a-fA-F]{64}", v) for v in (metadata_token, events_token))
+            or metadata_token.lower() == events_token.lower()
+        ):
+            raise ValueError("Exchange vault principals must be distinct 32-byte tokens")
+        self.metadata_url, self.events_url = metadata_url.rstrip("/"), events_url.rstrip("/")
+        self.metadata_token, self.events_token = metadata_token.lower(), events_token.lower()
+
+    def get(self, url, path, token):
+        """Return JSON over a private bearer channel without exposing remote bodies in failures."""
+        request = urllib.request.Request(url + path, headers={"Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.load(response)
+        except (OSError, ValueError, urllib.error.URLError):
+            raise Refused(503, "vault metadata or events unavailable") from None
+
+    def read(self, actor):
+        """Read one owner's current metadata with the principal that cannot resolve secrets."""
+        value = self.get(self.metadata_url, "/metadata/" + str(int(actor)), self.metadata_token)
+        if not isinstance(value, dict) or not isinstance(value.get("credentials"), list):
+            raise Refused(503, "vault metadata incomplete")
+        fields = {"user_id", "record_id", "route", "version", "status", "models", "kind", "expiry_known", "expires_at"}
+        if any(not isinstance(record, dict) or record.get("user_id") != str(actor) for record in value["credentials"]):
+            raise Refused(503, "vault metadata identity mismatch")
+        return [{key: item.get(key) for key in fields} for item in value["credentials"]]
+
+    def events(self, after):
+        """Read nonsecret lifecycle events on the isolated gateway-principal listener only."""
+        return self.get(self.events_url, "/events?after=" + str(after), self.events_token)
+
+
 class Exchange:
     """Sessions, their keys, their run bindings and the turns they serve, kept durably in SQLite.
 
@@ -313,9 +407,10 @@ class Exchange:
     the operator for a target and served to a live runner session of that target.
     """
 
-    def __init__(self, database, gateway, keys, audience):
+    def __init__(self, database, gateway, keys, audience, vault=None):
         self.db = sqlite3.connect(database, check_same_thread=False, isolation_level=None)
         self.gateway, self.keys, self.audience = gateway, keys, audience
+        self.vault = vault
         self.guard, self.lockfile = threading.Lock(), database + ".lock"
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, expected TEXT NOT NULL, models TEXT NOT NULL,
@@ -330,6 +425,12 @@ class Exchange:
             CREATE TABLE IF NOT EXISTS sponsorship (repository TEXT,issue INTEGER,provider TEXT,generation INTEGER,epoch INTEGER,slot TEXT,PRIMARY KEY(repository,issue,provider));
             CREATE TABLE IF NOT EXISTS sponsorship_transitions (id TEXT PRIMARY KEY,digest TEXT NOT NULL,response TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS sponsorship_revocations (repository TEXT,issue INTEGER,provider TEXT,actor TEXT,through_epoch INTEGER,reason TEXT,PRIMARY KEY(repository,issue,provider,actor));
+        """)
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS funding_generations(repository TEXT,issue INTEGER,generation INTEGER,PRIMARY KEY(repository,issue));
+            CREATE TABLE IF NOT EXISTS credential_revocations(record_id TEXT,version INTEGER,actor TEXT,route TEXT,sequence INTEGER,PRIMARY KEY(record_id,version));
+            CREATE TABLE IF NOT EXISTS vault_cursor(id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL);
+            INSERT OR IGNORE INTO vault_cursor VALUES(1,0);
         """)
         # Columns added since a table was first created; older databases gain them in place.
         self.add_columns(
@@ -346,6 +447,199 @@ class Exchange:
         self.add_columns(
             "turns", (("digest", "TEXT"), ("staff", "TEXT"), ("pin", "TEXT"), ("binding", "TEXT"), ("staffing", "TEXT"))
         )
+
+    def capabilities(self):
+        """Advertise only implemented adapter routes with a working retirement-event channel."""
+        routes = sorted(set(getattr(self.gateway, "contributed_routes", ())) & ROUTES.keys()) if self.vault else []
+        if routes:
+            self.consume_events()
+        return {"version": 1, "org": True, "contributed_routes": routes}
+
+    def advance_generation(self, repository, issue, generation):
+        """Mirror task ownership monotonically inside the caller's transaction, never a second authority."""
+        row = self.db.execute(
+            "SELECT generation FROM funding_generations WHERE repository=? AND issue=?", (repository, issue)
+        ).fetchone()
+        if row and generation < row[0]:
+            raise Refused(409, "task ownership generation is stale")
+        self.db.execute(
+            "INSERT INTO funding_generations VALUES(?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET generation=MAX(generation,excluded.generation)",
+            (repository, issue, generation),
+        )
+
+    def allowed(self, binding):
+        """Check only recorded authority and retirement cutoffs; graceful takeover keeps old epochs valid."""
+        if not binding or binding.get("funding") != "contributed":
+            return True
+        task = binding["repository"], binding["issue"]
+        generation = self.db.execute(
+            "SELECT generation FROM funding_generations WHERE repository=? AND issue=?", task
+        ).fetchone()
+        if generation and binding["generation"] < generation[0]:
+            return False
+        revoked = self.db.execute(
+            "SELECT through_epoch FROM sponsorship_revocations WHERE repository=? AND issue=? AND provider=? AND actor=?",
+            (*task, binding["sponsorship_provider"], binding["sponsor"]),
+        ).fetchone()
+        if revoked and binding["epoch"] <= revoked[0]:
+            return False
+        return not self.db.execute(
+            "SELECT 1 FROM credential_revocations WHERE record_id=? AND version=? AND actor=? AND route=?",
+            (binding["credential"], binding["credential_version"], binding["sponsor"], binding["route"]),
+        ).fetchone()
+
+    def retire_revoked(self, now):
+        """Retire affected contributed work after durable fences; failed key cleanup reconciles normally."""
+        for identifier, encoded in self.db.execute(
+            "SELECT id,binding FROM sessions WHERE ended IS NULL AND binding IS NOT NULL"
+        ).fetchall():
+            if not self.allowed(json.loads(encoded)):
+                try:
+                    self.retire(identifier, self.row(identifier), now)
+                except Refused:
+                    pass
+        for identifier, encoded in self.db.execute(
+            "SELECT id,binding FROM turns WHERE status='queued' AND binding IS NOT NULL"
+        ).fetchall():
+            if not self.allowed(json.loads(encoded)):
+                self._lose_turn(identifier, now)
+
+    def consume_events(self):
+        """Commit cursor and exact-version retirement together; never schedule tasks or new model work."""
+        if not self.vault:
+            return
+        while True:
+            with self.locked():
+                cursor = self.db.execute("SELECT sequence FROM vault_cursor WHERE id=1").fetchone()[0]
+            page = self.vault.events(cursor)
+            if (
+                not isinstance(page, dict)
+                or not isinstance(page.get("events"), list)
+                or type(page.get("next")) is not int
+                or type(page.get("more")) is not bool
+            ):
+                raise Refused(503, "vault event page incomplete")
+            sequence = cursor
+            for event in page["events"]:
+                if (
+                    not isinstance(event, dict)
+                    or type(event.get("sequence")) is not int
+                    or event["sequence"] <= sequence
+                    or not isinstance(event.get("record_id"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", event["record_id"])
+                    or type(event.get("user_id")) is not int
+                    or event["user_id"] < 1
+                    or type(event.get("version")) is not int
+                    or event["version"] < 1
+                    or event.get("route") not in ROUTES
+                    or event.get("type") not in ("validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
+                    or event.get("status") not in ("valid", "invalid", "revoked", "retired")
+                ):
+                    raise Refused(503, "vault event identity incomplete")
+                sequence = event["sequence"]
+            if page["next"] != sequence or page["more"] and sequence == cursor:
+                raise Refused(503, "vault event cursor incomplete")
+            with self.locked():
+                with self._transaction():
+                    if self.db.execute("SELECT sequence FROM vault_cursor WHERE id=1").fetchone()[0] != cursor:
+                        continue
+                    for event in page["events"]:
+                        if (
+                            event["type"] in ("retired", "revoked", "unusable")
+                            or event["type"] == "snapshot"
+                            and event["status"] != "valid"
+                        ):
+                            self.db.execute(
+                                "INSERT OR IGNORE INTO credential_revocations VALUES(?,?,?,?,?)",
+                                (
+                                    event["record_id"],
+                                    event["version"],
+                                    str(event["user_id"]),
+                                    event["route"],
+                                    event["sequence"],
+                                ),
+                            )
+                    self.db.execute("UPDATE vault_cursor SET sequence=? WHERE id=1", (sequence,))
+                self.retire_revoked(_now(None))
+            if not page["more"]:
+                return
+
+    def check_session_funding(self, session, record, now):
+        """Refuse revoked recorded work without selecting another payer or touching org sessions."""
+        if record["binding"] and not self.allowed(json.loads(record["binding"])):
+            try:
+                self.retire(session, record, now)
+            except Refused:
+                pass
+            raise Refused(410, "session funding authority ended")
+
+    def metadata_for(self, binding, models):
+        """Check a new admission's exact owner/route/version and model evidence outside the lifecycle lock."""
+        if binding.get("funding") != "contributed":
+            return
+        if binding["route"] not in self.capabilities()["contributed_routes"]:
+            raise Refused(503, "contributed route adapter is unavailable")
+        rows = self.vault.read(binding["sponsor"])
+        record = next(
+            (
+                row
+                for row in rows
+                if row.get("route") == binding["route"]
+                and row.get("record_id") == binding["credential"]
+                and row.get("version") == binding["credential_version"]
+                and row.get("user_id") == binding["sponsor"]
+            ),
+            None,
+        )
+        if record is None or record.get("status") != "valid" or record.get("kind") != ROUTES[binding["route"]]["kind"]:
+            raise Refused(410, "credential version is unavailable")
+        if record.get("expiry_known"):
+            try:
+                expired = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp() <= time.time()
+            except (ValueError, TypeError, KeyError, AttributeError):
+                raise Refused(503, "credential expiry evidence incomplete") from None
+            if expired:
+                raise Refused(410, "credential version expired")
+        if not isinstance(record.get("models"), list) or any(model not in record["models"] for model in models):
+            raise Refused(409, "credential model coverage is unavailable")
+
+    def current_grant(self, binding, admission):
+        """Enforce the selected fence at insertion, initializing only from the operator's frozen checkpoint grant."""
+        if binding.get("funding") != "contributed":
+            return
+        key = binding["repository"], binding["issue"], binding["sponsorship_provider"]
+        row = self.db.execute(
+            "SELECT generation,epoch,slot FROM sponsorship WHERE repository=? AND issue=? AND provider=?", key
+        ).fetchone()
+        slot = json.loads(row[2]) if row else admission.get("grant")
+        if (
+            not isinstance(slot, dict)
+            or slot.get("status") != "active"
+            or slot.get("sponsor_id") != binding["sponsor"]
+            or slot.get("epoch") != binding["epoch"]
+            or slot.get("grant_id") != binding["grant_id"]
+            or slot.get("provenance") != "explicit_comment"
+            and not (
+                slot.get("provenance") in ("task_start", "label") and slot.get("source_funding_mode") == "contributed"
+            )
+        ):
+            raise Refused(409, "provider grant differs from current sponsorship fence")
+        if row and binding["generation"] < row[0] or not self.allowed(binding):
+            raise Refused(409, "provider funding authority ended")
+        self.db.execute(
+            "INSERT INTO sponsorship VALUES(?,?,?,?,?,?) ON CONFLICT(repository,issue,provider) DO UPDATE SET generation=MAX(generation,excluded.generation)",
+            (*key, binding["generation"], binding["epoch"], json.dumps(slot, sort_keys=True)),
+        )
+
+    @contextmanager
+    def minting(self):
+        """Serialize key creation separately so lifecycle revocations can proceed during activation I/O."""
+        with open(self.lockfile + ".keys", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def sponsorship(self, request):
         """Apply replay-safe provider fences/cutoffs atomically; org-funded sessions are untouched."""
@@ -412,6 +706,12 @@ class Exchange:
                             raise Refused(409, "sponsorship transition identity conflict")
                         replies.append(json.loads(old[1]))
                         continue
+                    try:
+                        self.advance_generation(value["repository"], value["issue"], value["generation"])
+                    except Refused as error:
+                        raise Refused(
+                            error.status, str(error), "stale_sponsorship_generation", value["transition"]
+                        ) from None
                     key = value["repository"], value["issue"], value["provider"]
                     row = self.db.execute(
                         "SELECT generation,epoch,slot FROM sponsorship WHERE repository=? AND issue=? AND provider=?",
@@ -447,28 +747,7 @@ class Exchange:
                         (value["transition"], digest, json.dumps(reply)),
                     )
                     replies.append(reply)
-            # Later contributed bindings may use these cutoffs. Current org bindings carry
-            # no personal payer, and a prospective sponsor never retires their work.
-            for identifier, binding in self.db.execute(
-                "SELECT id,binding FROM sessions WHERE ended IS NULL AND binding IS NOT NULL"
-            ).fetchall():
-                bound = json.loads(binding)
-                if bound.get("funding") != "contributed":
-                    continue
-                revoked = self.db.execute(
-                    "SELECT through_epoch FROM sponsorship_revocations WHERE repository=? AND issue=? AND provider=? AND actor=?",
-                    (
-                        bound.get("repository"),
-                        bound.get("issue"),
-                        bound.get("sponsorship_provider"),
-                        bound.get("sponsor"),
-                    ),
-                ).fetchone()
-                if revoked and bound.get("epoch", -1) <= revoked[0]:
-                    try:
-                        self.retire(identifier, self.row(identifier), _now(None))
-                    except Refused:
-                        pass  # Durable retirement and ordinary key reconciliation already exist.
+            self.retire_revoked(_now(None))
             return {"transitions": replies}
 
     def add_columns(self, table, columns):
@@ -518,12 +797,16 @@ class Exchange:
         """Record a runner session the operator authorizes; returns its ID."""
         _expected_claims(expected)
         self.validate(models, budget, lease)
+        if isinstance(binding, dict) and binding.get("funding") == "contributed":
+            raise Refused(409, "contributed sessions require an admitted turn")
         with self.locked():
             return self.create(expected, models, budget, lease, binding=binding)
 
     def create(self, expected, models, budget, lease, kind="runner", binding=None):
         session, now = str(uuid.uuid4()), time.time()
         bound = session_binding(binding) if binding is not None else None
+        if kind != "runner" and binding and binding.get("funding") == "contributed":
+            raise ValueError("host sessions cannot use contributed credentials")
         group = staffing(expected, binding, models, budget, lease) if bound else None
         if bound:
             expected = {**expected, "event_name": "workflow_dispatch", "ref": "refs/heads/concurro/runs/" + session}
@@ -584,6 +867,7 @@ class Exchange:
             self.db.execute("INSERT INTO seen (jti, exp) VALUES (?, ?)", (payload["jti"], payload["exp"]))
         except sqlite3.IntegrityError:
             raise Refused(401, "token already used") from None
+        self.check_session_funding(session, record, now)
         if record["run_id"] is None:
             self.db.execute("UPDATE sessions SET run_id = ? WHERE id = ? AND run_id IS NULL", (run, session))
         return record
@@ -609,38 +893,76 @@ class Exchange:
             return {"repository": "/".join(workflow.split("/")[:2]), "engine": engine}
 
     def key(self, session, token, engine=None, now=None):
-        """The session's key and runner token, minted on first request; a retry from the bound run gets the same.
-
-        `engine` is the commit the runner states it runs; any but the session's is refused.
-        """
-        now = _now(now)
+        """Mint once outside the lifecycle lock; recheck retirement after activation without resetting budget."""
         with self.locked():
-            record = self.authorize(session, token, now)
-            if self.bound_engine(session, record) != engine:
-                self.refuse(session, 403, "runner engine differs from the session's")
-            key, runner = record["key"], record["token"] or secrets.token_hex(32)
-            self.db.execute("UPDATE sessions SET token = ?, seen = ? WHERE id = ?", (runner, now, session))
-            reply = {
-                "key": None,
-                "token": runner,
-                "models": json.loads(record["models"]),
-                "deadline": record["deadline"],
-                "binding": json.loads(record["binding"]) if record["binding"] else None,
-            }
-            if key and record["key_id"]:
+            contributed = json.loads(self.row(session)["binding"] or "{}").get("funding") == "contributed"
+        if contributed:
+            self.consume_events()
+        clock = now
+        now = _now(clock)
+        with self.minting():
+            with self.locked():
+                record = self.authorize(session, token, now)
+                if self.bound_engine(session, record) != engine:
+                    self.refuse(session, 403, "runner engine differs from the session's")
+                bound = json.loads(record["binding"])
+                contributed = bound.get("funding") == "contributed"
+                if contributed and bound["route"] not in getattr(self.gateway, "contributed_routes", ()):
+                    raise Refused(503, "contributed route adapter is unavailable")
+                key, runner = record["key"], record["token"] or secrets.token_hex(32)
+                self.db.execute("UPDATE sessions SET token = ?, seen = ? WHERE id = ?", (runner, now, session))
+                reply = {
+                    "key": None,
+                    "token": runner,
+                    "models": json.loads(record["models"]),
+                    "deadline": record["deadline"],
+                    "binding": bound,
+                }
+                if key and record["key_id"]:
+                    return reply | {"key": key}
+                if not key:
+                    key = "sk-agw-" + secrets.token_hex(24)
+                    self.db.execute("UPDATE sessions SET key = ? WHERE id = ?", (key, session))
+                if not contributed:
+                    key_id = self.activate_key(session, record, key, bound)
+                    self.db.execute("UPDATE sessions SET key_id = ? WHERE id = ?", (key_id, session))
+                    return reply | {"key": key}
+            try:
+                key_id = self.activate_key(session, record, key, bound)
+            except BaseException:
+                with self.locked():
+                    current = self.row(session)
+                    if current["ended"] or not self.allowed(bound):
+                        self.db.execute("UPDATE sessions SET key=? WHERE id=?", (key, session))
+                        try:
+                            self.retire(session, self.row(session), now)
+                        except Refused:
+                            pass
+                raise
+            with self.locked():
+                # Retirement during activation may have cleared the key before creation completed.
+                if self.row(session)["key"] != key:
+                    self.db.execute("UPDATE sessions SET key = ? WHERE id = ?", (key, session))
+                self.db.execute("UPDATE sessions SET key_id = ? WHERE id = ?", (key_id, session))
+                current = self.row(session)
+                if current["ended"] or current["deadline"] < _now(clock) or not self.allowed(bound):
+                    try:
+                        self.retire(session, current, _now(clock))
+                    except Refused:
+                        pass
+                    raise Refused(410, "session authority ended during key activation")
                 return reply | {"key": key}
-            if not key:
-                key = "sk-agw-" + secrets.token_hex(24)
-                # Durable before the gateway sees it, so reconciliation can always find it.
-                self.db.execute("UPDATE sessions SET key = ? WHERE id = ?", (key, session))
-            # A retry after a partial creation adopts the key if the gateway already has it.
-            key_id = self.gateway.find(key)
-            if key_id:
-                self.gateway.activated(key)
-            else:
-                key_id = self.gateway.create(key, session, json.loads(record["models"]), record["budget"])
-            self.db.execute("UPDATE sessions SET key_id = ? WHERE id = ?", (key_id, session))
-            return reply | {"key": key}
+
+    def activate_key(self, session, record, key, binding):
+        """Adopt a partially activated key with its existing budget; never create a replacement on retry."""
+        if binding.get("funding") == "contributed":
+            self.metadata_for(binding, json.loads(record["models"]))
+        key_id = self.gateway.find(key)
+        if key_id:
+            self.gateway.activated(key)
+            return key_id
+        arguments = {"binding": binding} if binding.get("funding") == "contributed" else {}
+        return self.gateway.create(key, session, json.loads(record["models"]), record["budget"], **arguments)
 
     def runner(self, session, token, now):
         """The live runner session that `token` proves; every runner call is also its heartbeat. The lock is held."""
@@ -649,6 +971,7 @@ class Exchange:
             raise Refused(401, "invalid runner token")
         if record["ended"] or record["deadline"] < now:
             raise Refused(410, "session has ended")
+        self.check_session_funding(session, record, now)
         self.db.execute("UPDATE sessions SET seen = ? WHERE id = ?", (now, session))
         return record
 
@@ -775,6 +1098,105 @@ class Exchange:
             **({"runner": {"session": session, "run_id": runner["run_id"]}} if runner else {}),
         }
 
+    def admitted(self, turn, digest, now):
+        """Return the exact existing-turn result before metadata, capabilities or current grant checks."""
+        found = self.db.execute("SELECT digest,status,staff,result FROM turns WHERE id=?", (turn,)).fetchone()
+        if found is None:
+            return None
+        if found[0] is None:
+            return {**self.observation(turn), "dispatch": None}
+        if found[0] != digest:
+            raise Refused(409, "the turn ID is in use")
+        staff = found[2] and self.row(found[2])
+        pending = staff and staff["run_id"] is None and self.live(staff, now)
+        reply = {**self.observation(turn), "dispatch": found[2] if pending else None}
+        return {**reply, "result": json.loads(found[3])} if found[1] == "done" else reply
+
+    def validate_admission(self, turn, binding, request, models):
+        """Match the versioned controller receipt to the exact turn, payer and selected model."""
+        if "version" not in binding:
+            if "admission" in request or "attempt" in request:
+                raise ValueError("admission requires a versioned binding")
+            return
+        value = request.get("admission")
+        fields = {
+            "version",
+            "funding",
+            "credential",
+            "sponsorship_provider",
+            "sponsor",
+            "epoch",
+            "grant_id",
+            "route",
+            "grant",
+            "call",
+            "owner_generation",
+            "transcript_scope",
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value) != fields
+            or type(value["version"]) is not int
+            or value["version"] != 1
+            or type(value["call"]) is not int
+            or value["call"] < 1
+            or type(value["owner_generation"]) is not int
+            or value["owner_generation"] != binding["generation"]
+        ):
+            raise ValueError("invalid frozen admission")
+        attempt = request.get("attempt")
+        try:
+            if not isinstance(attempt, str) or str(uuid.UUID(attempt)) != turn:
+                raise ValueError()
+        except ValueError:
+            raise ValueError("turn differs from frozen attempt") from None
+        if any(
+            value[k] != binding[k] for k in ("funding", "sponsorship_provider", "sponsor", "epoch", "grant_id", "route")
+        ):
+            raise ValueError("admission differs from session funding")
+        credential = value["credential"]
+        legacy = {"id", "provider", "kind", "adapter", "account"}
+        fields = legacy | ({"route", "record_id", "version"} if binding["funding"] == "contributed" else set())
+        if (
+            not isinstance(credential, dict)
+            or set(credential) != fields
+            or credential["kind"] != binding["funding"]
+            or credential["provider"] != request.get("provider")
+            or not isinstance(credential["adapter"], str)
+            or not credential["adapter"]
+        ):
+            raise ValueError("invalid admission credential")
+        if value["transcript_scope"] != (request.get("session") or {}).get("scope"):
+            raise ValueError("admission differs from retained transcript scope")
+        if binding["funding"] == "org":
+            if credential["id"] != binding["credential"] or value["grant"] is not None:
+                raise ValueError("organization admission differs from credential")
+        else:
+            identity = [
+                "contributed",
+                binding["sponsor"],
+                binding["route"],
+                binding["credential"],
+                binding["credential_version"],
+            ]
+            expected = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            if (
+                credential["id"] != expected
+                or credential["account"] != binding["sponsor"]
+                or credential["route"] != binding["route"]
+                or credential["record_id"] != binding["credential"]
+                or credential["version"] != binding["credential_version"]
+            ):
+                raise ValueError("admission differs from credential version")
+            if (
+                not isinstance(value["grant"], dict)
+                or any(value["grant"].get(k) != binding[k] for k in ("epoch", "grant_id"))
+                or value["grant"].get("sponsor_id") != binding["sponsor"]
+            ):
+                raise ValueError("admission differs from provider grant")
+        if models != [request.get("model")]:
+            raise ValueError("admission models differ from selected route")
+
     def submit(self, turn, expected, models, budget, lease, payload, pin=None, now=None, binding=None):
         """Queue a turn under the caller's ID; returns it and a new session ID to dispatch, if one is needed.
 
@@ -799,28 +1221,29 @@ class Exchange:
         request = payload.get("request", {})
         if binding["role"] != str(request.get("stage")) + ":" + str(request.get("provider")):
             raise ValueError("turn does not match its role")
+        self.validate_admission(turn, binding, request, models)
         group = staffing(expected, binding, models, budget, lease)
         now = _now(now)
         digest = hashlib.sha256(
             json.dumps([expected, models, budget, lease, payload, pin, binding], sort_keys=True).encode()
         ).hexdigest()
         with self.locked():
-            found = self.db.execute("SELECT digest, status, staff, result FROM turns WHERE id = ?", (turn,)).fetchone()
-            if found and found[0] is None:
-                # Withdrawn before its admission arrived.
-                return {**self.observation(turn), "dispatch": None}
-            if found and found[0] != digest:
-                raise Refused(409, "the turn ID is in use")
-            if found:
-                staff = found[2] and self.row(found[2])
-                pending = staff and staff["run_id"] is None and self.live(staff, now)
-                admitted = {**self.observation(turn), "dispatch": found[2] if pending else None}
-                return {**admitted, "result": json.loads(found[3])} if found[1] == "done" else admitted
+            prior = self.admitted(turn, digest, now)
+            if prior is not None:
+                return prior
+        self.metadata_for(binding, models)
+        with self.locked():
+            prior = self.admitted(turn, digest, now)
+            if prior is not None:
+                return prior
             if pin is not None:
                 record = self.row(pin)
                 if record["kind"] != "runner" or record["staffing"] != group:
                     raise Refused(409, "the pinned session serves another target")
             with self._transaction():
+                if binding.get("version") == 2:
+                    self.advance_generation(binding["repository"], binding["issue"], binding["generation"])
+                    self.current_grant(binding, request.get("admission") or {})
                 self.db.execute(
                     "INSERT INTO turns (id, expected, models, budget, lease, payload, status, created, digest, pin, binding, staffing) "
                     "VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?)",
@@ -850,6 +1273,9 @@ class Exchange:
         if not found or found[4] != "queued" or found[5] or not found[6]:
             return None
         expected, models, budget, lease, _, _, bound, group = found
+        if not self.allowed(json.loads(bound)):
+            self._lose_turn(turn, now)
+            return None
         for row in self.db.execute(
             "SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL AND staffing = ?", (group,)
         ).fetchall():
@@ -886,7 +1312,11 @@ class Exchange:
                     return {**self.observation(turn), "result": json.loads(result)}
                 if status == "running":
                     record = self.row(session)
-                    if not self.live(record, current):
+                    if (
+                        not self.live(record, current)
+                        or record["binding"]
+                        and not self.allowed(json.loads(record["binding"]))
+                    ):
                         try:
                             self.retire(session, record, current)
                         except Refused:
@@ -930,7 +1360,13 @@ class Exchange:
         Returns what was deleted. Finished turns are dropped after a day.
         """
         now = _now(now)
+        event_error = None
+        try:
+            self.consume_events()
+        except Refused as error:
+            event_error = error
         with self.locked():
+            self.retire_revoked(now)
             for (session,) in self.db.execute(
                 "SELECT id FROM sessions WHERE kind = 'runner' AND ended IS NULL"
             ).fetchall():
@@ -963,6 +1399,8 @@ class Exchange:
             for key, session in retired.items():
                 if key not in kept:
                     self.forget(session)
+            if event_error:
+                raise event_error
             return removed
 
 
@@ -1033,7 +1471,8 @@ class Handler(BaseHTTPRequestHandler):
                 reply = handle(self.body(size) if method == "POST" else {})
             self.reply(200, reply)
         except Refused as error:
-            self.reply(error.status, {"error": str(error)})
+            details = {"code": error.code, "transition": error.transition} if error.code else {}
+            self.reply(error.status, {"error": str(error), **details})
         except ValueError as error:
             self.reply(400, {"error": str(error)})
         except Exception:
@@ -1057,6 +1496,8 @@ class Handler(BaseHTTPRequestHandler):
     def operator(self, method, path, query, body):
         # Deliberately reject empty/percent-encoded wait values; URL-decoding would widen admission.
         wait = float(dict(p.partition("=")[::2] for p in query.split("&") if p).get("wait", 0))
+        if method == "GET" and path == "capabilities":
+            return self.server.exchange.capabilities()
         if method == "POST" and path == "sponsorship":
             return self.server.exchange.sponsorship(body)
         if method == "POST" and path == "turns":
@@ -1163,11 +1604,16 @@ def main():
     sub.add_parser("reconcile")
     args = parser.parse_args()
     env = os.environ.get
+    vault_values = [
+        env("EXCHANGE_VAULT_" + name) for name in ("METADATA_URL", "METADATA_TOKEN", "EVENTS_URL", "EVENTS_TOKEN")
+    ]
+    vault = Vault(*vault_values) if any(vault_values) else None
     exchange = Exchange(
         env("EXCHANGE_DB", "/data/exchange.db"),
         Gateway(env("EXCHANGE_ADMIN", "http://127.0.0.1:15000"), env("EXCHANGE_INFERENCE", "http://127.0.0.1:4000")),
         Keys(),
         env("EXCHANGE_AUDIENCE", "concurro-gateway"),
+        vault=vault,
     )
     if args.command == "serve":
         threading.Thread(target=reconciling, args=(exchange,), daemon=True).start()

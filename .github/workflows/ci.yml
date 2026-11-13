@@ -62,7 +62,7 @@ jobs:
             context: .
             dockerfile: backoffice/Dockerfile
           - image: exchange
-            context: gateway/exchange
+            context: .
             dockerfile: gateway/exchange/Dockerfile
           - image: vault
             context: gateway/vault

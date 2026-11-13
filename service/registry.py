@@ -19,7 +19,7 @@ from .errors import RegistryError, RegistryFailure
 from .observations import expected, satisfied
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -35,6 +35,9 @@ WEBHOOK_RECOVERY = "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, check
 OBSERVATIONS = """CREATE TABLE observations (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,
     due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
+FUNDING_POLICIES = """CREATE TABLE IF NOT EXISTS funding_policies (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,
+    started REAL NOT NULL, ended REAL, receipt TEXT NOT NULL)"""
 SPONSOR_SOURCES = """CREATE TABLE IF NOT EXISTS issue_sponsor_sources (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,
     PRIMARY KEY(repository,issue,revision))"""
@@ -42,7 +45,9 @@ SPONSOR_PROJECTIONS = """CREATE TABLE IF NOT EXISTS issue_sponsorships (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,
     confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))"""
 SCHEMA = (
-    SPONSOR_SOURCES
+    FUNDING_POLICIES
+    + ";"
+    + SPONSOR_SOURCES
     + ";"
     + SPONSOR_PROJECTIONS
     + ";"
@@ -190,6 +195,7 @@ def _migrate_v2(db):
     db.execute(REVIEW_INTENTS)
     db.execute(WEBHOOK_RECOVERY)
     db.execute(OBSERVATIONS)
+    db.execute(FUNDING_POLICIES)
     db.execute(SPONSOR_SOURCES)
     db.execute(SPONSOR_PROJECTIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
@@ -202,6 +208,7 @@ def _migrate_v3(db):
     db.execute(REVIEW_INTENTS)
     db.execute(WEBHOOK_RECOVERY)
     db.execute(OBSERVATIONS)
+    db.execute(FUNDING_POLICIES)
     db.execute(SPONSOR_SOURCES)
     db.execute(SPONSOR_PROJECTIONS)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
@@ -318,13 +325,14 @@ class Registry:
                 _migrate_v2(db)
             elif meta["schema"] == "3":
                 _migrate_v3(db)
-            elif meta["schema"] not in ("4", "5", str(SCHEMA_VERSION)):
+            elif meta["schema"] not in ("4", "5", "6", str(SCHEMA_VERSION)):
                 raise RegistryError("registry identity or schema version mismatch")
-            if meta["schema"] in ("4", "5"):
+            if meta["schema"] in ("4", "5", "6"):
                 db.execute("BEGIN IMMEDIATE")
                 if meta["schema"] == "4":
                     db.execute(WEBHOOK_RECOVERY)
                     db.execute(OBSERVATIONS)
+                db.execute(FUNDING_POLICIES)
                 db.execute(SPONSOR_SOURCES)
                 db.execute(SPONSOR_PROJECTIONS)
                 db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
@@ -855,6 +863,46 @@ class Registry:
                 "SELECT kind, progressed, retry_after FROM outcomes WHERE repository = ? AND issue = ?", key
             ).fetchone()
         return Outcome(row[0], bool(row[1]), row[2]) if row else None
+
+    def activate_funding(self, repository, identity, mode):
+        """Record policy activation at the service clock after a current-target read, never backdate."""
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT started,receipt FROM funding_policies WHERE repository=? AND ended IS NULL", (repository,)
+            ).fetchone()
+            previous = json.loads(row[1]) if row else None
+            if previous and previous["config_digest"] == identity and previous["funding_mode"] == mode:
+                return previous
+            now = self.clock()
+            if row and now < row[0]:
+                raise ValueError("funding policy activation clock did not advance")
+            receipt = {
+                "repository": repository,
+                "config_digest": identity,
+                "funding_mode": mode,
+                "effective_from": now,
+                "previous": previous.get("receipt_id") if previous else None,
+            }
+            receipt["receipt_id"] = digest(receipt)
+            db.execute("UPDATE funding_policies SET ended=? WHERE repository=? AND ended IS NULL", (now, repository))
+            db.execute(
+                "INSERT INTO funding_policies(repository,started,ended,receipt) VALUES(?,?,NULL,?)",
+                (repository, now, json.dumps(receipt)),
+            )
+            return receipt
+
+    def funding_policy(self, repository, identity, at):
+        """Select a persisted activation covering source time and exact config, or unknown."""
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT receipt,ended FROM funding_policies WHERE repository=? AND started<=? AND (ended IS NULL OR ended>?)",
+                (repository, at, at),
+            ).fetchall()
+        for encoded, ended in rows:
+            receipt = json.loads(encoded)
+            if receipt["config_digest"] == identity:
+                return {**receipt, "effective_until": ended}
+        return {"funding_mode": "unknown", "config_digest": None}
 
     def binding(self, key):
         """The task's pinned configuration and destinations, or None before enrollment."""

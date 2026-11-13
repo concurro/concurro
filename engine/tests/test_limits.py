@@ -90,7 +90,7 @@ class OutputTests(PipelineFixture, unittest.TestCase):
         view = controller.checkpoints.plan_body(controller.state)
         self.assertLessEqual(len(view.encode()), 60000)
         self.assertIn("Complete plan data, part", view)
-        self.assertIn('"version": 7', controller.checkpoints.audit_body(controller.state))
+        self.assertIn('"version": 9', controller.checkpoints.audit_body(controller.state))
 
     def test_pending_events_persist_and_publish_beyond_eight(self):
         controller = self.reach("plan")

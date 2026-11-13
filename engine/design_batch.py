@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+import admissions
 import design_eligibility
 import review_batch
 import review_timing
@@ -101,12 +102,15 @@ class Design:
         self.transport.check_owner()
         if not self.valid():
             raise Blocked("review binding changed before admission")
+        choices = c.select_admissions(
+            [(self.batch["members"][key]["identity"]["provider"], "plan_qc", self.contexts[key]) for key in keys]
+        )
         if c.state["calls"] + len(keys) > c.config["max_model_calls"]:
             raise Blocked(
                 "model-call budget cannot admit the review roster" if initial else "model-call budget exhausted"
             )
         prepared, reservations = {}, []
-        for key in keys:
+        for key, choice in zip(keys, choices, strict=True):
             member = self.select(key)
             provider = member["identity"]["provider"]
             context = deepcopy(self.contexts[key])
@@ -126,21 +130,28 @@ class Design:
             c.require_uncertain_budget(c.next_uncertain_count(operation))
             session = sessions.prepare(c.state, c.config, provider, "plan_qc", context)
             design_eligibility.prepare(c.state, context, session, operation)
-            credential = self.transport.credential(
-                provider, "plan_qc", {"repository": c.config["repository"], "issue": c.state["issue"]}
-            )
+            credential = admissions.validate(choice)
             request = {**context, "controller_credential": credential.record()}
             if session:
                 request["controller_session"] = session
             prepared[key] = self.transport.prepare(provider, "plan_qc", request)
-            reservations.append((key, context, session, credential))
-        # Preparation can fail without spending any calls or sending a request.
-        for key, context, session, credential in reservations:
+            reservations.append((key, context, session, credential, choice))
+        # Freeze every fallible input before mutating any roster attempt or ledger.
+        generation = getattr(self.transport, "generation", None)
+        frozen = [
+            admissions.freeze(choice, c.state["calls"] + index + 1, generation, session)
+            for index, (_key, _context, session, _credential, choice) in enumerate(reservations)
+        ]
+        for (key, context, _session, _credential, _choice), admission in zip(reservations, frozen, strict=True):
             member = self.select(key)
             operation = member["operation"]
-            c.begin_attempt(operation, context)
+            c.begin_attempt(operation, context, admission)
+            prepared[key]["request"].update(admission=deepcopy(operation["admission"]), attempt=operation["attempt"])
+        for key, context, session, credential, _choice in reservations:
+            member = self.select(key)
+            operation = member["operation"]
             member.update(session=session, status="queued")
-            operation["owner_generation"] = getattr(self.transport, "generation", None)
+            operation["owner_generation"] = operation["admission"]["owner_generation"]
             operation["call"] = c.charge_call(credential)
             self.contexts[key] = context
         self.batch.pop("active", None)

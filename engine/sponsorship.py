@@ -1,20 +1,16 @@
-"""Prospective provider grants and immutable source ordering; inference remains org-funded."""
+"""Provider grants and immutable explicit-first source ordering."""
 
 from copy import deepcopy
 from datetime import datetime
 
 import delegation
 from commands import CommandKind, parse
+from credential_routes import ROUTES
 from model_config import assigned, resolve
 from policy import design_roster, digest
 
 PROVIDERS = ("openai", "anthropic")
-ROUTES = {
-    "openai-api-key": {"sponsorship_provider": "openai", "kind": "api_key"},
-    "chatgpt-subscription": {"sponsorship_provider": "openai", "kind": "subscription"},
-    "anthropic-api-key": {"sponsorship_provider": "anthropic", "kind": "api_key"},
-    "claude-subscription": {"sponsorship_provider": "anthropic", "kind": "subscription"},
-}
+
 ROLES = {
     "triage": "intake",
     "planner": "plan",
@@ -164,7 +160,8 @@ def initialize(projection, boundary, routes, metadata):
                 "provenance": boundary["provenance"],
                 "source_id": boundary["source_id"],
                 "source_order": [boundary["at"], boundary["source_id"], -1],
-                "source_funding_mode": "org",
+                "source_funding_mode": boundary.get("source_policy", {}).get("funding_mode", "unknown"),
+                "source_policy": deepcopy(boundary.get("source_policy")),
             }
             slots[provider] = {**value, "grant_id": digest([value, available, metadata])}
             evidence.extend(available)
@@ -188,7 +185,7 @@ def initialize(projection, boundary, routes, metadata):
             if record["route"] in {item["route"] for item in evidence}
         ],
         "applied": [f["grant_id"] for f in before],
-        "source_funding_mode": "org",
+        "source_funding_mode": boundary.get("source_policy", {}).get("funding_mode", "unknown"),
     }
 
 
