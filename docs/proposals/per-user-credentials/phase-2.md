@@ -37,12 +37,16 @@ It does not force offline scopes or App setting changes and does not imply provi
 
 ## Configuration and release boundary
 
-No new secret is required for an existing deployment to start. Private resolver activation is
+The supplied current gateway base Compose requires `vault-service-token` alongside its
+master key; provision both before starting it, including org-only deployments. The original
+Phase 2 no-new-secret code boundary is historical. Private resolver activation is
 optional as described above. Durable logout retry is enabled only when both `auth_state_dir` and
 `auth_key_path` are configured; without them local logout still works and makes a best-effort
 remote call, reporting unavailable on failure or unknown if a refresh was in flight at logout.
 The portal preserves that result when there is no durable status receipt. Provision an owner-only external directory and
-32-byte hex key for uid 65533, mount the directory with `service/compose.portal.yaml`, and set:
+32-byte hex key for uid 65533. For the release helper, merge `service/compose.portal.yaml`
+into `/etc/concurro/compose.service.host.yaml` (read when present by both service/web
+updates); merely retaining the optional overlay in the checkout does not activate it. Set:
 
 ```json
 {"auth_state_dir":"/var/lib/concurro/backoffice","auth_key_path":"/etc/concurro/backoffice/auth-key"}

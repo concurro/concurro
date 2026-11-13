@@ -295,7 +295,7 @@ class Tasks:
                 return self.sponsorships(repository, number)
             except CommandError:
                 pass
-        return {"funding": "org", "status": "unavailable", "slots": {}}
+        return {"funding": "unknown", "status": "unavailable", "slots": {}}
 
     def my_sponsorships(self) -> list[dict]:
         """List visible task and pre-task current/provisional grants for this stable GitHub actor."""

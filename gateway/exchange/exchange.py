@@ -495,10 +495,10 @@ class Exchange:
 
     def observations(self, repository, issue):
         """Read durable task evidence and unresolved native requests without waking or retrying work."""
-        self.inference.import_native()
+        native_status = self.inference.import_native()
         with self.locked():
             pending = self.inference.pending(repository=repository, issue=issue)
-        return {"events": self.inference.events(repository, issue), "pending": pending}
+        return {"events": self.inference.events(repository, issue), "pending": pending, "native_status": native_status}
 
     def advance_generation(self, repository, issue, generation):
         """Mirror task ownership monotonically inside the caller's transaction, never a second authority."""
@@ -1101,6 +1101,7 @@ class Exchange:
             "OR (pin = ? AND status = 'queued')",
             (now, session, session),
         )
+        self.inference.settle_ended_locked()
 
     def _lose_turn(self, turn, now):
         """Lose one turn while the caller holds the lifecycle lock."""

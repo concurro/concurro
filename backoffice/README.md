@@ -90,3 +90,12 @@ The portal displays these receipts; it never authorizes a retry locally. Eligibl
 pauses require newer validated material; rate pauses require a trusted retry hint. Writer-only,
 unknown, stopped and budget pauses do not automatically resume. Token observations remain
 supplementary to the task's charged-call ledger.
+
+## Optional durable logout cleanup
+
+Set `auth_state_dir` and `auth_key_path` together only when enabling encrypted cleanup
+receipts/retry. Provision the owner-only state directory and separate 32-byte hex key for
+uid 65533. Merge `service/compose.portal.yaml` into
+`/etc/concurro/compose.service.host.yaml`; the release helper retains this optional mount
+on both service and web updates. Without those settings/mounts, sessions remain in memory
+and logout reports best-effort remote cleanup. See [current readiness](../docs/proposals/per-user-credentials/deployment-readiness.md).

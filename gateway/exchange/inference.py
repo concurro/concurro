@@ -63,6 +63,8 @@ class Inference:
             CREATE INDEX IF NOT EXISTS inference_request_turn ON inference_requests(turn);
             CREATE TABLE IF NOT EXISTS native_cursor(id INTEGER PRIMARY KEY,identity TEXT NOT NULL,last_row INTEGER NOT NULL);
         """)
+        with exchange.locked(), exchange._transaction():
+            self.settle_ended_locked()
 
     def start(self, key, method, path):
         """Authenticate a live virtual key before freezing its sole active turn, never client headers."""
@@ -165,11 +167,13 @@ class Inference:
             "version": bound["credential_version"],
         }
         if (
-            any(material.get(k) != v for k, v in required.items())
+            not isinstance(material, dict)
+            or any(material.get(k) != v for k, v in required.items())
             or not isinstance(material.get("secret"), str)
             or not material["secret"]
             or any(c in material["secret"] for c in "\r\n")
         ):
+            self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
             raise ex.refusal_type(503, "resolver identity incomplete")
         account = material.get("account") or ""
         if isinstance(account, dict) and bound["route"] == "chatgpt-subscription":
@@ -180,6 +184,7 @@ class Inference:
             or bound["route"] == "chatgpt-subscription"
             and not account
         ):
+            self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
             raise ex.refusal_type(503, "credential account metadata unavailable")
         with ex.locked():
             row = ex.row(session)
@@ -187,6 +192,7 @@ class Inference:
                 "SELECT 1 FROM turns WHERE id=? AND session=? AND status='running'", (snap["turn"], session)
             ).fetchone()
             if not active or row["ended"] or row["deadline"] <= time.time() or not ex.allowed(bound):
+                self.finish_locked(identifier, "resolver", {"category": "unknown", "status": 403, "completed": False})
                 raise ex.refusal_type(403, "request authority ended during resolution")
             ex.db.execute("UPDATE inference_requests SET resolved=1 WHERE id=?", (identifier,))
         return {"token": material["secret"], "account": account, "route": bound["route"], "request": identifier}
@@ -272,11 +278,20 @@ class Inference:
             ),
         )
 
+    def settle_ended_locked(self):
+        """Close missing evidence only after durable owner retirement, retaining late native joins."""
+        requests = self.exchange.db.execute(
+            "SELECT r.id FROM inference_requests r JOIN sessions s ON s.id=r.session "
+            "WHERE s.ended IS NOT NULL AND NOT EXISTS(SELECT 1 FROM inference_observations o WHERE o.request=r.id)"
+        ).fetchall()
+        for (identifier,) in requests:
+            self.finish_locked(identifier, "native_gap", {"category": "unknown", "completed": False})
+
     def import_native(self):
         """Join append-ordered native rows in one transaction, retaining the cursor with observations."""
-        if not self.native_database:
-            return
         ex = self.exchange
+        if not self.native_database:
+            return "disabled"
         with self.import_guard:
             with ex.locked():
                 cursor = ex.db.execute("SELECT identity,last_row FROM native_cursor WHERE id=1").fetchone()
@@ -291,8 +306,10 @@ class Inference:
                     rows = db.execute(
                         "SELECT rowid,attributes_json FROM request_logs WHERE rowid>? ORDER BY rowid", (after,)
                     ).fetchall()
-            except (OSError, sqlite3.OperationalError):
-                return  # Existing unavailable/backoff retains unresolved request identity.
+            except (OSError, sqlite3.DatabaseError):
+                with ex.locked(), ex._transaction():
+                    self.settle_ended_locked()
+                return "unavailable"
             with ex.locked(), ex._transaction():
                 for _, raw in rows:
                     try:
@@ -315,6 +332,8 @@ class Inference:
                         continue
                 high = rows[-1][0] if rows else after
                 ex.db.execute("INSERT OR REPLACE INTO native_cursor VALUES(1,?,?)", (identity, high))
+                self.settle_ended_locked()
+            return "available"
 
     def pending(self, turn=None, repository=None, issue=None):
         """Unjoined native requests cannot authorize a replacement paid attempt during log outages."""

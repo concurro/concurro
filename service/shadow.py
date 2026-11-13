@@ -212,7 +212,9 @@ class Shadow:
         slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
         if projection.get("funding") == "contributed":
             try:
-                projection["observations"] = self.operator().observations(*key).get("events", [])
+                reply = self.operator().observations(*key)
+                projection["observations"] = reply.get("events", [])
+                projection["native_status"] = reply.get("native_status", "unknown")
                 projection["observations_status"] = "available"
             except ExchangeError:
                 projection["observations"] = None

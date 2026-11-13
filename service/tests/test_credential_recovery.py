@@ -153,6 +153,49 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         row.update(version=version, record_id=digest([actor, route, version]), status="valid")
         return self.feed.add(row)
 
+    def test_orphan_observation_worker_retirement_allows_writer_recovery(self):
+        """Real queue/runner recovery cannot charge before the orphan owner is durably retired."""
+        self.registry.enqueue(KEY, "fixture-orphan-start", self.clock())
+        with patch.object(self.exchange.inference, "finish"):
+            self.assertEqual(self.dispatch(), [KEY])
+        before = self.state()
+        self.assertEqual(before["calls"], 1)
+        self.assertEqual(len(self.served), 1)
+        session, turn = self.served[0]
+        self.assertIsNotNone(self.exchange.row(session)["ended"])
+        self.assertFalse(self.exchange.inference.pending(turn=turn["id"]))
+        self.clock.now += 60
+        self.dispatch()
+        self.assertEqual(self.state()["calls"], 1)
+        self.assertEqual(len(self.served), 1)
+        event = self.exchange.inference.events(KEY[0], KEY[1])[0]
+        self.assertEqual((event["turn"], event["source"], event["category"]), (turn["id"], "native_gap", "unknown"))
+        self.clock.now += 300
+        self.registry.enqueue(KEY, "fixture-after-worker-end", self.clock())
+        self.dispatch()
+        after = self.state()
+        self.assertEqual(after["calls"], 1)
+        first_binding = deepcopy(event["binding"])
+        self.faults = [("auth", None)]
+        self.fake.comments.append(comment(99, "/concurro retry", "alice", "2026-11-12T10:00:20Z"))
+        self.registry.enqueue(KEY, "fixture-writer-retry", self.clock())
+        self.dispatch()
+        final = self.state()
+        self.assertFalse(self.exchange.inference.pending(turn=turn["id"]))
+        self.assertEqual(final["calls"], 2)
+        self.assertEqual(len(self.served), 2)
+        self.assertEqual(final["stage"], "awaiting_credentials")
+        self.assertNotEqual(self.served[1][1]["id"], turn["id"])
+        self.assertNotEqual(self.served[1][0], session)
+        self.assertEqual(sum(t["id"] == turn["id"] for _, t in self.served), 1)
+        event = self.exchange.inference.events(KEY[0], KEY[1])[0]
+        self.assertEqual(event["turn"], turn["id"])
+        self.assertEqual(event["binding"], first_binding)
+        self.assertEqual(
+            event["binding"],
+            json.loads(self.exchange.db.execute("SELECT binding FROM turns WHERE id=?", (turn["id"],)).fetchone()[0]),
+        )
+
     def test_auth_requires_new_version_and_duplicate_validation_never_retries_same_failed_version(self):
         """One new usable version authorizes one automatic paid attempt, not a loop on old validation."""
         original = self.pause()

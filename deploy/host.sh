@@ -12,7 +12,13 @@ flock -n 9 || { echo 'Another deployment phase is running.' >&2; exit 1; }
 # The image tags Compose runs: CONCURRO_RELEASE and CONCURRO_WEB_RELEASE.
 releases="$HOME/concurro-release.env"
 touch "$releases"
-svc() { sudo -n docker compose --env-file "$releases" -f "$HOME/concurro/service/compose.yaml" "$@"; }
+svc() {
+  local files=(-f "$HOME/concurro/service/compose.yaml")
+  if [[ -f /etc/concurro/compose.service.host.yaml ]]; then
+    files+=(-f /etc/concurro/compose.service.host.yaml)
+  fi
+  sudo -n docker compose --env-file "$releases" "${files[@]}" "$@"
+}
 gw() { sudo -n docker compose --env-file "$releases" -p concurro-gateway -f "$HOME/concurro/gateway/compose.yaml" -f /etc/concurro/gateway/compose.host.yaml "$@"; }
 record() {
   { grep -v "^$1=" "$releases" || true; echo "$1=$2"; } > "$releases.tmp"

@@ -11,7 +11,7 @@ from test_backoffice import USER, FakeOAuth, settings
 
 from backoffice import app as app_module
 from backoffice.auth import Sessions
-from backoffice.commands import ServiceCommands
+from backoffice.commands import CommandError, ServiceCommands
 from backoffice.credentials import Vault
 from backoffice.tasks import Tasks
 from github import STAGE_LABEL_PREFIX, Transient
@@ -106,6 +106,13 @@ class SponsorshipApiTests(unittest.TestCase):
 
 class PortalProjectionTests(unittest.TestCase):
     """Projection contracts never infer personal payment or require task state."""
+
+    def test_unavailable_projection_never_invents_organization_funding(self):
+        """An outage cannot claim that an unknown current payer is the org pool."""
+        reader = Tasks(settings(), Mock(), USER, Mock(side_effect=CommandError(503, "service unavailable")))
+        self.assertEqual(
+            reader.sponsorship_view("owner/project", 7), {"funding": "unknown", "status": "unavailable", "slots": {}}
+        )
 
     def test_issue_view_and_my_list_use_stable_actor_and_no_checkpoint(self):
         """Pre-task views retain pending state; matching a login is insufficient for ownership."""

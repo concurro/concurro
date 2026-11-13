@@ -22,6 +22,8 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Provider secrets (0600) | `/etc/concurro/gateway/secrets.env` |
 | The service's operator token (0600) | `/etc/concurro/gateway/exchange.env`, as `EXCHANGE_OPERATOR_TOKEN` |
 | Gateway state | `/var/lib/concurro/gateway/{inference,exchange,vault}` |
+| Required vault metadata bearer (0400, uid 65532) | `/etc/concurro/gateway/vault-service-token`; required by base Compose, including org-only deployments |
+| Optional nonsecret service override (0644; parent traversable by deploy user) | `/etc/concurro/compose.service.host.yaml`; outside private service settings |
 | Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
@@ -69,6 +71,9 @@ sudo install -d -m 0700 /etc/concurro/gateway
 sudo install -d -m 0700 -o 65533 -g 65533 /etc/concurro/service /etc/concurro/backoffice \
   /var/lib/concurro/service /var/lib/concurro/diagnostics
 ```
+
+Before the first gateway start, also create the master key and mandatory metadata bearer
+using [vault provisioning](#credentials-vault). Base Compose mounts both even for org-only targets.
 
 **2. Edge**
 
@@ -293,8 +298,15 @@ once, before the first `gw up -d`:
 sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/concurro/gateway/vault-master-key'
 sudo chown 65532:65532 /etc/concurro/gateway/vault-master-key
 sudo chmod 0400 /etc/concurro/gateway/vault-master-key
+sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/concurro/gateway/vault-service-token'
+sudo chown 65532:65532 /etc/concurro/gateway/vault-service-token
+sudo chmod 0400 /etc/concurro/gateway/vault-service-token
 sudo install -d -m 0700 -o 65532 -g 65532 /var/lib/concurro/gateway/vault
 ```
+
+The metadata bearer is mandatory with the supplied base Compose, even without contributed
+funding. The resolver bearer remains optional. For service metadata reads, install a separate
+owner-only copy of the metadata token for uid 65533; do not expose the resolver token there.
 
 Mount that state directory in `compose.host.yaml` as the other gateway state:
 
@@ -424,8 +436,9 @@ five minutes; unchanged idle PRs are not polled. Bootstrap and gaps beyond GitHu
 three-day delivery history use state reconciliation. The existing App JWT signs recovery
 requests; no installation-token permission expansion is required.
 
-This release upgrades the local service registry to schema 5 (coverage and observation
-jobs). Back up the stopped registry first; earlier service builds cannot read that schema.
+The current service upgrades the registry to schema 8, retaining the coverage/observation
+jobs introduced in schema 5. Back up the stopped registry and preserve its identity; use
+corrective releases and forward migrations.
 When combining with delegated backoffice commands, wire the command predicate and durable
 post-observation callback and run their combined regressions before release. See
 [service scheduling](../docs/design/service.md) and the
@@ -498,7 +511,7 @@ svc logs --tail 30 service
 ```
 
 A non-fast-forward release move needs explicit operator reconciliation, not a blind
-force push. The new registry migrates schema 2 to 3 transactionally. Exchange columns are
+force push. The current registry migrates schemas 2–7 to schema 8 transactionally. Exchange columns are
 added without clearing history; old unbound pending turns are lost rather than staffed
 under new authority. In-flight checkpoints retain their old bundle identity and block
 for reconciliation. A fresh issue is the straightforward pilot path; never replace a
@@ -511,8 +524,8 @@ and instructions while preserving completed work and original approval bindings.
 It records explicit writer authority, without a release compatibility certificate.
 Resume receipts require at least checkpoint format 6; large inventories require format 5.
 Artifact consolidation introduced format 7; shadow sponsorship introduced format 8.
-Frozen admissions now write **format 9 on every charged checkpoint save**; Registry schema 7
-is also required. This applies to ordinary calls as well as contributed-mode tests.
+Frozen admissions now write **format 9 on every charged checkpoint save**; Registry schema 8
+is current (provider fences/admission support first shipped with schema 7). This applies to ordinary calls as well as contributed-mode tests.
 Corrective releases must preserve phase 1's comment-encoded audits and publication
 receipts for all such tasks. Tasks
 writing shared artifacts additionally need the final phase-4b reader, including version-3
@@ -627,25 +640,34 @@ An edge installed before domain sites existed needs the current `Caddyfile`, `co
 and hook first, and `sudo docker compose -f /etc/edge/compose.yaml up -d` to mount
 `/etc/edge/domains`.
 
-## Shadow sponsorship metadata
+## Sponsorship metadata and private resolution
 
-The vault privately serves `GET /metadata/{user_id}?at=<ISO timestamp>` to a separately
-authenticated service bearer, with status/model/version evidence only. User credential
-endpoints reject that bearer before GitHub lookup. Configure `VAULT_SERVICE_TOKEN_FILE`
-with a dedicated owner-only 32-byte hex token; the service needs its own owner-only copy
-and `vault_metadata_url`/`vault_service_token_path`. Provision the vault mount before
-deploying updated Compose. Subscription registration and contributed inference remain
-disabled; org inference retains its credential identity and accounting. Migration and recovery details:
-[phase 1](../docs/proposals/per-user-credentials/phase-1.md).
+The vault serves `GET /metadata/{user_id}?at=<ISO timestamp>` and
+`GET /metadata/events?after=N` to a separate metadata/service bearer. These responses contain
+status/model/version/lifecycle evidence, never provider material. Owner endpoints reject this
+bearer before GitHub lookup. Configure `VAULT_SERVICE_TOKEN_FILE` with an owner-only 32-byte
+hex token, and an owner-only service copy through `vault_metadata_url` and
+`vault_service_token_path`. See the [current deployment readiness guide](../docs/proposals/per-user-credentials/deployment-readiness.md)
+for the complete principal, environment and mount wiring.
 
-Phase-2 [vault lifecycle and optional private listener](vault/README.md) add versioned
-events and key rotation without enabling contributed inference. Existing deployments need no
-resolver token; `compose.private.yaml` is an opt-in private-network overlay.
+Subscription registration and contributed inference are implemented. Default target funding
+remains org-owned; explicit contributed targets use confirmed per-provider consent and exact
+credential versions. The earlier [phase 1](../docs/proposals/per-user-credentials/phase-1.md)
+and [phase 3](../docs/proposals/per-user-credentials/phase-3.md) org-only boundaries are historical.
+Current checkpoints use format 9 and Registry schema 8. The [vault guide](vault/README.md)
+describes schema 3 and the isolated gateway principal used for private events and resolution.
 
-Phase 3 adds [frozen admissions and provider retirement fences](../docs/proposals/per-user-credentials/phase-3.md).
-The production adapter remains org-only; configured contributed calls stop before charge.
-Charged tasks use checkpoint format 9 and Registry schema 7. Optional Exchange metadata/event
-principals, build context changes and forward-migration requirements are documented in that phase note.
+The release helper reads `/etc/concurro/gateway/compose.host.yaml`; merge the needed
+`compose.private.yaml` network/listener/mount entries into that existing override, preserving
+its persistent volume bindings. Merely leaving the optional overlay in the checkout does not
+activate it. Service/backoffice remain outside the private resolver network.
+
+For optional durable GitHub logout cleanup, the helper also reads
+`/etc/concurro/compose.service.host.yaml` **when present** on both service and web updates. The override is nonsecret and must be stat-able by the
+deploy user; keep it outside the uid-65533/0700 service settings directory.
+Merge `service/compose.portal.yaml` there and provision its state/key before setting
+`auth_state_dir`/`auth_key_path`. Without that optional file/configuration, existing base-only
+service deployments are unchanged. Do not edit tracked Compose files on the release host.
 
 ## Contributed inference
 

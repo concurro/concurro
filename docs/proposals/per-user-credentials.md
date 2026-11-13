@@ -1,7 +1,9 @@
 # Proposal: per-user provider credentials
 
 **Status: phases 1–6 implemented; optional credential refresh remains deferred.**
-Current behavior and remaining boundaries are recorded in [phase 4](per-user-credentials/phase-4.md). Revised after two Codex reviews against
+Current operation and deployment prerequisites are recorded in the
+[readiness guide](per-user-credentials/deployment-readiness.md). Historical phase boundaries
+and evidence remain in the individual phase notes. Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
 The [implementation plan](per-user-credentials/implementation-plan.md) records the current

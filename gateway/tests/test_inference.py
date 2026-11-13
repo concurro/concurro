@@ -239,6 +239,138 @@ class InferenceTests(StateFixture, unittest.TestCase):
         self.assertFalse(reopened.inference.pending(turn=self.turn))
         self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 1)
 
+    def test_orphan_waits_for_owner_end_not_unrelated_log_progress(self):
+        """Newer rows and a recreated log cannot settle a still-live request's missing evidence."""
+        identifier = self.start()
+        self.exchange.complete(self.session, self.grant["token"], self.turn, {"outcome": "failed"})
+        path = Path(self.database).with_name("orphan-native.db")
+        self.adapter.native_database = path
+        for _generation in range(2):
+            if path.exists():
+                path.unlink()
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("CREATE TABLE request_logs(attributes_json TEXT)")
+                db.execute("INSERT INTO request_logs VALUES(?)", (json.dumps({"concurro_request": "unrelated"}),))
+            with self.assertRaises(Refused) as pending:
+                self.exchange.poll(self.turn, 0)
+            self.assertEqual(pending.exception.status, 503)
+            self.assertEqual(self.adapter.snapshot(identifier)["binding"], self.binding)
+            self.assertTrue(self.adapter.pending(turn=self.turn))
+            self.assertIsNone(self.adapter.failure(self.turn))
+            self.assertEqual(
+                self.exchange.observations(self.binding["repository"], self.binding["issue"])["native_status"],
+                "available",
+            )
+
+    def test_session_end_settles_missing_logs_and_late_native_denial_survives_restart(self):
+        """Durable retirement permits unknown settlement; late denial retains the original charged identity."""
+        identifier = self.start()
+        self.exchange.complete(self.session, self.grant["token"], self.turn, {"outcome": "failed"})
+        path = Path(self.database).with_name("unreadable-native.db")
+        path.write_text("not a SQLite database: SYNTHETIC_SECRET_SENTINEL")
+        self.adapter.native_database = path
+        unavailable = self.exchange.observations(self.binding["repository"], self.binding["issue"])
+        self.assertEqual(unavailable, {"events": [], "pending": True, "native_status": "unavailable"})
+        self.exchange.end(self.session)
+        settled = self.exchange.observations(self.binding["repository"], self.binding["issue"])
+        self.assertFalse(settled["pending"])
+        self.assertEqual(settled["native_status"], "unavailable")
+        event = settled["events"][0]
+        self.assertEqual(
+            (event["source"], event["category"], event["usage"], event["status"]), ("native_gap", "unknown", None, None)
+        )
+        self.assertFalse(event["completed"])
+        self.assertEqual(event["binding"], self.binding)
+        self.assertEqual(self.exchange.poll(self.turn, 0)["result"], {"outcome": "failed"})
+        self.assertNotIn("SYNTHETIC_SECRET_SENTINEL", json.dumps(settled))
+        self.assertNotIn(str(path), json.dumps(settled))
+        reopened = Exchange(
+            self.database, self.exchange.gateway, self.exchange.keys, AUDIENCE, vault=self.exchange.vault
+        )
+        self.addCleanup(reopened.db.close)
+        path.unlink()
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("CREATE TABLE request_logs(attributes_json TEXT)")
+            db.execute(
+                "INSERT INTO request_logs VALUES(?)",
+                (json.dumps({"concurro_request": identifier, "http.status": 429, "concurro_native_budget": True}),),
+            )
+        reopened.inference.native_database = path
+        failure = reopened.poll(self.turn, 0)["provider_failure"]
+        self.assertEqual(
+            (failure["request"], failure["turn"], failure["binding"], failure["category"]),
+            (identifier, self.turn, self.binding, "budget_denied"),
+        )
+        events = reopened.observations(self.binding["repository"], self.binding["issue"])["events"]
+        self.assertEqual([e["source"] for e in events], ["native_gap", "native"])
+        self.assertEqual(events[0], event)
+        self.assertEqual(reopened.db.execute("SELECT count(*) FROM turns").fetchone()[0], 1)
+
+    def test_preexisting_ended_orphan_settles_on_restart_with_logs_disabled(self):
+        """Forward recovery reads durable owner end even if the prior process recorded no gap or log path."""
+        identifier = self.start()
+        self.exchange.complete(self.session, self.grant["token"], self.turn, {"outcome": "failed"})
+        self.exchange.db.execute("UPDATE sessions SET ended=? WHERE id=?", (NOW, self.session))
+        reopened = Exchange(
+            self.database, self.exchange.gateway, self.exchange.keys, AUDIENCE, vault=self.exchange.vault
+        )
+        self.addCleanup(reopened.db.close)
+        self.assertEqual(reopened.poll(self.turn, 0)["result"], {"outcome": "failed"})
+        event = reopened.observations(self.binding["repository"], self.binding["issue"])["events"][0]
+        self.assertEqual((event["request"], event["source"], event["category"]), (identifier, "native_gap", "unknown"))
+        with self.assertRaises(Refused):
+            reopened.inference.start(self.grant["key"], "POST", "/v1/responses")
+        self.assertEqual(reopened.db.execute("SELECT count(*) FROM inference_requests").fetchone()[0], 1)
+
+    def test_independent_expiry_reconciliation_settles_orphan_without_log(self):
+        """The existing session lease reconciler can unblock pending evidence without a successful poll."""
+        self.start()
+        self.exchange.complete(self.session, self.grant["token"], self.turn, {"outcome": "failed"})
+        self.adapter.native_database = Path(self.database).with_name("missing-native.db")
+        with self.assertRaises(Refused):
+            self.exchange.poll(self.turn, 0)
+        deadline = self.exchange.row(self.session)["deadline"]
+        self.exchange.reconcile(now=deadline + 1)
+        self.assertIsNotNone(self.exchange.row(self.session)["ended"])
+        self.assertEqual(self.exchange.poll(self.turn, 0)["result"], {"outcome": "failed"})
+        self.assertFalse(self.adapter.pending(turn=self.turn))
+        self.assertEqual(
+            self.adapter.events(self.binding["repository"], self.binding["issue"])[0]["category"], "unknown"
+        )
+
+    def test_local_resolver_rejection_records_sanitized_unknown(self):
+        """Malformed resolver identity and post-resolution authority loss leave no orphan snapshot."""
+        original = self.exchange.vault.resolve
+        for kind in ("shape", "identity", "account", "authority"):
+            with self.subTest(kind=kind):
+                identifier = self.start()
+                material = original(self.binding)
+                if kind == "shape":
+                    material = None
+                elif kind == "identity":
+                    material["record_id"] = "wrong"
+                elif kind == "account":
+                    material["account"] = {"private": "SYNTHETIC_SECRET_SENTINEL"}
+                with (
+                    patch.object(self.exchange.vault, "resolve", return_value=material),
+                    patch.object(
+                        self.exchange,
+                        "allowed",
+                        side_effect=[True, False] if kind == "authority" else None,
+                        return_value=True,
+                    ),
+                ):
+                    with self.assertRaises(Refused):
+                        self.adapter.resolve(identifier, self.session)
+                event = next(
+                    e
+                    for e in self.adapter.events(self.binding["repository"], self.binding["issue"])
+                    if e["request"] == identifier
+                )
+                self.assertEqual((event["source"], event["category"], event["usage"]), ("resolver", "unknown", None))
+                self.assertNotIn("SYNTHETIC_SECRET_SENTINEL", json.dumps(event))
+        self.assertFalse(self.adapter.pending(turn=self.turn))
+
     def test_completed_native_unknown_retains_existing_generic_result(self):
         """Known native completion with no trusted category is distinct from missing evidence."""
         identifier = self.start()
@@ -316,6 +448,7 @@ class InferenceTests(StateFixture, unittest.TestCase):
             identifier = self.start()
             self.adapter.finish(identifier, "native", {"category": "budget_denied", "completed": False, "usage": None})
         else:
+            identifier = self.start()
             publish(
                 self.exchange,
                 self.binding,
@@ -324,6 +457,15 @@ class InferenceTests(StateFixture, unittest.TestCase):
                 actor="101",
                 cutoff=1,
             )
+            gap = next(
+                e
+                for e in self.adapter.events(self.binding["repository"], self.binding["issue"])
+                if e["request"] == identifier
+            )
+            self.assertEqual((gap["source"], gap["category"]), ("native_gap", "unknown"))
+            count = self.exchange.db.execute("SELECT count(*) FROM inference_requests").fetchone()[0]
+            self.adapter.start(self.grant["key"], "POST", "/v1/responses")
+            self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM inference_requests").fetchone()[0], count)
         with self.assertRaises(ProviderFailure) as failure:
             review_batch.run(adapter)
         self.assertEqual(failure.exception.provider, "openai")
