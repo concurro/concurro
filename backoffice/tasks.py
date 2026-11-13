@@ -1,7 +1,7 @@
 """Project targets, issues and engine checkpoint state into the frontend's `Target` and `Task` shapes.
 
-List views use stage labels only (one GitHub call per target); a task view loads and verifies the
-engine's audit checkpoint with `Checkpoints.load`, exactly as the controller does.
+List views use stage labels. Full task views load the engine checkpoint; section views verify
+the same audit identity and restore only the evidence needed by the selected display.
 """
 
 import hashlib
@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import UTC, datetime
 
+import report_store
 from checkpoints import MARKER, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
@@ -26,7 +27,7 @@ from .settings import Settings
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
 REPORTS = Cache()
-# Decoded checkpoint states by (repository, issue, checkpoint comment digest), oldest evicted first.
+# Decoded states by (repository, issue, checkpoint comment digest, evidence fields), oldest evicted first.
 STATES: dict[tuple, dict] = {}
 STATE_ENTRIES = 256
 # Target configurations by fork, briefly.
@@ -39,11 +40,61 @@ STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
 EMPTY_RUNS = {"runs": [], "message": None}
+# Evidence roots consumed by each independently loaded issue section.
+SECTION_FIELDS = {
+    "summary": {"reason", "requests"},
+    "intake": {"qc_history", "qc"},
+    "plan": {"plan", "design_history"},
+    "design": {"design_history", "design_votes", "objections", "qc_history"},
+    "implement": set(),
+    "review": {"review_history", "reviews", "findings"},
+    "handoff": {"review_history", "reviews", "findings"},
+    "timeline": {"reports", "qc_history"},
+    "pull": set(),
+}
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
 
 
 class ReadCheckpoints(Checkpoints):
     """The engine's checkpoint loader without the rendered plan artifact, which only writers compare against."""
+
+    def __init__(self, *args, fields=None, **kwargs):
+        """Select display evidence without changing the controller's full-state loader."""
+        super().__init__(*args, **kwargs)
+        self.fields = fields
+
+    def hydrate(self, state, payload):
+        """Verify selected report bodies; display views never consume file inventories."""
+        if self.fields is None:
+            return super().hydrate(state, payload)
+        self.restore_reports(state, payload, fields=self.fields)
+        refs = payload.get("report_data", [])
+        self.trim(state, refs)
+
+    def trim(self, state, refs=()):
+        """Keep section evidence and phase-presence metadata, including detached roots."""
+        present = {key for key, value in state.items() if value}
+        present.update(ref["path"][0] for ref in refs)
+        state.setdefault(
+            "_phaseRecords",
+            [
+                bool(present & {"qc", "qc_history"}),
+                bool(present & {"plan", "plan_id", "design_history"}),
+                bool(present & {"design_history", "design_votes"}),
+                bool(state.get("pr")),
+                bool(present & {"review_history", "reviews"}),
+                False,
+            ],
+        )
+        for key in report_store.FIELDS - self.fields:
+            state.pop(key, None)
+
+    def load(self, comments):
+        """Apply the same display projection to legacy inline checkpoints."""
+        state = super().load(comments)
+        if state is not None and self.fields is not None:
+            self.trim(state)
+        return state
 
     def read(self, number, kind):
         return None if kind == "plan" else super().read(number, kind)
@@ -131,12 +182,14 @@ class Tasks:
 
     def find_target(self, repository: str):
         """The configured target an issue repository belongs to, if this user can see it."""
-        for target, fork in self.visible_targets():
+        for target in self.settings.targets:
             if repository.lower() in (r.lower() for r in target.issue_repositories) or repository.lower() in (
                 target.upstream.lower(),
                 target.fork.lower(),
             ):
-                return target, fork
+                seen = {name: self.access.repository(name) for name in target.repositories}
+                if all(seen.values()):
+                    return target, seen[target.fork]
         raise TaskNotFound(f"{repository} is not a Concurro target visible to your account")
 
     # Lists
@@ -219,7 +272,8 @@ class Tasks:
 
     # One task
 
-    def state(self, repository: str, number: int) -> dict | None:
+    def state(self, repository: str, number: int, section: str | None = None) -> dict | None:
+        """Load verified evidence for a full task or one display section."""
         target, _ = self.find_target(repository)
         config = self.task_config(target, repository)
         github = self.access.engine(repository)
@@ -227,49 +281,56 @@ class Tasks:
         author = Identities(config).author("state")
         # The checkpoint comment pins the audit artifact by digest: the same comment means the same state.
         pins = [c["body"] for c in comments if (c.get("user") or {}).get("login") == author and MARKER in c["body"]]
-        key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest())
+        fields = None if section is None else frozenset(SECTION_FIELDS["summary"] | SECTION_FIELDS[section])
+        key = (repository.lower(), number, hashlib.sha256(json.dumps(pins).encode()).hexdigest(), fields)
         if pins and key in STATES:
             return deepcopy(STATES[key])
-        state = ReadCheckpoints(github, config, number, report_cache=REPORTS).load(comments)
+        state = ReadCheckpoints(github, config, number, report_cache=REPORTS, fields=fields).load(comments)
+        if state is not None and section is not None:
+            state["_revision"] = key[2]
         if pins and state is not None:
             STATES[key] = deepcopy(state)
             while len(STATES) > STATE_ENTRIES:
                 STATES.pop(next(iter(STATES)))
         return state
 
-    def task_view(self, repository: str, number: int) -> dict:
+    def task_view(self, repository: str, number: int, section: str | None = None) -> dict:
+        """Read a full legacy task or one independently rendered section."""
         target, fork = self.find_target(repository)
-        record = self.target_record(target, fork)
-        with ThreadPoolExecutor(2) as pool:
+        self.config(target.fork)
+        with ThreadPoolExecutor(3) as pool:
             issue_read = pool.submit(self.access.get, repository, f"issues/{number}")
-            state_read = pool.submit(self.state, repository, number)
+            state_read = pool.submit(self.state, repository, number, section)
+            record_read = pool.submit(self.target_record, target, fork) if section in (None, "summary") else None
             try:
                 issue = issue_read.result()
             except NotFound:
                 raise TaskNotFound(f"{repository}#{number} doesn't exist or isn't visible to you") from None
             state = state_read.result()
+            record = record_read.result() if record_read else None
         if state is None and not stage_label(issue):
             raise TaskNotFound(f"{repository}#{number} is not enrolled in Concurro")
         config, _ = self.config(target.fork)
-        task = summary(repository, issue, record["mode"]) | {"body": issue.get("body") or ""}
+        task = summary(repository, issue, "autonomous" if config.get("autonomous") else "manual")
+        if section in (None, "intake"):
+            task["body"] = issue.get("body") or ""
         if state:
-            task |= project(state, config, repository, issue)
+            task |= project(state, config, repository, issue, section)
             if state.get("pr"):
-                task["pr"] = self.pull(self.publication_repository(target), state)
-        return {"task": task, "target": record}
+                task["pr"] = (
+                    self.pull(self.publication_repository(target), state)
+                    if section in (None, "pull")
+                    else pull_summary(state)
+                )
+        if section is not None:
+            task["revision"] = hashlib.sha256(
+                json.dumps([(state or {}).get("_revision"), issue["updated_at"]]).encode()
+            ).hexdigest()
+        return {"task": task, **({"target": record} if record is not None else {})}
 
     def pull(self, upstream: str, state: dict) -> dict:
         number = state["pr"]
-        result = {
-            "number": number,
-            "title": "",
-            "branch": state.get("branch") or "",
-            "headSha": (state.get("head") or "")[:7],
-            "ci": "none",
-            "additions": 0,
-            "deletions": 0,
-            "ready": bool(state.get("handoff_ready")),
-        }
+        result = pull_summary(state)
         try:
             pull = self.access.get(upstream, f"pulls/{number}")
             result |= {
@@ -284,6 +345,20 @@ class Tasks:
         except (NotFound, KeyError, TypeError):
             pass
         return result
+
+
+def pull_summary(state: dict) -> dict:
+    """Checkpoint-backed PR identity; live CI and line counts are initially unknown."""
+    return {
+        "number": state["pr"],
+        "title": "",
+        "branch": state.get("branch") or "",
+        "headSha": (state.get("head") or "")[:7],
+        "ci": "unknown",
+        "additions": None,
+        "deletions": None,
+        "ready": bool(state.get("handoff_ready")),
+    }
 
 
 HARNESS_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
@@ -354,20 +429,25 @@ def summary(repository: str, issue: dict, mode: str) -> dict:
     }
 
 
-def project(state: dict, config: dict, repository: str, issue: dict) -> dict:
+def project(state: dict, config: dict, repository: str, issue: dict, section: str | None = None) -> dict:
+    """Project summary metadata and only the requested phase evidence."""
     stage = state.get("stage") or "intake"
-    plans = plan_versions(state, issue["updated_at"])
+    plans = (
+        plan_versions(state, issue["updated_at"], metadata_only=section == "design")
+        if section in (None, "plan", "design")
+        else []
+    )
     task = {
         "stage": stage,
         "atStage": parked_at(state),
         "mode": state.get("mode") or "manual",
         "alert": alert(stage, state),
-        "intake": intake_rounds(state),
+        "intake": intake_rounds(state) if section in (None, "intake") else [],
         "plans": plans,
         "approvedPlanId": (state.get("approval") or {}).get("plan"),
-        "designReview": design_reviews(state),
-        "rounds": review_rounds(state),
-        "findings": findings(state),
+        "designReview": design_reviews(state) if section in (None, "design") else [],
+        "rounds": review_rounds(state) if section in (None, "review", "handoff") else [],
+        "findings": findings(state) if section in (None, "review", "handoff") else [],
         "budgets": {
             "modelCalls": {"used": state.get("calls", 0), "max": config.get("max_model_calls", 48)},
             "fixRounds": {"used": state.get("round", 0), "max": config.get("max_fix_rounds", 2)},
@@ -376,8 +456,12 @@ def project(state: dict, config: dict, repository: str, issue: dict) -> dict:
                 "max": config.get("max_plan_revisions", 2) + state.get("plan_revision_extra", 0),
             },
         },
-        "timeline": timeline(state, repository, issue),
+        "timeline": timeline(state, repository, issue) if section in (None, "timeline") else [],
     }
+    if "_phaseRecords" in state:
+        task["phaseRecords"] = state["_phaseRecords"]
+    if state.get("plan_id"):
+        task["currentPlan"] = {"id": state["plan_id"]}
     questions = open_questions(state)
     if questions:
         task["question"] = questions
@@ -405,7 +489,7 @@ def parked_at(state: dict) -> str:
             return candidate
     if stage in ("merged", "observed_merged"):
         return "gates"
-    return "plan" if state.get("plan") else "intake"
+    return "plan" if state.get("plan") or state.get("plan_id") else "intake"
 
 
 def alert(stage: str, state: dict) -> dict:
@@ -454,26 +538,27 @@ def item_text(item) -> str:
     return str(item)
 
 
-def plan_versions(state: dict, at: str) -> list[dict]:
-    """Distinct historical plans (summaries only), then the current plan in full."""
+def plan_versions(state: dict, at: str, *, metadata_only: bool = False) -> list[dict]:
+    """Historical plan summaries and the current plan, or identities for design-review labels."""
     versions = {}
     for n, entry in enumerate(state.get("design_history") or [], start=1):
         plan_id = entry.get("plan") or f"g{n}"
         versions[plan_id] = {
             "id": plan_id,
             "createdAt": at,
-            "summary": entry.get("summary", ""),
-            "body": entry.get("summary", ""),
+            "summary": "" if metadata_only else entry.get("summary", ""),
+            "body": "" if metadata_only else entry.get("summary", ""),
         }
     plan = state.get("plan")
-    if isinstance(plan, dict):
+    if isinstance(plan, dict) or metadata_only and state.get("plan_id"):
+        plan = plan or {}
         plan_id = state.get("plan_id") or "current"
         versions.pop(plan_id, None)
         versions[plan_id] = {
             "id": plan_id,
             "createdAt": at,
             "summary": plan.get("headline") or (plan.get("summary") or "")[:200],
-            "body": plan_markdown(plan),
+            "body": "" if metadata_only else plan_markdown(plan),
         }
     return [{**plan, "version": n} for n, plan in enumerate(versions.values(), start=1)]
 

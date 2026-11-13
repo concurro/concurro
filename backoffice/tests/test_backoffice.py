@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -121,6 +122,26 @@ class SignInTests(unittest.TestCase):
             "/api/tasks/up/project/7/commands", json={"command": "merge"}, headers={app_module.CSRF_HEADER: "1"}
         )
         self.assertEqual(unknown.status_code, 422)
+
+
+class SectionTests(unittest.TestCase):
+    """Issue sections share normal authentication and dispatch only the requested read."""
+
+    def test_section_endpoint_requires_sign_in_and_selects_one_section(self):
+        """Neither unauthenticated requests nor section routing fall back to a full task read."""
+        sessions = Sessions()
+        client = TestClient(
+            app_module.create_app(settings("https://host.invalid"), oauth=FakeOAuth(), sessions=sessions)
+        )
+        path = "/api/tasks/up/project/7/sections/summary"
+        with patch.object(tasks_module.Tasks, "task_view", return_value={"task": {"title": "summary"}}) as view:
+            self.assertEqual(client.get(path).status_code, 401)
+            view.assert_not_called()
+            client.cookies.set(app_module.SESSION_COOKIE, sessions.create("token", USER, 60))
+            self.assertEqual(client.get(path).json(), {"task": {"title": "summary"}})
+            view.assert_called_once_with("up/project", 7, "summary")
+            client.get(path.replace("summary", "pull"))
+            view.assert_called_with("up/project", 7, "pull")
 
 
 class SettingsTests(unittest.TestCase):

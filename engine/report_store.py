@@ -316,8 +316,8 @@ def record_json(value):
     return json.dumps(value, sort_keys=True, indent=2)
 
 
-def restore(state, refs, store):
-    """Hydrate verified state references without changing slot or overlap validation."""
+def restore(state, refs, store, *, fields=None):
+    """Validate reference slots and hydrate all evidence, or selected roots for read-only views."""
     if not isinstance(refs, list):
         raise ValueError()
     seen = set()
@@ -346,6 +346,8 @@ def restore(state, refs, store):
             raise ValueError()
         seen.add(path)
         parent, slot = graft_slot(state, path, ValueError())
+        if fields is not None and path[0] not in fields:
+            continue
         value = (
             store.restore_history(ref["digest"], ref["history"])
             if "history" in ref
