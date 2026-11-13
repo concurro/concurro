@@ -1,24 +1,15 @@
-"""Recorded turns as the overview's activity feed and a target's Actions runs.
+"""The overview's activity feed: what the service's recorded turns did, newest event first.
 
-Both read the service's diagnostics rows only (`backoffice.turns.Diagnostics.recent`), so neither
-calls GitHub: a target's run list names the runs the service recorded for its turns, and the feed
-reports what those turns did. Run status comes from the recorded turn, not from a fresh Actions read.
+Rows come from `backoffice.turns.Diagnostics.recent`, so the feed reads no GitHub. A target's
+Actions runs are not derived here: `backoffice.runs.Runs.for_target` reads GitHub for their status.
 """
 
 import json
 
-from .turns import ROLES, STAGES, iso
+from .turns import STAGES, iso
 
-# Turn outcomes as the frontend's `ActionsRun.status`; a turn with no outcome yet is queued or running.
-RUN_STATUS = {
-    "ok": "success",
-    "failed": "failure",
-    "uncertain": "failure",
-    "lost": "failure",
-    "timed_out": "failure",
-    "terminated": "cancelled",
-    "queue_expired": "cancelled",
-}
+# A recorded status that ends a turn without an outcome: the runner stopped reporting.
+UNSETTLED = {"lost": ("stopped reporting on", "danger"), "cancelled": ("had its runner end", "warning")}
 # How each outcome reads in the feed, and the tone it carries.
 OUTCOME_TEXT = {
     "ok": ("finished", "success"),
@@ -30,7 +21,6 @@ OUTCOME_TEXT = {
     "queue_expired": ("expired in the queue", "warning"),
 }
 ACTIVITY_ITEMS = 12
-TARGET_RUNS = 50
 
 
 def actor(row) -> str:
@@ -39,19 +29,13 @@ def actor(row) -> str:
     return agent.get("profile") or row["provider"] or "concurro"
 
 
-def role(row) -> str:
-    """The role the stage assigns, for feed text; unmapped stages read as themselves."""
-    return ROLES.get(row["stage"], STAGES.get(row["stage"], row["stage"]))
-
-
-def assignment(row) -> tuple[int, int] | None:
-    """The `(run_id, attempt)` the service recorded for this turn, when it recorded one."""
-    assigned = json.loads(row["runner"]) if row["runner"] else None
-    identity = assigned.get("run_id") if isinstance(assigned, dict) else None
-    if not isinstance(identity, str):
-        return None
-    run, _, attempt = identity.partition("/")
-    return (int(run), int(attempt)) if run.isdigit() and attempt.isdigit() else None
+def event(row) -> tuple[str, str]:
+    """What the turn did and the tone it carries; a lost runner is never still running."""
+    if row["outcome"]:
+        return OUTCOME_TEXT.get(row["outcome"], (f"ended as {row['outcome']}", "warning"))
+    if row["status"] in UNSETTLED:
+        return UNSETTLED[row["status"]]
+    return ("is running", "neutral") if row["started"] else ("is queued", "neutral")
 
 
 def feed(rows, limit: int = ACTIVITY_ITEMS) -> list[dict]:
@@ -59,10 +43,7 @@ def feed(rows, limit: int = ACTIVITY_ITEMS) -> list[dict]:
     items = []
     for row in rows[:limit]:
         owner, _, repo = row["repository"].partition("/")
-        outcome = row["outcome"] or ""
-        text, tone = OUTCOME_TEXT.get(
-            outcome, ("is running", "neutral") if row["started"] else ("is queued", "neutral")
-        )
+        text, tone = event(row)
         items.append(
             {
                 "id": row["id"],
@@ -74,31 +55,3 @@ def feed(rows, limit: int = ACTIVITY_ITEMS) -> list[dict]:
             }
         )
     return items
-
-
-def runs(rows, limit: int = TARGET_RUNS) -> list[dict]:
-    """The Actions runs recorded for these turns, newest first; turns without one are left out."""
-    found = []
-    for row in rows:
-        identity = assignment(row)
-        if identity is None:
-            continue
-        run, attempt = identity
-        elapsed = row["elapsed_seconds"]
-        if row["finished"] and row["started"]:
-            elapsed = row["finished"] - row["started"]
-        found.append(
-            {
-                "id": run,
-                "attempt": attempt,
-                "title": f"{role(row)} turn {row['turn']}",
-                "status": RUN_STATUS.get(row["outcome"] or "", "in_progress" if row["started"] else "queued"),
-                "issue": row["issue"],
-                "turn": row["turn"],
-                "startedAt": iso(row["started"] or row["submitted"]),
-                "durationS": round(elapsed) if elapsed else 0,
-            }
-        )
-        if len(found) == limit:
-            break
-    return found

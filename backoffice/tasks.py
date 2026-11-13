@@ -21,6 +21,7 @@ from vocab import Stage
 from . import activity
 from .auth import User
 from .github import Access
+from .runs import TARGET_RUNS, Runs
 from .settings import Settings
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
@@ -37,6 +38,7 @@ COMMANDS = ("start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
+EMPTY_RUNS = {"runs": [], "message": None}
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
 
 
@@ -203,8 +205,10 @@ class Tasks:
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        runs = activity.runs(self.recorded(target.issue_repositories, activity.TARGET_RUNS * 2))
-        return {"target": record, "tasks": self.listed(target, record), "runs": runs}
+        rows = self.recorded(target.issue_repositories, TARGET_RUNS * 4)
+        found = Runs(self.access.transport(target.fork), target.fork).for_target(rows) if rows else EMPTY_RUNS
+        tasks = self.listed(target, record)
+        return {"target": record, "tasks": tasks, "runs": found["runs"], "runsMessage": found["message"]}
 
     def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
         """The newest recorded turns of these repositories; none without a diagnostics directory."""

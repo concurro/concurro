@@ -1,4 +1,4 @@
-"""Recorded turns become the overview's feed and a target's run list, without reading GitHub."""
+"""Recorded turns become the overview's feed; a target's runs come from GitHub, attributed to them."""
 
 import sys
 import tempfile
@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_backoffice import USER, settings  # noqa: E402
 
 from backoffice import activity  # noqa: E402
+from backoffice.runs import Runs  # noqa: E402
 from backoffice.tasks import Tasks  # noqa: E402
 from backoffice.turns import Diagnostics  # noqa: E402
+from github import Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
 from service.targets import Target  # noqa: E402
 
@@ -29,14 +31,27 @@ class ActivityTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.diagnostics = Diagnostics(self.root)
 
-    def record(self, identifier, repository, issue, stage, *, outcome=None, run_id=None, started=True, agent="opus"):
+    def record(
+        self,
+        identifier,
+        repository,
+        issue,
+        stage,
+        *,
+        outcome=None,
+        run_id=None,
+        started=True,
+        agent="opus",
+        status="running",
+        session=SESSION,
+    ):
         """Record one turn the way the worker does: submitted, observed, then finished."""
         self.clock[0] += 60
         request = {"stage": stage, "provider": "anthropic", "agent": {"profile": agent}}
         self.store.submitted(identifier, {"request": request}, {"repository": repository, "issue": issue})
-        runner = {"session": SESSION, "run_id": run_id} if run_id else None
+        runner = {"session": session, "run_id": run_id} if run_id else None
         timing = {"created": self.clock[0], "started": self.clock[0] + 5 if started else None}
-        self.store.observed(identifier, "running", timing, [SESSION], runner)
+        self.store.observed(identifier, status, timing, [session], runner)
         if outcome:
             self.store.finished(identifier, {"outcome": outcome, "elapsed_seconds": 999})
             self.store.db.execute("UPDATE turns SET finished = ? WHERE id = ?", (self.clock[0] + 35, identifier))
@@ -65,28 +80,108 @@ class ActivityTests(unittest.TestCase):
         [item] = activity.feed(self.diagnostics.recent(["up/project"], 5))
         self.assertEqual(item["text"], "is queued the plan turn")
 
-    def test_runs_list_recorded_assignments_with_their_turn_numbers(self):
-        self.record("t1", "up/project", 7, "intake", outcome="ok", run_id="77/1")
-        self.record("t2", "up/project", 7, "develop", outcome="failed", run_id="78/2")
-        self.record("t3", "up/project", 7, "review")
-        rows = self.diagnostics.recent(["up/project"], 10)
-        runs = activity.runs(rows)
-        self.assertEqual([(r["id"], r["attempt"], r["turn"]) for r in runs], [(78, 2, 2), (77, 1, 1)])
+    def test_a_lost_runner_never_reads_as_still_running(self):
+        """A job-bound turn whose runner vanished is recorded as lost with no outcome."""
+        self.record("t1", "up/project", 7, "develop", status="lost")
+        self.record("t2", "up/project", 8, "review", status="cancelled")
+        feed = activity.feed(self.diagnostics.recent(["up/project"], 5))
         self.assertEqual(
-            [(r["title"], r["status"]) for r in runs], [("implementer turn 2", "failure"), ("triage turn 1", "success")]
+            [(item["text"], item["tone"]) for item in feed],
+            [("had its runner end the review turn", "warning"), ("stopped reporting on the implement turn", "danger")],
         )
-        self.assertEqual([r["issue"] for r in runs], [7, 7])
-        self.assertEqual(runs[0]["durationS"], 30, "recorded timings win over the reported elapsed seconds")
-        self.assertEqual(activity.runs(rows, limit=1), runs[:1])
 
-    def test_turn_numbers_count_within_each_task(self):
-        self.record("t1", "up/project", 7, "intake", outcome="ok", run_id="1/1")
-        self.record("t2", "owner/project", 9, "intake", outcome="ok", run_id="2/1")
-        self.record("t3", "up/project", 7, "plan", outcome="ok", run_id="3/1")
-        rows = self.diagnostics.recent(["up/project", "owner/project"], 10)
-        self.assertEqual({r["id"]: r["turn"] for r in activity.runs(rows)}, {1: 1, 2: 1, 3: 2})
+    def test_the_feed_leads_with_the_newest_event_not_the_newest_submission(self):
+        """A long turn that just finished outranks a turn submitted after it."""
+        self.record("slow", "up/project", 7, "develop")
+        self.record("quick", "up/project", 8, "review", outcome="ok")
+        self.clock[0] += 600
+        self.store.finished("slow", {"outcome": "ok", "elapsed_seconds": 600})
+        self.store.db.execute("UPDATE turns SET finished = ? WHERE id = ?", (self.clock[0], "slow"))
+        self.assertEqual(
+            [item["id"] for item in activity.feed(self.diagnostics.recent(["up/project"], 5))], ["slow", "quick"]
+        )
+        self.assertEqual([row["id"] for row in self.diagnostics.recent(["up/project"], 1)], ["slow"])
 
-    def test_views_carry_the_feed_and_runs_without_a_github_read(self):
+    def runs(self, listed, rows=None, reader=None):
+        """`for_target` over a fake Actions listing, recording the request paths."""
+        self.paths = []
+
+        def request(method, path):
+            self.paths.append(path)
+            if reader:
+                return reader(path)
+            return {"workflow_runs": listed}
+
+        return Runs(Mock(request=request), "owner/project").for_target(
+            rows if rows is not None else self.diagnostics.recent(["up/project"], 20)
+        )
+
+    def listed_run(self, identifier, session=SESSION, **extra):
+        return {
+            "id": identifier,
+            "run_attempt": 1,
+            "head_branch": "concurro/runs/" + session,
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-11-13T12:00:00Z",
+            "updated_at": "2026-11-13T12:04:00Z",
+            **extra,
+        }
+
+    def test_one_run_serving_several_turns_is_listed_once(self):
+        """A session runs several turns, so its run must not appear once per turn."""
+        self.record("t1", "up/project", 7, "plan", outcome="ok", run_id="77/1")
+        self.record("t2", "up/project", 7, "plan", outcome="ok", run_id="77/1")
+        found = self.runs([self.listed_run(77)])
+        self.assertEqual([run["id"] for run in found["runs"]], [77])
+        [run] = found["runs"]
+        self.assertEqual((run["title"], run["turn"]), ("planner turns 1–2", 1))
+        self.assertEqual(run["task"], {"owner": "up", "repo": "project", "issue": 7})
+        self.assertIsNone(found["message"])
+
+    def test_status_and_duration_come_from_github_not_from_the_turn(self):
+        """A finished turn on a still-running run reads as running, with no invented duration."""
+        self.record("t1", "up/project", 7, "develop", outcome="ok", run_id="77/1")
+        running = self.listed_run(77, status="in_progress", conclusion=None)
+        [run] = self.runs([running])["runs"]
+        self.assertEqual((run["status"], run["durationS"]), ("in_progress", 0))
+        self.assertEqual(run["startedAt"], "2026-11-13T12:00:00Z")
+        for conclusion, status in (
+            ("success", "success"),
+            ("failure", "failure"),
+            ("cancelled", "cancelled"),
+            ("timed_out", "failure"),
+        ):
+            with self.subTest(conclusion=conclusion):
+                [run] = self.runs([self.listed_run(77, conclusion=conclusion)])["runs"]
+                self.assertEqual((run["status"], run["durationS"]), (status, 240))
+        [run] = self.runs([self.listed_run(77, status="queued", conclusion=None)])["runs"]
+        self.assertEqual(run["status"], "queued")
+
+    def test_a_fork_task_keeps_its_own_repository(self):
+        """Issues may live on the fork; the run must link to the repository that holds them."""
+        self.record("t1", "owner/project", 9, "intake", outcome="ok", run_id="78/1")
+        rows = self.diagnostics.recent(["owner/project"], 5)
+        [run] = self.runs([self.listed_run(78)], rows=rows)["runs"]
+        self.assertEqual(run["task"], {"owner": "owner", "repo": "project", "issue": 9})
+
+    def test_runs_without_a_recorded_turn_and_failed_listings(self):
+        """Unrelated or forgotten runs are left out; a refused listing says so instead of looking empty."""
+        self.record("t1", "up/project", 7, "intake", outcome="ok", run_id="77/1")
+        found = self.runs([self.listed_run(77), self.listed_run(99, session="00000000-0000-0000-0000-000000000000")])
+        self.assertEqual([run["id"] for run in found["runs"]], [77])
+        self.assertIn("event=workflow_dispatch", self.paths[0])
+        failed = self.runs([], reader=Mock(side_effect=Transient("throttled", 30)))
+        self.assertEqual(failed["runs"], [])
+        self.assertIn("could not be loaded", failed["message"])
+
+    def test_a_run_is_matched_by_its_session_when_no_identity_was_recorded(self):
+        """Older rows record only the session; its branch still identifies the run."""
+        self.record("t1", "up/project", 7, "review")
+        [run] = self.runs([self.listed_run(77)])["runs"]
+        self.assertEqual((run["id"], run["turn"]), (77, 1))
+
+    def test_views_carry_the_feed_and_the_targets_runs(self):
         self.record("t1", "up/project", 7, "develop", outcome="ok", run_id="77/1")
         target = Target("up/project", "up/project", "upstream")
         access = Mock()
@@ -95,11 +190,13 @@ class ActivityTests(unittest.TestCase):
         access.pull_requests.return_value = []
         access.config.return_value = ({"repository": "up/project"}, "main")
         access.writable.return_value = True
+        access.transport.return_value = Mock(request=lambda method, path: {"workflow_runs": [self.listed_run(77)]})
         reader = Tasks(settings(targets=(target,)), access, USER, self.diagnostics)
         overview = reader.overview()
         self.assertEqual([item["id"] for item in overview["activity"]], ["t1"])
         view = reader.target_view("up/project")
         self.assertEqual([run["id"] for run in view["runs"]], [77])
+        self.assertIsNone(view["runsMessage"])
         self.assertEqual(reader.recorded(["up/project"]), self.diagnostics.recent(["up/project"], 12))
 
     def test_without_a_diagnostics_directory_both_lists_are_empty(self):
@@ -112,7 +209,9 @@ class ActivityTests(unittest.TestCase):
         access.writable.return_value = True
         reader = Tasks(settings(targets=(target,)), access, USER)
         self.assertEqual(reader.overview()["activity"], [])
-        self.assertEqual(reader.target_view("up/project")["runs"], [])
+        view = reader.target_view("up/project")
+        self.assertEqual((view["runs"], view["runsMessage"]), ([], None))
+        access.transport.assert_not_called()
         self.assertEqual(Diagnostics(None).recent(["up/project"], 5), [])
         self.assertEqual(Diagnostics(self.root).recent([], 5), [])
 

@@ -60,7 +60,8 @@ class Diagnostics:
                 "SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
                 "(PARTITION BY repository, issue ORDER BY submitted, id) AS turn FROM turns "
                 f"WHERE repository IN ({','.join('?' * len(repositories))})) "
-                "ORDER BY submitted DESC, id DESC LIMIT ?",
+                # Newest by what the feed shows, so a long turn that just finished leads it.
+                "ORDER BY coalesce(finished, started, submitted) DESC, id DESC LIMIT ?",
                 (*repositories, limit),
             ).fetchall()
         finally:
