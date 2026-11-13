@@ -49,8 +49,28 @@ class Diagnostics:
         finally:
             db.close()
 
+    def for_sessions(self, repositories, sessions) -> list:
+        """Every recorded turn of these repositories that ran on one of these runner sessions.
+
+        Attribution must not depend on a recency window: a run GitHub still lists can be older
+        than any fixed number of recent turns.
+        """
+        sessions = [s for s in dict.fromkeys(sessions) if isinstance(s, str) and s]
+        if not sessions:
+            return []
+        # `runner_sessions` is a JSON array of session strings; match one element exactly.
+        clause = " OR ".join(["runner_sessions LIKE ?"] * len(sessions))
+        return self.query(repositories, f"({clause})", [f'%"{session}"%' for session in sessions])
+
     def recent(self, repositories, limit: int) -> list:
         """The newest turns across several repositories, each row carrying its per-task turn number."""
+        # Newest by what the feed shows, so a long turn that just finished leads it.
+        return self.query(
+            repositories, "1", [], order="coalesce(finished, started, submitted) DESC, id DESC", limit=limit
+        )
+
+    def query(self, repositories, condition: str, values: list, order: str = "turn", limit: int | None = None) -> list:
+        """Recorded turns of these repositories, each row carrying its per-task turn number."""
         repositories = list(dict.fromkeys(repositories))
         if not self.root or not repositories or not (self.root / diagnostics.DATABASE).exists():
             return []
@@ -60,9 +80,8 @@ class Diagnostics:
                 "SELECT * FROM (SELECT *, ROW_NUMBER() OVER "
                 "(PARTITION BY repository, issue ORDER BY submitted, id) AS turn FROM turns "
                 f"WHERE repository IN ({','.join('?' * len(repositories))})) "
-                # Newest by what the feed shows, so a long turn that just finished leads it.
-                "ORDER BY coalesce(finished, started, submitted) DESC, id DESC LIMIT ?",
-                (*repositories, limit),
+                f"WHERE {condition} ORDER BY {order}" + (" LIMIT ?" if limit is not None else ""),
+                (*repositories, *values, *([limit] if limit is not None else [])),
             ).fetchall()
         finally:
             db.close()

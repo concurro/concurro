@@ -14,11 +14,11 @@ from backoffice import activity  # noqa: E402
 from backoffice.runs import Runs  # noqa: E402
 from backoffice.tasks import Tasks  # noqa: E402
 from backoffice.turns import Diagnostics  # noqa: E402
-from github import Transient  # noqa: E402
+from github import NotFound, Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
 from service.targets import Target  # noqa: E402
 
-SESSION = "12345678-1234-1234-1234-1234567890"
+SESSION = "12345678-1234-1234-1234-123456789abc"
 
 
 class ActivityTests(unittest.TestCase):
@@ -102,19 +102,26 @@ class ActivityTests(unittest.TestCase):
         )
         self.assertEqual([row["id"] for row in self.diagnostics.recent(["up/project"], 1)], ["slow"])
 
-    def runs(self, listed, rows=None, reader=None):
-        """`for_target` over a fake Actions listing, recording the request paths."""
-        self.paths = []
+    def runs(self, listed, repositories=("up/project",), reader=None, attempts=None):
+        """`for_target` over a fake Actions listing, recording the request paths and lookups."""
+        self.paths, self.asked = [], []
 
         def request(method, path):
             self.paths.append(path)
             if reader:
                 return reader(path)
+            if "/attempts/" in path:
+                found = (attempts or {}).get(path)
+                if found is None:
+                    raise NotFound("attempt not found")
+                return found
             return {"workflow_runs": listed}
 
-        return Runs(Mock(request=request), "owner/project").for_target(
-            rows if rows is not None else self.diagnostics.recent(["up/project"], 20)
-        )
+        def lookup(sessions):
+            self.asked.append(sorted(sessions))
+            return self.diagnostics.for_sessions(repositories, sessions)
+
+        return Runs(Mock(request=request), "owner/project").for_target(lookup)
 
     def listed_run(self, identifier, session=SESSION, **extra):
         return {
@@ -161,19 +168,62 @@ class ActivityTests(unittest.TestCase):
     def test_a_fork_task_keeps_its_own_repository(self):
         """Issues may live on the fork; the run must link to the repository that holds them."""
         self.record("t1", "owner/project", 9, "intake", outcome="ok", run_id="78/1")
-        rows = self.diagnostics.recent(["owner/project"], 5)
-        [run] = self.runs([self.listed_run(78)], rows=rows)["runs"]
+        [run] = self.runs([self.listed_run(78)], repositories=("owner/project",))["runs"]
         self.assertEqual(run["task"], {"owner": "owner", "repo": "project", "issue": 9})
 
-    def test_runs_without_a_recorded_turn_and_failed_listings(self):
-        """Unrelated or forgotten runs are left out; a refused listing says so instead of looking empty."""
+    def test_a_run_with_no_recorded_turn_is_still_listed(self):
+        """Dropping unmatched runs hid real runs and could make a busy fork read as empty."""
         self.record("t1", "up/project", 7, "intake", outcome="ok", run_id="77/1")
-        found = self.runs([self.listed_run(77), self.listed_run(99, session="00000000-0000-0000-0000-000000000000")])
-        self.assertEqual([run["id"] for run in found["runs"]], [77])
+        other = "00000000-0000-0000-0000-000000000000"
+        found = self.runs([self.listed_run(77), self.listed_run(99, session=other)])
+        self.assertEqual([run["id"] for run in found["runs"]], [77, 99])
+        unmatched = found["runs"][1]
+        self.assertEqual((unmatched["task"], unmatched["turn"], unmatched["association"]), (None, None, None))
+        self.assertEqual(unmatched["title"], "Executor run")
         self.assertIn("event=workflow_dispatch", self.paths[0])
+        self.assertEqual(self.asked, [sorted([SESSION, other])], "attribution is asked only for the listed sessions")
+
+    def test_attribution_does_not_depend_on_how_recent_a_turn_is(self):
+        """A run GitHub still lists can be older than any window of recent turns."""
+        self.record("old", "up/project", 7, "intake", outcome="ok", run_id="77/1")
+        for n in range(30):
+            self.record(
+                f"n{n}", "up/project", 8, "review", outcome="ok", session=f"0000000{n:01d}-0000-0000-0000-000000000000"
+            )
+        [run] = self.runs([self.listed_run(77)])["runs"]
+        self.assertEqual(run["task"], {"owner": "up", "repo": "project", "issue": 7})
+
+    def test_failed_listings_say_so(self):
         failed = self.runs([], reader=Mock(side_effect=Transient("throttled", 30)))
         self.assertEqual(failed["runs"], [])
         self.assertIn("could not be loaded", failed["message"])
+
+    def test_a_rerun_never_lends_its_status_to_the_turns(self):
+        """Only attempt 1 can serve a session, so a failed rerun is not the turn's evidence."""
+        self.record("t1", "up/project", 7, "plan", outcome="ok", run_id="77/1")
+        rerun = self.listed_run(77, run_attempt=2, conclusion="failure")
+        first = self.listed_run(77, updated_at="2026-11-13T12:02:00Z")
+        found = self.runs([rerun], attempts={"repos/owner/project/actions/runs/77/attempts/1": first})
+        [run] = found["runs"]
+        self.assertEqual((run["status"], run["attempt"], run["durationS"]), ("success", 1, 120))
+        self.assertIn("repos/owner/project/actions/runs/77/attempts/1", self.paths)
+        unreadable = self.runs([rerun])
+        self.assertEqual(unreadable["runs"], [])
+        self.assertIn("reruns could not be read", unreadable["message"])
+        alone = self.runs([self.listed_run(99, session="00000000-0000-0000-0000-000000000000", run_attempt=2)])
+        self.assertEqual([run["attempt"] for run in alone["runs"]], [2], "an unattributed rerun needs no exact attempt")
+
+    def test_a_dispatch_that_did_not_serve_is_marked_dispatched(self):
+        """`runner_sessions` records dispatches; only the recorded assignment names the run that served."""
+        self.record(
+            "t1", "up/project", 7, "plan", outcome="ok", run_id="78/1", session="11111111-1111-1111-1111-111111111111"
+        )
+        self.record("t2", "up/project", 8, "review", outcome="ok")
+        earlier = self.runs([self.listed_run(77, session="11111111-1111-1111-1111-111111111111")])
+        self.assertEqual([(r["task"], r["association"]) for r in earlier["runs"]], [(None, None)])
+        [dispatched] = self.runs([self.listed_run(77)])["runs"]
+        self.assertEqual(dispatched["association"], "dispatched")
+        self.assertEqual(dispatched["task"], {"owner": "up", "repo": "project", "issue": 8})
 
     def test_a_run_is_matched_by_its_session_when_no_identity_was_recorded(self):
         """Older rows record only the session; its branch still identifies the run."""

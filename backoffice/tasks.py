@@ -21,7 +21,7 @@ from vocab import Stage
 from . import activity
 from .auth import User
 from .github import Access
-from .runs import TARGET_RUNS, Runs
+from .runs import Runs
 from .settings import Settings
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
@@ -205,8 +205,11 @@ class Tasks:
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        rows = self.recorded(target.issue_repositories, TARGET_RUNS * 4)
-        found = Runs(self.access.transport(target.fork), target.fork).for_target(rows) if rows else EMPTY_RUNS
+        lookup = self.diagnostics.for_sessions if self.diagnostics else None
+        found = EMPTY_RUNS
+        if lookup:
+            reader = Runs(self.access.transport(target.fork), target.fork)
+            found = reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions))
         tasks = self.listed(target, record)
         return {"target": record, "tasks": tasks, "runs": found["runs"], "runsMessage": found["message"]}
 

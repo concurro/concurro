@@ -60,17 +60,36 @@ def elapsed(run) -> int:
         return 0
 
 
+def recorded_run(row):
+    """The `(run, attempt)` the service recorded as having served this turn, if it recorded one."""
+    assigned = json.loads(row["runner"]) if row["runner"] else None
+    identity = assigned.get("run_id") if isinstance(assigned, dict) else None
+    if not isinstance(identity, str):
+        return None
+    run, _, attempt = identity.partition("/")
+    return (run, attempt) if run.isdigit() and attempt.isdigit() else None
+
+
+def sessions_of(row) -> list:
+    """Every runner session dispatched for this turn."""
+    found = json.loads(row["runner_sessions"] or "[]")
+    return [session for session in found if isinstance(session, str)]
+
+
 def served(rows) -> dict:
-    """Index recorded turns by the run and by the session they ran on."""
+    """Index recorded turns by the run that served them, and by the sessions merely dispatched.
+
+    A turn whose assignment names another run was not served by this one, however its session
+    was dispatched; keeping the two apart preserves the distinction `for_turn` already makes.
+    """
     by_run, by_session = {}, {}
     for row in rows:
-        for session in json.loads(row["runner_sessions"] or "[]"):
-            if isinstance(session, str):
-                by_session.setdefault(session, []).append(row)
-        assigned = json.loads(row["runner"]) if row["runner"] else None
-        identity = assigned.get("run_id") if isinstance(assigned, dict) else None
-        if isinstance(identity, str):
-            by_run.setdefault(identity.partition("/")[0], []).append(row)
+        identity = recorded_run(row)
+        if identity:
+            by_run.setdefault(identity[0], []).append(row)
+            continue
+        for session in sessions_of(row):
+            by_session.setdefault(session, []).append(row)
     return {"run": by_run, "session": by_session}
 
 
@@ -125,45 +144,71 @@ class Runs:
             messages.append("No Actions run identity was recorded for this turn.")
         return {"runs": runs, "message": " ".join(dict.fromkeys(messages)) or None}
 
-    def for_target(self, rows, limit=TARGET_RUNS):
+    def for_target(self, lookup, limit=TARGET_RUNS):
         """GitHub's own recent executor runs, attributed to the turns the service recorded for them.
 
-        One run serves every turn of its session, so each run appears once. Status and elapsed time
-        are GitHub's; the turns only supply the task each run belongs to.
+        `lookup(sessions)` supplies the recorded turns of those runner sessions, so attribution
+        never depends on how recent a turn is. One run serves every turn of its session, so each
+        run appears once; a run with no recorded turn is still listed, without a task.
+
+        Only attempt 1 can serve a session (`gateway/exchange`), so a rerun's own status is not
+        the turns' evidence: their attempt is read exactly when the listing returns a later one.
         """
-        index = served(rows)
         try:
             query = urlencode({"event": "workflow_dispatch", "per_page": limit})
             listing = self.reader.request("GET", f"{self.root}/workflows/{EXECUTOR_WORKFLOW}/runs?{query}")
             listed = listing["workflow_runs"] if isinstance(listing.get("workflow_runs"), list) else []
         except (NotFound, Transient, RuntimeError, OSError, ValueError, KeyError, TypeError):
             return {"runs": [], "message": "Actions runs could not be loaded from GitHub."}
-        found = []
+        branches = {str(run.get("head_branch") or "").removeprefix(RUN_BRANCH_PREFIX): run for run in listed}
+        index = served(lookup([session for session in branches if DISPATCH.fullmatch(session)]))
+        found, unreadable = [], False
         for run in listed:
             session = str(run.get("head_branch") or "").removeprefix(RUN_BRANCH_PREFIX)
-            turns = index["run"].get(str(run.get("id"))) or index["session"].get(session) or []
+            turns = index["run"].get(str(run.get("id")))
+            association = "assigned" if turns else None
             if not turns:
-                continue
-            found.append(self.attributed(run, sorted(turns, key=lambda row: row["turn"])))
-        return {"runs": found, "message": None}
+                turns = index["session"].get(session)
+                association = "dispatched" if turns else None
+            served_run = run
+            if turns and run.get("run_attempt") != 1:
+                try:
+                    served_run = self.reader.request("GET", f"{self.root}/runs/{run['id']}/attempts/1")
+                except (NotFound, Transient, RuntimeError, OSError, ValueError, KeyError, TypeError):
+                    unreadable = True
+                    continue
+            found.append(self.attributed(served_run, sorted(turns or [], key=lambda row: row["turn"]), association))
+        message = (
+            "Some reruns could not be read from GitHub; their original attempts are not shown." if unreadable else None
+        )
+        return {"runs": found, "message": message}
 
-    def attributed(self, run, turns) -> dict:
-        """One listed run with the task and turn numbers it served."""
+    def attributed(self, run, turns, association) -> dict:
+        """One listed run with the task and turn numbers it served, if any turn records it."""
+        record = {
+            "id": run["id"],
+            "attempt": run.get("run_attempt"),
+            "title": "Executor run",
+            "status": run_status(run),
+            "association": association,
+            "task": None,
+            "issue": None,
+            "turn": None,
+            "startedAt": run.get("run_started_at") or run.get("created_at"),
+            "durationS": elapsed(run),
+        }
+        if not turns:
+            return record
         row = turns[0]
         numbers = [turn["turn"] for turn in turns]
         owner, _, repo = row["repository"].partition("/")
         label = ROLES.get(row["stage"], STAGES.get(row["stage"], row["stage"]))
         span = f"turn {numbers[0]}" if len(numbers) == 1 else f"turns {numbers[0]}–{numbers[-1]}"
-        return {
-            "id": run["id"],
-            "attempt": run.get("run_attempt"),
+        return record | {
             "title": f"{label} {span}",
-            "status": run_status(run),
             "task": {"owner": owner, "repo": repo, "issue": row["issue"]},
             "issue": row["issue"],
             "turn": numbers[0],
-            "startedAt": run.get("run_started_at") or run.get("created_at"),
-            "durationS": elapsed(run),
         }
 
     def record(self, run, session, association):
