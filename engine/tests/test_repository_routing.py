@@ -26,11 +26,26 @@ class RepositoryRoutingTests(unittest.TestCase):
         self.assertEqual(controller.pr_url(9), "https://github.com/source/project/pull/9")
         self.assertIs(controller.gh, issue)
 
+    def test_writer_checks_use_upstream_and_recheck_each_invocation(self):
+        """Fork-only writers cannot enroll or command tasks; upstream writers need no fork permission."""
+        config = {**deepcopy(CONFIG), "upstream": "source/project", "fork": "owner/project"}
+        issue, upstream, fork = (FakeGitHub(config) for _ in range(3))
+        for permitted in (False, True, False):
+            upstream.authorized = permitted
+            issue.authorized = fork.authorized = not permitted
+            controller = Controller(issue, FakeAgents(), config, target_root=TARGET, code=fork, pulls=upstream)
+            controller.issue = issue.issue
+            with patch.object(upstream, "permitted", wraps=upstream.permitted) as check:
+                self.assertEqual(controller.permitted("writer"), permitted)
+                self.assertEqual(bool(controller.enrollment()), permitted)
+                check.assert_called_once_with("writer")
+
     def test_fork_draft_pr_recovers_then_becomes_ready_upstream(self):
         """Separate issue artifacts, fork objects and upstream PR writes survive a lost PR response."""
         config = {**deepcopy(CONFIG), "upstream": "source/project", "fork": "owner/project", "autonomous": False}
         issue, upstream, fork = (FakeGitHub(config) for _ in range(3))
         upstream.publication_source = fork
+        issue.authorized = fork.authorized = False
         agents = FakeAgents()
 
         def tick():

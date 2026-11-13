@@ -18,8 +18,8 @@ from service.transport import StaticCredential, Transport
 # Repository metadata as each user's token sees it, briefly.
 REPOSITORY_SECONDS = 60
 REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
-# UI command affordances only; the service authorizes every submitted command afresh.
-PERMISSIONS: dict[tuple[str, str, str], tuple[float, bool]] = {}
+# Upstream writer access for display reads; the service authorizes submitted commands afresh.
+PERMISSIONS: dict[tuple[int, int, str, str], tuple[float, bool]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 # The 100 most recently updated pull requests with line counts and their head commit's check runs.
@@ -90,9 +90,9 @@ class Access:
         REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)
         return found
 
-    def writable(self, repository: str, login: str) -> bool:
-        """Briefly cache the user's command affordance; command execution rechecks permission in the service."""
-        key = (hashlib.sha256(self.user_token.encode()).hexdigest(), repository.lower(), login)
+    def writable(self, repository: str, login: str, user_id: int) -> bool:
+        """Share a verified user's writer decision across sessions; the service rechecks every command."""
+        key = (self.identity.app_id, user_id, repository.lower(), login.lower())
         cached = PERMISSIONS.get(key)
         if cached and cached[0] > time.monotonic():
             return cached[1]

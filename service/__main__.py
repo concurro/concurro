@@ -119,7 +119,7 @@ class Daemon:
                 self.registry,
                 readers.__getitem__,
                 writers.__getitem__,
-                issue_repositories,
+                settings.targets,
             )
             if delegation_key
             else None

@@ -7,13 +7,14 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 - **Sign-in:** web flow on the **Concurro Sign-in OAuth App**, requesting no scopes, so users only
   verify their identity. One-use `state` and PKCE are bound to the starting browser by an HTTP-only
   cookie. Sessions are in memory: a restart signs everyone out. The user's token stays server-side;
-  it identifies them to the service and the vault, and decides which targets they see: a target
-  is listed only when their token can see its upstream and fork (public repositories only, with
-  no scopes).
+  it identifies them to the service and the vault. Targets are available only to users with
+  write, maintain or admin permission on the upstream repository. Their token must also see
+  both upstream and fork (public repositories only, with no scopes). Fork write access is not required.
 - **Reads** use the read-only **Concurro Backoffice GitHub App**: `service.identity.Identity` mints its
   installation tokens per repository, resolving each organization's installation, with the
-  service's read permissions. A target shows writer commands when the user has write access to its
-  fork, the same check the service applies. Task state is the engine's own audit checkpoint
+  service's read permissions. Upstream writer authorization precedes configuration, issue,
+  snapshot and diagnostic reads, including direct API requests. Writer commands use the same
+  upstream authority in the service and engine. Task state is the engine's own audit checkpoint
   (`Checkpoints.load`); lists use the `concurro` opt-in and stage labels.
   PR lists load line counts and head-commit check runs in one GraphQL query. If that fails,
   a REST listing supplies the PRs with unknown (`null`) line counts and no CI information.
@@ -76,8 +77,9 @@ configurations for that issue; closed issues remain available as historical disp
 
 The browser checks for completion while a background refresh is active and shows saved-data
 status on refresh failure. Repository visibility remains checked per user through the existing
-short-lived cache. UI writer hints are also cached for 60 seconds; the service still authorizes
-every command with a fresh permission check. Commands read live checkpoint state where needed.
+short-lived cache. Upstream writer decisions, including denials, are cached for 60 seconds
+across sessions of the same verified user and Reader App. The service still authorizes every
+command with a fresh permission check. Commands read live checkpoint state where needed.
 
 Phase readers still verify and hydrate their selected evidence using the engine reader. A phase
 whose cached pointer no longer matches a mutable audit refreshes the shared snapshot before

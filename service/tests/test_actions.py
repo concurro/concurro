@@ -5,6 +5,7 @@ import json
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import fixtures  # initializes the service and engine test paths
 
@@ -14,9 +15,11 @@ import delegation
 from controller import Outcome
 from github import NotFound
 from service import actions, ingress, transport
+from service.targets import Target
 
 KEY = b"k" * 32
 REPOSITORY = "up/project"
+
 TOKEN = "Bearer user-token"
 
 
@@ -74,7 +77,7 @@ class ActionsTests(unittest.TestCase):
             self.registry,
             lambda repository: self.reader,
             lambda repository: self.writer,
-            [REPOSITORY],
+            [Target(REPOSITORY, REPOSITORY, "both")],
             user=self.users.get,
             clock=lambda: 100.0,
         )
@@ -105,6 +108,34 @@ class ActionsTests(unittest.TestCase):
         self.registry.scheduled.add(TASK)
         self.assertEqual(self.request(command="stop", argument=None)[0], 201)
         self.assertEqual((self.registry.queued, self.observed()), ([], [TASK]))
+
+    def test_upstream_authority_applies_to_both_issue_destinations(self):
+        """Upstream-only writers may command fork tasks; fork-only writers cannot command either destination."""
+        target = Target(REPOSITORY, "fork/project", "both")
+        upstream = Mock(wraps=Reader({"writer": "write", "reader": "read"}))
+        fork = Mock(wraps=Reader({"writer": "read", "reader": "write"}))
+        handler = actions.Actions(
+            KEY,
+            self.registry,
+            {target.upstream: upstream, target.fork: fork}.__getitem__,
+            lambda repository: self.writer,
+            [target],
+            user=self.users.get,
+        )
+        for repository in target.issue_repositories:
+            body = json.dumps({"repository": repository.upper(), "issue": 7, "command": "stop"}).encode()
+            self.assertEqual(handler.handle(TOKEN, body)[0], 201)
+            self.assertEqual(self.writer.posts[-1][1], f"repos/{repository}/issues/7/comments")
+            count = len(self.writer.posts)
+            status, payload = handler.handle("Bearer reader-token", body)
+            self.assertEqual(status, 403)
+            self.assertIn(target.upstream, payload["error"])
+            self.assertEqual(len(self.writer.posts), count)
+        fork.request.assert_not_called()
+        self.assertEqual(upstream.request.call_count, 4)
+        upstream.request.return_value = {"permission": "read"}
+        self.assertEqual(handler.handle(TOKEN, body)[0], 403, "commands recheck revoked upstream permission")
+        self.assertEqual(len(self.writer.posts), 2)
 
     def test_refusals_post_nothing(self):
         cases = {
@@ -192,7 +223,7 @@ class RecoveryTests(fixtures.ServiceFixture, unittest.TestCase):
             self.registry,
             lambda repository: Reader({"writer": "write"}),
             lambda repository: SimpleNamespace(send=send),
-            [REPOSITORY],
+            [Target(REPOSITORY, REPOSITORY, "both")],
             user=lambda token: ("writer", 42),
             clock=self.clock,
         )

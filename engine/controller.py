@@ -823,9 +823,9 @@ class Controller:
         self.consuming = (operation["id"], operation["attempt"])
 
     def permitted(self, login):
-        """Cache fresh writer permissions within this invocation only."""
+        """Cache current upstream writer permissions within this invocation only."""
         if login not in self.permissions:
-            self.permissions[login] = self.gh.permitted(login)
+            self.permissions[login] = self.pulls.permitted(login)
         return self.permissions[login]
 
     def enrollment(self):

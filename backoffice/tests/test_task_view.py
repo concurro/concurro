@@ -67,6 +67,8 @@ class Connection(fixtures.WireConnection):
 class ReaderApp:
     """The Reader App's identity, with one fixed token for every repository."""
 
+    app_id = 1
+
     def credential(self, repository, kind):
         assert kind == "read"
         return StaticCredential("reader-token")
@@ -122,7 +124,8 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.assertEqual(task["plans"][-1]["id"], state["plan_id"])
         self.assertEqual(view["target"]["mode"], "manual")
         self.assertTrue(view["target"]["writer"])
-        self.assertFalse(self.tasks("reader").task_view(KEY[0], 7)["target"]["writer"], "a reader sees no commands")
+        with self.assertRaises(TaskNotFound):
+            self.tasks("reader").task_view(KEY[0], 7)
         # An unchanged checkpoint comment serves the decoded state without reading artifacts again.
         self.wire.paths.clear()
         again = self.tasks().task_view(KEY[0], 7)
@@ -242,13 +245,64 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.assertEqual(task["task"]["stage"], "planned")
         self.assertNotIn("cache", task)
 
-    def test_permission_hint_is_reused_without_crossing_users(self):
-        """Polling the summary does not repeat UI permission reads or share writer status with a reader."""
-        self.assertTrue(self.tasks().access.writable(KEY[0], "writer"))
+    def test_upstream_writer_does_not_need_fork_write(self):
+        """Upstream permission controls target access independently of the fork's collaborators."""
+        target = Target("source/project", KEY[0], "fork")
+        self.settings = replace(self.settings, targets=(target,))
+        self.wire.fixed["GET", f"repos/{target.upstream}"] = {"full_name": target.upstream}
+        self.wire.fixed["GET", f"repos/{target.upstream}/collaborators/writer/permission"] = {"permission": "write"}
+        self.wire.fixed["GET", f"repos/{target.fork}/collaborators/writer/permission"] = {"permission": "read"}
+        reader = self.tasks()
+        self.assertEqual(reader.find_target(target.fork)[0], target)
+        self.assertTrue(reader.target_record(*reader.find_target(target.upstream))["writer"])
+        self.assertFalse(any(p.startswith(f"repos/{target.fork}/collaborators/") for p in self.wire.paths))
+        # Fork write alone grants no target access, and negative decisions are cached too.
+        self.wire.fixed["GET", f"repos/{target.upstream}/collaborators/reader/permission"] = {"permission": "read"}
+        self.wire.fixed["GET", f"repos/{target.fork}/collaborators/reader/permission"] = {"permission": "write"}
         self.wire.paths.clear()
-        self.assertTrue(self.tasks().access.writable(KEY[0], "writer"))
+        for _ in range(3):
+            self.assertEqual(self.tasks("reader").overview(), {"targets": [], "tasks": [], "activity": []})
+            with self.assertRaises(TaskNotFound):
+                self.tasks("reader").find_target(target.fork)
+        self.assertEqual(self.wire.paths, [f"repos/{target.upstream}/collaborators/reader/permission"])
+
+    def test_warm_snapshot_cannot_bypass_upstream_writer_gate(self):
+        """A summary populated by a writer stays inaccessible to a different non-writer account."""
+        self.large_checkpoint()
+        with tempfile.TemporaryDirectory() as root:
+            cache = ReadCache(Path(root))
+            try:
+                self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+                self.wire.paths.clear()
+                with self.assertRaises(TaskNotFound):
+                    self.tasks("reader", read_cache=cache).task_view(KEY[0], 7, "summary")
+                self.assertEqual(self.wire.paths, [f"repos/{KEY[0]}/collaborators/reader/permission"])
+            finally:
+                cache.close()
+
+    def test_writer_gate_reuses_sessions_but_isolates_users_and_apps(self):
+        """Sessions share permission checks, while other users, Apps and expired grants are rechecked."""
+        self.assertTrue(self.tasks().access.writable(KEY[0], "writer", 1))
+        self.wire.paths.clear()
+        self.assertTrue(self.tasks().access.writable(KEY[0], "writer", 1))
         self.assertEqual(self.wire.paths, [])
-        self.assertFalse(self.tasks("reader").access.writable(KEY[0], "reader"))
+        self.assertTrue(
+            Access(ReaderApp(), "another-session-token", self.wire.connection).writable(KEY[0], "writer", 1)
+        )
+        self.assertEqual(self.wire.paths, [])
+        self.assertFalse(self.tasks("reader").access.writable(KEY[0], "reader", 1))
+        self.wire.paths.clear()
+        self.assertFalse(
+            Access(ReaderApp(), "another-session-token", self.wire.connection).writable(KEY[0], "reader", 1)
+        )
+        self.assertEqual(self.wire.paths, [], "denials also survive a new sign-in")
+        self.wire.fixed["GET", f"repos/{KEY[0]}/collaborators/writer/permission"] = {"permission": "read"}
+        self.assertFalse(Access(ReaderApp(), "new-account-token", self.wire.connection).writable(KEY[0], "writer", 2))
+        another_app = ReaderApp()
+        another_app.app_id = 2
+        self.assertFalse(Access(another_app, "user-token", self.wire.connection).writable(KEY[0], "writer", 1))
+        with patch.object(github_module.time, "monotonic", return_value=github_module.time.monotonic() + 61):
+            self.assertFalse(self.tasks().access.writable(KEY[0], "writer", 1))
 
     def test_summary_skips_hidden_evidence_and_pull_reads(self):
         """Initial display verifies only the audit, even when large phase bodies exist."""
@@ -415,7 +469,7 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
                     self.assertEqual(tokens.get(token), repository)
                     reads.append((token, path))
                     if path.endswith("/permission"):
-                        return 200, {"permission": "read"}
+                        return 200, {"permission": "write" if repository == target.upstream else "read"}
                     return 200, []
             return original(method, path, headers, body)
 
@@ -427,11 +481,15 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
             access = Access(identity, "user-token", app.connection)
             reader = Tasks(settings, access, User(1, "reader", "Reader", ""))
             self.assertEqual(reader.find_target(target.upstream)[0], target)
-            self.assertEqual({path for _, path in reads}, {f"/repos/{r}" for r in target.repositories})
-            self.assertEqual(minted, [], "visibility alone needs no installation token")
+            self.assertEqual(
+                {path for _, path in reads},
+                {f"/repos/{r}" for r in target.repositories}
+                | {f"/repos/{target.upstream}/collaborators/reader/permission"},
+            )
+            self.assertEqual(minted, [11], "upstream authorization uses only its Reader App token")
             for repository in target.repositories:
                 self.assertEqual(access.task_issues(repository), [])
-            self.assertFalse(access.writable(target.fork, "reader"))
+            self.assertFalse(access.writable(target.fork, "reader", 1))
             self.assertEqual(minted, [11, 22], "the fork's writer check reuses its read token")
             for repository in target.repositories:
                 with self.subTest(hidden=repository):
