@@ -53,14 +53,16 @@ class Diagnostics:
         """Every recorded turn of these repositories that ran on one of these runner sessions.
 
         Attribution must not depend on a recency window: a run GitHub still lists can be older
-        than any fixed number of recent turns.
+        than any fixed number of recent turns. A turn an already-running runner picked up has no
+        dispatch of its own, so the assignment is searched as well as the dispatches.
         """
         sessions = [s for s in dict.fromkeys(sessions) if isinstance(s, str) and s]
         if not sessions:
             return []
-        # `runner_sessions` is a JSON array of session strings; match one element exactly.
-        clause = " OR ".join(["runner_sessions LIKE ?"] * len(sessions))
-        return self.query(repositories, f"({clause})", [f'%"{session}"%' for session in sessions])
+        # Both columns hold JSON: an array of dispatched sessions, and the assignment object.
+        clause = " OR ".join(["runner_sessions LIKE ? OR runner LIKE ?"] * len(sessions))
+        values = [f'%"{session}"%' for session in sessions for _ in range(2)]
+        return self.query(repositories, f"({clause})", values)
 
     def recent(self, repositories, limit: int) -> list:
         """The newest turns across several repositories, each row carrying its per-task turn number."""

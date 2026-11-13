@@ -44,6 +44,7 @@ class ActivityTests(unittest.TestCase):
         agent="opus",
         status="running",
         session=SESSION,
+        dispatched=True,
     ):
         """Record one turn the way the worker does: submitted, observed, then finished."""
         self.clock[0] += 60
@@ -51,7 +52,7 @@ class ActivityTests(unittest.TestCase):
         self.store.submitted(identifier, {"request": request}, {"repository": repository, "issue": issue})
         runner = {"session": session, "run_id": run_id} if run_id else None
         timing = {"created": self.clock[0], "started": self.clock[0] + 5 if started else None}
-        self.store.observed(identifier, status, timing, [session], runner)
+        self.store.observed(identifier, status, timing, [] if dispatched is False else [session], runner)
         if outcome:
             self.store.finished(identifier, {"outcome": outcome, "elapsed_seconds": 999})
             self.store.db.execute("UPDATE turns SET finished = ? WHERE id = ?", (self.clock[0] + 35, identifier))
@@ -212,6 +213,26 @@ class ActivityTests(unittest.TestCase):
         self.assertIn("reruns could not be read", unreadable["message"])
         alone = self.runs([self.listed_run(99, session="00000000-0000-0000-0000-000000000000", run_attempt=2)])
         self.assertEqual([run["attempt"] for run in alone["runs"]], [2], "an unattributed rerun needs no exact attempt")
+
+    def test_a_turn_an_already_running_runner_picked_up_is_still_attributed(self):
+        """Only the first turn of a session is dispatched; later ones record the assignment alone."""
+        self.record("t1", "up/project", 7, "plan", outcome="ok", run_id="77/1")
+        self.record("t2", "up/project", 7, "plan", outcome="ok", run_id="77/1", dispatched=False)
+        rows = self.diagnostics.for_sessions(["up/project"], [SESSION])
+        self.assertEqual(sorted(row["id"] for row in rows), ["t1", "t2"])
+        [run] = self.runs([self.listed_run(77)])["runs"]
+        self.assertEqual((run["title"], run["association"]), ("planner turns 1–2", "assigned"))
+
+    def test_a_run_whose_turns_were_never_dispatched_keeps_its_attempt_correction(self):
+        """With no dispatch row at all, the assignment must still find the run and its attempt 1."""
+        self.record("t1", "up/project", 7, "plan", outcome="ok", run_id="77/1", dispatched=False)
+        first = self.listed_run(77, updated_at="2026-11-13T12:02:00Z")
+        rerun = self.listed_run(77, run_attempt=2, conclusion="failure")
+        found = self.runs([rerun], attempts={"repos/owner/project/actions/runs/77/attempts/1": first})
+        self.assertEqual(
+            [(r["task"], r["status"], r["attempt"]) for r in found["runs"]],
+            [({"owner": "up", "repo": "project", "issue": 7}, "success", 1)],
+        )
 
     def test_a_dispatch_that_did_not_serve_is_marked_dispatched(self):
         """`runner_sessions` records dispatches; only the recorded assignment names the run that served."""
