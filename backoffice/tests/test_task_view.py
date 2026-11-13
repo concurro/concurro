@@ -1,6 +1,8 @@
 """A task view reads the engine's own checkpoint through the Reader App's transport, end to end."""
 
+import sqlite3
 import sys
+import tempfile
 import unittest
 from copy import deepcopy
 from dataclasses import replace
@@ -19,6 +21,7 @@ from app_fakes import App  # noqa: E402
 from backoffice import github as github_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import User  # noqa: E402
 from backoffice.github import Access  # noqa: E402
+from backoffice.read_cache import ReadCache  # noqa: E402
 from backoffice.settings import Reader, Settings  # noqa: E402
 from backoffice.tasks import TaskNotFound, Tasks  # noqa: E402
 from checkpoints import MARKER, CheckpointError, Checkpoints  # noqa: E402
@@ -72,8 +75,9 @@ class ReaderApp:
 class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        for cache in (tasks_module.STATES, tasks_module.CONFIGS, github_module.REPOSITORIES):
+        for cache in (tasks_module.STATES, tasks_module.CONFIGS, github_module.REPOSITORIES, github_module.PERMISSIONS):
             cache.clear()
+        self.enterContext(patch.object(tasks_module, "REPORTS", report_store.Cache()))
         self.wire = Wire(self.backend)
         repository = KEY[0]
         self.wire.fixed["GET", f"repos/{repository}"] = {"full_name": repository, "description": "fixture"}
@@ -88,9 +92,9 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
             reader=Reader(1, Path("/unused"), targets),
         )
 
-    def tasks(self, login="writer"):
+    def tasks(self, login="writer", read_cache=None):
         access = Access(ReaderApp(), "user-token", self.wire.connection)
-        return Tasks(self.settings, access, User(1, login, login.title(), ""))
+        return Tasks(self.settings, access, User(1, login, login.title(), ""), read_cache=read_cache)
 
     def issue_listing(self):
         issue = deepcopy(self.fake.issue)
@@ -145,6 +149,106 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.fake.comment(MARKER + "\n" + "\n".join(cp.links()), self.config["bot_login"])
         self.wire.fixed["GET", f"repos/{KEY[0]}/issues/7"] = self.issue_listing()
         return cp, state
+
+    def test_persistent_summary_and_sections_share_issue_and_comment_reads(self):
+        """Restarted summaries and lazy sections reuse one persisted issue/checkpoint snapshot."""
+        self.large_checkpoint()
+        with tempfile.TemporaryDirectory() as root:
+            cache = ReadCache(Path(root))
+            try:
+                expected = self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+            finally:
+                cache.close()
+            tasks_module.STATES.clear()
+            cache = ReadCache(Path(root))
+            try:
+                self.wire.paths.clear()
+                again = self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+                self.assertEqual(again["task"], expected["task"])
+                self.assertFalse(again["cache"]["stale"])
+                self.assertEqual(self.wire.paths, [], "a fresh summary needs no repeated GitHub reads")
+                for section in ("plan", "design", "timeline"):
+                    phase = self.tasks(read_cache=cache).task_view(KEY[0], 7, section)
+                    self.assertEqual(phase["task"]["revision"], again["task"]["revision"])
+                self.assertFalse([p for p in self.wire.paths if "/comments" in p or p.endswith("issues/7")])
+                github_module.REPOSITORIES.clear()
+                self.wire.hidden_from_user.add(f"repos/{KEY[0]}")
+                with self.assertRaises(TaskNotFound):
+                    self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+            finally:
+                cache.close()
+
+    def test_phase_refreshes_summary_when_audit_advances_behind_old_comment(self):
+        """Historical checkpoint pointers cannot label newer phase evidence with an older summary revision."""
+        cp, state = self.large_checkpoint()
+        with tempfile.TemporaryDirectory() as root:
+            cache = ReadCache(Path(root))
+            try:
+                before = self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+                state["plan_id"] = "new-plan"
+                cp.save(state)
+                # Leave the dashboard comment on the verified historical audit version.
+                plan = self.tasks(read_cache=cache).task_view(KEY[0], 7, "plan")
+                after = self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+                self.assertNotEqual(before["task"]["revision"], plan["task"]["revision"])
+                self.assertEqual(plan["task"]["revision"], after["task"]["revision"])
+                self.assertEqual(after["task"]["currentPlan"]["id"], "new-plan")
+            finally:
+                cache.close()
+
+    def test_old_phase_does_not_refresh_current_issue_snapshot(self):
+        """A stale phase cache refreshes its evidence without rescanning issue metadata or comments."""
+        cp, state = self.large_checkpoint()
+        with tempfile.TemporaryDirectory() as root:
+            cache = ReadCache(Path(root))
+            try:
+                self.tasks(read_cache=cache).task_view(KEY[0], 7, "plan")
+                state["plan_id"] = "new-plan"
+                cp.save(state)
+                scope = cache.db.execute("SELECT scope FROM snapshots").fetchone()[0]
+                reader = self.tasks(read_cache=cache)
+                config = reader.task_config(reader.find_target(KEY[0])[0], KEY[0])
+                cache.read(scope, KEY[0], 7, lambda: reader.snapshot(KEY[0], 7, config), refresh=True)
+                self.wire.paths.clear()
+                plan = reader.task_view(KEY[0], 7, "plan")
+                self.assertEqual(plan["task"]["currentPlan"]["id"], "new-plan")
+                self.assertFalse([p for p in self.wire.paths if "/comments" in p or p.endswith("issues/7")])
+                self.assertEqual(plan["task"]["revision"], reader.task_view(KEY[0], 7, "summary")["task"]["revision"])
+            finally:
+                cache.close()
+
+    def test_phase_mismatch_does_not_retry_a_failed_snapshot(self):
+        """A cached phase mismatch does not bypass the shared snapshot's failure cooldown."""
+        self.large_checkpoint()
+        reader = self.tasks()
+        config = reader.task_config(reader.find_target(KEY[0])[0], KEY[0])
+        snapshot = reader.snapshot(KEY[0], 7, config)
+        reader.state(KEY[0], 7, "plan", comments=snapshot["comments"], config=config)
+        snapshot["state"]["_audit"] = {"digest": "newer"}
+        reader.read_cache = Mock()
+        reader.read_cache.read.return_value = (snapshot, {"error": "rate limited"})
+        self.wire.paths.clear()
+        with self.assertRaises(CheckpointError):
+            reader.task_view(KEY[0], 7, "plan")
+        self.assertEqual(self.wire.paths, [])
+        self.assertEqual(reader.read_cache.read.call_count, 1)
+
+    def test_unavailable_database_falls_back_to_direct_reads(self):
+        """The optional display store cannot prevent an otherwise valid issue read."""
+        self.large_checkpoint()
+        cache = Mock()
+        cache.read.side_effect = sqlite3.DatabaseError("broken read cache")
+        task = self.tasks(read_cache=cache).task_view(KEY[0], 7, "summary")
+        self.assertEqual(task["task"]["stage"], "planned")
+        self.assertNotIn("cache", task)
+
+    def test_permission_hint_is_reused_without_crossing_users(self):
+        """Polling the summary does not repeat UI permission reads or share writer status with a reader."""
+        self.assertTrue(self.tasks().access.writable(KEY[0], "writer"))
+        self.wire.paths.clear()
+        self.assertTrue(self.tasks().access.writable(KEY[0], "writer"))
+        self.assertEqual(self.wire.paths, [])
+        self.assertFalse(self.tasks("reader").access.writable(KEY[0], "reader"))
 
     def test_summary_skips_hidden_evidence_and_pull_reads(self):
         """Initial display verifies only the audit, even when large phase bodies exist."""

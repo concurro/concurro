@@ -11,6 +11,8 @@ COPY bundle /opt/concurro/bundle
 COPY service /opt/concurro/service
 COPY backoffice /opt/concurro/backoffice
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV CONCURRO_READ_CACHE_DIR=/var/lib/concurro/backoffice
+RUN mkdir -p /var/lib/concurro/backoffice && chown 65533:65533 /var/lib/concurro/backoffice
 WORKDIR /opt/concurro
 USER 65533:65533
 ENTRYPOINT ["python3", "-m", "backoffice", "--settings", "/etc/concurro/backoffice/settings.json"]

@@ -49,16 +49,52 @@ historical reports, plan bodies or file inventories. After the summary, the sele
 `timeline` and `pull` load independently. Phase names are `intake`, `plan`, `design`,
 `implement`, `review` and `handoff`; the existing full-task endpoint remains available.
 
-Section readers verify checkpoint identity and the immutable evidence they consume using
-the engine's storage reader. The controller continues to restore and verify full state.
-Summary and phase state caches are separate. Responses carry a revision derived from the
-checkpoint comment and issue update time. Live CI is `unknown` until GitHub supplies it;
-unavailable counts are `null`.
+The API keeps a rebuildable SQLite read cache in `read_cache_dir`, or the
+`CONCURRO_READ_CACHE_DIR` environment variable when the setting is omitted. The image enables
+it at `/var/lib/concurro/backoffice`; Compose persists that directory in `backoffice-data`.
+It is separate from the service registry and diagnostics. No credentials or user permissions
+are stored in it. An explicit null or empty directory disables the cache. Without a configured directory, reads
+retain their direct-GitHub behavior. Database startup or read failures also fall back to direct reads.
+
+The first section request fetches issue metadata and checkpoint comments and verifies a
+lightweight checkpoint through the engine reader. Only owned checkpoint comments are retained,
+not the whole discussion. The issue, comments and summary state are published together in one
+SQLite update, scoped to the Reader App and effective target configuration. Summary, timeline,
+PR and phase requests share these inputs instead of scanning the issue and comments separately.
+
+Snapshots are fresh for 60 seconds. Stale snapshots return immediately while one background
+refresh runs per issue/configuration in the API process. Cold concurrent requests wait for the
+same refresh. Failures retain the last verified snapshot with an error and observation time;
+confirmed missing issues discard it. Retry deadlines survive restarts and honor GitHub's
+requested delay (at least 60 seconds). Checkpoint verification failures retain their diagnostic
+codes and use a short two-second retry interval. Successful commands, and deliveries whose
+outcome is uncertain, invalidate every cached configuration for that issue. Saved data and
+GitHub retry deadlines survive invalidation; older in-flight refreshes cannot overwrite it.
+After a command, unchanged checkpoint state stays on a five-second refresh interval for up to
+60 seconds while the browser waits for the change. A successful read retires obsolete cached
+configurations for that issue; closed issues remain available as historical display data.
+
+The browser checks for completion while a background refresh is active and shows saved-data
+status on refresh failure. Repository visibility remains checked per user through the existing
+short-lived cache. UI writer hints are also cached for 60 seconds; the service still authorizes
+every command with a fresh permission check. Commands read live checkpoint state where needed.
+
+Phase readers still verify and hydrate their selected evidence using the engine reader. A phase
+whose cached pointer no longer matches a mutable audit refreshes the shared snapshot before
+retrying. Full task/diagnostics loads and live PR/check reads remain direct GitHub reads. The
+controller's authoritative storage and verification are unchanged. Responses carry a revision
+derived from the checkpoint comment, verified audit reference and issue update time; live CI
+remains `unknown` until read.
+
+This iteration fills the cache on access, not through service checkpoint hooks or webhooks.
+Inactive issues need no background polling. Deploy one API process for shared refresh coalescing;
+the database is persistent display data, not a replacement for the service registry.
 
 The web app reuses task and section responses for navigation, refreshes entries older than
 ten seconds in the background, and clears them after commands, sign-out or account changes.
-Section failures can be retried without hiding the rest of the page. Deploy the API before
-the updated web app, which requires the section endpoint. No data migration is required.
+Section failures can be retried without hiding the rest of the page. Deploy the API before the
+web enhancement to enable background-refresh status. Existing settings need no edits with the
+image and Compose defaults; custom mounts must make `read_cache_dir` writable by uid 65533.
 
 ## Run diagnostics
 

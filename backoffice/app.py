@@ -4,6 +4,8 @@ Response shapes follow the frontend's domain types (`concurro-backoffice/src/lib
 """
 
 import logging
+import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -21,6 +23,7 @@ from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
 from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
 from .github import Access
+from .read_cache import ReadCache
 from .runs import Runs
 from .settings import Settings
 from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
@@ -54,7 +57,24 @@ def create_app(
 ) -> FastAPI:
     """`oauth`, `vault`, `sessions`, `commands`, the GitHub `connection` and the Reader `identity` are injectable
     for tests."""
-    app = FastAPI(title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
+    try:
+        read_cache = ReadCache(settings.read_cache_dir) if settings.read_cache_dir else None
+    except (OSError, sqlite3.Error):
+        log.warning("issue read cache unavailable at startup; reading GitHub directly")
+        read_cache = None
+
+    @asynccontextmanager
+    async def lifespan(app):
+        """Drain background cache refreshes when the API stops."""
+        try:
+            yield
+        finally:
+            if read_cache is not None:
+                read_cache.close()
+
+    app = FastAPI(
+        lifespan=lifespan, title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
+    )
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
     commands = commands or ServiceCommands(settings.service_url)
@@ -81,7 +101,7 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
-        return Tasks(settings, Access(reader_app, current.token, connection), current.user, diagnostics)
+        return Tasks(settings, Access(reader_app, current.token, connection), current.user, diagnostics, read_cache)
 
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:
@@ -211,7 +231,15 @@ def create_app(
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
         except ValueError:
             raise HTTPException(422, "invalid command argument") from None
-        return commands.send(current.token, repository, issue, body.command, argument)
+        try:
+            result = commands.send(current.token, repository, issue, body.command, argument)
+        except CommandError as error:
+            if error.may_have_posted and read_cache is not None:
+                read_cache.invalidate(repository, issue)
+            raise
+        if read_cache is not None:
+            read_cache.invalidate(repository, issue)
+        return result
 
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):
