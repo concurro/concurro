@@ -5,7 +5,7 @@ import unittest
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "service/tests")]
@@ -14,12 +14,14 @@ import fixtures  # noqa: E402 -- initializes the service and engine test paths
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule  # noqa: E402
 
+import report_store  # noqa: E402
 from app_fakes import App  # noqa: E402
 from backoffice import github as github_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import User  # noqa: E402
 from backoffice.github import Access  # noqa: E402
 from backoffice.settings import Reader, Settings  # noqa: E402
 from backoffice.tasks import TaskNotFound, Tasks  # noqa: E402
+from checkpoints import MARKER, CheckpointError, Checkpoints  # noqa: E402
 from service.identity import Identity  # noqa: E402
 from service.targets import Target  # noqa: E402
 from service.transport import StaticCredential  # noqa: E402
@@ -122,6 +124,127 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         again = self.tasks().task_view(KEY[0], 7)
         self.assertEqual(again["task"]["plans"], task["plans"])
         self.assertFalse([path for path in self.wire.paths if "/artifacts" in path])
+
+    def large_checkpoint(self):
+        """Publish independent plan/review artifacts through the real storage writer."""
+        state = {
+            "version": 2,
+            "issue": 7,
+            "base": "a" * 40,
+            "stage": "planned",
+            "plan_id": "plan-test",
+            "plan": {"summary": "A plan " * 1500, "steps": ["one"], "files": [], "tests": [], "questions": []},
+            "reviews": {"reviewer": {"verdict": "approve", "summary": "Review " * 1500}},
+            "reports": [],
+            "calls": 5,
+            "pr": 9,
+        }
+        cp = Checkpoints(self.fake, self.config, 7)
+        cp.save(state)
+        self.fake.comments = []
+        self.fake.comment(MARKER + "\n" + "\n".join(cp.links()), self.config["bot_login"])
+        self.wire.fixed["GET", f"repos/{KEY[0]}/issues/7"] = self.issue_listing()
+        return cp, state
+
+    def test_summary_skips_hidden_evidence_and_pull_reads(self):
+        """Initial display verifies only the audit, even when large phase bodies exist."""
+        cp, state = self.large_checkpoint()
+        with patch.object(Tasks, "pull", side_effect=AssertionError("eager PR read")):
+            view = self.tasks().task_view(KEY[0], 7, "summary")
+        task = view["task"]
+        self.assertEqual(task["stage"], "planned")
+        self.assertEqual(task["budgets"]["modelCalls"]["used"], 5)
+        self.assertEqual(task["currentPlan"]["id"], state["plan_id"])
+        self.assertTrue(task["phaseRecords"][1])
+        self.assertTrue(task["phaseRecords"][4])
+        self.assertEqual(task["pr"]["ci"], "unknown")
+        self.assertIsNone(task["pr"]["additions"])
+        self.assertNotIn("body", task)
+        for field in ("plans", "rounds", "findings", "designReview", "timeline"):
+            self.assertEqual(task[field], [])
+        artifacts = [path for path in self.wire.paths if "/artifacts" in path]
+        self.assertEqual(artifacts, [f"repos/{KEY[0]}/issues/7/artifacts/{cp.audit['number']}?per_page=1&page=1"])
+
+    def test_phase_reads_only_its_reports_and_does_not_poison_full_state(self):
+        """Section caches never substitute a partial state for controller/legacy reads."""
+        _, state = self.large_checkpoint()
+        self.tasks().task_view(KEY[0], 7, "summary")
+        self.wire.paths.clear()
+        plan = self.tasks().task_view(KEY[0], 7, "plan")["task"]
+        self.assertIn(state["plan"]["summary"], plan["plans"][0]["body"])
+        self.assertEqual(plan["rounds"], [])
+        plan_reads = [p for p in self.wire.paths if "/artifacts/" in p and "?" not in p]
+        self.assertEqual(len(plan_reads), 1)
+        self.wire.paths.clear()
+        review = self.tasks().task_view(KEY[0], 7, "review")["task"]
+        self.assertEqual(review["rounds"][0]["votes"][0]["verdict"], "approve")
+        review_reads = [p for p in self.wire.paths if "/artifacts/" in p and "?" not in p]
+        self.assertEqual(len(review_reads), 1)
+        self.assertNotEqual(plan_reads, review_reads)
+        self.assertEqual(plan["revision"], review["revision"])
+        self.wire.paths.clear()
+        design = self.tasks().task_view(KEY[0], 7, "design")["task"]
+        self.assertEqual(design["plans"][0]["id"], state["plan_id"])
+        self.assertEqual(design["plans"][0]["body"], "")
+        self.assertFalse([p for p in self.wire.paths if "/artifacts/" in p and "?" not in p])
+        self.assertEqual(self.tasks().state(KEY[0], 7), state)
+
+    def test_unselected_corruption_is_isolated_but_selected_evidence_is_verified(self):
+        """A damaged hidden report does not block the summary or get trusted by its phase."""
+        cp, _ = self.large_checkpoint()
+        numbers = [
+            n
+            for n, item in self.fake.artifacts[7].items()
+            if item["artifact"]["name"].startswith("Concurro review data")
+        ]
+        for number in numbers:
+            self.fake.artifacts[7][number]["artifact"]["creator"] = {"login": "someone-else"}
+        with patch.object(tasks_module, "REPORTS", report_store.Cache()):
+            self.tasks().task_view(KEY[0], 7, "summary")
+            with self.assertRaises(CheckpointError):
+                self.tasks().task_view(KEY[0], 7, "plan")
+        tasks_module.STATES.clear()
+        self.fake.artifacts[7][cp.audit["number"]]["artifact"]["creator"] = {"login": "someone-else"}
+        with self.assertRaises(CheckpointError):
+            self.tasks().task_view(KEY[0], 7, "summary")
+
+    def test_pull_is_independent_and_inventory_reads_are_not_needed_for_display(self):
+        """PR enrichment is explicit and display never expands changed-file inventories."""
+        self.large_checkpoint()
+        with patch("checkpoints.file_inventory.restore", side_effect=AssertionError("inventory read")):
+            for section in tasks_module.SECTION_FIELDS:
+                with patch.object(Tasks, "pull", return_value={"number": 9, "ci": "passing"}) as pull:
+                    view = self.tasks().task_view(KEY[0], 7, section)
+                    self.assertEqual(pull.call_count, int(section == "pull"))
+                    if section == "pull":
+                        self.assertEqual(view["task"]["pr"]["ci"], "passing")
+
+    def test_sections_with_identical_evidence_reuse_decoded_state(self):
+        """Equivalent display projections share an audit read without affecting full reads."""
+        self.large_checkpoint()
+        for first, second in (("summary", "pull"), ("summary", "implement"), ("review", "handoff")):
+            with self.subTest(first=first, second=second):
+                expected = self.tasks().state(KEY[0], 7, first)
+                self.wire.paths.clear()
+                self.assertEqual(self.tasks().state(KEY[0], 7, second), expected)
+                self.assertFalse([p for p in self.wire.paths if "/artifacts" in p])
+
+    def test_selected_restore_still_validates_unselected_slots(self):
+        """Reference shape and overlapping paths remain validated before skipped reads."""
+        store = Mock()
+        ref = {"path": ["plan"], "digest": "a" * 64, "artifacts": [1], "select": [], "annotations": {}}
+        with self.assertRaises(ValueError):
+            report_store.restore({"version": 7, "plan": {}}, [ref], store, fields=set())
+        with self.assertRaises(ValueError):
+            report_store.restore({"version": 7, "plan": None}, [ref, ref], store, fields=set())
+        store.get.assert_not_called()
+
+    def test_target_lookup_does_not_read_unrelated_repositories(self):
+        """Issue navigation checks only the selected target's repository visibility."""
+        unrelated = Target("unrelated/up", "unrelated/fork", "fork")
+        self.settings = replace(self.settings, targets=(unrelated, *self.settings.targets))
+        self.tasks().find_target(KEY[0])
+        self.assertFalse(any("unrelated" in path for path in self.wire.paths))
 
     def test_the_users_token_only_decides_visibility(self):
         """Reads use the Reader App, but a repository hidden from the user's own token hides its target."""

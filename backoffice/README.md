@@ -33,12 +33,32 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/api/overview` | `{targets, tasks, activity}` |
 | GET | `/api/targets/{owner}/{repo}` | `{target, tasks, runs}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target}` |
+| GET | `/api/tasks/{owner}/{repo}/{issue}/sections/{section}` | Summary, selected phase, timeline or live PR data |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns/{turn-id}/runs` | `{runs, message}` with Actions run attempts and jobs |
 | POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}` |
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |
+
+## Issue-page loading
+
+The issue page loads `sections/summary` first. It contains stage, budgets, alerts, current
+plan identity, phase-presence flags and checkpoint-backed PR identity. It does not restore
+historical reports, plan bodies or file inventories. After the summary, the selected phase,
+`timeline` and `pull` load independently. Phase names are `intake`, `plan`, `design`,
+`implement`, `review` and `handoff`; the existing full-task endpoint remains available.
+
+Section readers verify checkpoint identity and the immutable evidence they consume using
+the engine's storage reader. The controller continues to restore and verify full state.
+Summary and phase state caches are separate. Responses carry a revision derived from the
+checkpoint comment and issue update time. Live CI is `unknown` until GitHub supplies it;
+unavailable counts are `null`.
+
+The web app reuses task and section responses for navigation, refreshes entries older than
+ten seconds in the background, and clears them after commands, sign-out or account changes.
+Section failures can be retried without hiding the rest of the page. Deploy the API before
+the updated web app, which requires the section endpoint. No data migration is required.
 
 ## Run diagnostics
 

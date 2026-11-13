@@ -5,7 +5,7 @@ Response shapes follow the frontend's domain types (`concurro-backoffice/src/lib
 
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -167,6 +167,17 @@ def create_app(
     @app.get("/api/tasks/{owner}/{repo}/{issue}")
     def task(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.task_view(f"{owner}/{repo}", issue)
+
+    @app.get("/api/tasks/{owner}/{repo}/{issue}/sections/{section}")
+    def task_section(
+        owner: str,
+        repo: str,
+        issue: int,
+        section: Literal["summary", "intake", "plan", "design", "implement", "review", "handoff", "timeline", "pull"],
+        reader: Annotated[Tasks, Depends(tasks)],
+    ):
+        """Load one issue section without unrelated report evidence or live PR enrichment."""
+        return reader.task_view(f"{owner}/{repo}", issue, section)
 
     @app.get("/api/tasks/{owner}/{repo}/{issue}/turns")
     def turns(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
