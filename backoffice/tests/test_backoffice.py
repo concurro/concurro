@@ -299,6 +299,8 @@ class DiagnosticsTests(unittest.TestCase):
             (result["n"], result["stage"], result["role"], result["outcome"]), (1, "implement", "implementer", "ok")
         )
         self.assertEqual((result["queuedMs"], result["durationMs"]), (2000, 8000))
+        self.assertEqual(result["tokens"], {"input": None, "cached": None, "output": None})
+        self.assertIsNone(result["run"]["id"])
         self.assertEqual([item["kind"] for item in result["transcript"]], ["assistant", "tool_call", "tool_result"])
         self.assertIn("=== a.py", result["diff"])
         self.assertIn("b.py (removed)", result["diff"])

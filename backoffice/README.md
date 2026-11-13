@@ -34,10 +34,28 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/api/targets/{owner}/{repo}` | `{target, tasks, runs}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
+| GET | `/api/tasks/{owner}/{repo}/{issue}/turns/{turn-id}/runs` | `{runs, message}` with Actions run attempts and jobs |
 | POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}` |
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |
+
+## Run diagnostics
+
+Run diagnostics load Actions jobs on demand using the Reader App. New turn observations retain
+the Exchange's assigned runner session and OIDC-bound run/attempt. Older records can resolve
+dispatched sessions by their unique run branch; these are labeled as associated dispatches,
+not confirmed assignments. Missing/deleted history and failed API reads remain unavailable.
+Job durations cover the entire session, which can execute several turns.
+
+Token counts are `null` until per-turn usage is available; neither zero counts nor totals are
+inferred from retained conversation archives. Provider sponsorship's durable usage projection
+is the integration point for metering. Diagnostics are not the accounting authority.
+
+The service automatically adds the nullable `runner` column to existing diagnostics databases.
+Deploy the web release first so it accepts nullable counts, then the service/Exchange/backoffice
+API release. The Runner tab is unavailable until the new `/runs` endpoint is deployed. No App
+permission changes are needed (Actions read is already required).
 
 ## Settings
 

@@ -21,6 +21,7 @@ from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
 from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
 from .github import Access
+from .runs import Runs
 from .settings import Settings
 from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
 from .turns import Diagnostics
@@ -172,6 +173,16 @@ def create_app(
         view = reader.task_view(f"{owner}/{repo}", issue)
         turns = diagnostics.turns(f"{owner}/{repo}", issue)
         return {"task": view["task"], "turns": turns, "profiles": view["target"]["profiles"]}
+
+    @app.get("/api/tasks/{owner}/{repo}/{issue}/turns/{identifier}/runs")
+    def turn_runs(owner: str, repo: str, issue: int, identifier: str, reader: Annotated[Tasks, Depends(tasks)]):
+        """Read Actions evidence for a recorded turn after checking both target repositories."""
+        repository = f"{owner}/{repo}"
+        target, _ = reader.find_target(repository)
+        row = next((row for row in diagnostics.rows(repository, issue) if row["id"] == identifier), None)
+        if row is None:
+            raise HTTPException(404, "turn not found")
+        return Runs(reader.access.transport(target.fork), target.fork).for_turn(row)
 
     @app.post("/api/tasks/{owner}/{repo}/{issue}/commands")
     def command(

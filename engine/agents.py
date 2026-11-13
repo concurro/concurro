@@ -418,7 +418,7 @@ class RunnerExecutor:
             handle.sessions.add(session)
             self.groups.setdefault(handle.group, set()).add(session)
             self.start(session, handle.turn)
-        self.record("observed", handle.identifier, handle.status, handle.timing, handle.sessions)
+        self.record("observed", handle.identifier, handle.status, handle.timing, handle.sessions, reply.get("runner"))
         if reply.get("refusal"):
             raise Blocked("a runner of the target was refused by the gateway: " + reply["refusal"])
         if reply.get("status") == "done" and "result" in reply:

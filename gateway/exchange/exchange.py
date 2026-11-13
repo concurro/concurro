@@ -636,7 +636,7 @@ class Exchange:
         status, created, started, finished, session = self.db.execute(
             "SELECT status, created, started, finished, session FROM turns WHERE id = ?", (turn,)
         ).fetchone()
-        runner = self.row(session) if session and status in ("lost", "cancelled") else None
+        runner = self.row(session) if session else None
         return {
             "turn": turn,
             "status": status,

@@ -79,13 +79,13 @@ class Diagnostics:
             "durationMs": round((finished - started) * 1000)
             if finished and started
             else round((row["elapsed_seconds"] or 0) * 1000),
-            "tokens": {"input": 0, "cached": 0, "output": 0},
+            "tokens": {"input": None, "cached": None, "output": None},
             "run": {
-                "id": 0,
-                "attempt": 1,
-                "workflow": "agent.yml",
+                "id": None,
+                "attempt": None,
+                "workflow": None,
                 "runner": sessions[-1] if sessions else "",
-                "jobs": [],
+                "jobs": None,
                 **({"diagnosis": diagnosis(row)} if row["termination_reason"] else {}),
             },
             "session": {"scope": row["session_scope"], "turn": row["session_turn"]} if row["session_scope"] else None,
