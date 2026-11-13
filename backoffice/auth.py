@@ -1,4 +1,4 @@
-"""GitHub App user sign-in: one-use `state` and PKCE bound to the starting browser, server-side sessions.
+"""GitHub OAuth sign-in: one-use `state` and PKCE bound to the starting browser, server-side sessions.
 
 Sessions live in memory; a restart signs everyone out. The user's GitHub token never reaches the browser.
 """
@@ -17,7 +17,7 @@ AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 USER_URL = "https://api.github.com/user"
 LOGIN_SECONDS = 600
-# GitHub App user tokens expire after 8 hours unless expiry is disabled for the App.
+# Expiring GitHub user tokens have an eight-hour lifetime.
 DEFAULT_TOKEN_SECONDS = 8 * 3600
 
 

@@ -25,7 +25,7 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
-| Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in App's `client-secret`, the Reader App's `reader-app.pem` (see `backoffice/README.md`) |
+| Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in OAuth App's `client-secret`, the Backoffice App's `reader-app.pem` (see `backoffice/README.md`) |
 | Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
@@ -90,8 +90,11 @@ Create an App owned by the account that operates the installation, with the perm
 and event subscriptions in [Target and App prerequisites](#target-and-app-prerequisites):
 
 - Webhook URL `https://<host>/concurro/webhook`, with a generated webhook secret.
-- Callback URL `https://<host>/concurro/auth/callback`, for backoffice sign-in.
 - Install it on each upstream and fork.
+
+Backoffice sign-in uses a separate OAuth App; repository reads use a separate read-only
+GitHub App. Configure both as described in [Backoffice settings](../backoffice/README.md#settings).
+The service App needs no backoffice callback URL.
 
 **5. Service settings**
 

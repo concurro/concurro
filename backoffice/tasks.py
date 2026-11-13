@@ -72,7 +72,7 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 
 
 class Tasks:
-    """Views for one signed-in user; GitHub reads use the Reader App, whatever the user."""
+    """Views for one signed-in user: targets their own token can see, read with the Reader App."""
 
     def __init__(self, settings: Settings, access: Access, user: User):
         self.settings, self.access, self.user = settings, access, user
@@ -82,13 +82,14 @@ class Tasks:
     # Targets
 
     def visible_targets(self) -> list[tuple]:
-        """Configured targets whose fork the Reader App can see, with that repository's metadata (once per request)."""
+        """Configured targets whose repositories this user can see, with the fork's metadata (once per request)."""
         if self.visible is None:
             self.visible = []
             for target in self.settings.targets:
-                fork = self.access.repository(target.fork)
-                if fork is not None:
-                    self.visible.append((target, fork))
+                # The Reader App reads every repository of a target, so the user must see them all.
+                seen = {repository: self.access.repository(repository) for repository in target.repositories}
+                if all(seen.values()):
+                    self.visible.append((target, seen[target.fork]))
         return self.visible
 
     def config(self, fork: str) -> tuple[dict, str]:

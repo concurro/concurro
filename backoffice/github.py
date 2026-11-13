@@ -1,5 +1,9 @@
-"""GitHub reads with the Reader App's read-only tokens; sign-in only identifies the user. The backoffice never writes."""
+"""GitHub reads with the Reader App's read-only tokens, for repositories the signed-in user can see.
 
+The user's own token (an OAuth App token with no scopes) only decides visibility; the backoffice never writes.
+"""
+
+import hashlib
 import re
 import time
 from urllib.parse import quote
@@ -9,11 +13,11 @@ from service.actions import WRITER_PERMISSIONS
 from service.github_reads import content, default_branch
 from service.identity import Identity
 from service.target_config import read_remote
-from service.transport import Transport
+from service.transport import StaticCredential, Transport
 
-# Repository metadata, briefly.
+# Repository metadata as each user's token sees it, briefly.
 REPOSITORY_SECONDS = 60
-REPOSITORIES: dict[str, tuple[float, dict | None]] = {}
+REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 # The 100 most recently updated pull requests with line counts and their head commit's check runs.
@@ -49,18 +53,18 @@ class ReadOnlyGitHub(GitHub):
 
 
 class Access:
-    """Per-repository transports with the Reader App's token for each repository; one per request."""
+    """One request's GitHub reads: the Reader App's token per repository, and the user's own for visibility."""
 
-    def __init__(self, identity: Identity, connection=None):
-        self.identity, self.connection = identity, connection
-        self.transports: dict[str, Transport] = {}
+    def __init__(self, identity: Identity, user_token: str, connection=None):
+        self.identity, self.user_token, self.connection = identity, user_token, connection
+        self.transports: dict[tuple[str, bool], Transport] = {}
 
-    def transport(self, repository: str) -> Transport:
-        if repository not in self.transports:
+    def transport(self, repository: str, as_user: bool = False) -> Transport:
+        if (repository, as_user) not in self.transports:
             options = {"connection": self.connection} if self.connection else {}
-            credential = self.identity.credential(repository, "read")
-            self.transports[repository] = Transport(repository, credential, time.time, **options)
-        return self.transports[repository]
+            credential = StaticCredential(self.user_token) if as_user else self.identity.credential(repository, "read")
+            self.transports[repository, as_user] = Transport(repository, credential, time.time, **options)
+        return self.transports[repository, as_user]
 
     def engine(self, repository: str) -> ReadOnlyGitHub:
         return ReadOnlyGitHub(repository, self.transport(repository))
@@ -69,13 +73,16 @@ class Access:
         return self.transport(repository).request("GET", f"repos/{repository}" + ("/" + path if path else ""))
 
     def repository(self, repository: str) -> dict | None:
-        """The repository, or None when the Reader App can't see it; cached briefly."""
-        key = repository.lower()
+        """The repository as the user's own token sees it, or None when hidden from them; cached briefly per user.
+
+        A token without scopes sees public repositories only, so private targets stay hidden.
+        """
+        key = (hashlib.sha256(self.user_token.encode()).hexdigest(), repository.lower())
         cached = REPOSITORIES.get(key)
         if cached and cached[0] > time.monotonic():
             return cached[1]
         try:
-            found = self.get(repository)
+            found = self.transport(repository, as_user=True).request("GET", f"repos/{repository}")
         except NotFound:
             found = None
         REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)

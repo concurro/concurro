@@ -85,6 +85,7 @@ class SignInTests(unittest.TestCase):
         query = parse_qs(urlsplit(response.headers["location"]).query)
         self.assertEqual(query["redirect_uri"], ["https://host.invalid/auth/callback"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertNotIn("scope", query, "sign-in requests no OAuth scopes: identity only")
         return query["state"][0], query["code_challenge"][0]
 
     def test_sign_in_binds_state_and_pkce_to_the_browser(self):
@@ -433,7 +434,7 @@ class PullListingTests(unittest.TestCase):
                     raise self.result
                 return self.result
 
-        access = github_module.Access(None)  # type: ignore[arg-type]
+        access = github_module.Access(None, "user-token")  # type: ignore[arg-type]
         access.engine = lambda repository: Engine({"data": {"repository": {"pullRequests": {"nodes": [node]}}}})  # type: ignore[method-assign]
         [pull] = access.pull_requests("up/project")
         self.assertEqual(queries, [("graphql", "POST", {"owner": "up", "name": "project"})])

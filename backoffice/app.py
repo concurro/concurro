@@ -80,7 +80,7 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
-        return Tasks(settings, Access(reader_app, connection), current.user)
+        return Tasks(settings, Access(reader_app, current.token, connection), current.user)
 
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:
@@ -183,7 +183,7 @@ def create_app(
     ):
         if body.command not in COMMANDS:
             raise HTTPException(422, "unknown command")
-        reader = Tasks(settings, Access(reader_app, connection), current.user)
+        reader = Tasks(settings, Access(reader_app, current.token, connection), current.user)
         repository = f"{owner}/{repo}"
         try:
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))
