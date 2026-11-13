@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -20,7 +21,7 @@ from backoffice import app as app_module, github as github_module, tasks as task
 from backoffice.auth import AuthError, Sessions, User, challenge  # noqa: E402
 from backoffice.commands import CommandError, ServiceCommands  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
-from backoffice.settings import Settings  # noqa: E402
+from backoffice.settings import Reader, Settings, SettingsError, load  # noqa: E402
 from backoffice.turns import Diagnostics, normalize  # noqa: E402
 from github import NotFound, Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
@@ -31,12 +32,14 @@ TURN_ID = "12345678-1234-1234-1234-123456789abc"
 
 
 def settings(public_url="https://host.invalid/concurro", **extra) -> Settings:
+    targets = (Target("up/project", "owner/project", "fork"),)
     return Settings(
         **{
             "public_url": public_url,
             "client_id": "client",
             "client_secret": "secret",
-            "targets": (Target("up/project", "owner/project", "fork"),),
+            "targets": targets,
+            "reader": Reader(1, Path("/unused"), targets),
             **extra,
         }
     )
@@ -125,6 +128,33 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(configured.base_path, "/concurro")
         self.assertEqual(configured.callback_url, "https://host.invalid/concurro/auth/callback")
         self.assertTrue(configured.secure)
+
+    def test_the_reader_app_needs_an_id_and_an_owner_only_key(self):
+        root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, root)
+        secret, key = root / "client-secret", root / "reader.pem"
+        for path in (secret, key):
+            path.write_text("x")
+            path.chmod(0o600)
+        target = {"upstream": "up/project", "fork": "owner/project", "issues": "fork"}
+
+        def loaded(**reader):
+            path = root / "settings.json"
+            body = {"public_url": "https://host.invalid/concurro", "client_id": "client", "targets": [target]}
+            path.write_text(json.dumps({**body, "client_secret_path": str(secret), "reader": reader}))
+            return load(path)
+
+        configured = loaded(app_id=7, private_key_path=str(key))
+        self.assertEqual((configured.reader.app_id, configured.reader.private_key_path), (7, key))
+        self.assertEqual(configured.reader.targets, configured.targets)
+        key.chmod(0o644)
+        for reader, field in (
+            ({"app_id": 7, "private_key_path": str(key)}, "reader.private_key_path"),
+            ({"app_id": "7", "private_key_path": str(key)}, "reader.app_id"),
+            ({"app_id": 7}, "reader"),
+        ):
+            with self.subTest(field=field), self.assertRaisesRegex(SettingsError, field + "$"):
+                loaded(**reader)
 
 
 class SessionTests(unittest.TestCase):
@@ -403,7 +433,7 @@ class PullListingTests(unittest.TestCase):
                     raise self.result
                 return self.result
 
-        access = github_module.UserAccess("token")
+        access = github_module.Access(None)  # type: ignore[arg-type]
         access.engine = lambda repository: Engine({"data": {"repository": {"pullRequests": {"nodes": [node]}}}})  # type: ignore[method-assign]
         [pull] = access.pull_requests("up/project")
         self.assertEqual(queries, [("graphql", "POST", {"owner": "up", "name": "project"})])

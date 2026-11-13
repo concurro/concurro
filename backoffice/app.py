@@ -15,11 +15,12 @@ from pydantic import BaseModel
 from checkpoints import CheckpointError
 from github import NotFound, Transient
 from policy import Blocked
+from service.identity import Identity
 
 from .auth import AuthError, GitHubOAuth, Session, Sessions, authorize_url
 from .commands import CommandError, ServiceCommands
 from .credentials import Vault, VaultError
-from .github import UserAccess
+from .github import Access
 from .settings import Settings
 from .tasks import COMMANDS, TaskNotFound, Tasks, command_argument
 from .turns import Diagnostics
@@ -48,13 +49,17 @@ def create_app(
     sessions: Sessions | None = None,
     commands: ServiceCommands | None = None,
     connection=None,
+    identity: Identity | None = None,
 ) -> FastAPI:
-    """`oauth`, `vault`, `sessions`, `commands` and the GitHub `connection` are injectable for tests."""
+    """`oauth`, `vault`, `sessions`, `commands`, the GitHub `connection` and the Reader `identity` are injectable
+    for tests."""
     app = FastAPI(title="Concurro backoffice", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
     commands = commands or ServiceCommands(settings.service_url)
     sessions = sessions or Sessions()
+    # One Reader identity, so its token cache serves every request.
+    reader_app = identity or Identity(settings.reader, **({"connection": connection} if connection else {}))
     diagnostics = Diagnostics(settings.diagnostics_dir)
     cookie_path = settings.base_path or "/"
 
@@ -75,7 +80,7 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
-        return Tasks(settings, UserAccess(current.token, connection), current.user)
+        return Tasks(settings, Access(reader_app, connection), current.user)
 
     @app.exception_handler(TaskNotFound)
     async def not_found(_: Request, error: TaskNotFound) -> JSONResponse:
@@ -178,7 +183,7 @@ def create_app(
     ):
         if body.command not in COMMANDS:
             raise HTTPException(422, "unknown command")
-        reader = Tasks(settings, UserAccess(current.token, connection), current.user)
+        reader = Tasks(settings, Access(reader_app, connection), current.user)
         repository = f"{owner}/{repo}"
         try:
             argument = command_argument(body.command, body.argument, lambda: reader.state(repository, issue))

@@ -1,4 +1,4 @@
-"""A task view reads the engine's own checkpoint through the user's transport, end to end."""
+"""A task view reads the engine's own checkpoint through the Reader App's transport, end to end."""
 
 import sys
 import unittest
@@ -14,10 +14,11 @@ from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 from backoffice import github as github_module, tasks as tasks_module  # noqa: E402
 from backoffice.auth import User  # noqa: E402
-from backoffice.github import UserAccess  # noqa: E402
-from backoffice.settings import Settings  # noqa: E402
+from backoffice.github import Access  # noqa: E402
+from backoffice.settings import Reader, Settings  # noqa: E402
 from backoffice.tasks import TaskNotFound, Tasks  # noqa: E402
 from service.targets import Target  # noqa: E402
+from service.transport import StaticCredential  # noqa: E402
 
 KEY = fixtures.KEY
 
@@ -37,6 +38,14 @@ class Wire(fixtures.Wire):
         return super().answer(method, path, data)
 
 
+class ReaderApp:
+    """The Reader App's identity, with one fixed token for every repository."""
+
+    def credential(self, repository, kind):
+        assert kind == "read"
+        return StaticCredential("reader-token")
+
+
 class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -44,18 +53,20 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
             cache.clear()
         self.wire = Wire(self.backend)
         repository = KEY[0]
-        metadata = {"full_name": repository, "description": "fixture", "permissions": {"push": True}}
-        self.wire.fixed["GET", f"repos/{repository}"] = metadata
+        self.wire.fixed["GET", f"repos/{repository}"] = {"full_name": repository, "description": "fixture"}
+        for login, permission in (("writer", "write"), ("reader", "read")):
+            self.wire.fixed["GET", f"repos/{repository}/collaborators/{login}/permission"] = {"permission": permission}
+        targets = (Target(repository, repository, "fork"),)
         self.settings = Settings(
             public_url="https://host.invalid/concurro",
             client_id="client",
             client_secret="secret",
-            targets=(Target(repository, repository, "fork"),),
+            targets=targets,
+            reader=Reader(1, Path("/unused"), targets),
         )
 
-    def tasks(self):
-        access = UserAccess("user-token", self.wire.connection)
-        return Tasks(self.settings, access, User(1, "writer", "Writer", ""))
+    def tasks(self, login="writer"):
+        return Tasks(self.settings, Access(ReaderApp(), self.wire.connection), User(1, login, login.title(), ""))
 
     def issue_listing(self):
         issue = deepcopy(self.fake.issue)
@@ -83,6 +94,7 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.assertEqual(task["plans"][-1]["id"], state["plan_id"])
         self.assertEqual(view["target"]["mode"], "manual")
         self.assertTrue(view["target"]["writer"])
+        self.assertFalse(self.tasks("reader").task_view(KEY[0], 7)["target"]["writer"], "a reader sees no commands")
         # An unchanged checkpoint comment serves the decoded state without reading artifacts again.
         self.wire.paths.clear()
         again = self.tasks().task_view(KEY[0], 7)

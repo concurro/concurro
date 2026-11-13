@@ -19,7 +19,7 @@ from report_store import Cache
 from vocab import Stage
 
 from .auth import User
-from .github import UserAccess
+from .github import Access
 from .settings import Settings
 
 # Verified immutable report artifacts, shared across requests; the engine scopes entries to their provenance.
@@ -72,9 +72,9 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
 
 
 class Tasks:
-    """Views for one signed-in user; every GitHub read uses their token."""
+    """Views for one signed-in user; GitHub reads use the Reader App, whatever the user."""
 
-    def __init__(self, settings: Settings, access: UserAccess, user: User):
+    def __init__(self, settings: Settings, access: Access, user: User):
         self.settings, self.access, self.user = settings, access, user
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
@@ -82,7 +82,7 @@ class Tasks:
     # Targets
 
     def visible_targets(self) -> list[tuple]:
-        """Configured targets whose fork this user can see, with that repository's metadata (once per request)."""
+        """Configured targets whose fork the Reader App can see, with that repository's metadata (once per request)."""
         if self.visible is None:
             self.visible = []
             for target in self.settings.targets:
@@ -120,7 +120,7 @@ class Tasks:
             "roster": roster,
             "profiles": profiles,
             "config": "\n".join(f"{k}: {v}" for k, v in limits.items()),
-            "writer": bool((fork.get("permissions") or {}).get("push")),
+            "writer": self.access.writable(target.fork, self.user.login),
         }
 
     def find_target(self, repository: str):

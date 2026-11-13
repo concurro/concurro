@@ -5,23 +5,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from service import settings as service_settings
 from service.targets import Target
 
 FIELDS = {
     "public_url",
     "client_id",
     "client_secret_path",
+    "reader",
     "targets",
     "diagnostics_dir",
     "vault_url",
     "static_dir",
     "service_url",
 }
-REQUIRED = {"public_url", "client_id", "client_secret_path", "targets"}
+REQUIRED = {"public_url", "client_id", "client_secret_path", "reader", "targets"}
 
 
 class SettingsError(ValueError):
     """The settings file is missing or invalid; the text names only the field."""
+
+
+@dataclass(frozen=True)
+class Reader:
+    """The read-only GitHub App the backoffice reads with; `service.identity.Identity` mints its tokens."""
+
+    app_id: int
+    private_key_path: Path
+    targets: tuple[Target, ...]
 
 
 @dataclass(frozen=True)
@@ -32,6 +43,7 @@ class Settings:
     client_id: str
     client_secret: str
     targets: tuple[Target, ...]
+    reader: Reader
     diagnostics_dir: Path | None = None
     vault_url: str | None = None
     static_dir: Path | None = None
@@ -77,12 +89,20 @@ def load(path: str | Path) -> Settings:
         require(isinstance(entry, dict) and set(entry) == {"upstream", "fork", "issues"}, "targets")
         require(entry["issues"] in ("upstream", "fork", "both"), "targets.issues")
         targets.append(Target(**entry))
+    reader = data["reader"]
+    require(isinstance(reader, dict) and set(reader) == {"app_id", "private_key_path"}, "reader")
+    try:
+        app_id = service_settings.integer(reader["app_id"], "reader.app_id")
+        key, _ = service_settings.secret(reader["private_key_path"], "reader.private_key_path")
+    except service_settings.SettingsError as error:
+        raise SettingsError(str(error)) from None
     optional_path = {k: Path(data[k]) if data.get(k) else None for k in ("diagnostics_dir", "static_dir")}
     return Settings(
         public_url=url.rstrip("/"),
         client_id=data["client_id"],
         client_secret=secret,
         targets=tuple(targets),
+        reader=Reader(app_id, key, tuple(targets)),
         vault_url=data.get("vault_url") or None,
         service_url=data.get("service_url") or None,
         **optional_path,

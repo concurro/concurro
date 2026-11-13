@@ -4,11 +4,15 @@ The API of the [backoffice web app](https://github.com/concurro/concurro-backoff
 `https://<host>/concurro/api` and `/concurro/auth`; the edge sends the rest of `/concurro/` to
 the web app's own container (see `gateway/concurro.caddy`). Responses follow the frontend's domain types.
 
-- **Sign-in:** GitHub App user-to-server web flow on the existing App, with one-use `state` and PKCE
-  bound to the starting browser by an HTTP-only cookie. Sessions are in memory: a restart signs
-  everyone out. The user's token stays server-side.
-- **Reads** use the signed-in user's token, so GitHub decides what they see. Task state is the
-  engine's own audit checkpoint (`Checkpoints.load`); lists use the `concurro` opt-in and stage labels.
+- **Sign-in:** GitHub App user-to-server web flow on a **Sign-in App with no permissions**, so
+  users only verify their identity. One-use `state` and PKCE are bound to the starting browser by an
+  HTTP-only cookie. Sessions are in memory: a restart signs everyone out. The user's token stays
+  server-side; it only identifies them, to the service and the vault.
+- **Reads** use a **read-only Reader App**: `service.identity.Identity` mints its installation
+  tokens per repository with the service's read permissions, so every signed-in user sees the
+  configured (public) targets. A target shows writer commands when the user has write access to
+  its fork, the same check the service applies. Task state is the engine's own audit checkpoint
+  (`Checkpoints.load`); lists use the `concurro` opt-in and stage labels.
   PR lists load line counts and head-commit check runs in one GraphQL query. If that fails,
   a REST listing supplies the PRs with unknown (`null`) line counts and no CI information.
 - **Diagnostics** come from the service's `diagnostics_dir` (`service/diagnostics.py`), read-only.
@@ -40,8 +44,9 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 ```json
 {
   "public_url": "https://<host>/concurro",
-  "client_id": "<GitHub App client ID>",
+  "client_id": "<Sign-in App client ID>",
   "client_secret_path": "/etc/concurro/backoffice/client-secret",
+  "reader": {"app_id": 123456, "private_key_path": "/etc/concurro/backoffice/reader-app.pem"},
   "targets": [{"upstream": "owner/repo", "fork": "owner/fork", "issues": "fork"}],
   "diagnostics_dir": "/var/lib/concurro/diagnostics",
   "vault_url": "http://concurro-vault:8090",
@@ -50,8 +55,14 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 ```
 
 `targets` matches the service's settings. An optional `static_dir` also serves a static build of
-the web app (built with base path `/concurro`) from this process, for running without the edge. The App's callback URL must be
-`https://<host>/concurro/auth/callback`.
+the web app (built with base path `/concurro`) from this process, for running without the edge.
+
+The two GitHub Apps, neither of them the Concurro App:
+
+| App | Permissions | Setup |
+| ---- | ---- | ---- |
+| Sign-in | None | Callback URL `https://<host>/concurro/auth/callback`; no webhook. Its client secret goes in `client_secret_path` |
+| Reader | Read-only: Contents, Issues, Pull requests, Checks, Commit statuses, Actions | No webhook. Install it on only the selected target repositories (upstream and fork); its private key goes in `reader.private_key_path` (owner-only, uid 65533) |
 
 ## Run locally
 

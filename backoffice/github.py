@@ -1,17 +1,19 @@
-"""GitHub reads as the signed-in user, so GitHub decides what each user may see; the backoffice never writes."""
+"""GitHub reads with the Reader App's read-only tokens; sign-in only identifies the user. The backoffice never writes."""
 
-import hashlib
 import re
 import time
+from urllib.parse import quote
 
 from github import GitHub, NotFound
+from service.actions import WRITER_PERMISSIONS
 from service.github_reads import content, default_branch
+from service.identity import Identity
 from service.target_config import read_remote
-from service.transport import StaticCredential, Transport
+from service.transport import Transport
 
-# Repository metadata (visibility and permissions) per user token, briefly.
+# Repository metadata, briefly.
 REPOSITORY_SECONDS = 60
-REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
+REPOSITORIES: dict[str, tuple[float, dict | None]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
 # The 100 most recently updated pull requests with line counts and their head commit's check runs.
@@ -33,8 +35,8 @@ query($owner: String!, $name: String!) {
 """
 
 
-class UserGitHub(GitHub):
-    """The engine's GitHub client for one repository, read-only, with the user's token."""
+class ReadOnlyGitHub(GitHub):
+    """The engine's GitHub client for one repository, refusing every write."""
 
     def __init__(self, repository: str, transport: Transport):
         super().__init__(repository)
@@ -46,28 +48,29 @@ class UserGitHub(GitHub):
         raise PermissionError("the backoffice reads task state; it never writes it")
 
 
-class UserAccess:
-    """Per-repository transports for one user token."""
+class Access:
+    """Per-repository transports with the Reader App's token for each repository; one per request."""
 
-    def __init__(self, token: str, connection=None):
-        self.token, self.connection = token, connection
+    def __init__(self, identity: Identity, connection=None):
+        self.identity, self.connection = identity, connection
         self.transports: dict[str, Transport] = {}
 
     def transport(self, repository: str) -> Transport:
         if repository not in self.transports:
             options = {"connection": self.connection} if self.connection else {}
-            self.transports[repository] = Transport(repository, StaticCredential(self.token), time.time, **options)
+            credential = self.identity.credential(repository, "read")
+            self.transports[repository] = Transport(repository, credential, time.time, **options)
         return self.transports[repository]
 
-    def engine(self, repository: str) -> UserGitHub:
-        return UserGitHub(repository, self.transport(repository))
+    def engine(self, repository: str) -> ReadOnlyGitHub:
+        return ReadOnlyGitHub(repository, self.transport(repository))
 
     def get(self, repository: str, path: str = ""):
         return self.transport(repository).request("GET", f"repos/{repository}" + ("/" + path if path else ""))
 
     def repository(self, repository: str) -> dict | None:
-        """The repository as this user sees it, or None when it is hidden from them; cached briefly per user."""
-        key = (hashlib.sha256(self.token.encode()).hexdigest(), repository.lower())
+        """The repository, or None when the Reader App can't see it; cached briefly."""
+        key = repository.lower()
         cached = REPOSITORIES.get(key)
         if cached and cached[0] > time.monotonic():
             return cached[1]
@@ -77,6 +80,14 @@ class UserAccess:
             found = None
         REPOSITORIES[key] = (time.monotonic() + REPOSITORY_SECONDS, found)
         return found
+
+    def writable(self, repository: str, login: str) -> bool:
+        """Whether `login` may give writer commands: the service's and engine's check."""
+        try:
+            found = self.get(repository, f"collaborators/{quote(login, safe='')}/permission")
+        except NotFound:
+            return False
+        return isinstance(found, dict) and found.get("permission") in WRITER_PERMISSIONS
 
     def pull_requests(self, repository: str) -> list[dict]:
         """Recently updated pull requests: `number`, `title`, `open`, `draft`, `ref`, `sha`, `additions`,
