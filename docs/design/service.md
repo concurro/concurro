@@ -123,8 +123,10 @@ removed; failure must propagate before that coverage is recorded.
 
 `service/list_index.py` keeps a second SQLite file, `list-index.sqlite3`, in the state
 directory: one revision per repository and list kind (`issues`, `sponsorships`, `pulls`,
-`runs`), which the backoffice uses to decide when a saved list must be read again. It
-holds no list content and no scheduling state, and deleting it only causes one re-read.
+`runs`), which the backoffice uses to decide when a saved list must be read again. A kind
+is in one of two modes. In `signals` the index holds nothing else. In `rows` it holds the
+list itself: today each fork's executor runs. It holds no scheduling state, and deleting
+it costs one re-read or rebuild per list.
 
 - **Deliveries:** after a delivery passes the installation check, and before the task
   filter, ingress offers its GUID, event and repository to a bounded queue. A writer
@@ -147,8 +149,26 @@ holds no list content and no scheduling state, and deleting it only causes one r
   raised for every repository and a repository-wide resynchronization change is logged.
 - **Start:** a kind never verified, or not within GitHub's three-day history, gets a new
   baseline. Coverage of a repository no longer configured is dropped. Full reconciliation rebaselines everything.
-- **Endpoints:** `POST /lists/revisions` and `POST /lists/refresh` on the service's
-  listener, which the edge does not forward. They require the bearer in
+- **Rows (executor runs):** a `workflow_run` delivery for the executor workflow's
+  `workflow_dispatch` runs, on any branch, is reduced to the listed fields and stored per
+  run attempt. A snapshot older than the stored one is dropped and a newer one replaces
+  it; a tie with different content is settled by reading that exact attempt. A rerun seen
+  without its attempt 1 owes a read of exactly that attempt. An attempt GitHub no longer
+  has loses its document, and a run whose latest attempt is gone is not listed. In this mode the repair of a
+  missing delivery fetches its payload from GitHub's delivery history; one that cannot be
+  fetched or applied, like more than 20, is covered by a rebuild.
+- **Reads from GitHub** run on a second thread, one request at a time: rebuilds (the
+  fork's 50 most recent executor runs, plus attempt 1 of each rerun) and owed item reads.
+  A result is applied under the same ordering rule and wins a tie only if nothing changed
+  the row since the read began. A rebuild replaces the displayed membership except for
+  runs created while it ran, and its start becomes the baseline. Owed reads are stored,
+  survive a restart, and a read settles only requests made before it began. A read that
+  fails waits for the next recovery scan.
+- **State of a kind in `rows`:** `rebuilding` while a first or requested rebuild is owed,
+  `failed` when its last attempt failed, otherwise as above, and `catching-up` also while
+  an owed read is older than ten minutes.
+- **Endpoints:** `POST /lists/revisions`, `POST /lists` (the rows of one kind) and
+  `POST /lists/refresh` on the service's listener, which the edge does not forward. They require the bearer in
   `lists_token_path` (32 random bytes as hex, shared with the backoffice) and answer 503
   when it is unset. They take no user token.
 

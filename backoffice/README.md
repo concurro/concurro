@@ -64,6 +64,12 @@ saved lists. A target lists its `issueRepositories`, which is where its tasks' `
 
 ### With the list index
 
+A list the service holds (`mode: rows`; today a fork's executor runs) is taken from the
+service instead of GitHub, again only when its revision moved, and saved as the fallback
+copy. Attribution of runs to recorded turns happens on every request and is not part of
+what is saved. While the service has not built such a list yet, the saved copy is shown
+with the reason, and a list with nothing saved answers 503.
+
 Setting `lists_token_path` (the bearer shared with the service's `lists_token_path`) replaces
 the one-minute rule. Each request asks the service once for the revisions of its repositories'
 lists (`service/list_index.py`):

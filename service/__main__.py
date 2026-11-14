@@ -124,7 +124,11 @@ class Daemon:
         worker.observe_policies()
         self.reconciler.cleanup = worker.cleanup_runners
         self.list_index = ListIndex(settings.state_dir)
-        self.list_index.start({r: readers[r].request("GET", f"repos/{r}")["id"] for r in repositories})
+        self.list_index.start(
+            {r: readers[r].request("GET", f"repos/{r}")["id"] for r in repositories},
+            rows={"runs": {target.fork for target in settings.targets}},
+            reader=readers.__getitem__,
+        )
         self.registry.changed = lambda repository: self.list_index.signal(repository, "sponsorships")
         lists_token = read_token(settings.lists_token_path) if settings.lists_token_path else None
         self.recovery = Recovery(

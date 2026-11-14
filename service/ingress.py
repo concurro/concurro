@@ -88,7 +88,7 @@ class Ingress:
         if self.list_index is not None:
             # Before the task filter, so Concurro's own label changes count; never part of the delivery's outcome.
             try:
-                self.list_index.offer(delivery, event, repository)
+                self.list_index.offer(delivery, event, repository, payload)
             except Exception as error:
                 log.warning("list index offer failed: %s", type(error).__name__)
         try:
@@ -248,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(411, "length required")
         if self.path in ("/actions", "/sponsorships"):
             return self.action(int(length))
-        if self.path.startswith("/lists/"):
+        if self.path == "/lists" or self.path.startswith("/lists/"):
             return self.lists(int(length))
         if int(length) > BODY_LIMIT:
             return self.reply(413, "payload too large")

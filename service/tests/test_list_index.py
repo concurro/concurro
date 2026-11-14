@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import sqlite3
 import threading
 import unittest
 from datetime import UTC, datetime
@@ -17,7 +18,10 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+from github import NotFound, Transient
 from service import ingress, list_index
+from service.admission import EXECUTOR_WORKFLOW
+from service.identity import IdentityError
 from service.ingress import Ingress
 from service.list_index import FRESH_SECONDS, REPLAY_LIMIT, ListIndex, Lists
 from service.webhook_recovery import HISTORY_SECONDS, Recovery
@@ -84,7 +88,7 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         expected = {"issues": "issues", "issue_comment": "issues", "pull_request": "pulls", "check_run": "pulls"}
         for number, (event, kind) in enumerate({**expected, "check_suite": "pulls", "workflow_run": "runs"}.items()):
             before = self.revision(kind)
-            self.index.offer(f"g{number}", event, KEY[0])
+            self.index.offer(f"g{number}", event, KEY[0], {"workflow_run": run(number)})
             self.assertNotEqual(self.revision(kind), before, event)
 
     def test_a_recreated_file_never_matches_old_revisions(self):
@@ -131,7 +135,7 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.revision("issues"), before["issues"], "applied, before the baseline, other repository")
         self.assertNotEqual(self.revision("runs", FORK), before["runs"])
         self.assertEqual(self.index.check(groups, started), {}, "a repaired delivery has its receipt")
-        self.index.offer("guid-2", "workflow_run", FORK)
+        self.index.offer("guid-2", "workflow_run", FORK, {"workflow_run": run(2)})
         self.index.pending.join()
         self.assertEqual(self.index.check(groups, started), {})
 
@@ -211,6 +215,361 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         self.assertNotEqual(self.revision("issues", FORK), before["issues"])
 
 
+def run(number, attempt=1, updated="2026-11-14T10:00:00Z", status="completed", created=None, **fields):
+    """One executor run attempt as GitHub lists and delivers it."""
+    return {
+        "id": number,
+        "run_attempt": attempt,
+        "status": status,
+        "conclusion": "success" if status == "completed" else None,
+        "head_branch": "concurro/runs/session",
+        "event": "workflow_dispatch",
+        "path": f".github/workflows/{EXECUTOR_WORKFLOW}",
+        "created_at": created or f"2026-11-14T09:{number % 60:02d}:00Z",
+        "run_started_at": "2026-11-14T09:59:00Z",
+        "updated_at": updated,
+        "html_url": "https://github.invalid/not-listed",
+        **fields,
+    }
+
+
+class Fork:
+    """The fork's Actions API: a listing and exact attempts, which may fail or hook into a read."""
+
+    def __init__(self):
+        self.listed, self.attempts, self.paths, self.failing, self.during = [], {}, [], False, None
+
+    def request(self, method, path):
+        self.paths.append(path)
+        if self.during:
+            hook, self.during = self.during, None
+            hook()
+        if self.failing:
+            raise Transient("unavailable")
+        if "/attempts/" in path:
+            number, _, attempt = path.rsplit("/runs/", 1)[1].partition("/attempts/")
+            if (int(number), int(attempt)) not in self.attempts:
+                raise NotFound(path)
+            return self.attempts[int(number), int(attempt)]
+        return {"workflow_runs": self.listed}
+
+
+class RowsTests(ServiceFixture, unittest.TestCase):
+    """The fork's executor runs held as rows: built from GitHub once, then kept from deliveries."""
+
+    def setUp(self):
+        super().setUp()
+        self.fork = Fork()
+        self.fork.listed = [run(3), run(2), run(1)]
+        self.index = self.opened()
+
+    def opened(self):
+        index = ListIndex(self.directory.name, clock=self.clock)
+        self.addCleanup(index.close)
+        index.start(REPOSITORIES, rows={"runs": {FORK}}, reader=lambda repository: self.fork, work=False)
+        return index
+
+    def entry(self):
+        self.index.pending.join()
+        return self.index.revisions({FORK})[FORK]["runs"]
+
+    def listed(self):
+        self.index.pending.join()
+        return [
+            (item["run"]["id"], item["run"]["run_attempt"], item["first"] and item["first"]["run_attempt"])
+            for item in self.index.rows(FORK, "runs")["items"]
+        ]
+
+    def built(self):
+        """A first rebuild and a history check: the ordinary running state."""
+        self.clock.now += 1
+        self.index.drain()
+        self.index.check({}, self.clock.now)
+        self.clock.now += 1
+
+    def deliver(self, guid, document, event="workflow_run"):
+        self.clock.now += 1
+        self.index.offer(guid, event, FORK, {"workflow_run": document})
+        self.index.pending.join()
+
+    def owed(self):
+        return [row[0] for row in self.index.db.execute("SELECT item FROM pending ORDER BY item")]
+
+    def test_the_first_rebuild_publishes_the_listing(self):
+        before = self.entry()
+        self.assertEqual((before["mode"], before["state"], before["built"]), ("rows", "rebuilding", None))
+        self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["runs"]["mode"], "signals", "only forks hold runs")
+        self.assertEqual(self.listed(), [])
+        self.built()
+        after = self.entry()
+        self.assertEqual((after["state"], after["built"] is not None), ("current", True))
+        self.assertNotEqual(after["revision"], before["revision"])
+        self.assertEqual(self.listed(), [(3, 1, 1), (2, 1, 1), (1, 1, 1)])
+        self.assertNotIn("html_url", self.index.rows(FORK, "runs")["items"][0]["run"], "only listed fields are kept")
+        self.assertIsNone(self.index.rows(KEY[0], "runs"))
+        self.assertIsNone(self.index.rows(FORK, "issues"))
+
+    def test_deliveries_keep_the_rows_current_under_the_ordering_rule(self):
+        self.built()
+        revision = self.entry()["revision"]
+        self.deliver("new", run(4, status="in_progress", updated="2026-11-14T10:05:00Z"))
+        self.assertEqual(self.listed()[0], (4, 1, 1))
+        self.assertNotEqual(self.entry()["revision"], revision)
+        self.deliver("done", run(4, updated="2026-11-14T10:09:00Z"))
+        self.deliver("late", run(4, status="queued", updated="2026-11-14T10:01:00Z"))
+        self.assertEqual(
+            self.index.rows(FORK, "runs")["items"][0]["run"]["status"], "completed", "an older snapshot is dropped"
+        )
+        revision = self.entry()["revision"]
+        self.deliver("again", run(4, updated="2026-11-14T10:09:00Z"))
+        self.deliver("other", {**run(9), "path": ".github/workflows/ci.yml"})
+        self.deliver("push", {**run(9), "event": "push"})
+        self.assertEqual(self.entry()["revision"], revision, "an identical snapshot and other workflows change nothing")
+        self.assertEqual(self.listed()[0], (4, 1, 1))
+        self.assertEqual(self.owed(), [])
+
+    def test_a_tie_with_different_content_is_settled_by_reading_that_attempt(self):
+        self.built()
+        self.deliver("tie", run(3, status="in_progress"))
+        self.assertEqual(self.owed(), ["3/1"])
+        self.assertEqual(self.index.rows(FORK, "runs")["items"][0]["run"]["status"], "completed", "not applied")
+        self.fork.attempts[3, 1] = run(3, status="in_progress")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual(self.index.rows(FORK, "runs")["items"][0]["run"]["status"], "in_progress")
+        self.assertEqual(self.owed(), [])
+
+    def test_a_rerun_first_seen_at_a_later_attempt_owes_attempt_one(self):
+        self.built()
+        self.deliver("rerun", run(7, attempt=3, updated="2026-11-14T10:20:00Z"))
+        self.assertEqual((self.listed()[0], self.owed()), ((7, 3, None), ["7/1"]))
+        self.fork.attempts[7, 1] = run(7)
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.listed()[0], self.owed()), ((7, 3, 1), []))
+        self.deliver("gone", run(8, attempt=2, updated="2026-11-14T10:30:00Z"))
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.listed()[0], self.owed()), ((8, 2, None), []), "GitHub no longer has attempt 1")
+        self.fork.paths.clear()
+        self.deliver("gone-again", run(8, attempt=2, updated="2026-11-14T10:31:00Z"))
+        self.index.drain()
+        self.assertEqual(self.fork.paths, [], "an absent attempt is not asked for again")
+
+    def test_an_owed_read_survives_a_restart_and_a_newer_request_survives_an_older_read(self):
+        self.built()
+        self.deliver("tie", run(3, status="in_progress"))
+        self.index.close()
+        self.index = self.opened()
+        self.assertEqual(self.owed(), ["3/1"])
+        requested = self.index.db.execute("SELECT requested FROM pending").fetchone()[0]
+        self.fork.attempts[3, 1] = run(3, status="queued")
+
+        def newer():
+            self.clock.now += 5
+            self.index.offer("tie-2", "workflow_run", FORK, {"workflow_run": run(3, status="waiting")})
+            self.index.pending.join()
+
+        self.fork.during = newer
+        self.clock.now += 1
+        self.index.read_run(FORK, "3/1")
+        self.assertEqual(
+            self.index.db.execute("SELECT requested FROM pending").fetchone()[0], requested, "its age is kept"
+        )
+        self.fork.attempts[3, 1] = run(3, status="waiting")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.owed(), self.index.rows(FORK, "runs")["items"][0]["run"]["status"]), ([], "waiting"))
+
+    def test_a_rebuild_replaces_membership_but_keeps_runs_created_while_it_ran(self):
+        self.built()
+        self.deliver("extra", run(6, updated="2026-11-14T10:10:00Z"))
+        self.assertEqual([item[0] for item in self.listed()], [6, 3, 2, 1])
+        self.fork.listed = [run(5), run(3)]
+
+        def created():
+            self.clock.now += 5
+            self.index.offer("during", "workflow_run", FORK, {"workflow_run": run(8, updated="2026-11-14T10:40:00Z")})
+            self.index.pending.join()
+
+        self.fork.during = created
+        self.clock.now += 1
+        self.index.rebaseline(FORK)
+        self.assertEqual(self.entry()["state"], "rebuilding")
+        self.index.drain()
+        self.assertEqual(
+            [item[0] for item in self.listed()], [8, 5, 3], "runs GitHub no longer lists leave; the new one stays"
+        )
+        self.assertEqual(self.entry()["state"], "current")
+
+    def test_a_failed_rebuild_shows_and_waits_for_the_next_check(self):
+        self.fork.failing = True
+        self.index.drain()
+        self.assertEqual(self.entry()["state"], "failed")
+        calls = len(self.fork.paths)
+        self.index.drain()
+        self.assertEqual(len(self.fork.paths), calls, "not retried until the next history check")
+        self.fork.failing = False
+        self.index.check({}, self.clock.now)
+        self.index.drain()
+        self.assertEqual((self.entry()["state"], [item[0] for item in self.listed()]), ("current", [3, 2, 1]))
+
+    def test_an_overdue_read_takes_the_kind_out_of_current(self):
+        self.built()
+        self.deliver("rerun", run(7, attempt=2))
+        self.fork.failing = True
+        self.index.drain()
+        self.assertEqual(self.entry()["state"], "current", "a read owed for a moment is ordinary")
+        self.clock.now += FRESH_SECONDS + 5
+        self.index.check({}, self.clock.now)
+        self.assertEqual(self.entry()["state"], "catching-up")
+
+    def test_the_history_check_replays_payloads_or_rebuilds(self):
+        self.built()
+        details = {
+            1: {"workflow_run": run(4, updated="2026-11-14T10:05:00Z")},
+            2: {"workflow_run": {**run(9), "event": "push"}},
+        }
+        groups = {
+            "guid-1": [summary(1, "workflow_run", 11, at=self.clock.now)],
+            "guid-2": [summary(2, "workflow_run", 11, at=self.clock.now)],
+        }
+        self.clock.now += 1
+        self.index.check(groups, self.clock.now, lambda item: details[item["id"]])
+        self.assertEqual(([item[0] for item in self.listed()], self.entry()["state"]), ([4, 3, 2, 1], "current"))
+        self.assertEqual(self.index.check(groups, self.clock.now, Mock(side_effect=AssertionError("has receipts"))), {})
+        lost = {"guid-3": [summary(3, "workflow_run", 11, at=self.clock.now)]}
+        self.clock.now += 1
+        self.index.check(lost, self.clock.now, Mock(side_effect=RuntimeError("payload unreadable")))
+        self.assertEqual(self.entry()["state"], "rebuilding", "what cannot be replayed is covered by a rebuild")
+        self.fork.listed = [run(5), run(4)]
+        self.index.drain()
+        self.assertEqual([item[0] for item in self.listed()], [5, 4])
+        many = {
+            f"guid-m{n}": [summary(100 + n, "workflow_run", 11, at=self.clock.now + 1)] for n in range(REPLAY_LIMIT + 1)
+        }
+        self.clock.now += 2
+        self.index.check(many, self.clock.now, Mock(side_effect=AssertionError("too many to replay")))
+        self.assertEqual(self.entry()["state"], "rebuilding")
+
+    def test_a_request_made_during_a_rebuild_is_still_owed_after_it(self):
+        self.built()
+
+        def again():
+            self.clock.now += 5
+            self.index.rebaseline(FORK)
+
+        self.clock.now += 1
+        self.index.rebaseline(FORK)
+        self.fork.during = again
+        self.clock.now += 1
+        self.index.rebuild_runs(FORK)
+        self.assertEqual(self.entry()["state"], "rebuilding", "the later request was not settled by the earlier read")
+        listings = len(self.fork.paths)
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.entry()["state"], len(self.fork.paths)), ("current", listings + 1))
+
+    def test_a_replayed_delivery_a_newer_rebuild_covers_is_not_applied(self):
+        self.built()
+        self.deliver("old", run(6, updated="2026-11-14T10:10:00Z"))
+        delivered = self.clock.now + 1
+        self.clock.now += 2
+
+        def detail(item):
+            """While the payload is fetched, a rebuild publishes a listing without the run."""
+            self.fork.listed = []
+            self.index.rebaseline(FORK)
+            self.clock.now += 5
+            self.index.rebuild_runs(FORK)
+            return {"workflow_run": run(6, status="in_progress", updated="2026-11-14T10:15:00Z")}
+
+        self.index.check({"guid-7": [summary(7, "workflow_run", 11, at=delivered)]}, self.clock.now, detail)
+        self.assertEqual(self.listed(), [], "the removed run did not come back")
+        self.assertEqual(
+            self.index.db.execute("SELECT outcome FROM receipts WHERE guid = 'guid-7'").fetchone()[0], "covered"
+        )
+
+    def test_an_attempt_github_no_longer_has_leaves_the_list(self):
+        self.built()
+        self.deliver("tie", run(3, status="in_progress"))
+        revision = self.entry()["revision"]
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual(([item[0] for item in self.listed()], self.owed()), ([2, 1], []), "run 3 is gone, not stale")
+        self.assertNotEqual(self.entry()["revision"], revision)
+        self.deliver("rerun", run(2, attempt=2, updated="2026-11-14T10:20:00Z"))
+        self.deliver("tie-2", run(2, attempt=2, status="queued", updated="2026-11-14T10:20:00Z"))
+        self.fork.attempts[2, 1] = run(2)
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual([item[0] for item in self.listed()], [1], "its latest attempt is gone: no older one stands in")
+
+    def test_a_delivery_cannot_undo_a_confirmed_absence(self):
+        self.built()
+        self.deliver("tie", run(3, status="in_progress"))
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual([item[0] for item in self.listed()], [2, 1])
+        self.fork.paths.clear()
+        self.deliver("late", run(3, status="queued", updated="2026-11-14T09:00:00Z"))
+        self.deliver("later", run(3, status="completed", updated="2026-11-14T11:00:00Z"))
+        self.assertEqual(([item[0] for item in self.listed()], self.owed()), ([2, 1], ["3/1"]), "asked, not applied")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual(([item[0] for item in self.listed()], self.owed()), ([2, 1], []), "GitHub still says gone")
+        self.deliver("back", run(3, updated="2026-11-14T11:30:00Z"))
+        self.fork.attempts[3, 1] = run(3, updated="2026-11-14T11:30:00Z")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual([item[0] for item in self.listed()], [3, 2, 1], "an authoritative read can restore it")
+
+    def test_a_payload_without_its_run_is_not_an_unrelated_event(self):
+        self.built()
+        for payload in ({}, {"workflow_run": {}}, {"workflow_run": {"id": 9, "run_attempt": 1}}):
+            with self.assertRaises(ValueError):
+                self.index.offer("empty", "workflow_run", FORK, payload)
+        groups = {"guid-5": [summary(5, "workflow_run", 11, at=self.clock.now)]}
+        self.clock.now += 1
+        self.index.check(groups, self.clock.now, lambda item: {"workflow_run": {}})
+        self.assertEqual(self.entry()["state"], "rebuilding")
+        self.assertFalse(self.index.db.execute("SELECT 1 FROM receipts WHERE guid = 'guid-5'").fetchone())
+
+    def test_a_version_one_file_migrates_with_its_data(self):
+        self.index.close()
+        for suffix in ("", "-wal", "-shm"):
+            Path(self.directory.name, list_index.DATABASE + suffix).unlink(missing_ok=True)
+        db = sqlite3.connect(Path(self.directory.name, list_index.DATABASE))
+        db.executescript(list_index.SCHEMA)
+        db.execute("INSERT INTO meta VALUES ('version', '1'), ('incarnation', 'feedfacefeedface')")
+        db.execute("INSERT INTO revisions VALUES (?, 'issues', 41)", (KEY[0],))
+        db.execute(
+            "INSERT INTO coverage VALUES (?, 'issues', 'signals', ?, ?)", (KEY[0], self.clock.now, self.clock.now)
+        )
+        db.execute("INSERT INTO coverage VALUES (?, 'runs', 'signals', ?, ?)", (FORK, self.clock.now, self.clock.now))
+        db.commit()
+        db.close()
+        self.index = self.opened()
+        self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["revision"], "feedfacefeedface:41")
+        self.assertEqual((self.entry()["mode"], self.entry()["state"]), ("rows", "rebuilding"))
+        self.built()
+        self.assertEqual([item[0] for item in self.listed()], [3, 2, 1])
+
+    def test_the_list_endpoint_serves_rows_only(self):
+        self.built()
+        lists = Lists(self.index, TOKEN)
+        ask = lambda body: lists.handle("/lists", "Bearer " + TOKEN, json.dumps(body).encode())
+        status, found = ask({"repository": FORK, "kind": "runs"})
+        self.assertEqual(
+            (status, found["state"], len(found["items"]), found["revision"]),
+            (200, "current", 3, self.entry()["revision"]),
+        )
+        self.assertEqual(ask({"repository": KEY[0], "kind": "runs"})[0], 404)
+        self.assertEqual(ask({"repository": FORK, "kind": "issues"})[0], 404)
+        self.assertEqual(ask({"repository": FORK})[0], 400)
+        self.assertEqual(lists.handle("/lists", "Bearer wrong", b"{}")[0], 401)
+
+
 class WiringTests(ServiceFixture, unittest.TestCase):
     """Ingress, recovery, the registry and the listener, each with a list index that may fail."""
 
@@ -246,7 +605,7 @@ class WiringTests(ServiceFixture, unittest.TestCase):
             for name, data in cases.items():
                 guid = f"{id(index)}-{name}"
                 self.assertEqual(self.deliver(indexed, "issues", data, guid), expected[name])
-                index.offer.assert_called_with(guid, "issues", KEY[0])
+                index.offer.assert_called_with(guid, "issues", KEY[0], data)
             self.assertEqual([item.key for item in self.registry.due(self.clock())], queued)
         rejected = Mock()
         refused = Ingress(SECRET, self.registry, {KEY[0]: 42}, set(), clock=self.clock, list_index=rejected)
@@ -260,8 +619,13 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         recovery = Recovery(api, self.registry, reconciler, {KEY[0]: 42}, clock=self.clock, list_index=index)
         recovery.poll()
         index.rebaseline.assert_called_once_with()
-        groups, started = index.check.call_args.args
+        groups, started, detail = index.check.call_args.args
         self.assertEqual((list(groups), started), (["guid-1"], self.clock.now))
+        api.details[1] = {"request": {"payload": {"action": "completed"}}}
+        self.assertEqual(detail({"id": 1}), {"action": "completed"}, "the payload of one delivery")
+        api.details[1] = {"request": {"payload": {}}}
+        with self.assertRaises(IdentityError):
+            detail({"id": 1})
         index.check.side_effect = RuntimeError("index down")
         self.clock.now += 300
         recovery.poll()

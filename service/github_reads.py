@@ -1,9 +1,28 @@
 """Read target files and runner identities using repository read credentials."""
 
 import base64
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
+from github import NotFound
 from policy import Blocked
+
+from .admission import EXECUTOR_WORKFLOW
+
+# What a list of executor runs shows of each run attempt.
+RUN_FIELDS = (
+    "id",
+    "run_attempt",
+    "status",
+    "conclusion",
+    "head_branch",
+    "event",
+    "path",
+    "created_at",
+    "run_started_at",
+    "updated_at",
+)
+TARGET_RUNS = 50
+EXECUTOR_PATH = f".github/workflows/{EXECUTOR_WORKFLOW}"
 
 DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
   repository(owner:$owner,name:$name) { defaultBranchRef { name target { oid } } }
@@ -82,3 +101,41 @@ def content(reader, repository, path, sha, limit=None):
     if len(data) != item["size"]:
         raise Blocked("target configuration must be regular files within the requested transport allowance")
     return data.decode("utf-8")
+
+
+def run_fields(run):
+    """One run attempt reduced to the listed fields; refuses anything without its identity."""
+    if not isinstance(run, dict) or type(run.get("id")) is not int or type(run.get("run_attempt")) is not int:
+        raise ValueError("malformed workflow run")
+    return {field: run.get(field) for field in RUN_FIELDS}
+
+
+def executor_run(run):
+    """A webhook's `workflow_run` as a listed executor run, or None for any other workflow or trigger.
+
+    A run without its identity, trigger or workflow path is refused: it cannot be told apart.
+    """
+    fields = run_fields(run)
+    if not isinstance(fields["event"], str) or not isinstance(fields["path"], str):
+        raise ValueError("malformed workflow run")
+    if fields["event"] != "workflow_dispatch" or fields["path"].split("@", 1)[0] != EXECUTOR_PATH:
+        return None
+    return fields
+
+
+def executor_runs(reader, fork, limit=TARGET_RUNS):
+    """The fork's most recent executor `workflow_dispatch` runs, newest first, on any branch."""
+    query = urlencode({"event": "workflow_dispatch", "per_page": limit})
+    listing = reader.request("GET", f"repos/{fork}/actions/workflows/{EXECUTOR_WORKFLOW}/runs?{query}")
+    listed = listing.get("workflow_runs") if isinstance(listing, dict) else None
+    if not isinstance(listed, list):
+        raise ValueError("malformed workflow run listing")
+    return [run_fields(run) for run in listed]
+
+
+def run_attempt(reader, fork, run, attempt):
+    """One exact attempt of a run, or None when GitHub no longer has it."""
+    try:
+        return run_fields(reader.request("GET", f"repos/{fork}/actions/runs/{run}/attempts/{attempt}"))
+    except NotFound:
+        return None

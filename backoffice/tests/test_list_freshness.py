@@ -23,6 +23,16 @@ from backoffice.tasks import Tasks  # noqa: E402
 from service.targets import Target  # noqa: E402
 
 TOKEN = "ab" * 32
+RUN = {
+    "id": 77,
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "success",
+    "head_branch": "concurro/runs/00000000-0000-0000-0000-000000000000",
+    "created_at": "2026-11-13T12:00:00Z",
+    "run_started_at": "2026-11-13T12:00:00Z",
+    "updated_at": "2026-11-13T12:02:00Z",
+}
 
 
 class Index:
@@ -31,7 +41,8 @@ class Index:
     def __init__(self, repositories=("up/project",)):
         self.repositories, self.down, self.asked, self.refreshed = repositories, False, 0, []
         self.counters = dict.fromkeys(("issues", "sponsorships", "pulls", "runs"), 1)
-        self.state = "current"
+        self.modes = dict.fromkeys(self.counters, "signals")
+        self.state, self.built, self.rows, self.listed = "current", "2026-11-14T10:00:00+00:00", [], 0
 
     def list_revisions(self, repositories):
         self.asked += 1
@@ -39,11 +50,18 @@ class Index:
             raise IndexUnavailable("down")
         entry = lambda kind: {
             "revision": f"x:{self.counters[kind]}",
-            "mode": "signals",
+            "mode": self.modes[kind],
             "state": self.state,
             "verified": "2026-11-14T10:00:00+00:00",
+            "built": self.built if self.modes[kind] == "rows" else None,
         }
         return {r: {kind: entry(kind) for kind in self.counters} for r in self.repositories if r in repositories}
+
+    def list_rows(self, repository, kind):
+        self.listed += 1
+        if self.down:
+            raise IndexUnavailable("down")
+        return self.rows
 
     def list_refresh(self, repository):
         if self.down:
@@ -191,19 +209,28 @@ class ServiceClientTests(unittest.TestCase):
         root = self.enterContext(tempfile.TemporaryDirectory())
         index = ListIndex(root)
         self.addCleanup(index.close)
-        index.start({"up/project": 10})
+        fork = Mock(request=Mock(return_value={"workflow_runs": [RUN]}))
+        index.start(
+            {"up/project": 10, "owner/project": 11}, rows={"runs": {"owner/project"}}, reader=lambda r: fork, work=False
+        )
+        index.drain()
         server = ingress.server(Mock(), "127.0.0.1", 0, lists=Lists(index, TOKEN))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         url = "http://{}:{}".format(*server.server_address)
         service = ServiceCommands(url, lists_token=TOKEN)
+        held = service.list_revisions(["owner/project"])["owner/project"]["runs"]
+        self.assertEqual((held["mode"], held["built"] is not None), ("rows", True))
+        self.assertEqual([item["run"]["id"] for item in service.list_rows("owner/project", "runs")], [77])
         before = service.list_revisions(["up/project"])["up/project"]
         self.assertEqual(set(before), {"issues", "sponsorships", "pulls", "runs"})
         service.list_refresh("up/project")
         self.assertNotEqual(
             service.list_revisions(["up/project"])["up/project"]["issues"]["revision"], before["issues"]["revision"]
         )
+        with self.assertRaises(IndexUnavailable):
+            service.list_rows("up/project", "runs")
         with self.assertRaises(IndexUnavailable):
             ServiceCommands(url, lists_token="cd" * 32).list_revisions(["up/project"])
         with self.assertRaises(IndexUnavailable):
@@ -329,18 +356,89 @@ class ListingTests(Cached):
         self.settle()
         self.assertIsNone(self.tasks().overview()["cache"]["error"], "recovered without any new revision")
 
-    def test_an_incomplete_runs_read_is_retried(self):
-        listing = Mock(side_effect=[RuntimeError("down"), {"workflow_runs": []}])
-        self.access.transport.return_value = Mock(request=lambda method, path: listing())
-        diagnostics = Mock(for_sessions=Mock(return_value=[]))
-        reader = lambda: Tasks(self.settings, self.access, USER, diagnostics, read_cache=self.cache, lists=self.index)
+    def runs_reader(self, listing, turns=()):
+        self.access.transport.return_value = Mock(request=lambda method, path: listing(path))
+        diagnostics = Mock(for_sessions=Mock(return_value=list(turns)))
+        return lambda: Tasks(self.settings, self.access, USER, diagnostics, read_cache=self.cache, lists=self.index)
+
+    def test_a_failed_runs_listing_says_so_and_is_retried(self):
+        answers = iter([RuntimeError("down"), {"workflow_runs": [RUN]}, RuntimeError("down again")])
+
+        def listing(path):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        reader = self.runs_reader(listing)
         first = reader().target_runs("up/project")
-        self.assertEqual((first["runs"], bool(first["message"]), bool(first["cache"]["error"])), ([], True, True))
+        self.assertEqual((first["runs"], first["message"]), ([], "Actions runs could not be loaded from GitHub."))
+        self.assertEqual(reader().target_runs("up/project")["runs"], [], "not asked again within the retry delay")
         self.now += 61
+        again = reader().target_runs("up/project")
+        self.assertEqual(([run["id"] for run in again["runs"]], again["message"]), ([77], None))
+        self.index.counters["runs"] += 1
+        reader().target_runs("up/project")
+        with self.assertRaises(RuntimeError):
+            self.settle()
+        kept = reader().target_runs("up/project")
+        self.assertEqual(([run["id"] for run in kept["runs"]], bool(kept["cache"]["error"])), ([77], True))
+
+    def test_runs_the_service_holds_are_taken_from_it_and_attributed_here(self):
+        reader = self.runs_reader(Mock(side_effect=AssertionError("GitHub is not read for a held list")))
+        rerun = {**RUN, "id": 78, "run_attempt": 2}
+        self.index.modes["runs"] = "rows"
+        self.index.rows = [{"run": RUN, "first": RUN}, {"run": rerun, "first": None}]
+        first = reader().target_runs("up/project")
+        self.assertEqual(
+            [(run["id"], run["attempt"]) for run in first["runs"]], [(77, 1), (78, 2)], "unattributed: latest"
+        )
+        self.assertEqual((first["message"], first["cache"]["state"], self.index.listed), (None, "current", 1))
+        self.now += 86_400
+        reader().target_runs("up/project")
+        self.assertEqual(self.index.listed, 1, "an unchanged revision asks the service for nothing more")
+        self.index.counters["runs"] += 1
+        self.index.rows = self.index.rows[:1]
         reader().target_runs("up/project")
         self.settle()
-        again = reader().target_runs("up/project")
-        self.assertEqual((again["message"], again["cache"]["error"]), (None, None))
+        self.assertEqual(
+            ([run["id"] for run in reader().target_runs("up/project")["runs"]], self.index.listed), ([77], 2)
+        )
+        self.index.down = True
+        away = reader().target_runs("up/project")
+        self.assertEqual(([run["id"] for run in away["runs"]], away["cache"]["state"]), ([77], "unavailable"))
+
+    def test_a_list_the_service_has_not_built_shows_the_saved_copy_or_fails(self):
+        reader = self.runs_reader(Mock(side_effect=AssertionError("GitHub is not read for a held list")))
+        self.index.modes["runs"], self.index.built, self.index.state = "rows", None, "rebuilding"
+        with self.assertRaises(IndexUnavailable):
+            reader().target_runs("up/project")
+        self.index.built, self.index.state, self.index.rows = (
+            "2026-11-14T10:00:00+00:00",
+            "current",
+            [{"run": RUN, "first": RUN}],
+        )
+        reader().target_runs("up/project")
+        self.index.built, self.index.state = None, "failed"
+        view = reader().target_runs("up/project")
+        self.assertEqual(([run["id"] for run in view["runs"]], view["cache"]["state"]), ([77], "failed"))
+        self.assertIn("could not build", view["cache"]["error"])
+        self.assertEqual(self.index.listed, 1)
+
+    def test_copies_saved_by_the_previous_release_still_serve(self):
+        """Unchanged lists keep their saved copies; the reshaped runs list falls back to the old one."""
+        scope = self.tasks().list_scope
+        attributed = {"runs": [{"id": 70}], "message": None}
+        self.cache.read(scope, "up/project", LISTING + "issues", lambda: {"items": []}, revision="x:1")
+        self.cache.read(scope, "up/project", LISTING + "pulls", lambda: {"items": []}, revision="x:1")
+        self.cache.read(scope, "up/project", LISTING + f"sponsorships:{USER.id}", lambda: {"items": []}, revision="x:1")
+        self.cache.read(scope, "up/project", LISTING + "runs", lambda: {"items": attributed}, revision="x:1")
+        self.index.down = True
+        self.assertEqual(self.tasks().overview()["cache"]["state"], "unavailable")
+        reader = self.runs_reader(Mock(side_effect=AssertionError("nothing is read while the index is away")))
+        view = reader().target_runs("up/project")
+        self.assertEqual((view["runs"], view["cache"]["state"]), ([{"id": 70}], "unavailable"))
+        self.assertEqual(self.reads(), [0, 0, 0])
 
     def test_no_usable_cache_never_bypasses_an_unavailable_index(self):
         broken = Mock()
@@ -365,6 +463,7 @@ class ListingTests(Cached):
             {},
             {**good, "mode": "rows"},
             {**good, "state": "rebuilding"},
+            {**good, "built": 5},
             {**good, "revision": 7},
             {k: v for k, v in good.items() if k != "verified"},
             "current",

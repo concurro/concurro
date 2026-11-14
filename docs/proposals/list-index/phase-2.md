@@ -1,8 +1,53 @@
 # Phase 2 brief: rows, rebuilds and executor runs
 
-**Not implemented; depends on phase 1.** Implements phase 2 of the
-[proposal](../list-index.md). Re-check against the code and against phase 1 as built
-before starting.
+**Implemented in this changeset; not deployed.** Base: service `6ec87c1`, frontend
+`782db86` (phase 1 merged). The brief below is kept as written; where the implementation
+differs, this section says so.
+
+## As built
+
+- **Schema version 2** adds `pending`, `runs`, `run_members` and three coverage columns
+  (`built`, `wanted`, `failed`); a version 1 file migrates forward on open.
+- **Which lists are rows:** `ListIndex.start(rows=…)` names them. The daemon passes each
+  target's fork for `runs`; every other kind stays in `signals`.
+- **One saved shape for runs.** The backoffice now saves the raw listing (each run with
+  its first attempt) in both modes and attributes on every request (`Runs.listing`,
+  `Runs.attribute`). Attribution reads only local diagnostics, and saving it froze it at
+  the time of the read. In legacy mode this reads attempt 1 of every listed rerun, not only
+  attributed ones.
+- **The backoffice still decides by revision.** For a held list its "read" is `/lists`
+  instead of GitHub, through the same saved-copy and revision rule as phase 1, so an
+  unchanged revision costs no request to the service beyond the one revisions call.
+- **Absent attempts are remembered** as a row without a document, so an attempt GitHub no
+  longer has is not asked for on every later delivery of that run.
+- **Failed reads wait for the next recovery scan** (`ListIndex.deferred`), not a timer.
+- **A failed listing in legacy mode** now raises into the read cache, which keeps the last
+  good copy and retries after a minute; `Tasks.target_runs` turns a cold failure into the
+  existing "could not be loaded" message.
+- **Found by the end-to-end test:** the listener dispatched only paths under `/lists/`, so
+  the bare `/lists` fell through to webhook handling. Fixed.
+- **Deployment order differs from the brief:** the phase 1 backoffice treats `mode: rows`
+  as unusable, so with a phase 2 service it would show the saved runs with an
+  "unavailable" note. Deploy the backoffice first, or both together.
+- **After code review** (five findings, all fixed with a test each):
+  - A rebuild settles only the rebuild requests made before it began; one made while it
+    ran is still owed afterwards.
+  - A delivery replayed from history is not applied when a rebuild published during the
+    payload fetch already covers it, so it cannot bring back a run that rebuild removed.
+  - An attempt GitHub no longer has loses its stored document under the same fence as a
+    read. A run whose latest attempt is gone leaves the list; no older attempt stands in.
+    The marker keeps the removed snapshot's timestamp, and a later delivery for it, of
+    whatever age, is not applied but answered with a read of that attempt.
+  - Saved copies of the unchanged lists keep their scope. The reshaped runs list has its
+    own key (`runs:attempts`), and while it has no copy and the index is unavailable, a
+    copy saved by phase 1 is still served.
+  - A delivery payload without what its event must carry (the run with its identity,
+    trigger and workflow path) is refused, in ingress and in replay, and so leads to a
+    rebuild instead of a receipt.
+- **Tests:** 32 in `service/tests/test_list_index.py`, 27 in
+  `backoffice/tests/test_list_freshness.py`.
+- **Not done:** the "Done when" checks need a deployment. The new status notes were not
+  checked in a browser; the mock data has no index states.
 
 ## Outcome
 

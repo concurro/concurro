@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from github import NotFound, Transient
 from service.admission import DISPATCH, EXECUTOR_WORKFLOW, RUN_BRANCH_PREFIX
+from service.github_reads import executor_runs, run_attempt
 from service.reconciler import pages
 
 from .turns import ROLES, STAGES
@@ -39,7 +40,8 @@ def job_record(job):
 # Actions run status as the frontend's `ActionsRun.status`; a completed run reads from its conclusion.
 QUEUED = ("queued", "waiting", "pending", "requested")
 CONCLUSION = {"success": "success", "cancelled": "cancelled", "skipped": "cancelled", "stale": "cancelled"}
-TARGET_RUNS = 50
+READ_FAILURES = (NotFound, Transient, RuntimeError, OSError, ValueError, KeyError, TypeError)
+UNLISTED = "Actions runs could not be loaded from GitHub."
 
 
 def run_status(run) -> str:
@@ -144,44 +146,61 @@ class Runs:
             messages.append("No Actions run identity was recorded for this turn.")
         return {"runs": runs, "message": " ".join(dict.fromkeys(messages)) or None}
 
-    def for_target(self, lookup, limit=TARGET_RUNS):
-        """GitHub's own recent executor runs, attributed to the turns the service recorded for them.
+    def listing(self) -> list[dict]:
+        """GitHub's recent executor runs, each with the first attempt that alone can serve a session.
+
+        `first` is the run itself unless it was rerun; None when that attempt cannot be read.
+        """
+        items = []
+        for run in executor_runs(self.reader, self.fork):
+            first = run
+            if run["run_attempt"] != 1:
+                try:
+                    first = run_attempt(self.reader, self.fork, run["id"], 1)
+                except READ_FAILURES:
+                    first = None
+            items.append({"run": run, "first": first})
+        return items
+
+    def attribute(self, items, lookup) -> dict:
+        """Listed runs attributed to the turns the service recorded for them.
 
         `lookup(sessions)` supplies the recorded turns of those runner sessions, so attribution
         never depends on how recent a turn is. One run serves every turn of its session, so each
         run appears once; a run with no recorded turn is still listed, without a task.
 
         Only attempt 1 can serve a session (`gateway/exchange`), so a rerun's own status is not
-        the turns' evidence: their attempt is read exactly when the listing returns a later one.
+        the turns' evidence: an attributed rerun shows its first attempt, or is left out.
         """
-        try:
-            query = urlencode({"event": "workflow_dispatch", "per_page": limit})
-            listing = self.reader.request("GET", f"{self.root}/workflows/{EXECUTOR_WORKFLOW}/runs?{query}")
-            listed = listing["workflow_runs"] if isinstance(listing.get("workflow_runs"), list) else []
-        except (NotFound, Transient, RuntimeError, OSError, ValueError, KeyError, TypeError):
-            return {"runs": [], "message": "Actions runs could not be loaded from GitHub."}
-        branches = {str(run.get("head_branch") or "").removeprefix(RUN_BRANCH_PREFIX): run for run in listed}
+        branches = {str(item["run"].get("head_branch") or "").removeprefix(RUN_BRANCH_PREFIX) for item in items}
         index = served(lookup([session for session in branches if DISPATCH.fullmatch(session)]))
         found, unreadable = [], False
-        for run in listed:
+        for item in items:
+            run = item["run"]
             session = str(run.get("head_branch") or "").removeprefix(RUN_BRANCH_PREFIX)
             turns = index["run"].get(str(run.get("id")))
             association = "assigned" if turns else None
             if not turns:
                 turns = index["session"].get(session)
                 association = "dispatched" if turns else None
-            served_run = run
             if turns and run.get("run_attempt") != 1:
-                try:
-                    served_run = self.reader.request("GET", f"{self.root}/runs/{run['id']}/attempts/1")
-                except (NotFound, Transient, RuntimeError, OSError, ValueError, KeyError, TypeError):
+                run = item["first"]
+                if run is None:
                     unreadable = True
                     continue
-            found.append(self.attributed(served_run, sorted(turns or [], key=lambda row: row["turn"]), association))
+            found.append(self.attributed(run, sorted(turns or [], key=lambda row: row["turn"]), association))
         message = (
             "Some reruns could not be read from GitHub; their original attempts are not shown." if unreadable else None
         )
         return {"runs": found, "message": message}
+
+    def for_target(self, lookup):
+        """GitHub's own recent executor runs, attributed; a failed listing says so instead of raising."""
+        try:
+            items = self.listing()
+        except READ_FAILURES:
+            return {"runs": [], "message": UNLISTED}
+        return self.attribute(items, lookup)
 
     def attributed(self, run, turns, association) -> dict:
         """One listed run with the task and turn numbers it served, if any turn records it."""

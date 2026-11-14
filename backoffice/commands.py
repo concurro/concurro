@@ -60,6 +60,13 @@ class ServiceCommands:
             raise IndexUnavailable("the list index answer was malformed")
         return found
 
+    def list_rows(self, repository: str, kind: str) -> list:
+        """The list the service holds for a kind in mode `rows`."""
+        items = self.lists("/lists", {"repository": repository, "kind": kind}).get("items")
+        if not isinstance(items, list):
+            raise IndexUnavailable("the list index answer was malformed")
+        return items
+
     def list_refresh(self, repository: str) -> None:
         """Have the service treat every list of the repository as changed."""
         self.lists("/lists/refresh", {"repository": repository})

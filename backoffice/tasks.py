@@ -29,7 +29,7 @@ from .auth import User
 from .commands import CommandError, IndexUnavailable
 from .github import Access
 from .read_cache import LISTING
-from .runs import Runs
+from .runs import READ_FAILURES, UNLISTED, Runs
 from .settings import Settings
 
 log = logging.getLogger("concurro.backoffice")
@@ -62,8 +62,15 @@ SECTION_FIELDS = {
     "pull": set(),
 }
 # List index states, most to least favourable; a response reports the least favourable it read.
-INDEX_STATES = ("current", "catching-up", "unavailable")
+INDEX_STATES = ("current", "catching-up", "rebuilding", "failed", "unavailable")
 INDEX_UNAVAILABLE = "Concurro's list index is unavailable."
+# The saved list of a fork's runs with their first attempts; `runs` alone was the attributed result.
+RUNS = "runs:attempts"
+# A list the service holds but has not built yet has nothing to serve but the saved copy.
+INDEX_UNBUILT = {
+    "rebuilding": "Concurro is building this list from GitHub.",
+    "failed": "Concurro could not build this list from GitHub.",
+}
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
 
 
@@ -247,10 +254,11 @@ class Tasks:
 
     # Lists
 
-    def list_state(self, repository: str, kind: str) -> dict | None:
+    def list_state(self, repository: str, kind: str, rows: bool = False) -> dict | None:
         """The index's entry for one list, or None with the index disabled; asked once per request.
 
-        An entry this backoffice cannot use, malformed or in a mode it does not serve, is unavailable.
+        An entry this backoffice cannot use, malformed or in a mode it does not serve, is
+        unavailable; `rows` says the caller can take the list from the service.
         """
         if self.lists is None:
             return None
@@ -268,9 +276,10 @@ class Tasks:
             entry = self.index[repository][kind]
             usable = (
                 isinstance(entry["revision"], str)
-                and entry["mode"] == "signals"
-                and entry["state"] in INDEX_STATES[:2]
+                and (entry["mode"] == "signals" or rows and entry["mode"] == "rows")
+                and entry["state"] in (INDEX_STATES[:2] if entry["mode"] == "signals" else INDEX_STATES[:-1])
                 and isinstance(entry["verified"], str | None)
+                and isinstance(entry.get("built"), str | None)
             )
         except (KeyError, TypeError):
             usable = False
@@ -278,16 +287,23 @@ class Tasks:
             raise IndexUnavailable(f"the list index does not usably report {kind}")
         return entry
 
-    def listing(self, repository: str, name: str, load, incomplete=None):
-        """One list read: saved data at once and a background refresh when due, or GitHub directly.
+    @property
+    def list_scope(self) -> str:
+        return hashlib.sha256(json.dumps([1, "listing", self.settings.reader.app_id]).encode()).hexdigest()
+
+    def listing(self, repository: str, name: str, load, incomplete=None, rows=None):
+        """One list read: saved data at once and a background refresh when due, or its source directly.
 
         With the list index a saved list is due when its kind's revision moved, and nothing is
-        read from GitHub while the index cannot be asked. `incomplete(items)` says a read came
-        back without everything it should hold: it then never replaces a complete saved copy
-        and is retried, instead of being kept as the list.
+        read from GitHub while the index cannot be asked. `incomplete(items)` says a read from
+        GitHub came back without everything it should hold: it then never replaces a complete
+        saved copy and is retried, instead of being kept as the list. `rows()` takes the list
+        from the service, for a kind it holds; GitHub is then not read for it at all.
         """
 
         def read():
+            if held:
+                return rows()
             log.info("list read: %s of %s", name.partition(":")[0], repository)
             return load()
 
@@ -299,21 +315,23 @@ class Tasks:
 
         def saved_read():
             items = read()
-            return {"items": items, "degraded": bool(incomplete and incomplete(items))}
+            return {"items": items, "degraded": bool(not held and incomplete and incomplete(items))}
 
         kind = name.partition(":")[0]
-        entry, freshness = None, {}
+        entry, freshness, held = None, {}, False
         try:
-            entry = self.list_state(repository, "issues" if kind == "issue" else kind)
+            entry = self.list_state(repository, "issues" if kind == "issue" else kind, rows is not None)
             if entry:
                 freshness = {"revision": entry["revision"]}
+                held = entry["mode"] == "rows"
+                if held and entry.get("built") is None:
+                    freshness = {"saved": INDEX_UNBUILT.get(entry["state"], INDEX_UNAVAILABLE)}
         except IndexUnavailable:
             freshness = {"saved": INDEX_UNAVAILABLE}
         if self.read_cache is None:
             return direct()
-        scope = hashlib.sha256(json.dumps([1, "listing", self.settings.reader.app_id]).encode()).hexdigest()
         try:
-            saved, status = self.read_cache.read(scope, repository, LISTING + name, saved_read, **freshness)
+            saved, status = self.read_cache.read(self.list_scope, repository, LISTING + name, saved_read, **freshness)
         except LookupError:
             raise IndexUnavailable("nothing is saved for this list") from None
         except (sqlite3.Error, OSError):
@@ -499,14 +517,31 @@ class Tasks:
             return EMPTY_RUNS
         lookup = self.diagnostics.for_sessions
         reader = Runs(self.access.transport(target.fork), target.fork)
-        found = self.listing(
-            target.fork,
-            "runs",
-            lambda: reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions)),
-            # A message says the listing or a rerun's attempt could not be read.
-            incomplete=lambda found: bool(found["message"]),
-        )
-        return found | self.freshness()
+        try:
+            items = self.listing(
+                target.fork,
+                RUNS,
+                reader.listing,
+                # A rerun whose first attempt could not be read.
+                incomplete=lambda items: any(item["first"] is None for item in items),
+                rows=lambda: self.lists.list_rows(target.fork, "runs"),
+            )
+        except IndexUnavailable:
+            # Until a copy in the current shape exists, one saved by the previous release still serves.
+            try:
+                found, status = self.read_cache.read(
+                    self.list_scope, target.fork, LISTING + "runs", None, saved=INDEX_UNAVAILABLE
+                )
+            except Exception:
+                found = None
+            if found is None:
+                raise
+            self.reads.append(status | {"state": "unavailable", "verified": None})
+            return found["items"] | self.freshness()
+        except READ_FAILURES:
+            return {"runs": [], "message": UNLISTED} | self.freshness()
+        # Attribution reads only local records, so it is never part of what is saved.
+        return reader.attribute(items, lambda sessions: lookup(target.issue_repositories, sessions)) | self.freshness()
 
     def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
         """The newest recorded turns of these repositories; none without a diagnostics directory."""

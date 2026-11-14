@@ -111,6 +111,14 @@ class Recovery:
         self.identity.api("POST", path + "/attempts", self.identity.app_jwt())
         return True
 
+    def payload(self, attempt):
+        """One delivery's request payload, for the list index to apply what it never received."""
+        found = self.identity.api("GET", f"app/hook/deliveries/{attempt['id']}", self.identity.app_jwt())
+        payload = (found.get("request") or {}).get("payload")
+        if not isinstance(payload, dict) or not payload:
+            raise IdentityError("webhook delivery without its payload")
+        return payload
+
     def indexed(self, operation, *arguments):
         """Keep the list index covered by the same scan; its failures never stop delivery recovery."""
         if self.list_index is not None:
@@ -134,7 +142,7 @@ class Recovery:
                 if self.reconciler.cleanup is not None:
                     self.reconciler.cleanup()
             groups = self.deliveries()
-            self.indexed("check", groups, started)
+            self.indexed("check", groups, started, self.payload)
             unresolved = False
             for attempts in groups.values():
                 unresolved = self.redeliver(attempts) or unresolved
