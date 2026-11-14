@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  engine:
-    name: Engine
+  checks:
+    name: Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -32,20 +32,39 @@ jobs:
         run: ruff format --check engine service gateway backoffice deploy
       - name: Check extracted engine types
         run: pyright --project pyrightconfig.json
-      - run: python3 -m unittest discover -s engine/tests -v
-      - run: python3 -m unittest discover -s service/tests -v
-      - run: python3 -m unittest discover -s gateway/tests -v
-      - run: python3 -m unittest discover -s backoffice/tests -v
       - run: python3 -m compileall -q engine service gateway/exchange gateway/vault backoffice
-      - run: python3 -m unittest discover -s deploy/tests -v
       - run: shellcheck deploy/*.sh
       - name: Verify trusted role, skill, schema and example charter packaging
         run: python3 engine/bundle.py examples/stacks-core
 
+  tests:
+    name: Tests (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [engine, service, gateway, backoffice, deploy]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0
+      # One process per test file, one file per core; each file's output is printed whole.
+      - name: Run tests
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          # shellcheck disable=SC2016
+          find "$SUITE/tests" -name 'test*.py' -print0 | xargs -0 -P "$(nproc)" -n 1 sh -c '
+            out=$(python3 -m unittest discover -s "$(dirname "$1")" -p "$(basename "$1")" -v 2>&1); rc=$?
+            printf "%s\n" "$out"; exit $rc' sh
+
   # Release images, tagged with the commit. Hosts pull them; see gateway/README.md.
   images:
     name: Image (${{ matrix.image }})
-    needs: engine
+    needs: [checks, tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
