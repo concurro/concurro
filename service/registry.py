@@ -314,7 +314,8 @@ class Registry:
         self.db, self.lock_fd, self.clock = db, lock_fd, clock
         self.guard = threading.RLock()
         self.failed = False
-        # Called with each repository whose sponsorship projections a committed transaction changed.
+        # Called with each `(repository, issue)` whose sponsorship projection a committed transaction changed;
+        # the issue is None when a change concerns every sponsorship of the repository.
         self.changed = None
         self.touched = set()
 
@@ -408,9 +409,9 @@ class Registry:
                 self.touched = set()
         # After the commit and outside the lock: a listener can neither undo nor delay the transaction.
         if self.changed:
-            for repository in touched:
+            for repository, issue in sorted(touched, key=str):
                 try:
-                    self.changed(repository)
+                    self.changed(repository, issue)
                 except Exception as error:
                     log.warning("sponsorship change not signalled: %s", type(error).__name__)
 
@@ -418,7 +419,7 @@ class Registry:
         """The document's stored text, noting its repository for `changed` when it differs from `raw`."""
         text = json.dumps(document, sort_keys=True)
         if text != raw:
-            self.touched.add(key[0])
+            self.touched.add(tuple(key))
         return text
 
     def recover(self):
@@ -494,7 +495,7 @@ class Registry:
             (*key, source["revision"], json.dumps(source, sort_keys=True)),
         )
         if result.rowcount:
-            self.touched.add(key[0])
+            self.touched.add(tuple(key))
             db.execute(
                 "INSERT INTO issue_sponsorships VALUES (?,?,1,0,NULL) ON CONFLICT(repository,issue) DO UPDATE SET source_revision=source_revision+1,confirmed=0",
                 key,
@@ -564,7 +565,7 @@ class Registry:
                 "INSERT INTO issue_sponsorships VALUES (?,?,?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET confirmed=excluded.confirmed,document=excluded.document",
                 (*key, current, int(document.get("history_complete", True)), json.dumps(document, sort_keys=True)),
             )
-            self.touched.add(key[0])
+            self.touched.add(tuple(key))
             return True
 
     def record_shadow(self, key, state, projection=None, funding="org"):
@@ -685,7 +686,7 @@ class Registry:
                 )
                 # A credential event changes the vault-read coverage of sponsorship views without changing a document.
                 if consumed:
-                    self.touched.add(repository)
+                    self.touched.add((repository, None))
             db.execute(
                 "INSERT INTO credential_cursor VALUES(1,?) ON CONFLICT(id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
                 (max(after, batch["next"]),),
@@ -858,7 +859,7 @@ class Registry:
                 )
                 # A terminal outcome changes which issues `sponsor_issues` lists.
                 if outcome is not None and outcome.kind == "terminal":
-                    self.touched.add(key[0])
+                    self.touched.add(tuple(key))
             return True
 
     def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None):

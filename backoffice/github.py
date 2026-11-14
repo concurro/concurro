@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from github import GitHub, NotFound
 from service.actions import WRITER_PERMISSIONS
-from service.github_reads import content, default_branch
+from service.github_reads import content, default_branch, enrolled_issues
 from service.identity import Identity
 from service.target_config import read_remote
 from service.transport import StaticCredential, Transport
@@ -128,13 +128,7 @@ class Access:
 
     def task_issues(self, repository: str) -> list[dict]:
         """Recently updated issues opted in with the `concurro` label (pull requests excluded)."""
-        found = []
-        for page in range(1, ISSUE_PAGES + 1):
-            batch = self.get(repository, f"issues?state=all&labels=concurro&sort=updated&per_page=100&page={page}")
-            found += [issue for issue in batch if "pull_request" not in issue]
-            if len(batch) < 100:
-                break
-        return found
+        return enrolled_issues(self.transport(repository), repository, ISSUE_PAGES)
 
     def config(self, fork: str) -> tuple[dict, str]:
         """The target configuration at the fork's default-branch head, and that branch's name."""

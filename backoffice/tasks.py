@@ -20,6 +20,7 @@ from checkpoints import MARKER, CheckpointError, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
 from report_store import Cache
+from service.github_reads import gone as gone_issue
 from sponsorship import own_consent, own_consent_present, selected_routes
 from storage_helpers import owned
 from vocab import Stage
@@ -74,9 +75,9 @@ INDEX_UNBUILT = {
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
 
 
-def gone_issue(error: RuntimeError) -> bool:
-    """Recognize only GitHub's moved/deleted issue responses, preserving outages and other failures."""
-    return isinstance(error, NotFound) or str(error).endswith(("(HTTP 301)", "(HTTP 410)"))
+def unread():
+    """The read of a list that must be served from its saved copy alone."""
+    raise IndexUnavailable("this list is not read here")
 
 
 class ReadCheckpoints(Checkpoints):
@@ -378,8 +379,12 @@ class Tasks:
 
         return self.listing(repository, f"sponsorships:{self.user.id}", load, incomplete=lambda found: found is None)
 
-    def sponsored_issue(self, repository: str, number: int) -> dict | None:
-        """An issue known only from its sponsorship, unless GitHub moved or deleted it."""
+    def sponsored_issue(self, repository: str, number: int, saved: bool = False) -> dict | None:
+        """An issue known only from its sponsorship, unless GitHub moved or deleted it.
+
+        `saved` takes only a copy saved earlier: the service holds the issue list but has not
+        built it yet, so GitHub is not read here.
+        """
 
         def load():
             try:
@@ -389,7 +394,21 @@ class Tasks:
                     raise
                 return None
 
-        return self.listing(repository, f"issue:{number}", load)
+        try:
+            return self.listing(repository, f"issue:{number}", load, rows=unread if saved else None)
+        except IndexUnavailable:
+            # Nothing saved and nothing may be read from GitHub: the issue is left out for now.
+            return None
+
+    def holds(self, repository: str, kind: str) -> str | None:
+        """`built` or `unbuilt` when the service holds this list, so nothing of it is read from GitHub here."""
+        try:
+            entry = self.list_state(repository, kind, True)
+        except IndexUnavailable:
+            return None
+        if not entry or entry["mode"] != "rows":
+            return None
+        return "unbuilt" if entry.get("built") is None else "built"
 
     def listed(self, target, record: dict) -> tuple[list[dict], list[dict]]:
         """A target's tasks and its sponsored issues awaiting enrollment, from concurrent reads."""
@@ -398,7 +417,13 @@ class Tasks:
         with ThreadPoolExecutor(2 * len(repositories) + 1) as pool:
             pulls_read = pool.submit(self.pulls_by_issue, self.publication_repository(target))
             issue_reads = [
-                pool.submit(self.listing, repository, "issues", lambda r=repository: self.access.task_issues(r))
+                pool.submit(
+                    self.listing,
+                    repository,
+                    "issues",
+                    lambda r=repository: self.access.task_issues(r),
+                    rows=lambda r=repository: self.lists.list_rows(r, "issues"),
+                )
                 for repository in repositories
             ]
             projection_reads = [pool.submit(self.projections, repository) for repository in repositories]
@@ -408,9 +433,17 @@ class Tasks:
                 if found is None:
                     record["sponsorshipStatus"] = "unavailable"
                 projections = {item["issue"]: item for item in found or []}
-                missing = sorted(projections.keys() - {i["number"] for i in issues})
-                issues += filter(None, pool.map(lambda n, r=repository: self.sponsored_issue(r, n), missing))
+                # A built held list already contains the sponsored issues the service could read. Before
+                # its first build the saved enrolled list is served, with sponsored issues saved one by one.
+                held = self.holds(repository, "issues")
+                missing = [] if held == "built" else sorted(projections.keys() - {i["number"] for i in issues})
+                read = lambda n, r=repository, saved=held == "unbuilt": self.sponsored_issue(r, n, saved)
+                issues += filter(None, pool.map(read, missing))
                 for issue in issues:
+                    enrolled = stage_label(issue) or "concurro" in {label["name"] for label in issue.get("labels", [])}
+                    if not enrolled and issue["number"] not in projections:
+                        # Listed for a sponsorship this read does not have: neither a task nor a known intent.
+                        continue
                     task = summary(repository, issue, record["mode"])
                     if issue["number"] in projections:
                         task["sponsorships"] = projections[issue["number"]]

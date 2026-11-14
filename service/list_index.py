@@ -25,14 +25,15 @@ from pathlib import Path
 
 import private
 
-from .github_reads import executor_run, executor_runs, run_attempt
+from . import github_reads
+from .github_reads import ENROLLMENT, enrolled_issues, executor_run, executor_runs, issue_fields, run_attempt
 from .settings import CHECKOUT
 from .webhook_recovery import HISTORY_SECONDS
 
 log = logging.getLogger("concurro.service")
 
 DATABASE = "list-index.sqlite3"
-VERSION = 2
+VERSION = 3
 # Webhook events that change a list, and the list each changes.
 EVENT_KINDS = {
     "issues": "issues",
@@ -76,7 +77,13 @@ CREATE TABLE runs (repository TEXT NOT NULL, run INTEGER NOT NULL, attempt INTEG
 CREATE TABLE run_members (repository TEXT NOT NULL, run INTEGER NOT NULL, created TEXT NOT NULL,
                           added REAL NOT NULL, PRIMARY KEY (repository, run));
 """,
+    2: """
+CREATE TABLE issues (repository TEXT NOT NULL, number INTEGER NOT NULL, updated TEXT, document TEXT,
+                     version INTEGER NOT NULL, PRIMARY KEY (repository, number));
+""",
 }
+# Row tables by kind: the table, and the key columns after `repository`.
+ROWS = {"runs": ("runs", ("run", "attempt")), "issues": ("issues", ("number",))}
 # How many runs a list shows.
 LISTED_RUNS = 50
 
@@ -102,11 +109,18 @@ def projected(event, payload):
 
     A payload without what its event must carry is refused, never taken for an unrelated event.
     """
-    if event != "workflow_run":
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("workflow_run"), dict):
-        raise ValueError("workflow_run delivery without its run")
-    return executor_run(payload["workflow_run"])
+    if event == "workflow_run":
+        if not isinstance(payload, dict) or not isinstance(payload.get("workflow_run"), dict):
+            raise ValueError("workflow_run delivery without its run")
+        return executor_run(payload["workflow_run"])
+    if event in ("issues", "issue_comment"):
+        if not isinstance(payload, dict) or not isinstance(payload.get("issue"), dict):
+            raise ValueError("issue delivery without its issue")
+        fields = issue_fields(payload["issue"])
+        # A comment on a pull request changes no issue; only these two actions take an issue away.
+        removed = event == "issues" and payload.get("action") in ("deleted", "transferred")
+        return {"issue": fields, "removed": removed} if fields else None
+    return None
 
 
 def stamp(seconds):
@@ -126,6 +140,7 @@ class ListIndex:
         self.pending = queue.Queue(QUEUE_SIZE)
         self.overflowed, self.stopping = threading.Event(), threading.Event()
         self.names, self.writer, self.worker, self.reader = {}, None, None, None
+        self.sponsored = lambda repository: ()
         # Reads that failed since the last history check; each is retried once per check.
         self.deferred = set()
         # Whether a history check has completed in this process; before one, nothing is current.
@@ -165,16 +180,19 @@ class ListIndex:
                 raise
             self.db.execute("COMMIT")
 
-    def start(self, repositories, rows=None, reader=None, work=True):
+    def start(self, repositories, rows=None, reader=None, work=True, sponsored=None):
         """Record `{name: GitHub ID}`, establish coverage and start applying.
 
         `rows` maps a kind to the repositories whose list this index holds; `reader(repository)`
-        returns the read transport its rebuilds and item reads use. A kind not verified within
+        returns the read transport its rebuilds and item reads use; `sponsored(repository)` lists
+        the issue numbers the registry holds sponsorships for, which belong to the issue list
+        whatever their labels. A kind not verified within
         GitHub's delivery history is covered afresh: history can no longer show what it missed.
         Local signals lost while stopped are covered by `resync`.
         """
         now = self.clock()
         self.reader = reader
+        self.sponsored = sponsored or self.sponsored
         with self.transaction() as db:
             db.execute("DELETE FROM repositories")
             db.executemany("INSERT INTO repositories VALUES (?, ?)", [(n, name) for name, n in repositories.items()])
@@ -227,9 +245,9 @@ class ListIndex:
         if kind:
             self.put(("delivery", guid, repository, kind, projected(event, payload)))
 
-    def signal(self, repository, kind):
-        """Queue a change the service itself made to a list."""
-        self.put(("signal", None, repository, kind, None))
+    def signal(self, repository, kind, item=None):
+        """Queue a change the service itself made to a list; `item` names what changed when one thing did."""
+        self.put(("signal", None, repository, kind, item))
 
     def put(self, entry):
         try:
@@ -256,7 +274,9 @@ class ListIndex:
             try:
                 with self.transaction() as db:
                     if source == "signal":
-                        self.raise_revision(db, repository, kind, self.clock())
+                        self.raise_revision(db, repository, kind, self.clock(), data and str(data))
+                        if kind == "sponsorships":
+                            self.sponsorship_changed(db, repository, data)
                     else:
                         self.deliver(db, guid, repository, kind, data, "applied")
             except sqlite3.Error as error:
@@ -289,44 +309,86 @@ class ListIndex:
         if not self.receive(db, guid, outcome):
             return
         now = self.clock()
-        mode = db.execute("SELECT mode FROM coverage WHERE repository = ? AND kind = ?", (repository, kind)).fetchone()
-        if mode is None or mode[0] != "rows":
+        if not self.held(db, repository, kind):
             self.raise_revision(db, repository, kind, now)
-        elif kind == "runs" and data is not None and self.apply_run(db, repository, data, now):
-            self.raise_revision(db, repository, kind, now, str(data["id"]))
+        elif data is not None:
+            item = (self.apply_run if kind == "runs" else self.apply_issue)(db, repository, data, now)
+            if item:
+                self.raise_revision(db, repository, kind, now, item)
 
-    def apply_run(self, db, repository, document, now, read=None):
-        """Store one run attempt under the ordering rule; whether the list changed.
+    @staticmethod
+    def held(db, repository, kind):
+        """Whether this index holds the list itself."""
+        row = db.execute("SELECT mode FROM coverage WHERE repository = ? AND kind = ?", (repository, kind)).fetchone()
+        return row is not None and row[0] == "rows"
+
+    def store(self, db, kind, key, item, document, read=None):
+        """Store one row under the ordering rule; whether it changed.
 
         A snapshot older than the stored one is dropped and a newer one replaces it. A delivery
-        that ties with different content cannot be ordered, so that exact attempt is read. `read`
-        marks a result read from GitHub and carries the row's version when the read began: it
-        wins a tie only if nothing changed the row meanwhile, and is read again otherwise.
+        that ties with different content cannot be ordered, and one for a row GitHub reported
+        gone cannot say otherwise: both are answered by reading `item`. `read` marks a result
+        read from GitHub and carries the row's version when the read began: it wins a tie only
+        if nothing changed the row meanwhile, and is read again otherwise.
         """
-        run, attempt, updated = document["id"], document["run_attempt"], document.get("updated_at") or ""
-        text = json.dumps(document, sort_keys=True)
-        key = (repository, run, attempt)
-        row = db.execute(
-            "SELECT updated, document, version FROM runs WHERE repository=? AND run=? AND attempt=?", key
-        ).fetchone()
-        changed = False
+        table, columns = ROWS[kind]
+        where = " AND ".join(f"{column} = ?" for column in ("repository", *columns))
+        updated, text = document.get("updated_at") or "", json.dumps(document, sort_keys=True)
+        row = db.execute(f"SELECT updated, document, version FROM {table} WHERE {where}", key).fetchone()
         if row is None:
-            db.execute("INSERT INTO runs VALUES (?, ?, ?, ?, ?, 1)", (*key, updated, text))
-            changed = True
-        elif row[1] is None and read is None:
-            # GitHub reported this attempt gone. A delivery, of whatever age, cannot say otherwise: ask.
-            self.request(db, repository, "runs", f"{run}/{attempt}")
-            return False
+            db.execute(f"INSERT INTO {table} VALUES ({'?, ' * len(key)}?, ?, 1)", (*key, updated, text))
+            return True
+        if row[1] is None and read is None:
+            self.request(db, key[0], kind, item)
         elif row[1] != text:
             if updated > (row[0] or "") or updated == row[0] and read is not None and row[2] == read:
                 db.execute(
-                    "UPDATE runs SET updated = ?, document = ?, version = version + 1 "
-                    "WHERE repository = ? AND run = ? AND attempt = ?",
+                    f"UPDATE {table} SET updated = ?, document = ?, version = version + 1 WHERE {where}",
                     (updated, text, *key),
                 )
-                changed = True
-            elif updated == row[0]:
-                self.request(db, repository, "runs", f"{run}/{attempt}")
+                return True
+            if updated == row[0]:
+                self.request(db, key[0], kind, item)
+        return False
+
+    def remove(self, db, kind, key, item, read=None, updated=None):
+        """Record that an item is gone; whether the list changed.
+
+        By a read from GitHub, under its fence: a row changed since the read began is read again.
+        By a delivery carrying its `updated` time: an older one than the stored row is dropped.
+        The marker keeps the time of what it replaced, as the ordering evidence against late
+        deliveries, and an item never stored is only remembered.
+        """
+        table, columns = ROWS[kind]
+        where = " AND ".join(f"{column} = ?" for column in ("repository", *columns))
+        row = db.execute(f"SELECT updated, document, version FROM {table} WHERE {where}", key).fetchone()
+        if row is None:
+            db.execute(f"INSERT INTO {table} VALUES ({'?, ' * len(key)}?, NULL, 1)", (*key, updated))
+        elif row[1] is not None and (row[2] == read if updated is None else updated >= (row[0] or "")):
+            db.execute(
+                f"UPDATE {table} SET updated = COALESCE(?, updated), document = NULL, version = version + 1 "
+                f"WHERE {where}",
+                (updated, *key),
+            )
+            return True
+        elif row[1] is not None and updated is None:
+            self.request(db, key[0], kind, item)
+        return False
+
+    def apply_run(self, db, repository, document, now, read=None):
+        """Store one run attempt; the run's identifier when the list changed.
+
+        A stored attempt GitHub reported gone is not listed again by a delivery. A rerun seen
+        without its attempt 1 owes a read of exactly that attempt.
+        """
+        run, attempt = document["id"], document["run_attempt"]
+        key = (repository, run, attempt)
+        gone = db.execute(
+            "SELECT document IS NULL FROM runs WHERE repository=? AND run=? AND attempt=?", key
+        ).fetchone()
+        changed = self.store(db, "runs", key, f"{run}/{attempt}", document, read)
+        if gone and gone[0] and read is None:
+            return None
         member = (repository, run, document.get("created_at") or "", now)
         changed |= bool(db.execute("INSERT OR IGNORE INTO run_members VALUES (?, ?, ?, ?)", member).rowcount)
         first = (repository, run)
@@ -336,7 +398,41 @@ class ListIndex:
         ):
             # Only attempt 1 can have served a runner session; no other attempt stands in for it.
             self.request(db, repository, "runs", f"{run}/1")
-        return changed
+        return str(run) if changed else None
+
+    def apply_issue(self, db, repository, data, now, read=None):
+        """Store one issue snapshot; its number when the list changed.
+
+        Only issues that belong to the list get a row: enrolled ones, and ones already held,
+        whose label may since have been removed. A sponsored issue arrives by its own signal.
+        """
+        document = data["issue"]
+        key, item = (repository, document["number"]), str(document["number"])
+        if data.get("removed"):
+            changed = self.remove(db, "issues", key, item, updated=document["updated_at"])
+        elif (
+            read is None
+            and not any(label["name"] == ENROLLMENT for label in document["labels"])
+            and not db.execute("SELECT 1 FROM issues WHERE repository = ? AND number = ?", key).fetchone()
+        ):
+            return None
+        else:
+            changed = self.store(db, "issues", key, item, document, read)
+        return item if changed else None
+
+    def sponsorship_changed(self, db, repository, issue, raised=False):
+        """A sponsorship decides membership of the issue list, and may name an issue never seen."""
+        if not self.held(db, repository, "issues"):
+            return
+        if not raised:
+            self.raise_revision(db, repository, "issues", self.clock(), issue and str(issue))
+        if (
+            issue
+            and not db.execute(
+                "SELECT 1 FROM issues WHERE repository = ? AND number = ?", (repository, issue)
+            ).fetchone()
+        ):
+            self.request(db, repository, "issues", str(issue))
 
     def request(self, db, repository, kind, item):
         """Owe one read from GitHub; an item already owed keeps the time it was first asked for."""
@@ -369,8 +465,17 @@ class ListIndex:
         self.raise_revision(db, repository, kind, now)
 
     def resync(self, db, repositories, now):
-        """Cover local signals that may have been lost: raise their revisions and tell the feed to resynchronize."""
+        """Cover local signals that may have been lost.
+
+        Raises their revisions and tells the feed to resynchronize. A held issue list is raised
+        too, since a lost sponsorship signal may have added to it or taken from it, and a read is
+        owed of every sponsored issue it has no row for.
+        """
         for repository in repositories:
+            if self.held(db, repository, "issues"):
+                self.raise_revision(db, repository, "issues", now)
+                for number in self.sponsored(repository):
+                    self.sponsorship_changed(db, repository, number, raised=True)
             for kind in LOCAL_KINDS:
                 db.execute(
                     "INSERT INTO revisions VALUES (?, ?, 1) ON CONFLICT(repository, kind) "
@@ -479,10 +584,11 @@ class ListIndex:
                 return
             repository, kind, item = job
             try:
+                reads = {"runs": (self.rebuild_runs, self.read_run), "issues": (self.rebuild_issues, self.read_issue)}
                 if item is None:
-                    self.rebuild_runs(repository)
+                    reads[kind][0](repository)
                 else:
-                    self.read_run(repository, item)
+                    reads[kind][1](repository, item)
             except sqlite3.Error:
                 raise
             except Exception as error:
@@ -494,34 +600,32 @@ class ListIndex:
                             "UPDATE coverage SET failed = 1 WHERE repository = ? AND kind = ?", (repository, kind)
                         )
 
-    def versions(self, repository):
+    def versions(self, kind, repository):
+        """Each stored row's version by its key, as the fence for reads that begin now."""
+        table, columns = ROWS[kind]
         with self.lock:
-            found = self.db.execute("SELECT run, attempt, version FROM runs WHERE repository = ?", (repository,))
-            return {(run, attempt): version for run, attempt, version in found}
-
-    def absent(self, db, repository, run, attempt, read):
-        """Record that GitHub no longer has an attempt, under the fence of a read; whether the list changed.
-
-        An attempt never stored is only remembered, so it is not asked for again. A stored one
-        loses its document if nothing changed it since the read began, and is read again otherwise.
-        """
-        key = (repository, run, attempt)
-        row = db.execute(
-            "SELECT document, version FROM runs WHERE repository=? AND run=? AND attempt=?", key
-        ).fetchone()
-        if row is None:
-            db.execute("INSERT INTO runs VALUES (?, ?, ?, NULL, NULL, 1)", key)
-        elif row[0] is not None and row[1] == read:
-            # `updated` stays as the ordering evidence of what was removed.
-            db.execute(
-                "UPDATE runs SET document = NULL, version = version + 1 "
-                "WHERE repository = ? AND run = ? AND attempt = ?",
-                key,
+            found = self.db.execute(
+                f"SELECT {', '.join(columns)}, version FROM {table} WHERE repository = ?", (repository,)
             )
-            return True
-        elif row[0] is not None:
-            self.request(db, repository, "runs", f"{run}/{attempt}")
-        return False
+            return {tuple(row[:-1]): row[-1] for row in found}
+
+    def built(self, db, repository, kind, began):
+        """Publish a rebuild: it covers every delivery before it began and settles the requests made by then."""
+        db.execute(
+            "UPDATE coverage SET built = ?, baseline = ?, failed = 0, "
+            "wanted = CASE WHEN wanted <= ? THEN NULL ELSE wanted END WHERE repository = ? AND kind = ?",
+            (began, began, began, repository, kind),
+        )
+        self.raise_revision(db, repository, kind, self.clock())
+
+    def settled(self, db, repository, kind, item, began, changed):
+        """Finish an item read: requests made before it began are settled; later ones stay owed."""
+        db.execute(
+            "DELETE FROM pending WHERE repository = ? AND kind = ? AND item = ? AND latest <= ?",
+            (repository, kind, item, began),
+        )
+        if changed:
+            self.raise_revision(db, repository, kind, self.clock(), changed)
 
     def rebuild_runs(self, repository):
         """Read the fork's executor runs and publish them as the list.
@@ -529,7 +633,7 @@ class ListIndex:
         The listing replaces the displayed membership except for runs deliveries created while
         it was read. It covers every delivery before it began, which becomes the baseline.
         """
-        began, versions = self.clock(), self.versions(repository)
+        began, versions = self.clock(), self.versions("runs", repository)
         reader = self.reader(repository)
         listed = executor_runs(reader, repository, LISTED_RUNS)
         firsts = {run["id"]: run_attempt(reader, repository, run["id"], 1) for run in listed if run["run_attempt"] != 1}
@@ -540,35 +644,73 @@ class ListIndex:
                 )
             for run, first in firsts.items():
                 if first is None:
-                    self.absent(db, repository, run, 1, versions.get((run, 1), 0))
+                    self.remove(db, "runs", (repository, run, 1), f"{run}/1", versions.get((run, 1), 0))
             marks = ",".join("?" * len(listed))
             db.execute(
                 f"DELETE FROM run_members WHERE repository = ? AND added < ? AND run NOT IN ({marks})",
                 (repository, began, *(run["id"] for run in listed)),
             )
-            db.execute(
-                "UPDATE coverage SET built = ?, baseline = ?, failed = 0, "
-                "wanted = CASE WHEN wanted <= ? THEN NULL ELSE wanted END WHERE repository = ? AND kind = 'runs'",
-                (began, began, began, repository),
-            )
-            self.raise_revision(db, repository, "runs", self.clock())
+            self.built(db, repository, "runs", began)
 
     def read_run(self, repository, item):
-        """Read one exact run attempt and publish it; requests made before the read began are settled."""
+        """Read one exact run attempt and publish it."""
         run, attempt = map(int, item.split("/"))
-        began, version = self.clock(), self.versions(repository).get((run, attempt), 0)
+        began, version = self.clock(), self.versions("runs", repository).get((run, attempt), 0)
         document = run_attempt(self.reader(repository), repository, run, attempt)
         with self.transaction() as db:
             if document is None:
-                changed = self.absent(db, repository, run, attempt, version)
+                changed = self.remove(db, "runs", (repository, run, attempt), item, version) and str(run)
             else:
                 changed = self.apply_run(db, repository, document, began, version)
-            db.execute(
-                "DELETE FROM pending WHERE repository = ? AND kind = 'runs' AND item = ? AND latest <= ?",
-                (repository, item, began),
-            )
-            if changed:
-                self.raise_revision(db, repository, "runs", self.clock(), str(run))
+            self.settled(db, repository, "runs", item, began, changed)
+
+    def rebuild_issues(self, repository):
+        """Read every enrolled issue, and every other issue the list holds or owes, and publish them.
+
+        Issues the listing did not return are read by number: sponsored ones, and every held
+        one, enrolled or not, since any of them can re-enter the list without a new read.
+        """
+        began, versions = self.clock(), self.versions("issues", repository)
+        reader = self.reader(repository)
+        listed = {found["number"]: found for found in map(issue_fields, enrolled_issues(reader, repository)) if found}
+        with self.lock:
+            held = self.db.execute(
+                "SELECT number FROM issues WHERE repository = ? AND document IS NOT NULL", (repository,)
+            ).fetchall()
+        others = {
+            number: self.issue(reader, repository, number)
+            for number in sorted(({number for (number,) in held} | set(self.sponsored(repository))) - set(listed))
+        }
+        with self.transaction() as db:
+            for number, document in (listed | others).items():
+                key, read = (repository, number), versions.get((number,), 0)
+                if document is None:
+                    self.remove(db, "issues", key, str(number), read)
+                else:
+                    self.store(db, "issues", key, str(number), document, read)
+            self.built(db, repository, "issues", began)
+
+    def read_issue(self, repository, item):
+        """Read one issue and publish it."""
+        number = int(item)
+        began, version = self.clock(), self.versions("issues", repository).get((number,), 0)
+        document = self.issue(self.reader(repository), repository, number)
+        with self.transaction() as db:
+            if document is None:
+                changed = self.remove(db, "issues", (repository, number), item, version)
+            else:
+                changed = self.store(db, "issues", (repository, number), item, document, version)
+            self.settled(db, repository, "issues", item, began, changed and item)
+
+    @staticmethod
+    def issue(reader, repository, number):
+        """One issue as a row, or None when GitHub no longer has it as an issue."""
+        found = github_reads.issue(reader, repository, number)
+        return issue_fields(found) if found is not None else None
+
+    @staticmethod
+    def enrolled(document):
+        return any(label["name"] == ENROLLMENT for label in document["labels"])
 
     # Reads
 
@@ -613,23 +755,38 @@ class ListIndex:
         """The list a kind in mode `rows` holds, with the entry `revisions` reports for it; None otherwise."""
         with self.lock:
             entry = self.revisions({repository}).get(repository, {}).get(kind)
-            if entry is None or entry["mode"] != "rows" or kind != "runs":
+            if entry is None or entry["mode"] != "rows":
                 return None
-            members = self.db.execute(
-                "SELECT run FROM run_members WHERE repository = ? ORDER BY created DESC, run DESC LIMIT ?",
-                (repository, LISTED_RUNS),
-            ).fetchall()
-            items = []
-            for (run,) in members:
-                attempts = self.db.execute(
-                    "SELECT attempt, document FROM runs WHERE repository = ? AND run = ? ORDER BY attempt",
-                    (repository, run),
-                ).fetchall()
-                # The latest attempt, never an older one in its place: a run whose latest is gone is not listed.
-                if attempts and attempts[-1][1] is not None:
-                    first = attempts[0][1] if attempts[0][0] == 1 else None
-                    items.append({"run": json.loads(attempts[-1][1]), "first": first and json.loads(first)})
+            items = self.listed_runs(repository) if kind == "runs" else self.listed_issues(repository)
         return {**entry, "items": items}
+
+    def listed_runs(self, repository):
+        """The newest runs, each with its latest attempt and, when held, its first."""
+        members = self.db.execute(
+            "SELECT run FROM run_members WHERE repository = ? ORDER BY created DESC, run DESC LIMIT ?",
+            (repository, LISTED_RUNS),
+        ).fetchall()
+        items = []
+        for (run,) in members:
+            attempts = self.db.execute(
+                "SELECT attempt, document FROM runs WHERE repository = ? AND run = ? ORDER BY attempt",
+                (repository, run),
+            ).fetchall()
+            # The latest attempt, never an older one in its place: a run whose latest is gone is not listed.
+            if attempts and attempts[-1][1] is not None:
+                first = attempts[0][1] if attempts[0][0] == 1 else None
+                items.append({"run": json.loads(attempts[-1][1]), "first": first and json.loads(first)})
+        return items
+
+    def listed_issues(self, repository):
+        """Enrolled issues, and the registry's sponsored ones whatever their labels, in GitHub's own shape."""
+        sponsored = set(self.sponsored(repository))
+        held = self.db.execute(
+            "SELECT document FROM issues WHERE repository = ? AND document IS NOT NULL ORDER BY number DESC",
+            (repository,),
+        )
+        documents = (json.loads(text) for (text,) in held)
+        return [document for document in documents if self.enrolled(document) or document["number"] in sponsored]
 
 
 class Lists:

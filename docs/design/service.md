@@ -125,7 +125,7 @@ removed; failure must propagate before that coverage is recorded.
 directory: one revision per repository and list kind (`issues`, `sponsorships`, `pulls`,
 `runs`), which the backoffice uses to decide when a saved list must be read again. A kind
 is in one of two modes. In `signals` the index holds nothing else. In `rows` it holds the
-list itself: today each fork's executor runs. It holds no scheduling state, and deleting
+list itself: each fork's executor runs and each issue repository's issues. It holds no scheduling state, and deleting
 it costs one re-read or rebuild per list.
 
 - **Deliveries:** after a delivery passes the installation check, and before the task
@@ -134,7 +134,7 @@ it costs one re-read or rebuild per list.
   queue or a failing index never changes a delivery's status or its wakeups.
 - **Sponsorships:** the registry reports each repository whose sponsorship documents, or
   a task's terminal outcome, changed in a committed transaction; that raises
-  `sponsorships`. An unchanged document is not reported, except when a credential poll
+  `sponsorships` and names the issue. An unchanged document is not reported, except when a credential poll
   consumed events: those change the vault-read coverage of sponsorship views.
 - **Repair:** each recovery scan hands its delivery history to `ListIndex.check`. A
   delivery of a list-changing event, delivered after the kind's baseline and without a
@@ -157,8 +157,19 @@ it costs one re-read or rebuild per list.
   has loses its document, and a run whose latest attempt is gone is not listed. In this mode the repair of a
   missing delivery fetches its payload from GitHub's delivery history; one that cannot be
   fetched or applied, like more than 20, is covered by a rebuild.
+- **Rows (issues):** `issues` and `issue_comment` deliveries both carry the issue, reduced
+  to what lists show, in GitHub's own shape. A row exists for an issue that carried the
+  enrollment label when delivered, or that the registry holds a sponsorship for; a held
+  row keeps following its issue after the label is removed. The list is the held issues
+  that are enrolled or sponsored. Only `issues.deleted` and `issues.transferred` take an
+  issue away, and a later delivery for it is answered by a read. A sponsorship signal
+  names its issue: one without a row owes a read, and at every start and after a queue
+  overflow the list's revision is raised and the registry's sponsored issues are
+  compared with the rows.
 - **Reads from GitHub** run on a second thread, one request at a time: rebuilds (the
-  fork's 50 most recent executor runs, plus attempt 1 of each rerun) and owed item reads.
+  fork's 50 most recent executor runs, plus attempt 1 of each rerun; every enrolled issue
+  to the last page, plus by number the sponsored ones and every held one the listing
+  did not return) and owed item reads.
   A result is applied under the same ordering rule and wins a tie only if nothing changed
   the row since the read began. A rebuild replaces the displayed membership except for
   runs created while it ran, and its start becomes the baseline. Owed reads are stored,

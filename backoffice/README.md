@@ -64,10 +64,12 @@ saved lists. A target lists its `issueRepositories`, which is where its tasks' `
 
 ### With the list index
 
-A list the service holds (`mode: rows`; today a fork's executor runs) is taken from the
-service instead of GitHub, again only when its revision moved, and saved as the fallback
+A list the service holds (`mode: rows`: a fork's executor runs, an issue repository's
+issues) is taken from the service instead of GitHub, again only when its revision moved, and saved as the fallback
 copy. Attribution of runs to recorded turns happens on every request and is not part of
-what is saved. While the service has not built such a list yet, the saved copy is shown
+what is saved. The held issue list is every enrolled issue, not the 300 most recently
+updated, and already contains the sponsored issues, so none is read one by one. While the
+service has not built such a list yet, the saved copy is shown
 with the reason, and a list with nothing saved answers 503.
 
 Setting `lists_token_path` (the bearer shared with the service's `lists_token_path`) replaces

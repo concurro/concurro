@@ -41,7 +41,7 @@ class Index:
     def __init__(self, repositories=("up/project",)):
         self.repositories, self.down, self.asked, self.refreshed = repositories, False, 0, []
         self.counters = dict.fromkeys(("issues", "sponsorships", "pulls", "runs"), 1)
-        self.modes = dict.fromkeys(self.counters, "signals")
+        self.modes, self.states = dict.fromkeys(self.counters, "signals"), {}
         self.state, self.built, self.rows, self.listed = "current", "2026-11-14T10:00:00+00:00", [], 0
 
     def list_revisions(self, repositories):
@@ -51,7 +51,7 @@ class Index:
         entry = lambda kind: {
             "revision": f"x:{self.counters[kind]}",
             "mode": self.modes[kind],
-            "state": self.state,
+            "state": self.states.get(kind, self.state),
             "verified": "2026-11-14T10:00:00+00:00",
             "built": self.built if self.modes[kind] == "rows" else None,
         }
@@ -424,6 +424,88 @@ class ListingTests(Cached):
         self.assertEqual(([run["id"] for run in view["runs"]], view["cache"]["state"]), ([77], "failed"))
         self.assertIn("could not build", view["cache"]["error"])
         self.assertEqual(self.index.listed, 1)
+
+    def held_issue(self, number, *labels):
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "state": "open",
+            "user": {"login": "author"},
+            "labels": [{"name": name} for name in labels],
+            "created_at": "2026-11-01T00:00:00Z",
+            "updated_at": "2026-11-14T10:00:00Z",
+        }
+
+    def test_issues_the_service_holds_are_taken_from_it(self):
+        self.index.modes["issues"] = "rows"
+        self.index.rows = [self.held_issue(7, "concurro", "concurro:stage:plan"), self.held_issue(8, "question")]
+        self.sponsorships.return_value = {
+            "issues": [{"issue": number, "status": "confirmed", "slots": {}} for number in (8, 9)]
+        }
+        view = self.tasks().overview()
+        self.assertEqual([(task["issue"], task["stage"]) for task in view["tasks"]], [(7, "plan")])
+        self.assertEqual([intent["issue"] for intent in view["issues"]], [8], "sponsored and unlabelled: an intent")
+        self.assertEqual((view["cache"]["state"], self.index.listed), ("current", 1))
+        self.access.task_issues.assert_not_called()
+        self.access.get.assert_not_called()
+        self.now += 86_400
+        self.tasks().target_view("up/project")
+        self.assertEqual(self.index.listed, 1, "an unchanged revision asks the service for nothing more")
+        self.index.counters["issues"] += 1
+        self.index.rows = self.index.rows[:1]
+        self.tasks().overview()
+        self.settle()
+        self.assertEqual(self.tasks().overview()["issues"], [])
+        self.access.get.assert_not_called()
+
+    def test_a_list_being_built_serves_the_copy_the_previous_release_saved(self):
+        self.access.task_issues.return_value = [self.held_issue(7, "concurro") | {"body": "saved by phase 2"}]
+        self.tasks().overview()
+        self.index.modes["issues"], self.index.built, self.index.states["issues"] = "rows", None, "rebuilding"
+        view = self.tasks().overview()
+        self.assertEqual(([task["issue"] for task in view["tasks"]], view["cache"]["state"]), ([7], "rebuilding"))
+        self.assertEqual((self.access.task_issues.call_count, self.index.listed), (1, 0))
+
+    def test_a_held_issue_without_its_sponsorship_is_neither_a_task_nor_an_intent(self):
+        """Issue rows and sponsorships refresh independently; an unlabelled row alone says nothing."""
+        self.index.modes["issues"] = "rows"
+        self.index.rows = [self.held_issue(7, "concurro"), self.held_issue(8, "question")]
+        for answer in ({"issues": []}, CommandError(503, "sponsorship status unavailable")):
+            self.sponsorships.side_effect = [answer]
+            self.index.counters["sponsorships"] += 1
+            self.tasks().overview()
+            try:
+                self.settle()
+            except CommandError:
+                pass
+            view = self.tasks().overview()
+            self.assertEqual(([task["issue"] for task in view["tasks"]], view["issues"]), ([7], []), answer)
+
+    def test_before_the_first_build_saved_sponsored_issues_still_serve(self):
+        self.access.task_issues.return_value = [self.held_issue(7, "concurro")]
+        self.access.get.return_value = self.held_issue(8, "question")
+        self.sponsorships.return_value = {"issues": [{"issue": 8, "status": "confirmed", "slots": {}}]}
+        self.assertEqual([intent["issue"] for intent in self.tasks().overview()["issues"]], [8])
+        self.index.modes["issues"], self.index.built, self.index.states["issues"] = "rows", None, "rebuilding"
+        view = self.tasks().overview()
+        self.assertEqual(([task["issue"] for task in view["tasks"]], [i["issue"] for i in view["issues"]]), ([7], [8]))
+        self.assertEqual((view["cache"]["state"], self.access.get.call_count, self.index.listed), ("rebuilding", 1, 0))
+        self.sponsorships.return_value = {"issues": [{"issue": n, "status": "confirmed", "slots": {}} for n in (8, 9)]}
+        self.index.counters["sponsorships"] += 1
+        self.tasks().overview()
+        self.settle()
+        self.assertEqual([i["issue"] for i in self.tasks().overview()["issues"]], [8], "one never saved is left out")
+        self.assertEqual(self.access.get.call_count, 1, "and not read from GitHub")
+
+    def test_a_sponsored_issue_that_cannot_be_read_is_left_out_not_fatal(self):
+        self.tasks().overview()
+        self.sponsorships.return_value = {"issues": [{"issue": 9, "status": "confirmed", "slots": {}}]}
+        self.index.counters["sponsorships"] += 1
+        self.tasks().overview()
+        self.settle()
+        self.index.down = True
+        view = self.tasks().overview()
+        self.assertEqual((view["tasks"], view["issues"], view["cache"]["state"]), ([], [], "unavailable"))
 
     def test_copies_saved_by_the_previous_release_still_serve(self):
         """Unchanged lists keep their saved copies; the reshaped runs list falls back to the old one."""

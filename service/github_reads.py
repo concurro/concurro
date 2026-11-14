@@ -22,6 +22,8 @@ RUN_FIELDS = (
     "updated_at",
 )
 TARGET_RUNS = 50
+# The label that opts an issue in.
+ENROLLMENT = "concurro"
 EXECUTOR_PATH = f".github/workflows/{EXECUTOR_WORKFLOW}"
 
 DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
@@ -138,4 +140,56 @@ def run_attempt(reader, fork, run, attempt):
     try:
         return run_fields(reader.request("GET", f"repos/{fork}/actions/runs/{run}/attempts/{attempt}"))
     except NotFound:
+        return None
+
+
+def gone(error):
+    """Whether a read failed because GitHub moved or deleted the item, not because of an outage."""
+    return isinstance(error, NotFound) or str(error).endswith(("(HTTP 301)", "(HTTP 410)"))
+
+
+def issue_fields(issue):
+    """An issue reduced to what lists show, in GitHub's own shape; None for a pull request.
+
+    Refuses anything without the identity, labels and update time a row is ordered and listed by.
+    """
+    if (
+        not isinstance(issue, dict)
+        or type(issue.get("number")) is not int
+        or not isinstance(issue.get("updated_at"), str)
+        or not isinstance(issue.get("labels"), list)
+    ):
+        raise ValueError("malformed issue")
+    if "pull_request" in issue:
+        return None
+    return {
+        **{field: issue.get(field) for field in ("number", "title", "state", "created_at", "updated_at")},
+        "user": {"login": (issue.get("user") or {}).get("login", "")},
+        "labels": [{"name": label["name"]} for label in issue["labels"]],
+    }
+
+
+def enrolled_issues(reader, repository, pages=None):
+    """Issues opted in with the enrollment label, open and closed, most recently updated first.
+
+    Every page unless `pages` caps them; pull requests are left out.
+    """
+    found, page = [], 1
+    while pages is None or page <= pages:
+        path = f"repos/{repository}/issues?state=all&labels={ENROLLMENT}&sort=updated&per_page=100&page={page}"
+        batch = reader.request("GET", path)
+        found += [issue for issue in batch if "pull_request" not in issue]
+        if len(batch) < 100:
+            break
+        page += 1
+    return found
+
+
+def issue(reader, repository, number):
+    """One issue, or None when GitHub moved or deleted it."""
+    try:
+        return reader.request("GET", f"repos/{repository}/issues/{number}")
+    except RuntimeError as error:
+        if not gone(error):
+            raise
         return None

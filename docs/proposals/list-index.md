@@ -1,6 +1,6 @@
 # Proposal: webhook-fed list index
 
-**Status: phases 1 and 2 implemented; later phases are proposals.** Revised after four Codex reviews and a design
+**Status: phases 1 to 3 implemented; later phases are proposals.** Revised after four Codex reviews and a design
 discussion, against service `main` at `cf29ba9` and frontend `main` at `6b275ec`. [Phase 0](list-index/phase-0.md)
 records what was verified live and what is still open; the per-phase briefs are in
 [`list-index/`](list-index/).
@@ -443,7 +443,7 @@ pagination and fields builds need. The backoffice keeps calling them for kinds i
 | 0 | Evidence. **Done** except measurements under load: see [phase 0](list-index/phase-0.md). | Small |
 | 1 | Change signals. **Implemented, not deployed:** see the [phase 1 record](list-index/phase-1.md). | Medium to large |
 | 2 | Mode `rows` and executor runs. **Implemented, not deployed:** see the [phase 2 record](list-index/phase-2.md). | Medium |
-| 3 | Issues: rows from payloads, removal, sponsorship hydration. | Medium |
+| 3 | Issues. **Implemented, not deployed:** see the [phase 3 record](list-index/phase-3.md). | Medium |
 | 4 | Pull requests from payloads, linked pull requests in rebuilds, CI by rollup read. | Medium |
 | 5 | Live updates: `changes` feed, relay with resynchronization, frontend subscription, task progress. | Medium |
 

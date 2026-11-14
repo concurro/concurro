@@ -69,8 +69,8 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
 
     def test_a_delivery_raises_its_kind_once_and_survives_a_restart(self):
         before = {kind: self.revision(kind) for kind in list_index.KINDS}
-        self.index.offer("one", "issues", KEY[0])
-        self.index.offer("one", "issues", KEY[0])
+        self.index.offer("one", "issues", KEY[0], {"issue": issue(7)})
+        self.index.offer("one", "issues", KEY[0], {"issue": issue(7)})
         self.index.offer("two", "push", KEY[0])
         after = {kind: self.revision(kind) for kind in list_index.KINDS}
         self.assertEqual({k for k in after if after[k] != before[k]}, {"issues"})
@@ -88,7 +88,7 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         expected = {"issues": "issues", "issue_comment": "issues", "pull_request": "pulls", "check_run": "pulls"}
         for number, (event, kind) in enumerate({**expected, "check_suite": "pulls", "workflow_run": "runs"}.items()):
             before = self.revision(kind)
-            self.index.offer(f"g{number}", event, KEY[0], {"workflow_run": run(number)})
+            self.index.offer(f"g{number}", event, KEY[0], {"workflow_run": run(number), "issue": issue(number)})
             self.assertNotEqual(self.revision(kind), before, event)
 
     def test_a_recreated_file_never_matches_old_revisions(self):
@@ -104,7 +104,7 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
             index = self.opened(start=False)
         index.signal(KEY[0], "sponsorships")
         index.signal(KEY[0], "sponsorships")
-        index.offer("dropped", "issues", KEY[0])
+        index.offer("dropped", "issues", KEY[0], {"issue": issue(7)})
         self.assertTrue(index.overflowed.is_set())
         index.start(REPOSITORIES)
         index.pending.join()
@@ -120,7 +120,7 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         self.assertFalse(index.db.execute("SELECT 1 FROM receipts WHERE guid = 'dropped'").fetchone())
 
     def test_the_history_check_repairs_an_acknowledged_delivery_that_was_never_applied(self):
-        self.index.offer("guid-1", "issues", KEY[0])
+        self.index.offer("guid-1", "issues", KEY[0], {"issue": issue(7)})
         before = {kind: self.revision(kind) for kind in ("issues", "runs")}
         self.clock.now += 60
         groups = {
@@ -213,6 +213,291 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.revision("issues", FORK), before["issues"])
         self.index.rebaseline()
         self.assertNotEqual(self.revision("issues", FORK), before["issues"])
+
+
+def issue(number, *labels, updated="2026-11-14T10:00:00Z", state="open", **fields):
+    """One issue as GitHub lists and delivers it."""
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "state": state,
+        "user": {"login": "author", "id": 5},
+        "labels": [{"name": name, "color": "ededed"} for name in labels],
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": updated,
+        "body": "not listed",
+        **fields,
+    }
+
+
+class Hub:
+    """An issue repository's API: the enrolled listing by page and issues by number."""
+
+    def __init__(self):
+        self.listed, self.items, self.paths, self.failing, self.during = [], {}, [], False, None
+
+    def request(self, method, path):
+        self.paths.append(path)
+        if self.during:
+            hook, self.during = self.during, None
+            hook()
+        if self.failing:
+            raise Transient("unavailable")
+        if "/issues?" in path:
+            page = int(path.rsplit("page=", 1)[1])
+            return self.listed[(page - 1) * 100 : page * 100]
+        found = self.items.get(int(path.rsplit("/", 1)[1]), NotFound(path))
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+
+class IssueRowsTests(ServiceFixture, unittest.TestCase):
+    """Enrolled and sponsored issues held as rows, in the shape GitHub lists them."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub, self.sponsored = Hub(), []
+        self.hub.listed = [issue(2, "concurro", "bug"), issue(1, "concurro", state="closed")]
+        self.index = self.opened()
+
+    def opened(self):
+        index = ListIndex(self.directory.name, clock=self.clock)
+        self.addCleanup(index.close)
+        index.start(
+            REPOSITORIES,
+            rows={"issues": {KEY[0]}},
+            reader=lambda repository: self.hub,
+            work=False,
+            sponsored=lambda repository: list(self.sponsored),
+        )
+        return index
+
+    def built(self):
+        self.clock.now += 1
+        self.index.drain()
+        self.index.check({}, self.clock.now)
+        self.clock.now += 1
+
+    def entry(self, kind="issues"):
+        self.index.pending.join()
+        return self.index.revisions({KEY[0]})[KEY[0]][kind]
+
+    def listed(self):
+        self.index.pending.join()
+        return {
+            item["number"]: [label["name"] for label in item["labels"]]
+            for item in self.index.rows(KEY[0], "issues")["items"]
+        }
+
+    def deliver(self, guid, document, event="issues", action="edited"):
+        self.clock.now += 1
+        self.index.offer(guid, event, KEY[0], {"action": action, "issue": document})
+        self.index.pending.join()
+
+    def owed(self):
+        return [row[0] for row in self.index.db.execute("SELECT item FROM pending WHERE kind = 'issues' ORDER BY item")]
+
+    def test_a_rebuild_publishes_every_enrolled_issue_and_the_sponsored_ones(self):
+        self.hub.listed = [issue(n, "concurro") for n in range(400, 50, -1)] + [issue(9, "concurro", pull_request={})]
+        self.sponsored = [7, 8]
+        self.hub.items[7] = issue(7, "question")
+        self.assertEqual(self.entry()["state"], "rebuilding")
+        self.built()
+        listed = self.listed()
+        self.assertEqual((len(listed), self.entry()["state"]), (351, "current"), "beyond three pages; no pull request")
+        self.assertEqual(listed[7], ["question"], "sponsored, whatever its labels")
+        self.assertNotIn(8, listed, "a sponsored issue GitHub no longer has")
+        document = self.index.rows(KEY[0], "issues")["items"][0]
+        self.assertEqual(set(document), {"number", "title", "state", "created_at", "updated_at", "user", "labels"})
+        self.assertEqual((document["user"], document["labels"][0]), ({"login": "author"}, {"name": "concurro"}))
+
+    def test_deliveries_keep_issues_current_under_the_ordering_rule(self):
+        self.built()
+        revision = self.entry()["revision"]
+        self.deliver("enroll", issue(3, "concurro", updated="2026-11-14T10:01:00Z"), action="labeled")
+        self.assertEqual(self.listed()[3], ["concurro"])
+        self.assertNotEqual(self.entry()["revision"], revision)
+        # A stage change arrives as two deliveries: the new label added, then the old one removed.
+        added = issue(3, "concurro", "concurro:stage:intake", "concurro:stage:plan", updated="2026-11-14T10:02:00Z")
+        removed = issue(3, "concurro", "concurro:stage:plan", updated="2026-11-14T10:02:02Z")
+        self.deliver("added", added, action="labeled")
+        self.assertEqual(self.listed()[3], ["concurro", "concurro:stage:intake", "concurro:stage:plan"])
+        self.deliver("removed", removed, action="unlabeled")
+        self.deliver("added-late", {**added, "title": "redelivered out of order"}, action="labeled")
+        self.assertEqual(self.listed()[3], ["concurro", "concurro:stage:plan"], "the older snapshot is dropped")
+        self.deliver(
+            "comment",
+            issue(3, "concurro", "concurro:stage:plan", updated="2026-11-14T10:05:00Z"),
+            "issue_comment",
+            "created",
+        )
+        self.assertEqual(self.index.rows(KEY[0], "issues")["items"][0]["updated_at"], "2026-11-14T10:05:00Z")
+        revision = self.entry()["revision"]
+        self.deliver("on-a-pull", issue(4, "concurro", pull_request={}), "issue_comment", "created")
+        self.deliver("unrelated", issue(5, "bug"), action="opened")
+        self.assertEqual(
+            (self.entry()["revision"], sorted(self.listed())), (revision, [1, 2, 3]), "neither belongs to the list"
+        )
+        self.assertEqual(self.owed(), [])
+
+    def test_unlabelling_keeps_the_row_out_of_the_list_until_relabelled(self):
+        self.built()
+        self.deliver("unlabel", issue(2, "bug", updated="2026-11-14T10:10:00Z"), action="unlabeled")
+        self.assertEqual(sorted(self.listed()), [1])
+        self.deliver("edit", issue(2, "bug", updated="2026-11-14T10:11:00Z", title="still followed"))
+        self.deliver("relabel", issue(2, "bug", "concurro", updated="2026-11-14T10:12:00Z"), action="labeled")
+        self.assertEqual(self.listed()[2], ["bug", "concurro"])
+
+    def test_a_tie_with_different_content_is_settled_by_reading_the_issue(self):
+        self.built()
+        self.deliver("tie", issue(2, "concurro", "concurro:stage:plan"))
+        self.assertEqual((self.listed()[2], self.owed()), (["concurro", "bug"], ["2"]))
+        self.hub.items[2] = issue(2, "concurro", "concurro:stage:plan")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.listed()[2], self.owed()), (["concurro", "concurro:stage:plan"], []))
+
+    def test_a_deleted_or_transferred_issue_leaves_and_is_not_brought_back_by_a_late_delivery(self):
+        self.built()
+        self.deliver("deleted", issue(2, "concurro", "bug", updated="2026-11-14T10:20:00Z"), action="deleted")
+        self.deliver("moved", issue(1, "concurro", updated="2026-11-14T10:20:00Z"), action="transferred")
+        self.assertEqual(self.listed(), {})
+        self.deliver(
+            "comment-deleted", issue(6, "concurro", updated="2026-11-14T10:21:00Z"), "issue_comment", "deleted"
+        )
+        self.assertEqual(sorted(self.listed()), [6], "a deleted comment is an ordinary update of its issue")
+        self.deliver("late", issue(2, "concurro", updated="2026-11-14T10:19:00Z"), action="labeled")
+        self.deliver("later", issue(2, "concurro", updated="2026-11-14T10:30:00Z"), action="labeled")
+        self.assertEqual((sorted(self.listed()), self.owed()), ([6], ["2"]), "asked, not applied")
+        self.hub.items[2] = RuntimeError("GitHub request failed: GET repos/o/r/issues/2 (HTTP 410)")
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((sorted(self.listed()), self.owed()), ([6], []))
+        self.deliver("never-seen", issue(70, "concurro", updated="2026-11-14T10:40:00Z"), action="deleted")
+        self.deliver("never-seen-late", issue(70, "concurro", updated="2026-11-14T10:39:00Z"), action="labeled")
+        self.assertNotIn(70, self.listed())
+
+    def test_a_sponsorship_names_an_issue_the_list_has_never_seen(self):
+        self.built()
+        revision = self.entry()["revision"]
+        self.sponsored = [9]
+        self.hub.items[9] = issue(9, "question")
+        self.index.signal(KEY[0], "sponsorships", 9)
+        self.assertNotEqual(self.entry()["revision"], revision, "membership of the issue list may have changed")
+        self.assertEqual(self.owed(), ["9"])
+        self.clock.now += 1
+        self.index.drain()
+        self.assertEqual((self.listed()[9], self.owed()), (["question"], []))
+        self.index.signal(KEY[0], "sponsorships", 9)
+        self.index.signal(KEY[0], "sponsorships")
+        self.assertEqual(self.entry() and self.owed(), [], "a held issue owes nothing")
+        self.sponsored = []
+        self.assertNotIn(9, self.listed(), "membership follows the registry")
+
+    def test_a_lost_sponsorship_signal_is_repaired_at_start(self):
+        self.built()
+        self.sponsored = [9]
+        self.hub.items[9] = issue(9)
+        self.index.close()
+        self.index = self.opened()
+        self.assertEqual(self.owed(), ["9"])
+        self.clock.now += 1
+        self.index.drain()
+        self.assertIn(9, self.listed())
+
+    def test_a_lost_sponsorship_removal_still_moves_the_revision_at_start(self):
+        self.sponsored = [9]
+        self.hub.items[9] = issue(9)
+        self.built()
+        self.assertEqual(sorted(self.listed()), [1, 2, 9])
+        self.index.check({}, self.clock.now)
+        revision = self.entry()["revision"]
+        self.index.close()
+        self.sponsored = []
+        self.index = self.opened()
+        self.assertEqual(sorted(self.listed()), [1, 2])
+        self.assertNotEqual(self.entry()["revision"], revision, "the list changed, so must its revision")
+
+    def test_a_rebuild_reconciles_rows_that_are_held_but_not_listed(self):
+        self.built()
+        self.deliver("unlabel", issue(2, "bug", updated="2026-11-14T10:10:00Z"), action="unlabeled")
+        self.hub.listed = [issue(1, "concurro", state="closed")]
+        self.hub.items[2] = issue(2, "bug", updated="2026-11-14T11:00:00Z", title="Renamed while unseen")
+        self.clock.now += 1
+        self.index.rebaseline(KEY[0], kinds=("issues",))
+        self.index.drain()
+        self.sponsored = [2]
+        self.index.signal(KEY[0], "sponsorships", 2)
+        self.assertEqual(self.index.rows(KEY[0], "issues")["items"][0]["title"], "Renamed while unseen")
+        self.assertEqual(self.entry() and self.owed(), [])
+
+    def test_a_rebuild_rereads_what_its_listing_no_longer_returns(self):
+        self.built()
+        self.hub.listed = [issue(1, "concurro", state="closed")]
+        self.hub.items[2] = issue(2, "bug", updated="2026-11-14T11:00:00Z")
+        self.clock.now += 1
+        self.index.rebaseline(KEY[0], kinds=("issues",))
+        self.index.drain()
+        self.assertEqual((sorted(self.listed()), self.entry()["state"]), ([1], "current"), "unlabelled while unseen")
+        self.assertEqual(
+            self.index.db.execute("SELECT COUNT(*) FROM issues WHERE document IS NOT NULL").fetchone()[0], 2
+        )
+        self.hub.listed = []
+        self.hub.items[1] = RuntimeError("GitHub request failed: GET repos/o/r/issues/1 (HTTP 301)")
+        self.clock.now += 1
+        self.index.rebaseline(KEY[0], kinds=("issues",))
+        self.index.drain()
+        self.assertEqual((self.listed(), self.entry()["state"]), ({}, "current"), "moved away")
+        self.hub.listed = [issue(3, "concurro")]
+        self.sponsored = [4]
+        self.hub.items[4] = RuntimeError("GitHub request failed: GET repos/o/r/issues/4 (HTTP 403)")
+        self.clock.now += 1
+        self.index.rebaseline(KEY[0], kinds=("issues",))
+        self.index.drain()
+        self.assertEqual(
+            (self.listed(), self.entry()["state"]), ({}, "failed"), "a refusal fails the rebuild, not the row"
+        )
+
+    def test_a_delivery_during_a_rebuild_survives_it(self):
+        self.built()
+
+        def during():
+            self.clock.now += 5
+            self.index.offer(
+                "during",
+                "issues",
+                KEY[0],
+                {
+                    "action": "labeled",
+                    "issue": issue(2, "concurro", "bug", "concurro:stage:plan", updated="2026-11-14T12:00:00Z"),
+                },
+            )
+            self.index.pending.join()
+
+        self.hub.during = during
+        self.clock.now += 1
+        self.index.rebaseline(KEY[0], kinds=("issues",))
+        self.index.drain()
+        self.assertEqual(self.listed()[2], ["concurro", "bug", "concurro:stage:plan"])
+
+    def test_the_history_check_replays_issue_payloads(self):
+        self.built()
+        details = {
+            1: {"action": "labeled", "issue": issue(3, "concurro", updated="2026-11-14T10:05:00Z")},
+            2: {"action": "created"},
+        }
+        groups = {"guid-1": [summary(1, "issues", at=self.clock.now)]}
+        self.clock.now += 1
+        self.index.check(groups, self.clock.now, lambda item: details[item["id"]])
+        self.assertEqual((sorted(self.listed()), self.entry()["state"]), ([1, 2, 3], "current"))
+        self.clock.now += 1
+        self.index.check(
+            {"guid-2": [summary(2, "issue_comment", at=self.clock.now - 1)]},
+            self.clock.now,
+            lambda item: details[item["id"]],
+        )
+        self.assertEqual(self.entry()["state"], "rebuilding", "a comment delivery without its issue cannot be applied")
 
 
 def run(number, attempt=1, updated="2026-11-14T10:00:00Z", status="completed", created=None, **fields):
@@ -635,8 +920,8 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         index.rebaseline.assert_called_once()
 
     def test_the_registry_reports_committed_sponsorship_changes_only(self):
-        seen = []
-        self.registry.changed = seen.append
+        seen, issues = [], []
+        self.registry.changed = lambda repository, number: (seen.append(repository), issues.append(number))
         with self.registry.transaction() as db:
             text = self.registry.noted(KEY, None, {"facts": [1]})
             db.execute("INSERT INTO issue_sponsorships VALUES (?,?,1,0,?)", (*KEY, text))
@@ -665,7 +950,8 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         self.registry.changed = Mock(side_effect=RuntimeError("listener down"))
         with self.registry.transaction():
             self.registry.noted(KEY, text, {"facts": [3]})
-        self.registry.changed.assert_called_once_with(KEY[0])
+        self.registry.changed.assert_called_once_with(*KEY)
+        self.assertEqual(issues, [KEY[1], None], "a document names its issue; a credential poll concerns them all")
         self.assertEqual(self.registry.sponsor_issues(KEY[0]), [KEY[1]], "the registry stays usable")
 
     def test_list_requests_need_the_token_and_never_reach_webhook_handling(self):

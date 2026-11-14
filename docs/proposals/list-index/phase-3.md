@@ -1,7 +1,49 @@
 # Phase 3 brief: issues
 
-**Not implemented; depends on phase 2.** Implements phase 3 of the
-[proposal](../list-index.md). Re-check against the code and the earlier phases as built.
+**Implemented in this changeset; not deployed.** Base: service `427c49f` (phases 1 and 2
+merged and deployed). No frontend change was needed. The brief below is kept as written;
+where the implementation differs, this section says so.
+
+## As built
+
+- **Row handling is shared.** `ListIndex.store` and `ListIndex.remove` hold the ordering
+  rule, the read fence and absence for both runs and issues; `built` and `settled`
+  publish a rebuild and an item read. Runs keep their membership and attempt-1 logic on
+  top.
+- **Schema version 3** adds `issues`; versions 1 and 2 migrate forward on open.
+- **Which issues get a row.** One that carried the enrollment label when delivered, one
+  the registry holds a sponsorship for, and one already held. Other issues of the
+  repository are not stored. A held row keeps following its issue after the label goes,
+  so relabelling restores it without a read.
+- **Same shape as GitHub's.** Rows are GitHub issue objects reduced to the listed fields
+  (`number`, `title`, `state`, `user.login`, `labels[].name`, timestamps), so the
+  backoffice's `summary` and `stage_label` are unchanged and copies saved by earlier
+  releases keep serving while the list is first built.
+- **Registry signals name the issue** (`Registry.changed(repository, issue)`; the issue is
+  None for a credential poll). A sponsorship signal raises `issues` as well as
+  `sponsorships`, since sponsorship decides membership of the issue list.
+- **Membership follows the registry at read time:** `/lists` for issues filters held rows
+  by the enrollment label or `Registry.sponsor_issues`.
+- **Shared reads:** `enrolled_issues`, `issue`, `issue_fields` and `gone` live in
+  `service/github_reads.py`. The backoffice's legacy listing calls `enrolled_issues` with
+  its three-page cap; the rebuild reads every page.
+- **Backoffice:** `Tasks.listed` takes a held issue list from the service and reads no
+  sponsored issue one by one. A sponsored issue that cannot be shown (not held yet, or
+  the index is away with nothing saved) is left out instead of failing the page.
+- **Deployment:** the phase 2 backoffice treats a held issue list as unusable, so the
+  backoffice must not be older than the service. Both images come from this repository.
+- **After code review** (four findings, all fixed with a test each):
+  - Start and overflow resynchronization always raises a held issue list's revision, so a
+    lost sponsorship removal cannot leave the backoffice with an issue the list dropped.
+  - A rebuild reads every held issue its listing did not return, enrolled or not, since
+    any of them can re-enter the list through a sponsorship without a new read.
+  - The backoffice leaves out a held issue that is neither enrolled nor in the
+    sponsorships it read, instead of showing it as an intake task.
+  - Before the list's first build, sponsored issues saved one by one by the previous
+    release are still served from their saved copies, without reading GitHub.
+- **Tests:** 44 in `service/tests/test_list_index.py`, 32 in
+  `backoffice/tests/test_list_freshness.py`.
+- **Not done:** the "Done when" checks need a deployment.
 
 ## Outcome
 
