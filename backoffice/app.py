@@ -311,6 +311,10 @@ def create_app(
     def target(owner: str, repo: str, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.target_view(f"{owner}/{repo}")
 
+    @app.get("/api/targets/{owner}/{repo}/runs")
+    def target_runs(owner: str, repo: str, reader: Annotated[Tasks, Depends(tasks)]):
+        return reader.target_runs(f"{owner}/{repo}")
+
     @app.get("/api/tasks/{owner}/{repo}/{issue}")
     def task(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.task_view(f"{owner}/{repo}", issue)

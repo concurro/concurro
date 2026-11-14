@@ -1,4 +1,4 @@
-"""Persistent, rebuildable issue snapshots with coalesced background GitHub refreshes."""
+"""Persistent, rebuildable issue and list snapshots with coalesced background GitHub refreshes."""
 
 import json
 import logging
@@ -17,6 +17,8 @@ log = logging.getLogger("concurro.backoffice")
 FRESH_SECONDS = 60
 RETRY_SECONDS = 60
 COMMAND_SECONDS = 5
+# Prefix of the `issue` key of a repository-wide list read, which a command on any of its issues outdates.
+LISTING = "list:"
 
 
 class ReadCache:
@@ -191,8 +193,8 @@ class ReadCache:
                     "due = CASE WHEN error_kind = 'transient' THEN due ELSE 0 END, "
                     "error = CASE WHEN error_kind = 'transient' THEN error ELSE NULL END, "
                     "error_kind = CASE WHEN error_kind = 'transient' THEN error_kind ELSE NULL END "
-                    "WHERE repository = ? AND issue = ?",
-                    (self.clock() + FRESH_SECONDS, repository.lower(), str(issue)),
+                    "WHERE repository = ? AND (issue = ? OR substr(issue, 1, ?) = ?)",
+                    (self.clock() + FRESH_SECONDS, repository.lower(), str(issue), len(LISTING), LISTING),
                 )
         except sqlite3.Error:
             log.warning("issue read cache invalidation unavailable; command delivery is unaffected")

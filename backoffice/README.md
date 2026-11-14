@@ -32,8 +32,9 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | POST | `/auth/logout` | `{signedOut, remote}`; checked write header, local-first logout |
 | GET | `/auth/logout-status` | Anonymous remote cleanup status |
 | GET | `/api/me` | `{id, login, name, avatarUrl}` |
-| GET | `/api/overview` | `{targets, tasks, issues, activity}` |
-| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, runs}` |
+| GET | `/api/overview` | `{targets, tasks, issues, activity, cache?}` |
+| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, cache?}` |
+| GET | `/api/targets/{owner}/{repo}/runs` | `{runs, message, cache?}` with the fork's recent executor runs |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target, issueWriter}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/sections/{section}` | Summary, selected phase, timeline or live PR data |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
@@ -44,6 +45,17 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |
+
+## List loading
+
+The overview and target views read each target's pull requests, enrolled issues and
+sponsorships concurrently. With the read cache enabled, each of those lists and a fork's
+Actions runs is saved per repository (sponsorships per repository and user). A request
+returns saved lists at once and refreshes the ones older than a minute in the background;
+`cache` reports the oldest list's `observedAt` and whether a refresh is `refreshing`, so the
+frontend can reload. A posted command outdates the saved lists of its issue repository.
+Visibility and writer access are decided per request from their own one-minute caches, never from
+saved lists. A target lists its `issueRepositories`, which is where its tasks' `owner`/`repo` come from.
 
 ## Issue-page loading
 

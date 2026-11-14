@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_backoffice import USER, settings  # noqa: E402
 
 from backoffice import activity  # noqa: E402
+from backoffice.read_cache import ReadCache  # noqa: E402
 from backoffice.runs import Runs  # noqa: E402
-from backoffice.tasks import Tasks  # noqa: E402
+from backoffice.tasks import TaskNotFound, Tasks  # noqa: E402
 from backoffice.turns import Diagnostics  # noqa: E402
 from github import NotFound, Transient  # noqa: E402
 from service import diagnostics  # noqa: E402
@@ -265,10 +266,49 @@ class ActivityTests(unittest.TestCase):
         reader = Tasks(settings(targets=(target,)), access, USER, self.diagnostics)
         overview = reader.overview()
         self.assertEqual([item["id"] for item in overview["activity"]], ["t1"])
-        view = reader.target_view("up/project")
+        self.assertNotIn("runs", reader.target_view("up/project"))
+        view = reader.target_runs("up/project")
         self.assertEqual([run["id"] for run in view["runs"]], [77])
-        self.assertIsNone(view["runsMessage"])
+        self.assertIsNone(view["message"])
         self.assertEqual(reader.recorded(["up/project"]), self.diagnostics.recent(["up/project"], 12))
+
+    def test_saved_lists_serve_repeat_views_and_refresh_in_the_background(self):
+        target = Target("up/project", "up/project", "upstream")
+        access = Mock()
+        access.repository.return_value = {"full_name": "up/project", "description": ""}
+        access.task_issues.return_value = []
+        access.pull_requests.return_value = []
+        access.config.return_value = ({"repository": "up/project"}, "main")
+        access.writable.return_value = True
+        access.transport.return_value = Mock(request=lambda method, path: {"workflow_runs": [self.listed_run(77)]})
+        now = [1000.0]
+        cache = ReadCache(self.root / "reads", clock=lambda: now[0])
+        self.addCleanup(cache.close)
+        sponsorships = Mock(return_value={"issues": []})
+        reader = lambda: Tasks(
+            settings(targets=(target,)), access, USER, self.diagnostics, read_cache=cache, sponsorships=sponsorships
+        )
+        first = reader().overview()
+        self.assertEqual(first["targets"][0]["issueRepositories"], ["up/project"])
+        self.assertEqual((first["cache"]["stale"], first["cache"]["refreshing"]), (False, False))
+        self.assertEqual([run["id"] for run in reader().target_runs("up/project")["runs"]], [77])
+        access.transport.return_value = Mock(request=Mock(side_effect=AssertionError("served from saved runs")))
+        self.assertEqual(reader().target_view("up/project")["tasks"], [])
+        self.assertEqual([run["id"] for run in reader().target_runs("up/project")["runs"]], [77])
+        reads = (access.task_issues, access.pull_requests, sponsorships)
+        self.assertEqual([read.call_count for read in reads], [1, 1, 1])
+        access.writable.return_value = False
+        with self.assertRaises(TaskNotFound, msg="access is checked before saved lists are served"):
+            reader().target_view("up/project")
+        access.writable.return_value = True
+        now[0] += 61
+        due = reader().target_view("up/project")["cache"]
+        self.assertEqual((due["stale"], due["refreshing"]), (True, True))
+        for pending, _ in list(cache.pending.values()):
+            pending.result(5)
+        self.assertEqual([read.call_count for read in reads], [2, 2, 2])
+        cache.invalidate("up/project", 7)
+        self.assertTrue(reader().target_view("up/project")["cache"]["pendingCommand"])
 
     def test_without_a_diagnostics_directory_both_lists_are_empty(self):
         target = Target("up/project", "up/project", "upstream")
@@ -280,8 +320,7 @@ class ActivityTests(unittest.TestCase):
         access.writable.return_value = True
         reader = Tasks(settings(targets=(target,)), access, USER)
         self.assertEqual(reader.overview()["activity"], [])
-        view = reader.target_view("up/project")
-        self.assertEqual((view["runs"], view["runsMessage"]), ([], None))
+        self.assertEqual(reader.target_runs("up/project"), {"runs": [], "message": None})
         access.transport.assert_not_called()
         self.assertEqual(Diagnostics(None).recent(["up/project"], 5), [])
         self.assertEqual(Diagnostics(self.root).recent([], 5), [])

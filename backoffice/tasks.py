@@ -27,6 +27,7 @@ from . import activity
 from .auth import User
 from .commands import CommandError
 from .github import Access
+from .read_cache import LISTING
 from .runs import Runs
 from .settings import Settings
 
@@ -155,9 +156,10 @@ class Tasks:
         """Share cached display reads and live consent projection without loading unrelated evidence."""
         self.settings, self.access, self.user = settings, access, user
         self.diagnostics, self.read_cache, self.sponsorships = diagnostics, read_cache, sponsorships
-        self.issue_intents = []
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
+        # Freshness of every saved list read this request served.
+        self.reads: list[dict] = []
 
     # Targets
 
@@ -165,17 +167,17 @@ class Tasks:
         """Return fork metadata only for upstream writers who can see both target repositories."""
         if require_writer and not self.access.writable(target.upstream, self.user.login, self.user.id):
             return None
-        seen = {repository: self.access.repository(repository) for repository in target.repositories}
+        with ThreadPoolExecutor(len(target.repositories)) as pool:
+            seen = dict(zip(target.repositories, pool.map(self.access.repository, target.repositories)))
         return seen[target.fork] if all(seen.values()) else None
 
     def visible_targets(self) -> list[tuple]:
         """Configured targets this upstream writer may access, with the fork's metadata."""
         if self.visible is None:
-            self.visible = []
-            for target in self.settings.targets:
-                fork = self.target_access(target)
-                if fork is not None:
-                    self.visible.append((target, fork))
+            targets = self.settings.targets
+            with ThreadPoolExecutor(max(1, len(targets))) as pool:
+                forks = list(pool.map(self.target_access, targets))
+            self.visible = [(target, fork) for target, fork in zip(targets, forks) if fork is not None]
         return self.visible
 
     def config(self, fork: str) -> tuple[dict, str]:
@@ -205,6 +207,7 @@ class Tasks:
             "owner": owner,
             "repo": repo,
             "fork": target.fork,
+            "issueRepositories": list(target.issue_repositories),
             "description": fork.get("description") or "",
             "mode": "autonomous" if config.get("autonomous") else "manual",
             "defaultBranch": branch,
@@ -229,57 +232,107 @@ class Tasks:
 
     # Lists
 
-    def listed(self, target, record: dict) -> list[dict]:
-        tasks = []
-        pulls = self.pulls_by_issue(self.publication_repository(target))
-        for repository in target.issue_repositories:
-            issues = self.access.task_issues(repository)
+    def listing(self, repository: str, name: str, load):
+        """One list read: saved data at once and a background refresh when due, or GitHub directly."""
+        if self.read_cache is None:
+            return load()
+        scope = hashlib.sha256(json.dumps([1, "listing", self.settings.reader.app_id]).encode()).hexdigest()
+        try:
+            saved, status = self.read_cache.read(scope, repository, LISTING + name, lambda: {"items": load()})
+        except (sqlite3.Error, OSError):
+            log.warning("list read cache unavailable; reading GitHub directly")
+            return load()
+        self.reads.append(status)
+        return saved["items"]
+
+    def freshness(self) -> dict:
+        """The response's `cache` entry: its oldest saved list read and whether any is being refreshed."""
+        if not self.reads:
+            return {}
+        return {
+            "cache": {
+                "observedAt": min(read["observedAt"] for read in self.reads),
+                "stale": any(read["stale"] for read in self.reads),
+                "refreshing": any(read["refreshing"] for read in self.reads),
+                "pendingCommand": any(read["pendingCommand"] for read in self.reads),
+                "error": next((read["error"] for read in self.reads if read["error"]), None),
+            }
+        }
+
+    def projections(self, repository: str) -> list[dict] | None:
+        """The service's issue sponsorships as this user may see them; None when it can't supply them."""
+        if not self.sponsorships:
+            return []
+
+        def load():
             try:
-                projections = (
-                    {item["issue"]: item for item in self.sponsorships(repository).get("issues", [])}
-                    if self.sponsorships
-                    else {}
-                )
+                return self.sponsorships(repository).get("issues", [])
             except CommandError:
-                projections = {}
-                record["sponsorshipStatus"] = "unavailable"
-            for number in projections.keys() - {i["number"] for i in issues}:
-                try:
-                    issues.append(self.access.get(repository, f"issues/{number}"))
-                except NotFound:
-                    pass
-                except RuntimeError as error:
-                    if not gone_issue(error):
-                        raise
-            for issue in issues:
-                task = summary(repository, issue, record["mode"])
-                if issue["number"] in projections:
-                    task["sponsorships"] = projections[issue["number"]]
-                    if (
-                        not stage_label(issue)
-                        and "concurro" not in {label["name"] for label in issue.get("labels", [])}
-                        and not projections[issue["number"]].get("task")
-                    ):
-                        self.issue_intents.append(
-                            {
-                                key: task[key]
-                                for key in (
-                                    "owner",
-                                    "repo",
-                                    "issue",
-                                    "title",
-                                    "author",
-                                    "labels",
-                                    "updatedAt",
-                                    "sponsorships",
-                                )
-                            }
-                        )
-                        continue
-                if task["issue"] in pulls:
-                    task["pr"] = pulls[task["issue"]]
-                tasks.append(task)
-        return sorted(tasks, key=lambda t: t["updatedAt"], reverse=True)
+                return None
+
+        return self.listing(repository, f"sponsorships:{self.user.id}", load)
+
+    def sponsored_issue(self, repository: str, number: int) -> dict | None:
+        """An issue known only from its sponsorship, unless GitHub moved or deleted it."""
+
+        def load():
+            try:
+                return self.access.get(repository, f"issues/{number}")
+            except RuntimeError as error:
+                if not gone_issue(error):
+                    raise
+                return None
+
+        return self.listing(repository, f"issue:{number}", load)
+
+    def listed(self, target, record: dict) -> tuple[list[dict], list[dict]]:
+        """A target's tasks and its sponsored issues awaiting enrollment, from concurrent reads."""
+        tasks, intents = [], []
+        repositories = target.issue_repositories
+        with ThreadPoolExecutor(2 * len(repositories) + 1) as pool:
+            pulls_read = pool.submit(self.pulls_by_issue, self.publication_repository(target))
+            issue_reads = [
+                pool.submit(self.listing, repository, "issues", lambda r=repository: self.access.task_issues(r))
+                for repository in repositories
+            ]
+            projection_reads = [pool.submit(self.projections, repository) for repository in repositories]
+            pulls = pulls_read.result()
+            for repository, issue_read, projection_read in zip(repositories, issue_reads, projection_reads):
+                issues, found = issue_read.result(), projection_read.result()
+                if found is None:
+                    record["sponsorshipStatus"] = "unavailable"
+                projections = {item["issue"]: item for item in found or []}
+                missing = sorted(projections.keys() - {i["number"] for i in issues})
+                issues += filter(None, pool.map(lambda n, r=repository: self.sponsored_issue(r, n), missing))
+                for issue in issues:
+                    task = summary(repository, issue, record["mode"])
+                    if issue["number"] in projections:
+                        task["sponsorships"] = projections[issue["number"]]
+                        if (
+                            not stage_label(issue)
+                            and "concurro" not in {label["name"] for label in issue.get("labels", [])}
+                            and not projections[issue["number"]].get("task")
+                        ):
+                            intents.append(
+                                {
+                                    key: task[key]
+                                    for key in (
+                                        "owner",
+                                        "repo",
+                                        "issue",
+                                        "title",
+                                        "author",
+                                        "labels",
+                                        "updatedAt",
+                                        "sponsorships",
+                                    )
+                                }
+                            )
+                            continue
+                    if task["issue"] in pulls:
+                        task["pr"] = pulls[task["issue"]]
+                    tasks.append(task)
+        return sorted(tasks, key=lambda t: t["updatedAt"], reverse=True), intents
 
     def task_config(self, target, repository: str) -> dict:
         """The configuration the engine runs a task with (`service.worker.Worker.load`): the target's
@@ -297,7 +350,7 @@ class Tasks:
     def pulls_by_issue(self, repository: str) -> dict[int, dict]:
         """Recent pull requests from task branches, by issue; an open one wins over closed ones."""
         try:
-            listing = self.access.pull_requests(repository)
+            listing = self.listing(repository, "pulls", lambda: self.access.pull_requests(repository))
         except NotFound:
             return {}
         found: dict[int, dict] = {}
@@ -322,36 +375,42 @@ class Tasks:
         return {issue: {k: v for k, v in pull.items() if k != "open"} for issue, pull in found.items()}
 
     def overview(self) -> dict:
-        targets, tasks = [], []
-        for target, fork in self.visible_targets():
-            record = self.target_record(target, fork)
-            targets.append(record)
-            tasks += self.listed(target, record)
-        tasks.sort(key=lambda t: t["updatedAt"], reverse=True)
-        repositories = [r for target, _ in self.visible_targets() for r in target.issue_repositories]
+        visible = self.visible_targets()
+
+        def view(entry):
+            record = self.target_record(*entry)
+            return record, *self.listed(entry[0], record)
+
+        with ThreadPoolExecutor(max(1, len(visible))) as pool:
+            views = list(pool.map(view, visible))
+        repositories = [r for target, _ in visible for r in target.issue_repositories]
         return {
-            "targets": targets,
-            "tasks": tasks,
-            "issues": self.issue_intents,
+            "targets": [record for record, _, _ in views],
+            "tasks": sorted((t for _, tasks, _ in views for t in tasks), key=lambda t: t["updatedAt"], reverse=True),
+            "issues": [intent for _, _, intents in views for intent in intents],
             "activity": activity.feed(self.recorded(repositories)),
+            **self.freshness(),
         }
 
     def target_view(self, repository: str) -> dict:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
-        lookup = self.diagnostics.for_sessions if self.diagnostics else None
-        found = EMPTY_RUNS
-        if lookup:
-            reader = Runs(self.access.transport(target.fork), target.fork)
-            found = reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions))
-        tasks = self.listed(target, record)
-        return {
-            "target": record,
-            "tasks": tasks,
-            "issues": self.issue_intents,
-            "runs": found["runs"],
-            "runsMessage": found["message"],
-        }
+        tasks, intents = self.listed(target, record)
+        return {"target": record, "tasks": tasks, "issues": intents, **self.freshness()}
+
+    def target_runs(self, repository: str) -> dict:
+        """The fork's recent executor runs, attributed to recorded turns; none without diagnostics."""
+        target, _ = self.find_target(repository)
+        if not self.diagnostics:
+            return EMPTY_RUNS
+        lookup = self.diagnostics.for_sessions
+        reader = Runs(self.access.transport(target.fork), target.fork)
+        found = self.listing(
+            target.fork,
+            "runs",
+            lambda: reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions)),
+        )
+        return found | self.freshness()
 
     def recorded(self, repositories, limit: int = activity.ACTIVITY_ITEMS) -> list:
         """The newest recorded turns of these repositories; none without a diagnostics directory."""

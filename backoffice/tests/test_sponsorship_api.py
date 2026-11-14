@@ -114,12 +114,12 @@ class SponsorshipApiTests(unittest.TestCase):
         )
         target = SimpleNamespace(issue_repositories=("owner/project",), upstream="up/project")
         with patch.object(view, "pulls_by_issue", return_value={}):
-            tasks = view.listed(target, {"mode": "manual"})
+            tasks, intents = view.listed(target, {"mode": "manual"})
         self.assertEqual(tasks, [])
-        self.assertEqual(len(view.issue_intents), 1)
-        self.assertNotIn("stage", view.issue_intents[0])
-        self.assertNotIn("budgets", view.issue_intents[0])
-        self.assertEqual(view.issue_intents[0]["sponsorships"]["status"], "confirmed")
+        self.assertEqual(len(intents), 1)
+        self.assertNotIn("stage", intents[0])
+        self.assertNotIn("budgets", intents[0])
+        self.assertEqual(intents[0]["sponsorships"]["status"], "confirmed")
 
 
 class PortalProjectionTests(unittest.TestCase):
@@ -229,8 +229,9 @@ class PortalProjectionTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         reader.listed(target, {"mode": "manual"})
                 else:
-                    self.assertEqual(reader.listed(target, {"mode": "manual"}), [])
-                    self.assertEqual([i["issue"] for i in reader.issue_intents], [8])
+                    tasks, intents = reader.listed(target, {"mode": "manual"})
+                    self.assertEqual(tasks, [])
+                    self.assertEqual([i["issue"] for i in intents], [8])
         access.get.side_effect = Transient("unavailable")
         with patch.object(reader, "pulls_by_issue", return_value={}):
             with self.assertRaises(Transient):
@@ -239,7 +240,7 @@ class PortalProjectionTests(unittest.TestCase):
     def test_empty_and_legacy_configurations_keep_target_listing(self):
         """Actual model-config/policy helpers raise caught errors or resolve legacy settings, never Blocked."""
         reader = Tasks(settings(), Mock(), USER)
-        target = SimpleNamespace(fork="owner/project", upstream="up/project")
+        target = SimpleNamespace(fork="owner/project", upstream="up/project", issue_repositories=("up/project",))
         with patch.object(reader, "config", return_value=({}, "main")):
             self.assertIsNone(reader.target_record(target, {})["credentialRequirements"])
         legacy = {
