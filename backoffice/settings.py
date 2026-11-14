@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 import private
 from service import settings as service_settings
+from service.list_index import read_token
 from service.settings import CHECKOUT
 from service.targets import Target
 
@@ -24,6 +25,7 @@ FIELDS = {
     "service_url",
     "auth_state_dir",
     "auth_key_path",
+    "lists_token_path",
 }
 REQUIRED = {"public_url", "client_id", "client_secret_path", "reader", "targets"}
 
@@ -60,6 +62,8 @@ class Settings:
     # Optional encrypted GitHub logout retry state; neither field changes provider credentials.
     auth_state_dir: Path | None = None
     auth_key_path: Path | None = None
+    # The shared bearer for the service's list index; setting it switches list freshness to the index.
+    lists_token: str | None = None
 
     @property
     def base_path(self) -> str:
@@ -119,6 +123,12 @@ def load(path: str | Path) -> Settings:
             require(len(key) == 32, "auth_key_path")
         except Exception:
             raise SettingsError("invalid settings field: auth_state") from None
+    lists_token = None
+    if data.get("lists_token_path"):
+        try:
+            lists_token = read_token(data["lists_token_path"])
+        except Exception:
+            raise SettingsError("invalid settings field: lists_token_path") from None
     cache_dir = data.get("read_cache_dir", os.environ.get("CONCURRO_READ_CACHE_DIR"))
     if cache_dir == "":
         cache_dir = None
@@ -132,5 +142,6 @@ def load(path: str | Path) -> Settings:
         read_cache_dir=Path(cache_dir) if cache_dir else None,
         vault_url=data.get("vault_url") or None,
         service_url=data.get("service_url") or None,
+        lists_token=lists_token,
         **optional_path,
     )

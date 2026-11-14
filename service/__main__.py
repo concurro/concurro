@@ -23,6 +23,7 @@ from .diagnostics import Store
 from .errors import GatewayStop, RegistryError
 from .gateway import MutationGateway
 from .identity import Identity, IdentityError
+from .list_index import ListIndex, Lists, read_token
 from .reconciler import Reconciler
 from .registry import Registry
 from .scheduler import Scheduler
@@ -122,7 +123,13 @@ class Daemon:
         self.reconciler.policy_observer = worker.observe_policies
         worker.observe_policies()
         self.reconciler.cleanup = worker.cleanup_runners
-        self.recovery = Recovery(self.identity, self.registry, self.reconciler, installations)
+        self.list_index = ListIndex(settings.state_dir)
+        self.list_index.start({r: readers[r].request("GET", f"repos/{r}")["id"] for r in repositories})
+        self.registry.changed = lambda repository: self.list_index.signal(repository, "sponsorships")
+        lists_token = read_token(settings.lists_token_path) if settings.lists_token_path else None
+        self.recovery = Recovery(
+            self.identity, self.registry, self.reconciler, installations, list_index=self.list_index
+        )
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
         actions = Actions(
@@ -141,9 +148,11 @@ class Daemon:
                 {bot_login},
                 issue_repositories=issue_repositories,
                 command_comment=delegation.marked,
+                list_index=self.list_index,
             ),
             *self.listen,
             actions=actions,
+            lists=Lists(self.list_index, lists_token),
         )
         self.control = control.server(
             control.Control(self.registry, self.reconciler, cutover, worker.evaluate, gateway), settings.state_dir
@@ -179,6 +188,7 @@ class Daemon:
         self.http.shutdown()
         self.control.shutdown()
         self.scheduler.shutdown()
+        self.list_index.close()
         self.identity.close()
         self.registry.close()
 

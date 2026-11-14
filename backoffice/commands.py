@@ -12,6 +12,8 @@ DEFAULT_URL = "http://concurro-service:8787"
 # Failures before the request reached the service; anything later may follow a posted command.
 NOT_DELIVERED = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 UNKNOWN = "the command may or may not have been posted; check the issue before retrying"
+# List index requests are local and small; a slow answer is treated as no answer.
+LIST_SECONDS = 5
 
 
 class CommandError(Exception):
@@ -24,10 +26,43 @@ class CommandError(Exception):
         self.may_have_posted = may_have_posted
 
 
+class IndexUnavailable(Exception):
+    """The service's list index gave no usable answer; never a failure of the user's own sign-in."""
+
+
 class ServiceCommands:
-    def __init__(self, url: str | None = None, client: httpx.Client | None = None):
+    def __init__(self, url: str | None = None, client: httpx.Client | None = None, lists_token: str | None = None):
+        """`lists_token` is the shared bearer for the list index; without it the index is not used."""
         self.url = (url or DEFAULT_URL).rstrip("/")
         self.client = client or httpx.Client(timeout=60)
+        self.lists_token = lists_token
+
+    def lists(self, path: str, body: dict) -> dict:
+        """One list index request with the backoffice's own token; any failure is `IndexUnavailable`."""
+        try:
+            response = self.client.post(
+                self.url + path,
+                headers={"Authorization": "Bearer " + (self.lists_token or "")},
+                json=body,
+                timeout=LIST_SECONDS,
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            raise IndexUnavailable("the list index did not answer") from None
+        if response.status_code != 200 or not isinstance(payload, dict):
+            raise IndexUnavailable(f"the list index refused the request (HTTP {response.status_code})")
+        return payload
+
+    def list_revisions(self, repositories: list[str]) -> dict:
+        """`{repository: {kind: {revision, mode, state, verified}}}` as the service reports it."""
+        found = self.lists("/lists/revisions", {"repositories": repositories}).get("repositories")
+        if not isinstance(found, dict):
+            raise IndexUnavailable("the list index answer was malformed")
+        return found
+
+    def list_refresh(self, repository: str) -> None:
+        """Have the service treat every list of the repository as changed."""
+        self.lists("/lists/refresh", {"repository": repository})
 
     def sponsorships(self, token: str | TokenCredential, repository: str, issue: int | None = None) -> dict:
         """Read issue intents from the daemon without opening its registry database."""

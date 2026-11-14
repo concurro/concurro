@@ -32,8 +32,16 @@ FIELDS = {
     "delegation_key_path",
     "vault_metadata_url",
     "vault_service_token_path",
+    "lists_token_path",
 }
-OPTIONAL = {"engine", "diagnostics_dir", "delegation_key_path", "vault_metadata_url", "vault_service_token_path"}
+OPTIONAL = {
+    "engine",
+    "diagnostics_dir",
+    "delegation_key_path",
+    "vault_metadata_url",
+    "vault_service_token_path",
+    "lists_token_path",
+}
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
 WORKFLOW_REF = re.compile(
@@ -90,6 +98,8 @@ class Settings:
     delegation_key_path: Path | None = None
     vault_metadata_url: str | None = None  # Private nonsecret metadata listener.
     vault_service_token_path: Path | None = None  # Separate service bearer, never a user token.
+    # The backoffice's bearer for the list index endpoints; without it they are refused.
+    lists_token_path: Path | None = None
 
 
 def require(condition, field):
@@ -183,6 +193,11 @@ def load(path):
         metadata_token, metadata_identity = secret(data["vault_service_token_path"], "vault_service_token_path")
         require(metadata_identity not in identities, "vault_service_token_path")
         identities.add(metadata_identity)
+    lists_token = None
+    if "lists_token_path" in data:
+        lists_token, lists_identity = secret(data["lists_token_path"], "lists_token_path")
+        require(lists_identity not in identities, "lists_token_path")
+        identities.add(lists_identity)
     gateway = gateway_settings(data["gateway"], identities)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
@@ -203,6 +218,7 @@ def load(path):
         delegation_key_path=delegation,
         vault_metadata_url=metadata_url,
         vault_service_token_path=metadata_token,
+        lists_token_path=lists_token,
     )
 
 

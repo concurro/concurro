@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -25,7 +26,7 @@ from vocab import Stage
 
 from . import activity
 from .auth import User
-from .commands import CommandError
+from .commands import CommandError, IndexUnavailable
 from .github import Access
 from .read_cache import LISTING
 from .runs import Runs
@@ -60,6 +61,9 @@ SECTION_FIELDS = {
     "timeline": {"reports", "qc_history"},
     "pull": set(),
 }
+# List index states, most to least favourable; a response reports the least favourable it read.
+INDEX_STATES = ("current", "catching-up", "unavailable")
+INDEX_UNAVAILABLE = "Concurro's list index is unavailable."
 DEFAULT_LIMITS = {"max_model_calls": 48, "max_fix_rounds": 2, "max_plan_revisions": 2}
 
 
@@ -151,11 +155,22 @@ class Tasks:
     """Views for one signed-in upstream writer, read with the Reader App."""
 
     def __init__(
-        self, settings: Settings, access: Access, user: User, diagnostics=None, read_cache=None, sponsorships=None
+        self,
+        settings: Settings,
+        access: Access,
+        user: User,
+        diagnostics=None,
+        read_cache=None,
+        sponsorships=None,
+        lists=None,
     ):
-        """Share cached display reads and live consent projection without loading unrelated evidence."""
+        """Share cached display reads and live consent projection without loading unrelated evidence.
+
+        `lists` asks the service's list index (`ServiceCommands`); without it saved lists age out.
+        """
         self.settings, self.access, self.user = settings, access, user
         self.diagnostics, self.read_cache, self.sponsorships = diagnostics, read_cache, sponsorships
+        self.lists, self.index, self.index_guard = lists, None, threading.Lock()
         self.configs: dict[str, tuple[dict, str]] = {}
         self.visible: list[tuple] | None = None
         # Freshness of every saved list read this request served.
@@ -232,16 +247,80 @@ class Tasks:
 
     # Lists
 
-    def listing(self, repository: str, name: str, load):
-        """One list read: saved data at once and a background refresh when due, or GitHub directly."""
-        if self.read_cache is None:
+    def list_state(self, repository: str, kind: str) -> dict | None:
+        """The index's entry for one list, or None with the index disabled; asked once per request.
+
+        An entry this backoffice cannot use, malformed or in a mode it does not serve, is unavailable.
+        """
+        if self.lists is None:
+            return None
+        with self.index_guard:
+            if self.index is None:
+                try:
+                    self.index = self.lists.list_revisions(
+                        sorted({r for target in self.settings.targets for r in target.repositories})
+                    )
+                except IndexUnavailable as error:
+                    self.index = error
+        if isinstance(self.index, IndexUnavailable):
+            raise self.index
+        try:
+            entry = self.index[repository][kind]
+            usable = (
+                isinstance(entry["revision"], str)
+                and entry["mode"] == "signals"
+                and entry["state"] in INDEX_STATES[:2]
+                and isinstance(entry["verified"], str | None)
+            )
+        except (KeyError, TypeError):
+            usable = False
+        if not usable:
+            raise IndexUnavailable(f"the list index does not usably report {kind}")
+        return entry
+
+    def listing(self, repository: str, name: str, load, incomplete=None):
+        """One list read: saved data at once and a background refresh when due, or GitHub directly.
+
+        With the list index a saved list is due when its kind's revision moved, and nothing is
+        read from GitHub while the index cannot be asked. `incomplete(items)` says a read came
+        back without everything it should hold: it then never replaces a complete saved copy
+        and is retried, instead of being kept as the list.
+        """
+
+        def read():
+            log.info("list read: %s of %s", name.partition(":")[0], repository)
             return load()
+
+        def direct():
+            """Without a usable cache: GitHub, unless the index that decides freshness is away."""
+            if "saved" in freshness:
+                raise IndexUnavailable("the list index is unavailable and nothing is saved")
+            return read()
+
+        def saved_read():
+            items = read()
+            return {"items": items, "degraded": bool(incomplete and incomplete(items))}
+
+        kind = name.partition(":")[0]
+        entry, freshness = None, {}
+        try:
+            entry = self.list_state(repository, "issues" if kind == "issue" else kind)
+            if entry:
+                freshness = {"revision": entry["revision"]}
+        except IndexUnavailable:
+            freshness = {"saved": INDEX_UNAVAILABLE}
+        if self.read_cache is None:
+            return direct()
         scope = hashlib.sha256(json.dumps([1, "listing", self.settings.reader.app_id]).encode()).hexdigest()
         try:
-            saved, status = self.read_cache.read(scope, repository, LISTING + name, lambda: {"items": load()})
+            saved, status = self.read_cache.read(scope, repository, LISTING + name, saved_read, **freshness)
+        except LookupError:
+            raise IndexUnavailable("nothing is saved for this list") from None
         except (sqlite3.Error, OSError):
-            log.warning("list read cache unavailable; reading GitHub directly")
-            return load()
+            log.warning("list read cache unavailable")
+            return direct()
+        if self.lists is not None:
+            status |= {"state": entry["state"] if entry else "unavailable", "verified": entry and entry["verified"]}
         self.reads.append(status)
         return saved["items"]
 
@@ -256,8 +335,17 @@ class Tasks:
                 "refreshing": any(read["refreshing"] for read in self.reads),
                 "pendingCommand": any(read["pendingCommand"] for read in self.reads),
                 "error": next((read["error"] for read in self.reads if read["error"]), None),
+                **self.index_freshness(),
             }
         }
+
+    def index_freshness(self) -> dict:
+        """The least favourable list index state among the lists read, and their oldest verification."""
+        states = [read["state"] for read in self.reads if "state" in read]
+        if not states:
+            return {}
+        verified = [read["verified"] for read in self.reads if read.get("verified")]
+        return {"state": max(states, key=INDEX_STATES.index), "verified": min(verified, default=None)}
 
     def projections(self, repository: str) -> list[dict] | None:
         """The service's issue sponsorships as this user may see them; None when it can't supply them."""
@@ -270,7 +358,7 @@ class Tasks:
             except CommandError:
                 return None
 
-        return self.listing(repository, f"sponsorships:{self.user.id}", load)
+        return self.listing(repository, f"sponsorships:{self.user.id}", load, incomplete=lambda found: found is None)
 
     def sponsored_issue(self, repository: str, number: int) -> dict | None:
         """An issue known only from its sponsorship, unless GitHub moved or deleted it."""
@@ -350,7 +438,13 @@ class Tasks:
     def pulls_by_issue(self, repository: str) -> dict[int, dict]:
         """Recent pull requests from task branches, by issue; an open one wins over closed ones."""
         try:
-            listing = self.listing(repository, "pulls", lambda: self.access.pull_requests(repository))
+            listing = self.listing(
+                repository,
+                "pulls",
+                lambda: self.access.pull_requests(repository),
+                # The REST fallback lists pull requests without their line counts or checks.
+                incomplete=lambda pulls: any(pull["runs"] is None for pull in pulls),
+            )
         except NotFound:
             return {}
         found: dict[int, dict] = {}
@@ -409,6 +503,8 @@ class Tasks:
             target.fork,
             "runs",
             lambda: reader.for_target(lambda sessions: lookup(target.issue_repositories, sessions)),
+            # A message says the listing or a rerun's attempt could not be read.
+            incomplete=lambda found: bool(found["message"]),
         )
         return found | self.freshness()
 

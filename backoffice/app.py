@@ -25,10 +25,10 @@ from service.identity import Identity
 from service.settings import CHECKOUT
 
 from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
-from .commands import CommandError, ServiceCommands
+from .commands import CommandError, IndexUnavailable, ServiceCommands
 from .credentials import Vault, VaultError
 from .github import Access
-from .read_cache import ReadCache
+from .read_cache import LISTING, ReadCache
 from .revocations import RevocationError, Revocations
 from .runs import Runs
 from .settings import Settings
@@ -75,7 +75,7 @@ def create_app(
         read_cache = None
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
-    commands = commands or ServiceCommands(settings.service_url)
+    commands = commands or ServiceCommands(settings.service_url, lists_token=settings.lists_token)
     sessions = sessions or Sessions()
     # One Reader identity, so its token cache serves every request.
     reader_app = identity or Identity(settings.reader, **({"connection": connection} if connection else {}))
@@ -156,6 +156,7 @@ def create_app(
             sponsorships=lambda repository, issue=None: commands.sponsorships(
                 current.credential or current.token, repository, issue
             ),
+            lists=commands if settings.lists_token else None,
         )
 
     @app.exception_handler(TaskNotFound)
@@ -176,6 +177,13 @@ def create_app(
     @app.exception_handler(NotFound)
     async def missing(_: Request, __: NotFound) -> JSONResponse:
         return JSONResponse({"detail": "not found, or not visible to your GitHub account"}, status_code=404)
+
+    @app.exception_handler(IndexUnavailable)
+    async def index_unavailable(_: Request, __: IndexUnavailable) -> JSONResponse:
+        return JSONResponse(
+            {"detail": "Concurro's list index is unavailable and this list has not been saved yet; try again shortly"},
+            status_code=503,
+        )
 
     @app.exception_handler(CommandError)
     async def command_refused(_: Request, error: CommandError) -> JSONResponse:
@@ -311,6 +319,17 @@ def create_app(
     def target(owner: str, repo: str, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.target_view(f"{owner}/{repo}")
 
+    @app.post("/api/targets/{owner}/{repo}/refresh")
+    def refresh_target(owner: str, repo: str, current: Annotated[Session, Depends(writer)]):
+        """Have every list of a target read from GitHub again; with the list index, through the service."""
+        target, _ = tasks(current).find_target(f"{owner}/{repo}")
+        if settings.lists_token:
+            for repository in target.repositories:
+                commands.list_refresh(repository)
+        elif read_cache is not None:
+            read_cache.outdate(LISTING, target.repositories)
+        return {"refreshed": True}
+
     @app.get("/api/targets/{owner}/{repo}/runs")
     def target_runs(owner: str, repo: str, reader: Annotated[Tasks, Depends(tasks)]):
         return reader.target_runs(f"{owner}/{repo}")
@@ -381,17 +400,26 @@ def create_app(
             read_cache.invalidate(repository, issue)
         return result
 
+    def outdate_sponsorships():
+        """Credential coverage comes from the vault, which the service's signals follow only at its next poll."""
+        if read_cache is not None:
+            read_cache.outdate(LISTING + "sponsorships:")
+
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):
         return {"routes": vault.routes(current.credential or current.token), "usage": []}
 
     @app.put("/api/me/credentials/{route}")
     def put_credential(route: str, body: SecretBody, current: Annotated[Session, Depends(writer)]):
-        return vault.put(current.credential or current.token, route, body.secret, body.models, body.account_id)
+        result = vault.put(current.credential or current.token, route, body.secret, body.models, body.account_id)
+        outdate_sponsorships()
+        return result
 
     @app.delete("/api/me/credentials/{route}")
     def revoke_credential(route: str, current: Annotated[Session, Depends(writer)]):
-        return vault.revoke(current.credential or current.token, route)
+        result = vault.revoke(current.credential or current.token, route)
+        outdate_sponsorships()
+        return result
 
     if settings.static_dir:
         mount_frontend(app, settings.static_dir)

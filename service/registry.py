@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -25,6 +26,8 @@ DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
 DISPOSITIONS = {"applied": "done", "not-applied": "failed", "discarded": "failed"}
+log = logging.getLogger("concurro.service")
+
 REVIEW_INTENTS = "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)"
 BINDINGS = """CREATE TABLE bindings (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, upstream TEXT NOT NULL, fork TEXT NOT NULL,
@@ -311,6 +314,9 @@ class Registry:
         self.db, self.lock_fd, self.clock = db, lock_fd, clock
         self.guard = threading.RLock()
         self.failed = False
+        # Called with each repository whose sponsorship projections a committed transaction changed.
+        self.changed = None
+        self.touched = set()
 
     @classmethod
     def open(cls, state_dir, registry_id, initialize=False, clock=time.time):
@@ -383,6 +389,7 @@ class Registry:
     @contextmanager
     def transaction(self):
         """Run one durable transaction; any storage failure stops all further use."""
+        touched = ()
         with self.guard:
             if self.failed:
                 raise RegistryFailure("registry unavailable")
@@ -390,12 +397,29 @@ class Registry:
                 self.db.execute("BEGIN IMMEDIATE")
                 yield self.db
                 self.db.execute("COMMIT")
+                touched = self.touched
             except sqlite3.Error:
                 self.failed = True
                 raise RegistryFailure("registry storage failed") from None
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
+            finally:
+                self.touched = set()
+        # After the commit and outside the lock: a listener can neither undo nor delay the transaction.
+        if self.changed:
+            for repository in touched:
+                try:
+                    self.changed(repository)
+                except Exception as error:
+                    log.warning("sponsorship change not signalled: %s", type(error).__name__)
+
+    def noted(self, key, raw, document):
+        """The document's stored text, noting its repository for `changed` when it differs from `raw`."""
+        text = json.dumps(document, sort_keys=True)
+        if text != raw:
+            self.touched.add(key[0])
+        return text
 
     def recover(self):
         """After a restart, interrupted writes are unknown and interrupted ticks are due again."""
@@ -424,7 +448,7 @@ class Registry:
                     queue(db, key, "credential-bootstrap", max(now, pending[0] if pending else now))
                     db.execute(
                         "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
-                        (json.dumps(document, sort_keys=True), *key),
+                        (self.noted(key, raw, document), *key),
                     )
 
     def webhook_check(self, scope, checked=None):
@@ -470,6 +494,7 @@ class Registry:
             (*key, source["revision"], json.dumps(source, sort_keys=True)),
         )
         if result.rowcount:
+            self.touched.add(key[0])
             db.execute(
                 "INSERT INTO issue_sponsorships VALUES (?,?,1,0,NULL) ON CONFLICT(repository,issue) DO UPDATE SET source_revision=source_revision+1,confirmed=0",
                 key,
@@ -539,6 +564,7 @@ class Registry:
                 "INSERT INTO issue_sponsorships VALUES (?,?,?,?,?) ON CONFLICT(repository,issue) DO UPDATE SET confirmed=excluded.confirmed,document=excluded.document",
                 (*key, current, int(document.get("history_complete", True)), json.dumps(document, sort_keys=True)),
             )
+            self.touched.add(key[0])
             return True
 
     def record_shadow(self, key, state, projection=None, funding="org"):
@@ -585,7 +611,7 @@ class Registry:
                     *key,
                     document.get("source_revision", 0),
                     int(document.get("status") == "confirmed"),
-                    json.dumps(document, sort_keys=True),
+                    self.noted(key, row[0] if row else None, document),
                 ),
             )
 
@@ -626,9 +652,11 @@ class Registry:
         with self.transaction() as db:
             current = db.execute("SELECT sequence FROM credential_cursor WHERE id=1").fetchone()
             after = current[0] if current else 0
+            consumed = False
             for event in sorted(batch["events"], key=lambda e: e["sequence"]):
                 if event["sequence"] <= after:
                     continue
+                consumed = True
                 actor, route = str(event["user_id"]), event["route"]
                 value = dict(event)
                 if event["type"] == "validated":
@@ -653,8 +681,11 @@ class Registry:
                 self.schedule_credential_recovery(db, (repository, issue), document)
                 db.execute(
                     "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
-                    (json.dumps(document, sort_keys=True), repository, issue),
+                    (self.noted((repository, issue), raw, document), repository, issue),
                 )
+                # A credential event changes the vault-read coverage of sponsorship views without changing a document.
+                if consumed:
+                    self.touched.add(repository)
             db.execute(
                 "INSERT INTO credential_cursor VALUES(1,?) ON CONFLICT(id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
                 (max(after, batch["next"]),),
@@ -768,7 +799,7 @@ class Registry:
                         recovery["enqueued"] = False
                         db.execute(
                             "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
-                            (json.dumps(document, sort_keys=True), *key),
+                            (self.noted(key, row[0], document), *key),
                         )
         return generation
 
@@ -823,8 +854,11 @@ class Registry:
                 self.schedule_credential_recovery(db, key, document)
                 db.execute(
                     "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
-                    (json.dumps(document, sort_keys=True), *key),
+                    (self.noted(key, row[0], document), *key),
                 )
+                # A terminal outcome changes which issues `sponsor_issues` lists.
+                if outcome is not None and outcome.kind == "terminal":
+                    self.touched.add(key[0])
             return True
 
     def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None):

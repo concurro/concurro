@@ -53,10 +53,12 @@ class Ingress:
         clock=time.time,
         issue_repositories=None,
         command_comment=None,
+        list_index=None,
     ):
         """`installations` maps each enabled repository to the App's installation ID on it."""
         self.secret, self.registry, self.clock = secret, registry, clock
         self.command_comment = command_comment
+        self.list_index = list_index
         self.installations = dict(installations)
         self.repositories = {repository.lower(): repository for repository in installations}
         self.identities = frozenset(identities)
@@ -83,6 +85,12 @@ class Ingress:
         repository = self.repositories.get(name.lower()) if isinstance(name, str) else None
         if repository is None or installation != self.installations[repository]:
             return 403, "repository or installation not enabled"
+        if self.list_index is not None:
+            # Before the task filter, so Concurro's own label changes count; never part of the delivery's outcome.
+            try:
+                self.list_index.offer(delivery, event, repository)
+            except Exception as error:
+                log.warning("list index offer failed: %s", type(error).__name__)
         try:
             keys = self.keys(repository, event, payload)
         except (KeyError, TypeError, AttributeError):
@@ -240,6 +248,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(411, "length required")
         if self.path in ("/actions", "/sponsorships"):
             return self.action(int(length))
+        if self.path.startswith("/lists/"):
+            return self.lists(int(length))
         if int(length) > BODY_LIMIT:
             return self.reply(413, "payload too large")
         body = self.rfile.read(int(length))
@@ -269,6 +279,21 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = 503, {"error": "unavailable"}
         self.reply_json(status, payload)
 
+    def lists(self, length):
+        """One list index request from the backoffice; independent of command delegation."""
+        lists = self.server.lists
+        if lists is None:
+            return self.reply_json(503, {"error": "the list index is not configured"})
+        if length > ACTION_LIMIT:
+            return self.reply_json(413, {"error": "payload too large"})
+        body = self.rfile.read(length)
+        try:
+            status, payload = lists.handle(self.path, self.headers.get("Authorization", ""), body)
+        except Exception as error:
+            log.warning("list index request failed: %s", type(error).__name__)
+            status, payload = 503, {"error": "unavailable"}
+        self.reply_json(status, payload)
+
     def reply_json(self, status, payload):
         data = json.dumps(payload).encode()
         self.send_response(status)
@@ -292,9 +317,10 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("ingress: " + format, *args)
 
 
-def server(ingress, host, port, actions=None):
-    """An HTTP server for one ingress and, optionally, backoffice commands; the caller runs and stops it."""
+def server(ingress, host, port, actions=None, lists=None):
+    """An HTTP server for one ingress and, optionally, backoffice commands and list index requests."""
     instance = ThreadingHTTPServer((host, port), Handler)
     instance.ingress = ingress
     instance.actions = actions
+    instance.lists = lists
     return instance

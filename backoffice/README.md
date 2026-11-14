@@ -35,6 +35,7 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/api/overview` | `{targets, tasks, issues, activity, cache?}` |
 | GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, cache?}` |
 | GET | `/api/targets/{owner}/{repo}/runs` | `{runs, message, cache?}` with the fork's recent executor runs |
+| POST | `/api/targets/{owner}/{repo}/refresh` | `{refreshed}`; writers only; every list of the target is read from GitHub again |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target, issueWriter}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/sections/{section}` | Summary, selected phase, timeline or live PR data |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
@@ -54,8 +55,37 @@ Actions runs is saved per repository (sponsorships per repository and user). A r
 returns saved lists at once and refreshes the ones older than a minute in the background;
 `cache` reports the oldest list's `observedAt` and whether a refresh is `refreshing`, so the
 frontend can reload. A posted command outdates the saved lists of its issue repository.
+A read that comes back incomplete (sponsorships the service could not supply, an Actions
+listing or rerun that could not be read, pull requests from the REST fallback without checks)
+never replaces a complete saved list: the saved one is kept, flagged, and the read retried
+after a minute. With nothing saved, the incomplete result is shown flagged and retried.
 Visibility and writer access are decided per request from their own one-minute caches, never from
 saved lists. A target lists its `issueRepositories`, which is where its tasks' `owner`/`repo` come from.
+
+### With the list index
+
+Setting `lists_token_path` (the bearer shared with the service's `lists_token_path`) replaces
+the one-minute rule. Each request asks the service once for the revisions of its repositories'
+lists (`service/list_index.py`):
+
+- A saved list is read again only when its kind's revision moved or it was outdated here: by a
+  posted command, or, for sponsorship lists, by a credential write, since credential coverage
+  comes from the vault. Age alone never causes a read.
+- `cache` gains `state` (`current`, `catching-up` or `unavailable`) and `verified`, the time
+  the service last checked its lists against GitHub's delivery history.
+- While the service gives no usable answer, saved lists are served with that reason and are
+  not refreshed; a list with nothing saved answers 503. No such failure is reported as 401.
+- With the read cache disabled or failing, lists are read from GitHub directly while the
+  service answers, and answer 503 while it does not.
+- An entry the backoffice cannot use (malformed, or in a mode it does not serve yet) is
+  treated as the service giving no answer for that list.
+- Each GitHub list read is logged as `list read: <kind> of <repository>`.
+- A credential that expires emits no signal, so the credential coverage inside a saved
+  sponsorship list can be stale until another sponsorship change or a refresh. List views do
+  not display coverage.
+
+`POST /api/targets/{owner}/{repo}/refresh` asks the service to treat the target's lists as
+changed. Without the list index it outdates the saved lists directly.
 
 ## Issue-page loading
 
@@ -146,7 +176,8 @@ permission changes are needed (Actions read is already required).
   "targets": [{"upstream": "owner/repo", "fork": "owner/fork", "issues": "fork"}],
   "diagnostics_dir": "/var/lib/concurro/diagnostics",
   "vault_url": "http://concurro-vault:8090",
-  "service_url": "http://concurro-service:8787"
+  "service_url": "http://concurro-service:8787",
+  "lists_token_path": "/etc/concurro/backoffice/lists-token"
 }
 ```
 

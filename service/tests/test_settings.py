@@ -97,6 +97,14 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(settings.SettingsError):
             self.load({**self.data, "delegation_key_path": str(key)})
 
+    def test_optional_lists_token(self):
+        """The backoffice's list index bearer is an optional, distinct owner-only secret."""
+        self.assertIsNone(self.load(self.data).lists_token_path)
+        token = self.private("lists-token", "ab" * 32)
+        self.assertEqual(self.load({**self.data, "lists_token_path": str(token)}).lists_token_path, token)
+        with self.assertRaises(settings.SettingsError):
+            self.load({**self.data, "lists_token_path": self.data["webhook_secret_path"]})
+
     def test_older_settings_move_to_the_gateway(self):
         """Provider credentials and the engine pin go; the result must validate before it replaces the file."""
         path = self.root / "settings.json"

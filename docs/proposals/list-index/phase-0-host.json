@@ -1,0 +1,194 @@
+{
+  "app_events": [
+    "check_run",
+    "check_suite",
+    "issue_comment",
+    "issues",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "pull_request_review_thread",
+    "push",
+    "status",
+    "workflow_run"
+  ],
+  "app_permissions": {
+    "actions": "write",
+    "administration": "read",
+    "checks": "read",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "read",
+    "workflows": "write"
+  },
+  "history": {
+    "applied_per_day": {
+      "2026-11-11": 70,
+      "2026-11-12": 332,
+      "2026-11-13": 153
+    },
+    "applied_status_codes": {
+      "202": 555
+    },
+    "by_repository_event_action": {
+      "concurro-demo-fork/stacks-core check_run.completed": 47,
+      "concurro-demo-fork/stacks-core check_run.created": 47,
+      "concurro-demo-fork/stacks-core check_suite.completed": 47,
+      "concurro-demo-fork/stacks-core push.None": 79,
+      "concurro-demo-fork/stacks-core workflow_run.completed": 37,
+      "concurro-demo-fork/stacks-core workflow_run.in_progress": 37,
+      "concurro-demo-fork/stacks-core workflow_run.requested": 37,
+      "concurro-demo-upstream/stacks-core check_run.completed": 8,
+      "concurro-demo-upstream/stacks-core check_run.created": 9,
+      "concurro-demo-upstream/stacks-core check_suite.completed": 4,
+      "concurro-demo-upstream/stacks-core issue_comment.created": 28,
+      "concurro-demo-upstream/stacks-core issue_comment.edited": 155,
+      "concurro-demo-upstream/stacks-core issues.labeled": 40,
+      "concurro-demo-upstream/stacks-core issues.opened": 6,
+      "concurro-demo-upstream/stacks-core issues.unlabeled": 40,
+      "concurro-demo-upstream/stacks-core pull_request.closed": 2,
+      "concurro-demo-upstream/stacks-core pull_request.edited": 2,
+      "concurro-demo-upstream/stacks-core pull_request.opened": 3,
+      "concurro-demo-upstream/stacks-core pull_request.ready_for_review": 3,
+      "concurro-demo-upstream/stacks-core pull_request.reopened": 2,
+      "concurro-demo-upstream/stacks-core pull_request.synchronize": 1,
+      "concurro-demo-upstream/stacks-core pull_request_review.edited": 9,
+      "concurro-demo-upstream/stacks-core pull_request_review.submitted": 11,
+      "concurro-demo-upstream/stacks-core pull_request_review_comment.created": 2,
+      "concurro-demo-upstream/stacks-core pull_request_review_thread.resolved": 1
+    },
+    "deliveries": 657,
+    "oldest_applied": "2026-11-11T22:18:06.652Z",
+    "scan_seconds": 2.3,
+    "summary_fields_present": {
+      "action": 578,
+      "delivered_at": 657,
+      "event": 657,
+      "repository_id": 657
+    }
+  },
+  "repositories": {
+    "concurro-demo-fork/stacks-core": {
+      "id": 1446678592,
+      "installation_events": [
+        "check_run",
+        "check_suite",
+        "issue_comment",
+        "issues",
+        "pull_request",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "pull_request_review_thread",
+        "push",
+        "status",
+        "workflow_run"
+      ],
+      "installation_permissions": {
+        "actions": "write",
+        "administration": "read",
+        "checks": "read",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "statuses": "read",
+        "workflows": "write"
+      },
+      "issues": false,
+      "role": "fork"
+    },
+    "concurro-demo-upstream/stacks-core": {
+      "id": 1446668935,
+      "installation_events": [
+        "check_run",
+        "check_suite",
+        "issue_comment",
+        "issues",
+        "pull_request",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "pull_request_review_thread",
+        "status"
+      ],
+      "installation_permissions": {
+        "actions": "write",
+        "administration": "read",
+        "checks": "read",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "statuses": "read"
+      },
+      "issues": true,
+      "role": "upstream"
+    }
+  },
+  "samples": {
+    "bot_label_events": [
+      {
+        "sent_by_bot": true,
+        "stage_label": true
+      },
+      {
+        "sent_by_bot": true,
+        "stage_label": true
+      },
+      {
+        "sent_by_bot": true,
+        "stage_label": true
+      },
+      {
+        "sent_by_bot": true,
+        "stage_label": true
+      },
+      {
+        "sent_by_bot": true,
+        "stage_label": true
+      }
+    ],
+    "check_runs": [
+      {
+        "has_head_sha": true,
+        "listed_pull_requests": 0,
+        "repository": "concurro-demo-fork/stacks-core"
+      },
+      {
+        "has_head_sha": true,
+        "listed_pull_requests": 0,
+        "repository": "concurro-demo-fork/stacks-core"
+      },
+      {
+        "has_head_sha": true,
+        "listed_pull_requests": 0,
+        "repository": "concurro-demo-upstream/stacks-core"
+      },
+      {
+        "has_head_sha": true,
+        "listed_pull_requests": 0,
+        "repository": "concurro-demo-fork/stacks-core"
+      },
+      {
+        "has_head_sha": true,
+        "listed_pull_requests": 0,
+        "repository": "concurro-demo-fork/stacks-core"
+      }
+    ],
+    "synchronize": [
+      {
+        "head_unchanged": true,
+        "now": [
+          1300,
+          92
+        ],
+        "payload": [
+          1300,
+          92
+        ]
+      }
+    ]
+  },
+  "unreadable_details": {}
+}

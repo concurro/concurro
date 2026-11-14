@@ -29,6 +29,7 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
 | Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in OAuth App's `client-secret`, the Backoffice App's `reader-app.pem` (see `backoffice/README.md`) |
 | Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
+| List index token (0600, owned by each container's user) | The same value in `/etc/concurro/service/lists-token` and `/etc/concurro/backoffice/lists-token`, enabled by `"lists_token_path"` in each `settings.json`; create it with `openssl rand -hex 32`. Set the service's first: the backoffice keeps reading lists on its one-minute rule until its own is set |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Bundled edge route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |

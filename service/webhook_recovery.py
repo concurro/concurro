@@ -36,9 +36,10 @@ def next_page(headers):
 class Recovery:
     """One App-wide delivery scan; reconcile tasks only when local coverage is missing."""
 
-    def __init__(self, identity, registry, reconciler, installations, clock=time.time):
+    def __init__(self, identity, registry, reconciler, installations, clock=time.time, list_index=None):
         """Reuse App authentication and the existing exceptional reconciliation path."""
         self.identity, self.registry, self.reconciler = identity, registry, reconciler
+        self.list_index = list_index
         self.installations, self.clock = dict(installations), clock
         self.scope = digest([str(identity.app_id), sorted(installations.items()), sorted(reconciler.repositories)])
 
@@ -110,6 +111,14 @@ class Recovery:
         self.identity.api("POST", path + "/attempts", self.identity.app_jwt())
         return True
 
+    def indexed(self, operation, *arguments):
+        """Keep the list index covered by the same scan; its failures never stop delivery recovery."""
+        if self.list_index is not None:
+            try:
+                getattr(self.list_index, operation)(*arguments)
+            except Exception as error:
+                log.warning("list index %s failed: %s", operation, type(error).__name__)
+
     def poll(self):
         """Advance coverage only after full reconciliation or a scan with no unresolved delivery."""
         started = self.clock()
@@ -118,12 +127,14 @@ class Recovery:
             if previous is None or started - previous >= HISTORY_SECONDS:
                 self.reconciler.poll(strict=True)
                 self.registry.webhook_check(self.scope, started)
+                self.indexed("rebaseline")
             else:
                 if getattr(self.reconciler, "policy_observer", None) is not None:
                     self.reconciler.policy_observer()
                 if self.reconciler.cleanup is not None:
                     self.reconciler.cleanup()
             groups = self.deliveries()
+            self.indexed("check", groups, started)
             unresolved = False
             for attempts in groups.values():
                 unresolved = self.redeliver(attempts) or unresolved
