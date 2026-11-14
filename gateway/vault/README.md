@@ -1,7 +1,7 @@
 # Personal credential vault
 
 The owner API validates API keys and pasted CLI subscription tokens for personal sponsorship.
-Configured contributed tasks resolve exact admitted versions; org-funded tasks retain org
+Personally funded providers resolve exact admitted versions; organization-funded providers retain org
 credentials. Both subscription PUTs now accept an explicit selected model set; ChatGPT also
 requires its account header. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
 No CLI login, provider refresh or remote provider revoke runs in this service.

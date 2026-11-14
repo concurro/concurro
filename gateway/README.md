@@ -705,9 +705,12 @@ hex token, and an owner-only service copy through `vault_metadata_url` and
 `vault_service_token_path`. See the [current deployment readiness guide](../docs/proposals/per-user-credentials/deployment-readiness.md)
 for the complete principal, environment and mount wiring.
 
-Subscription registration and contributed inference are implemented. Default target funding
-remains org-owned; explicit contributed targets use confirmed per-provider consent and exact
-credential versions. The earlier [phase 1](../docs/proposals/per-user-credentials/phase-1.md)
+Subscription registration and contributed inference are implemented. Issues select funding
+independently per provider; organization remains the default for new tasks. Personal selections
+use confirmed consent and exact credential versions, with no organization fallback. Provider
+credential defaults and optional profile overrides are described in the
+[service design](../docs/design/service.md#provider-funding-and-credential-routes). Legacy
+`funding_mode: contributed` keeps its existing initialization semantics. The earlier [phase 1](../docs/proposals/per-user-credentials/phase-1.md)
 and [phase 3](../docs/proposals/per-user-credentials/phase-3.md) org-only boundaries are historical.
 Current checkpoints use format 9 and Registry schema 8. The [vault guide](vault/README.md)
 describes schema 3 and the isolated gateway principal used for private events and resolution.

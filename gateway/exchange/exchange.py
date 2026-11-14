@@ -725,7 +725,8 @@ class Exchange:
                 and (not isinstance(slot["sponsor_id"], str) or not slot["sponsor_id"].isdecimal())
                 or slot.get("status") == "active"
                 and (not slot.get("sponsor_id") or not re.fullmatch(r"[0-9a-f]{64}", slot.get("grant_id", "")))
-                or value["reason"] not in ("initialize", "sponsor", "withdraw", "permission_loss", "cutover")
+                or slot.get("funding", "org") not in ("org", "contributed")
+                or value["reason"] not in ("initialize", "sponsor", "funding", "withdraw", "permission_loss", "cutover")
                 or not isinstance(value["transition"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", value["transition"])
                 or value["cutoff"] is not None
@@ -771,9 +772,16 @@ class Exchange:
                             1 if slot.get("sponsor_id") else 0
                         )
                     else:
-                        same = json.loads(row[2]) == slot
+                        previous = json.loads(row[2])
+                        same = previous == slot
+                        funding_only = value["reason"] == "funding" and {
+                            k: v for k, v in previous.items() if k not in ("funding", "funding_order")
+                        } == {k: v for k, v in slot.items() if k not in ("funding", "funding_order")}
                         valid = (
-                            slot["epoch"] == expected + 1 or same and value["reason"] in ("withdraw", "permission_loss")
+                            slot["epoch"] == expected + 1
+                            or funding_only
+                            or same
+                            and value["reason"] in ("withdraw", "permission_loss")
                         )
                     if not valid or value["cutoff"] is not None and value["cutoff"] > max(expected, 0):
                         raise Refused(409, "sponsorship epoch conflict")

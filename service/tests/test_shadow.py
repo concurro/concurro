@@ -471,7 +471,7 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
         self.fake.issue["labels"] = []
         self.assertIsNone(self.advance())
         self.assertEqual(len(self.fake.comments), 2)
-        self.assertIn("/concurro sponsor openai", self.fake.comments[-1]["body"])
+        self.assertIn("/concurro funding <provider> personal", self.fake.comments[-1]["body"])
         self.assertIsNone(self.advance())
         self.assertEqual(len(self.fake.comments), 2)
         self.assertEqual(self.agents.calls, [])

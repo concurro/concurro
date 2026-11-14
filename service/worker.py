@@ -158,7 +158,7 @@ class Worker:
                 login = (comment.get("user") or {}).get("login")
                 if (
                     body.startswith("/concurro ")
-                    and body.split(" ", 2)[1] not in ("sponsor", "withdraw")
+                    and body.split(" ", 2)[1] not in ("sponsor", "funding", "withdraw")
                     and (
                         login == controller.issue["user"]["login"]
                         or comment.get("author_association") in WRITER_ASSOCIATIONS
@@ -175,7 +175,9 @@ class Worker:
     def _acknowledge(self, key, snapshot, controller):
         """Acknowledge the pre-tick input with the controller's resulting stage."""
         if self.sponsorship and controller.state:
-            self.registry.record_shadow(key, controller.state, funding=admissions.mode(controller.config))
+            self.registry.record_shadow(
+                key, controller.state, funding=admissions.task_mode(controller.config, controller.state)
+            )
         self.registry.acknowledge(key, {**snapshot, "_stage": controller.state["stage"] if controller.state else None})
 
     def _facade(self, repository, issue, generation, task_key=None):

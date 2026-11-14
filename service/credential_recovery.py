@@ -11,7 +11,10 @@ RECOVERABLE_STAGES = frozenset(("intake", "plan", "plan_qc", "implement", "publi
 
 def intent(state, config, now, observations=None):
     """Describe one paused attempt without granting consent or resetting any attempt allowance."""
-    if admissions.mode(config) != "contributed" or state.get("stage") != "awaiting_credentials":
+    if (
+        "contributed" not in admissions.provider_modes(config, state).values()
+        or state.get("stage") != "awaiting_credentials"
+    ):
         return None
     previous = state.get("credential_recovery") or {}
     failures = deepcopy(observations if observations is not None else previous.get("failures", []))
@@ -22,6 +25,8 @@ def intent(state, config, now, observations=None):
     waits = []
     for requirement in sponsorship.selected_routes(config):
         provider, route = requirement["provider"], requirement["route"]
+        if admissions.provider_modes(config, state)[provider] != "contributed":
+            continue
         slot = state.get("sponsorships", {}).get(provider, {})
         actor = slot.get("sponsor_id")
         if not actor or route not in sponsorship.ROUTES or slot.get("status") != "active":

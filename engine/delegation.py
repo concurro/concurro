@@ -23,6 +23,7 @@ FIELDS = ("actor", "actor_id", "command", "nonce")
 NONCE = re.compile(r"[0-9a-f]{16,64}")
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 DESCRIPTIONS = {
+    commands.CommandKind.FUNDING: "selected {argument} funding for future calls on this issue",
     commands.CommandKind.SPONSOR: "sponsored {argument} for future contributed calls on this issue",
     commands.CommandKind.WITHDRAW: "withdrew their {argument} sponsorship",
     commands.CommandKind.START: "started this task",
@@ -37,7 +38,7 @@ DESCRIPTIONS = {
 
 def command_text(kind, argument=None):
     """The exact `/concurro` command for a kind and its argument, or ValueError if the grammar refuses it."""
-    if kind in ("sponsor", "withdraw") and argument is not None:
+    if kind in ("sponsor", "withdraw", "funding") and argument is not None:
         text = f"/concurro {kind} {argument}"
     elif kind == "approve":
         text = f"/concurro approve {argument}"
@@ -63,11 +64,14 @@ def render(key, repository, issue, actor, actor_id, command, nonce):
         raise ValueError("invalid delegated command")
     fields = {"actor": actor, "actor_id": actor_id, "command": command, "nonce": nonce}
     marker = json.dumps({**fields, "signature": signature(key, repository, issue, fields)}, sort_keys=True)
-    line = DESCRIPTIONS[parsed.kind].format(argument=str(parsed.argument if parsed.argument is not None else "")[:12])
+    argument = str(parsed.argument if parsed.argument is not None else "")
+    line = DESCRIPTIONS[parsed.kind].format(
+        argument=argument if parsed.kind == commands.CommandKind.FUNDING else argument[:12]
+    )
     if parsed.kind == commands.CommandKind.SPONSOR and parsed.argument is None:
         line = "requested sponsorship status; use /concurro sponsor openai or /concurro sponsor anthropic"
     notice = (
-        " Current calls remain org-funded."
+        " Provider funding is unchanged."
         if parsed.kind in (commands.CommandKind.SPONSOR, commands.CommandKind.WITHDRAW)
         else ""
     )
@@ -88,7 +92,11 @@ def sponsorship_hint(body):
         command = commands.parse(data["command"])
     except (ValueError, KeyError, TypeError, AttributeError):
         return False
-    return command is not None and command.kind in (commands.CommandKind.SPONSOR, commands.CommandKind.WITHDRAW)
+    return command is not None and command.kind in (
+        commands.CommandKind.SPONSOR,
+        commands.CommandKind.FUNDING,
+        commands.CommandKind.WITHDRAW,
+    )
 
 
 def resolve(comment, key, repository, issue, author):
@@ -103,7 +111,8 @@ def resolve(comment, key, repository, issue, author):
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
     # The rendering embeds the signature, so an exact match also verifies it.
-    if body != expected:
+    legacy = expected.replace(" Provider funding is unchanged.\n\n", " Current calls remain org-funded.\n\n", 1)
+    if body not in (expected, legacy):
         return None
     return {
         **comment,

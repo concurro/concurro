@@ -98,9 +98,9 @@ class Ingress:
             known = any(h["comment_id"] == comment.get("id") for h in self.registry.sponsor_sources(keys[0]))
             if (
                 command
-                and command.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+                and command.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW)
                 or prior
-                and prior.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+                and prior.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW)
                 or known
                 or payload["action"] == "edited"
                 and (command and command.kind == CommandKind.START or prior and prior.kind == CommandKind.START)
@@ -213,9 +213,9 @@ class Ingress:
         )
         sponsorship = (
             command
-            and command.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+            and command.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW)
             or prior
-            and prior.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
+            and prior.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW)
             or known
         )
         if (

@@ -20,11 +20,28 @@ ROLES = {
 }
 
 
+def credential_route(config, profile, stage, identity=None):
+    """Use a profile override before its provider's default credential route."""
+    provider = resolve(config, profile, stage, identity).profile.provider
+    defaults = config.get("provider_credential_routes", {})
+    overrides = config.get("credential_routes", {})
+    if (
+        not isinstance(defaults, dict)
+        or not isinstance(overrides, dict)
+        or any(
+            p not in PROVIDERS or r not in ROUTES or ROUTES[r]["sponsorship_provider"] != p for p, r in defaults.items()
+        )
+        or any(not isinstance(name, str) or route not in ROUTES for name, route in overrides.items())
+    ):
+        raise ValueError("invalid provider credential routes")
+    route = overrides.get(profile, defaults.get(provider))
+    if route and ROUTES[route]["sponsorship_provider"] != provider:
+        raise ValueError("credential route does not support this profile")
+    return route
+
+
 def selected_routes(config):
     """Resolve only selected roles through explicit profile-to-route settings and the trusted catalog."""
-    configured = config.get("credential_routes", {})
-    if not isinstance(configured, dict) or any(route not in ROUTES for route in configured.values()):
-        raise ValueError("invalid credential_routes")
     result = []
     for role, stage in ROLES.items():
         if role == "plan_reviewers":
@@ -35,16 +52,14 @@ def selected_routes(config):
         for member in members:
             name = member["provider"]
             agent = resolve(config, name, stage, member)
-            route = configured.get(name)
-            if route and ROUTES[route]["sponsorship_provider"] != agent.profile.provider:
-                raise ValueError("credential route does not support this profile")
+            route = credential_route(config, name, stage, member)
             result.append(
                 {
                     "role": role,
                     "profile": name,
                     "model": agent.profile.model,
                     "route": route,
-                    "provider": ROUTES[route]["sponsorship_provider"] if route else None,
+                    "provider": agent.profile.provider,
                 }
             )
     return result
@@ -56,13 +71,13 @@ def hint(comment, action="created", previous=None, editor=None):
     command = parse(body)
     keep = (
         command
-        and command.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW, CommandKind.START)
+        and command.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW, CommandKind.START)
         or delegation.sponsorship_hint(body)
     )
     prior = parse(previous or "")
     keep_prior = (
         prior
-        and prior.kind in (CommandKind.SPONSOR, CommandKind.WITHDRAW, CommandKind.START)
+        and prior.kind in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW, CommandKind.START)
         or delegation.sponsorship_hint(previous or "")
     )
     user = comment.get("user") or {}
@@ -85,16 +100,21 @@ def hint(comment, action="created", previous=None, editor=None):
 def fact(comment, authorized):
     """Normalize a verified effective command and stable actor into immutable consent evidence."""
     command = parse(comment.get("body") or "")
+    funding = None
+    provider = command.argument if command else None
+    if command and command.kind == CommandKind.FUNDING:
+        provider, funding = command.argument.split()
+        funding = "contributed" if funding == "personal" else "org"
     user = comment.get("user") or {}
     if (
         command is None
-        or command.kind not in (CommandKind.SPONSOR, CommandKind.WITHDRAW)
-        or command.argument not in PROVIDERS
+        or command.kind not in (CommandKind.SPONSOR, CommandKind.FUNDING, CommandKind.WITHDRAW)
+        or provider not in PROVIDERS
     ):
         return None
     if type(user.get("id")) is not int or user["id"] < 1 or not user.get("login"):
         raise ValueError("sponsorship actor identity unavailable")
-    if command.kind == CommandKind.SPONSOR and not authorized(user["id"], user["login"]):
+    if command.kind in (CommandKind.SPONSOR, CommandKind.FUNDING) and not authorized(user["id"], user["login"]):
         return None
     stamp = comment.get("updated_at") or comment.get("created_at")
     if not isinstance(stamp, str):
@@ -104,24 +124,32 @@ def fact(comment, authorized):
         "source_id": comment["id"],
         "actor_id": str(user["id"]),
         "login": user["login"],
-        "provider": command.argument,
+        "provider": provider,
         "command": command.kind.value,
         "source_order": [stamp, comment["id"], 0],
         "provenance": "explicit_comment",
         "source_funding_mode": "org",
         "body_digest": digest(comment["body"]),
     }
+    if funding is not None:
+        value["funding"] = funding
     return {**value, "grant_id": digest(value)}
 
 
 def project(facts):
-    """Fold accepted source facts deterministically; self-withdraw never restores a prior sponsor."""
+    """Fold ordered consent and payer choices independently; withdrawal never restores a payer."""
     slots = {p: {"status": "unassigned", "sponsor_id": None} for p in PROVIDERS}
     tombstones = {p: {} for p in PROVIDERS}
+    funding = {}
     for item in sorted(facts, key=lambda f: f["source_order"]):
         provider, actor = item["provider"], item["actor_id"]
         slot = slots[provider]
-        if item["command"] == "sponsor":
+        if item["command"] == "funding":
+            funding[provider] = item["funding"]
+            slot["funding_order"] = item["source_order"]
+            if item["funding"] == "org":
+                continue
+        if item["command"] == "sponsor" or item["command"] == "funding" and item["funding"] == "contributed":
             slots[provider] = {**deepcopy(item), "sponsor_id": actor, "status": "active"}
             tombstones[provider].pop(actor, None)
         else:
@@ -130,7 +158,9 @@ def project(facts):
                 not item.get("removed_source") or slot.get("source_id") == item["removed_source"]
             ):
                 slots[provider] = {"sponsor_id": None, "status": "withdrawn", "grant_id": item["grant_id"]}
-    return {"slots": slots, "tombstones": tombstones}
+        if "funding_order" in slot:
+            slots[provider]["funding_order"] = slot["funding_order"]
+    return {"slots": slots, "tombstones": tombstones, "provider_funding": funding}
 
 
 def initialize(projection, boundary, routes, metadata):
@@ -167,6 +197,7 @@ def initialize(projection, boundary, routes, metadata):
             evidence.extend(available)
     return {
         "slots": slots,
+        "provider_funding": initial["provider_funding"],
         "tombstones": initial["tombstones"],
         "boundary": deepcopy(boundary),
         "projection_revision": projection["revision"],
@@ -191,11 +222,11 @@ def initialize(projection, boundary, routes, metadata):
 
 def attribution(state, config, profile, stage):
     """Snapshot prospective attribution separately from the org credential and actual payment binding."""
-    route = config.get("credential_routes", {}).get(profile)
-    provider = ROUTES.get(route, {}).get("sponsorship_provider")
+    route = credential_route(config, profile, stage)
+    provider = resolve(config, profile, stage).profile.provider
     slot = state.get("sponsorships", {}).get(provider, {})
     return {
-        "funding": "org",
+        "funding": state.get("provider_funding", {}).get(provider, config.get("funding_mode", "org")),
         "status": state.get("sponsorship_status", "pending"),
         "route": route,
         "sponsorship_provider": provider,

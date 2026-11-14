@@ -18,7 +18,7 @@ ROUTES = (
 )
 VAULT_ROUTES = {ui: vault for ui, vault, *_ in ROUTES if vault}
 STATUS = {"valid": "valid", "invalid": "invalid", "revoked": "revoked"}
-USAGE = "Configured contributed tasks use validated models from this personal version. Organization-funded tasks keep their organization credentials."
+USAGE = "Personally funded providers use validated models from this personal version. Each issue selects funding per provider; organization-funded calls keep their organization credentials."
 
 
 class VaultError(Exception):

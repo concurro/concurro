@@ -242,15 +242,51 @@ host-execution fallback. Every session names the served engine commit, which its
 must run.
 
 
-## Org-funded sponsorship in shadow
+## Provider funding and credential routes
 
-The service confirms explicit provider intent before enrollment and prospective slots after
-initialization; org credentials still pay every call. Configure target `credential_routes`
-and optional service `vault_metadata_url`/`vault_service_token_path` for one-time initiator
-availability. Missing history or metadata leaves shadow bookkeeping pending. The private
-`/sponsorships` API supplies issue views through existing user-authenticated command transport.
-See [phase 1](../proposals/per-user-credentials/phase-1.md) for source ordering, migrations,
-separate service-token provisioning and roll-forward recovery.
+Each issue selects organization or personal funding independently for OpenAI and Anthropic.
+Use `/concurro funding openai personal` (or `anthropic`) to grant your own consent and select
+personal credentials; use `/concurro funding openai org` to select organization credentials.
+Both require current upstream write access. `/concurro sponsor <provider>` records prospective
+consent; `/concurro withdraw <provider>` revokes only the caller's consent, even after writer
+access is lost. Withdrawal never switches a personally funded provider to organization funding.
+Organization selection preserves personal consent and historical charges. Funding selection
+does not resume a paused task: after changing funding, a writer uses `/concurro retry` when
+manual recovery is needed. Stale personal credential recovery receipts are cleared.
+
+Configure provider defaults once; existing profile overrides take precedence:
+
+```json
+{
+  "provider_credential_routes": {
+    "openai": "openai-api-key",
+    "anthropic": "claude-subscription"
+  },
+  "credential_routes": {
+    "optional-special-profile": "anthropic-api-key"
+  }
+}
+```
+
+Routes resolve against the profile's actual provider. Before a new charge, personal funding
+requires confirmed consent, current upstream writer authority, a supported adapter and validated
+coverage for every selected model using that provider. Organization-funded providers require no
+personal credential coverage. Missing coverage pauses calls without payer fallback.
+
+Ordered commands work before enrollment and use the same durable checkpoint/Exchange transition
+receipts afterward. `provider_funding` freezes initial task choices; later explicit funding
+commands change only future admissions. Admitted payer, route, credential version and spent budgets
+remain immutable. Existing `funding_mode` configurations retain their initialization semantics:
+absent means organization funding; `contributed` means both providers use personal funding with
+legacy consent rules. Existing tasks migrate from their recorded policy, preserving historical
+org-funded sponsor attribution. Configuration adoption alone does not switch their payer.
+
+The private `/sponsorships` API exposes per-provider choices, actionable pending source intent and
+historical debits. Rejected or superseded funding sources stay in history and are excluded from
+pending adoption. Pending owner and payer details come from the validated transition outbox;
+queued commands show general pending confirmation until their transition is validated. Registry schema 8 and checkpoint format 9 accept these additive fields through forward
+migration; no downgrade path is required. The optional `vault_metadata_url` and
+`vault_service_token_path` supply nonsecret coverage and credential-event recovery evidence.
 
 ## Credential-event recovery
 

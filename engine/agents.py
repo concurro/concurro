@@ -13,6 +13,7 @@ import admissions
 import protocol
 import review_timing
 import run_display
+import sponsorship
 from bundle import Bundle
 from credential_routes import ROUTES
 from credentials import Credential
@@ -145,15 +146,17 @@ class Agents:
         if not model.strip():
             raise Blocked("live inference requires an explicit model ID for every participating role")
         credential = Credential.parse(selected) if selected is not None else self.credential(provider, stage, None)
-        if admissions.mode(self.config) != credential.kind:
-            raise Blocked("selected credential differs from task funding policy")
         if credential.kind == "org":
             valid = credential == self.credential(provider, stage, None)
         else:
             route = ROUTES.get(credential.route, {})
             valid = (
                 credential.provider == agent.profile.harness
-                and credential.route == self.config.get("credential_routes", {}).get(provider)
+                and (
+                    admission is not None
+                    or credential.route
+                    == sponsorship.credential_route(self.config, provider, stage, context.get("reviewer_identity"))
+                )
                 and route.get("sponsorship_provider") == agent.profile.provider
             )
         if not valid:

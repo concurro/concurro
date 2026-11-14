@@ -89,6 +89,34 @@ class ActionsTests(unittest.TestCase):
         data = {"repository": REPOSITORY, "issue": 7, "command": "approve", "argument": "a" * 64, **fields}
         return self.actions().handle(authorization, json.dumps(body if body is not None else data).encode())
 
+    def test_historical_delegated_consent_notice_still_verifies(self):
+        """Legacy signed comments remain valid while new receipts avoid claiming an org payer."""
+        body = delegation.render(KEY, REPOSITORY, 7, "writer", 42, "/concurro sponsor openai", "a" * 16)
+        self.assertIn("Provider funding is unchanged", body)
+        historical = body.replace(" Provider funding is unchanged.", " Current calls remain org-funded.")
+        effective = delegation.resolve(
+            {"id": 1, "body": historical, "user": {"login": "app[bot]"}}, KEY, REPOSITORY, 7, "app[bot]"
+        )
+        self.assertEqual(effective["body"], "/concurro sponsor openai")
+
+    def test_provider_funding_command_is_signed_and_requires_writer(self):
+        """The authenticated command API binds personal consent to the caller and checks both choices."""
+        for argument in ("openai personal", "anthropic org"):
+            with self.subTest(argument=argument):
+                status, payload = self.request(command="funding", argument=argument)
+                self.assertEqual(status, 201)
+                self.assertEqual(payload["posted"], "/concurro funding " + argument)
+                body = self.writer.posts[-1][2]["body"]
+                effective = delegation.resolve(
+                    {"id": 1, "body": body, "user": {"login": "app[bot]"}}, KEY, REPOSITORY, 7, "app[bot]"
+                )
+                self.assertEqual(effective["body"], "/concurro funding " + argument)
+                self.assertEqual(effective["user"]["id"], 42)
+                self.assertEqual(
+                    self.request(command="funding", argument=argument, authorization="Bearer reader-token")[0], 403
+                )
+        self.assertEqual(self.request(command="funding", argument="openai unknown")[0], 422)
+
     def test_a_writer_command_is_posted_as_a_signed_app_comment_and_wakes_the_task(self):
         status, payload = self.request(repository="UP/Project")
         self.assertEqual(status, 201)

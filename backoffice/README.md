@@ -178,9 +178,14 @@ absent; refresh is attempted only with supplied usable refresh material.
 Issue-addressed sponsorship reads and commands work before a checkpoint exists:
 `GET /api/repos/{owner}/{repo}/issues/{issue}/sponsorships` and
 `POST /api/repos/{owner}/{repo}/issues/{issue}/commands`. Commands use the existing CSRF
-header and a `command` (`sponsor` or `withdraw`) with an `argument` (`openai` or `anthropic`).
-Explicit sponsorship authorizes contributed calls when the target enables that funding mode.
-Org-funded targets keep org credentials and prospective sponsor attribution.
+header. `funding` takes `openai personal`, `openai org`, `anthropic personal` or `anthropic org`.
+Personal selection grants the caller's consent and selects that provider's personal credentials;
+organization selection preserves consent. Both require current upstream writer permission.
+`sponsor` and `withdraw` take `openai` or `anthropic`: sponsor remains prospective consent;
+withdrawal affects only the caller's consent and never changes payer selection.
+Responses expose `provider_funding`, a `funding` summary (`org`, `contributed`, or `mixed`),
+`source_provider_funding` from validated pending transitions, and immutable historical `charged_calls`.
+Nonwriters receive only their own consent and withdrawal receipts, without payer/task data.
 Target/overview responses include known unenrolled intents in `issues`, without task
 stages/budgets. The companion frontend supplies provider controls and pre-task views.
 See [phase 2](../docs/proposals/per-user-credentials/phase-2.md) for lifecycle behavior, optional

@@ -182,7 +182,6 @@ class Shadow:
         """Refresh coverage on a read without advancing a task or changing confirmed consent."""
         projection = self.registry.sponsorship(key)
         if projection.get("task") and projection["task"]["slots"]:
-            projection["source_slots"] = projection.get("slots", {})
             projection["slots"] = projection["task"]["slots"]
             projection["pending"] = projection["task"]["pending"]
         routes = projection.get("routes")
@@ -198,7 +197,8 @@ class Shadow:
                 "profile": row.get("provider"),
                 "route": row.get("route"),
                 "version": row.get("version"),
-                "provider": sponsorship.ROUTES.get(row.get("route"), {}).get("sponsorship_provider"),
+                "provider": sponsorship.ROUTES.get(row.get("route"), {}).get("sponsorship_provider")
+                or {"codex": "openai", "claude": "anthropic"}.get(row.get("provider")),
                 "sponsor": row.get("account") if row.get("kind") == "contributed" else None,
             }
             for row in projection.get("task", {}).get("usage", [])
@@ -208,9 +208,20 @@ class Shadow:
         projection["task_status"] = projection.get("task", {}).get("status")
         if projection.get("task"):
             projection["funding"] = projection["task"]["funding"]
+            projection["provider_funding"] = projection["task"].get(
+                "provider_funding", {p: projection["funding"] for p in sponsorship.PROVIDERS}
+            )
+            pending = projection["task"].get("pending_slots", {})
+            projection["source_slots"] = {**projection["task"].get("slots", {}), **pending}
+            projection["source_provider_funding"] = {
+                **projection["provider_funding"],
+                **{provider: slot["funding"] for provider, slot in pending.items() if "funding" in slot},
+            }
             projection["observations"] = projection["task"].get("observations", [])
         slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
-        if projection.get("funding") == "contributed":
+        if projection.get("funding") in ("contributed", "mixed") or any(
+            row["kind"] == "contributed" for row in projection["charged_calls"]
+        ):
             try:
                 reply = self.operator().observations(*key)
                 projection["observations"] = reply.get("events", [])
@@ -268,6 +279,8 @@ class Shadow:
         )
         if plan is not None:
             state["credential_recovery"] = plan
+        else:
+            state.pop("credential_recovery", None)
 
     def recover(self, controller, comments):
         """Resume only a ready recorded receipt after current authority and whole-roster coverage checks."""
@@ -279,7 +292,7 @@ class Shadow:
         if state.get("credential_recovery") != prior:
             controller.save()
         key = controller.config["repository"], state["issue"]
-        self.registry.record_shadow(key, state, funding=admissions.mode(controller.config))
+        self.registry.record_shadow(key, state, funding=admissions.task_mode(controller.config, state))
         plan = state.get("credential_recovery")
         projected = self.registry.sponsorship(key).get("task", {}).get("recovery") or {}
         delivery = projected.get("delivery")
@@ -362,10 +375,26 @@ class Shadow:
                         error.observations = failures
                         raise error
             capabilities = self.operator().capabilities()
-            routes = controller.config.get("credential_routes", {})
+            projection = getattr(controller, "shadow_projection", None)
+            self.source_fence(key, projection)
+            intended = {
+                **admissions.provider_modes(controller.config, controller.state),
+                **sponsorship.project(projection["facts"])["provider_funding"],
+            }
+            if (
+                not controller.state.get("funding_initialization")
+                and "contributed" in intended.values()
+                and any(fact["command"] == "funding" for fact in projection["facts"])
+            ):
+                raise Transient("provider funding initialization is pending")
+            self.flush(controller)
+            self.apply(controller, projection)
+            funding = admissions.provider_modes(controller.config, controller.state)
             selected = []
             for profile, stage, context in requests:
-                route = routes.get(profile)
+                route = sponsorship.credential_route(
+                    controller.config, profile, stage, context.get("reviewer_identity")
+                )
                 agent = resolve(controller.config, profile, stage, context.get("reviewer_identity"))
                 role = next((name for name, value in sponsorship.ROLES.items() if value == stage), stage)
                 requirement = {
@@ -376,6 +405,9 @@ class Shadow:
                     "model": agent.profile.model,
                 }
                 detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
+                if funding[agent.profile.provider] == "org":
+                    selected.append((None, agent.profile.provider, agent.profile, role, profile))
+                    continue
                 if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
                     raise CredentialsUnavailable(
                         f"{detail}: contributed credential route adapter is unavailable", requirement
@@ -391,6 +423,8 @@ class Shadow:
             # participates in admission; the separate design_eval tool is diagnostic only.
             for requirement in sponsorship.selected_routes(controller.config):
                 route = requirement["route"]
+                if funding[requirement["provider"]] == "org":
+                    continue
                 if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
                     detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
                     raise CredentialsUnavailable(
@@ -403,10 +437,17 @@ class Shadow:
             projection = getattr(controller, "shadow_projection", None)
             self.source_fence(key, projection)
             self.flush(controller, {p for _, p, _, _, _ in selected})
-            self.cutover(controller, {p for _, p, _, _, _ in selected})
+            self.cutover(controller, {p for _, p, _, _, _ in selected if funding[p] == "contributed"})
             self.apply(controller, projection, {p for _, p, _, _, _ in selected})
             owners, metadata, choices = {}, {}, []
             for route, provider, profile, role, profile_name in selected:
+                if funding[provider] == "org":
+                    choices.append(
+                        admissions.selection(
+                            controller.agents.credential(profile_name, sponsorship.ROLES.get(role, role), None)
+                        )
+                    )
+                    continue
                 requirement = {
                     "provider": provider,
                     "route": route,
@@ -522,6 +563,7 @@ class Shadow:
                     "status": "unassigned",
                     "epoch": slot["epoch"] + 1,
                     "cutover_from": slot.get("grant_id"),
+                    **{k: deepcopy(slot[k]) for k in ("funding", "funding_order") if k in slot},
                 }
                 self.pending(controller, provider, new, slot["epoch"], "cutover")
                 self.flush(controller, {provider})
@@ -632,7 +674,9 @@ class Shadow:
             observed = current.get(item["source_id"])
             effective = delegation.resolve(observed, self.key, *key, author) or observed if observed else None
             removed = effective is None or digest(effective.get("body") or "") != item["body_digest"]
-            if removed and item["command"] == "sponsor":
+            if removed and (
+                item["command"] == "sponsor" or item["command"] == "funding" and item["funding"] == "contributed"
+            ):
                 when = (observed or {}).get("updated_at") or "9999-12-31T23:59:59Z"
                 value = {
                     **item,
@@ -647,7 +691,7 @@ class Shadow:
             observed = (delegation.resolve(raw, self.key, *key, author) or raw) if raw else None
             if (
                 observed
-                and item["command"] == "sponsor"
+                and (item["command"] == "sponsor" or item["command"] == "funding" and item["funding"] == "contributed")
                 and item["body_digest"] != digest(observed.get("body") or "")
                 and item["source_order"][0] == observed.get("updated_at")
             ):
@@ -668,6 +712,10 @@ class Shadow:
             ),
             "permissions": {str(k): v for k, v in permissions.items()},
             "funding": admissions.mode(config) if config is not None else "unknown",
+            "provider_funding": {
+                **({p: admissions.mode(config) for p in sponsorship.PROVIDERS} if config else {}),
+                **sponsorship.project(ordered)["provider_funding"],
+            },
         }
         document["revision"] = digest([revision, document])
         document["digest"] = digest(document)
@@ -708,8 +756,12 @@ class Shadow:
                 continue
             body = (
                 marker
-                + "\nUse `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor your own future contributed calls. Use `/concurro withdraw <provider>` to withdraw your consent. "
-                + admissions.funding_notice(controller.config)
+                + "\nUse `/concurro funding <provider> personal` to select your credentials or `/concurro funding <provider> org` to select organization funding. `/concurro sponsor <provider>` records prospective consent; `/concurro withdraw <provider>` withdraws your consent. "
+                + admissions.funding_notice(
+                    controller.config,
+                    controller.state
+                    or {"provider_funding": getattr(controller, "shadow_projection", {}).get("provider_funding", {})},
+                )
             )
             controller.gh.repo(f"issues/{controller.issue['number']}/comments", "POST", {"body": body})
 
@@ -718,6 +770,13 @@ class Shadow:
         key = (controller.config["repository"], controller.issue["number"])
         controller.shadow_projection = None
         try:
+            if controller.state and "provider_funding" not in controller.state:
+                old_task = self.registry.sponsorship(key).get("task", {})
+                baseline = old_task.get("funding", admissions.mode(controller.config))
+                controller.state["provider_funding"] = old_task.get("provider_funding") or {
+                    p: baseline for p in sponsorship.PROVIDERS
+                }
+                controller.save()
             events = pages(self.reader(key[0]), f"repos/{key[0]}/issues/{key[1]}/events")
             projection = self.confirm(
                 key,
@@ -763,7 +822,7 @@ class Shadow:
                     key,
                     controller.state,
                     getattr(controller, "shadow_projection", None),
-                    funding=admissions.mode(controller.config),
+                    funding=admissions.task_mode(controller.config, controller.state),
                 )
 
     def initialize(self, controller, comments, mode, command_id=0, enrollment=None):
@@ -778,7 +837,7 @@ class Shadow:
                 key,
                 controller.state,
                 getattr(controller, "shadow_projection", None),
-                funding=admissions.mode(controller.config),
+                funding=admissions.task_mode(controller.config, controller.state),
             )
 
     def defer(self, controller, error):
@@ -862,12 +921,25 @@ class Shadow:
                 return
             routes = sponsorship.selected_routes(controller.config)
             earlier = sponsorship.project([f for f in projection["facts"] if f["source_order"][0] <= boundary["at"]])
+            explicit_funding = any(fact["command"] == "funding" for fact in projection["facts"])
             implicit = (
                 admissions.mode(controller.config) == "org"
+                and not explicit_funding
                 or boundary.get("source_policy", {}).get("funding_mode") == "contributed"
             )
+            if explicit_funding or any(route["route"] is not None for route in routes):
+                routes = [route for route in routes if route["route"] is not None]
+            if explicit_funding:
+                current = {
+                    **admissions.provider_modes(controller.config, state),
+                    **sponsorship.project(projection["facts"])["provider_funding"],
+                }
+                routes = [route for route in routes if current[route["provider"]] == "contributed"]
+            filling = {route["provider"] for route in routes}
             needs_fill = implicit and any(
-                not slot.get("sponsor_id") and boundary["actor_id"] not in earlier["tombstones"][provider]
+                provider in filling
+                and not slot.get("sponsor_id")
+                and boundary["actor_id"] not in earlier["tombstones"][provider]
                 for provider, slot in earlier["slots"].items()
             )
             initiator = boundary.get("initiator_revision")
@@ -899,7 +971,10 @@ class Shadow:
                 record.get("status") == "unknown" or record.get("status") == "valid" and record.get("models") is None
                 for record in metadata
             ):
-                if not any(f["command"] == "sponsor" for f in projection["facts"]):
+                if not any(
+                    f["command"] == "sponsor" or f["command"] == "funding" and f["funding"] == "contributed"
+                    for f in projection["facts"]
+                ):
                     raise ValueError("sponsorship credential history incomplete")
                 routes, metadata = [], []
                 boundary = {**boundary, "initializer_status": "unknown"}
@@ -913,13 +988,19 @@ class Shadow:
         if boundary.get("initializer_status") == "unknown":
             frozen.update(initializer_status="unknown", available=None, metadata=None)
         frozen["observed_sources"] = [f["grant_id"] for f in projection["facts"]]
+        state.setdefault("provider_funding", admissions.provider_modes(controller.config, state))
+        state["provider_funding"].update(frozen["provider_funding"])
         state["funding_initialization"] = frozen
         conversation.queue(
             state,
             "Provider sponsorship is org-funded"
-            if admissions.mode(controller.config) == "org"
+            if admissions.task_mode(controller.config, state) == "org"
             else "Provider sponsorship recorded",
-            admissions.funding_notice(controller.config),
+            admissions.funding_notice(
+                controller.config,
+                controller.state
+                or {"provider_funding": getattr(controller, "shadow_projection", {}).get("provider_funding", {})},
+            ),
         )
         state["sponsorship_projection_revision"] = projection["revision"]
         state["sponsorship_projection_source_revision"] = projection["source_revision"]
@@ -933,7 +1014,7 @@ class Shadow:
             self.pending(
                 controller,
                 provider,
-                {**slot, "epoch": 1 if slot.get("sponsor_id") else 0},
+                {**slot, "funding": state["provider_funding"][provider], "epoch": 1 if slot.get("sponsor_id") else 0},
                 -1,
                 "initialize",
                 save=False,
@@ -1001,6 +1082,13 @@ class Shadow:
                 continue
             for provider, pending in group:
                 state["sponsorships"][provider] = deepcopy(pending["request"]["slot"])
+                if (
+                    pending["request"]["reason"] in ("initialize", "funding")
+                    and "funding" in pending["request"]["slot"]
+                ):
+                    state.setdefault("provider_funding", admissions.provider_modes(controller.config, state))[
+                        provider
+                    ] = pending["request"]["slot"]["funding"]
                 state.setdefault("sponsorship_history", []).append(pending["request"])
                 if pending["source"]:
                     source = pending["source"]
@@ -1027,6 +1115,8 @@ class Shadow:
                 and datetime.fromisoformat(source["source_order"][0].replace("Z", "+00:00")).timestamp()
                 <= cutoff["observed_at"]
             ):
+                state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                controller.save()
                 continue
             if provider in state.get("pending_sponsorships", {}):
                 continue
@@ -1054,7 +1144,7 @@ class Shadow:
                 controller.save()
                 continue
             if source["command"] == "withdraw" and any(
-                f["command"] == "sponsor"
+                (f["command"] == "sponsor" or f["command"] == "funding" and f["funding"] == "contributed")
                 and f["actor_id"] == source["actor_id"]
                 and f["provider"] == provider
                 and f["source_order"] > source["source_order"]
@@ -1065,11 +1155,24 @@ class Shadow:
                 controller.save()
                 continue
             slot = state["sponsorships"][provider]
-            if source["command"] == "sponsor":
-                if slot.get("source_order", []) > source["source_order"] and slot.get("provenance") not in (
-                    "task_start",
-                    "label",
-                ):
+            funding = state.get("provider_funding", {}).get(provider, admissions.mode(controller.config))
+            if source["command"] == "funding":
+                if slot.get("funding_order", []) > source["source_order"]:
+                    state.setdefault("sponsorship_applied", []).append(source["grant_id"])
+                    controller.save()
+                    continue
+                funding = source["funding"]
+            older_consent = slot.get("source_order", []) > source["source_order"] and slot.get("provenance") not in (
+                "task_start",
+                "label",
+            )
+            if source["command"] == "funding" and (funding == "org" or older_consent):
+                new = deepcopy(slot)
+                cutoff = None
+            elif (
+                source["command"] == "sponsor" or source["command"] == "funding" and source["funding"] == "contributed"
+            ):
+                if older_consent:
                     state.setdefault("sponsorship_applied", []).append(source["grant_id"])
                     controller.save()
                     continue
@@ -1093,6 +1196,12 @@ class Shadow:
                     else deepcopy(slot)
                 )
                 cutoff = slot["epoch"]
+            if source["command"] != "withdraw" or slot.get("sponsor_id") == source["actor_id"]:
+                new["funding"] = funding
+            if source["command"] == "funding":
+                new["funding_order"] = source["source_order"]
+            elif "funding_order" in slot:
+                new["funding_order"] = slot["funding_order"]
             self.pending(
                 controller, provider, new, slot["epoch"], source["command"], source, source["actor_id"], cutoff
             )
@@ -1126,6 +1235,7 @@ class Shadow:
                     "epoch": slot["epoch"] + 1,
                     "source_order": slot.get("source_order", []),
                     "authority_revoked": True,
+                    **{k: deepcopy(slot[k]) for k in ("funding", "funding_order") if k in slot},
                 }
                 if slot.get("sponsor_id") == actor
                 else deepcopy(slot)

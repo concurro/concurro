@@ -49,12 +49,17 @@ the service override is used only when present. Preserve native request logs and
 outbox/identity state together; lost logs remain unknown rather than reconstructed usage.
 The isolated read-only WAL proof does not benchmark persistent-volume capacity/durability.
 
-A target selects `funding_mode: contributed` and explicit profile-to-`credential_routes`
-settings only through its normal reviewed configuration. Models/roles come from the existing
-roster, not a parallel vault catalog. API keys and both subscription routes are distinct.
+A target configures `provider_credential_routes` defaults with optional existing
+`credential_routes` profile overrides through its normal reviewed configuration. Each issue
+selects organization or personal funding per provider with `/concurro funding <provider> org|personal`;
+legacy `funding_mode` initializes old policies without rebinding enrolled tasks. Models/roles
+come from the existing roster, not a parallel vault catalog. API keys and subscription routes
+remain distinct. See the [current contract](../../design/service.md#provider-funding-and-credential-routes).
 Org-era starter/label grants remain historical at cutover; explicit provider grants can carry
 forward. Unknown old source-policy/credential availability cannot create personal consent.
-New providers require explicit grants. Existing admitted work keeps its original payer.
+New providers require explicit grants. Existing admitted work keeps its original payer. Upgrade the gateway/Exchange before the
+service when introducing provider funding commands; older Exchanges do not accept the new
+`funding` transition reason. Updates and state migration are roll-forward only.
 
 ## Final review corrections
 

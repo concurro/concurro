@@ -123,7 +123,7 @@ def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
     admissions.mode(config)
     pr_template.validate(config.get("pr_template_sections"))
-    if "credential_routes" in config:
+    if "credential_routes" in config or "provider_credential_routes" in config:
         import sponsorship
 
         try:
@@ -730,7 +730,22 @@ class Controller:
 
     def select_admissions(self, requests):
         """Select every required payer before any charge, shared by serial and batch reservations."""
-        if admissions.mode(self.config) == "contributed":
+        if "provider_funding" not in self.state:
+            self.state["provider_funding"] = admissions.provider_modes(self.config)
+        projection = getattr(self, "shadow_projection", None) or {}
+        pending_funding = any(
+            item["request"]["reason"] == "funding" for item in self.state.get("pending_sponsorships", {}).values()
+        ) or any(
+            fact["command"] == "funding"
+            and fact["grant_id"] not in self.state.get("sponsorship_applied", [])
+            and str(fact["source_id"]) not in self.state.get("sponsorship_sources", {})
+            for fact in projection.get("facts", [])
+        )
+        if (
+            pending_funding
+            or self.state.get("provider_retire_sessions")
+            or "contributed" in admissions.provider_modes(self.config, self.state).values()
+        ):
             if not self.sponsorship:
                 raise Blocked("contributed admission requires confirmed provider sponsorship")
             return self.sponsorship.preflight(self, requests)

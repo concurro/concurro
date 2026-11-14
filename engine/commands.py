@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 class CommandKind(StrEnum):
     """Supported writer command kinds; revision grants are distinct from retries."""
 
+    FUNDING = "funding"
     SPONSOR = "sponsor"
     WITHDRAW = "withdraw"
     START = "start"
@@ -63,13 +64,15 @@ def parse(body: str) -> Command | None:
     """Parse only the existing exact command grammar, ignoring surrounding whitespace."""
     body = body.strip()
     if not re.fullmatch(
-        r"/concurro (sponsor(?: (?:openai|anthropic))?|withdraw (?:openai|anthropic)|start|approve "
+        r"/concurro (funding (?:openai|anthropic) (?:org|personal)|sponsor(?: (?:openai|anthropic))?|withdraw (?:openai|anthropic)|start|approve "
         + protocol.DIGEST_PATTERN
         + r"|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
         body,
     ):
         return None
     parts = body.split()
+    if parts[1] == "funding":
+        return Command(CommandKind.FUNDING, " ".join(parts[2:]))
     if len(parts) == 4:
         return Command(CommandKind.EXTEND, int(parts[-1]))
     return Command(CommandKind(parts[1]), parts[2] if len(parts) == 3 else None)
@@ -107,6 +110,7 @@ class CommandHandler:
     def dispatch(self, command: Command, comment: Comment, comments: list[Comment]) -> LoopAction:
         """Dispatch one already-authorized command and return its loop action."""
         handlers = {
+            CommandKind.FUNDING: self.sponsorship,
             CommandKind.SPONSOR: self.sponsorship,
             CommandKind.WITHDRAW: self.sponsorship,
             CommandKind.START: self.start,
@@ -130,8 +134,8 @@ class CommandHandler:
             conversation.queue(
                 self.controller.state,
                 "Provider sponsorship",
-                "Use `/concurro sponsor openai` or `/concurro sponsor anthropic` to sponsor future contributed calls; `/concurro withdraw <provider>` withdraws only your own consent. "
-                + admissions.funding_notice(self.controller.config),
+                "Use `/concurro funding <provider> personal` to select your credentials or `/concurro funding <provider> org` to select organization funding. `/concurro sponsor <provider>` records prospective consent; `/concurro withdraw <provider>` withdraws only your own consent. "
+                + admissions.funding_notice(self.controller.config, self.controller.state),
             )
             self.controller.save()
         return LoopAction.CONTINUE

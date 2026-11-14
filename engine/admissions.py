@@ -11,6 +11,22 @@ from policy import Blocked
 FIELDS = {"funding", "credential", "sponsorship_provider", "sponsor", "epoch", "grant_id", "route", "grant"}
 
 
+def provider_modes(config, state=None):
+    """Resolve frozen task choices, retaining the target mode only as the legacy default."""
+    fallback = mode(config)
+    values = (state or {}).get("provider_funding", {})
+    result = {provider: values.get(provider, fallback) for provider in ("openai", "anthropic")}
+    if any(value not in ("org", "contributed") for value in result.values()):
+        raise Blocked("unknown provider funding policy")
+    return result
+
+
+def task_mode(config, state=None):
+    """Summarize current provider choices without rewriting historical charged attempts."""
+    values = set(provider_modes(config, state).values())
+    return next(iter(values)) if len(values) == 1 else "mixed"
+
+
 def mode(config):
     """Return the explicit task funding policy; legacy configurations retain organization funding."""
     value = config.get("funding_mode", "org")
@@ -19,11 +35,13 @@ def mode(config):
     return value
 
 
-def funding_notice(config):
+def funding_notice(config, state=None):
     """Describe actual configured funding without promising unavailable coverage."""
+    if task_mode(config, state) == "mixed":
+        return "This issue selects organization or personal credentials separately for each provider. Missing personal coverage pauses calls; there is no organization fallback."
     return (
         "Current calls use organization credentials. Explicit provider sponsorship authorizes future contributed calls on this task/provider. Starter and label attribution made while org-funded does not authorize personal payment."
-        if mode(config) == "org"
+        if task_mode(config, state) == "org"
         else "This task uses contributed funding when its configured route adapter and selected sponsor credentials are available. There is no organization fallback."
     )
 

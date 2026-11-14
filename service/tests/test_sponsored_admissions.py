@@ -59,6 +59,7 @@ class AdmissionTests(ShadowTests):
     def setUp(self):
         """Create versioned metadata for independently consenting synthetic accounts."""
         super().setUp()
+        self.agents.generation = 1
         self.clock.now = datetime.fromisoformat(AT.replace("Z", "+00:00")).timestamp() - 10
         self.exchange.gateway = FundedGateway()
         self.exchange.gateway.contributed_routes = ("openai-api-key", "anthropic-api-key")
@@ -101,6 +102,8 @@ class AdmissionTests(ShadowTests):
         self.shadow.sync(controller, self.fake.comments)
         if funded:
             controller.config = {**controller.config, "funding_mode": "contributed"}
+            # This fixture explicitly requests personal funding; configuration alone no longer changes existing tasks.
+            controller.state["provider_funding"] = {"openai": "contributed", "anthropic": "contributed"}
         controller.agents.generation = generation
         try:
             yield controller
@@ -114,6 +117,460 @@ class AdmissionTests(ShadowTests):
             comment(3, "/concurro sponsor anthropic", "bob", "2026-11-12T10:00:01Z"),
         ]
         return self.advance()
+
+    def test_mixed_funding_crosses_real_runner_exchange_and_keeps_separate_payers(self):
+        """Actual Controller/Agents/Exchange turns preserve personal OpenAI and org Anthropic bindings."""
+        self.serial_flow(mixed=True)
+
+    def test_mixed_credential_recovery_ignores_org_personal_coverage(self):
+        """Only personally funded routes enter credential replacement requirements."""
+        from service import credential_recovery
+
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        with self.current(funded=False) as controller:
+            paused = {**controller.state, "stage": "awaiting_credentials", "retry_stage": "intake"}
+            plan = credential_recovery.intent(paused, controller.config, self.clock())
+            self.assertTrue(plan["eligible"])
+            self.assertEqual({r["provider"] for r in plan["requirements"]}, {"openai"})
+            self.assertEqual({r["sponsor"] for r in plan["requirements"]}, {"202"})
+            self.assertEqual(controller.state["provider_funding"]["anthropic"], "org")
+
+    def test_lost_funding_receipt_replays_without_changing_admitted_consent(self):
+        """An accepted org selection with a lost response is adopted exactly once after reload."""
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        with self.current(funded=False) as controller:
+            before = deepcopy(controller.state["sponsorships"]["openai"])
+            calls = controller.state["calls"]
+            self.fake.comments.append(comment(9, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            original = self.exchange.sponsorship
+
+            def lost(request):
+                """Apply the genuine durable transition before losing its operator reply."""
+                original(request)
+                raise ExchangeError(503, "synthetic lost funding receipt")
+
+            with patch.object(self.exchange, "sponsorship", side_effect=lost):
+                self.shadow.begin(controller)
+                self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "contributed")
+            self.assertIn("openai", controller.state["pending_sponsorships"])
+            controller.load(self.fake.comments)
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+            self.assertEqual(controller.state["sponsorships"]["openai"]["epoch"], before["epoch"])
+            self.assertEqual(controller.state["sponsorships"]["openai"]["grant_id"], before["grant_id"])
+            self.assertEqual(controller.state["calls"], calls)
+            self.assertEqual(len([h for h in controller.state["sponsorship_history"] if h["reason"] == "funding"]), 1)
+
+    def test_pending_personal_funding_cannot_admit_stale_org_after_lost_reply(self):
+        """Unacknowledged payer changes reconcile before admission across reloads and duplicate delivery."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            calls = controller.state["calls"]
+            self.fake.comments.append(
+                comment(22, "/concurro funding openai personal", "writer", "2026-11-12T10:02:00Z")
+            )
+            original = self.exchange.sponsorship
+
+            def lost(request):
+                """Keep returning an unavailable receipt after the genuine Exchange commit."""
+                original(request)
+                raise ExchangeError(503, "synthetic lost personal funding receipt")
+
+            with patch.object(self.exchange, "sponsorship", side_effect=lost):
+                self.shadow.begin(controller)
+                self.shadow.sync(controller, self.fake.comments)
+                self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+                self.assertIn("openai", controller.state["pending_sponsorships"])
+                view = self.shadow.view(KEY)
+                self.assertEqual(view["slots"]["openai"]["sponsor_id"], "202")
+                self.assertEqual(view["source_slots"]["openai"]["sponsor_id"], "101")
+                self.assertNotEqual(view["source_slots"]["openai"]["sponsor_id"], view["slots"]["openai"]["sponsor_id"])
+                self.assertEqual(view["provider_funding"]["openai"], "org")
+                self.assertEqual(view["source_provider_funding"]["openai"], "contributed")
+                with self.assertRaises(Transient):
+                    controller.select_admissions([("codex", "intake", {})])
+                controller.load(self.fake.comments)
+                self.shadow.begin(controller)
+                self.shadow.sync(controller, self.fake.comments)
+                with self.assertRaises(Transient):
+                    controller.select_admissions([("codex", "intake", {})])
+                self.assertEqual(controller.state["calls"], calls)
+            selected = controller.select_admissions([("codex", "intake", {})])
+            self.assertEqual(selected[0]["funding"], "contributed")
+            self.assertEqual(selected[0]["sponsor"], "101")
+            epoch = selected[0]["epoch"]
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["epoch"], epoch)
+            self.assertEqual(controller.state["calls"], calls)
+
+    def test_late_withdrawal_cannot_cancel_newer_personal_funding_consent(self):
+        """A renewed explicit personal selection remains active when an older withdrawal arrives late."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            self.fake.comments.append(comment(22, "/concurro funding openai personal", "alice", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            before = deepcopy(controller.state["sponsorships"]["openai"])
+            self.fake.comments.append(comment(21, "/concurro withdraw openai", "alice", "2026-11-12T10:01:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["sponsorships"]["openai"], before)
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["sponsor"], "202")
+
+    def test_legacy_and_repeated_nonowner_withdrawals_do_not_wedge_exchange(self):
+        """Migrated slots without payer metadata accept identity-preserving withdrawal receipts."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            slot = controller.state["sponsorships"]["openai"]
+            slot.pop("funding", None)
+            slot.pop("funding_order", None)
+            self.exchange.db.execute(
+                "UPDATE sponsorship SET slot=? WHERE repository=? AND issue=? AND provider='openai'",
+                (json.dumps(slot, sort_keys=True), *KEY),
+            )
+            controller.save()
+            for identifier in (22, 23):
+                self.fake.comments.append(
+                    comment(identifier, "/concurro withdraw openai", "bob", f"2026-11-12T10:02:{identifier}Z")
+                )
+                self.shadow.begin(controller)
+                self.shadow.sync(controller, self.fake.comments)
+                self.assertFalse(controller.state.get("pending_sponsorships"))
+                self.assertEqual(controller.state["sponsorships"]["openai"], slot)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+
+    def test_withdraw_after_permission_loss_preserves_newer_funding_order(self):
+        """Post-revocation self-withdrawal and late older payer sources cannot replace a newer org choice."""
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        with self.current(funded=False) as controller:
+            self.fake.comments.append(comment(22, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            order = controller.state["sponsorships"]["openai"]["funding_order"]
+            self.allowed.remove("alice")
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["sponsorships"]["openai"]["funding_order"], order)
+            self.fake.comments += [
+                comment(23, "/concurro withdraw openai", "alice", "2026-11-12T10:03:00Z"),
+                comment(21, "/concurro funding openai personal", "writer", "2026-11-12T10:01:00Z"),
+            ]
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertFalse(controller.state.get("pending_sponsorships"))
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+
+    def test_cutover_keeps_funding_order_and_accepts_later_withdrawal(self):
+        """Retiring org-era implicit attribution retains independent payer ordering metadata."""
+        self.advance()
+        with self.current(funded=False) as controller:
+            self.fake.comments.append(comment(22, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            order = controller.state["sponsorships"]["openai"]["funding_order"]
+            self.shadow.cutover(controller, {"openai"})
+            self.assertEqual(controller.state["sponsorships"]["openai"]["funding_order"], order)
+            self.fake.comments.append(comment(23, "/concurro withdraw openai", "writer", "2026-11-12T10:03:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertFalse(controller.state.get("pending_sponsorships"))
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+
+    def test_delayed_personal_choice_keeps_newer_prospective_sponsor(self):
+        """Payer and consent ordering converge independently when a newer sponsor was observed first."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            self.fake.comments.append(comment(22, "/concurro sponsor openai", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            epoch = controller.state["sponsorships"]["openai"]["epoch"]
+            self.fake.comments.append(comment(21, "/concurro funding openai personal", "alice", "2026-11-12T10:01:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "contributed")
+            selected = controller.select_admissions([("codex", "intake", {})])[0]
+            self.assertEqual(selected["sponsor"], "303")
+            self.assertEqual(selected["epoch"], epoch)
+
+    def test_org_selection_clears_stale_recovery_and_preserves_manual_pause(self):
+        """Payer selection keeps lifecycle/budgets stable; a writer retry drains old personal sessions."""
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        with self.current(funded=False) as controller:
+            calls = controller.state["calls"]
+            controller.state.update(
+                stage="awaiting_credentials",
+                retry_stage="intake",
+                credential_recovery={"eligible": True, "id": "old", "not_before": self.clock()},
+                provider_retire_sessions=["old-personal-session"],
+            )
+            self.fake.comments.append(comment(22, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.shadow.prepare_recovery(controller)
+            self.assertNotIn("credential_recovery", controller.state)
+            self.assertEqual(controller.state["stage"], "awaiting_credentials")
+            self.assertEqual(controller.state["calls"], calls)
+            with patch.object(self.shadow, "retire_pending") as retire:
+                self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+            retire.assert_called_once_with(controller)
+            self.assertEqual(controller.state["calls"], calls)
+
+    def test_org_only_intent_does_not_require_personal_initialization(self):
+        """Org admission stays available when an org-only source has no usable starter boundary."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            controller.state.pop("funding_initialization")
+            controller.state["funding_initialization_pending"] = {"actor_id": None, "at": AT}
+            self.fake.comments.append(comment(22, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            controller.shadow_projection = self.shadow.confirm(
+                KEY, self.fake.comments, [], controller.identities.author("state"), config=controller.config
+            )
+            calls = controller.state["calls"]
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+            self.assertEqual(controller.state["calls"], calls)
+
+    def test_rejected_historical_funding_is_history_without_pending_adoption(self):
+        """A source suppressed by a durable authority cutoff cannot appear as actionable future funding."""
+        import sponsorship
+
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            self.fake.comments.append(comment(22, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.clock.now += 300
+            self.allowed.remove("alice")
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.allowed.add("alice")
+            self.fake.comments.append(comment(23, "/concurro funding openai personal", "alice", "2026-11-12T10:03:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            view = self.shadow.view(KEY)
+            rejected = next(fact for fact in view["facts"] if fact["source_id"] == 23)
+            self.assertIn(rejected["grant_id"], controller.state["sponsorship_applied"])
+            self.assertNotIn(rejected["grant_id"], controller.state["sponsorship_sources"].values())
+            self.assertEqual(view["provider_funding"]["openai"], "org")
+            self.assertEqual(view["source_provider_funding"], view["provider_funding"])
+            self.assertEqual(view["source_slots"], view["slots"])
+            source, slot = view["source_slots"]["openai"], view["slots"]["openai"]
+            self.assertFalse(source.get("sponsor_id") and source.get("sponsor_id") != slot.get("sponsor_id"))
+            own = sponsorship.own_consent(view, "202")
+            self.assertTrue(any(fact["grant_id"] == rejected["grant_id"] for fact in own["facts"]))
+            with patch.object(self.shadow, "preflight", side_effect=AssertionError("ignored funding forced preflight")):
+                self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+
+    def test_queued_funding_is_general_pending_without_promised_owner_or_payer(self):
+        """A posted command invalidates source confirmation before any validated transition exists."""
+        import delegation
+
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            body = delegation.render(
+                self.shadow.key, KEY[0], KEY[1], "writer", 101, "/concurro funding openai personal", "f" * 16
+            )
+            self.registry.request_observation(
+                KEY, comment={"id": 24, "body": body, "updated_at": "2026-11-12T10:03:00Z"}
+            )
+            view = self.shadow.view(KEY)
+            self.assertNotEqual(view["status"], "confirmed")
+            self.assertFalse(controller.state.get("pending_sponsorships"))
+            self.assertEqual(view["source_slots"], view["slots"])
+            self.assertEqual(view["source_provider_funding"], view["provider_funding"])
+            self.assertEqual(view["provider_funding"]["openai"], "org")
+
+    def test_provider_defaults_and_profile_override(self):
+        """Provider defaults cover every role; an explicit profile route keeps precedence."""
+        import sponsorship
+
+        config = {
+            **self.config,
+            "provider_credential_routes": {"openai": "chatgpt-subscription", "anthropic": "claude-subscription"},
+        }
+        config.pop("credential_routes")
+        routes = sponsorship.selected_routes(config)
+        self.assertTrue(
+            all(
+                r["route"] == ("chatgpt-subscription" if r["provider"] == "openai" else "claude-subscription")
+                for r in routes
+            )
+        )
+        config["credential_routes"] = {"codex": "openai-api-key"}
+        self.assertEqual(sponsorship.credential_route(config, "codex", "intake"), "openai-api-key")
+        self.assertEqual(sponsorship.credential_route(config, "claude", "plan"), "claude-subscription")
+        from fakes import named_config
+
+        named = named_config()
+        named["provider_credential_routes"] = config["provider_credential_routes"]
+        named["credential_routes"] = {"sol-high": "openai-api-key"}
+        requirements = sponsorship.selected_routes(named)
+        self.assertGreater(len({r["profile"] for r in requirements if r["provider"] == "openai"}), 1)
+        self.assertTrue(
+            all(
+                r["route"]
+                == (
+                    "openai-api-key"
+                    if r["profile"] == "sol-high"
+                    else "chatgpt-subscription"
+                    if r["provider"] == "openai"
+                    else "claude-subscription"
+                )
+                for r in requirements
+            )
+        )
+        config["provider_credential_routes"]["openai"] = "claude-subscription"
+        with self.assertRaises(ValueError):
+            sponsorship.selected_routes(config)
+
+    def test_mixed_issue_funding_requires_only_personal_provider_coverage(self):
+        """Org Anthropic needs no personal route, token or optional starter availability evidence."""
+        self.config.pop("credential_routes")
+        self.config["provider_credential_routes"] = {"openai": "openai-api-key"}
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.metadata = [row for row in self.metadata if row["route"] == "openai-api-key"]
+        self.advance()
+        with self.current(funded=False) as controller:
+            selected = controller.select_admissions([("codex", "intake", {}), ("claude", "plan", {})])
+            self.assertEqual([row["funding"] for row in selected], ["contributed", "org"])
+            self.assertEqual(selected[0]["sponsor"], "202")
+            self.assertIsNone(selected[1]["sponsor"])
+            self.assertEqual(controller.state["provider_funding"], {"openai": "contributed", "anthropic": "org"})
+            self.registry.record_shadow(
+                KEY, controller.state, funding=admissions.task_mode(controller.config, controller.state)
+            )
+            view = self.shadow.view(KEY)
+            self.assertEqual(view["funding"], "mixed")
+            self.assertEqual(view["provider_funding"], controller.state["provider_funding"])
+            self.metadata = []
+            calls = controller.state["calls"]
+            with self.assertRaisesRegex(Blocked, "credential"):
+                controller.select_admissions([("claude", "plan", {})])
+            self.assertEqual(controller.state["calls"], calls)
+
+    def test_explicit_org_preserves_consent_and_frozen_personal_admission(self):
+        """Changing future funding preserves earlier payer/version, grants and spent budgets."""
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        with self.current(funded=False) as controller:
+            controller.ask("codex", "intake", {"purpose": "freeze personal"})
+            prior = deepcopy(controller.state["operation"]["admission"])
+            calls = controller.state["calls"]
+            grant = controller.state["sponsorships"]["openai"]["grant_id"]
+            self.fake.comments.append(comment(9, "/concurro funding openai org", "bob", "2026-11-12T10:02:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+            self.assertEqual(controller.state["sponsorships"]["openai"]["grant_id"], grant)
+            self.assertEqual(controller.state["sponsorships"]["openai"]["sponsor_id"], "202")
+            self.assertEqual(controller.state["operation"]["admission"], prior)
+            self.assertEqual(controller.state["calls"], calls)
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+            # Already admitted work remains authorized until its own consent/version is retired.
+            binding = {
+                "repository": KEY[0],
+                "issue": KEY[1],
+                "generation": controller.gh.generation,
+                "funding": "contributed",
+                "sponsorship_provider": "openai",
+                "sponsor": "202",
+                "epoch": prior["epoch"],
+                "grant_id": prior["grant_id"],
+                "credential": prior["credential"]["record_id"],
+                "credential_version": 1,
+                "route": "openai-api-key",
+            }
+            self.assertTrue(self.exchange.allowed(binding))
+            with self.exchange.locked(), self.exchange._transaction():
+                self.exchange.current_grant(binding, prior)
+            self.fake.comments.append(comment(8, "/concurro withdraw openai", "alice", "2026-11-12T10:01:00Z"))
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"]["openai"], "org")
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+            self.assertFalse(self.exchange.allowed(binding))
+
+    def test_withdrawal_never_falls_back_and_lost_writer_can_withdraw(self):
+        """Personal payer choice survives self-withdrawal, with no org admission or new charge."""
+        self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+        self.advance()
+        self.allowed.remove("alice")
+        self.fake.comments.append(comment(9, "/concurro withdraw openai", "alice", "2026-11-12T10:02:00Z"))
+        with self.current(funded=False) as controller:
+            self.assertEqual(controller.state["provider_funding"]["openai"], "contributed")
+            calls = controller.state["calls"]
+            with self.assertRaises(Blocked):
+                controller.select_admissions([("codex", "intake", {})])
+            self.assertEqual(controller.state["calls"], calls)
+            own = __import__("sponsorship").own_consent(self.shadow.view(KEY), "202")
+            self.assertEqual(own["scope"], "own")
+            self.assertTrue(own["history"])
+            self.assertNotIn("provider_funding", own)
+            self.assertNotIn("charged_calls", own)
+
+    def test_old_org_tasks_ignore_settings_only_payer_changes(self):
+        """Forward migration freezes prior org policy and legacy sponsor comments remain prospective."""
+        self.sponsors()
+        with self.current(funded=False) as controller:
+            calls = controller.state["calls"]
+            operation = deepcopy(controller.state.get("operation"))
+            controller.state.pop("provider_funding", None)
+            controller.config = {**controller.config, "funding_mode": "contributed"}
+            self.shadow.begin(controller)
+            with patch.object(self.shadow, "confirm", side_effect=Transient("synthetic first-upgrade source outage")):
+                self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(controller.state["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
+            self.assertEqual(controller.state.get("operation"), operation)
+            self.assertEqual(controller.state["calls"], calls)
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            view = self.shadow.view(KEY)
+            self.assertEqual(view["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertEqual(view["source_provider_funding"], view["provider_funding"])
+
+    def test_pretask_funding_order_is_independent_of_delivery_and_duplicates(self):
+        """Issue intents converge in source order and enrollment adopts the exact latest choice."""
+        self.fake.comments = [
+            comment(8, "/concurro funding openai org", "bob", "2026-11-12T10:00:02Z"),
+            comment(7, "/concurro funding openai personal", "alice", "2026-11-12T10:00:01Z"),
+        ]
+        with self.current(funded=False) as controller:
+            first = self.shadow.view(KEY)
+            self.assertEqual(first["provider_funding"]["openai"], "org")
+            self.assertEqual(first["slots"]["openai"]["sponsor_id"], "202")
+            self.assertNotIn("task", first)
+            for raw in self.fake.comments:
+                raw["author_association"] = "COLLABORATOR"
+            self.service()
+            self.assertTrue(self.worker.consumed({}, controller)["_sponsorship_discovery"])
+            self.fake.comments.reverse()
+            self.shadow.begin(controller)
+            self.shadow.sync(controller, self.fake.comments)
+            self.assertEqual(self.shadow.view(KEY)["provider_funding"], first["provider_funding"])
+        self.fake.comments.append(comment(10, "/concurro start"))
+        state = self.advance()
+        self.assertEqual(state["provider_funding"]["openai"], "org")
+        self.assertEqual(state["sponsorships"]["openai"]["sponsor_id"], "202")
+
+    def test_funding_commands_require_current_writer_authority(self):
+        """Neither org selection nor personal self-consent can be applied by a nonwriter."""
+        self.allowed.remove("alice")
+        self.fake.comments += [
+            comment(2, "/concurro funding openai personal", "alice"),
+            comment(3, "/concurro funding anthropic org", "alice"),
+        ]
+        self.advance()
+        with self.current(funded=False) as controller:
+            self.assertEqual(controller.state["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertFalse(any(f["actor_id"] == "202" for f in controller.shadow_projection["facts"]))
 
     def test_batch_preflight_has_no_charge_when_any_required_owner_lacks_coverage(self):
         """Aggregate both providers before spending; a retry never borrows the other sponsor."""
@@ -243,13 +700,14 @@ class AdmissionTests(ShadowTests):
                     self.assertEqual(len(controller.select_admissions([("codex", "intake", {})])), 1)
 
     def test_bare_sponsor_notices_describe_actual_funding_mode(self):
-        """Both pre-task and enrolled GitHub replies match configured org/contributed funding."""
+        """Both pre-task and enrolled replies describe actual choices, independent of config changes."""
         self.sponsors()
         with self.current() as controller:
             from commands import parse
 
             for index, mode in enumerate(("org", "contributed"), 90):
                 controller.config = {**controller.config, "funding_mode": mode}
+                controller.state["provider_funding"] = {"openai": mode, "anthropic": mode}
                 usage = comment(index, "/concurro sponsor")
                 self.shadow.usage(controller, [usage])
                 body = self.fake.comments[-1]["body"]
@@ -329,10 +787,15 @@ class AdmissionTests(ShadowTests):
         """A successful retirement with a lost response is replayed before fresh staffing."""
         self.serial_flow("after")
 
-    def serial_flow(self, retirement=None):
+    def serial_flow(self, retirement=None, mixed=False):
         """Exercise actual serial admissions, optionally losing an exact-session cleanup receipt."""
-        self.sponsors()
-        with self.current() as controller:
+        if mixed:
+            self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
+            self.metadata = [row for row in self.metadata if row["route"] == "openai-api-key"]
+            self.advance()
+        else:
+            self.sponsors()
+        with self.current(funded=not mixed) as controller:
             expected = {**EXPECTED, "actor_id": "3003"}
             operator = LocalOperator(self.exchange)
             task = {
@@ -392,6 +855,20 @@ class AdmissionTests(ShadowTests):
                 (binding["sponsor"], binding["epoch"], binding["credential_version"]), ("202", admission["epoch"], 1)
             )
             self.assertEqual(next(iter(self.exchange.gateway.resources.values()))["binding"], binding)
+            if mixed:
+                with patch("exchange.claims", side_effect=lambda token, *args: json.loads(token)):
+                    controller.ask("claude", "intake", {**controller.context(), "purpose": "organization provider"})
+                self.assertEqual(controller.state["operation"]["admission"]["funding"], "org")
+                rows = [
+                    json.loads(row[0]) for row in self.exchange.db.execute("SELECT binding FROM turns ORDER BY rowid")
+                ]
+                self.assertEqual([row["funding"] for row in rows], ["contributed", "org"])
+                self.assertEqual(rows[0]["sponsor"], "202")
+                self.assertIsNone(rows[1]["sponsor"])
+                self.assertEqual(
+                    sum(row["calls"] for row in controller.state["credentials"].values()), controller.state["calls"]
+                )
+                return
             self.exchange.gateway.contributed_routes = ()
             with patch.object(self.shadow, "preflight", side_effect=AssertionError("recovery reselected payer")):
                 recovered = controller.ask("codex", "intake", {**controller.context(), "purpose": "admission identity"})

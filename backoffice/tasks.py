@@ -42,7 +42,7 @@ CONFIG_SECONDS = 120
 CONFIGS: dict[str, tuple[float, tuple[dict, str]]] = {}
 # The engine's task branches (`policy.py`): `concurro/issue-<number>-<digest>`.
 TASK_BRANCH = re.compile(r"concurro/issue-([1-9][0-9]*)-[0-9a-f]+")
-COMMANDS = ("sponsor", "withdraw", "start", "approve", "retry", "resume", "stop", "invalidate")
+COMMANDS = ("funding", "sponsor", "withdraw", "start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
 PIPELINE = ("intake", "plan", "plan_qc", "planned", "implement", "publish", "review", "gates")
@@ -128,6 +128,10 @@ def iso_epoch(stamp) -> str | None:
 
 def command_argument(command: str, argument: str | None, state) -> str | None:
     """The command's argument: the plan to approve (the current one unless given) or a revision grant."""
+    if command == "funding":
+        if argument not in ("openai org", "openai personal", "anthropic org", "anthropic personal"):
+            raise ValueError("unknown provider funding selection")
+        return argument
     if command in ("sponsor", "withdraw"):
         if argument not in ("openai", "anthropic") and not (command == "sponsor" and argument is None):
             raise ValueError("unknown sponsorship provider")

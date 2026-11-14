@@ -416,7 +416,7 @@ class Registry:
                     not task.get("recovery_bootstrapped")
                     and not task.get("recovery")
                     and acknowledged.get("_stage") == "awaiting_credentials"
-                    and task.get("funding") == "contributed"
+                    and task.get("funding") in ("contributed", "mixed")
                     and any(slot.get("sponsor_id") for slot in task.get("slots", {}).values())
                 ):
                     task["recovery_bootstrapped"] = True
@@ -565,6 +565,11 @@ class Registry:
                     for identifier, record in state.get("credentials", {}).items()
                 ],
                 "funding": funding,
+                "provider_funding": state.get("provider_funding", {p: funding for p in sponsorship.PROVIDERS}),
+                "pending_slots": {
+                    provider: item["request"]["slot"]
+                    for provider, item in state.get("pending_sponsorships", {}).items()
+                },
                 "last_failure": state.get("provider_failure"),
                 "slots": state.get("sponsorships", {}),
                 "history": state.get("sponsorship_history", []),
@@ -593,7 +598,7 @@ class Registry:
     def schedule_credential_recovery(self, db, key, document):
         """Atomically queue one eligible receipt without shortening its recorded retry deadline."""
         task = document.get("task") or {}
-        if task.get("funding") != "contributed" or task.get("stage") != "awaiting_credentials":
+        if task.get("funding") not in ("contributed", "mixed") or task.get("stage") != "awaiting_credentials":
             return
         plan = task.get("recovery")
         versions = {
