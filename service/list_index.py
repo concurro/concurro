@@ -26,14 +26,24 @@ from pathlib import Path
 import private
 
 from . import github_reads
-from .github_reads import ENROLLMENT, enrolled_issues, executor_run, executor_runs, issue_fields, run_attempt
+from .github_reads import (
+    ENROLLMENT,
+    TASK_BRANCH,
+    enrolled_issues,
+    executor_run,
+    executor_runs,
+    issue_fields,
+    pull_fields,
+    run_attempt,
+    task_pulls,
+)
 from .settings import CHECKOUT
 from .webhook_recovery import HISTORY_SECONDS
 
 log = logging.getLogger("concurro.service")
 
 DATABASE = "list-index.sqlite3"
-VERSION = 3
+VERSION = 4
 # Webhook events that change a list, and the list each changes.
 EVENT_KINDS = {
     "issues": "issues",
@@ -81,9 +91,15 @@ CREATE TABLE run_members (repository TEXT NOT NULL, run INTEGER NOT NULL, create
 CREATE TABLE issues (repository TEXT NOT NULL, number INTEGER NOT NULL, updated TEXT, document TEXT,
                      version INTEGER NOT NULL, PRIMARY KEY (repository, number));
 """,
+    3: """
+CREATE TABLE pulls (repository TEXT NOT NULL, number INTEGER NOT NULL, updated TEXT, document TEXT,
+                    version INTEGER NOT NULL, PRIMARY KEY (repository, number));
+CREATE TABLE pull_checks (repository TEXT NOT NULL, number INTEGER NOT NULL, sha TEXT NOT NULL,
+                          runs TEXT NOT NULL, PRIMARY KEY (repository, number));
+""",
 }
 # Row tables by kind: the table, and the key columns after `repository`.
-ROWS = {"runs": ("runs", ("run", "attempt")), "issues": ("issues", ("number",))}
+ROWS = {"runs": ("runs", ("run", "attempt")), "issues": ("issues", ("number",)), "pulls": ("pulls", ("number",))}
 # How many runs a list shows.
 LISTED_RUNS = 50
 
@@ -120,6 +136,16 @@ def projected(event, payload):
         # A comment on a pull request changes no issue; only these two actions take an issue away.
         removed = event == "issues" and payload.get("action") in ("deleted", "transferred")
         return {"issue": fields, "removed": removed} if fields else None
+    if event == "pull_request":
+        if not isinstance(payload, dict) or "pull_request" not in payload:
+            raise ValueError("pull request delivery without its pull request")
+        fields = pull_fields(payload["pull_request"])
+        return {"pull": fields} if TASK_BRANCH.fullmatch(fields["ref"]) else None
+    if event in ("check_run", "check_suite"):
+        checked = payload.get(event) if isinstance(payload, dict) else None
+        if not isinstance(checked, dict) or not isinstance(checked.get("head_sha"), str):
+            raise ValueError("check delivery without its commit")
+        return {"commit": checked["head_sha"]}
     return None
 
 
@@ -140,7 +166,7 @@ class ListIndex:
         self.pending = queue.Queue(QUEUE_SIZE)
         self.overflowed, self.stopping = threading.Event(), threading.Event()
         self.names, self.writer, self.worker, self.reader = {}, None, None, None
-        self.sponsored = lambda repository: ()
+        self.sponsored = self.linked = lambda repository: ()
         # Reads that failed since the last history check; each is retried once per check.
         self.deferred = set()
         # Whether a history check has completed in this process; before one, nothing is current.
@@ -180,19 +206,20 @@ class ListIndex:
                 raise
             self.db.execute("COMMIT")
 
-    def start(self, repositories, rows=None, reader=None, work=True, sponsored=None):
+    def start(self, repositories, rows=None, reader=None, work=True, sponsored=None, linked=None):
         """Record `{name: GitHub ID}`, establish coverage and start applying.
 
         `rows` maps a kind to the repositories whose list this index holds; `reader(repository)`
         returns the read transport its rebuilds and item reads use; `sponsored(repository)` lists
         the issue numbers the registry holds sponsorships for, which belong to the issue list
-        whatever their labels. A kind not verified within
+        whatever their labels; `linked(repository)` lists the pull request numbers the registry
+        records for tasks, which a rebuild reads wherever they are. A kind not verified within
         GitHub's delivery history is covered afresh: history can no longer show what it missed.
         Local signals lost while stopped are covered by `resync`.
         """
         now = self.clock()
         self.reader = reader
-        self.sponsored = sponsored or self.sponsored
+        self.sponsored, self.linked = sponsored or self.sponsored, linked or self.linked
         with self.transaction() as db:
             db.execute("DELETE FROM repositories")
             db.executemany("INSERT INTO repositories VALUES (?, ?)", [(n, name) for name, n in repositories.items()])
@@ -312,7 +339,8 @@ class ListIndex:
         if not self.held(db, repository, kind):
             self.raise_revision(db, repository, kind, now)
         elif data is not None:
-            item = (self.apply_run if kind == "runs" else self.apply_issue)(db, repository, data, now)
+            applied = {"runs": self.apply_run, "issues": self.apply_issue, "pulls": self.apply_pull}
+            item = applied[kind](db, repository, data, now)
             if item:
                 self.raise_revision(db, repository, kind, now, item)
 
@@ -419,6 +447,59 @@ class ListIndex:
         else:
             changed = self.store(db, "issues", key, item, document, read)
         return item if changed else None
+
+    def apply_pull(self, db, repository, data, now):
+        """Apply a pull request snapshot, or a check on a commit; the pull request's number when the list changed.
+
+        Check runs are read, never assembled: a new row, a new head and a check on a row's head
+        each owe a read of that pull request with its rollup.
+        """
+        if "commit" in data:
+            heads = db.execute(
+                "SELECT number FROM pulls WHERE repository = ? AND json_extract(document, '$.sha') = ?",
+                (repository, data["commit"]),
+            ).fetchall()
+            for (number,) in heads:
+                self.request(db, repository, "pulls", str(number))
+            return None
+        document = data["pull"]
+        key, item = (repository, document["number"]), str(document["number"])
+        before = self.head(db, key)
+        changed = self.store(db, "pulls", key, item, document)
+        if self.head(db, key) != before:
+            self.request(db, repository, "pulls", item)
+        return item if changed else None
+
+    @staticmethod
+    def head(db, key):
+        """The head commit of a held pull request, or None."""
+        row = db.execute(
+            "SELECT json_extract(document, '$.sha') FROM pulls WHERE repository = ? AND number = ?", key
+        ).fetchone()
+        return row and row[0]
+
+    def publish_pull(self, db, repository, number, found, read):
+        """Publish one pull request read with its rollup, under the read's fence.
+
+        Returns whether the list changed, and whether the read itself gave the row its head.
+        A check delivered during such a read matched no held head and owed nothing, so the
+        caller owes one more read of the rollup. The check runs are kept only while the row's
+        head is still the commit they were read for.
+        """
+        key, item = (repository, number), str(number)
+        if found is None:
+            return self.remove(db, "pulls", key, item, read), False
+        document = {field: value for field, value in found.items() if field != "runs"}
+        before = self.head(db, key)
+        changed = self.store(db, "pulls", key, item, document, read)
+        moved = self.head(db, key) != before
+        if self.head(db, key) == document["sha"]:
+            checks = (*key, document["sha"], json.dumps(found["runs"], sort_keys=True))
+            held = db.execute("SELECT * FROM pull_checks WHERE repository = ? AND number = ?", key).fetchone()
+            if held != checks:
+                db.execute("INSERT OR REPLACE INTO pull_checks VALUES (?, ?, ?, ?)", checks)
+                changed = True
+        return changed, moved
 
     def sponsorship_changed(self, db, repository, issue, raised=False):
         """A sponsorship decides membership of the issue list, and may name an issue never seen."""
@@ -584,7 +665,11 @@ class ListIndex:
                 return
             repository, kind, item = job
             try:
-                reads = {"runs": (self.rebuild_runs, self.read_run), "issues": (self.rebuild_issues, self.read_issue)}
+                reads = {
+                    "runs": (self.rebuild_runs, self.read_run),
+                    "issues": (self.rebuild_issues, self.read_issue),
+                    "pulls": (self.rebuild_pulls, self.read_pull),
+                }
                 if item is None:
                     reads[kind][0](repository)
                 else:
@@ -702,6 +787,39 @@ class ListIndex:
                 changed = self.store(db, "issues", (repository, number), item, document, version)
             self.settled(db, repository, "issues", item, began, changed and item)
 
+    def rebuild_pulls(self, repository):
+        """Read the task pull requests among the newest, and every other the list holds or a task links, and publish them.
+
+        One request lists the newest 100 with their rollups; the others are read by number.
+        """
+        began, versions = self.clock(), self.versions("pulls", repository)
+        reader = self.reader(repository)
+        listed = {found["number"]: found for found in task_pulls(reader, repository)}
+        with self.lock:
+            held = self.db.execute(
+                "SELECT number FROM pulls WHERE repository = ? AND document IS NOT NULL", (repository,)
+            ).fetchall()
+        others = {
+            number: github_reads.pull_request(reader, repository, number)
+            for number in sorted(({number for (number,) in held} | set(self.linked(repository))) - set(listed))
+        }
+        with self.transaction() as db:
+            for number, found in (listed | others).items():
+                if self.publish_pull(db, repository, number, found, versions.get((number,), 0))[1]:
+                    self.request(db, repository, "pulls", str(number))
+            self.built(db, repository, "pulls", began)
+
+    def read_pull(self, repository, item):
+        """Read one pull request with its rollup and publish it."""
+        number = int(item)
+        began, version = self.clock(), self.versions("pulls", repository).get((number,), 0)
+        found = github_reads.pull_request(self.reader(repository), repository, number)
+        with self.transaction() as db:
+            changed, moved = self.publish_pull(db, repository, number, found, version)
+            self.settled(db, repository, "pulls", item, began, changed and item)
+            if moved:
+                self.request(db, repository, "pulls", item)
+
     @staticmethod
     def issue(reader, repository, number):
         """One issue as a row, or None when GitHub no longer has it as an issue."""
@@ -757,7 +875,8 @@ class ListIndex:
             entry = self.revisions({repository}).get(repository, {}).get(kind)
             if entry is None or entry["mode"] != "rows":
                 return None
-            items = self.listed_runs(repository) if kind == "runs" else self.listed_issues(repository)
+            listed = {"runs": self.listed_runs, "issues": self.listed_issues, "pulls": self.listed_pulls}
+            items = listed[kind](repository)
         return {**entry, "items": items}
 
     def listed_runs(self, repository):
@@ -787,6 +906,19 @@ class ListIndex:
         )
         documents = (json.loads(text) for (text,) in held)
         return [document for document in documents if self.enrolled(document) or document["number"] in sponsored]
+
+    def listed_pulls(self, repository):
+        """Held pull requests, most recently updated first, each with the check runs read for its head."""
+        held = self.db.execute(
+            "SELECT p.document, c.sha, c.runs FROM pulls p LEFT JOIN pull_checks c USING (repository, number) "
+            "WHERE p.repository = ? AND p.document IS NOT NULL ORDER BY p.updated DESC, p.number DESC",
+            (repository,),
+        )
+        items = []
+        for text, sha, runs in held:
+            document = json.loads(text)
+            items.append({**document, "runs": json.loads(runs) if sha == document["sha"] else []})
+        return items
 
 
 class Lists:

@@ -65,10 +65,14 @@ saved lists. A target lists its `issueRepositories`, which is where its tasks' `
 ### With the list index
 
 A list the service holds (`mode: rows`: a fork's executor runs, an issue repository's
-issues) is taken from the service instead of GitHub, again only when its revision moved, and saved as the fallback
+issues, an upstream's task pull requests) is taken from the service instead of GitHub, again only when its revision moved, and saved as the fallback
 copy. Attribution of runs to recorded turns happens on every request and is not part of
 what is saved. The held issue list is every enrolled issue, not the 300 most recently
-updated, and already contains the sponsored issues, so none is read one by one. While the
+updated, and already contains the sponsored issues, so none is read one by one. The held
+pull request list keeps every task pull request the service has seen, also after it leaves
+the upstream's 100 most recently updated; one it never saw, outside that window and not
+recorded for a task, is not listed. With all three held, no list content is read from
+GitHub while a page loads. While the
 service has not built such a list yet, the saved copy is shown
 with the reason, and a list with nothing saved answers 503.
 

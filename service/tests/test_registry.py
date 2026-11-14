@@ -224,6 +224,7 @@ class StateTests(ServiceFixture, unittest.TestCase):
         registry = self.open_again()
         self.assertEqual(registry.pull(KEY), PullRequest("upstream/repo", 9))
         self.assertEqual(registry.task("upstream/repo", 9), KEY)
+        self.assertEqual((registry.linked_pulls("upstream/repo"), registry.linked_pulls(KEY[0])), ([9, 10], []))
         self.assertEqual(registry.task("upstream/repo", 10), other)
         self.assertIsNone(registry.task(KEY[0], 9))
 

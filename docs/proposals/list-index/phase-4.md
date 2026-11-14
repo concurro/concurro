@@ -1,9 +1,50 @@
 # Phase 4 brief: pull requests and CI
 
-**Not implemented; depends on phase 3.** Implements phase 4 of the
-[proposal](../list-index.md). Re-check against the code and the earlier phases as built.
-Phase 0 confirmed line counts in one `synchronize` payload and that a rerun changes which
-check runs the rollup holds.
+**Implemented in this changeset; not deployed.** Base: service `6441488` (phases 1 to 3
+merged and deployed). No frontend change was needed. The brief below is kept as written;
+where the implementation differs, this section says so.
+
+## As built
+
+- **Schema version 4** adds `pulls`, shaped like the other row tables so `store`, `remove`
+  and the read fence are shared, and `pull_checks`: the check runs with the commit they
+  were read for. Versions 1 to 3 migrate forward on open.
+- **Rows are in the backoffice's existing shape** (`number`, `title`, `open`, `draft`,
+  `ref`, `sha`, `additions`, `deletions`, `runs`, plus `updated_at`), so
+  `Tasks.pulls_by_issue` only gained the `rows` source and copies saved by earlier
+  releases keep serving while the list is first built. `/lists` orders them most
+  recently updated first, which the selection relies on.
+- **Checks apart from the row's ordering.** A check changes no pull request timestamp, so
+  check runs are not part of the ordered document. They are listed only while their
+  commit is the row's head; a push therefore shows `none` until the new head is read.
+- **Rollup reads** are the item reads of this kind: owed for a new row, a changed head and
+  a `check_run` or `check_suite` on a held head, coalesced per pull request. The same read
+  returns the row, so it also corrects line counts and settles ties.
+- **Shared code:** `TASK_BRANCH`, `PULL_REQUESTS`, `graphql_pull`, `pull_fields`,
+  `task_pulls` and `pull_request` live in `service/github_reads.py`. `Access.pull_requests`
+  keeps its REST fallback for the index-disabled mode only.
+- **Linked pull requests:** `Registry.linked_pulls(repository)` gives a rebuild the numbers
+  recorded for tasks.
+- **Deployment:** as in phase 3, the backoffice must not be older than the service: the
+  phase 3 backoffice treats a held pull request list as unusable. This replaces "Service
+  first" below. Both images come from this repository.
+- **After code review** (two findings, both fixed with a test each):
+  - A read that itself gives a row its head (a rebuild discovering a pull request or a
+    changed head, or an item read finding a new head) owes one more rollup read. A check
+    delivered during such a read matched no held head, got a receipt and owed nothing, so
+    its result would otherwise be lost. A rebuild therefore reads each newly discovered
+    pull request a second time.
+  - A GraphQL answer carrying errors is refused whole, for the listing and for one pull
+    request, so a partial answer never replaces held check runs. Absence is taken only
+    from an answer without the pull request whose every error is `NOT_FOUND`.
+- **Tests:** 52 in `service/tests/test_list_index.py`, 33 in
+  `backoffice/tests/test_list_freshness.py`.
+- **Not done:** the "Done when" checks need a deployment. Check deliveries for an
+  upstream's other pull requests each cost a receipt and one lookup; more than 20 missed
+  at once for the kind cause a rebuild, whose cost under a busy upstream is unmeasured.
+
+Implements phase 4 of the [proposal](../list-index.md). Phase 0 confirmed line counts in
+one `synchronize` payload and that a rerun changes which check runs the rollup holds.
 
 ## Outcome
 

@@ -88,7 +88,8 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         expected = {"issues": "issues", "issue_comment": "issues", "pull_request": "pulls", "check_run": "pulls"}
         for number, (event, kind) in enumerate({**expected, "check_suite": "pulls", "workflow_run": "runs"}.items()):
             before = self.revision(kind)
-            self.index.offer(f"g{number}", event, KEY[0], {"workflow_run": run(number), "issue": issue(number)})
+            data = {"workflow_run": run(number), "issue": issue(number), "pull_request": delivered(pull(number))}
+            self.index.offer(f"g{number}", event, KEY[0], {**data, event: {"head_sha": "a" * 40}, **data})
             self.assertNotEqual(self.revision(kind), before, event)
 
     def test_a_recreated_file_never_matches_old_revisions(self):
@@ -853,6 +854,302 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(ask({"repository": FORK, "kind": "issues"})[0], 404)
         self.assertEqual(ask({"repository": FORK})[0], 400)
         self.assertEqual(lists.handle("/lists", "Bearer wrong", b"{}")[0], 401)
+
+
+def pull(number, issue=None, sha="a" * 40, updated="2026-11-14T10:00:00Z", state="OPEN", checks=(), **fields):
+    """One pull request as GraphQL lists it; `checks` are its rollup's `(status, conclusion)` check runs."""
+    contexts = [{"__typename": "CheckRun", "status": status, "conclusion": conclusion} for status, conclusion in checks]
+    return {
+        "number": number,
+        "title": f"PR {number}",
+        "state": state,
+        "isDraft": False,
+        "headRefName": f"concurro/issue-{issue or number}-0123456789ab",
+        "headRefOid": sha,
+        "additions": 12,
+        "deletions": 3,
+        "updatedAt": updated,
+        "commits": {
+            "nodes": [
+                {"commit": {"statusCheckRollup": {"contexts": {"nodes": [*contexts, {"__typename": "StatusContext"}]}}}}
+            ]
+        },
+        **fields,
+    }
+
+
+def delivered(node):
+    """The same pull request as a webhook delivers it."""
+    return {
+        "number": node["number"],
+        "title": node["title"],
+        "state": "open" if node["state"] == "OPEN" else "closed",
+        "draft": node["isDraft"],
+        "head": {"ref": node["headRefName"], "sha": node["headRefOid"], "repo": {"full_name": FORK}},
+        "additions": node["additions"],
+        "deletions": node["deletions"],
+        "updated_at": node["updatedAt"],
+        "body": "not listed",
+    }
+
+
+GREEN, RED, RUNNING = ("COMPLETED", "SUCCESS"), ("COMPLETED", "FAILURE"), ("IN_PROGRESS", None)
+
+
+class Upstream:
+    """An upstream's GraphQL API: the newest pull requests and pull requests by number."""
+
+    def __init__(self):
+        self.listed, self.items, self.numbers, self.failing, self.during = [], {}, [], False, None
+
+    def request(self, method, path, data):
+        """The answer as GitHub held it when asked; `during` runs after that, before it is returned."""
+        number = data["variables"].get("number")
+        self.numbers.append(number)
+        listed = list(self.listed)
+        found = ({node["number"]: node for node in listed} | self.items).get(number)
+        if self.during:
+            hook, self.during = self.during, None
+            hook()
+        if self.failing:
+            raise Transient("unavailable")
+        if number is None:
+            return {"data": {"repository": {"pullRequests": {"nodes": listed}}}}
+        errors = {} if found else {"errors": [{"type": "NOT_FOUND"}]}
+        return {"data": {"repository": {"pullRequest": found}}, **errors}
+
+
+class PullRowsTests(ServiceFixture, unittest.TestCase):
+    """Task pull requests held as rows, with check runs read from the rollup."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub, self.linked = Upstream(), []
+        self.index = ListIndex(self.directory.name, clock=self.clock)
+        self.addCleanup(self.index.close)
+        self.index.start(
+            REPOSITORIES,
+            rows={"pulls": {KEY[0]}},
+            reader=lambda repository: self.hub,
+            work=False,
+            linked=lambda repository: list(self.linked),
+        )
+
+    def built(self):
+        self.clock.now += 1
+        self.index.drain()
+        self.index.check({}, self.clock.now)
+        self.clock.now += 1
+
+    def entry(self):
+        self.index.pending.join()
+        return self.index.revisions({KEY[0]})[KEY[0]]["pulls"]
+
+    def listed(self):
+        self.index.pending.join()
+        return {item["number"]: item for item in self.index.rows(KEY[0], "pulls")["items"]}
+
+    def deliver(self, guid, node=None, commit=None, event="check_run"):
+        self.clock.now += 1
+        if node:
+            self.index.offer(guid, "pull_request", KEY[0], {"action": "edited", "pull_request": delivered(node)})
+        else:
+            self.index.offer(guid, event, KEY[0], {"action": "completed", event: {"head_sha": commit}})
+        self.index.pending.join()
+
+    def owed(self):
+        return [row[0] for row in self.index.db.execute("SELECT item FROM pending WHERE kind = 'pulls' ORDER BY item")]
+
+    def read(self):
+        self.clock.now += 1
+        self.index.drain()
+
+    def test_a_rebuild_publishes_task_pull_requests_with_their_checks(self):
+        merged = pull(40, issue=36, state="MERGED", updated="2026-11-14T09:00:00Z")
+        self.hub.listed = [pull(41, issue=36, checks=[GREEN]), merged, pull(37, headRefName="chore/other")]
+        self.hub.items[5] = pull(5, updated="2026-10-01T00:00:00Z", checks=[RED])
+        self.linked = [5, 6, 41]
+        self.assertEqual(self.entry()["state"], "rebuilding")
+        self.built()
+        listed = self.listed()
+        self.assertEqual((list(listed), self.entry()["state"]), ([41, 40, 5], "current"), "most recently updated first")
+        self.assertEqual(self.hub.numbers[:3], [None, 5, 6], "linked ones outside the newest are read by number")
+        self.assertEqual(sorted(self.hub.numbers[3:]), [5, 40, 41], "each discovered head's rollup is read once more")
+        self.assertEqual(self.owed(), [])
+        self.assertEqual(
+            listed[41],
+            {
+                "number": 41,
+                "title": "PR 41",
+                "open": True,
+                "draft": False,
+                "ref": "concurro/issue-36-0123456789ab",
+                "sha": "a" * 40,
+                "additions": 12,
+                "deletions": 3,
+                "updated_at": "2026-11-14T10:00:00Z",
+                "runs": [{"status": "completed", "conclusion": "success"}],
+            },
+        )
+        self.assertEqual((listed[40]["open"], listed[5]["runs"][0]["conclusion"]), (False, "failure"))
+
+    def test_a_rebuild_rereads_retained_rows_and_fails_without_the_rollup(self):
+        self.hub.listed = [pull(41), pull(40)]
+        self.built()
+        self.hub.listed, self.hub.numbers = [pull(41, checks=[GREEN])], []
+        self.hub.items[40] = pull(40, state="CLOSED", updated="2026-11-14T11:00:00Z")
+        self.index.rebaseline(KEY[0], ("pulls",))
+        self.built()
+        self.assertEqual(self.hub.numbers, [None, 40], "a held row the listing no longer returns; no head is new")
+        self.assertEqual([(n, item["open"]) for n, item in self.listed().items()], [(40, False), (41, True)])
+        del self.hub.items[40]
+        self.index.rebaseline(KEY[0], ("pulls",))
+        self.built()
+        self.assertEqual(list(self.listed()), [41], "one GitHub no longer has")
+        for answer in ({"errors": [{"message": "refused"}]}, {"data": {"repository": None}}):
+            self.hub.request = lambda method, path, data, answer=answer: answer
+            self.index.rebaseline(KEY[0], ("pulls",))
+            self.built()
+            self.assertEqual((self.entry()["state"], list(self.listed())), ("failed", [41]))
+
+    def test_deliveries_keep_pull_requests_current_and_owe_their_checks(self):
+        self.built()
+        opened = pull(41, checks=[RUNNING])
+        self.deliver("other", pull(37, headRefName="chore/other"))
+        self.assertEqual((self.listed(), self.owed()), ({}, []), "not a task branch")
+        self.deliver("opened", opened)
+        self.assertEqual((self.listed()[41]["runs"], self.owed()), ([], ["41"]), "listed before its checks are read")
+        self.hub.items[41] = opened
+        self.read()
+        self.assertEqual(
+            (self.listed()[41]["runs"], self.owed()), ([{"status": "in_progress", "conclusion": None}], [])
+        )
+        revision = self.entry()["revision"]
+        self.deliver("titled", {**opened, "title": "Renamed", "updatedAt": "2026-11-14T10:01:00Z"})
+        self.assertEqual((self.listed()[41]["title"], len(self.listed()[41]["runs"]), self.owed()), ("Renamed", 1, []))
+        self.assertNotEqual(self.entry()["revision"], revision)
+        pushed = pull(41, sha="b" * 40, updated="2026-11-14T10:02:00Z", additions=20, checks=[GREEN])
+        self.deliver("pushed", {**pushed, "additions": 19})
+        self.deliver("late", {**opened, "title": "Out of order", "updatedAt": "2026-11-14T10:01:30Z"})
+        found = self.listed()[41]
+        self.assertEqual((found["sha"], found["title"], found["runs"]), ("b" * 40, "PR 41", []), "a new head resets CI")
+        self.hub.items[41] = pushed
+        self.read()
+        found = self.listed()[41]
+        self.assertEqual(
+            (found["additions"], found["runs"][0]["conclusion"]), (20, "success"), "the read corrects counts"
+        )
+        self.deliver("tied", {**pushed, "title": "Same instant"})
+        self.assertEqual((self.listed()[41]["title"], self.owed()), ("PR 41", ["41"]), "a tie is answered by a read")
+
+    def test_checks_owe_a_read_only_for_a_held_head(self):
+        self.built()
+        revision = self.entry()["revision"]
+        self.deliver("early", commit="a" * 40)
+        self.deliver("suite", commit="c" * 40, event="check_suite")
+        self.assertEqual((self.owed(), self.entry()["revision"]), ([], revision), "no row has that head")
+        self.hub.items[41] = pull(41, checks=[RED])
+        self.deliver("opened", pull(41))
+        self.read()
+        self.assertEqual(self.listed()[41]["runs"], [{"status": "completed", "conclusion": "failure"}])
+        # A rerun: the rollup then holds only the new attempt's check runs.
+        self.hub.items[41] = pull(41, checks=[GREEN])
+        self.deliver("rerun", commit="a" * 40)
+        self.assertEqual(self.owed(), ["41"])
+        revision = self.entry()["revision"]
+        self.read()
+        self.assertEqual(self.listed()[41]["runs"], [{"status": "completed", "conclusion": "success"}])
+        self.assertNotEqual(self.entry()["revision"], revision)
+        self.assertEqual(self.owed(), [])
+
+    def test_signals_during_a_rollup_read_are_still_owed_after_it(self):
+        self.built()
+        self.hub.items[41] = pull(41, checks=[RUNNING])
+        self.deliver("opened", pull(41))
+        self.hub.during = lambda: self.deliver("completed", commit="a" * 40)
+        self.read()
+        self.assertEqual(self.owed(), [], "the read after the one the check interrupted")
+        self.assertEqual(self.hub.numbers[-2:], [41, 41])
+        pushed = pull(41, sha="b" * 40, updated="2026-11-14T10:05:00Z")
+
+        def push():
+            self.deliver("pushed", pushed)
+            self.hub.items[41] = pull(41, sha="b" * 40, updated="2026-11-14T10:05:00Z", checks=[GREEN])
+            self.hub.failing = True
+
+        self.deliver("again", commit="a" * 40)
+        self.hub.items[41] = pull(41, checks=[RED])
+        self.hub.during = push
+        self.read()
+        self.hub.failing = False
+        self.assertEqual((self.listed()[41]["sha"], self.listed()[41]["runs"]), ("b" * 40, []))
+        self.index.check({}, self.clock.now)
+        self.read()
+        self.assertEqual(self.listed()[41]["runs"], [{"status": "completed", "conclusion": "success"}])
+
+    def test_a_check_during_a_read_that_discovers_its_head_is_not_lost(self):
+        """The check matches no held head when delivered, so the read that brings the head owes another."""
+        self.hub.listed = [pull(41, checks=[GREEN])]
+
+        def failed():
+            self.deliver("failed", commit="a" * 40)
+            self.hub.items[41] = pull(41, checks=[RED])
+
+        self.hub.during = failed
+        self.built()
+        self.assertEqual((self.listed()[41]["runs"][0]["conclusion"], self.owed()), ("failure", []), "a new row")
+        for rebuild in (False, True):
+            sha = ("c" if rebuild else "d") * 40
+            stamp = "2026-11-14T10:1%d:00Z" % rebuild
+            self.hub.listed = [pull(41, sha=sha, updated=stamp, checks=[GREEN])]
+            self.hub.items[41] = self.hub.listed[0]
+
+            def failed(sha=sha, stamp=stamp):
+                self.deliver(f"failed-{sha[0]}", commit=sha)
+                self.hub.items[41] = pull(41, sha=sha, updated=stamp, checks=[RED])
+
+            self.hub.during = failed
+            if rebuild:
+                self.index.rebaseline(KEY[0], ("pulls",))
+            else:
+                self.deliver("checked", commit=self.listed()[41]["sha"])
+            self.built()
+            found = self.listed()[41]
+            self.assertEqual((found["sha"], found["runs"][0]["conclusion"], self.owed()), (sha, "failure", []), rebuild)
+
+    def test_an_answer_with_errors_is_never_published(self):
+        self.hub.listed = [pull(41, checks=[RED])]
+        self.built()
+        partial = pull(41, commits={"nodes": [{"commit": {"statusCheckRollup": None}}]})
+        errors = {"errors": [{"type": "INTERNAL", "path": ["repository", "pullRequest", "commits"]}]}
+        answers = {
+            None: {"data": {"repository": {"pullRequests": {"nodes": [partial]}}}, **errors},
+            41: {"data": {"repository": {"pullRequest": partial}}, **errors},
+        }
+        self.hub.request = lambda method, path, data: answers[data["variables"].get("number")]
+        self.deliver("checked", commit="a" * 40)
+        self.read()
+        self.assertEqual((self.listed()[41]["runs"][0]["conclusion"], self.owed()), ("failure", ["41"]))
+        self.index.rebaseline(KEY[0], ("pulls",))
+        self.read()
+        self.assertEqual((self.listed()[41]["runs"][0]["conclusion"], self.entry()["state"]), ("failure", "failed"))
+        answers[41] = {
+            "data": {"repository": {"pullRequest": None}},
+            "errors": [{"type": "NOT_FOUND"}, *errors["errors"]],
+        }
+        self.index.check({}, self.clock.now)
+        with self.assertRaises(ValueError):
+            self.index.read_pull(KEY[0], "41")
+        self.assertIn(41, self.listed(), "absence only when not found is all GitHub reported")
+
+    def test_a_result_for_a_head_that_moved_is_discarded(self):
+        self.built()
+        self.deliver("opened", pull(41))
+        self.hub.items[41] = pull(41, checks=[RED])
+        self.hub.during = lambda: self.deliver("pushed", pull(41, sha="b" * 40, updated="2026-11-14T10:05:00Z"))
+        self.index.read_pull(KEY[0], "41")
+        self.assertEqual((self.listed()[41]["sha"], self.listed()[41]["runs"]), ("b" * 40, []))
+        self.assertEqual(self.owed(), ["41"], "the new head's read is still owed")
 
 
 class WiringTests(ServiceFixture, unittest.TestCase):

@@ -1,6 +1,7 @@
 """Read target files and runner identities using repository read credentials."""
 
 import base64
+import re
 from urllib.parse import quote, urlencode
 
 from github import NotFound
@@ -25,6 +26,35 @@ TARGET_RUNS = 50
 # The label that opts an issue in.
 ENROLLMENT = "concurro"
 EXECUTOR_PATH = f".github/workflows/{EXECUTOR_WORKFLOW}"
+# The engine's task branches (`policy.py`): `concurro/issue-<number>-<digest>`.
+TASK_BRANCH = re.compile(r"concurro/issue-([1-9][0-9]*)-[0-9a-f]+")
+# What a list shows of a pull request, with its head commit's check runs.
+PULL_FIELDS = """
+        number title state isDraft headRefName headRefOid additions deletions updatedAt
+        commits(last: 1) {
+          nodes { commit { statusCheckRollup { contexts(first: 100) {
+            nodes { __typename ... on CheckRun { status conclusion } }
+          } } } }
+        }"""
+# The 100 most recently updated pull requests.
+PULL_REQUESTS = f"""
+query($owner: String!, $name: String!) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequests(first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+      nodes {{{PULL_FIELDS}
+      }}
+    }}
+  }}
+}}
+"""
+PULL_REQUEST = f"""
+query($owner: String!, $name: String!, $number: Int!) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $number) {{{PULL_FIELDS}
+    }}
+  }}
+}}
+"""
 
 DEFAULT_BRANCH = """query($owner:String!,$name:String!) {
   repository(owner:$owner,name:$name) { defaultBranchRef { name target { oid } } }
@@ -193,3 +223,100 @@ def issue(reader, repository, number):
         if not gone(error):
             raise
         return None
+
+
+def graphql_pull(node: dict) -> dict:
+    """Normalize a GraphQL pull request and its check runs for task lists."""
+    commits = (node.get("commits") or {}).get("nodes") or []
+    rollup = (commits[-1]["commit"].get("statusCheckRollup") or {}) if commits else {}
+    contexts = (rollup.get("contexts") or {}).get("nodes") or []
+    return {
+        "number": node["number"],
+        "title": node.get("title") or "",
+        "open": node.get("state") == "OPEN",
+        "draft": bool(node.get("isDraft")),
+        "ref": node.get("headRefName") or "",
+        "sha": node.get("headRefOid") or "",
+        "additions": node.get("additions"),
+        "deletions": node.get("deletions"),
+        "updated_at": node.get("updatedAt"),
+        "runs": [
+            {"status": (c.get("status") or "").lower(), "conclusion": (c.get("conclusion") or "").lower() or None}
+            for c in contexts
+            if c.get("__typename") == "CheckRun"
+        ],
+    }
+
+
+def pull_fields(pull):
+    """A webhook's `pull_request` in the shape `graphql_pull` gives, without check runs.
+
+    Refuses anything without the identity, head and update time a row is ordered and matched by.
+    """
+    head = pull.get("head") if isinstance(pull, dict) else None
+    if (
+        not isinstance(head, dict)
+        or type(pull.get("number")) is not int
+        or not isinstance(pull.get("updated_at"), str)
+        or not isinstance(head.get("ref"), str)
+        or not isinstance(head.get("sha"), str)
+    ):
+        raise ValueError("malformed pull request")
+    return {
+        "number": pull["number"],
+        "title": pull.get("title") or "",
+        "open": pull.get("state") == "open",
+        "draft": bool(pull.get("draft")),
+        "ref": head["ref"],
+        "sha": head["sha"],
+        "additions": pull.get("additions"),
+        "deletions": pull.get("deletions"),
+        "updated_at": pull["updated_at"],
+    }
+
+
+def rollup_pull(node):
+    """A pull request read with its rollup; refuses one that cannot be ordered or matched to its checks."""
+    found = graphql_pull(node)
+    if type(found["number"]) is not int or not isinstance(found["updated_at"], str) or not found["sha"]:
+        raise ValueError("malformed pull request")
+    return found
+
+
+def graphql(reader, repository, query, **variables):
+    """One GraphQL read of a repository; its `repository` object and the errors GitHub reported."""
+    owner, name = repository.split("/")
+    response = reader.request(
+        "POST", "graphql", {"query": query, "variables": {"owner": owner, "name": name, **variables}}
+    )
+    found = (response.get("data") or {}).get("repository") if isinstance(response, dict) else None
+    if not isinstance(found, dict):
+        raise ValueError("malformed GraphQL answer")
+    return found, response.get("errors") or []
+
+
+def task_pulls(reader, repository):
+    """The task-branch pull requests among the 100 most recently updated, with their check runs.
+
+    An answer carrying errors is refused whole: part of it, such as a rollup, may be missing.
+    """
+    found, errors = graphql(reader, repository, PULL_REQUESTS)
+    if errors:
+        raise ValueError("incomplete GraphQL answer")
+    pulls = [rollup_pull(node) for node in found["pullRequests"]["nodes"]]
+    return [pull for pull in pulls if TASK_BRANCH.fullmatch(pull["ref"])]
+
+
+def pull_request(reader, repository, number):
+    """One pull request with its check runs, or None when GitHub no longer has it.
+
+    Only an answer without the pull request whose every error says it was not found means
+    absence; any other answer carrying errors is refused, since part of it may be missing.
+    """
+    found, errors = graphql(reader, repository, PULL_REQUEST, number=number)
+    missing = all(isinstance(error, dict) and error.get("type") == "NOT_FOUND" for error in errors)
+    if found.get("pullRequest") is None and errors and missing:
+        return None
+    if errors or found.get("pullRequest") is None:
+        raise ValueError("incomplete GraphQL answer")
+    return rollup_pull(found["pullRequest"])

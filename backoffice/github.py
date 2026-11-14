@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from github import GitHub, NotFound
 from service.actions import WRITER_PERMISSIONS
-from service.github_reads import content, default_branch, enrolled_issues
+from service.github_reads import PULL_REQUESTS, content, default_branch, enrolled_issues, graphql_pull
 from service.identity import Identity
 from service.target_config import read_remote
 from service.transport import StaticCredential, Transport
@@ -24,23 +24,6 @@ REPOSITORIES: dict[tuple[str, str], tuple[float, dict | None]] = {}
 PERMISSIONS: dict[tuple[int, int, str, str], tuple[float, bool]] = {}
 QUERY = re.compile(r"\s*(?:query\b|\{)")
 ISSUE_PAGES = 3
-# The 100 most recently updated pull requests with line counts and their head commit's check runs.
-PULL_REQUESTS = """
-query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) {
-    pullRequests(first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      nodes {
-        number title state isDraft headRefName headRefOid additions deletions
-        commits(last: 1) {
-          nodes { commit { statusCheckRollup { contexts(first: 100) {
-            nodes { __typename ... on CheckRun { status conclusion } }
-          } } } }
-        }
-      }
-    }
-  }
-}
-"""
 
 
 class ReadOnlyGitHub(GitHub):
@@ -135,28 +118,6 @@ class Access:
         reader = self.transport(fork)
         branch, sha = default_branch(reader, fork)
         return read_remote(lambda path: content(reader, fork, path, sha)), branch
-
-
-def graphql_pull(node: dict) -> dict:
-    """Normalize a GraphQL pull request and its check runs for task lists."""
-    commits = (node.get("commits") or {}).get("nodes") or []
-    rollup = (commits[-1]["commit"].get("statusCheckRollup") or {}) if commits else {}
-    contexts = (rollup.get("contexts") or {}).get("nodes") or []
-    return {
-        "number": node["number"],
-        "title": node.get("title") or "",
-        "open": node.get("state") == "OPEN",
-        "draft": bool(node.get("isDraft")),
-        "ref": node.get("headRefName") or "",
-        "sha": node.get("headRefOid") or "",
-        "additions": node.get("additions"),
-        "deletions": node.get("deletions"),
-        "runs": [
-            {"status": (c.get("status") or "").lower(), "conclusion": (c.get("conclusion") or "").lower() or None}
-            for c in contexts
-            if c.get("__typename") == "CheckRun"
-        ],
-    }
 
 
 def rest_pull(pull: dict) -> dict:

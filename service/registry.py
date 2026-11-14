@@ -1148,6 +1148,11 @@ class Registry:
             ).fetchone()
         return PullRequest(*row) if row else None
 
+    def linked_pulls(self, repository):
+        """The numbers of every PR in `repository` recorded for a task."""
+        with self.transaction() as db:
+            return [pull for (pull,) in db.execute("SELECT pull FROM pulls WHERE pull_repository = ?", (repository,))]
+
     def task(self, repository, pull):
         """The issue identity owning a PR in `repository`, or None."""
         with self.transaction() as db:

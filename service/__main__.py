@@ -126,9 +126,14 @@ class Daemon:
         self.list_index = ListIndex(settings.state_dir)
         self.list_index.start(
             {r: readers[r].request("GET", f"repos/{r}")["id"] for r in repositories},
-            rows={"runs": {target.fork for target in settings.targets}, "issues": set(issue_repositories)},
+            rows={
+                "runs": {target.fork for target in settings.targets},
+                "issues": set(issue_repositories),
+                "pulls": {target.upstream for target in settings.targets},
+            },
             reader=readers.__getitem__,
             sponsored=self.registry.sponsor_issues,
+            linked=self.registry.linked_pulls,
         )
         self.registry.changed = lambda repository, issue: self.list_index.signal(repository, "sponsorships", issue)
         lists_token = read_token(settings.lists_token_path) if settings.lists_token_path else None

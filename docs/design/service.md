@@ -125,7 +125,8 @@ removed; failure must propagate before that coverage is recorded.
 directory: one revision per repository and list kind (`issues`, `sponsorships`, `pulls`,
 `runs`), which the backoffice uses to decide when a saved list must be read again. A kind
 is in one of two modes. In `signals` the index holds nothing else. In `rows` it holds the
-list itself: each fork's executor runs and each issue repository's issues. It holds no scheduling state, and deleting
+list itself: each fork's executor runs, each issue repository's issues and each upstream's
+task pull requests. It holds no scheduling state, and deleting
 it costs one re-read or rebuild per list.
 
 - **Deliveries:** after a delivery passes the installation check, and before the task
@@ -166,10 +167,26 @@ it costs one re-read or rebuild per list.
   names its issue: one without a row owes a read, and at every start and after a queue
   overflow the list's revision is raised and the registry's sponsored issues are
   compared with the rows.
+- **Rows (pull requests):** a `pull_request` delivery whose head ref is a task branch
+  (`concurro/issue-<number>-<digest>`, whatever repository the head is in) is reduced to
+  the listed fields, line counts included, and stored under the same ordering rule. Pull
+  requests are never taken away by a delivery; closed and merged ones stay listed. Check
+  runs are read, never assembled from deliveries: a new row, a new head, and a
+  `check_run` or `check_suite` delivery whose `head_sha` is a held row's head each owe a
+  read of that pull request with its status rollup, which after a rerun holds only the
+  latest attempt's check runs. A check for a commit that is no row's head gets a receipt
+  and nothing else. The check runs are kept with the commit they were read for and
+  listed only while that is still the row's head, so a push shows no checks until the
+  new head's are read. A read that itself gives a row its head owes one more: a check
+  delivered meanwhile matched no held head. A GraphQL answer carrying errors is refused
+  whole; a pull request is gone only when every error says it was not found.
 - **Reads from GitHub** run on a second thread, one request at a time: rebuilds (the
   fork's 50 most recent executor runs, plus attempt 1 of each rerun; every enrolled issue
   to the last page, plus by number the sponsored ones and every held one the listing
-  did not return) and owed item reads.
+  did not return; the task pull requests among the upstream's 100 most recently updated
+  in one GraphQL request, plus by number every held one it did not return and every one
+  `Registry.link` recorded for a task) and owed item reads. A pull request rebuild has no
+  REST fallback: without line counts and rollups it fails.
   A result is applied under the same ordering rule and wins a tie only if nothing changed
   the row since the read began. A rebuild replaces the displayed membership except for
   runs created while it ran, and its start becomes the baseline. Owed reads are stored,

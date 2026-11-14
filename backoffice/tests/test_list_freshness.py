@@ -61,7 +61,7 @@ class Index:
         self.listed += 1
         if self.down:
             raise IndexUnavailable("down")
-        return self.rows
+        return self.rows[kind] if isinstance(self.rows, dict) else self.rows
 
     def list_refresh(self, repository):
         if self.down:
@@ -458,6 +458,51 @@ class ListingTests(Cached):
         self.assertEqual(self.tasks().overview()["issues"], [])
         self.access.get.assert_not_called()
 
+    def test_pull_requests_the_service_holds_are_taken_from_it(self):
+        def held(number, issue, updated, open=True, draft=False, runs=()):
+            return {
+                "number": number,
+                "title": f"PR {number}",
+                "open": open,
+                "draft": draft,
+                "ref": f"concurro/issue-{issue}-0123456789ab",
+                "sha": "a" * 40,
+                "additions": 12,
+                "deletions": 3,
+                "updated_at": updated,
+                "runs": [{"status": "completed", "conclusion": conclusion} for conclusion in runs],
+            }
+
+        self.index.modes["issues"] = self.index.modes["pulls"] = "rows"
+        self.index.rows = {
+            "issues": [self.held_issue(number, "concurro") for number in (7, 8, 9)],
+            # As the service lists them: most recently updated first.
+            "pulls": [
+                held(44, 7, "2026-11-14T12:00:00Z", open=False),
+                held(43, 8, "2026-11-14T11:00:00Z", open=False, runs=["failure"]),
+                held(42, 7, "2026-11-14T10:00:00Z", runs=["success"]),
+                held(41, 8, "2026-11-14T09:00:00Z", open=False),
+                held(40, 9, "2026-11-14T08:00:00Z", draft=True),
+            ],
+        }
+        view = self.tasks().overview()
+        found = {task["issue"]: task["pr"] for task in view["tasks"]}
+        self.assertEqual(
+            {issue: (pr["number"], pr["ready"], pr["ci"]) for issue, pr in found.items()},
+            {7: (42, True, "passing"), 8: (43, False, "failing"), 9: (40, False, "none")},
+            "an open one wins, then the most recently updated",
+        )
+        self.assertEqual((found[7]["additions"], found[7]["headSha"], view["cache"]["state"]), (12, "a" * 7, "current"))
+        self.access.pull_requests.assert_not_called()
+        self.access.task_issues.assert_not_called()
+        self.index.counters["pulls"] += 1
+        self.index.rows["pulls"][2]["runs"] = [{"status": "in_progress", "conclusion": None}]
+        self.tasks().overview()
+        self.settle()
+        tasks = self.tasks().overview()["tasks"]
+        self.assertEqual(next(task["pr"]["ci"] for task in tasks if task["issue"] == 7), "pending")
+        self.access.pull_requests.assert_not_called()
+
     def test_a_list_being_built_serves_the_copy_the_previous_release_saved(self):
         self.access.task_issues.return_value = [self.held_issue(7, "concurro") | {"body": "saved by phase 2"}]
         self.tasks().overview()
@@ -540,7 +585,7 @@ class ListingTests(Cached):
 
     def test_entries_the_backoffice_cannot_use_are_unavailable(self):
         self.tasks().overview()
-        good = self.index.list_revisions(["up/project"])["up/project"]["pulls"]
+        good = self.index.list_revisions(["up/project"])["up/project"]["sponsorships"]
         for entry in (
             {},
             {**good, "mode": "rows"},
@@ -552,7 +597,8 @@ class ListingTests(Cached):
         ):
             self.index.list_revisions = lambda repositories, entry=entry: {
                 "up/project": {
-                    kind: entry if kind == "pulls" else good for kind in ("issues", "sponsorships", "pulls", "runs")
+                    kind: entry if kind == "sponsorships" else good
+                    for kind in ("issues", "sponsorships", "pulls", "runs")
                 }
             }
             self.now += 86_400

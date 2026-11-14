@@ -7,7 +7,6 @@ the same audit identity and restore only the evidence needed by the selected dis
 import hashlib
 import json
 import logging
-import re
 import sqlite3
 import threading
 import time
@@ -20,7 +19,7 @@ from checkpoints import MARKER, CheckpointError, Checkpoints
 from github import STAGE_LABEL_PREFIX, NotFound
 from identities import Identities
 from report_store import Cache
-from service.github_reads import gone as gone_issue
+from service.github_reads import TASK_BRANCH, gone as gone_issue
 from sponsorship import own_consent, own_consent_present, selected_routes
 from storage_helpers import owned
 from vocab import Stage
@@ -43,8 +42,6 @@ STATE_ENTRIES = 256
 # Target configurations by fork, briefly.
 CONFIG_SECONDS = 120
 CONFIGS: dict[str, tuple[float, tuple[dict, str]]] = {}
-# The engine's task branches (`policy.py`): `concurro/issue-<number>-<digest>`.
-TASK_BRANCH = re.compile(r"concurro/issue-([1-9][0-9]*)-[0-9a-f]+")
 COMMANDS = ("funding", "sponsor", "withdraw", "start", "approve", "retry", "resume", "stop", "invalidate")
 STAGES = {s.value for s in Stage}
 PARKED = {"blocked", "stopped", "rejected", "escalated", "closed", "clarify"}
@@ -495,6 +492,7 @@ class Tasks:
                 lambda: self.access.pull_requests(repository),
                 # The REST fallback lists pull requests without their line counts or checks.
                 incomplete=lambda pulls: any(pull["runs"] is None for pull in pulls),
+                rows=lambda: self.lists.list_rows(repository, "pulls"),
             )
         except NotFound:
             return {}
