@@ -59,41 +59,21 @@ class IdentityTest(VaultFixture, unittest.TestCase):
         self.assertEqual(self.client.get("/health").json(), {"status": "ok"})
 
 
-class ValidationTest(VaultFixture, unittest.TestCase):
-    def test_provider_calls(self):
-        self.put("anthropic-api-key", ANTHROPIC)
-        self.put("openai-api-key", OPENAI)
-        anthropic, openai = [call for call in self.transport.calls if call[0] != vault.GITHUB_USER]
-        self.assertEqual(
-            anthropic,
-            (
-                "https://api.anthropic.com/v1/models?limit=1000",
-                {"x-api-key": ANTHROPIC, "anthropic-version": "2023-06-01"},
-            ),
-        )
-        self.assertEqual(openai, ("https://api.openai.com/v1/models", {"Authorization": f"Bearer {OPENAI}"}))
-
-    def test_rejected_secret_is_422_and_stores_nothing(self):
-        response = self.put("anthropic-api-key", "sk-ant-wrong")
-        self.assertEqual(response.status_code, 422)
-        self.assertEqual(self.rows(), [])
-        self.assertEqual(self.request("GET", "/credentials").json(), [])
-
-    def test_rejected_replacement_keeps_current_version(self):
-        self.put("anthropic-api-key", ANTHROPIC)
-        before = self.rows()
-        self.assertEqual(self.put("anthropic-api-key", "sk-ant-wrong").status_code, 422)
-        self.assertEqual(self.rows(), before)
+class SaveTest(VaultFixture, unittest.TestCase):
+    def test_saves_arbitrary_keys_without_contacting_provider(self):
+        """API key saves neither test authentication nor discover models."""
+        for route in ("anthropic-api-key", "openai-api-key"):
+            self.assertEqual(self.put(route, "unverified-token").status_code, 200)
+            reply = self.put(route, "replacement-token")
+            self.assertEqual(reply.status_code, 200)
+            self.assertEqual(reply.json()["version"], 2)
+            self.assertIsNone(reply.json()["validated"])
+        self.assertTrue(all(url == vault.GITHUB_USER for url, _ in self.transport.calls))
 
     def test_unsupported_characters_are_422_without_a_provider_call(self):
         for secret in ("", "   ", "sk ant", "sk-ant\r\nX-Injected: 1"):
             self.assertEqual(self.put("anthropic-api-key", secret).status_code, 422)
         self.assertEqual([c for c in self.transport.calls if c[0] != vault.GITHUB_USER], [])
-        self.assertEqual(self.rows(), [])
-
-    def test_provider_outage_is_502_and_stores_nothing(self):
-        self.transport.provider_status = 503
-        self.assertEqual(self.put("openai-api-key", OPENAI).status_code, 502)
         self.assertEqual(self.rows(), [])
 
     def test_unknown_route_is_404(self):

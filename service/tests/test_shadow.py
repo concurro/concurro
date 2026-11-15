@@ -528,14 +528,9 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
             with self.assertRaisesRegex(Transient, "^GitHub unavailable; retry later[.]$"):
                 client.read("101")
 
-    def test_selected_legacy_model_evidence_waits_instead_of_freezing_empty(self):
-        """A valid old vault row without model evidence is unknown at the initiating boundary."""
+    def test_saved_credential_without_model_evidence_initializes_funding(self):
+        """Stored credentials can fund configured models without a validation gate."""
         self.metadata[0]["models"] = None
-        state = self.advance()
-        self.assertNotIn("funding_initialization", state)
-        self.assertEqual(state["funding_initialization_pending"]["at"], AT)
-        self.assertEqual(state["sponsorship_status"], "pending")
-        self.metadata[0]["models"] = [self.config["models"]["codex"]]
         state = self.advance()
         self.assertEqual(state["sponsorships"]["openai"]["sponsor_id"], "101")
 

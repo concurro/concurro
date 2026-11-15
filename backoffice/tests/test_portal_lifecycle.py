@@ -12,11 +12,10 @@ from test_backoffice import USER, FakeOAuth, settings
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
 from vault_fixtures import ALICE, BOB, OPENAI, VaultFixture
 
-import vault  # noqa: E402
 from backoffice.app import CSRF_HEADER, SESSION_COOKIE, create_app  # noqa: E402
 from backoffice.auth import Sessions, User  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
-from test_subscription_validation import TOKENS, Probes
+from test_subscription_storage import TOKENS
 
 
 class PortalLifecycleTests(VaultFixture, unittest.TestCase):
@@ -62,7 +61,7 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
         client.cookies.set(SESSION_COOKIE, alice)
         before = self.store.events()
         self.assertEqual(
-            client.put(path, headers={CSRF_HEADER: "1"}, json={"secret": "wrong-candidate"}).status_code, 422
+            client.put(path, headers={CSRF_HEADER: "1"}, json={"secret": "invalid header value"}).status_code, 422
         )
         self.assertEqual(self.store.events(), before)
         self.assertEqual(
@@ -74,9 +73,8 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
                 client.put(
                     "/api/me/credentials/" + name, headers={CSRF_HEADER: "1"}, json={"secret": "synthetic-cli-token"}
                 ).status_code,
-                422,
+                422 if name == "chatgpt_subscription" else 200,
             )
-        self.transport.accepted.add(OPENAI + "replacement")
         replaced = client.put(path, headers={CSRF_HEADER: "1"}, json={"secret": OPENAI + "replacement"})
         self.assertEqual(replaced.json()["version"], 2)
         self.assertEqual(client.delete(path, headers={CSRF_HEADER: "1"}).json()["status"], "revoked")
@@ -88,12 +86,8 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
             self.assertNotIn(marker, json.dumps(listing))
 
     def test_both_subscription_forms_cross_real_bff_and_vault_with_two_owners(self):
-        """Model/account candidate fields and replacement/revoke remain owner-bound through both apps."""
-        probes = Probes()
-        candidate_vault = TestClient(
-            vault.create_app(self.store, self.identity, vault.Validator(self.transport, probe=probes))
-        )
-        client, alice, bob = self.browser(candidate_vault)
+        """Token/account candidate fields and replacement/revoke remain owner-bound through both apps."""
+        client, alice, bob = self.browser()
         routes = {"chatgpt_subscription": "chatgpt-subscription", "claude_subscription": "claude-subscription"}
         for ui, route in routes.items():
             for index, sid in enumerate((alice, bob)):
@@ -108,16 +102,10 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
                 result = client.put(path, headers={CSRF_HEADER: "1"}, json=body)
                 self.assertEqual(result.status_code, 200, result.text)
                 self.assertTrue(result.json()["registrationAvailable"])
-                self.assertEqual(result.json()["models"], ["model-a", "model-b"])
+                self.assertNotIn("models", result.json())
                 self.assertFalse(result.json()["expiryKnown"])
                 self.assertFalse(result.json()["accountVerified"])
                 self.assertNotIn(token, result.text)
-                before = self.store.events()
-                probes.mode[(token, "model-b")] = 503
-                failure = client.put(path, headers={CSRF_HEADER: "1"}, json=body)
-                self.assertEqual(failure.status_code, 502)
-                self.assertEqual(self.store.events(), before)
-                probes.mode.clear()
                 replacement = client.put(path, headers={CSRF_HEADER: "1"}, json=body)
                 self.assertEqual(replacement.json()["version"], 2)
                 current = self.store.listing(101 if index == 0 else 202)
@@ -126,19 +114,3 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
                 self.assertEqual(client.delete(path, headers={CSRF_HEADER: "1"}).json()["status"], "revoked")
         self.assertEqual({row["user_id"] for row in self.rows()}, {101, 202})
         self.assertNotIn(999, {row["user_id"] for row in self.rows()})
-
-    def test_candidate_timeout_exceeds_shared_total_model_deadline(self):
-        """Actual HTTPX candidate requests allow every distinct model's full shared deadline plus margin."""
-        from credential_routes import VALIDATION_SECONDS
-
-        seen = []
-
-        def record(request):
-            """Inspect effective transport timeout without contacting a provider or vault."""
-            seen.append(request.extensions["timeout"]["read"])
-            return httpx.Response(200, json={"route": "claude-subscription", "status": "valid"})
-
-        client = Vault("http://synthetic", httpx.Client(transport=httpx.MockTransport(record)))
-        for count in (1, 3, 10):
-            client.put(ALICE, "claude_subscription", "synthetic", ["model-" + str(i) for i in range(count)])
-            self.assertGreater(seen[-1], VALIDATION_SECONDS * count)

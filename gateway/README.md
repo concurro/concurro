@@ -236,6 +236,25 @@ release's instructions **before** the normal update. The updater neither modifie
 nor runs arbitrary migration hooks. Updating the installed deployment helpers is also an
 explicit installer operation, separate from pulling application images.
 
+### Save-only credential rollout
+
+The save-only release emits `stored` lifecycle events. Older service and Exchange consumers
+cannot advance past them, including to later revocations. Upgrade both consumers before
+allowing the new vault to accept saves; never leave an old consumer running against the new feed.
+Upgrade the vault before the backoffice API and frontend, whose saves no longer include models.
+
+For the combined updater, finish active work and stop the `backoffice` Compose service
+before running the update so credential writes cannot race the gateway replacement. The
+updater stops service dispatch and replaces the gateway stack (Exchange and vault), then
+starts the new service, backoffice API and frontend. Keep the backoffice stopped if an update
+fails before the new consumers are ready; correct the failure and rerun the same or a later
+release. Verify all running versions before reopening credential saves. Individual component
+updates must order Exchange and service first, vault second, backoffice API and frontend last.
+
+Preserve vault, registry and Exchange state and their event cursors. Recovery is roll-forward
+only: once `stored` events exist, every corrective consumer release must understand them.
+This change requires no new App grants, settings or database migration.
+
 ### Individual component deployments from a workstation
 
 The existing workstation helper remains available for a selected service or web release.
@@ -329,14 +348,14 @@ and publishes no port: other `edge` services, such as the backoffice API, reach 
 | Request | Result |
 | ---- | ---- |
 | `GET /credentials` | `[{route, status, fingerprint, version, updated}]`, latest version per route |
-| `PUT /credentials/{route}` `{"secret": "..."}` | Validates with the provider, stores a new version, returns its entry; 422 if rejected, 502 if the provider gives no verdict |
+| `PUT /credentials/{route}` `{"secret": "..."}` | Stores a new version without provider requests and returns its entry; 422 for malformed input |
 | `DELETE /credentials/{route}` | Marks it `revoked` and destroys its ciphertext; returns its entry |
 | `GET /health` | `{"status": "ok"}` |
 
 Routes are `anthropic-api-key`, `openai-api-key`, `chatgpt-subscription` and
-`claude-subscription`. Subscription PUTs also carry a `models` array; ChatGPT requires
-`account_id`. Each distinct selected model is probed with the supplied token before one
-atomic replacement. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
+`claude-subscription`. ChatGPT PUTs also require `account_id`. Saving requires no model selection;
+token and model-access failures are reported during execution. Each save atomically
+replaces the previous version. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
 `status` is `valid`, `invalid` or
 `revoked`; `fingerprint` is the secret's last 4 characters and the first 8 hex characters
 of its SHA-256. Secrets are never returned or logged. Each version is sealed with its own

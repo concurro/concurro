@@ -7,7 +7,7 @@ Real subscription/backend checks remain deferred; Phase 5a refresh is not implem
 ## Scheduling authority
 
 The service reads `GET /metadata/events?after=N` with its existing metadata principal on
-the public metadata listener. The feed contains only existing immutable lifecycle fields.
+the public metadata listener. The feed contains immutable lifecycle fields. New writes emit `stored`; historical `validated` events remain supported. Neither model coverage nor provider validation is required for recovery.
 GitHub owner tokens and the gateway bearer cannot use it; the metadata bearer still cannot
 resolve secrets. Exchange retains its independent private events/resolver principal.
 No new secret or enablement setting is introduced. The vault and service must both serve
@@ -20,16 +20,16 @@ do not disable the feed or App delivery scan; arbitrary failures remain failures
 not another lifecycle ledger. One transaction updates that evidence, matching queue receipts
 and cursor acknowledgment. A failure before commit leaves all three unapplied. Out-of-order
 or repeated sequences cannot replace newer evidence. Key rewrapping preserves the original
-validation receipt and does not count as another validation. The poll scans current task
+saved-version receipt and does not count as another save. The poll scans current task
 projections and latest-version metadata in the existing Registry transaction; this favors
 atomic receipts over a new scheduling index, with work scaling with those local records.
 
 Each checkpoint's recovery intent binds current provider/owner/route/grant/epoch requirements,
 failed versions and one pause identity. Registry projects its pending delivery alongside the
 existing sponsorship task document. Queueing during a live tick waits until that owner ends;
-validation arriving before the failure checkpoint therefore is not lost. Consuming a receipt
+a saved version arriving before the failure checkpoint therefore is not lost. Consuming a receipt
 is checkpointed. A known coverage refusal consumes only that receipt; transient I/O retains
-it and uses existing queue backoff. That service deadline survives new validation,
+it and uses existing queue backoff. That service deadline survives new saves,
 restart and an earlier inspection tick; consuming a work item cannot lose its future wake.
 Unrelated events cannot renew the same retry. An explicitly empty current-failure snapshot
 stays empty after writer recovery; only an absent legacy snapshot consults the old failure.
@@ -38,8 +38,8 @@ stays empty after writer recovery; only an absent legacy snapshot consults the o
 
 | Pause | Automatic condition |
 | ---- | ---- |
-| Trusted `auth` or `quota_exhausted` | A newer validated version for each affected current owner/route, plus usable evidence for every required route. A validation of the failed version cannot retry it. |
-| Precharge credential coverage | Recorded active consent and validation evidence for all required owner/routes; the tick checks exact models and current versions. Missing grants are never restored by token events. |
+| Trusted `auth` or `quota_exhausted` | A newer saved version for each affected current owner/route, plus usable evidence for every required route. A repeated event for the failed version cannot retry it. |
+| Precharge credential coverage | Recorded active consent and saved-version evidence for all required owner/routes; the tick checks stored routes and current versions. Missing grants are never restored by token events. |
 | Trusted `rate_limited` | A numeric retry hint already accepted by the gateway parser; persist the original not-before time. Same-version retry is allowed only after that time and full admission. |
 | Unknown, missing rate hint, stopped, human wait, budget block | No automatic recovery. Ordinary writer commands retain their existing behavior. |
 
@@ -72,13 +72,13 @@ organization-funded calls are labelled separately from prospective personal cons
 observations remain source-labelled supplementary evidence, with missing usage unknown.
 A consumed delivery remains visible as a prior check, not a scheduled retry; its status
 survives inspection until a new intent supersedes it. The live and mock portal use the same shapes and existing command/credential transport.
-Mock validation updates only matching current sponsors' coverage/scheduling display, never
+Mock saving updates only matching current sponsors' coverage/scheduling display, never
 spent budgets or simulated paid work.
 
 Registry schemas 2–7 migrate forward preserving journals, grants and queue deadlines.
 Previously acknowledged contributed `awaiting_credentials` tasks without a recovery receipt
 receive one owned inspection after upgrade. It reconstructs only from their checkpoint and
-current source/metadata; old same-version validation cannot authorize an auth retry. Stopped,
+current source/metadata; old same-version events cannot authorize an auth retry. Stopped,
 unknown/human and budget states receive no such bootstrap. Preserve the vault's event
 sequence, versioned state and Registry together when moving services; recovery is roll-forward
 only. Old admission bindings and historical artifacts are unchanged.

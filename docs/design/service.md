@@ -382,8 +382,8 @@ Configure provider defaults once; existing profile overrides take precedence:
 ```
 
 Routes resolve against the profile's actual provider. Before a new charge, personal funding
-requires confirmed consent, current upstream writer authority, a supported adapter and validated
-coverage for every selected model using that provider. Organization-funded providers require no
+requires confirmed consent, current upstream writer authority, a supported adapter and a stored
+credential for the selected route. Model access is checked during execution. Organization-funded providers require no
 personal credential coverage. Missing coverage pauses calls without payer fallback.
 
 Ordered commands work before enrollment and use the same durable checkpoint/Exchange transition
@@ -405,7 +405,7 @@ migration; no downgrade path is required. The optional `vault_metadata_url` and
 
 Every delivery-recovery timer tick runs current-policy observation and reads the vault's
 service-authenticated nonsecret
-`/metadata/events` feed. Registry schema 8 atomically persists its cursor, latest validation
+`/metadata/events` feed. Registry schema 8 atomically persists its cursor, latest saved-version evidence
 per owner/route and matching task queue receipts. The service has no gateway resolver bearer.
 A paused task records current provider grants, failed versions and its original retry deadline.
 Only eligible `awaiting_credentials` tasks are reconsidered. The owned tick processes writer

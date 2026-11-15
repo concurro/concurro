@@ -113,7 +113,8 @@ class Metadata:
                     or not str(row.get("user_id", "")).isdigit()
                     or row.get("route") not in sponsorship.ROUTES
                     or row.get("status") not in ("valid", "invalid", "revoked", "retired")
-                    or row.get("type") not in ("validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
+                    or row.get("type")
+                    not in ("stored", "validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
                 ):
                     raise ValueError()
             if cursor != max([after] + [row["sequence"] for row in rows]) or more and cursor == after:
@@ -501,15 +502,7 @@ class Shadow:
                         default=0,
                     )
                     if type(record.get("version")) is not int or record["version"] <= minimum:
-                        raise Transient(f"{detail}: validated credential version is not yet current")
-                if not isinstance(record.get("models"), list) or any(
-                    not isinstance(model, str) for model in record["models"]
-                ):
-                    raise Transient(f"{detail}: sponsorship model coverage unknown")
-                if profile.model not in record["models"]:
-                    raise CredentialsUnavailable(
-                        f"{detail}: provider credential does not cover selected model", requirement
-                    )
+                        raise Transient(f"{detail}: saved credential version is not yet current")
                 if record.get("expiry_known") and (
                     not isinstance(record.get("expires_at"), str)
                     or datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp()
@@ -969,10 +962,7 @@ class Shadow:
                 r["route"] for r in routes if r["provider"] and not earlier["slots"][r["provider"]].get("sponsor_id")
             }
             metadata = [record for record in metadata if record["route"] in selected]
-            if any(
-                record.get("status") == "unknown" or record.get("status") == "valid" and record.get("models") is None
-                for record in metadata
-            ):
+            if any(record.get("status") == "unknown" for record in metadata):
                 if not any(
                     f["command"] == "sponsor" or f["command"] == "funding" and f["funding"] == "contributed"
                     for f in projection["facts"]

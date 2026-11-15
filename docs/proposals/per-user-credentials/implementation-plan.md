@@ -15,7 +15,7 @@ remain authoritative unless a decision below explicitly calls out a change. The
 [review record](review.md) includes the original Claude review and the CLI-token
 follow-up, plus the review and repairs for provider-specific sponsorship and explicit-first initiation.
 
-The current [phase-4 runtime](phase-4.md) supplies native contributed injection, trusted request observations and credential pauses. [Phase 5](phase-5.md) adds both CLI-token forms, atomic selected-model validation and manual replacement. Earlier phase records describe historical boundaries.
+The current [phase-4 runtime](phase-4.md) supplies native contributed injection, trusted request observations and credential pauses. [Phase 5](phase-5.md) adds both CLI-token forms, atomic token/account storage and manual replacement. Earlier phase records describe historical boundaries.
 
 ## What this plan delivers
 
@@ -26,14 +26,14 @@ Canonical slots are `openai` and `anthropic`, with independent owners and epochs
 They use their own subscriptions through the same
 CLI-issued tokens and gateway routes as the current deployment. The user logs in locally
 with each CLI and pastes the resulting token into the GitHub-authenticated portal.
-**Token-only storage, validation, use and manual replacement are the complete initial
+**Token-only storage, use and manual replacement are the complete initial
 subscription deliverable.** Automatic refresh is optional, not a prerequisite.
 
 | Layer | PRs | Deliverable |
 | ---- | ---- | ---- |
 | Provider sponsorship and admission | 1-3 | Pre-enrollment issue intents, explicit-first initiation, independent slots/epochs, frozen payer/version, withdrawal and usage |
 | Sponsored inference | 0, 4 | Measured per-user injection into the existing ChatGPT and Claude subscription routes; API-key routes remain distinct |
-| Both subscription token forms | 5 | Local CLI instructions, pasted tokens, ChatGPT account metadata, validation, expiry/status and manual replacement |
+| Both subscription token forms | 5 | Local CLI instructions, pasted tokens, ChatGPT account metadata, expiry/status and manual replacement |
 | Optional refresh | 5a | Only for supplied refresh material with demonstrated refresh behavior for that CLI-issued grant |
 | Automatic task recovery | 6 | Credential-valid events wake eligible pauses; ordinary admission and budget rules still apply |
 
@@ -62,7 +62,8 @@ workflow-SHA-equals-engine-SHA. Recheck `gateway/exchange/exchange.py`, `engine/
 `engine/runner.py`, `service/worker.py`, Compose/Caddy and deployment instructions after
 that work lands.
 
-The epic's "Today" section predates several implemented pieces:
+The following table records the original pre-implementation baseline, not current behavior.
+For current operation, see [deployment readiness](deployment-readiness.md).
 
 | Existing capability | Verified source and reuse |
 | ---- | ---- |
@@ -99,7 +100,7 @@ a new OAuth client flow or read a local CLI credential file. Preserve existing C
 harness pins; the inspected local versions above are instruction evidence, not a change
 to deployed runner versions.
 
-### Registration and validation
+### Registration and storage
 
 Extend `backoffice/credentials.py:ROUTES` so `chatgpt_subscription` maps to
 `chatgpt-subscription` and `claude_subscription` to `claude-subscription`. Reuse the existing
@@ -110,7 +111,7 @@ a submitted user ID never chooses whose slot is written. Extend `SecretBody` and
 such as ChatGPT account ID; update `route()`'s "Subscription credentials aren't supported yet."
 note, `UNUSED`, and expiry/account fields in the same PR. Subscription writes remain write-only.
 
-The existing gateway configuration defines the exact route to validate and inject:
+The existing gateway configuration defines the exact route to store and inject:
 
 | Route | Token and metadata | Preserve from `gateway/agentgateway.yaml` |
 | ---- | ---- | ---- |
@@ -120,34 +121,19 @@ The existing gateway configuration defines the exact route to validate and injec
 ChatGPT account metadata is part of the versioned route record. Extract it from an
 authentically verified token claim if this CLI token format supports that; otherwise ask
 the user for the account ID alongside the token, as the operator configuration does today.
-Unsigned JWT decoding is only a hint. Confirm the token/account combination with a cheap
-model inference on the configured route, recording any authenticated account evidence
-returned by that route. The spike must establish how that backend validates the account
-header; a 2xx that ignores it must not be described as verified account identity. Never
-substitute the operator's account ID when metadata is missing or rejected.
+Unsigned JWT decoding is only a hint. Saving does not authenticate the account ID;
+never substitute the operator's account ID when metadata is missing.
 
-Validate both providers with the same configured-route adapter used for sponsored inference,
-including the selected model set, fixed request shape, headers and stream completion. Validate
-each distinct selected model once and publish the entire set atomically; a failed member
-preserves the previous complete version. Portal defaults reuse target route requirements
-and previous validated models, without a separate operator model catalog. The probe carries only
-the candidate token and account metadata and never traverses a gateway model entry that injects
-`$CHATGPT_ACCESS_TOKEN`, `$CHATGPT_ACCOUNT_ID`, `$CLAUDE_OAUTH_TOKEN` or `$OPENAI_API_KEY`; a 2xx
-obtained with operator credentials is not validation.
-Do not send a CLI token to an API-key `/models` validator or to any endpoint other than the
-configured subscription route. A successful cheap inference proves that token/version/model
-combination worked at validation time; it does not promise future quota. Record sanitized
-failure/status, validation time and model evidence. An invalid replacement leaves the
-previous usable version intact, matching today's `Validator`-before-`Store.put` order.
+Save API keys and subscription tokens without contacting providers, model discovery or
+preflight inference. Task configuration selects models; authentication and model-access
+errors are reported during execution. New writes emit `stored` events without validation
+timestamps or model coverage. Historical `validated` events remain supported for recovery.
+Saving a replacement retires the previous version, even when the new token does not work.
 
-The UI shows route, fingerprint, account label when available, validation time, expiry
-when known, and Replace/Revoke. Clear the token form after submission and never persist
-it in browser storage or return it from listing APIs. Known expiry prompts local CLI
-login and replacement; unknown expiry is labelled unknown, never assigned a guessed
-lifetime. Auth failure prompts replacement; quota exhaustion pauses required work with a retry
-action when capacity returns; a transient validation outage preserves the current version and asks the user to
-retry validation. Replacing a token does not reset call budgets, transfer sponsorship or
-invalidate approvals. Its interruption semantics are specified below.
+The UI shows route, fingerprint, supplied account hint, update time and known/unknown expiry,
+with Save and Revoke actions. Clear token/account inputs after submission and never persist
+them in browser storage or return them from listing APIs. Replacement does not reset call
+budgets, transfer sponsorship or invalidate approvals. See [phase 5](phase-5.md).
 
 ## Authority and persistent records
 
@@ -383,7 +369,7 @@ existing enrollment. Enroller/start actor identity alone is not enough: payment 
 one-time initialization decision and its route-availability/source evidence.
 
 The task UI lists each provider's owner, epoch, consent/pending/withdrawn state and missing
-route/model coverage. A credential pause names the affected provider/sponsor; another
+stored route availability. A credential pause names the affected provider/sponsor; another
 person cannot donate someone else's token or silently fill a missing slot.
 
 ## Coverage, admission and charge order
@@ -402,13 +388,11 @@ pauses before a charge. Recheck routing changes, all reviewer seats and
 repair roles, not unused catalog profiles. Never change model or effort to fit a
 credential.
 
-Coverage checks `(route, credential kind, selected model)` and status through a
-service-authenticated vault metadata endpoint (new: the vault accepts only user tokens
-today). `Validator.valid` establishes authentication only. Keep entitlement evidence separately: for
-API-key routes, the account's model list where the provider publishes one, otherwise a cheap
-inference; for subscription routes, always the configured-route inference probe. Validation probes
-are vault operations, disclosed as validation usage, never
-task attempts.
+Coverage checks stored status, route and credential kind through service-authenticated
+vault metadata. Saving never checks provider authentication or model access. Execution reports
+those failures. Saving a newer version can schedule one automatic retry per eligible paused
+task; a failed attempt still counts against `max_model_calls`. A failed version cannot keep
+retrying automatically. Provider billing is separate from this task-attempt count.
 
 Selection replaces the two `Agents.credential` call sites (`Controller.ask`,
 `Design.reserve`) with one shared helper; `Agents.prepare` then checks the selected
@@ -420,7 +404,7 @@ identity. For serial calls and `Design.reserve` alike:
    required by this admission. Do not reselect the payer of saved work.
 2. **Preflight.** For every required role, resolve its route/provider, that slot's active confirmed
 grant (explicit comment or recorded one-time start/label grant) and adopted source revision, owner's
-exact credential version/model coverage and writer
+exact stored credential version and writer
    permission by ID:
    [resolve the login from the ID](https://docs.github.com/en/rest/users/users#get-a-user-using-their-id),
    apply the collaborator rule used by `GitHub.permitted`, and require the response's
@@ -557,7 +541,7 @@ or unsigned-token expiry is a hint, not validated metadata. Otherwise expiry is 
 When a token is known expired with no usable refresh path, or the configured route
 terminally rejects its authentication, mark it unusable and notify the sponsor to log in locally and
 replace it. Unknown expiry does
-not make a successfully validated token unusable.
+not make a stored token unusable.
 
 Refresh is a later optional adapter only when the user supplies usable refresh material
 and the existing CLI-issued route's refresh behavior has been demonstrated. An opaque
@@ -581,7 +565,7 @@ Refresh never silently creates another account, version, budget or paid retry.
 | Token refresh | Same version, new token revision | Continues |
 | User pastes a replacement key/token (same or another provider account) | New version; old version retired and its ciphertext destroyed, as `Store.put` does today | Sessions on the old version are retired; the portal warns that unfinished work may be lost |
 | User revokes, or the stored version is definitively unusable (known expiry with no usable refresh path, or trusted terminal `auth` evidence) | Status change and vault event committed together, then ciphertext removed | Sessions on that version are retired |
-| Rejected replacement candidate or transient validation outage | Existing version unchanged; candidate is discarded | Existing sessions unaffected |
+| Malformed replacement input | Existing version unchanged; candidate is discarded | Existing sessions unaffected |
 | Runtime quota exhaustion or rate limit | Preserve stored ciphertext; record the trusted category and retry information | Follow the pause/backoff rules below; do not require a new token merely to clear temporary quota exhaustion |
 | Sponsor loses write permission | Stored tokens unchanged; task/user authority revocation and monotonic clearing of their owned slots | All that user's old/current provider admissions on this task retire; another user's slots/work and other tasks/repositories are unaffected |
 | Provider-slot takeover | Unchanged; only this provider's epoch advances | Old admitted work finishes; other providers untouched |
@@ -621,7 +605,7 @@ current status.
 
 | Category | Required-role behavior |
 | ---- | ---- |
-| Trusted `auth` / `quota_exhausted` | Pause in a new `awaiting_credentials` stage added to `SUSPENDED_STAGES`, reusing `Controller.suspend` and `CommandHandler.retry`; record the failed admission, route and model; notify the sponsor once per pause/version. Phase 6 retries only after a newer validated version and current admission checks. |
+| Trusted `auth` / `quota_exhausted` | Pause in a new `awaiting_credentials` stage added to `SUSPENDED_STAGES`, reusing `Controller.suspend` and `CommandHandler.retry`; record the failed admission, route and model; notify the sponsor once per pause/version. Phase 6 retries only after a newer saved version and current admission checks. |
 | `rate_limited` with bounded retry-after | Phase 6 schedules a fresh charged attempt after the recorded hint and normal admission. |
 | Gateway `budget_denied` | `budget_exhausted`; only a writer retry opens the normal new charged session. A valid credential never auto-resumes this. |
 | `unknown`, ambiguous stream or unattributed failure | Existing uncertainty/session handling; no raw provider text. |
@@ -686,10 +670,10 @@ optional PR 5a does not hold it up.
 | ---- | ---- | ---- |
 | 0: empirical selection | `gateway/tests/` spike, this directory's mechanism/evidence note, pinned gateway/CLI config | The isolation/streaming/account-transfer experiments above; failures retained and a mechanism chosen. |
 | 1: issue intents and initiation in shadow | `service/ingress.py`, `registry.py`, `observations.py`, `reconciler.py`, `webhook_recovery.py`, `worker.py`; controller `step`/`initialize`, commands/delegation; `service/actions.py`; backoffice issue views/transport; trusted route/provider catalog and profile-to-route setting | Pre-label explicit sponsor wins delayed/out-of-order hooks; latest source claim/ties deterministic; provisional→confirmed badges without checkpoint; edits/deletions/withdraw tombstones; source permission/signature checks; initiator fills initially uncovered routes once; pre-enrollment withdrawal blocks only that actor, not another starter; no charge on incomplete history; legacy enrollment and receipts survive. |
-| 2: vault lifecycle | `gateway/vault/vault.py` plus storage modules as needed: both subscription route record schemas, token/account metadata, known/unknown expiry, status/event log, service metadata API (prerequisite of PR 1), resolver listener, migrations; `gateway/compose.yaml`; `backoffice/auth.py`, `app.py`. Subscription `ROUTES` entries keep `None` and user PUTs keep today's 404 until PR 5 supplies the configured-route validator; the API-key `/models` `Validator` never accepts a CLI token. | Two-user isolation; invalid replacement preserves the prior token; successful replacement retires its version; AAD/wrapping-key rotation; redaction; event replay; metadata endpoint never returns secrets. |
+| 2: vault lifecycle | `gateway/vault/vault.py` plus storage modules as needed: both subscription route record schemas, token/account metadata, known/unknown expiry, status/event log, service metadata API (prerequisite of PR 1), resolver listener, migrations; `gateway/compose.yaml`; `backoffice/auth.py`, `app.py`. All four supported routes save without provider validation. | Two-user isolation; malformed input preserves the prior token; successful replacement retires its version; AAD/wrapping-key rotation; redaction; event replay; metadata endpoint never returns secrets. |
 | 3: provider admission and fences | `engine/agents.py`, `review_batch.py`, `relay.py`; Exchange provider fences/cutoffs; controller transition/grant publication; `Worker.consumed`; diagnostics | Source revision races initialization; post-label removal cannot widen initiator fill; late prior claim never rebinds charged work or defeats later withdrawal; UUID/digest/lost-reply replay; independent slot epochs; concurrent same/different-provider changes; withdrawal/ABA/crash cases; old caller epochs only; late pre-boundary initiator withdrawal; org-era starter grants never become payers at cutover, explicit grants do; pre-enrollment self-withdraw after writer loss and without prior grant; adoption epochs; permission-loss isolation; key/poll/revoke races. |
 | 4: sponsored inference | Gateway config/resolver/private network/`Gateway.create`; both subscription and separate API backends; consume PR 1 route/provider catalog; `vocab.py`, aggregate coverage/pause rendering | Alice/OpenAI + Bob/Anthropic on one task; missing required grants and initial-batch coverage cause zero new charges; optional unassigned sponsor falls back; routing to new provider pauses; spoof resistance/no org fallback; token/account/beta injection, redaction and trusted failures unchanged; mixed-provider pause drains unaffected admitted reviewers without new charges, while task-authority loss still cancels all. |
-| 5: both subscription token forms | Existing BFF/vault PUT schemas and route mappings; portal local-CLI instructions, token/account fields, validation/status/expiry and Replace/Revoke; matching frontend work in its own repo | Authorized local CLI login and token paste for each provider; selected-model probe through current configured route; rejected/missing ChatGPT account metadata; known/unknown expiry; token-only expiry and auth rejection during a running turn; pause→manual replacement→charged retry→retained resume→takeover→revoke. Two accounts per provider; invalid replacement keeps old token; no custom OAuth helper/edge import. Fake tests plus separately authorized real acceptance. |
+| 5: both subscription token forms | Existing BFF/vault PUT schemas and route mappings; portal local-CLI instructions, token/account fields, status/expiry and Replace/Revoke; matching frontend work in its own repo | Authorized local CLI login and token paste for each provider; save without model selection or provider calls; rejected/missing ChatGPT account metadata; known/unknown expiry; token-only expiry and auth rejection during a running turn; pause→manual replacement→charged retry→retained resume→takeover→revoke. Two accounts per provider; malformed input keeps the old token; an unusable saved replacement retires it; no custom OAuth helper/edge import. Fake tests plus separately authorized real acceptance. |
 | 5a: optional refresh | Only demonstrated CLI-grant adapter, supplied refresh material, vault lease/CAS and any supported schedule/revoke job | Single-flight, crash at each step, expired in-flight lease, refresh versus revoke, token expiry during a long turn and unsupported refresh falling back to manual replacement. No inferred SIWC metadata or automatic paid retry. |
 | 6: recovery and provider-slot UI | Vault-event scheduling, `service/registry.py`, coverage/usage UI and docs | Valid-credential events never restore withdrawn consent; unrelated provider changes preserve sessions/transcripts; retries use recorded current slot consent and spend remains; budget never auto-resumes; duplicate events preserve backoff. |
 
@@ -764,8 +748,7 @@ no live login, provider spend, permission change, task retry or deployment.
 - **CLI token instructions:** document the existing local Codex token-retrieval procedure
   without inventing an export flag; pinned help establishes device login, not token export.
   The portal uses the approved existing local retrieval procedure; Concurro reads no CLI cache.
-- **Route/account validation:** prove both CLI-token model probes against current backends
-  and how ChatGPT authenticates the supplied account header. Record known token expiry
+- **Runtime account semantics:** verify how ChatGPT authenticates the supplied account header. Record known token expiry
   when trustworthy and display unknown otherwise. Phase 5 proves isolated fake-provider
   journeys only; real backend/account-header/transfer acceptance remains pending by user scope.
 - **Optional refresh/revoke:** discover only the supplied CLI grant's usable material and

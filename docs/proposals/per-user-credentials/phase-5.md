@@ -17,38 +17,28 @@ pins Codex 0.163.0 and Claude 2.1.301. See the official [Codex authentication gu
 and [Claude authentication guidance](https://code.claude.com/docs/en/authentication).
 No custom OAuth client, import helper, password, refresh token or CLI credential file is used.
 
-`PUT /api/me/credentials/{route}` accepts `secret`, subscription `models` and, for
-`chatgpt_subscription`, `account_id`. The vault independently authenticates the stable GitHub
-owner. Default models come from existing target credential requirements plus prior validated
-coverage, with owner edits allowed. One distinct-model probe per candidate uses provider
-capacity and is disclosed before submit; these are not task attempts. There is no second
-operator-maintained model catalog.
+`PUT /api/me/credentials/{route}` accepts `secret` and, for `chatgpt_subscription`,
+`account_id`. The vault authenticates the GitHub owner and stores the candidate without
+provider requests or model selection. The UI says Save and shows the update time. Task
+configuration selects the model; authentication and model-access errors are handled during
+execution. Saving a replacement retires the previous version even if the new token does not
+work. Empty or header-unsafe input is rejected locally without echoing secrets.
 
-Both fixed upstream routes, response parser and probe construction share
-`gateway/provider_protocol.py` and the trusted route catalog. Validation uses only the
-candidate token/account, no operator secret or API-key model-list endpoint. Minimal streaming
-Responses/Messages probes must finish successfully for every selected model before a version
-is published. Redirects are refused. Candidate rejection returns a fixed 422; transient,
-malformed or incomplete validation returns a fixed 502. Neither validation path changes
-the prior version. A shared ten-second per-model deadline interrupts connected header/body
-reads, including partial lines. System DNS, multi-address TCP connect and TLS handshake
-may outlive that interval before the socket is captured. Deadline checks prevent sending
-a late provider request/token or committing its candidate after connection returns; those
-uninterruptible connection operations may retain a worker longer than the BFF timeout.
-The BFF derives its larger timeout from the same constant. Indeterminate save outcomes
-refresh status and remain labelled unknown rather than promising the old version survived.
-Successful replacement stores only the models actually probed.
+New credentials emit `stored` events and have no validation timestamp or model coverage.
+Historical fields/events remain readable. The service and Exchange accept both event types;
+model coverage is no longer an admission or automatic-recovery requirement. The existing
+owner/route revision fence still prevents a concurrent stale write from undoing a replacement
+or revocation. Save outcomes lost in transit remain unknown until refreshed.
 
 ChatGPT account-header material is encrypted with the exact token/version. Public owner
-metadata exposes only an opaque supplied-account hint. Successful inference does not prove
-the backend authenticated that header; `accountVerified` remains false. No unsigned JWT
+metadata exposes only an opaque supplied-account hint. Saving does not authenticate that header; `accountVerified` remains false. No unsigned JWT
 claims, guessed lifetimes or unrelated OAuth scopes are accepted as evidence. Pasted-token
 expiry remains unknown. Existing trusted exact-version expiry, when available independently,
 continues to deny resolution and retire that version.
 
 ## Mutation and runtime boundaries
 
-Vault schema 3 adds only `credential_fences(user_id, route, revision)`. Before probing, PUT
+Vault schema 3 adds only `credential_fences(user_id, route, revision)`. Before saving, PUT
 captures this private revision. The replacement transaction checks it, then atomically
 advances revision/version, destroys old material and emits existing lifecycle events.
 Every DELETE advances the fence, including an empty or already-revoked slot, so a candidate
@@ -71,8 +61,8 @@ keeps its frozen identity. Optional refresh and automatic recovery remain phases
 
 ## Verification and operation
 
-Isolated tests cover both providers/two accounts, model-set atomicity, invalid/transient
-replacement, overlapping candidates, revoke during validation including empty slots, forward
+Isolated tests cover both providers/two accounts, saves without provider calls or model selection,
+atomic replacement, stale writes, revoke during saving including empty slots, forward
 migration, private-principal isolation and redaction. The real Controller/Registry/Exchange
 journey tests running-turn trusted expiry, one charged failure, no replacement auto-wake,
 explicit writer retry/new version and preserved grants. The opt-in `phase5_spike.py` runs the
@@ -80,16 +70,15 @@ actual pinned gateway and native CLIs against fake providers, with actual BFF/pu
 vault storage, replacement, retained resume, graceful account transfer and isolated revocation.
 Its manually admitted native turns do not independently prove Controller budget accounting.
 
-Real subscription validation, authenticated account-header semantics, token expiry and
+Live subscription execution, authenticated account-header semantics, token expiry and
 cross-account transcript portability remain **pending** by the user's live-account deferral.
 Fake-provider protocol success is not provider approval or evidence of those live capabilities.
-The probe bodies/header combination are implemented on the configured routes but must still
-be checked against dedicated real accounts before claiming that acceptance.
+Provider-specific inference behavior is verified separately from credential storage.
 
-Candidate HTTPS transport is direct and does not use proxy environment variables;
-an egress-proxied deployment is unvalidated. Deploy coordinated vault and Exchange images
-containing the shared protocol/catalog, with
-the existing private-listener configuration. No new secret or model-catalog configuration is
+Credential saving has no provider transport; the vault image no longer contains the inference
+protocol/catalog. Follow the [save-only rollout order](../../../gateway/README.md#save-only-credential-rollout):
+upgrade service and Exchange consumers before permitting new vault writes, then update the
+backoffice API and frontend. Retain the existing private-listener configuration. No new secret or model-catalog configuration is
 needed. Back up state consistently with WAL and retain wrapping keys before the forward
 migration. Recovery is roll-forward only; preserve revisions, versions and retirement events.
 No deployment, provider login, real provider call or live task retry was performed here.

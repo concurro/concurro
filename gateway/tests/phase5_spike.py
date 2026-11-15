@@ -6,7 +6,6 @@ import os
 import sys
 import time
 import unittest
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -70,23 +69,9 @@ class RuntimeTests(InferenceTests):
         super().setUp()
         self.store = vault.Store(self.root / "vault.db", vault.Envelope(os.urandom(32)))
         self.context.callback(self.store.close)
-        self.validation_calls = []
-
-        @contextmanager
-        def probe(url, headers, body):
-            """Change only the fixed upstream origin to this test's existing local provider."""
-            route = next(route for route in UI_ROUTES if url.startswith(vault.PROTOCOL["UPSTREAMS"][route] + "/"))
-            suffix = url.removeprefix(vault.PROTOCOL["UPSTREAMS"][route])
-            self.validation_calls.append(
-                {"route": route, "model": body["model"], "account_supplied": "ChatGPT-Account-Id" in headers}
-            )
-            with vault.http_probe(self.exchange.inference.upstreams[route] + suffix, headers, body) as result:
-                yield result
-
         public = vault.create_app(
             self.store,
             vault.Identity(FakeTransport()),
-            vault.Validator(FakeTransport(), probe=probe),
             METADATA,
             (GATEWAY,),
         )
@@ -118,15 +103,14 @@ class RuntimeTests(InferenceTests):
         self.browser.cookies.set(SESSION_COOKIE, self.cookies[owner])
 
     def register(self, route, owner, revision=1, mode="ok"):
-        """Paste a synthetic CLI candidate through the actual BFF, validation and encrypted vault."""
+        """Paste a synthetic CLI candidate through the actual BFF and encrypted vault."""
         secret = "SYNTHETIC_SUBSCRIPTION_" + route + "_" + owner + "_" + str(revision)
         self.vault.material["scan-candidate-" + secret] = {"secret": secret}
         account = "synthetic-account-" + owner if route == "chatgpt-subscription" else None
         alias = "chatgpt" if account else "claude"
         self.state.credentials[secret] = {"route": alias, "account": account}
         self.state.pending[secret] = {"token": secret, "account": account, "route": alias, "mode": mode}
-        model = "gpt-test" if account else "claude-test"
-        body = {"secret": secret, "models": [model, model + "-other", model]}
+        body = {"secret": secret}
         if account:
             body["account_id"] = account
         self.owner(owner)
@@ -134,7 +118,7 @@ class RuntimeTests(InferenceTests):
         self.assertEqual(reply.status_code, 200, reply.text)
         self.assertFalse(reply.json()["expiryKnown"])
         self.assertFalse(reply.json()["accountVerified"])
-        self.assertEqual(reply.json()["models"], [model, model + "-other"])
+        self.assertIsNone(reply.json()["models"])
         self.candidates[route, owner] = self.store.listing(int(owner))[-1]
         self.tokens[route, owner] = secret
         return reply.json()
@@ -321,7 +305,7 @@ class RuntimeTests(InferenceTests):
             {"chatgpt_account_id": 17},
             {"chatgpt_account_id": "bad\r\nheader"},
         ):
-            self.store.put(vault.User(101, "alice"), route, self.tokens[route, "101"], ["gpt-test"], account=account)
+            self.store.put(vault.User(101, "alice"), route, self.tokens[route, "101"], account=account)
             self.exchange.consume_events()
             grant = self.admit(route, "101")
             before = len(self.state.calls)
@@ -350,7 +334,7 @@ class RuntimeTests(InferenceTests):
         if hasattr(self, "journey"):
             (self.root / "owner-journey.json").write_text(
                 json.dumps(
-                    {"steps": self.journey, "validation_calls": self.validation_calls, "events": self.store.events()},
+                    {"steps": self.journey, "events": self.store.events()},
                     indent=2,
                 )
             )

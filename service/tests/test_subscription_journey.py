@@ -23,13 +23,12 @@ from exchange_fixtures import BINDING, EXPECTED
 from fixtures import KEY
 from vault_fixtures import ALICE, BOB, FakeTransport
 
-import sponsorship
 import vault
 from agents import Agents, RunnerExecutor
 from exchange import Refused
 from policy import ProviderFailure
 from test_shadow import comment
-from test_subscription_validation import TOKENS, Probes
+from test_subscription_storage import TOKENS
 
 
 class IdentityTransport(FakeTransport):
@@ -58,12 +57,7 @@ class JourneyTests(admission_fixture.AdmissionTests):
         )
         self.addCleanup(self.credential_store.close)
         transport = IdentityTransport()
-        self.probes = Probes()
-        self.owner_api = TestClient(
-            vault.create_app(
-                self.credential_store, vault.Identity(transport), vault.Validator(transport, probe=self.probes)
-            )
-        )
+        self.owner_api = TestClient(vault.create_app(self.credential_store, vault.Identity(transport)))
         self.addCleanup(self.owner_api.close)
         for route in self.config["credential_routes"].values():
             for token in (ALICE, BOB):
@@ -71,9 +65,8 @@ class JourneyTests(admission_fixture.AdmissionTests):
         self.service()
 
     def register(self, route, token=ALICE):
-        """Validate the selected role model union as one real owner replacement operation."""
-        models = sorted({r["model"] for r in sponsorship.selected_routes(self.config) if r["route"] == route})
-        body = {"secret": TOKENS[route][int(token == BOB)], "models": models}
+        """Save the token as one real owner replacement without provider preflight."""
+        body = {"secret": TOKENS[route][int(token == BOB)]}
         if route == "chatgpt-subscription":
             body["account_id"] = "account-bob" if token == BOB else "account-alice"
         result = self.owner_api.put("/credentials/" + route, headers={"Authorization": "Bearer " + token}, json=body)

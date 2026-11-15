@@ -1053,7 +1053,7 @@ class AdmissionTests(ShadowTests):
         """Unknown old availability remains unknown while a new exact explicit grant progresses."""
         for record in self.metadata:
             if record["user_id"] == "101":
-                record["models"] = None
+                record["status"] = "unknown"
         state = self.advance()
         boundary = deepcopy(state["funding_initialization_pending"])
         self.fake.comments.append(comment(20, "/concurro sponsor openai", "alice", "2026-11-12T10:01:00Z"))

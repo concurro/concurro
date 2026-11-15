@@ -82,7 +82,7 @@ The service and vault must both provide the metadata-feed contract; no new secre
 or resolver privilege is introduced. Registry schema 8 upgrades forward, retaining prior state.
 Recovery is roll-forward only.
 
-Legacy snapshot-only credentials lack a validation receipt and cannot establish automatic
+Historical review note (superseded by save-only credentials): legacy snapshot-only credentials lacked a validation receipt and could not establish automatic
 readiness until re-registration. The last check status may remain visible next to a newly
 scheduled receipt. Dedicated new cases do not exercise every authority-invalidating/replan
 branch or review-peer uncertainty path; those retain existing fail-closed/accounting behavior

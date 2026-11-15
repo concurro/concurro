@@ -1,4 +1,4 @@
-"""An isolated vault with fake GitHub and provider endpoints."""
+"""An isolated vault with fake GitHub identity and no provider transport."""
 
 import json
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vault"))
-from vault import GITHUB_USER, ROUTES, Envelope, Identity, Store, Validator, create_app
+from vault import GITHUB_USER, Envelope, Identity, Store, create_app
 
 ALICE, BOB = "ghu_alice-token", "ghu_bob-token"
 USERS = {ALICE: {"id": 101, "login": "alice"}, BOB: {"id": 202, "login": "bob"}}
@@ -18,22 +18,17 @@ OPENAI = "sk-proj-validsecretBBBB"
 
 
 class FakeTransport:
-    """GitHub's /user and the providers' model listings; secrets in `accepted` validate."""
+    """Serve synthetic GitHub identities and reject unexpected network calls."""
 
     def __init__(self):
         self.calls: list[tuple[str, dict[str, str]]] = []
-        self.accepted = {ANTHROPIC, OPENAI, ANTHROPIC + "2"}
-        self.provider_status: int | None = None
 
     def __call__(self, url, headers):
         self.calls.append((url, dict(headers)))
         if url == GITHUB_USER:
             user = USERS.get(headers["Authorization"].removeprefix("Bearer "))
             return (200, json.dumps(user).encode()) if user else (401, b'{"message": "Bad credentials"}')
-        if self.provider_status is not None:
-            return self.provider_status, b""
-        secret = headers.get("x-api-key") or headers["Authorization"].removeprefix("Bearer ")
-        return (200, b'{"data": [], "has_more": false}') if secret in self.accepted else (401, b"{}")
+        raise AssertionError("unexpected provider request")
 
     def github_calls(self):
         return [call for call in self.calls if call[0] == GITHUB_USER]
@@ -50,7 +45,7 @@ class VaultFixture:
         self.store = Store(self.directory / "vault.db", self.envelope)
         self.addCleanup(self.store.close)
         self.identity = Identity(self.transport, clock=lambda: self.now)
-        self.client = TestClient(create_app(self.store, self.identity, Validator(self.transport, ROUTES)))
+        self.client = TestClient(create_app(self.store, self.identity))
 
     def request(self, method, path, token=ALICE, **kwargs):
         return self.client.request(method, path, headers={"Authorization": f"Bearer {token}"}, **kwargs)

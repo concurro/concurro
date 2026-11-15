@@ -176,12 +176,7 @@ def initialize(projection, boundary, routes, metadata):
     for provider in PROVIDERS:
         matching = [r for r in routes if r["provider"] == provider]
         available = [
-            r
-            for r in matching
-            if any(
-                m.get("route") == r["route"] and m.get("status") == "valid" and r["model"] in (m.get("models") or [])
-                for m in metadata
-            )
+            r for r in matching if any(m.get("route") == r["route"] and m.get("status") == "valid" for m in metadata)
         ]
         if not slots[provider].get("sponsor_id") and actor not in initial["tombstones"][provider] and available:
             value = {
@@ -208,15 +203,7 @@ def initialize(projection, boundary, routes, metadata):
         "routes": deepcopy(routes),
         "available": evidence,
         "metadata": [
-            {
-                **deepcopy(record),
-                "models": sorted(
-                    set(record.get("models") or [])
-                    & {item["model"] for item in evidence if item["route"] == record["route"]}
-                ),
-            }
-            for record in metadata
-            if record["route"] in {item["route"] for item in evidence}
+            deepcopy(record) for record in metadata if record["route"] in {item["route"] for item in evidence}
         ],
         "applied": [f["grant_id"] for f in before],
         "source_funding_mode": boundary.get("source_policy", {}).get("funding_mode", "unknown"),
@@ -258,10 +245,8 @@ def coverage(routes, slots, metadata):
             status = "missing"
         elif record.get("status") != "valid":
             status = "reconnect"
-        elif record.get("models") is None:
-            status = "unknown"
         else:
-            status = "available" if route["model"] in record["models"] else "missing_model"
+            status = "available"
         result[provider].append({**route, "status": status, "version": record.get("version") if record else None})
     return result
 

@@ -193,11 +193,10 @@ class FundingTests(StateFixture, HttpFixture, unittest.TestCase):
         self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 1)
 
     def test_metadata_version_model_owner_expiry_and_adapter_checks(self):
-        """A new turn cannot select latest credentials, absent models or the organization adapter."""
+        """A new turn cannot select latest credentials or the organization adapter."""
         for field, value in (
             ("version", 2),
             ("status", "revoked"),
-            ("models", None),
             ("user_id", "202"),
             ("kind", "subscription"),
             ("expires_at", "1970-01-01T00:00:01Z"),
@@ -216,6 +215,12 @@ class FundingTests(StateFixture, HttpFixture, unittest.TestCase):
         self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 0)
         with self.assertRaisesRegex(Refused, "adapter"):
             Gateway.create(self.gateway, "fake", "session", ["synthetic-model"], 1000, binding=funded_turn()[1])
+
+    def test_saved_credential_needs_no_model_coverage(self):
+        """A new admission reaches execution with unverified model access."""
+        self.vault.records[0]["models"] = None
+        self.send()
+        self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 1)
 
     def test_wire_rejects_changed_payer_attempt_and_transcript(self):
         """The admission cannot disagree with session binding or transport UUID."""

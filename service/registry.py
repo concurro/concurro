@@ -763,7 +763,8 @@ class Registry:
                 consumed = True
                 actor, route = str(event["user_id"]), event["route"]
                 value = dict(event)
-                if event["type"] == "validated":
+                # Retain the persisted field name for existing recovery receipts.
+                if event["type"] in ("stored", "validated"):
                     value["validation_sequence"] = event["sequence"]
                 elif event["type"] == "rewrapped" and event["status"] == "valid":
                     prior = db.execute(
@@ -771,7 +772,7 @@ class Registry:
                     ).fetchone()
                     old = json.loads(prior[0]) if prior else {}
                     if old.get("version") == event["version"] and old.get("status") == "valid":
-                        value["validation_sequence"] = old.get("validation_sequence")
+                        value["validation_sequence"] = old.get("validation_sequence") or old.get("sequence")
                 db.execute(
                     "INSERT INTO credential_versions VALUES(?,?,?,?) ON CONFLICT(user_id,route) "
                     "DO UPDATE SET sequence=excluded.sequence,document=excluded.document "

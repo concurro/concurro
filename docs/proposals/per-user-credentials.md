@@ -189,7 +189,7 @@ confirmed changes win. See the
   never part of preflight and never puts the task in `awaiting_credentials`; without
   coverage it takes its deterministic fallback.
 - **Preflight:** at `/concurro start`, and before each phase is admitted, aggregate each
-  required role's provider-slot consent and its owner's credential/model coverage.
+  required role's provider-slot consent and its owner's stored credential.
   Preflight all required owners before initial batch charging; missing coverage waits in
   `awaiting_credentials` with a notice that lists what's missing and links to the portal.
 - **Per-attempt checks:** a runner obtains its key once, at `claim` (`Exchange.key`), then
@@ -205,7 +205,7 @@ confirmed changes win. See the
     turn survives a graceful transfer.
   - **Queued work and key issuance** (`Exchange.next`, `Exchange.key`): check the
     **recorded credential version** of the attempt or session is still usable under the
-    [vault's](#5-vault) revocation and failed-validation rules. They don't
+    [vault's](#5-vault) revocation and version-retirement rules. They don't
     check whether its epoch is still the selected provider's current one. A graceful
     transfer never invalidates it; an explicit revocation does.
 
@@ -244,8 +244,8 @@ confirmed changes win. See the
   - revoke a credential;
   - view your recent usage.
 
-  Validate a new credential with a cheap model probe on its configured provider route
-  before accepting it. For subscriptions, the user logs into the CLI locally and pastes
+  Store new credentials without provider validation or model selection; report token and
+  model-access problems during execution. For subscriptions, the user logs into the CLI locally and pastes
   the issued token (plus ChatGPT account metadata when needed); Concurro does not run a
   custom provider OAuth flow. Show known expiry or unknown, with Replace/Revoke actions.
 - **Routes:** a small portal service behind the edge, for example `/concurro/portal/*`.
@@ -256,7 +256,7 @@ confirmed changes win. See the
 - **Encryption:** envelope encryption, with the master key in a separate owner-only file.
   Records are keyed by `(user id, route)` and versioned.
 - **Detection boundary:** a credential stops being usable when the portal records a
-  revocation or a failed validation, or when the sponsor fails the writer check
+  revocation or trusted expiry, or when the sponsor fails the writer check
   (`permitted`) at a new attempt's admission. Nothing outside those checks is detected;
   a permission change takes effect at the next admission, not instantly.
   - Only new-attempt admission checks GitHub permissions. A detected permission loss is
@@ -308,7 +308,7 @@ Requirements for any of them:
     automatically.
   - **`auth` or `quota_exhausted`** (the credential is unusable): the task waits in
     `awaiting_credentials` and the sponsor is notified. It resumes on `/concurro retry`,
-    or automatically after a newer validated version satisfies current admission checks; see
+    or automatically after a newer saved version satisfies current admission checks; see
     [phase 6](per-user-credentials/phase-6.md).
   - **`budget_denied`** (the gateway session's token budget is spent): this is not a
     credential problem, and a valid credential doesn't fix it. The task blocks as
@@ -344,7 +344,7 @@ Requirements for any of them:
    never rerun. Org-funded attempts always use org identities/accounting. Deliver the
    metadata prerequisite and complete command/Exchange transitions in the release order
    specified by the implementation plan before exposing these behaviors.
-2. **Portal and vault:** token storage, validation, revocation/status and provider-slot UI;
+2. **Portal and vault:** token storage, revocation/status and provider-slot UI;
    preserve the local CLI token-paste baseline in phase 5.
 3. **Enforcement:** provider-slot injection, aggregate coverage preflight and `awaiting_credentials`.
    Pause conservatively: a credential-category failure stops new admissions, lets valid
@@ -355,7 +355,7 @@ Requirements for any of them:
    writer-only.
 5. **Subscription credentials:** reuse local Codex device login and Claude CLI token setup;
    users paste their tokens into the authenticated portal for versioned vault storage,
-   route/model validation, expiry status and manual replacement. Preserve the existing
+   route storage, expiry status and manual replacement. Preserve the existing
    gateway backends and account/beta headers. Refresh is optional only for supplied usable
    refresh material with demonstrated CLI-grant behavior (see the
    [plan](per-user-credentials/implementation-plan.md#cli-tokens-and-existing-subscription-routes)).
@@ -397,4 +397,4 @@ Requirements for any of them:
 
 Phase 2 now implements [portal and vault lifecycle](per-user-credentials/phase-2.md).
 Phase 3 implements [frozen admission and provider fences](per-user-credentials/phase-3.md),
-including isolated contributed adapters. [Phase 4](per-user-credentials/phase-4.md) now implements configured production native injection, trusted observations and credential pauses; [Phase 5](per-user-credentials/phase-5.md) adds subscription token-paste validation and manual replacement.
+including isolated contributed adapters. [Phase 4](per-user-credentials/phase-4.md) now implements configured production native injection, trusted observations and credential pauses; [Phase 5](per-user-credentials/phase-5.md) adds subscription token-paste storage and manual replacement.

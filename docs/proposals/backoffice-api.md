@@ -57,7 +57,7 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 
 - **In:** GitHub sign-in; overview, target and task views from GitHub and issue artifacts;
   run diagnostics captured from deployment onwards; commands posted as the user's issue
-  comments; storing, validating and listing your own credentials.
+  comments; storing and listing your own credentials.
 - **Out:** sponsorship, live updates (the frontend polls), operator endpoints,
   preferences, and injecting stored credentials into the gateway (credentials proposal
   phase 0).
@@ -113,10 +113,9 @@ Token refresh (8 h expiry, rotating refresh token) stays server-side.
 
 | Method | Path | Purpose |
 | ---- | ---- | ---- |
-| GET | `/me/credentials/routes` | Supported routes (Anthropic API key, Claude subscription, OpenAI API key, ChatGPT subscription) and the model patterns each covers |
-| GET | `/me/credentials` | Per route: version, fingerprint, status (`valid`/`expired`/`exhausted`/`revoked`), validated/last-used times |
-| PUT | `/me/credentials/{route}` | Add or replace (write-only); validated with a cheap provider call before acceptance; returns version + fingerprint |
-| POST | `/me/credentials/{route}/validate` | Re-validate an existing credential |
+| GET | `/me/credentials/routes` | Supported routes (Anthropic API key, Claude subscription, OpenAI API key, ChatGPT subscription)  |
+| GET | `/me/credentials` | Per route: version, fingerprint, status (`valid`/`expired`/`exhausted`/`revoked`), updated/last-used times |
+| PUT | `/me/credentials/{route}` | Add or replace (write-only); stored without provider calls; returns version + fingerprint |
 | DELETE | `/me/credentials/{route}` | Revoke; retires sessions per the [vault rules](per-user-credentials.md#5-vault) |
 | GET | `/me/coverage?target=` | Which roles of each target's roster your credentials cover; what's missing |
 | GET | `/me/sponsorships` | Issue/task provider slots you sponsor, projection revision before adoption or independent epochs afterwards, source/provenance, provisional/confirmed state and missing coverage |

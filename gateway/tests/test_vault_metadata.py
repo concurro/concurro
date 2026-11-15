@@ -17,7 +17,7 @@ class MetadataTests(VaultFixture, unittest.TestCase):
     def setUp(self):
         """Enable a separate fake service bearer without changing normal user registration."""
         super().setUp()
-        self.client = TestClient(vault.create_app(self.store, self.identity, vault.Validator(self.transport), SERVICE))
+        self.client = TestClient(vault.create_app(self.store, self.identity, SERVICE))
 
     def test_only_service_bearer_can_read_other_user_metadata(self):
         """User tokens cannot select another owner; the service receives only the metadata allow-list."""
@@ -47,7 +47,7 @@ class MetadataTests(VaultFixture, unittest.TestCase):
                 "token_revision",
             },
         )
-        self.assertEqual(result["credentials"][0]["models"], [])
+        self.assertEqual(result["credentials"][0]["models"], None)
         for secret in (ALICE, BOB, OPENAI, ANTHROPIC, SERVICE, vault.fingerprint(OPENAI)):
             self.assertNotIn(secret, str(result))
 
@@ -63,8 +63,10 @@ class MetadataTests(VaultFixture, unittest.TestCase):
     def test_asof_replacement_preserves_original_route_evidence(self):
         """A later replacement cannot make credentials available retroactively at task initiation."""
         user = vault.User(101, "alice")
-        self.store.put(user, "openai-api-key", OPENAI, ["model-old"])
-        self.store.put(user, "openai-api-key", OPENAI + "2", ["model-new"])
+        self.store.put(user, "openai-api-key", OPENAI)
+        self.store.put(user, "openai-api-key", OPENAI + "2")
+        # Preserve actual pre-save-only metadata in the historical reader fixture.
+        self.store.db.execute("UPDATE credential_metadata SET models='[\"model-old\"]' WHERE version=1")
         self.store.db.execute("UPDATE credentials SET created='2000-01-01T00:00:00Z' WHERE version=1")
         self.store.db.execute("UPDATE credentials SET created='2000-01-03T00:00:00Z' WHERE version=2")
         self.store.db.execute("UPDATE credential_metadata SET retired='2000-01-03T00:00:00Z' WHERE version=1")
@@ -89,4 +91,4 @@ class MetadataTests(VaultFixture, unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             self.assertNotIn("synthetic-sensitive-input", response.text)
         for route in ("chatgpt-subscription", "claude-subscription"):
-            self.assertEqual(self.put(route, OPENAI).status_code, 422)
+            self.assertEqual(self.put(route, OPENAI).status_code, 422 if route == "chatgpt-subscription" else 200)

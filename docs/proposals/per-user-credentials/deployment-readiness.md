@@ -11,12 +11,12 @@ refresh (5a) and user-deferred real-account acceptance remain separate.
 
 | Boundary | Current implementation | Local evidence |
 | ---- | ---- | ---- |
-| Identity and owner registration | `backoffice/app.py`, `auth.py`, `credentials.py` → vault owner API. GitHub session refresh/logout is separate from provider tokens. Candidate model-set probes use the owner's supplied token on fixed routes, then revision CAS commits one version. | Phase 2 auth/lifecycle tests; Phase 5 owner journeys, probe deadlines and replacement/revoke races. |
+| Identity and owner registration | `backoffice/app.py`, `auth.py`, `credentials.py` → vault owner API. GitHub session refresh/logout is separate from provider tokens. Saving atomically stores a token/account version without provider requests or model selection. | Phase 2 auth/lifecycle tests; Owner save journeys, version/account binding and replacement/revoke races. |
 | Issue consent before a task | Ingress/observation jobs → `Shadow.confirm` and Registry projection → issue-addressed backoffice views/commands. Signed delegated comments bind stable actor/provider. Full source reconciliation precedes initialization. | Phase 1 ordering/editor/permission/replay tests and live-mode intercepted portal controls. |
 | Initiation and admission | Current route catalog defines provider. Prior explicit sponsorship wins; first source-era starter fill covers only its own available routes. Whole required roster preflight → immutable UUID/digest/admission → checkpointed debit → Exchange. | Phase 3 lost-reply/fence/withdrawal/permission/cutover tests, charge history and retained-result recovery. |
 | Inference and observation | Real key/active-turn start hook → native key/model/budget enforcement → exact-version private resolver → native header auth and narrow streaming hop. Native denial importer joins the server nonce to its original turn. | Phase 4 pinned-image/fake-provider streaming, spoof, cancellation, budget, shared WAL and TLS experiments. |
 | Provider lifecycle | Vault replacement/revoke events → Exchange retirement, without payer rebinding. Task-local withdrawal differs from global token revoke; transfer is graceful for old admitted work. | Phase 3–5 real vault/Exchange fixtures; two fake accounts/provider and retained native-CLI transcripts. |
-| Recovery and views | Each normal delivery-recovery timer polls service-principal metadata events. Registry cursor/cache/queue commit atomically; owned tick rechecks current consent, versions, required models, authority and budget. UI separates recorded charges, prospective grants and consumed/scheduled receipts. | Phase 6 real timer → TCP Store feed → Scheduler/Worker/Controller/Exchange, replay/restart/backoff/multi-route tests and loaded light/dark views. |
+| Recovery and views | Each normal delivery-recovery timer polls service-principal metadata events. Registry cursor/cache/queue commit atomically; owned tick rechecks current consent, versions, required credential routes, authority and budget. UI separates recorded charges, prospective grants and consumed/scheduled receipts. | Phase 6 real timer → TCP Store feed → Scheduler/Worker/Controller/Exchange, replay/restart/backoff/multi-route tests and loaded light/dark views. |
 
 See [implementation plan](implementation-plan.md), phase notes and their review records for
 exact historical artifacts. Synthetic providers establish local mechanics, not real backend
@@ -92,7 +92,8 @@ a fresh offline image build lacked cached pip dependencies and is not release-bu
 1. Commit/sign review corrections, publish approved backend/portal releases and pass remote
    CI/image publication for the exact SHAs. Local checks and historical image experiments do
    not replace that release evidence. Once those SHAs exist, use the full-SHA commands in
-   [the deployment guide](../../../gateway/README.md#releases); no deployment was authorized here.
+   [the deployment guide](../../../gateway/README.md#releases), including the
+   [save-only rollout ordering](../../../gateway/README.md#save-only-credential-rollout); no deployment was authorized here.
 2. Provision/verify the chosen external settings, distinct principal files, persistent mounts,
    private network and optional logout override above. Preserve state through forward migration.
    This review does not inspect private host configuration or establish what is already provisioned.
@@ -100,7 +101,7 @@ a fresh offline image build lacked cached pip dependencies and is not release-bu
    target caller/config pins and `gateway.workflow_ref` against the intended launcher/engine.
    Finish active work or use explicit writer recovery for changed bundles/configuration;
    never rewrite approval hashes or retry a live task automatically for rollout.
-4. Keep the explicitly deferred real checks visible: both subscription model probes/backends,
+4. Keep the explicitly deferred real checks visible: both subscription execution backends,
    actual ChatGPT account-header semantics, trustworthy token expiry when available and real
    cross-account transcript portability. Fake success proves none of them or provider approval.
    These are pending acceptance evidence, not a newly imposed provider-agreement gate.

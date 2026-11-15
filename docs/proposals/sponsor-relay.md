@@ -189,9 +189,8 @@ between connections otherwise rests on the provider.
 
 ### 6. Coverage, admission and failure
 
-- **Registration validates through the relay.** The model probes which validate a pasted
-  token ([phase 5](per-user-credentials/phase-5.md)) run as proven exchanges on the relay's
-  link. Coverage is recorded as for a vault version.
+- **Registration makes no provider call.** As with pasted credentials, authentication and
+  model-access problems are reported during execution ([phase 5](per-user-credentials/phase-5.md)).
 - **A new attempt needs a live link** for its exact record version, checked where the
   vault's usability is checked today. Without one the task waits in
   `awaiting_credentials`, and the notice says the relay is offline.
@@ -212,8 +211,7 @@ between connections otherwise rests on the provider.
   the install steps.
 - A page where the signed-in sponsor enters the code their relay shows, sees the relay's
   name and routes, and approves or refuses it.
-- A relay record shows custody, relay name, online or last seen, policy version and
-  validated models. Revoke works as for a vault version.
+- A relay record shows custody, relay name, online or last seen, policy version. Revoke works as for a vault version.
 
 ## Phasing
 

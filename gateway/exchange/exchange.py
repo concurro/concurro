@@ -577,7 +577,8 @@ class Exchange:
                     or type(event.get("version")) is not int
                     or event["version"] < 1
                     or event.get("route") not in ROUTES
-                    or event.get("type") not in ("validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
+                    or event.get("type")
+                    not in ("stored", "validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
                     or event.get("status") not in ("valid", "invalid", "revoked", "retired")
                 ):
                     raise Refused(503, "vault event identity incomplete")
@@ -618,8 +619,8 @@ class Exchange:
                 pass
             raise Refused(410, "session funding authority ended")
 
-    def metadata_for(self, binding, models):
-        """Check a new admission's exact owner/route/version and model evidence outside the lifecycle lock."""
+    def metadata_for(self, binding):
+        """Check a new admission's stored owner/route/version outside the lifecycle lock."""
         if binding.get("funding") != "contributed":
             return
         if binding["route"] not in self.capabilities()["contributed_routes"]:
@@ -645,8 +646,6 @@ class Exchange:
                 raise Refused(503, "credential expiry evidence incomplete") from None
             if expired:
                 raise Refused(410, "credential version expired")
-        if not isinstance(record.get("models"), list) or any(model not in record["models"] for model in models):
-            raise Refused(409, "credential model coverage is unavailable")
 
     def current_grant(self, binding, admission):
         """Enforce the selected fence at insertion, initializing only from the operator's frozen checkpoint grant."""
@@ -1009,7 +1008,7 @@ class Exchange:
     def activate_key(self, session, record, key, binding):
         """Adopt a partially activated key with its existing budget; never create a replacement on retry."""
         if binding.get("funding") == "contributed":
-            self.metadata_for(binding, json.loads(record["models"]))
+            self.metadata_for(binding)
         key_id = self.gateway.find(key)
         if key_id:
             self.gateway.activated(key)
@@ -1303,7 +1302,7 @@ class Exchange:
             prior = self.admitted(turn, digest, now)
             if prior is not None:
                 return prior
-        self.metadata_for(binding, models)
+        self.metadata_for(binding)
         with self.locked():
             prior = self.admitted(turn, digest, now)
             if prior is not None:

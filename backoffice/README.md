@@ -284,18 +284,18 @@ stages/budgets. The companion frontend supplies provider controls and pre-task v
 See [phase 2](../docs/proposals/per-user-credentials/phase-2.md) for lifecycle behavior, optional
 encrypted logout retry settings, migration and roll-forward recovery. GitHub refresh pairs remain server-only;
 unknown expiry is not invented. Both subscription routes now accept local CLI token paste
-with an explicit model set and ChatGPT account ID through the existing authenticated PUT.
-The portal derives default models from target requirements and existing validated coverage;
-all selected models validate before replacement. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
+and the ChatGPT account ID through the existing authenticated PUT.
+Saving makes no provider request and asks for no model selection. Token and model-access
+errors are reported during execution. A replacement retires the previous version. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
 
 
 ## Credential recovery views
 
 [Phase 6](../docs/proposals/per-user-credentials/phase-6.md) exposes current recovery eligibility,
 recorded retry deadlines and historical charged-attempt owners/routes/versions in the existing
-issue/task sponsorship projection. Coverage includes exact selected models and current versions.
+issue/task sponsorship projection. Coverage shows configured model requirements and stored route versions, without preflight model-access checks.
 The portal displays these receipts; it never authorizes a retry locally. Eligible auth/quota
-pauses require newer validated material; rate pauses require a trusted retry hint. Writer-only,
+pauses require newer saved material; rate pauses require a trusted retry hint. Writer-only,
 unknown, stopped and budget pauses do not automatically resume. Token observations remain
 supplementary to the task's charged-call ledger.
 

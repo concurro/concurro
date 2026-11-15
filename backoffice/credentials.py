@@ -5,8 +5,6 @@ The vault resolves the user itself; the backoffice never stores or reads back a 
 
 import httpx
 
-from credential_routes import VALIDATION_SECONDS
-
 from .auth import BearerAuth, TokenCredential
 
 # Stable UI identifiers map to exact fixed vault/provider routes.
@@ -18,7 +16,7 @@ ROUTES = (
 )
 VAULT_ROUTES = {ui: vault for ui, vault, *_ in ROUTES if vault}
 STATUS = {"valid": "valid", "invalid": "invalid", "revoked": "revoked"}
-USAGE = "Personally funded providers use validated models from this personal version. Each issue selects funding per provider; organization-funded calls keep their organization credentials."
+USAGE = "Credentials are saved without contacting the provider. Token and model-access problems are reported during execution. Each issue selects funding per provider; organization-funded calls keep their organization credentials."
 
 
 class VaultError(Exception):
@@ -74,17 +72,13 @@ class Vault:
         token: str | TokenCredential,
         ui_route: str,
         secret: str,
-        models: list[str] | None = None,
         account_id: str | None = None,
     ) -> dict:
         """Forward only this owner's candidate and route metadata; never retain the secret."""
         body = {"secret": secret}
         if ui_route in ("chatgpt_subscription", "claude_subscription"):
-            body.update(models=models, account_id=account_id)
-        timeout = max(30, VALIDATION_SECONDS * len(models or []) + 15)
-        return route(
-            ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, body, timeout=timeout)
-        )
+            body.update(account_id=account_id)
+        return route(ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, body))
 
     def revoke(self, token: str | TokenCredential, ui_route: str) -> dict:
         return route(ui_route, self.call("DELETE", f"/credentials/{self.vault_route(ui_route)}", token))
@@ -115,11 +109,10 @@ def route(ui_route: str, entry: dict | None) -> dict:
         "expired" if entry.get("status_reason") == "expired" else STATUS.get(entry.get("status"), "invalid")
     )
     result["fingerprint"] = entry.get("fingerprint")
-    result["lastValidated"] = entry.get("validated")
+    result["lastUpdated"] = entry.get("updated")
     result["lastUsed"] = entry.get("last_used")
     result["expiresAt"] = entry.get("expires_at")
     result["expiryKnown"] = bool(entry.get("expiry_known"))
-    result["models"] = entry.get("models")
     result["version"] = entry.get("version")
     result["statusReason"] = entry.get("status_reason")
     result["accountLabel"] = entry.get("account_label")

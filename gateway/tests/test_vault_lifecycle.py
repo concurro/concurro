@@ -15,21 +15,34 @@ import vault
 class LifecycleTests(VaultFixture, unittest.TestCase):
     """Check atomic retirement/events, expiry, legacy migration and key rotation."""
 
+    def test_schema_two_migration_preserves_records_events_and_seeds_fences(self):
+        """Adding mutation fences preserves existing encrypted material and event identities."""
+        original = self.put("openai-api-key", OPENAI).json()
+        self.store.db.execute("UPDATE credential_events SET type='validated',reason='validated'")
+        before = self.store.events()
+        self.store.db.execute("DROP TABLE credential_fences")
+        self.store.db.execute("UPDATE vault_meta SET value='2' WHERE key='schema'")
+        other = vault.Store(self.directory / "vault.db", self.envelope)
+        self.addCleanup(other.close)
+        self.assertEqual(other.events(), before)
+        self.assertEqual(other.resolve(101, "openai-api-key", original["record_id"], 1)["secret"], OPENAI)
+        self.assertEqual(other.revision(101, "openai-api-key"), before["next"])
+        self.assertEqual(other.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()[0], "3")
+
     def test_replacement_revoke_events_replay_without_material_or_duplicates(self):
         """Only accepted replacements retire versions; repeated revoke and restart preserve event identity."""
         first = self.put("openai-api-key", OPENAI).json()
         self.assertEqual(first["version"], 1)
-        self.assertEqual(self.put("openai-api-key", "invalid-candidate").status_code, 422)
-        self.assertEqual([e["type"] for e in self.store.events()["events"]], ["validated"])
-        self.transport.accepted.add(OPENAI + "2")
+        self.assertEqual(self.put("openai-api-key", "invalid header").status_code, 422)
+        self.assertEqual([e["type"] for e in self.store.events()["events"]], ["stored"])
         second = self.put("openai-api-key", OPENAI + "2").json()
         self.assertEqual(second["version"], 2)
         events = self.store.events()["events"]
-        self.assertEqual([e["type"] for e in events], ["validated", "retired", "validated"])
+        self.assertEqual([e["type"] for e in events], ["stored", "retired", "stored"])
         self.request("DELETE", "/credentials/openai-api-key")
         self.request("DELETE", "/credentials/openai-api-key")
         final = self.store.events()
-        self.assertEqual([e["type"] for e in final["events"]], ["validated", "retired", "validated", "revoked"])
+        self.assertEqual([e["type"] for e in final["events"]], ["stored", "retired", "stored", "revoked"])
         self.assertEqual(self.store.events(events[-1]["sequence"])["events"], final["events"][-1:])
         with self.assertRaises(vault.VaultError):
             self.store.resolve(101, "openai-api-key", first["record_id"], 1)
@@ -41,11 +54,9 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
             self.assertNotIn(secret, json.dumps(final))
 
     def test_secret_and_account_are_one_exact_subscription_version_without_candidate_metadata(self):
-        """A candidate missing validation metadata cannot split or replace an existing token/account version."""
+        """A candidate missing the required account header cannot split or replace an existing token/account version."""
         token, account = "synthetic-cli-access", {"chatgpt_account_id": "synthetic-account-a"}
-        entry = self.store.put(
-            vault.User(101, "alice"), "chatgpt-subscription", token, ["gpt-fixture"], account=account
-        )
+        entry = self.store.put(vault.User(101, "alice"), "chatgpt-subscription", token, account=account)
         value = self.store.resolve(101, "chatgpt-subscription", entry["record_id"], entry["version"])
         self.assertEqual((value["secret"], value["account"]), (token, account))
         with self.assertRaises(vault.VaultError):
@@ -64,18 +75,16 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
         now = [1000.0]
         self.store.clock = lambda: now[0]
         expiry = datetime.fromtimestamp(1010, UTC).isoformat()
-        entry = self.store.put(
-            vault.User(101, "alice"), "openai-api-key", OPENAI, ["fixture"], expires_at=expiry, expiry_known=True
-        )
+        entry = self.store.put(vault.User(101, "alice"), "openai-api-key", OPENAI, expires_at=expiry, expiry_known=True)
         self.assertEqual(self.store.resolve(101, "openai-api-key", entry["record_id"], 1)["secret"], OPENAI)
         now[0] = 1011
         for _ in range(2):
             with self.assertRaises(vault.VaultError) as error:
                 self.store.resolve(101, "openai-api-key", entry["record_id"], 1)
             self.assertEqual(error.exception.status, 410)
-        self.assertEqual([e["type"] for e in self.store.events()["events"]], ["validated", "unusable"])
+        self.assertEqual([e["type"] for e in self.store.events()["events"]], ["stored", "unusable"])
         self.assertIsNone(self.store.sealed(101, "openai-api-key"))
-        newer = self.store.put(vault.User(101, "alice"), "openai-api-key", OPENAI, ["fixture"])
+        newer = self.store.put(vault.User(101, "alice"), "openai-api-key", OPENAI)
         now[0] = 10**10
         self.assertEqual(self.store.resolve(101, "openai-api-key", newer["record_id"], 2)["secret"], OPENAI)
 
@@ -84,7 +93,7 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
         old, new = os.urandom(32), os.urandom(32)
         store = vault.Store(self.directory / "rotation.db", vault.Envelope(old))
         self.addCleanup(store.close)
-        entry = store.put(vault.User(101, "alice"), "openai-api-key", OPENAI, ["fixture"])
+        entry = store.put(vault.User(101, "alice"), "openai-api-key", OPENAI)
         before = dict(store.db.execute("SELECT * FROM credentials").fetchone())
         with self.assertRaises(vault.ConfigError):
             store.rotate(vault.Envelope(new, "new"))
@@ -137,29 +146,3 @@ class LifecycleTests(VaultFixture, unittest.TestCase):
         self.assertIsNone(record["models"])
         self.assertIsNone(record["validated"])
         self.assertEqual([e["type"] for e in store.events()["events"]], ["snapshot"])
-
-    def test_paginated_models_are_complete_or_explicitly_unknown(self):
-        """A second Anthropic page contributes coverage; missing/cyclic cursors never become partial truth."""
-        calls = []
-        pages = [
-            {"data": [{"id": "first-model"}], "has_more": True, "last_id": "cursor-one"},
-            {"data": [{"id": "later-model"}], "has_more": False},
-        ]
-
-        def transport(url, headers):
-            """Return provider-shaped pages while retaining actual encoded cursor requests."""
-            calls.append((url, headers))
-            return 200, json.dumps(pages[min(len(calls) - 1, len(pages) - 1)]).encode()
-
-        validator = vault.Validator(transport)
-        self.assertEqual(validator.models("anthropic-api-key", OPENAI), (True, ["first-model", "later-model"]))
-        self.assertTrue(calls[0][0].endswith("?limit=1000"))
-        self.assertTrue(calls[1][0].endswith("?limit=1000&after_id=cursor-one"))
-        calls.clear()
-        pages[:] = [{"data": [{"id": "first-model"}], "has_more": True, "last_id": "same"}]
-        self.assertEqual(validator.models("anthropic-api-key", OPENAI), (True, None))
-        self.assertEqual(len(calls), 2)
-        calls.clear()
-        pages[:] = [{"data": [{"id": "first-model"}], "has_more": True}]
-        self.assertEqual(validator.models("anthropic-api-key", OPENAI), (True, None))
-        self.assertEqual(len(calls), 1)

@@ -298,29 +298,63 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.assertEqual(self.dispatch(), [KEY])
         self.assertEqual(self.state()["calls"], 2)
 
-    def test_current_model_coverage_is_rechecked_before_latch_or_charge(self):
-        """A validated but wrong model set consumes only its wake receipt and leaves the credential latch intact."""
+    def test_saved_replacement_recovers_without_model_coverage(self):
+        """A new stored version reaches execution without checking a preflight model list."""
+        for row in self.feed.rows:
+            row["type"] = "snapshot"
         self.pause()
         self.validate()
+        self.feed.rows[-1]["type"] = "stored"
         current = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
-        wanted = current["models"]
-        current["models"] = ["unselected-model"]
-        self.shadow.poll_credentials()
-        self.assertEqual(self.dispatch(), [KEY])
-        state = self.state()
-        self.assertEqual(state["calls"], 1)
-        self.assertTrue(state["provider_pause_pending"])
-        self.assertEqual(state["stage"], "awaiting_credentials")
-        self.assertEqual(self.dispatch(), [])
-        with self.current() as controller, patch.object(controller, "save", wraps=controller.save) as saved:
-            self.shadow.recover(controller, self.fake.comments)
-            self.assertEqual(controller.state["credential_recovery"]["status"], "coverage still unavailable")
-            saved.assert_not_called()
-        current["models"] = wanted
-        self.validate(version=3)
+        current["models"] = None
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [KEY])
         self.assertEqual(self.state()["calls"], 2)
+
+    def test_unusable_replacement_consumes_recovery_receipt_without_charging(self):
+        """Current metadata can refuse a queued replacement without clearing the pause or spending."""
+        self.pause()
+        row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
+        for version, changes in enumerate(
+            (
+                {"status": "revoked"},
+                {"kind": "subscription"},
+                {"expiry_known": True, "expires_at": "2000-01-01T00:00:00Z"},
+            ),
+            start=2,
+        ):
+            with self.subTest(changes=changes):
+                self.validate(version=version)
+                self.shadow.poll_credentials()
+                saved = deepcopy(row)
+                row.update(changes)
+                self.assertEqual(self.dispatch(), [KEY])
+                state = self.state()
+                self.assertEqual(state["calls"], 1)
+                self.assertTrue(state["provider_pause_pending"])
+                self.assertEqual(state["stage"], "awaiting_credentials")
+                self.assertEqual(state["credential_recovery"]["status"], "coverage still unavailable")
+                self.assertEqual(self.dispatch(), [])
+                row.clear()
+                row.update(saved)
+
+    def test_snapshot_rewrap_preserves_consumed_receipt_across_restart(self):
+        """Rewrapping a snapshot-only replacement cannot create a second recovery delivery."""
+        self.pause()
+        event = self.validate()
+        event["type"] = "snapshot"
+        self.shadow.poll_credentials()
+        row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
+        row["status"] = "revoked"
+        self.assertEqual(self.dispatch(), [KEY])
+        receipt = self.state()["credential_recovery"]["consumed"]
+        row["status"] = "valid"
+        self.feed.add(row, "rewrapped")
+        self.shadow.poll_credentials()
+        self.reopen_registry()
+        self.assertEqual(self.dispatch(), [])
+        self.assertEqual(self.state()["calls"], 1)
+        self.assertEqual(self.state()["credential_recovery"]["consumed"], receipt)
 
     def test_permission_loss_and_withdrawal_remain_scoped_and_cannot_be_restored_by_events(self):
         """Fresh source authorization retires only the lost owner's grant before a queued retry can charge."""
@@ -661,16 +695,16 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.assertEqual(self.state()["operation"]["admission"]["credential"]["version"], 1)
 
     def test_healthy_webhook_timer_reads_real_replacement_feed_and_schedules_once(self):
-        """Normal delivery scans consume actual retired+validated pages before a real task can charge."""
+        """Normal delivery scans consume actual retired+stored pages before a real task can charge."""
         store = vault.Store(Path(self.directory.name) / "recovery-vault.db", vault.Envelope(os.urandom(32)), self.clock)
         self.addCleanup(store.close)
         for row in self.metadata:
-            store.put(vault.User(int(row["user_id"]), "synthetic"), row["route"], "synthetic-token", row["models"])
+            store.put(vault.User(int(row["user_id"]), "synthetic"), row["route"], "synthetic-token")
         with self.registry.transaction() as db:
             db.execute("DELETE FROM credential_versions")
             db.execute("DELETE FROM credential_cursor")
         transport = FakeTransport()
-        public = vault.create_app(store, vault.Identity(transport), vault.Validator(transport), SERVICE, (GATEWAY,))
+        public = vault.create_app(store, vault.Identity(transport), SERVICE, (GATEWAY,))
         token = Path(self.directory.name) / "metadata-token"
         token.write_text(SERVICE)
         token.chmod(0o600)
@@ -686,10 +720,10 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 self.pause()
                 prior = self.registry.credential_cursor()
                 row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
-                entry = store.put(vault.User(202, "alice"), row["route"], "synthetic-replacement", row["models"])
+                entry = store.put(vault.User(202, "alice"), row["route"], "synthetic-replacement")
                 page = store.events(prior)
                 self.assertEqual(
-                    [(e["type"], e["status"]) for e in page["events"]], [("retired", "retired"), ("validated", "valid")]
+                    [(e["type"], e["status"]) for e in page["events"]], [("retired", "retired"), ("stored", "valid")]
                 )
                 self.assertEqual(self.registry.due(self.clock()), [])
                 self.clock.now += 300

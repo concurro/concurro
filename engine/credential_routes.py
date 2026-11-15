@@ -18,6 +18,3 @@ ROUTES = {
         "url": "https://api.anthropic.com/v1",
     },
 }
-
-# One subscription model probe must finish within this wall-clock interval.
-VALIDATION_SECONDS = 10

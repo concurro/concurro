@@ -53,10 +53,9 @@ class CommandBody(BaseModel):
 
 
 class SecretBody(BaseModel):
-    """Write-only credential candidate and selected validation models."""
+    """Write-only credential candidate and optional account header."""
 
     secret: str
-    models: list[str] | None = Field(default=None, description="Models selected from configured route requirements.")
     account_id: str | None = Field(default=None, description="Supplied ChatGPT account header for this token.")
 
 
@@ -457,7 +456,7 @@ def create_app(
 
     @app.put("/api/me/credentials/{route}")
     def put_credential(route: str, body: SecretBody, current: Annotated[Session, Depends(writer)]):
-        result = vault.put(current.credential or current.token, route, body.secret, body.models, body.account_id)
+        result = vault.put(current.credential or current.token, route, body.secret, body.account_id)
         outdate_sponsorships()
         return result
 

@@ -5,6 +5,5 @@ RUN pip install --no-cache-dir -r /tmp/vault-requirements.txt \
     && rm /tmp/vault-requirements.txt \
     && mkdir /data && chown 65532:65532 /data
 COPY gateway/vault/vault.py /app/vault.py
-COPY gateway/provider_protocol.py engine/credential_routes.py /app/
 USER 65532:65532
 ENTRYPOINT ["python3", "-I", "-B", "/app/vault.py"]

@@ -1,4 +1,4 @@
-"""Fixed provider routes and sanitized response parsing shared by inference and validation."""
+"""Fixed provider routes and sanitized response parsing for personal inference."""
 
 import json
 import runpy
@@ -9,7 +9,6 @@ if not CATALOG.exists():
     CATALOG = Path(__file__).resolve().parents[1] / "engine" / "credential_routes.py"
 CATALOG_VALUES = runpy.run_path(str(CATALOG))
 ROUTES = CATALOG_VALUES["ROUTES"]
-VALIDATION_SECONDS = CATALOG_VALUES["VALIDATION_SECONDS"]
 UPSTREAMS = {route: value["url"] for route, value in ROUTES.items()}
 MAX_EVENT = 8 * 1024 * 1024
 
@@ -122,39 +121,3 @@ def event_value(event):
     value = {} if payload in (b"", b"[DONE]") else json.loads(payload)
     error = any(line.startswith(b"event:") and line[6:].strip() == b"error" for line in event.splitlines())
     return value, error
-
-
-def probe_request(route, model, secret, account_id=None):
-    """Build a fixed, minimal generation probe with only this candidate's credential."""
-    if route == "chatgpt-subscription":
-        return (
-            UPSTREAMS[route] + "/responses",
-            {
-                "Authorization": "Bearer " + secret,
-                "ChatGPT-Account-Id": account_id,
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "Accept-Encoding": "identity",
-            },
-            {
-                "model": model,
-                "instructions": "Reply with OK.",
-                "input": [{"role": "user", "content": [{"type": "input_text", "text": "OK"}]}],
-                "stream": True,
-                "store": False,
-            },
-        )
-    if route == "claude-subscription":
-        return (
-            UPSTREAMS[route] + "/messages",
-            {
-                "Authorization": "Bearer " + secret,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "oauth-2025-04-20",
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "Accept-Encoding": "identity",
-            },
-            {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "Reply OK."}], "stream": True},
-        )
-    raise ValueError("not a subscription route")

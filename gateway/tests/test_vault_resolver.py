@@ -48,7 +48,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
     def setUp(self):
         """Reuse the existing fake provider transport; enable separate synthetic private principals."""
         super().setUp()
-        self.public = vault.create_app(self.store, self.identity, vault.Validator(self.transport), SERVICE, (GATEWAY,))
+        self.public = vault.create_app(self.store, self.identity, SERVICE, (GATEWAY,))
         self.private = vault.create_resolver(self.store, GATEWAY)
 
     def test_socket_boundary_cannot_be_selected_by_host_forwarded_headers_or_principal(self):
@@ -86,12 +86,13 @@ class ResolverTests(VaultFixture, unittest.TestCase):
             )
 
     def test_private_bearers_never_forward_to_github_on_public_user_routes(self):
-        """A mistaken private-to-public request is rejected before identity lookup or provider validation."""
+        """A mistaken private-to-public request is rejected before identity lookup."""
         client = TestClient(self.public)
         for token in (SERVICE, GATEWAY):
             for method, path, body in (
                 ("GET", "/credentials", None),
                 ("PUT", "/credentials/openai-api-key", {"secret": OPENAI}),
+                ("DELETE", "/credentials/openai-api-key", None),
             ):
                 self.assertEqual(
                     client.request(method, path, json=body, headers={"Authorization": "Bearer " + token}).status_code,
@@ -102,7 +103,6 @@ class ResolverTests(VaultFixture, unittest.TestCase):
     def test_version_events_and_errors_do_not_cross_owner_or_echo_material(self):
         """A replaced version is unusable, metadata cannot resolve it, and malformed errors are fixed."""
         first = self.put("openai-api-key", OPENAI).json()
-        self.transport.accepted.add(OPENAI + "2")
         self.put("openai-api-key", OPENAI + "2", token=BOB)
         private = TestClient(self.private)
         headers = {"Authorization": "Bearer " + GATEWAY}
@@ -131,7 +131,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
     def test_service_lifecycle_feed_is_nonsecret_and_cannot_resolve(self):
         """Scheduler feed auth stays on the metadata listener and never grants material resolution."""
         entry = self.put("openai-api-key", OPENAI).json()
-        public = vault.create_app(self.store, self.identity, vault.Validator(self.transport), SERVICE, (GATEWAY,))
+        public = vault.create_app(self.store, self.identity, SERVICE, (GATEWAY,))
         with (
             listeners(public, vault.create_resolver(self.store, GATEWAY)) as (public_url, private_url),
             httpx.Client() as client,
@@ -140,7 +140,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
                 public_url + "/metadata/events?after=0", headers={"Authorization": "Bearer " + SERVICE}
             )
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["events"][0]["type"], "validated")
+            self.assertEqual(response.json()["events"][0]["type"], "stored")
             token_path = self.directory / "metadata-token"
             token_path.write_text(SERVICE)
             token_path.chmod(0o600)
@@ -148,12 +148,11 @@ class ResolverTests(VaultFixture, unittest.TestCase):
             self.assertEqual(feed["events"][0]["user_id"], "101")
             self.assertNotIn(OPENAI, response.text)
             self.assertNotIn("fingerprint", response.text)
-            self.transport.accepted.add(OPENAI + "2")
             replacement = self.put("openai-api-key", OPENAI + "2").json()
             feed = Metadata(public_url, token_path).events(0)
             self.assertEqual(
                 [(e["type"], e["status"]) for e in feed["events"]],
-                [("validated", "valid"), ("retired", "retired"), ("validated", "valid")],
+                [("stored", "valid"), ("retired", "retired"), ("stored", "valid")],
             )
             self.assertEqual(replacement["version"], 2)
             self.request("DELETE", "/credentials/openai-api-key")
@@ -195,15 +194,15 @@ class ResolverTests(VaultFixture, unittest.TestCase):
             )
         store = vault.Store(path, self.envelope)
         self.addCleanup(store.close)
-        public = vault.create_app(store, self.identity, vault.Validator(self.transport), SERVICE, (GATEWAY,))
+        public = vault.create_app(store, self.identity, SERVICE, (GATEWAY,))
         token = self.directory / "legacy-service-token"
         token.write_text(SERVICE)
         token.chmod(0o600)
         with listeners(public, vault.create_resolver(store, GATEWAY)) as (url, _):
             feed = Metadata(url, token).events(0)
             self.assertEqual([(e["type"], e["status"]) for e in feed["events"]], [("snapshot", "retired")])
-            store.put(vault.User(101, "alice"), "openai-api-key", OPENAI, ["synthetic-model"])
+            store.put(vault.User(101, "alice"), "openai-api-key", OPENAI)
             later = Metadata(url, token).events(feed["next"])
             self.assertEqual(
-                [(e["type"], e["status"], e["version"]) for e in later["events"]], [("validated", "valid", 2)]
+                [(e["type"], e["status"], e["version"]) for e in later["events"]], [("stored", "valid", 2)]
             )

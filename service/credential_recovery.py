@@ -97,19 +97,16 @@ def intent(state, config, now, observations=None):
 
 
 def receipt(plan, versions):
-    """Require usable validated versions for every current slot; an old failed version never suffices."""
+    """Require usable saved versions for every current slot; an old failed version never suffices."""
     if not plan or not plan.get("eligible"):
         return None
     selected = []
     for requirement in plan["requirements"]:
         value = versions.get((requirement["sponsor"], requirement["route"]))
-        if (
-            not value
-            or value.get("status") != "valid"
-            or not value.get("validation_sequence")
-            or value.get("version", 0) <= requirement["minimum_version"]
-        ):
+        if not value or value.get("status") != "valid" or value.get("version", 0) <= requirement["minimum_version"]:
             return None
-        selected.append((requirement["sponsor"], requirement["route"], value["validation_sequence"]))
+        selected.append(
+            (requirement["sponsor"], requirement["route"], value.get("validation_sequence") or value["sequence"])
+        )
     identifier = digest([plan["id"], selected])
     return None if identifier == plan.get("consumed") else {"id": identifier, "due_at": plan["not_before"]}

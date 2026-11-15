@@ -1,46 +1,45 @@
 # Personal credential vault
 
-The owner API validates API keys and pasted CLI subscription tokens for personal sponsorship.
-Personally funded providers resolve exact admitted versions; organization-funded providers retain org
-credentials. Both subscription PUTs now accept an explicit selected model set; ChatGPT also
-requires its account header. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
-No CLI login, provider refresh or remote provider revoke runs in this service.
-
-Subscription validation requires a completed provider response, not HTTP 200 alone. Validation
-and personal inference recognize event streams without a `Content-Type` header from their first
-line and retain JSON response support. Failed, malformed or incomplete validation leaves the
-stored credential unchanged.
+The owner API stores API keys and pasted CLI subscription tokens for personal sponsorship.
+Saving does not contact the provider, discover models or run inference. Token and model-access
+problems are reported during execution. ChatGPT tokens require their supplied account ID;
+other routes require only the secret. No CLI login, provider refresh or remote provider revoke
+runs in this service. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
 
 ## Records and events
 
 SQLite schema 3 retains lifecycle metadata and a monotonic, paginated nonsecret event log to the
 existing owner/route/version rows. Migration preserves original ciphertext/AAD and unknown
 legacy model/validation evidence. Each accepted replacement atomically retires the prior version,
-destroys its usable material and emits retirement/validation events. Rejected validation leaves
-that version unchanged. Public revoke events are idempotent. A private owner/route revision advances on every revoke,
-including an empty slot, and accepted replacement. Candidate validation captures that revision
-before probing and CAS checks it in the replacement transaction. A delayed candidate cannot
-undo a concurrent replacement/revoke. Schema 2 migrates forward without changing records or
+destroys its usable material and emits retirement/stored events. Saving a nonworking replacement still retires the prior
+version. Public revoke events are idempotent. A private owner/route revision advances on every revoke,
+including an empty slot, and accepted replacement. Owner saves and revokes serialize in the
+store transaction; no separate pre-save revision check is needed without a provider call.
+Internal callers may still pass an expected revision to reject stale candidates. Schema 2 migrates forward without changing records or
 public events; no version-zero events are introduced. Destruction is logical; encrypted backups/WAL may
 retain old bytes and must remain protected with their keys.
 
-API-key model discovery follows provider cursor pages; incomplete/malformed or cyclic
-pagination remains unknown coverage rather than a truncated model list. Anthropic's
-[model-list contract](https://platform.claude.com/docs/en/api/models/list) supplies the cursor
-and upstream page-size maximum; this does not impose a model-count cap.
-
-Public owner responses include fingerprint, version, validated models, known/unknown expiry,
+Public owner responses include fingerprint, version, update time, known/unknown expiry,
 status reason and last resolution time. Metadata service responses exclude fingerprints,
 account headers and secrets. Known expiry makes metadata unusable immediately; private
 resolution commits destruction and one `unusable` event before denying. Unknown expiry stays
 unknown. Replacement and revoke affect personal records only; current org sessions are untouched.
+
+New records have `status_reason: stored`, with no validation timestamp or model coverage.
+The legacy `valid` status means stored and usable, not provider-verified. Historical validation
+fields remain readable. Consumers accept both `stored` and historical `validated` events;
+either records an available replacement for recovery. No database migration is needed.
+A replacement can schedule one automatic retry per eligible paused task using that owner/route.
+Even a mistyped replacement consumes a model-call attempt if execution starts and fails;
+provider billing depends on the response. Failed versions are not retried automatically again.
+See [save-only rollout](../README.md#save-only-credential-rollout) for component ordering.
 
 ## Service metadata events
 
 `GET /metadata/events?after=N` exposes the existing paginated nonsecret lifecycle log on
 the metadata listener using only `VAULT_SERVICE_TOKEN_FILE`. Owner/GitHub and gateway
 bearers are refused without identity lookup. The service stores its own cursor and latest
-validation evidence; it never receives the resolver token. Private `/events` remains available
+saved-version evidence; it never receives the resolver token. Private `/events` remains available
 to Exchange. See [phase 6](../../docs/proposals/per-user-credentials/phase-6.md).
 
 ## Optional private listener

@@ -1,7 +1,7 @@
 """Concurro's credentials vault: per-user provider secrets, stored write-only.
 
 Callers present a GitHub user token; the vault resolves the user itself through
-`GET https://api.github.com/user`. Each secret is validated with a cheap provider call, then
+`GET https://api.github.com/user`. Each secret is stored without a provider call and
 sealed with a fresh data key that the master key wraps (envelope encryption, AES-256-GCM).
 Public endpoints never return secrets. Only the separately authenticated gateway listener resolves exact versions.
 """
@@ -9,10 +9,8 @@ Public endpoints never return secrets. Only the separately authenticated gateway
 import argparse
 import hashlib
 import hmac
-import http.client
 import json
 import os
-import runpy
 import socket
 import sqlite3
 import stat
@@ -23,13 +21,11 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import chain
 from pathlib import Path
-from typing import Annotated, BinaryIO
-from urllib.parse import urlencode, urlsplit
+from typing import Annotated
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -37,17 +33,6 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-PROTOCOL_PATH = Path(__file__).with_name("provider_protocol.py")
-if not PROTOCOL_PATH.exists():
-    PROTOCOL_PATH = Path(__file__).resolve().parents[1] / "provider_protocol.py"
-PROTOCOL = runpy.run_path(str(PROTOCOL_PATH))
-SUBSCRIPTIONS = {route for route, value in PROTOCOL["ROUTES"].items() if value["kind"] == "subscription"}
-MAX_EVENT = PROTOCOL["MAX_EVENT"]
-VALIDATION_SECONDS = PROTOCOL["VALIDATION_SECONDS"]
-# One fixed-origin streaming candidate response, closed after validation.
-ProbeTransport = Callable[[str, Mapping[str, str], dict], AbstractContextManager[tuple[int, str, BinaryIO]]]
-
 
 GITHUB_USER = "https://api.github.com/user"
 IDENTITY_TTL = 300
@@ -86,58 +71,6 @@ def http_get(url: str, headers: Mapping[str, str]) -> tuple[int, bytes]:
         return error.code, error.read()
     except (urllib.error.URLError, TimeoutError, OSError):
         raise Unavailable("upstream unreachable") from None
-
-
-@contextmanager
-def http_probe(url: str, headers: Mapping[str, str], body: dict) -> Iterator[tuple[int, str, BinaryIO]]:
-    """Bound connected reads; late DNS/TCP/TLS completion cannot send a token or publish material."""
-    target = urlsplit(url)
-    connection_type = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
-    connection = connection_type(target.hostname, target.port, timeout=VALIDATION_SECONDS)
-    deadline = time.monotonic() + VALIDATION_SECONDS
-    expired, channel = threading.Event(), []
-
-    def expire():
-        """Interrupt a slow header or partial-line read without waiting for socket inactivity."""
-        expired.set()
-        if channel:
-            try:
-                channel[0].shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
-    timer = threading.Timer(VALIDATION_SECONDS, expire)
-    timer.daemon = True
-    timer.start()
-    try:
-        connection.connect()
-        channel.append(connection.sock)
-        if expired.is_set():
-            raise TimeoutError
-        connection.request(
-            "POST",
-            target.path + (("?" + target.query) if target.query else ""),
-            json.dumps(body).encode(),
-            {"User-Agent": "concurro-vault", **headers},
-        )
-        with connection.getresponse() as reply:
-            yield reply.status, reply.getheader("Content-Type", ""), reply
-        if expired.is_set() or time.monotonic() >= deadline:
-            raise TimeoutError
-    except (TimeoutError, OSError, http.client.HTTPException):
-        raise Unavailable("provider validation unavailable") from None
-    finally:
-        timer.cancel()
-        connection.close()
-
-
-@dataclass(frozen=True)
-class Validated:
-    """Material proven by validation; account identity and expiry remain unverified."""
-
-    models: list[str] | None  # Exact models proved, or legacy unknown API coverage.
-    account: dict | None = None  # Account header material sealed with this token/version.
-    account_label: str | None = None  # Opaque owner-visible hint, never authenticated identity.
 
 
 def digest(value: str) -> str:
@@ -248,133 +181,6 @@ class Identity:
             self.cache = {k: v for k, v in self.cache.items() if v[0] > now}
             self.cache[key] = (now + IDENTITY_TTL, user)
         return user
-
-
-@dataclass(frozen=True)
-class Route:
-    """A credential route and the provider call that proves a secret works."""
-
-    url: str
-    headers: Callable[[str], dict[str, str]]
-
-
-ROUTES = {
-    "anthropic-api-key": Route(
-        "https://api.anthropic.com/v1/models",
-        lambda secret: {"x-api-key": secret, "anthropic-version": "2023-06-01"},
-    ),
-    "openai-api-key": Route(
-        "https://api.openai.com/v1/models",
-        lambda secret: {"Authorization": f"Bearer {secret}"},
-    ),
-}
-
-
-class Validator:
-    """Checks a secret against its provider: 2xx is valid, 401/403 invalid, anything else unavailable."""
-
-    def __init__(self, transport: Transport, routes: Mapping[str, Route] = ROUTES, probe: ProbeTransport = http_probe):
-        self.transport, self.routes, self.probe = transport, routes, probe
-
-    def validate(
-        self, route: str, secret: str, models: list[str] | None = None, account_id: str | None = None
-    ) -> Validated:
-        """Validate the entire candidate before publishing any replacement or model coverage."""
-        if route not in SUBSCRIPTIONS:
-            valid, available = self.models(route, secret)
-            if not valid:
-                raise VaultError(422, "provider rejected the secret")
-            return Validated(available)
-        if not models or any(not isinstance(model, str) or not model.strip() or secret in model for model in models):
-            raise VaultError(422, "select models to validate")
-        selected = list(dict.fromkeys(model.strip() for model in models))
-        account = None
-        if route == "chatgpt-subscription":
-            if not account_id or not all(33 <= ord(c) <= 126 for c in account_id):
-                raise VaultError(422, "ChatGPT account ID is required and must be a valid header value")
-            account = {"chatgpt_account_id": account_id}
-        elif account_id is not None:
-            raise VaultError(422, "this route does not use an account ID")
-        for model in selected:
-            url, headers, body = PROTOCOL["probe_request"](route, model, secret, account_id)
-            deadline = time.monotonic() + VALIDATION_SECONDS
-            try:
-                with self.probe(url, headers, body) as (status, media, response):
-                    if status in (400, 401, 403, 404, 422):
-                        raise VaultError(422, "provider rejected the candidate or selected model")
-                    if not 200 <= status < 300:
-                        raise Unavailable("provider validation unavailable")
-                    observation = PROTOCOL["Observation"](route, status)
-                    streaming, prefix = PROTOCOL["response_format"](media, response)
-                    if not streaming:
-                        raw = prefix + response.read(MAX_EVENT + 1 - len(prefix))
-                        if len(raw) > MAX_EVENT:
-                            raise Unavailable("provider validation did not complete")
-                        observation.accept(json.loads(raw))
-                    else:
-                        frame = bytearray()
-                        for chunk in chain((prefix,), iter(lambda: response.readline(MAX_EVENT + 1), b"")):
-                            if time.monotonic() >= deadline:
-                                raise Unavailable("provider validation did not complete")
-                            frame.extend(chunk)
-                            if len(frame) > MAX_EVENT:
-                                raise Unavailable("provider validation did not complete")
-                            if chunk not in (b"\n", b"\r\n"):
-                                continue
-                            value, error = PROTOCOL["event_value"](frame)
-                            if observation.accept(value) or error:
-                                raise Unavailable("provider validation did not complete")
-                            frame.clear()
-                        if frame:
-                            observation.ambiguous = True
-                    result = observation.finish()
-                    if time.monotonic() >= deadline or not result["completed"] or result["category"] is not None:
-                        raise Unavailable("provider validation did not complete")
-            except (ValueError, UnicodeError, TimeoutError, OSError, http.client.HTTPException):
-                raise Unavailable("provider validation did not complete") from None
-        label = "Supplied ChatGPT account " + digest(account_id)[:8] if account_id else None
-        return Validated(selected, account, label)
-
-    def valid(self, route: str, secret: str) -> bool:
-        return self.models(route, secret)[0]
-
-    def models(self, route: str, secret: str) -> tuple[bool, list[str] | None]:
-        """Validate a complete provider model listing; malformed/cyclic pagination stays unknown."""
-        target = self.routes[route]
-        parameters: dict[str, int | str] = {"limit": 1000} if route == "anthropic-api-key" else {}
-        models, cursors = set(), set()
-        while True:
-            url = target.url + (("&" if "?" in target.url else "?") + urlencode(parameters) if parameters else "")
-            status, body = self.transport(url, target.headers(secret))
-            if status in (401, 403):
-                return False, None
-            if not 200 <= status < 300:
-                raise Unavailable(f"provider validation returned {status}")
-            try:
-                payload = json.loads(body)
-                values = payload.get("data")
-                if not isinstance(values, list) or any(
-                    not isinstance(v, dict) or not isinstance(v.get("id"), str) or not v["id"] or secret in v["id"]
-                    for v in values
-                ):
-                    return True, None
-                models.update(v["id"] for v in values)
-                more = payload.get("has_more", None if route == "anthropic-api-key" else False)
-                if more is False:
-                    return True, sorted(models)
-                cursor = payload.get("last_id")
-                if (
-                    more is not True
-                    or not isinstance(cursor, str)
-                    or not cursor
-                    or cursor in cursors
-                    or secret in cursor
-                ):
-                    return True, None
-                cursors.add(cursor)
-                parameters["after_id"] = cursor
-            except (ValueError, TypeError, AttributeError):
-                return True, None
 
 
 @dataclass(frozen=True)
@@ -566,7 +372,7 @@ class Store:
             return [self.entry(user_id, row["route"], row["version"]) for row in rows]
 
     def revision(self, user_id: int, route: str) -> int:
-        """Read the owner/route mutation fence before any candidate validation I/O."""
+        """Read the owner/route mutation fence before preparing a candidate replacement."""
         with self.lock:
             row = self.db.execute(
                 "SELECT revision FROM credential_fences WHERE user_id=? AND route=?", (user_id, route)
@@ -585,7 +391,6 @@ class Store:
         user: User,
         route: str,
         secret: str,
-        models: list[str] | None = None,
         *,
         account: dict | None = None,
         account_label: str | None = None,
@@ -594,7 +399,7 @@ class Store:
         expiry_known=False,
         expected_revision: int | None = None,
     ) -> dict[str, object]:
-        """Store already-validated material; replacement retires only this owner's previous route version."""
+        """Store supplied material without provider validation; replacement retires only this owner's previous route version."""
         if route not in ROUTE_KINDS:
             raise VaultError(422, "unsupported credential kind")
         if expiry_known and expires_at is None or expires_at is not None and not expiry_known:
@@ -605,7 +410,7 @@ class Store:
         now = self.now()
         with self.lock, self.transaction():
             if expected_revision is not None and self.revision(user.id, route) != expected_revision:
-                raise VaultError(409, "credential changed during validation; refresh status before retrying")
+                raise VaultError(409, "credential changed during save; refresh status before retrying")
             self.advance_revision(user.id, route)
             version = self.db.execute(
                 "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
@@ -631,23 +436,23 @@ class Store:
             self.db.execute(
                 "INSERT INTO credential_metadata(user_id,route,version,models,kind,account_label,verified_account,"
                 "status_reason,validated,expires_at,expiry_known,key_id,envelope_format)"
-                " VALUES(?,?,?,?,?,?,?,'validated',?,?,?,?,?)",
+                " VALUES(?,?,?,?,?,?,?,'stored',?,?,?,?,?)",
                 (
                     user.id,
                     route,
                     version,
-                    json.dumps(models),
+                    None,
                     ROUTE_KINDS[route],
                     account_label,
                     verified_account,
-                    now,
+                    None,
                     expiry,
                     int(expiry_known),
                     self.envelope.current,
                     2 if account else 1,
                 ),
             )
-            self.event(user.id, route, version, "validated", "valid", "validated")
+            self.event(user.id, route, version, "stored", "valid", "stored")
             return self.entry(user.id, route, version)
 
     def revoke(self, user_id: int, route: str) -> dict[str, object] | None:
@@ -886,16 +691,12 @@ class SecretBody(BaseModel):
     """An owner-supplied candidate; no owner, URL, refresh or trusted-expiry fields."""
 
     secret: str
-    models: list[str] | None = Field(
-        default=None, description="Selected model set, each probed once before replacement."
-    )
     account_id: str | None = Field(default=None, description="Candidate ChatGPT account header, not verified identity.")
 
 
 def create_app(
     store: Store,
     identity: Identity,
-    validator: Validator,
     service_token: str | None = None,
     private_tokens: tuple[str, ...] = (),
 ) -> FastAPI:
@@ -916,7 +717,7 @@ def create_app(
         return identity.resolve(token.strip())
 
     def known(route: str) -> str:
-        if route not in validator.routes and route not in SUBSCRIPTIONS:
+        if route not in ROUTE_KINDS:
             raise VaultError(404, "unknown route")
         return route
 
@@ -956,16 +757,19 @@ def create_app(
         # Keys go into request headers: only printable ASCII without whitespace is a plausible key.
         if not secret or not all(33 <= ord(c) <= 126 for c in secret):
             raise VaultError(422, "secret is empty or has unsupported characters")
-        revision = store.revision(caller.id, route)
-        validated = validator.validate(route, secret, body.models, body.account_id)
+        account = None
+        if route == "chatgpt-subscription":
+            if not body.account_id or not all(33 <= ord(c) <= 126 for c in body.account_id):
+                raise VaultError(422, "ChatGPT account ID is required and must be a valid header value")
+            account = {"chatgpt_account_id": body.account_id}
+        elif body.account_id is not None:
+            raise VaultError(422, "this route does not use an account ID")
         return store.put(
             caller,
             route,
             secret,
-            validated.models,
-            account=validated.account,
-            account_label=validated.account_label,
-            expected_revision=revision,
+            account=account,
+            account_label="Supplied ChatGPT account " + digest(body.account_id)[:8] if body.account_id else None,
         )
 
     @app.delete("/credentials/{route}")
@@ -1078,9 +882,7 @@ def main(argv=None) -> None:
                     raise ConfigError("rotation requires a named keyring")
                 print(json.dumps({"rewrapped": store.rotate(envelope)}))
                 return
-            public = create_app(
-                store, Identity(http_get), Validator(http_get), service_token, (gateway_token,) if gateway_token else ()
-            )
+            public = create_app(store, Identity(http_get), service_token, (gateway_token,) if gateway_token else ())
             host, _, port = os.environ.get("VAULT_LISTEN", "0.0.0.0:8090").rpartition(":")
             sockets = [resources.enter_context(socket.create_server((host, int(port))))]
             private, private_port = None, None
