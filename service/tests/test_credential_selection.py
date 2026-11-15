@@ -151,6 +151,17 @@ class InitializationTests(AdmissionTests):
         self.assertFalse(state["sponsorships"]["openai"].get("sponsor_id"))
         self.assertFalse(state["sponsorships"]["anthropic"].get("sponsor_id"))
 
+    def test_removed_record_of_unknown_history_does_not_block_a_valid_entry_on_its_route(self):
+        """A migrated tombstone shares the route; only the matched entry is initialization evidence."""
+        state = self.boundary(
+            {"route": "openai-api-key"},
+            {"route": "anthropic-api-key", "status": "unknown", "position": None, "enabled": False, "removed": True},
+            {"route": "anthropic-api-key", "version": 2, "position": 0},
+        )
+        self.assertEqual(state["sponsorships"]["anthropic"]["sponsor_id"], "101")
+        evidence = [r for r in state["funding_initialization"]["metadata"] if r["route"] == "anthropic-api-key"]
+        self.assertEqual([(r["version"], r["status"]) for r in evidence], [(2, "valid")])
+
     def test_route_era_boundary_keeps_the_frozen_route_semantics(self):
         self.metadata = [row for row in self.metadata if (row["user_id"], row["route"]) != ("101", "anthropic-api-key")]
         self.metadata.append(

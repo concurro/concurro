@@ -125,8 +125,23 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(kept, requirements[1:])
         records = [entry("personal", "claude-subscription", 0, roles=["planner"])]
         resolved = sponsorship.listed_routes(requirements, records, TARGET)
-        self.assertEqual([(r["role"], r["route"]) for r in resolved], [("planner", "claude-subscription")])
-        self.assertEqual(sponsorship.listed_routes(requirements, [], TARGET), [])
+        self.assertEqual(
+            [(r["role"], r["route"], r["entry_id"]) for r in resolved], [("planner", "claude-subscription", "personal")]
+        )
+        # A reviewed PR considers only its own role, and route-era providers keep every requirement.
+        self.assertEqual(sponsorship.listed_routes(requirements, records, TARGET, ("pr_reviewers",)), [])
+        self.assertEqual(sponsorship.listed_routes(requirements, legacy, TARGET, ("pr_reviewers",)), requirements[1:])
+
+    def test_boundary_evidence_is_the_matched_entry_not_every_record_on_its_route(self):
+        removed = entry("old", "anthropic-api-key", None, status="unknown", enabled=False)
+        current = entry("new", "anthropic-api-key", 0)
+        requirement = {"role": "planner", "profile": "a", "model": "m", "provider": "anthropic", "route": None}
+        resolved = sponsorship.listed_routes([requirement], [removed, current], TARGET)
+        self.assertEqual(sponsorship.boundary_evidence(resolved, [removed, current]), [current])
+        legacy = [{"route": "anthropic-api-key", "status": "unknown"}, {"route": "openai-api-key", "status": "valid"}]
+        configured = [{**requirement, "route": "anthropic-api-key"}]
+        self.assertEqual(sponsorship.boundary_evidence(configured, legacy), legacy[:1])
+        self.assertEqual(sponsorship.listed_routes([requirement], [], TARGET), [])
 
     def test_coverage_names_the_selected_entry_or_why_none_is_selected(self):
         requirement = {"role": "planner", "profile": "a", "model": "m", "provider": "anthropic", "route": None}

@@ -4,11 +4,12 @@ import hashlib
 import hmac
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from fixtures import ENGINE, KEY, SERVICE, Inline, RestBackend, ServiceFixture, target_files
+from fixtures import ENGINE, KEY, SERVICE, Inline, RestBackend, ServiceFixture, listed, target_files
 
 from support import (
     setUpModule as setUpModule,  # unittest module fixtures
@@ -17,6 +18,7 @@ from support import (
 
 import delegation
 import review_api
+import sponsorship
 from github import Transient
 from service.actions import Actions
 from service.gateway import Disallowed, MutationGateway
@@ -488,6 +490,37 @@ class FundingTests(Fixture, unittest.TestCase):
         self.assertEqual(state["stage"], "complete")
         self.assertIn("funding_initialization", state)
         self.assertEqual(self.fake.comments, [])
+
+    def test_only_pr_review_credentials_make_the_requester_a_sponsor(self):
+        """A triage-only credential is no evidence for a reviewed PR; a PR-review one is."""
+        reviewers = {
+            route["provider"] for route in sponsorship.selected_routes(self.config) if route["role"] == "pr_reviewers"
+        }
+        self.assertEqual(reviewers, {"openai", "anthropic"})
+        user = str(WRITER["id"])
+        rows = listed(
+            [
+                {"user_id": user, "route": "openai-api-key", "version": 1, "status": "valid", "roles": ["triage"]},
+                {
+                    "user_id": user,
+                    "route": "anthropic-api-key",
+                    "version": 1,
+                    "status": "valid",
+                    "roles": ["pr_reviewers"],
+                },
+            ]
+        )
+        self.shadow.metadata = SimpleNamespace(read=lambda actor, at=None: deepcopy(rows))
+        self.request()
+        self.drain()
+        state = self.task_state()
+        self.assertIn("funding_initialization", state)
+        self.assertFalse(state["sponsorships"]["openai"].get("sponsor_id"))
+        self.assertEqual(state["sponsorships"]["anthropic"]["sponsor_id"], user)
+        self.assertEqual(
+            [(r["role"], r["route"]) for r in state["funding_initialization"]["available"]],
+            [("pr_reviewers", "anthropic-api-key")],
+        )
 
     def test_credential_recovery_needs_no_approved_plan(self):
         self.request()

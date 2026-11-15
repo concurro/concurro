@@ -82,11 +82,12 @@ def candidates(records, provider, role, target, profile, routes=None, now=None):
     return sorted(found, key=lambda record: record["position"])
 
 
-def listed_routes(requirements, records, target):
+def listed_routes(requirements, records, target, roles=None):
     """Resolve role requirements against the owner's entry lists as they stood at a boundary.
 
     A provider with route-era records predates entry lists and keeps its configured requirements.
-    Any other provider's requirement takes its first candidate's route, and is dropped without a match.
+    Any other provider's requirement must be one of `roles`, when given, and takes its first
+    candidate's route and entry; it is dropped without a match.
     """
     legacy = {
         ROUTES[record["route"]]["sponsorship_provider"]
@@ -97,11 +98,22 @@ def listed_routes(requirements, records, target):
     for requirement in requirements:
         if requirement["provider"] in legacy:
             result.append(requirement)
-            continue
-        found = candidates(records, requirement["provider"], requirement["role"], target, requirement["profile"])
-        if found:
-            result.append({**requirement, "route": found[0]["route"]})
+        elif roles is None or requirement["role"] in roles:
+            found = candidates(records, requirement["provider"], requirement["role"], target, requirement["profile"])
+            if found:
+                result.append({**requirement, "route": found[0]["route"], "entry_id": found[0]["entry_id"]})
     return result
+
+
+def boundary_evidence(requirements, records):
+    """The boundary records that back `requirements`: each matched entry, or a route-era route's record."""
+    entries = {requirement["entry_id"] for requirement in requirements if "entry_id" in requirement}
+    routes = {requirement["route"] for requirement in requirements if "entry_id" not in requirement}
+    return [
+        record
+        for record in records
+        if (record.get("entry_id") in entries if record.get("list_revision") else record["route"] in routes)
+    ]
 
 
 def selected_routes(config):

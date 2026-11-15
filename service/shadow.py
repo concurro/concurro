@@ -944,7 +944,9 @@ class Shadow:
                 # Where the initiator's entry lists governed the boundary, they name each role's route.
                 evidence = self.metadata.read(boundary["actor_id"], boundary["at"])
                 target = controller.config.get("upstream", controller.config["repository"])
-                routes = sponsorship.listed_routes(routes, evidence, target)
+                # A reviewed PR runs only its PR-review profiles; no other role's credential is evidence.
+                standalone = getattr(controller, "kind", None) == STANDALONE_REVIEW
+                routes = sponsorship.listed_routes(routes, evidence, target, ("pr_reviewers",) if standalone else None)
             if explicit_funding or any(route["route"] is not None for route in routes):
                 routes = [route for route in routes if route["route"] is not None]
             filling = {route["provider"] for route in routes}
@@ -975,10 +977,8 @@ class Shadow:
             if not implicit:
                 routes = []
                 boundary = {**boundary, "initializer_status": "unknown"}
-            selected = {
-                r["route"] for r in routes if r["provider"] and not earlier["slots"][r["provider"]].get("sponsor_id")
-            }
-            metadata = [record for record in metadata if record["route"] in selected]
+            unfilled = [r for r in routes if r["provider"] and not earlier["slots"][r["provider"]].get("sponsor_id")]
+            metadata = sponsorship.boundary_evidence(unfilled, metadata)
             if any(record.get("status") == "unknown" for record in metadata):
                 if not any(
                     f["command"] == "sponsor" or f["command"] == "funding" and f["funding"] == "contributed"

@@ -395,7 +395,9 @@ bindings that name them stay readable, but they no longer choose or constrain th
 of a new personal selection. They still describe a task whose initiation boundary predates
 entry lists: there, the initiator fills a provider slot only with usable material on the
 configured route, as frozen grants already record. At a later boundary the initiator fills a
-slot when their list has a candidate for one of that provider's roles.
+slot when their list has a candidate for one of that provider's roles. A reviewed PR considers
+only its PR-review profiles. The frozen evidence is each matched entry's own record, so another
+record on the same route, such as a removed one, neither qualifies nor blocks it.
 
 Ordered commands work before enrollment and use the same durable checkpoint/Exchange transition
 receipts afterward. `provider_funding` freezes initial task choices; later explicit funding
