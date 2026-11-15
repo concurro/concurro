@@ -56,6 +56,28 @@ class SettingsTests(unittest.TestCase):
             },
         }
 
+    def test_reviewer_enables_reviews_with_its_own_secret_and_one_fork_per_upstream(self):
+        self.private("client-secret")
+        entry = {"user_id": 4242, "client_id": "Iv1.client", "client_secret_path": str(self.root / "client-secret")}
+        loaded = self.load({**self.data, "reviewer": entry})
+        self.assertEqual((loaded.reviewer.user_id, loaded.reviewer.client_id), (4242, "Iv1.client"))
+        self.assertIsNone(self.load(self.data).reviewer)
+        for field, value in (
+            ("user_id", "4242"),
+            ("user_id", 0),
+            ("client_id", ""),
+            ("client_secret_path", str(self.root / "webhook")),
+        ):
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(SettingsError, "reviewer"):
+                self.load({**self.data, "reviewer": {**entry, field: value}})
+        with self.assertRaisesRegex(SettingsError, "reviewer"):
+            self.load({**self.data, "reviewer": {**entry, "login": "ConcurroBot"}})
+        shared = deepcopy(self.data)
+        shared["targets"].append({"upstream": "source/one", "fork": "owner/three", "issues": "fork"})
+        self.load(shared)
+        with self.assertRaisesRegex(SettingsError, "targets"):
+            self.load({**shared, "reviewer": entry})
+
     def private(self, name, content="{}"):
         path = self.root / name
         path.write_text(content)

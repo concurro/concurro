@@ -3,6 +3,7 @@
 import re
 
 import review_api
+import review_checks
 import run_display
 from checkpoint_health import MARKER as HEALTH_MARKER
 from checkpoints import MARKER as STATUS_MARKER
@@ -48,6 +49,16 @@ PULL = re.compile(rf"pulls/(?P<pull>{NUMBER})(?:/comments/(?P<comment>{NUMBER})/
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 OID = re.compile(r"[0-9a-f]{40}")
 QUERY = re.compile(r"\s*query\b")
+
+# A standalone review writes only its PR's artifacts, command replies, progress check and reviews.
+REVIEW_WRITES = (
+    ("POST", rf"issues/(?P<issue>{NUMBER})/artifacts"),
+    ("PATCH", rf"issues/(?P<issue>{NUMBER})/artifacts/{NUMBER}"),
+    ("POST", rf"issues/(?P<issue>{NUMBER})/comments"),
+)
+CHECK_RUN = re.compile(rf"check-runs(?:/(?P<run>{NUMBER}))?")
+CHECK_STATES = {"queued": None, "in_progress": None, "completed": "neutral"}
+CHECK_FIELDS = {"status", "output"}
 
 RUN_BRANCH_PREFIX = "concurro/runs/"
 EXECUTOR_WORKFLOW = "concurro-executor.yml"
@@ -161,6 +172,57 @@ def allowed_target(key, binding, method, path, body):
         and method in ("POST", "PATCH")
         and allowed((repository, key[1]), method, path, body)
     )
+
+
+def check_identity(key):
+    """The name and correlation prefix of a standalone review's check runs."""
+    return review_checks.NAME.format(pr=key[1]), f"concurro:{key[0]}#{key[1]}:"
+
+
+def check_write(key, method, relative, body):
+    """Whether a request creates or updates this task's progress check, which only ever ends neutral."""
+    match = CHECK_RUN.fullmatch(relative)
+    if match is None or not isinstance(body, dict) or not isinstance(body.get("output"), dict):
+        return False
+    status = body.get("status")
+    if status not in CHECK_STATES or set(body["output"]) != {"title", "summary"}:
+        return False
+    if not all(isinstance(value, str) for value in body["output"].values()):
+        return False
+    fields = set(body) - CHECK_FIELDS
+    if status == "completed":
+        if body.get("conclusion") != CHECK_STATES[status]:
+            return False
+        fields -= {"conclusion"}
+    if method == "PATCH" and match["run"]:
+        return not fields
+    name, prefix = check_identity(key)
+    return (
+        method == "POST"
+        and not match["run"]
+        and fields == {"name", "head_sha", "external_id", "details_url"}
+        and body["name"] == name
+        and isinstance(body["head_sha"], str)
+        and OID.fullmatch(body["head_sha"]) is not None
+        and isinstance(body["external_id"], str)
+        and body["external_id"].startswith(prefix)
+        and body["details_url"] == f"https://github.com/{key[0]}/pull/{key[1]}"
+    )
+
+
+def allowed_review(key, method, path, body):
+    """Admit a standalone review's storage, command replies, progress check and review mutations."""
+    if path == "graphql":
+        return method == "POST" and (resolved_thread(body) is not None or review_api.identify(body) is not None)
+    prefix = f"repos/{key[0]}/"
+    if not path.startswith(prefix):
+        return False
+    relative = path[len(prefix) :]
+    for verb, pattern in REVIEW_WRITES:
+        match = re.fullmatch(pattern, relative) if verb == method else None
+        if match:
+            return int(match["issue"]) == key[1]
+    return check_write(key, method, relative, body)
 
 
 def runner_write(path, method, body):

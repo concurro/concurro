@@ -3,6 +3,9 @@
 PREPARED_PUBLICATION = "prepared publication must be reconciled before reopening design"
 ACCUMULATED_CHANGES = "cannot reconcile accumulated PR changes"
 REVIEW_PUBLICATION_FAILED = "PR review publication failed repeatedly; inspect the PR and its review threads"
+REVIEW_OUTCOME_UNKNOWN = (
+    "PR review publication outcome is unknown; nothing was resent. Reconcile the PR's reviews, then retry"
+)
 UNCERTAIN_MODEL = "model call outcome was uncertain twice; operator reconciliation required"
 REVIEW_CONFLICT = "PR review publication differs from its recorded content; reconcile manually"
 
@@ -41,6 +44,7 @@ OPERATOR_REASONS = {
     PREPARED_PUBLICATION: "A prepared publication prevents reopening the design.",
     ACCUMULATED_CHANGES: "Concurro cannot account for the accumulated PR changes.",
     REVIEW_PUBLICATION_FAILED: "Concurro could not finish publishing the PR review.",
+    REVIEW_OUTCOME_UNKNOWN: "Concurro cannot tell whether a PR review write was applied.",
     UNCERTAIN_MODEL: "A model call's outcome could not be confirmed.",
     LEGACY_BUNDLE: "The trusted bundle has changed.",
     REVIEW_CONFLICT: "Published review content differs from Concurro's record.",

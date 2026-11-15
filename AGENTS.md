@@ -26,7 +26,10 @@ changes need no documentation unless they make existing guidance inaccurate.
   For changed permissions or a new/updated target, verify both the installation grants
   and the token permissions requested by `service.targets.permissions()` for each role.
   Fork publication needs Contents and Workflows write; dispatch additionally needs Actions
-  write. Upstream-only and read tokens must not gain Workflows write.
+  write. Upstream-only and read tokens must not gain Workflows write. Settings that name
+  a `reviewer` add Issues and Checks write to upstream write tokens: confirm that
+  installation grant is accepted before such settings are deployed, or no upstream
+  write token can be issued.
 - Compare the approved upstream base with the fork's default branch, particularly
   `.github/workflows/`, and check applicable branch rules. Compare exact file/blob identities;
   GitHub's three-dot comparison is relative to the merge base, not the current fork tree.

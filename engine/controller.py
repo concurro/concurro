@@ -76,7 +76,7 @@ from policy import (
 from publication import INLINE_BLOB_LIMIT as INLINE_BLOB_LIMIT, PR_TITLE_LIMIT as PR_TITLE_LIMIT, Publication
 from repository_reader import RepositoryReader
 from runtime_defaults import DEFAULT_RETAINED_BYTES, DEFAULT_TURN_SECONDS
-from vocab import JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
+from vocab import CONTRIBUTION, JUDGED_STAGES, MERGED_STAGES, SUSPENDED_STAGES, TERMINAL_STAGES
 
 # Correct malformed intake and planner output without spending a semantic design-revision round.
 PLAN_OUTPUT_REPAIRS = 2
@@ -233,8 +233,12 @@ def validate_config(config):
 
 
 def config_digest(config):
-    """Bind tasks to their configuration; the service's `engine` pin is excluded, so upgrades keep tasks valid."""
-    return digest({k: v for k, v in config.items() if k != "engine"})
+    """Bind tasks to their configuration.
+
+    The service's `engine` pin and resolved account descriptors are excluded: upgrades and
+    account renames keep tasks valid.
+    """
+    return digest({k: v for k, v in config.items() if k not in ("engine", "actors")})
 
 
 # Tasks without an ownership marker predate it and belong to the Actions controller.
@@ -314,6 +318,9 @@ def sha256(text):
 
 class Controller:
     """Advance at most one bounded stage, preserving intent before remote mutations."""
+
+    # The lifecycle and trusted instruction addenda this controller selects; never read from task input.
+    kind = CONTRIBUTION
 
     STAGE_METHODS = {
         "intake": "quality_control",
@@ -644,10 +651,10 @@ class Controller:
             context["pull_request"] = self.state["pr"]
         if "agents" in self.config:
             context["agent"] = resolve(self.config, provider, stage).record()
-        if prompts.size(stage, context, self.bundle) > self.config["max_context_bytes"]:
+        if prompts.size(stage, context, self.bundle, self.kind) > self.config["max_context_bytes"]:
             context = classification.context_core(context)
         context = feedback.prepare(context)
-        size = prompts.size(stage, context, self.bundle)
+        size = prompts.size(stage, context, self.bundle, self.kind)
         if size > self.config["max_context_bytes"]:
             raise Blocked(
                 f"{stage} prompt (context, instructions and schema) exceeds the size limit ({size} of {self.config['max_context_bytes']} bytes); "
@@ -683,6 +690,8 @@ class Controller:
             if stage == "plan_qc":
                 design_eligibility.prepare(self.state, context, session, operation)
             request = {**context, "controller_credential": credential.record()}
+            if self.kind != CONTRIBUTION:
+                request["controller_task_kind"] = self.kind
             if session:
                 request["controller_session"] = session
             frozen = admissions.freeze(
@@ -1961,7 +1970,7 @@ class Controller:
         over = [
             f"{name} ({size} of {limit} bytes)"
             for name, context in contexts
-            if (size := prompts.size("review", context, self.bundle)) > limit
+            if (size := prompts.size("review", context, self.bundle, self.kind)) > limit
         ]
         if not over:
             return None
@@ -1981,11 +1990,7 @@ class Controller:
                 "Review changes to CI, workflows and policy documents explicitly, including whether the required "
                 "checks still validate the contribution. These paths are editable under the target policy."
             )
-        context["published_pr_body"] = (
-            (self.pulls.repo(f"pulls/{self.state['pr']}").get("body") or "")
-            if self.state.get("pr") and head != "0" * 40
-            else ""
-        )
+        context["published_pr_body"] = self.published_body(head)
         context["pr_description_criterion"] = (
             "The published PR description accurately describes the whole base-to-head change and its validation."
         )
@@ -1996,7 +2001,7 @@ class Controller:
         # Diff previews are optional; file identities, findings and review criteria are not.
         limit = self.config["max_context_bytes"] - DISPATCH_ALLOWANCE
         preview = MAX_DIFF
-        while prompts.size("review", context, self.bundle) > limit and preview:
+        while prompts.size("review", context, self.bundle, self.kind) > limit and preview:
             preview //= 2
             if preview < 256:
                 preview = 0
@@ -2005,6 +2010,12 @@ class Controller:
                     change["diff"] = diff_preview(change["diff"], preview)
                     change["truncated"] = True
         return context
+
+    def published_body(self, head):
+        """The PR description a reviewer checks; empty for a prospective head."""
+        if not self.state.get("pr") or head == "0" * 40:
+            return ""
+        return self.pulls.repo(f"pulls/{self.state['pr']}").get("body") or ""
 
     def _publication(self):
         """Bind publication to current state; checkpoint callbacks stay explicit at write boundaries."""

@@ -7,11 +7,13 @@ import sys
 import markup
 import pending_reviews
 import reason_guidance
-from github import Transient
+from github import Rejected, Transient
+from identities import Actor
 from markup import block, code, link, table, text
 from model_config import assigned
 from policy import Blocked, agent_identity, digest
 from protocol import PUBLICATION_BODY_BYTES as REVIEW_BODY_LIMIT
+from vocab import STANDALONE_REVIEW
 
 # A closed finding's text is excerpted once its review event is published.
 EXCERPT = 300
@@ -77,7 +79,7 @@ def context(state, provider):
     return [{k: f[k] for k in ("id", "status", "path", "start_line", "line", "detail")} for f in owned(state, provider)]
 
 
-def apply(state, provider, report, head, issue_url=None):
+def apply(state, provider, report, head, issue_url=None, note=None):
     """Record a validated report's dispositions and new findings; return the review sequence and new IDs.
 
     Deterministic for one report, so a retained model result applied again after a crash
@@ -106,6 +108,8 @@ def apply(state, provider, report, head, issue_url=None):
         }
         if issue_url:
             finding["report_url"] = issue_url
+        if note:
+            finding["note"] = note
         finding["opening_digest"] = digest(finding_body(finding))
         ledger(state).append(finding)
         identifiers.append(identifier)
@@ -191,6 +195,9 @@ CONFLICT = reason_guidance.REVIEW_CONFLICT
 # GitHub rejects a review body over 65,536 characters.
 
 KEPT_TEXT = 1000
+# Standalone reviews have no issue dashboard; their complete reports stay in the PR's Concurro artifacts.
+STANDALONE_NOTE = "Shortened to fit GitHub's limit; the complete text is retained in Concurro's report data."
+POINT_IN_TIME = "Point-in-time review of {head}. Re-request the reviewer to assess later changes."
 OMITTED = "Full text omitted: it exceeds GitHub's review limit. It is kept in the automation audit state."
 HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -213,10 +220,13 @@ def shown_lines(patch):
     return hunks
 
 
-def placement(finding, patches, inline=True):
-    """`inline`, `file` or `body` for one finding against the PR's files at the reviewed head."""
+def placement(finding, patches, inline=True, threads=True):
+    """`inline`, `file` or `body` for one finding against the PR's files at the reviewed head.
+
+    Without `threads`, every finding goes in the review body.
+    """
     path = finding["path"]
-    if path is None or path not in patches:
+    if not threads or path is None or path not in patches:
         return "body"
     line = finding["line"]
     if inline and line is not None and patches[path]:
@@ -263,7 +273,7 @@ def finding_body(finding):
     suffix = "\n\n" + markup.sub("Concurro review · " + text(finding["provider"]))
     detail = block(finding["detail"])
     if finding.get("format", 1) >= 3:
-        note = "Full finding in the report archive linked from the issue dashboard."
+        note = finding.get("note", "Full finding in the report archive linked from the issue dashboard.")
         if finding.get("report_url"):
             note = link(note, finding["report_url"])
         detail = markup.excerpt(finding["detail"], REVIEW_BODY_LIMIT - len((prefix + suffix).encode()), note)
@@ -298,6 +308,10 @@ def where(finding):
     start, line = finding["start_line"], finding["line"]
     lines = line_suffix(start, line)
     return code(finding["path"] + lines, cell=True)
+
+
+class NotVisible(RuntimeError):
+    """A confirmed write is not yet readable; the same rendering is checked again later."""
 
 
 class Droppable(str):
@@ -388,25 +402,28 @@ def review_body_v2(state, config, item, report, findings, placed):
             f"review {item['sequence']}",
         ),
     ]
+    diagnostics = "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}"
+    snapshot = item.get("snapshot")
+    if snapshot:
+        # A standalone review states its own subject: nothing else on the PR records the round.
+        diagnostics += f" · round {snapshot['round']} · merge base " + code(snapshot["base"])
     if item.get("format", 1) >= 4:
-        lines[-1] = (
-            markup.sub(text(f"{item['provider']} / {report['model']}" + effort))
-            + "\n\n"
-            + markup.details("Diagnostics", "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}")
-        )
+        lines[-1] = markup.sub(text(f"{item['provider']} / {report['model']}" + effort))
+        if snapshot:
+            lines[-1] += "\n\n" + POINT_IN_TIME.format(head=code(item["head"][:7]))
+        lines[-1] += "\n\n" + markup.details("Diagnostics", diagnostics)
     body = "\n".join(str(line) for line in lines)
     measured = len(body.encode()) if item.get("format", 1) >= 5 else len(body)
     if measured > REVIEW_BODY_LIMIT:
         body = "\n".join(OMITTED if isinstance(line, Droppable) else line for line in lines)
     if item.get("format", 1) >= 5 and len(body.encode()) > REVIEW_BODY_LIMIT:
         prefix = review_marker(state, config, item["sequence"]) + f"\n### {emoji} Concurro review · {outcome}\n\n"
-        note = "Full review and findings in the report archive linked from the issue dashboard."
-        footer = (
-            "\n\n"
-            + note
-            + "\n\n"
-            + markup.details("Diagnostics", "Reviewed commit " + code(item["head"]) + f" · review {item['sequence']}")
+        note = (
+            STANDALONE_NOTE
+            if snapshot
+            else "Full review and findings in the report archive linked from the issue dashboard."
         )
+        footer = "\n\n" + note + "\n\n" + markup.details("Diagnostics", diagnostics)
         body = (
             prefix
             + markup.excerpt(
@@ -452,12 +469,14 @@ def disposition_body(state, item, disposition):
         location = {
             "fixed": "in " + code(item["head"][:7]),
             "open": "on " + code(item["head"][:7]),
-            "obsolete": "under plan " + code(state["plan_id"][:12]),
+            "obsolete": "under plan " + code(state["plan_id"][:12])
+            if state.get("plan_id")
+            else "as of " + code(item["head"][:7]),
         }[disposition["status"]]
         evidence = block(disposition["evidence"])
         if item.get("format", 1) >= 3:
-            note = "Full evidence in the report archive linked from the issue dashboard."
             finding = find(state, disposition["id"]) or {}
+            note = finding.get("note", "Full evidence in the report archive linked from the issue dashboard.")
             if finding.get("report_url"):
                 note = link(note, finding["report_url"])
             evidence = markup.excerpt(disposition["evidence"], REVIEW_BODY_LIMIT - 1000, note)
@@ -472,10 +491,11 @@ def disposition_body(state, item, disposition):
     return f"{marker}\n{answer}: {disposition['evidence']}"
 
 
-def queue_review(state, provider, report):
+def queue_review(state, provider, report, snapshot=None):
     """Queue a recorded report's publication on the PR.
 
     A design reopen is not kept among the head's reports, so its item carries the report.
+    `snapshot` is a standalone round's `{round, base}`, shown in the review itself.
     """
     item = {
         "kind": "review",
@@ -490,6 +510,8 @@ def queue_review(state, provider, report):
         item["publication"] = PUBLICATION
     if report["verdict"] == "reopen":
         item["report"] = report
+    if snapshot:
+        item["snapshot"] = dict(snapshot)
     state.setdefault("pr_outbox", []).append(item)
 
 
@@ -527,19 +549,43 @@ def report_for(state, item):
     return None
 
 
+def publisher(state, config):
+    """The account authoring this task's reviews: a standalone task's reviewer, otherwise the App.
+
+    The service supplies resolved `actors`; without them the App is known by its login alone.
+    """
+    actors = config.get("actors") or {}
+    if state.get("kind") == STANDALONE_REVIEW:
+        if "reviewer" not in actors:
+            raise Blocked("standalone review has no configured reviewer account")
+        return Actor.parse(actors["reviewer"])
+    return Actor.parse(actors.get("app") or config["bot_login"])
+
+
 class Publisher:
     """Publish the PR outbox through one GitHub client, checkpointing after each durable step."""
 
     def __init__(self, state, github, config, checkpoint):
         self.state, self.gh, self.config, self.checkpoint = state, github, config, checkpoint
-        self.bot = config["bot_login"]
+        self.actor = publisher(state, config)
+        self.bot = self.actor.login
         self.pr = state["pr"]
+        # A standalone round publishes against its frozen commit, whatever the PR's current head.
+        self.frozen = state.get("kind") == STANDALONE_REVIEW
+
+    def patches(self, item, head):
+        """Each changed file's patch at the reviewed head, for placement."""
+        if self.frozen:
+            # The PR's own file list follows its current head; the comparison is pinned to the item's round.
+            base = item.get("snapshot", {}).get("base", self.state["base"])
+            files = self.gh.repo(f"compare/{base}...{head}").get("files", [])
+        else:
+            files = self.gh.pages(f"pulls/{self.pr}/files")
+        return {f["filename"]: f.get("patch") for f in files}
 
     def ours(self, items, marker):
-        """App-authored items whose body starts with `marker`; more than one is a conflict."""
-        found = [
-            i for i in items if i.get("user", {}).get("login") == self.bot and i.get("body", "").startswith(marker)
-        ]
+        """Publisher-authored items whose body starts with `marker`; more than one is a conflict."""
+        found = [i for i in items if self.actor.rest(i.get("user")) and i.get("body", "").startswith(marker)]
         if len(found) > 1:
             raise Blocked(reason_guidance.DUPLICATE_REVIEW)
         return found[0] if found else None
@@ -552,14 +598,21 @@ class Publisher:
                 raise Blocked(CONFLICT)
             return existing
         created = self.gh.repo(path, "POST", data)
-        comments.append({"id": created["id"], "user": {"login": self.bot}, "body": body, "path": data.get("path")})
+        comments.append(
+            {
+                "id": created["id"],
+                "user": {"login": self.actor.login, "id": self.actor.id},
+                "body": body,
+                "path": data.get("path"),
+            }
+        )
         return created
 
     def opening(self, comments, finding):
         """A finding's verified opening comment; a missing one is retried, a changed one blocks."""
         comment = next((c for c in comments if c["id"] == finding["comment"]), None)
         if comment is None:
-            raise RuntimeError("finding comment not visible")
+            raise NotVisible("finding comment not visible")
         if not opening_matches(finding, comment):
             raise Blocked(CONFLICT)
         return comment
@@ -574,10 +627,10 @@ class Publisher:
         if report["verdict"] != "reopen":
             # Placement holds only for the head it was computed on; a newer head has its own review.
             # A design reopen has no findings to place and is published whatever the head.
-            if self.gh.repo(f"pulls/{self.pr}")["head"]["sha"] != item["head"]:
+            if not self.frozen and self.gh.repo(f"pulls/{self.pr}")["head"]["sha"] != item["head"]:
                 return
-            patches = {f["filename"]: f.get("patch") for f in self.gh.pages(f"pulls/{self.pr}/files")}
-            if self.gh.repo(f"pulls/{self.pr}")["head"]["sha"] != item["head"]:
+            patches = self.patches(item, item["head"])
+            if not self.frozen and self.gh.repo(f"pulls/{self.pr}")["head"]["sha"] != item["head"]:
                 return
         findings = [find(state, i) for i in report["finding_ids"]]
         placed = {f["id"]: placement(f, patches, item["inline"]) for f in findings}
@@ -637,10 +690,12 @@ class Publisher:
                 continue
             opening = self.ours(comments, finding_marker(finding["id"]))
             if opening is None or opening["id"] not in threads:
-                raise RuntimeError("finding thread not visible")
+                raise NotVisible("finding thread not visible")
             if not opening_matches(finding, opening):
                 raise Blocked(CONFLICT)
             finding.update(comment=opening["id"], thread=threads[opening["id"]])
+            if self.actor.id is not None:
+                finding["author"] = self.actor.record()
 
     def resolve(self, closed):
         """Resolve each closed finding's thread at most once; an unresolved thread after an attempt is left to a human."""
@@ -655,7 +710,15 @@ class Publisher:
             elif resolution == "none":
                 finding["resolution"] = "intended"
                 self.checkpoint()
-                finding["resolution"] = "done" if self.gh.resolve_thread(thread) else "manual"
+                try:
+                    resolved = self.gh.resolve_thread(thread)
+                except Rejected:
+                    # Definitely refused, as without permission: the disposition stands, a human resolves it.
+                    resolved = False
+                finding["resolution"] = "done" if resolved else "manual"
+                if resolved and self.frozen and (self.config.get("actors") or {}).get("app"):
+                    # A standalone reviewer's threads are resolved by the App, not their author.
+                    finding["resolved_by"] = Actor.parse(self.config["actors"]["app"]).record()
             self.checkpoint()
 
     def withdrawn(self, item):
@@ -683,8 +746,10 @@ class Publisher:
     def run(self):
         """Publish pending items in order; return whether the outbox is now empty.
 
-        A failed item stays pending and is retried on the next tick, its inline findings moved
-        to file-level comments; after `MAX_ATTEMPTS` failures the task is blocked.
+        Each failed attempt records its outcome and retries on the next tick, which first
+        reconciles by marker. Only a definite rejection moves inline findings to file-level
+        comments; an unknown outcome or a write not yet visible keeps its rendering. The task
+        blocks after `MAX_ATTEMPTS`.
         """
         outbox = self.state.get("pr_outbox", [])
         while outbox:
@@ -696,19 +761,57 @@ class Publisher:
                     self.review(item)
                 else:
                     self.withdrawn(item)
-            except (Blocked, Transient):
-                raise
-            except Exception:
+            except NotVisible:
                 item["attempts"] += 1
-                item["inline"] = False
+                item["outcome"] = {"status": "applied", "reason": "not_visible"}
                 self.checkpoint()
                 if item["attempts"] >= MAX_ATTEMPTS:
                     raise Blocked(reason_guidance.REVIEW_PUBLICATION_FAILED)
-                print("Concurro PR review publication failed; retained for retry.", file=sys.stderr)
+                print("Concurro PR review publication is not yet visible; retained for retry.", file=sys.stderr)
                 return False
+            except (Blocked, Transient):
+                raise
+            except Rejected as error:
+                # Only a definite rejection permits a replacement rendering: file-level, then the review body.
+                item["attempts"] += 1
+                if item.get("publication") == "pending-v1" and not item["inline"]:
+                    item["threads"] = False
+                item["inline"] = False
+                item["outcome"] = {"status": "rejected", "reason": error.reason}
+                self.checkpoint()
+                if item["attempts"] >= MAX_ATTEMPTS:
+                    raise Blocked(reason_guidance.REVIEW_PUBLICATION_FAILED)
+                print("Concurro PR review publication was rejected; retained for retry.", file=sys.stderr)
+                return False
+            except Exception:
+                # Possibly applied: keep the rendering, and let the next run reconcile by marker first.
+                item["attempts"] += 1
+                item["outcome"] = {"status": "unknown"}
+                self.checkpoint()
+                if item["attempts"] >= MAX_ATTEMPTS:
+                    raise Blocked(reason_guidance.REVIEW_OUTCOME_UNKNOWN) from None
+                print("Concurro PR review publication outcome is unknown; retained to reconcile.", file=sys.stderr)
+                return False
+            item.pop("outcome", None)
+            self.published(item)
             outbox.pop(0)
             self.checkpoint()
         return True
+
+    def published(self, item):
+        """Keep a standalone review's public identity for its check and later rounds."""
+        review = item.get("publication_state", {}).get("review_number")
+        if self.frozen and item["kind"] == "review" and review:
+            self.state.setdefault("review_receipts", []).append(
+                {
+                    "sequence": item["sequence"],
+                    "provider": item["provider"],
+                    "head": item["head"],
+                    "round": item.get("snapshot", {}).get("round"),
+                    "review": review,
+                    "author": self.actor.record(),
+                }
+            )
 
 
 def publish(state, github, config, checkpoint):

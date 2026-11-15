@@ -108,10 +108,25 @@ and withdrawals have distinct recovery markers. Full summaries and finding text 
 excerpted for GitHub's display capacity, with a link to the immutable report; the repair
 agent still receives the complete selected feedback.
 
-A non-transient publication failure retains the outbox item and falls back from inline
-to file-level placement on retry. Repeated failure blocks after the configured publication
-attempt bound (`MAX_ATTEMPTS` in `reviews.py`). Transient transport errors retain the item
-without that fallback. Unknown service writes require operator settlement before another
+Each failed attempt records its outcome on the outbox item and is retried on the next
+tick, which reconciles by marker before writing:
+
+| Outcome | Next attempt |
+| ---- | ---- |
+| `rejected`: GitHub definitely refused the write (`github.Rejected`) | Inline findings move to file-level placement; a pending review refused again puts every finding in its body |
+| `unknown`: any unclassified failure | Same rendering; nothing is switched or assumed |
+| `applied` but not yet visible (`reviews.NotVisible`) | Same rendering |
+
+While a pending review is built, a finding whose thread GitHub refuses, by a null thread or
+a definite rejection, falls back in place: inline to file-level, then to the review body.
+A pending review GitHub definitely refuses to submit is dropped and rebuilt with the
+stepped-down placement; it is never resubmitted unchanged.
+A definitely refused thread resolution, as without permission, leaves the thread for a
+human (`manual`) and the finding's disposition recorded.
+
+Repeated failure blocks after the publication attempt bound (`MAX_ATTEMPTS` in
+`reviews.py`), naming an unknown outcome as such. Transient transport errors retain the
+item without counting. Unknown service writes require operator settlement before another
 write. Review publication must finish before readiness.
 
 ## Thread resolution
@@ -143,8 +158,10 @@ application and automatic adoption of external commits are not supported.
 
 ## Service authorization
 
-PR writes are allowed only for the recorded App-authored PR on the task's fork branch.
-Replies and resolutions must target an App-authored root with the finding marker. The
+PR writes are allowed only for the recorded App-authored PR on the task's fork branch,
+or, for a [standalone review](standalone-reviews.md), the externally authored PR it was
+enrolled for. Replies and resolutions must target a root with the finding marker authored
+by the task's reviewing account: the App, or the standalone reviewer. The
 controller additionally binds it to the ledger. The gateway admits only the exact supported
 GraphQL mutations and treats incomplete or error-bearing mutation responses as unknown.
 
@@ -203,6 +220,10 @@ return to review; their evidence remains in history. A writer-requested repair w
 feedback archives the previous panel and requests new judgments.
 
 ### Bundle rollout
+
+The PR reviewer skill is composed from shared rules and a contribution or standalone
+addendum ([reviewer instructions](standalone-reviews.md#reviewer-instructions)); splitting
+it changed the bundle identity without changing contribution review rules.
 
 The description contract includes the develop schema and implementer skill; the final self-check
 and refinement guidance also change the implementer and PR reviewer skills. Deploy

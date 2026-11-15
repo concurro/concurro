@@ -614,7 +614,8 @@ class DescriptionRepairTests(unittest.TestCase):
         c = self.ready()
         short, large = self.report(), self.report()
         large["description"]["changes"] = ["Long description. " * 2200]
-        c.config["max_context_bytes"] = 20000
+        # Room for the review instructions and the short description, far below the large one.
+        c.config["max_context_bytes"] = 21000
         original = deepcopy(c.state["candidate"])
         with (
             patch.object(c, "ask", side_effect=[large, short]) as ask,

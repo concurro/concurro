@@ -150,7 +150,7 @@ class DescriptionTests(unittest.TestCase):
             "context": {"repository_commit": "a" * 40, "repository": {"refs": {}, "head": ""}},
         }
         prompt = json.loads(prompts.prompt_for(request, Bundle()))
-        instructions = " ".join(prompt["instructions"]["skill"].split())
+        instructions = " ".join((prompt["instructions"]["skill"] + prompt["instructions"]["mode"]).split())
         for requirement in (
             "Accept implementation refinements that preserve requirements, acceptance criteria and approved design intent",
             "renamed helpers, equivalent implementation choices and corrected description wording",
@@ -160,7 +160,7 @@ class DescriptionTests(unittest.TestCase):
             "Request changes for implementation defects",
             "Check `published_pr_body`",
             "Raise a finding for a materially misleading or incomplete description",
-            "Reopen only if the underlying change requires it, not solely because disclosure is missing",
+            "Reopen for a misleading description only if the underlying change requires it, not solely because disclosure is missing",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, instructions)

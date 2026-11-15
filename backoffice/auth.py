@@ -15,6 +15,8 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+import oauth_grant
+
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 USER_URL = "https://api.github.com/user"
@@ -301,25 +303,15 @@ class GitHubOAuth:
             payload = response.json()
         except (httpx.HTTPError, ValueError):
             raise AuthError("GitHub sign-in is unavailable; please sign in again", uncertain=True) from None
-        token = payload.get("access_token") if isinstance(payload, dict) else None
-        if response.status_code != 200 or not isinstance(token, str) or not token:
-            raise AuthError("GitHub refused the sign-in; please sign in again", uncertain=response.status_code >= 500)
-        lifetime, refresh, refresh_lifetime = (
-            payload.get("expires_in"),
-            payload.get("refresh_token"),
-            payload.get("refresh_token_expires_in"),
-        )
-        if lifetime is not None and (type(lifetime) is not int or lifetime <= 0):
-            raise AuthError("GitHub returned an incomplete sign-in; please sign in again", uncertain=True)
-        if refresh is not None and (
-            not isinstance(refresh, str)
-            or not refresh
-            or type(refresh_lifetime) is not int
-            or refresh_lifetime <= 0
-            or lifetime is None
-        ):
-            raise AuthError("GitHub returned an incomplete sign-in; please sign in again", uncertain=True)
-        return TokenGrant(token, lifetime, refresh, refresh_lifetime)
+        try:
+            return TokenGrant(*oauth_grant.parse(response.status_code, payload))
+        except oauth_grant.GrantError as error:
+            message = (
+                "GitHub refused the sign-in; please sign in again"
+                if error.code == "refused"
+                else "GitHub returned an incomplete sign-in; please sign in again"
+            )
+            raise AuthError(message, uncertain=error.uncertain) from None
 
     def exchange(self, code: str, callback: str, verifier: str) -> TokenGrant:
         """Exchange the browser's one-use code using its own PKCE verifier."""

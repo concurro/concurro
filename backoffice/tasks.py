@@ -24,7 +24,7 @@ from sponsorship import own_consent, own_consent_present, selected_routes
 from storage_helpers import owned
 from vocab import Stage
 
-from . import activity
+from . import activity, review_tasks
 from .auth import User
 from .commands import CommandError, IndexUnavailable
 from .github import Access
@@ -531,6 +531,7 @@ class Tasks:
             "targets": [record for record, _, _ in views],
             "tasks": sorted((t for _, tasks, _ in views for t in tasks), key=lambda t: t["updatedAt"], reverse=True),
             "issues": [intent for _, _, intents in views for intent in intents],
+            "reviews": [review for target, _ in visible for review in review_tasks.listed(self, target)],
             "activity": activity.feed(self.recorded(repositories)),
             **self.freshness(),
         }
@@ -539,7 +540,13 @@ class Tasks:
         target, fork = self.find_target(repository)
         record = self.target_record(target, fork)
         tasks, intents = self.listed(target, record)
-        return {"target": record, "tasks": tasks, "issues": intents, **self.freshness()}
+        return {
+            "target": record,
+            "tasks": tasks,
+            "issues": intents,
+            "reviews": review_tasks.listed(self, target),
+            **self.freshness(),
+        }
 
     def target_runs(self, repository: str) -> dict:
         """The fork's recent executor runs, attributed to recorded turns; none without diagnostics."""

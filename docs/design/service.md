@@ -24,6 +24,7 @@ operator-requested design evaluation. There is no host executor or build workben
 | `service/admission.py` | Pure request-shape admission for task, publication and runner writes |
 | `service/settlement.py` | Classify write outcomes and log bounded rejection diagnostics |
 | `service/identity.py`, `targets.py` | Mint and verify repository-specific installation tokens |
+| `service/user_grant.py` | Store, refresh and bind the reviewer account's user token for [standalone reviews](standalone-reviews.md) |
 | `service/registry.py` | Durable queue, ownership, mutation intents and observations |
 | `service/control.py`, `cutover.py` | Owner-only operator channel and legacy controller migration |
 | `service/actions.py` | Backoffice commands (`POST /actions`, internal network only): resolve the writer, check write permission, post the signed delegated command comment and enqueue the task. The comment is posted directly, not through the mutation gateway: it changes no task state until a tick applies it as a command |
@@ -73,6 +74,10 @@ permissions (excluding implicit metadata). A mismatch revokes the token and fail
 | Fork | Contents, Actions: read | Contents, Actions, Workflows: write |
 | Issue source | Adds Issues: read | Adds Issues: write |
 
+With a `reviewer` configured, upstream write tokens add Issues and Checks write: PR
+artifacts are issue artifacts, and review progress is an App-owned Check Run. Accept that
+installation grant before starting a service whose settings name a reviewer.
+
 Contents write upstream retains the tested owned-thread resolution combination. Workflows
 write on the fork permits publication from upstream commits containing workflow changes;
 path policy still forbids agents from editing dot-prefixed paths. Read and upstream-only
@@ -81,8 +86,9 @@ prevent all fork write-token issuance, not just the operation that first needs i
 
 ## Scheduling and observation
 
-A task key is `(issue_repository, issue_number)`. Its PR destination and fork branch are
-recorded separately. At most one tick owns a key. Concurrency is bounded globally and per
+A task key is `(issue_repository, issue_number)`, or `(upstream, pr_number)` for a
+[standalone review](standalone-reviews.md), whose kind the registry records. A contribution's
+PR destination and fork branch are recorded separately. At most one tick owns a key. Concurrency is bounded globally and per
 repository; due work is selected round-robin across repositories, oldest first within one.
 Leases last 15 minutes and are renewed every five minutes independently of GitHub writes.
 
@@ -97,7 +103,9 @@ The ingress verifies HMAC, installation and enabled repository. It handles issue
 issue comments (including deletions), PR/review/thread events, check runs/suites,
 workflow runs, commit statuses and base-branch pushes. Receipt and wakeup are committed
 in one registry transaction before returning 202. CI events wake readiness only and do
-not bypass deferred engine retries. Internal CI events may omit a sender.
+not bypass deferred engine retries. Internal CI events may omit a sender. A request for the
+reviewer account commits its task, PR ownership and request evidence in that transaction
+too; a standalone review otherwise wakes only for its PR's closure, reopening and commands.
 
 Service-owned readiness tasks wait for external events, including after handoff; they
 no longer schedule five-minute controller ticks. Actions-owned tasks retain their timer.
@@ -168,7 +176,8 @@ it costs one re-read or rebuild per list.
   overflow the list's revision is raised and the registry's sponsored issues are
   compared with the rows.
 - **Rows (pull requests):** a `pull_request` delivery whose head ref is a task branch
-  (`concurro/issue-<number>-<digest>`, whatever repository the head is in) is reduced to
+  (`concurro/issue-<number>-<digest>`, whatever repository the head is in), or whose pull
+  request a task links or the list already holds (a standalone review's), is reduced to
   the listed fields, line counts included, and stored under the same ordering rule. Pull
   requests are never taken away by a delivery; closed and merged ones stay listed. Check
   runs are read, never assembled from deliveries: a new row, a new head, and a
@@ -254,6 +263,9 @@ writes until completion or timeout. It is pacing, not a guarantee against rate l
 
 Writes are limited to task-bound issue artifacts/comments/labels, fork Git objects and
 refs, runner dispatch, upstream draft PRs and readiness, and owned review projections.
+A standalone review admits only its PR's artifacts and comments, its own neutral Check Run,
+review mutations on the enrolled PR and resolution of the reviewer's finding threads
+(`admission.allowed_review`). Each intent records the account whose credential sent it.
 The gateway does not admit merges, arbitrary workflow edits or linked-development-branch
 creation. PR adoption verifies the recorded number, App author and fork head. New PRs
 use `maintainer_can_modify: false`. Comment edits and finding-thread writes validate
@@ -265,9 +277,11 @@ App authorship and the expected marker before mutation.
 | ---- | ---- |
 | REST success | Applied; if its body is lost, reconstruct the result on the next tick |
 | Supported GraphQL mutation with complete expected success and no errors | Applied |
+| Review mutation or thread resolution whose own field is null and whose every error names it with a refusal type | Failed; report the rejection |
 | Definitely not sent, 401, or 403 with rate-limit evidence | Failed; schedule a transient retry |
 | Other definite REST rejection (except 408/429) | Failed; report the rejection |
 | Timeout/lost connection after sending, 408/429/5xx, ambiguous GraphQL response or interrupted send | Unknown; stop further writes and ownership handoff |
+| Unknown outcome of a standalone review's Check Run write | Recorded, then discarded as a derived view; the sender reads back before writing again |
 
 There is no blanket automatic resend of mutations. The engine reconstructs publications
 from markers, authors, exact content and receipts; a later identical write is a new
@@ -309,7 +323,8 @@ with no manual resolution. Uncertain same-ID retry is not enabled.
 
 A confirmed create stores the returned review ID atomically with its successful receipt.
 Registry schema 5 adds webhook coverage and durable observation jobs, preserving review
-identity and compensation progress. Schemas 2–4 migrate transactionally. Back up the
+identity and compensation progress. Schema 9 adds task kinds, reviewer request evidence and
+each write's sending account. Earlier schemas migrate transactionally. Back up the
 stopped registry before upgrading; earlier services cannot open schema 5. Recovery timing is an operator decision, not evidence that a lost
 request has finished. All compensating writes retain normal ownership and pacing checks.
 

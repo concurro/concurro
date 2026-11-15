@@ -1,6 +1,7 @@
 """Small GitHub REST/GraphQL adapter; credentials never reach model processes."""
 
 import json
+import re
 import subprocess
 from itertools import count
 from urllib.parse import quote
@@ -25,7 +26,22 @@ class NotFound(RuntimeError):
     """The resource does not exist or is not visible to this token."""
 
 
+class Rejected(RuntimeError):
+    """GitHub definitively rejected a write; it did not take effect.
+
+    `reason` names what was rejected when the response establishes it: `placement` for a
+    review comment's location, `commit` for the reviewed commit. None is an unclassified
+    definite rejection.
+    """
+
+    def __init__(self, message, status=None, reason=None):
+        """Keep the HTTP status and reason separate from operator-facing diagnostic text."""
+        super().__init__(message)
+        self.status, self.reason = status, reason
+
+
 DISPATCH_EVENT = "concurro-agent"
+HTTP_STATUS = re.compile(r"\(HTTP ([0-9]{3})\)")
 
 
 class Transient(RuntimeError):
@@ -80,8 +96,15 @@ class GitHub:
             command, input=json.dumps(data) if data is not None else None, text=True, capture_output=True, timeout=90
         )
         if result.returncode:
-            error = NotFound if "(HTTP 404)" in result.stderr else RuntimeError
-            raise error("GitHub request failed: " + method + " " + path)
+            message = "GitHub request failed: " + method + " " + path
+            found = HTTP_STATUS.search(result.stderr)
+            status = int(found[1]) if found else None
+            if status == 404:
+                raise NotFound(message)
+            # A write's client error is a definite rejection; anything else leaves its outcome unknown.
+            if method != "GET" and status is not None and 400 <= status < 500 and status not in (408, 429):
+                raise Rejected(message, status)
+            raise RuntimeError(message)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     def repo(self, path, method="GET", data=None):

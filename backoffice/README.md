@@ -33,20 +33,33 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/auth/logout-status` | Anonymous remote cleanup status |
 | GET | `/api/me` | `{id, login, name, avatarUrl}` |
 | GET | `/api/events` | Server-sent events: live changes for the targets the user can see; 404 without the list index |
-| GET | `/api/overview` | `{targets, tasks, issues, activity, cache?}` |
-| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, cache?}` |
+| GET | `/api/overview` | `{targets, tasks, issues, reviews, activity, cache?}` |
+| GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, reviews, cache?}` |
 | GET | `/api/targets/{owner}/{repo}/runs` | `{runs, message, cache?}` with the fork's recent executor runs |
 | POST | `/api/targets/{owner}/{repo}/refresh` | `{refreshed}`; writers only; every list of the target is read from GitHub again |
 | GET | `/api/tasks/{owner}/{repo}/{issue}` | `{task, target, issueWriter}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/sections/{section}` | Summary, selected phase, timeline or live PR data |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns` | `{task, turns}` |
 | GET | `/api/tasks/{owner}/{repo}/{issue}/turns/{turn-id}/runs` | `{runs, message}` with Actions run attempts and jobs |
-| POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}` |
+| GET | `/api/reviews/{owner}/{repo}/{pull}` | `{task, target, issueWriter}` for a [standalone review](../docs/design/standalone-reviews.md) |
+| GET | `/api/tasks/{owner}/{repo}/{issue}/reports/{report}` | `{report}`: one complete, verified report by its publication ID |
+| POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}`; also a reviewed PR's number |
 | GET | `/api/repos/{owner}/{repo}/issues/{issue}` | `{issue, target, issueWriter}` without requiring a checkpoint |
 | GET | `/api/me/sponsorships` | Visible current/historical provider consent for your stable actor ID |
 | GET | `/api/me/credentials` | `{routes, usage}` |
 | PUT, DELETE | `/api/me/credentials/{route}` | One route |
 | GET | `/api/openapi.json` | OpenAPI document |
+
+## Standalone reviews
+
+`backoffice/review_tasks.py` reads a review task from the audit artifact on the pull
+request, discovered and verified without a checkpoint comment; the view's revision comes
+from that audit, so a task is visible before its first review. `reviews` lists the
+upstream's held pull requests that are off a task branch, and is empty without the
+service's list index. A report is addressed by its publication ID from the verified report
+index; every referenced data part is read and verified, and missing or changed evidence is
+an error, never an empty report. Report text is returned as data for the frontend's
+Markdown rendering; stored HTML is not served. GitHub output never links here.
 
 ## List loading
 

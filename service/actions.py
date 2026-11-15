@@ -22,6 +22,7 @@ from urllib.parse import quote
 import delegation
 from github import NotFound, Transient
 from sponsorship import own_consent, own_consent_present
+from vocab import STANDALONE_REVIEW
 
 from . import transport
 from .settlement import settle
@@ -102,8 +103,21 @@ class Actions:
         self.key, self.registry, self.reader, self.writer = key, registry, reader, writer
         self.targets = enrollment(targets)
         self.issue_repositories = {r.lower(): r for r in self.targets}
+        self.upstreams = {target.upstream.lower(): target.upstream for target in targets}
         self.user, self.clock, self.visible = user, clock, visible
         self.projection = projection or (lambda key: registry.sponsorship(key))
+
+    def subject(self, name, number):
+        """`(repository, authority upstream)` for a command's subject.
+
+        A standalone review is addressed by its upstream PR and authorized against that
+        upstream; anything else must be an issue of a configured issue repository.
+        """
+        upstream = self.upstreams.get(str(name).lower())
+        if upstream and type(number) is int and self.registry.kind((upstream, number)) == STANDALONE_REVIEW:
+            return upstream, upstream
+        repository = self.issue_repositories[str(name).lower()]
+        return repository, self.targets[repository].upstream
 
     def handle(self, authorization, body):
         """`(status, payload)` for one request; never raises for a refused or failed request."""
@@ -120,10 +134,12 @@ class Actions:
             raise Refused(401, "missing bearer token")
         try:
             request = json.loads(body)
-            repository = self.issue_repositories[str(request["repository"]).lower()]
             issue, kind, argument = request["issue"], request["command"], request.get("argument")
+            repository, upstream = self.subject(request["repository"], issue)
         except (ValueError, KeyError, TypeError, AttributeError):
-            raise Refused(400, "malformed request, or not an issue repository of a configured target") from None
+            raise Refused(
+                400, "malformed request, or not an issue or reviewed pull request of a configured target"
+            ) from None
         if type(issue) is not int or issue < 1 or not isinstance(kind, str):
             raise Refused(400, "malformed request")
         try:
@@ -136,7 +152,6 @@ class Actions:
         login, user_id = user
         if kind == "withdraw" and not self.visible(token.strip(), repository, issue):
             raise Refused(404, "issue not visible")
-        upstream = self.targets[repository].upstream
         if kind != "withdraw" and not self.writable(upstream, login):
             raise Refused(403, f"@{login} does not have write access to {upstream}")
         text = delegation.render(self.key, repository, issue, login, user_id, command, secrets.token_hex(16))
@@ -175,15 +190,15 @@ class Actions:
                 raise Refused(401, "GitHub did not accept the sign-in token")
             try:
                 request = json.loads(body)
-                repository = self.issue_repositories[str(request["repository"]).lower()]
                 issue = request.get("issue")
+                repository, upstream = self.subject(request["repository"], issue)
             except (ValueError, KeyError, TypeError):
                 raise Refused(400, "invalid issue repository") from None
             if issue is not None and (type(issue) is not int or issue < 1):
                 raise Refused(400, "invalid issue")
             if not self.visible(token.strip(), repository, issue):
                 raise Refused(404, "issue not visible")
-            writer = self.writable(self.targets[repository].upstream, user[0])
+            writer = self.writable(upstream, user[0])
             if issue is None:
                 issues = []
                 for number in self.registry.sponsor_issues(repository):

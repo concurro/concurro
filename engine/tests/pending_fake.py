@@ -41,7 +41,7 @@ class PendingReviews:
                 "databaseId": self.counter,
                 "body": values["body"],
                 "state": "PENDING",
-                "author": {"login": self.config["bot_login"].removesuffix("[bot]")},
+                "author": self.review_author(),
                 "commit": {"oid": values["commitOID"]},
                 "pullRequest": {"number": 9, "state": "OPEN", "repository": {"nameWithOwner": self.repository}},
                 "drafts": [],
@@ -81,7 +81,15 @@ class PendingReviews:
                 "body": node["body"],
                 "commit_id": node["commit"]["oid"],
                 "event": "COMMENT",
-                "user": {"login": self.config["bot_login"]},
+                "user": self.review_user(),
             }
         )
         return {"data": {name: {"pullRequestReview": deepcopy(node)}}}
+
+    def review_author(self):
+        """The GraphQL author of pending reviews; a bot is named without its suffix."""
+        return {"login": self.config["bot_login"].removesuffix("[bot]")}
+
+    def review_user(self):
+        """The REST account that authors reviews and their comments."""
+        return {"login": self.config["bot_login"]}

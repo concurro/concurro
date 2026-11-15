@@ -25,6 +25,7 @@ from policy import Blocked
 from service.identity import Identity
 from service.settings import CHECKOUT
 
+from . import review_tasks
 from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
 from .commands import CommandError, IndexUnavailable, ServiceCommands
 from .credentials import Vault, VaultError
@@ -383,6 +384,16 @@ def create_app(
     ):
         """Load one issue section without unrelated report evidence or live PR enrichment."""
         return reader.task_view(f"{owner}/{repo}", issue, section)
+
+    @app.get("/api/reviews/{owner}/{repo}/{pull}")
+    def review(owner: str, repo: str, pull: int, reader: Annotated[Tasks, Depends(tasks)]):
+        """A standalone PR review task: live phase, reviewed snapshot, rounds, findings and its report index."""
+        return review_tasks.view(reader, f"{owner}/{repo}", pull)
+
+    @app.get("/api/tasks/{owner}/{repo}/{issue}/reports/{report}")
+    def task_report(owner: str, repo: str, issue: int, report: str, reader: Annotated[Tasks, Depends(tasks)]):
+        """One complete, verified report of a task by its stable publication ID."""
+        return review_tasks.report(reader, f"{owner}/{repo}", issue, report)
 
     @app.get("/api/tasks/{owner}/{repo}/{issue}/turns")
     def turns(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):

@@ -19,6 +19,9 @@ ROLES = {
     "pr_reviewers": "review",
 }
 
+# Slots attributed to whoever started the task, as opposed to an explicit funding comment.
+IMPLICIT = ("task_start", "label", "review_request")
+
 
 def credential_route(config, profile, stage, identity=None):
     """Use a profile override before its provider's default credential route."""

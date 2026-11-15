@@ -15,6 +15,7 @@ import reviews
 from checkpoints import LIMIT
 from controller import Controller
 from fakes import APPROVE, FINDING, FakeAgents, FakeGitHub
+from github import Rejected
 from legacy_publications import legacy_events
 from policy import Blocked, digest, validate_pr_review, validate_review
 from review_fixtures import DESIGN_ISSUE, Harness, Reviewers, answer, report
@@ -420,7 +421,7 @@ class PublicationTests(Harness, unittest.TestCase):
         def repo(path, method="GET", data=None):
             if method == "POST" and path.endswith("/reviews") and data["comments"] and not rejected:
                 rejected.append(data)
-                raise RuntimeError("GitHub request failed: POST pulls/9/reviews (HTTP 422)")
+                raise Rejected("GitHub request failed: POST pulls/9/reviews", 422)
             return original(path, method, data)
 
         with patch.object(self.gh, "repo", side_effect=repo):
@@ -433,10 +434,47 @@ class PublicationTests(Harness, unittest.TestCase):
 
         def refuse(path, method="GET", data=None):
             if method == "POST" and path.endswith("/reviews"):
-                raise RuntimeError("GitHub request failed: POST pulls/9/reviews (HTTP 422)")
+                raise Rejected("GitHub request failed: POST pulls/9/reviews", 422)
             return original(path, method, data)
 
         with patch.object(self.gh, "repo", side_effect=refuse), self.assertRaisesRegex(Blocked, "failed repeatedly"):
+            self.run_to(agents, "gates")
+
+    def test_unknown_review_outcome_keeps_placement_until_reconciled(self):
+        """An unclassified failure records an unknown outcome and never switches placement."""
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        original, failed, retried = self.gh.repo, [], []
+
+        def repo(path, method="GET", data=None):
+            if method == "POST" and path.endswith("/reviews"):
+                if not failed:
+                    failed.append(data)
+                    raise RuntimeError("connection reset")
+                # The retry starts from the checkpointed, still unresolved item.
+                retried.append(deepcopy(self.load()[1]["pr_outbox"][0]))
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=repo):
+            state = self.run_to(agents, "gates", until=lambda state: not state.get("pr_outbox")).state
+        item = retried[0]
+        self.assertEqual(item["outcome"], {"status": "unknown"})
+        self.assertTrue(item["inline"])
+        self.assertEqual(item["attempts"], 1)
+        [opening] = self.comments(f"{reviews.FINDING_MARKER}F1 -->")
+        self.assertNotEqual(opening.get("subject_type"), "file")
+        self.assertEqual(len([r for r in self.gh.app_reviews if ":1 -->" in r["body"]]), 1)
+        self.assertFalse(state.get("pr_outbox"))
+
+    def test_unknown_review_outcome_blocks_after_its_allowance(self):
+        agents = Reviewers({"claude"}, findings={"claude": [{**FINDING, "line": 1}]})
+        original = self.gh.repo
+
+        def repo(path, method="GET", data=None):
+            if method == "POST" and path.endswith("/reviews"):
+                raise RuntimeError("connection reset")
+            return original(path, method, data)
+
+        with patch.object(self.gh, "repo", side_effect=repo), self.assertRaisesRegex(Blocked, "outcome is unknown"):
             self.run_to(agents, "gates")
 
     def test_resolution_is_attempted_once(self):

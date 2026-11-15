@@ -20,6 +20,7 @@ from github import NotFound, Transient
 from model_config import resolve
 from policy import Blocked, CredentialsUnavailable, ProviderFailure, digest
 from relay import ExchangeError
+from vocab import STANDALONE_REVIEW
 
 from . import credential_recovery
 from .failures import backoff
@@ -465,7 +466,7 @@ class Shadow:
                     or not actor
                     or not (
                         slot.get("provenance") == "explicit_comment"
-                        or slot.get("provenance") in ("task_start", "label")
+                        or slot.get("provenance") in sponsorship.IMPLICIT
                         and slot.get("source_funding_mode") == "contributed"
                     )
                 ):
@@ -555,7 +556,7 @@ class Shadow:
                 continue
             if (
                 slot.get("sponsor_id")
-                and slot.get("provenance") in ("task_start", "label")
+                and slot.get("provenance") in sponsorship.IMPLICIT
                 and slot.get("source_funding_mode") != "contributed"
             ):
                 new = {
@@ -893,13 +894,14 @@ class Shadow:
                             )
                         ),
                     }
-            elif mode == "autonomous":
+            elif mode in ("autonomous", "review"):
                 boundary = {
                     "source_id": enrollment["event"],
                     "actor_id": str(enrollment.get("actor_id", "")),
                     "login": enrollment["actor"],
                     "at": enrollment.get("at"),
-                    "provenance": "label",
+                    # A standalone review starts from its first verified reviewer request.
+                    "provenance": "label" if mode == "autonomous" else "review_request",
                 }
             else:
                 boundary = {
@@ -991,17 +993,19 @@ class Shadow:
         state.setdefault("provider_funding", admissions.provider_modes(controller.config, state))
         state["provider_funding"].update(frozen["provider_funding"])
         state["funding_initialization"] = frozen
-        conversation.queue(
-            state,
-            "Provider sponsorship is org-funded"
-            if admissions.task_mode(controller.config, state) == "org"
-            else "Provider sponsorship recorded",
-            admissions.funding_notice(
-                controller.config,
-                controller.state
-                or {"provider_funding": getattr(controller, "shadow_projection", {}).get("provider_funding", {})},
-            ),
-        )
+        # A reviewed PR gets no lifecycle comment; its funding shows in the backoffice and its check.
+        if getattr(controller, "kind", None) != STANDALONE_REVIEW:
+            conversation.queue(
+                state,
+                "Provider sponsorship is org-funded"
+                if admissions.task_mode(controller.config, state) == "org"
+                else "Provider sponsorship recorded",
+                admissions.funding_notice(
+                    controller.config,
+                    controller.state
+                    or {"provider_funding": getattr(controller, "shadow_projection", {}).get("provider_funding", {})},
+                ),
+            )
         state["sponsorship_projection_revision"] = projection["revision"]
         state["sponsorship_projection_source_revision"] = projection["source_revision"]
         state.pop("funding_initialization_pending", None)
@@ -1162,9 +1166,9 @@ class Shadow:
                     controller.save()
                     continue
                 funding = source["funding"]
-            older_consent = slot.get("source_order", []) > source["source_order"] and slot.get("provenance") not in (
-                "task_start",
-                "label",
+            older_consent = (
+                slot.get("source_order", []) > source["source_order"]
+                and slot.get("provenance") not in sponsorship.IMPLICIT
             )
             if source["command"] == "funding" and (funding == "org" or older_consent):
                 new = deepcopy(slot)

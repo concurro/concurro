@@ -39,7 +39,7 @@ class ParentUpgradeTests(unittest.TestCase):
     """Read both parent layouts forward without changing saved payer, budget or source evidence."""
 
     def test_both_registries_preserve_existing_rows_queues_and_source_policy(self):
-        """Main schema5 advances to8; existing schema8 consent/policy rows survive byte-for-byte."""
+        """Main schema5 advances to9; existing schema8 consent/policy rows survive byte-for-byte."""
         for parent in ("main", "sponsorship"):
             with self.subTest(parent=parent), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -55,7 +55,7 @@ class ParentUpgradeTests(unittest.TestCase):
                 db.close()
                 registry = registry_module.Registry.open(root, "registry-test", clock=lambda: 1001)
                 try:
-                    self.assertEqual(dict(registry.db.execute("SELECT name,value FROM meta"))["schema"], "8")
+                    self.assertEqual(dict(registry.db.execute("SELECT name,value FROM meta"))["schema"], "9")
                     for table, before in rows.items():
                         self.assertEqual(registry.db.execute(f'SELECT * FROM "{table}"').fetchall(), before, table)
                     self.assertEqual([item.key for item in registry.due(2000)], [fixture.KEY])

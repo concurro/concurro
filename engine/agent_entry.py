@@ -13,6 +13,7 @@ from policy import KEY_VARIABLE as KEY_VARIABLE, KILLED, TIMEOUT_EXIT, UNCERTAIN
 from prompts import prompt_for as prompt_for
 from runtime_defaults import DEFAULT_RETAINED_BYTES
 from session_entry import SessionTurn
+from vocab import CONTRIBUTION
 
 
 class ProviderUncertain(RuntimeError):
@@ -153,7 +154,7 @@ def main():
     )
     if request["bundle_id"] != bundle.identity or not request["model"].strip():
         raise ValueError("unbound bundle or model")
-    request["schema"] = bundle.schema(request["stage"])
+    request["schema"] = bundle.schema(request["stage"], request.get("task_kind", CONTRIBUTION))
     Path(schema_path).write_text(json.dumps(request["schema"]))
     prompt = prompt_for(request, bundle)
     turn = (

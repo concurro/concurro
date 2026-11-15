@@ -17,6 +17,7 @@ def binding(gateway, key, repository, body):
         repository,
         PULL_NODE if creating else review_api.NODE,
         values["pullRequestId" if creating else "pullRequestReviewId"],
+        key,
     )
     pr = node if creating else node.get("pullRequest") or {}
     if (
@@ -30,11 +31,12 @@ def binding(gateway, key, repository, body):
     prefix = f"{REVIEW_MARKER}{key[0]}#{key[1]}:"
     if not marker.startswith(prefix) or not marker.endswith(" -->"):
         return None
+    author = gateway.review_author(key)
     if not creating and (
         node.get("id") != values["pullRequestReviewId"]
         or node.get("state") != "PENDING"
-        or (node.get("author") or {}).get("login")
-        not in (gateway.bot_login, (gateway.bot_login or "").removesuffix("[bot]"))
+        or author is None
+        or not author.graphql(node.get("author"))
     ):
         return None
     if name == "submitPullRequestReview" and values["body"].split("\n", 1)[0] != marker:

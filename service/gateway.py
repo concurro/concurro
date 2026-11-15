@@ -8,13 +8,16 @@ from contextlib import contextmanager
 from copy import deepcopy
 
 import review_api
-from github import GitHub
+from github import GitHub, Transient
+from identities import AUTHOR, Actor
 from policy import task_branch
 from reviews import FINDING_MARKER
+from vocab import STANDALONE_REVIEW
 
 from . import review_writes
 from .admission import (
     BRANCH as BRANCH,
+    CHECK_RUN,
     DISPATCH as DISPATCH,
     EDITABLE as EDITABLE,
     EXECUTOR_WORKFLOW,
@@ -27,7 +30,9 @@ from .admission import (
     RUN_BRANCH_PREFIX,
     WRITES as WRITES,
     allowed as allowed,
+    allowed_review,
     allowed_target as allowed_target,
+    check_identity,
     destination as destination,
     ready_pull as ready_pull,
     resolved_thread as resolved_thread,
@@ -60,15 +65,34 @@ def request_digest(method, path, body):
 class MutationGateway:
     """Admit, send and settle every write; grant and end ownership in the same per-task section."""
 
-    def __init__(self, registry, writer, reader, bot_login=None, *, clock=time.monotonic, sleep=time.sleep):
+    def __init__(
+        self,
+        registry,
+        writer,
+        reader,
+        bot_login=None,
+        *,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        app=None,
+        reviewer=None,
+        reviewer_transport=None,
+    ):
         """`writer(repository)` and `reader(repository)` return that repository's write and read transports.
 
         A writer's `send(method, path, body)` returns a `transport.Response`; raising means the
         outcome is unknown. The reader resolves each task's issue node ID and verifies PR and
         thread bindings; without `bot_login`, replies and thread resolutions are refused.
         `clock` is monotonic; `sleep` serves write pacing and commit retry backoff.
+
+        `app` is the App's actor descriptor; without one it is known by `bot_login` alone.
+        `reviewer` and `reviewer_transport(repository)` are the account and credential that
+        author standalone reviews; without them those writes are refused.
         """
         self.registry, self.writer, self.reader, self.bot_login = registry, writer, reader, bot_login
+        self.app_actor = Actor.parse(app) if app else None
+        self.reviewer = Actor.parse(reviewer) if reviewer else None
+        self.reviewer_transport = reviewer_transport
         self.write_clock, self.write_sleep = clock, sleep
         self.write_lock, self.next_write = threading.Lock(), 0.0
         self.pulls = {}
@@ -89,8 +113,41 @@ class MutationGateway:
         """The immutable destination pair recorded for this task."""
         return self.registry.binding(key)
 
+    @property
+    def app(self):
+        """The App's account: its resolved descriptor, else its login alone."""
+        return self.app_actor or (Actor(self.bot_login) if self.bot_login else None)
+
+    def standalone(self, key):
+        """Whether the task reviews an existing PR instead of publishing its own."""
+        return self.registry.kind(key) == STANDALONE_REVIEW
+
+    def review_author(self, key):
+        """The account that authors this task's reviews and finding threads, or None when unconfigured."""
+        return self.reviewer if self.standalone(key) else self.app
+
+    def sender(self, key, path, body):
+        """`(transport, actor)` for one admitted write, by task kind, operation and destination.
+
+        Only a standalone task's review mutations go out as the reviewer. Its storage, checks
+        and command replies are the App's, as is resolving the reviewer's finding threads, so
+        the reviewer account needs no more than read access. Every contribution write is the App's.
+        """
+        repository = destination(key, self.binding(key), path) or key[0]
+        if path == "graphql" and self.standalone(key) and review_api.identify(body):
+            if self.reviewer is None or self.reviewer_transport is None:
+                raise Disallowed("standalone review has no reviewer credential")
+            return self.reviewer_transport(repository), self.reviewer
+        return self.writer(repository), self.app
+
     def owned_pull(self, key, number):
-        """Verify the PR's head repository and task branch, independently of a later registry link."""
+        """Verify the PR's head repository and task branch, independently of a later registry link.
+
+        A standalone task's PR is the externally authored one it was enrolled for.
+        """
+        if self.standalone(key):
+            recorded = self.registry.pull(key)
+            return recorded is not None and (recorded.repository, recorded.number) == (key[0], number) == key
         binding = self.binding(key)
         repository = binding.upstream if binding else key[0]
         fork = binding.fork if binding else key[0]
@@ -105,29 +162,37 @@ class MutationGateway:
             ours = binding is not None and branch == task_branch(*key)
             self.pulls[identity] = (
                 ours
-                and self.bot_login is not None
-                and (pr.get("user") or {}).get("login") == self.bot_login
+                and self.app is not None
+                and self.app.rest(pr.get("user"))
                 and (head.get("repo") or {}).get("full_name", "").lower() == fork.lower()
             )
         return self.pulls[identity]
 
-    def ours(self, login, body):
-        """Whether a comment is the App's own finding comment (GraphQL names a bot without `[bot]`)."""
+    def ours(self, author, body, actor=None, rest=False):
+        """Whether a comment is a finding comment by `actor`, the App unless given.
+
+        `author` is a GraphQL author, or a REST user with `rest`.
+        """
+        actor = actor or self.app
         return (
-            self.bot_login is not None
-            and login in (self.bot_login, self.bot_login.removesuffix("[bot]"))
+            actor is not None
+            and (actor.rest(author) if rest else actor.graphql(author))
             and isinstance(body, str)
             and body.startswith(FINDING_MARKER)
         )
 
-    def _graphql_node(self, repository, query, node_id):
-        """Fetch one node using the caller's binding query."""
-        return (
-            (
-                self.reader(repository).request("POST", "graphql", {"query": query, "variables": {"id": node_id}}) or {}
-            ).get("data")
-            or {}
-        ).get("node") or {}
+    def _graphql_node(self, repository, query, node_id, key=None):
+        """Fetch one node using the caller's binding query.
+
+        With a standalone task's `key` the read is the reviewer's: only its author sees a pending review.
+        """
+        reader = (
+            self.reviewer_transport(repository)
+            if key is not None and self.reviewer_transport is not None and self.standalone(key)
+            else self.reader(repository)
+        )
+        response = reader.request("POST", "graphql", {"query": query, "variables": {"id": node_id}}) or {}
+        return (response.get("data") or {}).get("node") or {}
 
     def bound(self, key, path, body):
         """PR writes only for the task's own PR; replies and resolutions only in the App's own finding threads;
@@ -148,13 +213,15 @@ class MutationGateway:
         thread = resolved_thread(body) if path == "graphql" else None
         if thread is not None:
             return self.finding_thread(key, repository, thread)
+        if self.standalone(key):
+            return self.bound_check(key, path)
         prefix = f"repos/{key[0]}/"
         edit = ISSUE_COMMENT.fullmatch(path[len(prefix) :]) if path.startswith(prefix) else None
         if edit:
             comment = self.reader(key[0]).request("GET", path) or {}
             return (
-                self.bot_login is not None
-                and (comment.get("user") or {}).get("login") == self.bot_login
+                self.app is not None
+                and self.app.rest(comment.get("user"))
                 and str(comment.get("body", "")).startswith(EDITABLE)
                 and str(comment.get("issue_url", "")).endswith(f"/issues/{key[1]}")
             )
@@ -167,18 +234,28 @@ class MutationGateway:
         if match["comment"] is None:
             return True
         comment = self.reader(repository).request("GET", f"{prefix}pulls/comments/{match['comment']}")
-        return self.ours((comment.get("user") or {}).get("login"), comment.get("body")) and str(
+        return self.ours(comment.get("user"), comment.get("body"), rest=True) and str(
             comment.get("pull_request_url", "")
         ).endswith(f"/pulls/{match['pull']}")
+
+    def bound_check(self, key, path):
+        """A check update only for a run this task created; every other standalone write is bound by its shape."""
+        prefix = f"repos/{key[0]}/"
+        match = CHECK_RUN.fullmatch(path[len(prefix) :]) if path.startswith(prefix) else None
+        if match is None or not match["run"]:
+            return True
+        run = self.reader(key[0]).request("GET", path) or {}
+        name, correlation = check_identity(key)
+        return run.get("name") == name and str(run.get("external_id", "")).startswith(correlation)
 
     def finding_thread(self, key, repository, thread, pull=None):
         """Verify a finding root on this task, optionally restricted to one exact PR."""
         query = (
             "query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
             "pullRequest { number repository { nameWithOwner } } "
-            "comments(first:1) { nodes { author { login } body } } } } }"
+            "comments(first:1) { nodes { " + AUTHOR + " body } } } } }"
         )
-        node = self._graphql_node(repository, query, thread)
+        node = self._graphql_node(repository, query, thread, key)
         pr = node.get("pullRequest") or {}
         first = (node.get("comments") or {}).get("nodes") or [{}]
         return (
@@ -186,7 +263,7 @@ class MutationGateway:
             and isinstance(pr.get("number"), int)
             and (pull is None or pr["number"] == pull)
             and self.owned_pull(key, pr["number"])
-            and self.ours((first[0].get("author") or {}).get("login"), first[0].get("body"))
+            and self.ours(first[0].get("author"), first[0].get("body"), self.review_author(key))
         )
 
     def _replay_stop(self, key, generation):
@@ -291,10 +368,17 @@ class MutationGateway:
         stop = self.stops.setdefault((key, generation), stop)
         raise type(stop)(*stop.args)
 
+    def derived(self, key, path):
+        """Whether a write only displays checkpoint state, so an unknown outcome needs no operator."""
+        prefix = f"repos/{key[0]}/"
+        return path.startswith(prefix) and CHECK_RUN.fullmatch(path[len(prefix) :]) is not None and self.standalone(key)
+
     def _admitted(self, key, generation, method, path, body, binding):
         """Check runner, bound-target, then unbound issue-only admission in that order."""
         if self.runner_allowed(key, generation, method, path, body):
             return True
+        if self.standalone(key):
+            return allowed_review(key, method, path, body)
         if binding:
             return allowed_target(key, binding, method, path, body)
         return (path.startswith(f"repos/{key[0]}/issues/") or path == f"repos/{key[0]}/labels") and allowed(
@@ -373,18 +457,21 @@ class MutationGateway:
                     for record in self.registry.review_submissions(key, review["review"])
                 ):
                     raise Disallowed("review submission may already have applied; same-ID retry is disabled")
+            transport, actor = self.sender(key, path, body)
             intent = self.registry.admit(
-                key, generation, method, path, request_digest(method, path, body), review, recovery_of
+                key,
+                generation,
+                method,
+                path,
+                request_digest(method, path, body),
+                review,
+                recovery_of,
+                actor.record() if actor and actor.id is not None else None,
             )
             self.sending.add(key)
         try:
             try:
-                result, payload, error = settle(
-                    path,
-                    self.writer(destination(key, binding, path)).send(method, path, body),
-                    self.registry.clock(),
-                    body,
-                )
+                result, payload, error = settle(path, transport.send(method, path, body), self.registry.clock(), body)
             except Exception:
                 # Any unclassified send failure may have applied the write; never assume rejection.
                 result, payload, error = "unknown", None, None
@@ -396,6 +483,10 @@ class MutationGateway:
             with self.section(key) as condition:
                 self.sending.discard(key)
                 condition.notify_all()
+        if result == "unknown" and self.derived(key, path):
+            # A progress check is rebuilt from the checkpoint: its sender reads it back before writing again.
+            self.registry.resolve(intent, "discarded", "derived check status; reconciled by readback", "service")
+            raise Transient("unavailable")
         if result == "unknown":
             self.halt(
                 key, generation, Unresolved(f"write {intent} has an unknown outcome; operator resolution required")

@@ -11,12 +11,14 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from urllib.parse import quote
 
 import delegation
 import private
+from identities import Actor
 from policy import Blocked
 
-from . import control, ingress, settings as settings_module
+from . import control, ingress, settings as settings_module, user_grant
 from .actions import Actions
 from .cutover import Cutover
 from .diagnostics import Store
@@ -29,7 +31,7 @@ from .registry import Registry
 from .scheduler import Scheduler
 from .settings import CHECKOUT, SettingsError
 from .shadow import Metadata, Shadow
-from .targets import verify
+from .targets import review_targets, verify
 from .transport import Transport
 from .webhook_recovery import Recovery
 from .worker import Worker
@@ -92,10 +94,33 @@ class Daemon:
         readers = {r: Transport(r, self.identity.credential(r, "read"), time.time) for r in repositories}
         verify(settings.targets, readers.__getitem__)
         writers = {r: Transport(r, self.identity.credential(r, "write"), time.time) for r in repositories}
+        app = app_actor(readers[repositories[0]], bot_login)
+        # Standalone reviews are published with the reviewer account's own grant, one credential for every upstream.
+        reviews, reviewer, as_reviewer = {}, None, {}
+        if settings.reviewer:
+            grant = user_grant.UserGrant(settings.reviewer, settings.state_dir)
+            reviews, reviewer = review_targets(settings.targets), grant.actor
+            as_reviewer = {r: Transport(r, grant, time.time) for r in reviews}
+            log.info("reviewing pull requests as %s", reviewer.login)
+        identities = [app, *([reviewer] if reviewer else [])]
+        actors = {"app": app.record(), **({"reviewer": reviewer.record()} if reviewer else {})}
         self.registry = Registry.open(settings.state_dir, settings.registry_id, initialize=self.initialize)
-        gateway = MutationGateway(self.registry, writers.__getitem__, readers.__getitem__, bot_login)
+        gateway = MutationGateway(
+            self.registry,
+            writers.__getitem__,
+            readers.__getitem__,
+            bot_login,
+            app=app,
+            reviewer=reviewer,
+            reviewer_transport=as_reviewer.__getitem__ if reviewer else None,
+        )
         self.reconciler = Reconciler(
-            self.registry, readers.__getitem__, issue_repositories, {bot_login}, command_comment=delegation.marked
+            self.registry,
+            readers.__getitem__,
+            issue_repositories,
+            identities,
+            command_comment=delegation.marked,
+            review_repositories=sorted(reviews),
         )
         diagnostics = Store(settings.diagnostics_dir) if settings.diagnostics_dir else None
         delegation_key = (
@@ -110,6 +135,8 @@ class Daemon:
             bot_login,
             diagnostics=diagnostics,
             delegation_key=delegation_key,
+            actors=actors,
+            reviewer_reader=as_reviewer.__getitem__ if reviewer else None,
         )
         worker.sponsorship = Shadow(
             self.registry,
@@ -157,10 +184,12 @@ class Daemon:
                 secret,
                 self.registry,
                 installations,
-                {bot_login},
+                identities,
                 issue_repositories=issue_repositories,
                 command_comment=delegation.marked,
                 list_index=self.list_index,
+                reviewer=reviewer,
+                review_targets=reviews,
             ),
             *self.listen,
             actions=actions,
@@ -207,6 +236,25 @@ class Daemon:
         self.registry.close()
 
 
+def app_actor(reader, bot_login):
+    """The App's account with its REST numeric ID and GraphQL node ID; either stays unset when unavailable."""
+    try:
+        numeric = reader.request("GET", "users/" + quote(bot_login)).get("id")
+    except Exception:
+        numeric = None
+    node = user_grant.viewer(lambda body: reader.request("POST", "graphql", body))
+    return Actor(bot_login, numeric if type(numeric) is int else None, node)
+
+
+def authorize_reviewer(settings):
+    """Store the reviewer account's grant from an interactive device authorization."""
+    if settings.reviewer is None:
+        raise StartupError("settings name no reviewer")
+    actor = user_grant.authorize(settings.reviewer, settings.state_dir)
+    print("stored the reviewer grant for", actor.login)
+    return 0
+
+
 def serve(arguments, settings):
     """Run the daemon in the foreground; the first SIGINT or SIGTERM drains running ticks."""
     daemon = Daemon(settings, arguments.initialize, arguments.listen, arguments.poll_seconds)
@@ -233,6 +281,9 @@ def parser():
     serve_command.add_argument("--listen", default=LISTEN, help="webhook address, HOST:PORT")
     serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS, help="App webhook recovery interval")
     commands.add_parser("initialize", help="create a new, empty registry and exit, without starting the daemon")
+    commands.add_parser(
+        "authorize-reviewer", help="authorize the configured reviewer account for the App and store its grant"
+    )
     commands.add_parser("status", help="show every task the registry knows")
     commands.add_parser("reconcile-once", help="poll every target now")
     adopt = commands.add_parser("adopt", help="move tasks from the Actions controller to this service")
@@ -268,6 +319,8 @@ def main():
         settings = settings_module.load(arguments.settings)
         if arguments.command == "serve":
             return serve(arguments, settings)
+        if arguments.command == "authorize-reviewer":
+            return authorize_reviewer(settings)
         if arguments.command == "initialize":
             Registry.open(settings.state_dir, settings.registry_id, initialize=True).close()
             print("initialized the registry in", settings.state_dir)

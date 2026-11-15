@@ -40,8 +40,22 @@ def enrollment(targets):
     return result
 
 
-def permissions(targets):
-    """Union required token permissions when a repository serves several target roles."""
+def review_targets(targets):
+    """Map each upstream to the one target whose fork executes its standalone reviews."""
+    result = {}
+    for target in targets:
+        if target.upstream in result:
+            raise ValueError("upstream has more than one executor fork for standalone reviews")
+        result[target.upstream] = target
+    return result
+
+
+def permissions(targets, reviews=False):
+    """Union required token permissions when a repository serves several target roles.
+
+    `reviews` adds what standalone PR reviews need upstream: PR artifacts are issue
+    artifacts, and review progress is an App-owned Check Run.
+    """
     result = {}
     for target in targets:
         for repository in target.repositories:
@@ -50,6 +64,9 @@ def permissions(targets):
         upstream["read"].update(pull_requests="read", checks="read", statuses="read", actions="read")
         # Keep contents:write for the tested owned-thread resolution permission combination.
         upstream["write"].update(pull_requests="write", contents="write")
+        if reviews:
+            # Artifact reads are covered by Pull requests read; only their writes need Issues.
+            upstream["write"].update(issues="write", checks="write")
         # Referencing an upstream commit can introduce workflows into the fork unchanged.
         result[target.fork]["read"]["actions"] = "read"
         result[target.fork]["write"].update(contents="write", actions="write", workflows="write")

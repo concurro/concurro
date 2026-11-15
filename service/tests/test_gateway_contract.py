@@ -32,7 +32,7 @@ READY_QUERY = "query($id:ID!) { node(id:$id) { ... on PullRequest { number repos
 THREAD_QUERY = (
     "query($id:ID!) { node(id:$id) { ... on PullRequestReviewThread { "
     "pullRequest { number repository { nameWithOwner } } "
-    "comments(first:1) { nodes { author { login } body } } } } }"
+    "comments(first:1) { nodes { author { login ... on Node { id } } body } } } } }"
 )
 
 

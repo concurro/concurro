@@ -64,7 +64,11 @@ class Identity:
     def __init__(self, settings, connection=transport.connect, clock=time.time, signer=sign):
         """`settings` supplies `app_id` and `private_key_path`; the key is checked on each signature."""
         self.app_id, self.key_path = settings.app_id, settings.private_key_path
-        self.permissions = permissions(settings.targets) if hasattr(settings, "targets") else None
+        self.permissions = (
+            permissions(settings.targets, reviews=getattr(settings, "reviewer", None) is not None)
+            if hasattr(settings, "targets")
+            else None
+        )
         self.connection, self.clock, self.signer = connection, clock, signer
         self.guard = threading.Lock()
         self.locks = {}

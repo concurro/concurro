@@ -4,21 +4,12 @@ import logging
 import re
 
 import review_api
-from github import NotFound, Transient
+from github import NotFound, Rejected as Rejected, Transient
 
 from .admission import OID, ready_pull, resolved_thread
 from .transport import throttle
 
 log = logging.getLogger("concurro.service")
-
-
-class Rejected(RuntimeError):
-    """GitHub rejected a write; it did not take effect."""
-
-    def __init__(self, message, status=None):
-        """Keep the HTTP status separate from operator-facing diagnostic text."""
-        super().__init__(message)
-        self.status = status
 
 
 class TreeUnavailable(Rejected):
@@ -45,9 +36,15 @@ def settle(path, response, now, body=None):
             payload = response.json()
         except ValueError:
             return "unknown", None, None
+        review = review_api.identify(body)
+        if status == 200 and review is not None and review_api.rejected(review[0], payload):
+            log.warning("GitHub rejected the review mutation %s: %s", review[0], rejection(response))
+            return "failed", None, Rejected("GitHub rejected the review mutation " + review[0], status=status)
+        if status == 200 and resolved_thread(body) is not None and review_api.rejected("resolveReviewThread", payload):
+            log.warning("GitHub refused a thread resolution: %s", rejection(response))
+            return "failed", None, Rejected("GitHub refused the thread resolution", status=status, reason="permission")
         data = payload.get("data") if isinstance(payload, dict) and "errors" not in payload else None
         if status == 200 and isinstance(data, dict):
-            review = review_api.identify(body)
             if review is not None:
                 try:
                     review_api.result(*review, payload)

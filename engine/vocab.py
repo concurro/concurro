@@ -14,6 +14,10 @@ class Stage(StrEnum):
     IMPLEMENT = "implement"
     PUBLISH = "publish"
     REVIEW = "review"
+    # Standalone review rounds only.
+    QUEUED = "queued"
+    PUBLISHING = "publishing"
+    COMPLETE = "complete"
     GATES = "gates"
     MERGING = "merging"
     MERGED = "merged"
@@ -50,3 +54,8 @@ SUSPENDED_STAGES: frozenset[Stage] = frozenset(
 )
 # Assessment decisions that require reassessment unless correcting rejected output.
 JUDGED_STAGES: frozenset[Stage] = frozenset((Stage.REJECTED, Stage.ESCALATED))
+
+# Task kinds select a lifecycle; a task without a recorded kind is a contribution.
+CONTRIBUTION = "contribution"
+STANDALONE_REVIEW = "standalone_pr_review"
+TASK_KINDS = (CONTRIBUTION, STANDALONE_REVIEW)

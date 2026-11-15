@@ -4,14 +4,17 @@ import json
 import posixpath
 
 import runner_layout
+from vocab import CONTRIBUTION
 
 
 def prompt_for(request, bundle):
     """Keep controller-authored implementation authorization apart from untrusted task evidence."""
     context = {k: v for k, v in request["context"].items() if not k.startswith("controller_")}
     authorization = context.pop("design_authorization", None)
+    # The controller binds the kind outside the context; a request without one is a contribution.
+    kind = request.get("task_kind", CONTRIBUTION)
     prompt = {
-        "instructions": bundle.instructions(request["stage"]),
+        "instructions": bundle.instructions(request["stage"], kind),
         "repository_snapshot": {
             "workspace": ".",
             "commit": context["repository_commit"],
@@ -20,7 +23,7 @@ def prompt_for(request, bundle):
             "local_checkpoint": context.get("local_commit"),
             "head_is_local_candidate": bool(request.get("local_candidate")),
         },
-        "response_schema": bundle.schema(request["stage"]),
+        "response_schema": bundle.schema(request["stage"], kind),
         "untrusted_context": context,
     }
     if request.get("feedback_directory"):
@@ -39,13 +42,14 @@ def prompt_for(request, bundle):
     return json.dumps(prompt)
 
 
-def size(stage, context, bundle):
+def size(stage, context, bundle, kind=CONTRIBUTION):
     """Count the full constructed prompt; preflight supplies empty prospective repository metadata."""
     prepared = dict(context)
     prepared.setdefault("repository_commit", context.get("head", context.get("base", "")))
     prepared.setdefault("repository", {"refs": {}, "head": ""})
     request = {
         "stage": stage,
+        "task_kind": kind,
         "context": prepared,
         "local_candidate": "controller_candidate" in context,
         "feedback_directory": bool(context.get("controller_feedback")),

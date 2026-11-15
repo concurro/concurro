@@ -10,13 +10,14 @@ import private
 from policy import Blocked
 
 from . import ENGINE
-from .targets import Target, enrollment
+from .targets import Target, enrollment, review_targets
 
 CHECKOUT = ENGINE.parent
 CONTROLLER = re.compile(r"service:[a-z0-9-]{1,32}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 REGISTRY = re.compile(r"[A-Za-z0-9._-]{1,64}")
+CLIENT_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 FIELDS = {
     "controller_id",
     "engine",
@@ -33,6 +34,7 @@ FIELDS = {
     "vault_metadata_url",
     "vault_service_token_path",
     "lists_token_path",
+    "reviewer",
 }
 OPTIONAL = {
     "engine",
@@ -41,6 +43,7 @@ OPTIONAL = {
     "vault_metadata_url",
     "vault_service_token_path",
     "lists_token_path",
+    "reviewer",
 }
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
 GATEWAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*")
@@ -68,6 +71,16 @@ class Gateway:
     models: tuple
     budget: int
     headers: dict
+
+
+@dataclass(frozen=True)
+class Reviewer:
+    """The GitHub user that reviews PRs on request, authorized through the service App."""
+
+    # The account's stable numeric ID; its login is display only.
+    user_id: int
+    client_id: str
+    client_secret_path: Path
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,8 @@ class Settings:
     vault_service_token_path: Path | None = None  # Separate service bearer, never a user token.
     # The backoffice's bearer for the list index endpoints; without it they are refused.
     lists_token_path: Path | None = None
+    # Enables standalone PR reviews; without it review requests are ignored.
+    reviewer: Reviewer | None = None
 
 
 def require(condition, field):
@@ -198,6 +213,19 @@ def load(path):
         lists_token, lists_identity = secret(data["lists_token_path"], "lists_token_path")
         require(lists_identity not in identities, "lists_token_path")
         identities.add(lists_identity)
+    reviewer = None
+    if "reviewer" in data:
+        entry = data["reviewer"]
+        require(isinstance(entry, dict) and set(entry) == {"user_id", "client_id", "client_secret_path"}, "reviewer")
+        require(isinstance(entry["client_id"], str) and CLIENT_ID.fullmatch(entry["client_id"]), "reviewer.client_id")
+        client_secret, client_identity = secret(entry["client_secret_path"], "reviewer.client_secret_path")
+        require(client_identity not in identities, "reviewer.client_secret_path")
+        identities.add(client_identity)
+        try:
+            review_targets(targets)
+        except ValueError:
+            raise SettingsError("invalid settings field: targets") from None
+        reviewer = Reviewer(integer(entry["user_id"], "reviewer.user_id"), entry["client_id"], client_secret)
     gateway = gateway_settings(data["gateway"], identities)
     limits = data["limits"]
     require(isinstance(limits, dict) and set(limits) == {"global", "per_repository"}, "limits")
@@ -219,6 +247,7 @@ def load(path):
         vault_metadata_url=metadata_url,
         vault_service_token_path=metadata_token,
         lists_token_path=lists_token,
+        reviewer=reviewer,
     )
 
 

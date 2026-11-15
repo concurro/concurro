@@ -345,9 +345,13 @@ class FakeGitHub(PendingReviews):
     def review_comment(self, data, **fields):
         """Record one App review comment."""
         self.counter += 1
-        comment = {"id": self.counter, "user": {"login": self.config["bot_login"]}, "body": data["body"], **fields}
+        comment = {"id": self.counter, "user": self.review_user(), "body": data["body"], **fields}
         self.review_comments.append(comment)
         return comment
+
+    def review_user(self):
+        """The REST account that authors reviews and their comments."""
+        return {"login": self.config["bot_login"]}
 
     def review_threads(self, number):
         """Threads as the engine's adapter returns them."""
@@ -476,7 +480,7 @@ class FakeGitHub(PendingReviews):
             self.counter += 1
             review = {
                 "id": self.counter,
-                "user": {"login": self.config["bot_login"]},
+                "user": self.review_user(),
                 "body": data["body"],
                 "state": "COMMENTED",
                 "commit_id": data["commit_id"],

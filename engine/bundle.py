@@ -8,6 +8,7 @@ from pathlib import Path
 
 import classification
 from policy import Blocked, digest
+from vocab import CONTRIBUTION, STANDALONE_REVIEW
 
 STAGES = ("intake", "plan", "plan_qc", "develop", "review")
 SKILLS = dict(
@@ -22,12 +23,20 @@ SKILLS = dict(
         ),
     )
 )
+# Trusted addenda composed with a stage's skill, selected by the controller-bound task kind.
+MODES = {
+    "review": {
+        CONTRIBUTION: "bundle/skills/concurro-review-pr/contribution.md",
+        STANDALONE_REVIEW: "bundle/skills/concurro-review-pr/standalone.md",
+    }
+}
 MANIFEST = "bundle/manifest.json"
 CHARTER = ".concurro/charter.json"
 ENGINE_RESOURCES = (
     {"bundle/instructions.md", "bundle/roles.json", "bundle/schemas/classification.json"}
     | {f"bundle/schemas/{stage}.json" for stage in STAGES}
     | {f"bundle/skills/{name}/SKILL.md" for name in SKILLS.values()}
+    | {path for modes in MODES.values() for path in modes.values()}
 )
 INSTRUCTION_ROLES = {
     "intake": None,
@@ -106,6 +115,8 @@ class Bundle:
         self.roles = roles["roles"]
         for stage, role in self.roles.items():
             expected = {"skill": f"bundle/skills/{SKILLS[stage]}/SKILL.md", "schema": f"bundle/schemas/{stage}.json"}
+            if stage in MODES:
+                expected["modes"] = MODES[stage]
             if role != expected:
                 raise Blocked("role references an unapproved resource")
             skill = self.resources[role["skill"]]
@@ -125,9 +136,12 @@ class Bundle:
         """Exact target instruction bytes for reconstructing the bundle in a runner."""
         return {p: self.resources[p] for p in sorted(TARGET_INSTRUCTIONS) if p in self.resources}
 
-    def schema(self, stage):
-        """Return the external response contract for one role."""
+    def schema(self, stage, kind=CONTRIBUTION):
+        """Return the external response contract for one role and task kind."""
         schema = json.loads(self.resources[self.roles[stage]["schema"]])
+        if stage == "review" and kind == STANDALONE_REVIEW:
+            # A standalone review has no plan to reopen.
+            schema["properties"]["verdict"]["enum"].remove("reopen")
         if stage in ("intake", "plan_qc"):
             schema["properties"]["scope"]["properties"]["goal_ids"]["items"]["enum"] = sorted(self.charter["goals"])
         if stage in classification.STAGES:
@@ -137,13 +151,17 @@ class Bundle:
             schema["required"].append("classification")
         return schema
 
-    def instructions(self, stage):
-        """Load shared governance once and only the selected stage's skill."""
+    def instructions(self, stage, kind=CONTRIBUTION):
+        """Load shared governance once, the selected stage's skill and its addendum for the task kind."""
+        modes = self.roles[stage].get("modes")
+        if kind != CONTRIBUTION and (not modes or kind not in modes):
+            raise Blocked("stage has no instructions for this task kind")
         return {
             "shared": self.resources["bundle/instructions.md"],
             "charter": self.charter,
             "role": stage,
             "skill": self.resources[self.roles[stage]["skill"]],
+            **({"mode": self.resources[modes[kind]]} if modes else {}),
             "target": {
                 name: self.resources[path]
                 for name in ("shared", INSTRUCTION_ROLES[stage])

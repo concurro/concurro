@@ -17,6 +17,7 @@ authoritative for exact limits and behavior.
 | [Design-review eligibility](design/design-review-corrections.md) | Independent approvals through corrections, recovery and follow-ups |
 | [Review-cost baseline](reports/design-review-baseline.md) | Reproducible pilot measurements and coverage limits |
 | [PR reviews](design/pr-reviews.md) | Findings, native threads and publication recovery |
+| [Standalone PR reviews](design/standalone-reviews.md) | Reviewing an existing PR on request: rounds, checks, identities |
 | [Issue dashboard](design/issue-dashboard.md) | Current-run display, diagnostics and durable report storage |
 | [Comment format](design/comment-format.md) | Rendering and compatibility rules |
 | [Design evaluation](design-evaluation.md) | Current operator-run review smoke test |

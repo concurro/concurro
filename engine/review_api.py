@@ -2,11 +2,16 @@
 
 import re
 
+from github import Rejected
+from identities import AUTHOR
 from protocol import PUBLICATION_BODY_BYTES
 
 REVIEW_FIELDS = (
-    "id databaseId body state author { login } commit { oid } pullRequest { number state repository { nameWithOwner } }"
+    "id databaseId body state " + AUTHOR + " commit { oid } pullRequest { number state repository { nameWithOwner } }"
 )
+# Error types GitHub reports for a mutation it refused before applying it; `VALIDATION` is
+# its answer to a review commit outside the pull request.
+REJECTIONS = frozenset({"UNPROCESSABLE", "NOT_FOUND", "FORBIDDEN", "VALIDATION"})
 RESULTS = {
     "addPullRequestReview": "pullRequestReview { " + REVIEW_FIELDS + " }",
     "addPullRequestReviewThread": "thread { id }",
@@ -102,9 +107,32 @@ def result(name, values, payload):
     return node
 
 
+def rejected(name, payload):
+    """Whether a response is a definite refusal of the mutation itself.
+
+    Its own field is null and every error names that field with a refusal type; any other
+    error-bearing response leaves the outcome unknown.
+    """
+    data, errors = (payload.get(key) for key in ("data", "errors")) if isinstance(payload, dict) else (None, None)
+    return (
+        isinstance(data, dict)
+        and name in data
+        and data[name] is None
+        and isinstance(errors, list)
+        and bool(errors)
+        and all(
+            isinstance(error, dict) and error.get("path") == [name] and error.get("type") in REJECTIONS
+            for error in errors
+        )
+    )
+
+
 def mutate(github, name, **values):
     """Send and verify one supported mutation through the normal GitHub facade."""
-    return result(name, values, github.api("graphql", "POST", request(name, values)))
+    response = github.api("graphql", "POST", request(name, values))
+    if rejected(name, response):
+        raise Rejected("GitHub rejected the review mutation " + name, status=200)
+    return result(name, values, response)
 
 
 def node(github, identifier):

@@ -33,12 +33,13 @@ def reconcile(gateway, intent, operator):
             return {"intent": intent, "disposition": "discarded"}
         if child and not definitely_failed(child):
             raise ValueError("compensating write requires manual resolution")
-        node = gateway._graphql_node(context["repository"], review_api.NODE, context["review"])
+        node = gateway._graphql_node(context["repository"], review_api.NODE, context["review"], key)
         pr = node.get("pullRequest") or {}
-        author = (node.get("author") or {}).get("login")
+        author = gateway.review_author(key)
         if (
             node.get("id") != context["review"]
-            or author not in (gateway.bot_login, (gateway.bot_login or "").removesuffix("[bot]"))
+            or author is None
+            or not author.graphql(node.get("author"))
             or pr.get("number") != context["pull"]
             or pr.get("repository", {}).get("nameWithOwner", "").lower() != context["repository"].lower()
             or node.get("commit", {}).get("oid") != context["head"]

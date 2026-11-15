@@ -27,6 +27,16 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS tasks (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL,\n    PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE IF NOT EXISTS review_requests (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, delivery TEXT NOT NULL UNIQUE,\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, document TEXT NOT NULL)",
+      []
+    ],
+    [
+      "execute",
       "CREATE TABLE IF NOT EXISTS credential_cursor (id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL)",
       []
     ],
@@ -97,7 +107,7 @@
     ],
     [
       "execute",
-      "\nCREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+      "\nCREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, actor TEXT,\n                        UNIQUE (repository, issue, generation, sequence))",
       []
     ],
     [
@@ -130,7 +140,7 @@
         ],
         [
           "schema",
-          "8"
+          "9"
         ]
       ]
     ],
@@ -192,16 +202,18 @@
     "issue_sponsor_sources": "CREATE TABLE issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
     "issue_sponsorships": "CREATE TABLE issue_sponsorships (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,\n    confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))",
     "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, actor TEXT,\n                        UNIQUE (repository, issue, generation, sequence))",
     "observations": "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))",
     "outcomes": "CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,\n                       progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "ownership": "CREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n                        worker TEXT NOT NULL, lease_until REAL NOT NULL, live INTEGER NOT NULL,\n                        PRIMARY KEY (repository, issue))",
     "pulls": "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                    pull_repository TEXT NOT NULL, pull INTEGER NOT NULL,\n                    PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
     "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
+    "review_requests": "CREATE TABLE review_requests (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, delivery TEXT NOT NULL UNIQUE,\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, document TEXT NOT NULL)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
     "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
     "sqlite_sequence": "CREATE TABLE sqlite_sequence(name,seq)",
+    "tasks": "CREATE TABLE tasks (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL,\n    PRIMARY KEY (repository, issue))",
     "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
   },
   "migrate": [
@@ -312,9 +324,29 @@
     ],
     [
       "execute",
+      "CREATE TABLE IF NOT EXISTS tasks (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL,\n    PRIMARY KEY (repository, issue))",
+      []
+    ],
+    [
+      "execute",
+      "CREATE TABLE IF NOT EXISTS review_requests (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, delivery TEXT NOT NULL UNIQUE,\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, document TEXT NOT NULL)",
+      []
+    ],
+    [
+      "execute",
+      "PRAGMA table_info(mutations)",
+      []
+    ],
+    [
+      "execute",
+      "ALTER TABLE mutations ADD COLUMN actor TEXT",
+      []
+    ],
+    [
+      "execute",
       "UPDATE meta SET value = ? WHERE name = 'schema'",
       [
-        "8"
+        "9"
       ]
     ],
     [
@@ -365,16 +397,18 @@
     "issue_sponsor_sources": "CREATE TABLE issue_sponsor_sources (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL,\n    PRIMARY KEY(repository,issue,revision))",
     "issue_sponsorships": "CREATE TABLE issue_sponsorships (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, source_revision INTEGER NOT NULL,\n    confirmed INTEGER NOT NULL, document TEXT, PRIMARY KEY(repository,issue))",
     "meta": "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence))",
+    "mutations": "CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,\n                        generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,\n                        path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,\n                        settled REAL, resolution TEXT, actor TEXT, UNIQUE (repository, issue, generation, sequence))",
     "observations": "CREATE TABLE observations (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,\n    due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))",
     "outcomes": "CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,\n                       progressed INTEGER NOT NULL, retry_after INTEGER, recorded REAL NOT NULL,\n                       PRIMARY KEY (repository, issue))",
     "ownership": "CREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n                        worker TEXT NOT NULL, lease_until REAL NOT NULL, live INTEGER NOT NULL,\n                        PRIMARY KEY (repository, issue))",
     "pulls": "CREATE TABLE pulls (repository TEXT NOT NULL, issue INTEGER NOT NULL, pull_repository TEXT NOT NULL, pull INTEGER NOT NULL, PRIMARY KEY (repository, issue), UNIQUE (pull_repository, pull))",
     "queue": "CREATE TABLE queue (repository TEXT NOT NULL, issue INTEGER NOT NULL, causes TEXT NOT NULL,\n                    due_at REAL NOT NULL, PRIMARY KEY (repository, issue))",
     "review_intents": "CREATE TABLE review_intents (intent TEXT PRIMARY KEY, context TEXT NOT NULL, recovery TEXT)",
+    "review_requests": "CREATE TABLE review_requests (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT, delivery TEXT NOT NULL UNIQUE,\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, document TEXT NOT NULL)",
     "runner_sessions": "CREATE TABLE runner_sessions (\n    id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,\n    config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)",
     "snapshots": "CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,\n                        PRIMARY KEY (repository, issue))",
     "sqlite_sequence": "CREATE TABLE sqlite_sequence(name,seq)",
+    "tasks": "CREATE TABLE tasks (\n    repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL,\n    PRIMARY KEY (repository, issue))",
     "webhook_recovery": "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
   },
   "open": [

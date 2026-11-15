@@ -253,7 +253,7 @@ class WorkerHelperTests(unittest.TestCase):
         worker.load = lambda *args: SimpleNamespace(config=config, bundle="bundle")
         worker.reader = lambda repo: trace.append(("read", repo)) or "reader:" + repo
         worker.gateway = SimpleNamespace(stop=lambda *args: None)
-        worker.registry = SimpleNamespace(acknowledge=Mock())
+        worker.registry = SimpleNamespace(acknowledge=Mock(), kind=lambda key: "contribution")
         worker.delegation_key = None
         worker.sponsorship = None
         worker.make_executor = lambda *args: None

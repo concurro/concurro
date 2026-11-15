@@ -37,6 +37,9 @@ class Registry:
         if key not in self.scheduled:
             self.queued.append((key, cause, due_at))
 
+    def kind(self, key):
+        return "contribution"
+
 
 class Reader:
     def __init__(self, permissions):

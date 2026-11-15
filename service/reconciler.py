@@ -5,8 +5,10 @@ import threading
 import time
 
 from github import Transient, paginate
+from identities import Actor
 from policy import digest
 from readiness import ci_refs
+from vocab import STANDALONE_REVIEW
 
 from .failures import backoff
 from .observations import satisfied
@@ -27,26 +29,43 @@ def pages(reader, path, key=None):
 class Reconciler:
     """Snapshot task inputs through read tokens; compare with what the last completed tick acknowledged."""
 
-    def __init__(self, registry, reader, repositories, identities, clock=time.time, cleanup=None, command_comment=None):
-        """`reader(repository)` returns that repository's read transport; `identities` are Concurro logins."""
+    def __init__(
+        self,
+        registry,
+        reader,
+        repositories,
+        identities,
+        clock=time.time,
+        cleanup=None,
+        command_comment=None,
+        review_repositories=(),
+    ):
+        """`reader(repository)` returns that repository's read transport.
+
+        `identities` are Concurro's accounts, as actor descriptors or bare logins.
+        `repositories` supply issues; `review_repositories` are upstreams whose PRs may be
+        reviewed standalone, polled for those tasks even when they supply no issues.
+        """
         self.registry, self.reader, self.clock = registry, reader, clock
-        self.repositories = tuple(repositories)
-        self.identities = frozenset(identities)
+        self.issue_repositories = tuple(repositories)
+        self.repositories = tuple(dict.fromkeys((*repositories, *review_repositories)))
+        self.identities = tuple(Actor.parse(identity) for identity in identities)
         self.guard = threading.Lock()
         self.hints = {}
         self.cleanup = cleanup
         self.command_comment = command_comment
 
-    def ours(self, login):
-        """Whether a login belongs to Concurro; only marked commands become comment input."""
-        return login in self.identities
+    def ours(self, user):
+        """Whether a REST `user` object, or a bare login, is a Concurro account; only marked commands become comment input."""
+        user = {"login": user} if isinstance(user, str) else user
+        return any(identity.rest(user) for identity in self.identities)
 
     def comment_input(self, comments):
         """The snapshot form of issue comments: everyone's but Concurro's, plus marked commands."""
         return sorted(
             [c["id"], digest(c["body"])]
             for c in comments
-            if not self.ours(c["user"]["login"]) or self.command_comment and self.command_comment(c["body"] or "")
+            if not self.ours(c["user"]) or self.command_comment and self.command_comment(c["body"] or "")
         )
 
     def snapshot(self, key, cached=True, comments_read=None):
@@ -69,7 +88,7 @@ class Reconciler:
                 if e["event"] in ("labeled", "unlabeled")
                 and e.get("label", {}).get("name") == ENROLLMENT
                 and e.get("actor")
-                and not self.ours(e["actor"]["login"])
+                and not self.ours(e["actor"])
             ]
             if cached:
                 with self.guard:
@@ -78,7 +97,9 @@ class Reconciler:
             "issue": {"state": issue["state"], "requirements": digest([issue["title"], issue["body"]])},
             "comments": comments,
             "enrollment": enrollment,
-            "pull": self.pull(reader, root, key),
+            "pull": self.review_pull(key, issue)
+            if self.registry.kind(key) == STANDALONE_REVIEW
+            else self.pull(reader, root, key),
         }
         projection = self.registry.sponsorship(key)
         if projection.get("revision") or projection["source_revision"] or projection.get("task"):
@@ -88,6 +109,13 @@ class Reconciler:
                 "status": projection["status"],
             }
         return snapshot
+
+    def review_pull(self, key, issue):
+        """A standalone review's PR input: whether it is open and its recorded requests.
+
+        Pushes, retargets, CI and review activity are no input to it.
+        """
+        return {"number": key[1], "state": issue["state"], "requests": len(self.registry.review_requests(key))}
 
     def pull(self, reader, root, key):
         """The linked pull request's head, merge state, reviews and check runs, or None."""
@@ -101,7 +129,7 @@ class Reconciler:
         reviews = sorted(
             [r["id"], r["state"]]
             for r in pages(reader, root + f"pulls/{number}/reviews")
-            if not self.ours((r.get("user") or {}).get("login"))
+            if not self.ours(r.get("user") or {})
         )
         checks, statuses, suites, runs = [], [], [], []
         for sha in ci_refs(pr):
@@ -138,7 +166,11 @@ class Reconciler:
 
     def candidates(self, repository):
         """Poll enrolled tasks, intent facts and existing command watches; skip pure discovery reads."""
-        enrolled = pages(self.reader(repository), f"repos/{repository}/issues?state=open&labels={ENROLLMENT}")
+        enrolled = (
+            pages(self.reader(repository), f"repos/{repository}/issues?state=open&labels={ENROLLMENT}")
+            if repository in self.issue_repositories
+            else []
+        )
         keys = {(repository, issue["number"]) for issue in enrolled if "pull_request" not in issue}
         active = set()
         for key in self.registry.active(repository):

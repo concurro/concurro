@@ -262,7 +262,8 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.wire.paths.clear()
         for _ in range(3):
             self.assertEqual(
-                self.tasks("reader").overview(), {"targets": [], "tasks": [], "issues": [], "activity": []}
+                self.tasks("reader").overview(),
+                {"targets": [], "tasks": [], "issues": [], "reviews": [], "activity": []},
             )
             with self.assertRaises(TaskNotFound):
                 self.tasks("reader").find_target(target.fork)

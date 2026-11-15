@@ -140,7 +140,8 @@ sudo chown 65533:65533 /etc/concurro/service/delegation-key
 
 `headers.codex` selects the ChatGPT subscription route; use `"headers": {}` with an OpenAI
 API key. `issues` is `upstream`, `fork` or `both`. Omit `engine`: the service then serves
-the release it was deployed with. Backoffice settings are in
+the release it was deployed with. An optional `reviewer` block enables
+[standalone PR reviews](#standalone-pr-reviews). Backoffice settings are in
 [`backoffice/README.md`](../backoffice/README.md#settings).
 
 **6. Targets**
@@ -424,13 +425,69 @@ the public endpoint, and does not redact old logs or Git history.
 
 Install the controller App on the selected repositories. Grant Contents read/write,
 Pull requests read/write, Checks read, Commit statuses read, Actions read on the upstream, Issues read/write where
-issues enroll, and Actions write plus Workflows write on the fork. Fork read tokens explicitly request
+issues enroll, and Actions write plus Workflows write on the fork. Standalone PR reviews
+additionally need Issues write and Checks write on the upstream. Fork read tokens explicitly request
 Actions read for runner-termination diagnosis; this uses the already required fork
 Actions-write installation grant. Token requests narrow these permissions
 per repository; the write gateway narrows permitted endpoints further. Retain Contents
 write upstream for the tested review-thread resolution permission combination. No
 Administration permission is needed for readiness. Historical `adopt` additionally needs
 Actions, Variables and Environments read to verify the retired Actions controller is off.
+
+### Standalone PR reviews
+
+Reviews of existing upstream PRs are published by a real GitHub user, the reviewer account,
+through a user token of the service App ([design](../docs/design/standalone-reviews.md)).
+Nothing here is enabled until `settings.json` names a `reviewer`.
+
+Do these in order. The service requests exactly the permissions its settings imply and
+refuses a token that differs, so starting a service with a `reviewer` before the grant in
+step 1 is accepted stops every upstream write token, for contribution tasks too.
+
+1. **App permissions.** Add Issues write and Checks write on each upstream and accept the
+   updated permissions on every installation. Subscribe the App to `pull_request` events
+   if it is not already.
+2. **Device flow.** Enable device flow for the App. Keep its user-token expiration setting
+   as it is; both expiring and non-expiring tokens are handled.
+3. **Repository access.** Give the reviewer account read access to each upstream, as a
+   collaborator or through a team. GitHub lists only such accounts as requestable reviewers;
+   installing the App does not. Read access is enough: the account only publishes reviews
+   and replies, and the App resolves its finding threads.
+4. **Settings.** Add the block below, with the account's numeric ID (`gh api users/LOGIN --jq .id`),
+   the App's client ID and a 0600 file holding its client secret. Each upstream may then
+   appear in only one target.
+
+   ```json
+   {
+     "reviewer": {
+       "user_id": 123456789,
+       "client_id": "Iv23abcdefghijklmnop",
+       "client_secret_path": "/etc/concurro/service/app-client-secret"
+     }
+   }
+   ```
+
+5. **Authorize.** With the service stopped, run the command below and approve the shown code
+   in a browser signed in as the reviewer account. A grant for any other account is
+   discarded. The grant is stored as `reviewer-grant.json` in the state directory.
+
+   ```bash
+   sudo docker run --rm -it --volume /etc/concurro/service:/etc/concurro/service:ro \
+     --volume /var/lib/concurro/service:/var/lib/concurro/service \
+     ghcr.io/concurro/service:FULL_COMMIT_SHA authorize-reviewer
+   ```
+
+6. **Start.** The service refuses to start with a `reviewer` and no usable grant. Repeat
+   step 5 if a refresh is refused or the account's grant is revoked.
+
+The release that introduced this also split the PR reviewer skill, which changes the bundle
+identity: deploy it while idle, or have a writer `/concurro resume` each active task.
+Registry schema 9 migrates forward on first start; back up the stopped registry first.
+
+Before a pilot, confirm on disposable resources what unit tests cannot: PR artifact writes
+with the App's token and reads with the Reader App, the reviewer account's selection,
+reviews and replies, and how the check shows on a PR from a contributor fork. The design
+document lists these.
 
 ### Upstream workflow changes and fork publication
 

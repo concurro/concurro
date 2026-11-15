@@ -821,7 +821,12 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(instructions["skill"], bundle.resources[bundle.roles[stage]["skill"]])
             self.assertEqual(instructions["shared"], bundle.resources["bundle/instructions.md"])
             self.assertEqual(instructions["charter"], json.loads(bundle.charter_text))
-            self.assertEqual(set(instructions), {"shared", "charter", "role", "skill", "target"})
+            modes = bundle.roles[stage].get("modes", {})
+            self.assertEqual(
+                set(instructions), {"shared", "charter", "role", "skill", "target"} | ({"mode"} if modes else set())
+            )
+            for kind, path in modes.items():
+                self.assertEqual(bundle.instructions(stage, kind)["mode"], bundle.resources[path])
             self.assertTrue(bundle.schema(stage)["additionalProperties"] is False)
             skill_path = bundle.root / bundle.roles[stage]["skill"]
             links = re.findall(r"\]\(([^)]+)\)", instructions["skill"])

@@ -20,7 +20,11 @@
     },
     "review": {
       "skill": "bundle/skills/concurro-review-pr/SKILL.md",
-      "schema": "bundle/schemas/review.json"
+      "schema": "bundle/schemas/review.json",
+      "modes": {
+        "contribution": "bundle/skills/concurro-review-pr/contribution.md",
+        "standalone_pr_review": "bundle/skills/concurro-review-pr/standalone.md"
+      }
     }
   }
 }

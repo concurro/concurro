@@ -166,7 +166,8 @@ class SectionTests(unittest.TestCase):
             ) as client,
         ):
             self.assertEqual(
-                client.get("/api/overview").json(), {"targets": [], "tasks": [], "issues": [], "activity": []}
+                client.get("/api/overview").json(),
+                {"targets": [], "tasks": [], "issues": [], "reviews": [], "activity": []},
             )
             for repository in ("up/project", "owner/project"):
                 task = f"/api/tasks/{repository}/7"

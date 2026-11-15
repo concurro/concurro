@@ -15,13 +15,14 @@ import delegation
 import sponsorship
 from controller import Outcome
 from policy import digest
+from vocab import CONTRIBUTION, STANDALONE_REVIEW
 
 from . import credential_recovery
 from .errors import RegistryError, RegistryFailure
 from .observations import expected, satisfied
 
 BINDING_QUERY = "SELECT upstream, fork, config_sha FROM bindings WHERE repository = ? AND issue = ?"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DATABASE = "registry.db"
 LOCK = "lock"
 STATUSES = ("in-flight", "done", "failed", "unknown")
@@ -52,8 +53,20 @@ CREDENTIAL_CURSOR = "CREATE TABLE IF NOT EXISTS credential_cursor (id INTEGER PR
 CREDENTIAL_VERSIONS = """CREATE TABLE IF NOT EXISTS credential_versions (
     user_id TEXT NOT NULL,route TEXT NOT NULL,sequence INTEGER NOT NULL,document TEXT NOT NULL,
     PRIMARY KEY(user_id,route))"""
+# A task without a row is a contribution; a standalone review's row records its PR and target.
+TASKS = """CREATE TABLE IF NOT EXISTS tasks (
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL,
+    PRIMARY KEY (repository, issue))"""
+# Verified reviewer request and removal deliveries, in arrival order, as each task's request evidence.
+REVIEW_REQUESTS = """CREATE TABLE IF NOT EXISTS review_requests (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT, delivery TEXT NOT NULL UNIQUE,
+    repository TEXT NOT NULL, issue INTEGER NOT NULL, document TEXT NOT NULL)"""
 SCHEMA = (
-    CREDENTIAL_CURSOR
+    TASKS
+    + ";"
+    + REVIEW_REQUESTS
+    + ";"
+    + CREDENTIAL_CURSOR
     + ";"
     + CREDENTIAL_VERSIONS
     + ";"
@@ -84,7 +97,8 @@ CREATE TABLE ownership (repository TEXT NOT NULL, issue INTEGER NOT NULL, genera
 CREATE TABLE mutations (intent TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL,
                         generation INTEGER NOT NULL, sequence INTEGER NOT NULL, method TEXT NOT NULL,
                         path TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, admitted REAL NOT NULL,
-                        settled REAL, resolution TEXT, UNIQUE (repository, issue, generation, sequence));
+                        settled REAL, resolution TEXT, actor TEXT,
+                        UNIQUE (repository, issue, generation, sequence));
 CREATE TABLE snapshots (repository TEXT NOT NULL, issue INTEGER NOT NULL, snapshot TEXT NOT NULL,
                         PRIMARY KEY (repository, issue));
 CREATE TABLE outcomes (repository TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -154,6 +168,8 @@ class MutationRecord:
     admitted: float
     settled: float | None
     resolution: dict | None
+    # The account whose credential sent the write; None on records predating the column.
+    actor: dict | None = None
 
 
 def _lock_state_dir(root):
@@ -190,6 +206,14 @@ def _initialize(db, registry_id):
     db.execute("COMMIT")
 
 
+def _upgrade_v9(db):
+    """Add task kinds, review request evidence and each write's sending account."""
+    db.execute(TASKS)
+    db.execute(REVIEW_REQUESTS)
+    if "actor" not in [column[1] for column in db.execute("PRAGMA table_info(mutations)")]:
+        db.execute("ALTER TABLE mutations ADD COLUMN actor TEXT")
+
+
 def _migrate_v2(db):
     """Preserve old PR identities and journals while adding target bindings."""
     # Old PRs lived beside their issues. Preserve that identity and all journals.
@@ -212,6 +236,7 @@ def _migrate_v2(db):
     db.execute(SPONSOR_PROJECTIONS)
     db.execute(CREDENTIAL_CURSOR)
     db.execute(CREDENTIAL_VERSIONS)
+    _upgrade_v9(db)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
@@ -227,13 +252,20 @@ def _migrate_v3(db):
     db.execute(SPONSOR_PROJECTIONS)
     db.execute(CREDENTIAL_CURSOR)
     db.execute(CREDENTIAL_VERSIONS)
+    _upgrade_v9(db)
     db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
     db.execute("COMMIT")
 
 
 def _mutation_record(row):
-    """Decode one stored write occurrence, including optional resolution evidence."""
-    return MutationRecord(row[0], (row[1], row[2]), *row[3:11], json.loads(row[11]) if row[11] else None)
+    """Decode one stored write occurrence, including optional resolution evidence and sender."""
+    return MutationRecord(
+        row[0],
+        (row[1], row[2]),
+        *row[3:11],
+        json.loads(row[11]) if row[11] else None,
+        json.loads(row[12]) if row[12] else None,
+    )
 
 
 def without_stage(snapshot):
@@ -346,9 +378,9 @@ class Registry:
                 _migrate_v2(db)
             elif meta["schema"] == "3":
                 _migrate_v3(db)
-            elif meta["schema"] not in ("4", "5", "6", "7", str(SCHEMA_VERSION)):
+            elif meta["schema"] not in ("4", "5", "6", "7", "8", str(SCHEMA_VERSION)):
                 raise RegistryError("registry identity or schema version mismatch")
-            if meta["schema"] in ("4", "5", "6", "7"):
+            if meta["schema"] in ("4", "5", "6", "7", "8"):
                 db.execute("BEGIN IMMEDIATE")
                 if meta["schema"] == "4":
                     db.execute(WEBHOOK_RECOVERY)
@@ -358,6 +390,7 @@ class Registry:
                 db.execute(SPONSOR_PROJECTIONS)
                 db.execute(CREDENTIAL_CURSOR)
                 db.execute(CREDENTIAL_VERSIONS)
+                _upgrade_v9(db)
                 db.execute("UPDATE meta SET value = ? WHERE name = 'schema'", (str(SCHEMA_VERSION),))
                 db.execute("COMMIT")
         except (RegistryError, sqlite3.Error) as error:
@@ -488,6 +521,75 @@ class Registry:
                     queue(db, key, "webhook:" + event, now)
             db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, now))
         return True
+
+    def review_event(self, delivery_id, key, request, target=None):
+        """Commit a reviewer request or removal with its receipt, task, PR ownership and wakeup.
+
+        `target` is the `(upstream, fork)` that reviews this PR; given, a request enrolls the PR
+        as its own standalone task. Returns `duplicate`, `owned` when the PR already belongs
+        to a contribution task (which keeps it; nothing starts), `ignored` for an event about
+        a PR that is not a standalone task, or `accepted`.
+        """
+        with self.transaction() as db:
+            if db.execute("SELECT 1 FROM deliveries WHERE id = ?", (delivery_id,)).fetchone():
+                return "duplicate"
+            now = self.clock()
+            db.execute("INSERT INTO deliveries VALUES (?, ?)", (delivery_id, now))
+            owner = db.execute(
+                "SELECT repository, issue FROM pulls WHERE pull_repository = ? AND pull = ?", key
+            ).fetchone()
+            if owner is not None and tuple(owner) != key:
+                return "owned"
+            known = db.execute("SELECT kind FROM tasks WHERE repository = ? AND issue = ?", key).fetchone()
+            if known is None:
+                if target is None:
+                    return "ignored"
+                document = {"upstream": target[0], "fork": target[1], "enrolled": now, "request": delivery_id}
+                db.execute("INSERT INTO tasks VALUES (?, ?, ?, ?)", (*key, STANDALONE_REVIEW, json.dumps(document)))
+                db.execute("INSERT INTO pulls VALUES (?, ?, ?, ?)", (*key, *key))
+            elif known[0] != STANDALONE_REVIEW:
+                return "ignored"
+            db.execute(
+                "INSERT INTO review_requests (delivery, repository, issue, document) VALUES (?, ?, ?, ?)",
+                (delivery_id, *key, json.dumps({**request, "delivery": delivery_id}, sort_keys=True)),
+            )
+            queue(db, key, "webhook:review-request", now)
+            self.touched.add(("tasks", *key))
+            return "accepted"
+
+    def review_requests(self, key):
+        """A standalone task's recorded request events, oldest first."""
+        with self.transaction() as db:
+            return [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT document FROM review_requests WHERE repository = ? AND issue = ? ORDER BY sequence", key
+                )
+            ]
+
+    def kind(self, key):
+        """The task's kind; a task enrolled before kinds existed is a contribution."""
+        with self.transaction() as db:
+            row = db.execute("SELECT kind FROM tasks WHERE repository = ? AND issue = ?", key).fetchone()
+        return row[0] if row else CONTRIBUTION
+
+    def review_target(self, key):
+        """The `(upstream, fork)` recorded when a standalone review was enrolled, or None."""
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT document FROM tasks WHERE repository = ? AND issue = ? AND kind = ?", (*key, STANDALONE_REVIEW)
+            ).fetchone()
+        document = json.loads(row[0]) if row else None
+        return (document["upstream"], document["fork"]) if document else None
+
+    def review_tasks(self, repository):
+        """Every standalone review task of the repository."""
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT repository, issue FROM tasks WHERE repository = ? AND kind = ? ORDER BY issue",
+                (repository, STANDALONE_REVIEW),
+            ).fetchall()
+        return [tuple(row) for row in rows]
 
     def _sponsor_hint(self, db, key, source):
         """Commit a new source revision and invalidate its projection within the receipt transaction."""
@@ -864,8 +966,11 @@ class Registry:
                     self.touched.add(("sponsorships", *key))
             return True
 
-    def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None):
-        """Record a new occurrence as in flight before it is sent; return its intent ID."""
+    def admit(self, key, generation, method, path, request_digest, review=None, recovery_of=None, actor=None):
+        """Record a new occurrence as in flight before it is sent; return its intent ID.
+
+        `actor` is the account whose credential sends it, kept so no retry uses another.
+        """
         with self.transaction() as db:
             sequence = db.execute(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM mutations WHERE repository = ? "
@@ -874,8 +979,18 @@ class Registry:
             ).fetchone()[0]
             intent = f"{key[0]}#{key[1]}/{generation}/{sequence}"
             db.execute(
-                "INSERT INTO mutations VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-flight', ?, NULL, NULL)",
-                (intent, *key, generation, sequence, method, path, request_digest, self.clock()),
+                "INSERT INTO mutations VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-flight', ?, NULL, NULL, ?)",
+                (
+                    intent,
+                    *key,
+                    generation,
+                    sequence,
+                    method,
+                    path,
+                    request_digest,
+                    self.clock(),
+                    json.dumps(actor) if actor else None,
+                ),
             )
             if review is not None:
                 db.execute("INSERT INTO review_intents VALUES (?, ?, NULL)", (intent, json.dumps(review)))

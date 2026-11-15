@@ -33,7 +33,7 @@ from policy import (
 from relay import WAIT, ExchangeError
 from runtime_defaults import DEFAULT_RETAINED_BYTES, DEFAULT_TURN_SECONDS as DEFAULT_TURN_SECONDS
 from snapshot import inspection
-from vocab import TurnOutcome
+from vocab import CONTRIBUTION, TurnOutcome
 
 # Providers whose CLIs the gateway serves natively.
 PROVIDERS = ("claude", "codex")
@@ -138,6 +138,7 @@ class Agents:
         candidate = context.pop("controller_candidate", None)
         feedback = context.pop("controller_feedback", {})
         evaluation = context.pop("controller_evaluation", None)
+        kind = context.pop("controller_task_kind", CONTRIBUTION)
         if evaluation is not None and (
             stage != "plan_qc" or session is not None or not re.fullmatch(r"[a-f0-9]{32}", evaluation)
         ):
@@ -180,6 +181,8 @@ class Agents:
             "effort": agent.profile.effort,
             **({"agent": agent.record()} if "agents" in self.config else {}),
             "stage": stage,
+            # Contribution requests keep their original shape.
+            **({"task_kind": kind} if kind != CONTRIBUTION else {}),
             "gateway": self.executor.gateway,
             "bundle_id": self.bundle.identity,
             "charter": self.bundle.charter_text,

@@ -19,6 +19,8 @@ from model_config import resolve
 from policy import Blocked
 from relay import ExchangeError, Operator
 from report_store import Cache
+from standalone import ReviewController
+from vocab import STANDALONE_REVIEW
 
 from . import failures
 from .admission import RUN_BRANCH_PREFIX
@@ -37,7 +39,7 @@ from .ingress import WRITER_ASSOCIATIONS
 from .runner_diagnostics import runner_termination as runner_termination
 from .settings import CHECKOUT
 from .target_loader import Target as Target, load_target as load_target
-from .targets import enrollment
+from .targets import enrollment, review_targets
 
 RENEW_SECONDS = LEASE_SECONDS // 3
 
@@ -113,17 +115,23 @@ class Worker:
         diagnostics=None,
         delegation_key=None,
         sponsorship=None,
+        actors=None,
+        reviewer_reader=None,
     ):
         """`reader(repository)` returns a read transport; `agents` and `executor` are injectable.
 
         `diagnostics`, a `service.diagnostics.Store`, records every runner turn when given.
         `delegation_key` verifies backoffice commands (`engine/delegation.py`).
+        `actors` are the resolved `app` and `reviewer` account records given to the engine;
+        `reviewer_reader(repository)` reads as the reviewer, who alone sees its pending reviews.
         """
         self.settings, self.gateway, self.registry, self.reconciler = settings, gateway, registry, reconciler
         self.reader, self.bot_login, self.engine_root = reader, bot_login, engine_root
         self.agents, self.renew_seconds = agents, renew_seconds
         self.make_executor = executor or (lambda repo, gh: DeferredExecutor(lambda: self.executor(repo, gh)))
         self.targets = enrollment(settings.targets)
+        self.actors, self.reviewer_reader = actors, reviewer_reader
+        self.review_targets = review_targets(settings.targets) if reviewer_reader else {}
         self.guard = threading.Lock()
         self.failures = {}
         self.claims = {}
@@ -287,9 +295,15 @@ class Worker:
                 self.gateway.release(key, grant, None)
 
     def load(self, repository, issue=None, pin=False, *, latest=False, config_sha=None):
-        """Read the fork configuration pinned for this task; new tasks use its current head."""
-        target = self.targets[repository]
+        """Read the fork configuration pinned for this task; new tasks use its current head.
+
+        A standalone review uses its upstream's target, whether or not that upstream supplies issues.
+        """
         key = (repository, issue)
+        standalone = issue is not None and self.registry.kind(key) == STANDALONE_REVIEW
+        # An upstream that supplies no issues is known only as a review target.
+        review = standalone or repository not in self.targets
+        target = self.review_targets[repository] if review else self.targets[repository]
         binding = self.registry.binding(key) if issue is not None else None
         if binding and (binding.upstream, binding.fork) != (target.upstream, target.fork):
             raise Blocked("task target changed; reconcile before continuing")
@@ -319,13 +333,16 @@ class Worker:
             "fork": target.fork,
             "config_sha": loaded.config_sha,
         }
+        if self.actors:
+            config["actors"] = self.actors
         if not config_sha and (latest or binding is None):
             self.registry.activate_funding(repository, config_digest(config), admissions.mode(config))
         return Target(config, loaded.bundle, loaded.config_sha)
 
     def observe_policies(self):
         """Observe current policies before future starts; pinned task recovery never activates old settings."""
-        for repository in self.targets:
+        # Review upstreams too: a request's funding policy must be on record before the request.
+        for repository in dict.fromkeys((*self.targets, *self.review_targets)):
             try:
                 self.load(repository, latest=True)
             except (Blocked, NotFound, Transient, ValueError) as error:
@@ -377,10 +394,9 @@ class Worker:
             controller = snapshot = None
             try:
                 snapshot = self.reconciler.snapshot(key, cached=False)
+                standalone = self.registry.kind(key) == STANDALONE_REVIEW
                 target = self.load(key[0], key[1])
                 facade = self._facade(key[0], key[1], generation)
-                code = self._facade(target.config["fork"], key[1], generation, task_key=key)
-                pulls = self._facade(target.config["upstream"], key[1], generation, task_key=key)
                 executor = self.make_executor(key[0], facade)
                 agents = self.agents(
                     target.config,
@@ -394,25 +410,39 @@ class Worker:
                     latest = self.load(*key, latest=True)
                     return latest.config, latest.bundle
 
-                controller = Controller(
-                    facade,
-                    agents,
-                    target.config,
-                    bundle=target.bundle,
-                    controller_id=self.settings.controller_id,
-                    code=code,
-                    pulls=pulls,
-                    report_cache=self.report_cache,
-                    resume_target=latest_settings,
-                    resume_config=lambda state: self.resume_config(key, generation, state),
-                    enroll=lambda: self.registry.bind(
+                options = {
+                    "bundle": target.bundle,
+                    "controller_id": self.settings.controller_id,
+                    "report_cache": self.report_cache,
+                    "resume_target": latest_settings,
+                    "resume_config": lambda state: self.resume_config(key, generation, state),
+                    "enroll": lambda: self.registry.bind(
                         key, target.config["upstream"], target.config["fork"], target.config_sha
                     ),
-                    delegation_key=self.delegation_key,
-                    sponsorship=self.sponsorship,
-                )
+                    "delegation_key": self.delegation_key,
+                    "sponsorship": self.sponsorship,
+                }
+                if standalone:
+                    controller = ReviewController(
+                        facade,
+                        agents,
+                        target.config,
+                        requests=lambda: self.registry.review_requests(key),
+                        # Same repository and gateway; reads are the reviewer's own view.
+                        publisher=GatewayGitHub(key[0], key[1], generation, self.gateway, self.reviewer_reader(key[0])),
+                        **options,
+                    )
+                else:
+                    controller = Controller(
+                        facade,
+                        agents,
+                        target.config,
+                        code=self._facade(target.config["fork"], key[1], generation, task_key=key),
+                        pulls=self._facade(target.config["upstream"], key[1], generation, task_key=key),
+                        **options,
+                    )
                 outcome = controller.advance(key[1])
-                if controller.state:
+                if controller.state and not standalone:
                     sync_checkpoint_health(facade, target.config, key[1], failed=False)
                     if controller.state.get("pr"):
                         self.registry.link(key, controller.state["pr"], target.config["upstream"])
@@ -501,8 +531,12 @@ class Worker:
         return result
 
     def _failure_health(self, controller, issue, error):
-        """Publish a checkpoint diagnostic under the caller's effect exception boundary."""
-        sync_checkpoint_health(controller.gh, controller.config, issue, failed=True, error=error)
+        """Publish a checkpoint diagnostic under the caller's effect exception boundary.
+
+        A reviewed PR gets no health notice or label; its check and the backoffice show the failure.
+        """
+        if getattr(controller, "kind", None) != STANDALONE_REVIEW:
+            sync_checkpoint_health(controller.gh, controller.config, issue, failed=True, error=error)
 
 
 def describe(error):

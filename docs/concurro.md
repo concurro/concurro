@@ -315,6 +315,22 @@ only rechecks readiness. There is no automatic log ingestion, rerun or CI repair
 After readiness, failures update the dashboard without redrafting. A human's redraft is
 respected. Closed or merged PRs stop the watcher. Only humans merge.
 
+## Reviewing an existing pull request
+
+Where the deployment has a reviewer account, a writer requests that account as reviewer on
+an open upstream pull request. Concurro reviews the PR as it is at that moment with the
+target's `pr_reviewers`; each publishes a `COMMENT` review from the reviewer account, and a
+neutral check named `Concurro review - PR <n>` shows Queued, Reviewing and Finished. A
+review is a point-in-time assessment: later pushes do not update it. Request the reviewer
+again for a new round, which also re-assesses earlier findings.
+
+In the PR conversation a writer can use `/concurro stop`, `/concurro retry` and
+`/concurro resume`, and the [funding commands](design/service.md#provider-funding-and-credential-routes).
+Each gets one reply stating what it did. A finished check that names a command (for
+example after configuration or instructions changed) is waiting for it. If a request seems
+to have had no effect, remove and re-request the reviewer: a request is never reconstructed
+from the PR's history. See [standalone PR reviews](design/standalone-reviews.md).
+
 ## Commands and recovery
 
 Issue commands require the existing writer permissions. `/concurro start` starts or

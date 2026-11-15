@@ -146,7 +146,8 @@ def projected(event, payload):
         if not isinstance(payload, dict) or "pull_request" not in payload:
             raise ValueError("pull request delivery without its pull request")
         fields = pull_fields(payload["pull_request"])
-        return {"pull": fields} if TASK_BRANCH.fullmatch(fields["ref"]) else None
+        # A pull request off a task branch is listed only while a task links it or the list holds it.
+        return {"pull": fields, "task": bool(TASK_BRANCH.fullmatch(fields["ref"]))}
     if event in ("check_run", "check_suite"):
         checked = payload.get(event) if isinstance(payload, dict) else None
         if not isinstance(checked, dict) or not isinstance(checked.get("head_sha"), str):
@@ -482,6 +483,8 @@ class ListIndex:
         document = data["pull"]
         key, item = (repository, document["number"]), str(document["number"])
         before = self.head(db, key)
+        if not data.get("task", True) and before is None and document["number"] not in self.linked(repository):
+            return None
         changed = self.store(db, "pulls", key, item, document)
         if self.head(db, key) != before:
             self.request(db, repository, "pulls", item)
