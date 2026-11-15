@@ -13,6 +13,7 @@ import urllib.request
 import uuid
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler
+from itertools import chain
 from pathlib import Path
 
 PROTOCOL_PATH = Path(__file__).with_name("provider_protocol.py")
@@ -463,8 +464,9 @@ class Handler(BaseHTTPRequestHandler):
             if response.getheader("Content-Encoding", "identity").lower() not in ("identity", ""):
                 observer.ambiguous = True
                 return self.reply(502, {"error": {"type": "unknown", "message": "unsupported provider encoding"}})
-            if "text/event-stream" not in response.getheader("Content-Type", ""):
-                raw = response.read(MAX_EVENT + 1)
+            streaming, prefix = PROTOCOL["response_format"](response.getheader("Content-Type", ""), response)
+            if not streaming:
+                raw = prefix + response.read(MAX_EVENT + 1 - len(prefix))
                 try:
                     value = json.loads(raw) if len(raw) <= MAX_EVENT else None
                 except (ValueError, UnicodeError):
@@ -486,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             event = bytearray()
-            while chunk := response.readline(MAX_EVENT + 1):
+            for chunk in chain((prefix,), iter(lambda: response.readline(MAX_EVENT + 1), b"")):
                 event.extend(chunk)
                 if len(event) > MAX_EVENT:
                     observer.ambiguous = True

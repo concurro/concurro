@@ -14,6 +14,15 @@ UPSTREAMS = {route: value["url"] for route, value in ROUTES.items()}
 MAX_EVENT = 8 * 1024 * 1024
 
 
+def response_format(media, response):
+    """Identify JSON/SSE, retaining a bounded first line when the media header is absent."""
+    prefix = response.readline(MAX_EVENT + 1) if not media.strip() else b""
+    streaming = "text/event-stream" in media.lower() or (
+        not media.strip() and prefix.startswith((b"event:", b"data:", b":"))
+    )
+    return streaming, prefix
+
+
 def category(value, route):
     """Classify documented API structured codes; subscription taxonomy remains unverified."""
     if not isinstance(value, dict):

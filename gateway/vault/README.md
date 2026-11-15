@@ -6,6 +6,11 @@ credentials. Both subscription PUTs now accept an explicit selected model set; C
 requires its account header. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
 No CLI login, provider refresh or remote provider revoke runs in this service.
 
+Subscription validation requires a completed provider response, not HTTP 200 alone. Validation
+and personal inference recognize event streams without a `Content-Type` header from their first
+line and retain JSON response support. Failed, malformed or incomplete validation leaves the
+stored credential unchanged.
+
 ## Records and events
 
 SQLite schema 3 retains lifecycle metadata and a monotonic, paginated nonsecret event log to the

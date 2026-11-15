@@ -1,14 +1,17 @@
 """Request-start identity, exact secret resolution and durable sanitized observations."""
 
+import io
 import json
 import sqlite3
 import sys
+import time
 import unittest
 from contextlib import closing, contextmanager
 from copy import deepcopy
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "engine"))
 
@@ -18,8 +21,9 @@ from exchange_fixtures import AUDIENCE, NOW
 import review_batch
 from agents import RunnerExecutor, TurnHandle
 from exchange import Exchange, Refused, Vault
-from inference import Observation, category
+from inference import Handler, Observation, category
 from policy import ProviderFailure, digest
+from spike_fixtures import response_events, response_value
 from test_exchange_funding import FundedGateway, MetadataVault, funded_turn, publish
 from test_exchange_structure import EXPECTED_RUNNER, StateFixture
 
@@ -605,6 +609,54 @@ class InferenceTests(StateFixture, unittest.TestCase):
 
 class ParserTests(unittest.TestCase):
     """Production taxonomy never inherits fixture-only subscription assumptions."""
+
+    def test_headerless_response_forwarding_preserves_completion_and_redacts_errors(self):
+        """The actual forwarder recognizes SSE without losing JSON or leaking provider errors."""
+        value = response_value("fixture", "OK")
+        events = response_events(value)
+        complete = b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)
+        error = b'event: error\ndata: {"error": "SYNTHETIC_SECRET_SENTINEL"}\n\n'
+        for raw, streaming, completed, expected_category in (
+            (complete, True, True, None),
+            (b": keepalive\n\n" + complete, True, True, None),
+            (complete.rsplit(b"data:", 1)[0], True, False, "unknown"),
+            (error, True, False, "unknown"),
+            (complete + error.rstrip(), True, True, "unknown"),
+            (json.dumps(value).encode(), False, True, None),
+            (b'{"error": "SYNTHETIC_SECRET_SENTINEL"}', False, False, "unknown"),
+            (b"<html>unexpected</html>", False, False, "unknown"),
+        ):
+            with self.subTest(streaming=streaming, completed=completed, category=expected_category, size=len(raw)):
+                response = Mock(wraps=io.BytesIO(raw), status=200)
+                response.getheader = Mock(side_effect=lambda name, default=None: default)
+                connection = Mock()
+                connection.getresponse.return_value = response
+                handler = Mock(headers=Message(), wfile=io.BytesIO())
+                snapshot = {
+                    "deadline": time.time() + 30,
+                    "request": "fixture",
+                    "binding": {"route": "chatgpt-subscription"},
+                }
+                with patch("inference.http.client.HTTPSConnection", return_value=connection):
+                    Handler.forward(handler, snapshot, "https://fixture.invalid/responses", b'{"stream":true}')
+                result = handler.server.inference.finish.call_args.args[2]
+                self.assertEqual(result["completed"], completed)
+                self.assertEqual(result["category"], expected_category)
+                self.assertEqual(
+                    result["usage"],
+                    {"input_tokens": 2, "output_tokens": 3} if completed and expected_category is None else None,
+                )
+                if streaming:
+                    handler.send_header.assert_any_call("Content-Type", "text/event-stream")
+                    handler.reply.assert_not_called()
+                    if expected_category is None:
+                        self.assertEqual(handler.wfile.getvalue(), raw)
+                elif completed:
+                    handler.reply.assert_called_once_with(200, value)
+                else:
+                    self.assertTrue(handler.reply.called)
+                self.assertNotIn("SYNTHETIC_SECRET_SENTINEL", handler.wfile.getvalue().decode())
+                self.assertNotIn("SYNTHETIC_SECRET_SENTINEL", str(handler.reply.call_args))
 
     def test_route_specific_codes_and_ambiguous_rate_limit(self):
         """429 and spending-limit messages are not quota/rate evidence on either subscription route."""

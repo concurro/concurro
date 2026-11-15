@@ -29,6 +29,7 @@ class Probes:
     def __init__(self):
         """Keep configurable fake failures and a synthetic call journal."""
         self.calls, self.mode, self.hook = [], {}, None
+        self.media = None
         self.accounts = {
             token: "account-" + name
             for tokens in TOKENS.values()
@@ -80,7 +81,7 @@ class Probes:
             if mode == "event_error":
                 raw = b"event: error\ndata: " + json.dumps({"detail": secret}).encode() + b"\n\n"
             media = "text/event-stream"
-        yield status, media, io.BytesIO(raw)
+        yield status, media if self.media is None else self.media, io.BytesIO(raw)
 
 
 class SubscriptionTests(VaultFixture, unittest.TestCase):
@@ -158,6 +159,25 @@ class SubscriptionTests(VaultFixture, unittest.TestCase):
                     self.assertEqual(self.store.entry(101, route, 1)["models"], original["models"])
                     self.assertEqual(self.store.resolve(101, route, original["record_id"], 1)["secret"], secret)
             self.probes.mode.clear()
+
+    def test_headerless_stream_validates_but_failed_replacements_preserve_credential(self):
+        """Missing media headers still require completed inference before storing a candidate."""
+        self.probes.media = ""
+        for route in TOKENS:
+            with self.subTest(route=route):
+                original = self.candidate(route).json()
+                self.assertEqual(original.get("version"), 1, original)
+                before = self.store.events()
+                for mode in ("incomplete", "event_error", "invalid", "scalar_error", "disconnect"):
+                    with self.subTest(mode=mode):
+                        self.probes.mode[(TOKENS[route][0], "model-b")] = mode
+                        reply = self.candidate(route)
+                        self.assertEqual(reply.status_code, 502)
+                        self.assertEqual(self.store.events(), before)
+                        self.assertEqual(
+                            self.store.resolve(101, route, original["record_id"], 1)["secret"], TOKENS[route][0]
+                        )
+                self.probes.mode.clear()
 
     def test_account_rejection_and_ignored_account_success_never_verify_identity(self):
         """Wrong/missing headers are refused, while an accepting backend does not prove identity."""
@@ -317,7 +337,8 @@ class SubscriptionTests(VaultFixture, unittest.TestCase):
                 try:
                     time.sleep(0.5 if self.mode == "headers" else 0.1)
                     handler.send_response(200)
-                    handler.send_header("Content-Type", "text/event-stream")
+                    if self.mode != "headerless_drip":
+                        handler.send_header("Content-Type", "text/event-stream")
                     handler.send_header("Connection", "close")
                     handler.end_headers()
                     for _ in range(50):
@@ -340,7 +361,7 @@ class SubscriptionTests(VaultFixture, unittest.TestCase):
                     yield response
 
             self.validator.probe = local
-            for mode in ("headers", "drip"):
+            for mode in ("headers", "drip", "headerless_drip"):
                 state.mode = mode
                 start = time.monotonic()
                 with patch.object(vault, "VALIDATION_SECONDS", 0.2):

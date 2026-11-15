@@ -26,6 +26,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import chain
 from pathlib import Path
 from typing import Annotated, BinaryIO
 from urllib.parse import urlencode, urlsplit
@@ -304,14 +305,15 @@ class Validator:
                     if not 200 <= status < 300:
                         raise Unavailable("provider validation unavailable")
                     observation = PROTOCOL["Observation"](route, status)
-                    if "text/event-stream" not in media.lower():
-                        raw = response.read(MAX_EVENT + 1)
+                    streaming, prefix = PROTOCOL["response_format"](media, response)
+                    if not streaming:
+                        raw = prefix + response.read(MAX_EVENT + 1 - len(prefix))
                         if len(raw) > MAX_EVENT:
                             raise Unavailable("provider validation did not complete")
                         observation.accept(json.loads(raw))
                     else:
                         frame = bytearray()
-                        while chunk := response.readline(MAX_EVENT + 1):
+                        for chunk in chain((prefix,), iter(lambda: response.readline(MAX_EVENT + 1), b"")):
                             if time.monotonic() >= deadline:
                                 raise Unavailable("provider validation did not complete")
                             frame.extend(chunk)
