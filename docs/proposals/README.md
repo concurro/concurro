@@ -17,6 +17,7 @@ in the design and operator docs.
 | ---- | ---- | ---- |
 | [Demo target policy](demo-target-policy.md) | Approved direction | Default-open text edits, explicit protections and configurable workload limits; rollout requires engine support and replacement tasks. |
 | [Per-user provider credentials](per-user-credentials.md) | Epic | Provider slots let different people fund OpenAI and Anthropic; explicit issue sponsors take precedence over initiator fill. [Implementation plan](per-user-credentials/implementation-plan.md): user-pasted CLI subscription tokens and manual replacement. |
+| [Ordered personal credentials](credential-list.md) | Feature | Multiple accounts per provider, optional role/profile filters, list priority and automatic credential fallback, with forward migration of existing records. |
 | [Sponsor-held credentials through a relay](sponsor-relay.md) | Epic | A sponsor's subscription token stays on their machine; a relay they run performs each admitted request and proves it to Concurro. The relay exists in `concurro-relay`; Concurro's side is not built, and a design finding and a cryptographic review are open. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
@@ -53,7 +54,9 @@ These apply wherever the proposals meet:
   before charging. Fill uses the start/label event boundary: later removals cannot make
   the initiator pay more. An earlier withdrawal prevents only that actor's auto-
   reassignment (even without a previous grant), not another initiator's own grant.
-  Afterwards withdrawal/failure/retry/relabel never trigger automatic fallback.
+  Afterwards withdrawal/failure/retry/relabel never select another sponsor automatically.
+  [Ordered personal credentials](credential-list.md) proposes fallback between the same
+  sponsor's eligible credentials, preserving that provider grant and funding choice.
   `sponsor <provider>` assigns the caller; self `withdraw <provider>` retires only their
   selected-provider work. Independent epochs/tombstones survive; required batch coverage
   spans all owners, optional missing coverage takes the deterministic path.
