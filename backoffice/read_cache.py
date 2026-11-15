@@ -218,15 +218,20 @@ class ReadCache:
             with self.lock:
                 self.pending.pop(key, None)
 
-    def outdate(self, prefix, repositories=None):
-        """Make saved entries whose key starts with `prefix` due and reject refreshes already in flight."""
+    def outdate(self, prefix, repositories=None, exact=False):
+        """Make saved entries whose key starts with `prefix` due and reject refreshes already in flight.
+
+        With `exact`, only the entry whose key is `prefix`. Unlike `invalidate` this starts no
+        command settling: what changed is already recorded.
+        """
         try:
             with self.lock:
                 for repository in [None] if repositories is None else repositories:
                     self.db.execute(
                         "UPDATE snapshots SET epoch = epoch + 1, due = CASE WHEN error_kind = 'transient' THEN due "
-                        "ELSE 0 END WHERE substr(issue, 1, ?) = ? AND (? IS NULL OR repository = ?)",
-                        (len(prefix), prefix, repository, repository and repository.lower()),
+                        "ELSE 0 END WHERE (CASE WHEN ? THEN issue ELSE substr(issue, 1, ?) END) = ? "
+                        "AND (? IS NULL OR repository = ?)",
+                        (exact, len(prefix), prefix, repository, repository and repository.lower()),
                     )
         except sqlite3.Error:
             log.warning("issue read cache invalidation unavailable")

@@ -1,8 +1,67 @@
 # Phase 5 brief: live updates
 
-**Not implemented; depends on phase 1, and on phases 2 to 4 for list events.** Implements
-phase 5 of the [proposal](../list-index.md). Decide at the start which views subscribe
-beyond task progress. Re-check against the code and the earlier phases as built.
+**Implemented in this changeset; not deployed.** Base: service `0232334` and frontend
+`1cabd26` (phases 1 to 4 merged and deployed). The brief below is kept as written; where
+the implementation differs, this section says so.
+
+## As built
+
+- **What subscribes.** Decided at the start: every change kind is relayed, since the
+  rows of `changes` for lists already existed. Task progress outdates the overview and
+  that task's page; an issue, pull request or sponsorship change the overview and the
+  target pages concerned; a runs change those targets' runs tab.
+- **`tasks` is a local kind** next to `sponsorships` (`LOCAL_KINDS`), so it has a
+  revision and coverage row like any kind and is resynchronized with it. It has no list.
+- **`Registry.changed(kind, repository, issue)`** now carries the kind; `Registry.end`
+  notes `tasks` for a live generation. `diagnostics.Store.changed(repository, issue)` is
+  called after `submitted` and `finished`, and after `observed` only when the status moved
+  or a runner was first assigned, since observations repeat.
+- **Feed:** `ListIndex.changes` waits on a condition notified after every committed
+  transaction and holds no lock while waiting. A cursor is refused (resynchronize) when it
+  is missing, from another incarnation, older than the rows kept, or ahead of the last
+  row. One answer carries at most 500 changes. `ListIndex.release` wakes waiters;
+  `Daemon.stop` calls it before `self.http.shutdown()`.
+- **Retention:** `changes` rows are kept one hour (`CHANGES_SECONDS`), pruned by the
+  receipt check; receipts keep their six days.
+- **Relay:** `backoffice/live.py`, started in the app's lifespan when `lists_token_path`
+  is set. `ReadCache.outdate(..., exact=True)` is the operation that makes one snapshot due
+  without settling. The relay only outdates snapshots for `tasks` changes: lists already
+  follow their revisions.
+- **`GET /api/events`** is an async stream; the relay thread hands events to each
+  stream's queue on the event loop. Visibility is `Tasks.visible_targets`, cached per
+  stream for a minute. An event names the target pages concerned (`targets`, by upstream),
+  so the browser needs no mapping from repositories to targets.
+- **Shutdown:** the backoffice now stops with `timeout_graceful_shutdown=5`. Without it an
+  open stream would hold uvicorn's stop until the container is killed, skipping the
+  cleanup of the read cache and logout state.
+- **Frontend:** `Resource.reload` already ran one more read after a read in flight
+  (phase 1). New: `Resource.watch`/`outdate` and `outdate(concerns)` in
+  `cache.svelte.ts`, `changes.ts` (which reads a change outdates) and `events.ts` (the
+  stream). The overview, target page, runs tab and task page each mark their resource as
+  displayed.
+- **Mock mode** has no stream; a command applies the same change through `events.ts`.
+- **After code review** (two findings, both fixed with a test each):
+  - A change arriving while a read is in flight is now always followed by one more read,
+    displayed or not, so one during a page's first load is not overwritten by the answer
+    already under way. Pages watch their resource themselves, through loading and error
+    states, instead of `SavedData.svelte`, which mounts only after a first answer.
+  - The service appends a `state` change when the states a repository reports move
+    without a list changing: a history check that makes them `current`, or any read by
+    the worker, such as an overdue item read that settles with unchanged content, or a
+    rebuild that fails (the second review round added the successful reads). It is appended after the new state is reported and raises no revision. The
+    overview, target page and runs tab reload on it, which clears a stale "checking for
+    missed updates" note.
+- **Tests:** service: 5 feed tests, 2 hook tests, the overdue read and the endpoint in
+  `service/tests/test_list_index.py` (60 in all). Backoffice: 9 in
+  `backoffice/tests/test_live.py`, one of them a real HTTP stream, and the client against
+  the service's own feed in `test_list_freshness.py`. Frontend: 3 more in
+  `tests/cache.test.mjs` and 2 in `tests/events.test.mjs`, including the browser-only
+  disconnection.
+- **Not done:** the "Done when" checks and the edge's flush setting need a deployment.
+  Not verified against a real browser and edge: the stream was exercised over HTTP
+  without a proxy, and the app only in fixture mode.
+
+Implements phase 5 of the [proposal](../list-index.md).
 
 ## Outcome
 

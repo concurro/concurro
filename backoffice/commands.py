@@ -14,6 +14,8 @@ NOT_DELIVERED = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 UNKNOWN = "the command may or may not have been posted; check the issue before retrying"
 # List index requests are local and small; a slow answer is treated as no answer.
 LIST_SECONDS = 5
+# The service holds a feed request for up to 25 seconds; this waits longer, and less than a command does.
+FEED_SECONDS = 40
 
 
 class CommandError(Exception):
@@ -37,14 +39,14 @@ class ServiceCommands:
         self.client = client or httpx.Client(timeout=60)
         self.lists_token = lists_token
 
-    def lists(self, path: str, body: dict) -> dict:
+    def lists(self, path: str, body: dict, timeout: float = LIST_SECONDS) -> dict:
         """One list index request with the backoffice's own token; any failure is `IndexUnavailable`."""
         try:
             response = self.client.post(
                 self.url + path,
                 headers={"Authorization": "Bearer " + (self.lists_token or "")},
                 json=body,
-                timeout=LIST_SECONDS,
+                timeout=timeout,
             )
             payload = response.json()
         except (httpx.HTTPError, ValueError):
@@ -66,6 +68,10 @@ class ServiceCommands:
         if not isinstance(items, list):
             raise IndexUnavailable("the list index answer was malformed")
         return items
+
+    def list_changes(self, incarnation: str | None, since: int | None) -> dict:
+        """One request to the changes feed: `{incarnation, sequence, changes}` after the cursor, held while there are none."""
+        return self.lists("/lists/changes", {"incarnation": incarnation, "since": since}, FEED_SECONDS)
 
     def list_refresh(self, repository: str) -> None:
         """Have the service treat every list of the repository as changed."""

@@ -32,6 +32,7 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | POST | `/auth/logout` | `{signedOut, remote}`; checked write header, local-first logout |
 | GET | `/auth/logout-status` | Anonymous remote cleanup status |
 | GET | `/api/me` | `{id, login, name, avatarUrl}` |
+| GET | `/api/events` | Server-sent events: live changes for the targets the user can see; 404 without the list index |
 | GET | `/api/overview` | `{targets, tasks, issues, activity, cache?}` |
 | GET | `/api/targets/{owner}/{repo}` | `{target, tasks, issues, cache?}` |
 | GET | `/api/targets/{owner}/{repo}/runs` | `{runs, message, cache?}` with the fork's recent executor runs |
@@ -98,6 +99,30 @@ lists (`service/list_index.py`):
 
 `POST /api/targets/{owner}/{repo}/refresh` asks the service to treat the target's lists as
 changed. Without the list index it outdates the saved lists directly.
+
+### Live updates
+
+With the list index, one background thread (`backoffice/live.py`) follows the service's
+changes feed from an in-memory cursor. A request the service holds open is given 40 seconds;
+a lost or unusable answer is asked for again from the same cursor, with pauses growing to 30
+seconds while the service is away.
+
+- A `tasks` change (Concurro's progress on one issue) makes that issue's saved snapshot due.
+  It starts no command settling, so the next read returns the saved snapshot marked
+  `refreshing`. List changes need nothing here: lists follow their revisions, and a `state`
+  change only says the `cache.state` of the repository's lists moved.
+- A resynchronization, from the feed's answer or as a change for one repository, and the
+  relay's own start, make every saved snapshot and list concerned due.
+- `GET /api/events` sends each change to a signed-in browser as `event: change` or
+  `event: reload` with `{kind, repository, issue, targets}`, where `targets` names the
+  target pages concerned by their upstream. A change is sent only for targets the user may
+  see, decided as for any request and decided again once those decisions are a minute old.
+  The stream ends with the session. Nothing is replayed: a browser reloads its views
+  whenever its stream opens, and a stream that fell 256 events behind gets one reload.
+- An idle stream carries a comment line every 20 seconds. The edge must not buffer this
+  path (`flush_interval -1` in `gateway/concurro.caddy`).
+- Stopping the API waits five seconds for requests in flight, then cancels them: an open
+  stream never finishes on its own.
 
 ## Issue-page loading
 

@@ -18,9 +18,11 @@ from support import (
     tearDownModule as tearDownModule,
 )
 
+from controller import Outcome
 from github import NotFound, Transient
 from service import ingress, list_index
 from service.admission import EXECUTOR_WORKFLOW
+from service.diagnostics import Store
 from service.identity import IdentityError
 from service.ingress import Ingress
 from service.list_index import FRESH_SECONDS, REPLAY_LIMIT, ListIndex, Lists
@@ -253,6 +255,117 @@ class Hub:
         return found
 
 
+class FeedTests(ServiceFixture, unittest.TestCase):
+    """The changes feed: replay from a cursor, a held request, and cursors it cannot continue from."""
+
+    def setUp(self):
+        super().setUp()
+        self.index = ListIndex(self.directory.name, clock=self.clock)
+        self.addCleanup(self.index.close)
+        self.index.start(REPOSITORIES)
+        self.start = self.index.changes(None, None, wait=0)
+
+    def feed(self, since=None, wait=0, incarnation=None):
+        since = self.start["sequence"] if since is None else since
+        return self.index.changes(incarnation or self.index.incarnation, since, wait)
+
+    def signalled(self, *items, kind="tasks"):
+        for item in items:
+            self.index.signal(KEY[0], kind, item)
+        self.index.pending.join()
+
+    def test_changes_replay_from_a_cursor(self):
+        self.assertEqual((self.start["resynchronize"], self.start["changes"]), (True, []), "no cursor to continue from")
+        self.assertEqual(self.feed()["changes"], [], "nothing since")
+        self.signalled(7, 8)
+        self.index.offer("guid", "issues", FORK, {"issue": issue(3)})
+        self.index.pending.join()
+        found = self.feed()
+        self.assertEqual(
+            [(c["repository"], c["kind"], c["item"]) for c in found["changes"]],
+            [(KEY[0], "tasks", "7"), (KEY[0], "tasks", "8"), (FORK, "issues", None)],
+        )
+        self.assertNotIn("resynchronize", found)
+        self.assertEqual(
+            self.feed(found["changes"][0]["sequence"])["changes"], found["changes"][1:], "a repeated request"
+        )
+        self.assertEqual(self.feed(found["sequence"])["changes"], [])
+        with patch.object(list_index, "FEED_CHANGES", 2):
+            first = self.feed()
+            self.assertEqual(first["changes"] + self.feed(first["sequence"])["changes"], found["changes"])
+
+    def test_a_request_is_held_until_a_change_a_timeout_or_shutdown(self):
+        answers = []
+        waiter = threading.Thread(target=lambda: answers.append(self.feed(wait=30)))
+        waiter.start()
+        self.signalled(7)
+        waiter.join(5)
+        self.assertEqual([c["item"] for c in answers[0]["changes"]], ["7"])
+        cursor = answers[0]["sequence"]
+        self.assertEqual(self.feed(cursor, wait=0.05), {**answers[0], "changes": []}, "held, then answered empty")
+        waiter = threading.Thread(target=lambda: answers.append(self.feed(cursor, wait=30)))
+        waiter.start()
+        self.index.release()
+        waiter.join(5)
+        self.assertEqual((waiter.is_alive(), answers[1]["changes"]), (False, []), "shutdown answers at once")
+
+    def test_a_cursor_that_cannot_be_continued_resynchronizes(self):
+        self.signalled(7)
+        latest = self.feed()["sequence"]
+        other = self.feed(latest, incarnation="another")
+        self.assertEqual((other["resynchronize"], other["sequence"]), (True, latest), "another incarnation's")
+        self.assertTrue(self.feed(latest + 5)["resynchronize"], "one this file never issued")
+        self.clock.now += list_index.CHANGES_SECONDS + 1
+        self.signalled(8)
+        self.index.check({}, self.clock.now)
+        self.assertTrue(self.feed()["resynchronize"], "older than the changes kept")
+        kept = [c["item"] for c in self.feed(latest)["changes"] if c["kind"] == "tasks"]
+        self.assertEqual(kept, ["8"], "the newest pruned one still continues")
+        self.clock.now += list_index.CHANGES_SECONDS + 1
+        self.index.check({}, self.clock.now)
+        self.assertTrue(self.feed(latest)["resynchronize"], "everything since was pruned")
+        current = self.index.changes(None, None, wait=0)["sequence"]
+        self.assertNotIn("resynchronize", self.feed(current), "nothing missed since the newest change")
+
+    def test_a_state_that_moves_without_a_list_changing_reaches_an_open_consumer(self):
+        """After a restart a page reloads while recovery runs; a scan that finds nothing must still tell it."""
+        self.index.check({}, self.clock.now)
+        self.index.close()
+        self.index = ListIndex(self.directory.name, clock=self.clock)
+        self.addCleanup(self.index.close)
+        self.index.start(REPOSITORIES)
+        cursor = self.index.changes(self.index.incarnation, self.start["sequence"], wait=0)["sequence"]
+        revisions = self.index.revisions(set(REPOSITORIES))
+        self.assertEqual(revisions[KEY[0]]["issues"]["state"], "catching-up")
+        answers = []
+        waiter = threading.Thread(target=lambda: answers.append(self.feed(cursor, wait=30)))
+        waiter.start()
+        self.index.check({}, self.clock.now)
+        waiter.join(5)
+        found = self.feed(cursor)
+        self.assertEqual(answers[0]["changes"], found["changes"][: len(answers[0]["changes"])])
+        self.assertEqual(
+            sorted((c["repository"], c["kind"], c["item"]) for c in found["changes"]),
+            sorted((repository, "state", None) for repository in REPOSITORIES),
+        )
+        after = self.index.revisions(set(REPOSITORIES))
+        self.assertEqual(after[KEY[0]]["issues"]["state"], "current", "observable before it is announced")
+        self.assertEqual(
+            {kind: entry["revision"] for kind, entry in after[KEY[0]].items()},
+            {kind: entry["revision"] for kind, entry in revisions[KEY[0]].items()},
+            "no list is read again for it",
+        )
+        self.index.check({}, self.clock.now)
+        self.assertEqual(self.feed(found["sequence"])["changes"], [], "an unchanged state announces nothing")
+
+    def test_lost_local_signals_resynchronize_tasks_too(self):
+        before = self.index.revisions({KEY[0]})[KEY[0]]["tasks"]["revision"]
+        with self.index.transaction() as db:
+            self.index.resync(db, [KEY[0]], self.clock.now)
+        self.assertNotEqual(self.index.revisions({KEY[0]})[KEY[0]]["tasks"]["revision"], before)
+        self.assertEqual([(c["repository"], c["kind"]) for c in self.feed()["changes"]], [(KEY[0], None)])
+
+
 class IssueRowsTests(ServiceFixture, unittest.TestCase):
     """Enrolled and sponsored issues held as rows, in the shape GitHub lists them."""
 
@@ -459,6 +572,26 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(
             (self.listed(), self.entry()["state"]), ({}, "failed"), "a refusal fails the rebuild, not the row"
         )
+
+    def test_an_overdue_read_that_changes_nothing_still_announces_the_state(self):
+        self.built()
+        held = issue(3, "concurro", updated="2026-11-14T10:01:00Z")
+        self.deliver("enroll", held)
+        self.deliver("tied", {**held, "title": "Same instant"})
+        self.hub.items[3], self.hub.failing = held, True
+        self.index.drain()
+        self.clock.now += FRESH_SECONDS + 5
+        self.index.check({}, self.clock.now)
+        self.assertEqual(
+            (self.owed(), self.entry()["state"]), (["3"], "catching-up"), "verified, but a read is overdue"
+        )
+        revision = self.entry()["revision"]
+        cursor = self.index.changes(None, None, wait=0)["sequence"]
+        self.hub.failing = False
+        self.index.drain()
+        self.assertEqual((self.owed(), self.entry()["state"], self.entry()["revision"]), ([], "current", revision))
+        changes = self.index.changes(self.index.incarnation, cursor, wait=0)["changes"]
+        self.assertEqual([(c["repository"], c["kind"]) for c in changes], [(KEY[0], "state")])
 
     def test_a_delivery_during_a_rebuild_survives_it(self):
         self.built()
@@ -1218,7 +1351,11 @@ class WiringTests(ServiceFixture, unittest.TestCase):
 
     def test_the_registry_reports_committed_sponsorship_changes_only(self):
         seen, issues = [], []
-        self.registry.changed = lambda repository, number: (seen.append(repository), issues.append(number))
+        self.registry.changed = lambda kind, repository, number: (
+            self.assertEqual(kind, "sponsorships"),
+            seen.append(repository),
+            issues.append(number),
+        )
         with self.registry.transaction() as db:
             text = self.registry.noted(KEY, None, {"facts": [1]})
             db.execute("INSERT INTO issue_sponsorships VALUES (?,?,1,0,?)", (*KEY, text))
@@ -1247,9 +1384,43 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         self.registry.changed = Mock(side_effect=RuntimeError("listener down"))
         with self.registry.transaction():
             self.registry.noted(KEY, text, {"facts": [3]})
-        self.registry.changed.assert_called_once_with(*KEY)
+        self.registry.changed.assert_called_once_with("sponsorships", *KEY)
         self.assertEqual(issues, [KEY[1], None], "a document names its issue; a credential poll concerns them all")
         self.assertEqual(self.registry.sponsor_issues(KEY[0]), [KEY[1]], "the registry stays usable")
+
+    def test_a_tick_outcome_is_a_task_change_for_a_live_generation_only(self):
+        seen = []
+        self.registry.changed = lambda *change: seen.append(change)
+        generation = self.registry.grant(KEY, "worker", 60)
+        self.assertFalse(self.registry.end(KEY, generation - 1, Outcome("terminal")))
+        self.assertEqual([change for change in seen if change[0] == "tasks"], [], "a stale generation records nothing")
+        self.assertTrue(self.registry.end(KEY, generation, Outcome("wait-until", retry_after=300)))
+        self.assertEqual([change for change in seen if change[0] == "tasks"], [("tasks", *KEY)])
+
+    def test_recorded_turn_changes_are_task_changes(self):
+        store, seen = Store(Path(self.directory.name) / "diagnostics"), []
+        self.addCleanup(store.close)
+        store.changed = lambda repository, issue: seen.append((repository, issue))
+        turn = {"request": {"stage": "plan"}}
+        store.submitted("turn-1", turn, {"repository": KEY[0], "issue": KEY[1]})
+        self.assertEqual(seen, [KEY])
+        store.observed("turn-1", "queued", None, set())
+        self.assertEqual(seen, [KEY], "an observation that shows nothing new")
+        store.observed("turn-1", "running", {"started": 2.0}, {"s-1"})
+        store.observed("turn-1", "running", None, {"s-1"}, {"session": "s-1", "run_id": 5})
+        store.observed("turn-9", "running", None, set())
+        self.assertEqual(seen, [KEY] * 3, "started, then a runner assigned; an unknown turn changes nothing")
+        store.finished("turn-1", {"outcome": "ok"})
+        self.assertEqual(seen, [KEY] * 4)
+        store.changed = Mock(side_effect=RuntimeError("listener down"))
+        store.finished("turn-1", {"outcome": "ok"})
+        store.changed, written = lambda *task: seen.append(task), store.db
+        store.db = Mock(execute=Mock(side_effect=sqlite3.OperationalError("disk full")))
+        for record in (lambda: store.finished("turn-1", {}), lambda: store.observed("turn-1", "lost", None, set())):
+            with self.assertRaises(sqlite3.OperationalError):
+                record()
+        store.db = written
+        self.assertEqual(seen, [KEY] * 4, "a failed write is not a change")
 
     def test_list_requests_need_the_token_and_never_reach_webhook_handling(self):
         index = ListIndex(self.directory.name, clock=self.clock)
@@ -1278,6 +1449,13 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(post("/lists/refresh", {"repository": "owner/elsewhere"})[0], 404)
         self.assertEqual(post("/lists/revisions", {"repositories": "all"})[0], 400)
         self.assertEqual(post("/lists/unknown", {})[0], 404)
+        status, found = post("/lists/changes", {"incarnation": None, "since": None})
+        self.assertEqual((status, found["resynchronize"], found["incarnation"]), (200, True, index.incarnation))
+        index.signal(KEY[0], "tasks", 7)
+        status, later = post("/lists/changes", {"incarnation": found["incarnation"], "since": found["sequence"]})
+        self.assertEqual((status, [(c["kind"], c["item"]) for c in later["changes"]]), (200, [("tasks", "7")]))
+        for body in ({"incarnation": 5, "since": 0}, {"incarnation": "x", "since": "0"}, {"since": 0}):
+            self.assertEqual(post("/lists/changes", body)[0], 400)
         for token in ("", "cd" * 32):
             self.assertEqual(post("/lists/revisions", {"repositories": []}, token)[0], 401)
         self.assertEqual(post("/elsewhere", {})[0], 401, "any other path is still a webhook delivery")

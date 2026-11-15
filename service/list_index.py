@@ -53,8 +53,9 @@ EVENT_KINDS = {
     "check_suite": "pulls",
     "workflow_run": "runs",
 }
-# Kinds signalled by the service itself; GitHub's delivery history cannot repair them.
-LOCAL_KINDS = ("sponsorships",)
+# Kinds signalled by the service itself; GitHub's delivery history cannot repair them. `tasks` is
+# Concurro's own progress on a task and has no list: its changes only feed live updates.
+LOCAL_KINDS = ("sponsorships", "tasks")
 KINDS = (*dict.fromkeys(EVENT_KINDS.values()), *LOCAL_KINDS)
 QUEUE_SIZE = 1024
 # More missing deliveries than this for one kind are covered by a new baseline instead.
@@ -63,6 +64,11 @@ REPLAY_LIMIT = 20
 FRESH_SECONDS = 600
 # Receipts and changes outlive GitHub's delivery history.
 RETAINED_SECONDS = 2 * HISTORY_SECONDS
+# Changes are kept for the feed this long; a consumer further behind resynchronizes.
+CHANGES_SECONDS = 3600
+# How long a feed request is held open for a change, and how many changes one answer carries.
+FEED_SECONDS = 25
+FEED_CHANGES = 500
 SCHEMA = """
 CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE repositories (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
@@ -165,6 +171,8 @@ class ListIndex:
         self.lock = threading.RLock()
         self.pending = queue.Queue(QUEUE_SIZE)
         self.overflowed, self.stopping = threading.Event(), threading.Event()
+        # Feed requests wait here; `commits` counts committed transactions so a waiter misses none.
+        self.news, self.commits = threading.Condition(), 0
         self.names, self.writer, self.worker, self.reader = {}, None, None, None
         self.sponsored = self.linked = lambda repository: ()
         # Reads that failed since the last history check; each is retried once per check.
@@ -205,6 +213,9 @@ class ListIndex:
                 self.db.execute("ROLLBACK")
                 raise
             self.db.execute("COMMIT")
+        with self.news:
+            self.commits += 1
+            self.news.notify_all()
 
     def start(self, repositories, rows=None, reader=None, work=True, sponsored=None, linked=None):
         """Record `{name: GitHub ID}`, establish coverage and start applying.
@@ -251,9 +262,15 @@ class ListIndex:
             self.worker = threading.Thread(target=self.work, name="list-index-reads", daemon=True)
             self.worker.start()
 
+    def release(self):
+        """Stop applying and answer every held feed request."""
+        self.stopping.set()
+        with self.news:
+            self.news.notify_all()
+
     def close(self):
         """Stop applying and close the file; queued entries are left to the receipt check."""
-        self.stopping.set()
+        self.release()
         for thread in (self.writer, self.worker):
             if thread:
                 thread.join(timeout=5)
@@ -590,6 +607,7 @@ class ListIndex:
         """
         now = self.clock()
         replay = []
+        before = self.states()
         with self.transaction() as db:
             rows = db.execute("SELECT repository, kind, baseline, verified FROM coverage").fetchall()
             for repository, kind, baseline, verified in rows:
@@ -637,9 +655,10 @@ class ListIndex:
         with self.transaction() as db:
             db.execute("UPDATE coverage SET verified = ?", (started,))
             db.execute("DELETE FROM receipts WHERE recorded < ?", (now - RETAINED_SECONDS,))
-            db.execute("DELETE FROM changes WHERE changed < ?", (now - RETAINED_SECONDS,))
+            db.execute("DELETE FROM changes WHERE changed < ?", (now - CHANGES_SECONDS,))
         self.deferred.clear()
         self.checked = True
+        self.state_changed(before)
         return {key: len(entries) for key, entries in missing.items()}
 
     # Reads from GitHub
@@ -664,6 +683,8 @@ class ListIndex:
             if job is None:
                 return
             repository, kind, item = job
+            # A read can move the reported state without changing a list, by settling or by failing.
+            before = self.states()
             try:
                 reads = {
                     "runs": (self.rebuild_runs, self.read_run),
@@ -684,6 +705,7 @@ class ListIndex:
                         db.execute(
                             "UPDATE coverage SET failed = 1 WHERE repository = ? AND kind = ?", (repository, kind)
                         )
+            self.state_changed(before)
 
     def versions(self, kind, repository):
         """Each stored row's version by its key, as the fence for reads that begin now."""
@@ -869,6 +891,68 @@ class ListIndex:
             }
         return found
 
+    def changes(self, incarnation, since, wait=FEED_SECONDS):
+        """The feed: changes after the cursor `since`, held open up to `wait` seconds for the first.
+
+        Answers `{incarnation, sequence, changes}`, where `sequence` is the next cursor. A cursor
+        this file cannot continue from (none, another incarnation's, or older than the changes
+        kept) is answered at once with `resynchronize` and the cursor to continue from: what
+        lies between is unknown. No lock is held while waiting.
+        """
+        deadline = time.monotonic() + wait
+        while True:
+            with self.news:
+                seen = self.commits
+            with self.lock:
+                first, last = self.db.execute(
+                    "SELECT (SELECT MIN(sequence) FROM changes), "
+                    "(SELECT COALESCE(MAX(seq), 0) FROM sqlite_sequence WHERE name = 'changes')"
+                ).fetchone()
+                kept = last + 1 if first is None else first
+                if incarnation != self.incarnation or since is None or not kept - 1 <= since <= last:
+                    return {"incarnation": self.incarnation, "sequence": last, "resynchronize": True, "changes": []}
+                found = self.db.execute(
+                    "SELECT sequence, repository, kind, item FROM changes WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                    (since, FEED_CHANGES),
+                ).fetchall()
+            answer = {
+                "incarnation": self.incarnation,
+                "sequence": found[-1][0] if found else since,
+                "changes": [
+                    {"sequence": sequence, "repository": repository, "kind": kind, "item": item}
+                    for sequence, repository, kind, item in found
+                ],
+            }
+            with self.news:
+                held = lambda: self.commits != seen or self.stopping.is_set()
+                if found or not self.news.wait_for(held, max(0, deadline - time.monotonic())) or self.stopping.is_set():
+                    return answer
+
+    def states(self):
+        """Each configured repository's reported state by kind, to compare across an operation."""
+        names = set(self.names.values())
+        return {
+            repository: {kind: entry["state"] for kind, entry in kinds.items()}
+            for repository, kinds in self.revisions(names).items()
+        }
+
+    def state_changed(self, before):
+        """Tell the feed which repositories report a different state than `before`, once they do.
+
+        A state can move without any list changing, as when a history check finds nothing
+        missing; an open page would otherwise keep showing the earlier one. The change raises
+        no revision: no list has to be read again.
+        """
+        after = self.states()
+        moved = [repository for repository in after if after[repository] != before.get(repository)]
+        if moved:
+            now = self.clock()
+            with self.transaction() as db:
+                db.executemany(
+                    "INSERT INTO changes (repository, kind, item, changed) VALUES (?, 'state', NULL, ?)",
+                    [(repository, now) for repository in moved],
+                )
+
     def rows(self, repository, kind):
         """The list a kind in mode `rows` holds, with the entry `revisions` reports for it; None otherwise."""
         with self.lock:
@@ -945,6 +1029,11 @@ class Lists:
             if path == "/lists":
                 found = self.index.rows(request["repository"], request["kind"])
                 return (200, found) if found is not None else (404, {"error": "no such list"})
+            if path == "/lists/changes":
+                incarnation, since = request["incarnation"], request["since"]
+                if not isinstance(incarnation, str | None) or type(since) not in (int, type(None)):
+                    raise TypeError
+                return 200, self.index.changes(incarnation, since)
             if path == "/lists/refresh":
                 if request["repository"] not in self.index.names.values():
                     return 404, {"error": "repository not configured"}

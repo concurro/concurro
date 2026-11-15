@@ -7,6 +7,7 @@ import logging
 import secrets
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
@@ -14,7 +15,7 @@ from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import private
@@ -27,7 +28,8 @@ from service.settings import CHECKOUT
 from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
 from .commands import CommandError, IndexUnavailable, ServiceCommands
 from .credentials import Vault, VaultError
-from .github import Access
+from .github import REPOSITORY_SECONDS, Access
+from .live import Relay, stream
 from .read_cache import LISTING, ReadCache
 from .revocations import RevocationError, Revocations
 from .runs import Runs
@@ -85,6 +87,8 @@ def create_app(
         key = bytes.fromhex(private.read(settings.auth_key_path, (CHECKOUT,)).decode().strip())
         revocations = Revocations(settings.auth_state_dir, key)
         owned_revocations = True
+    # Live updates need the list index; without it pages are current only when loaded.
+    relay = Relay(commands.list_changes, read_cache) if settings.lists_token else None
 
     @asynccontextmanager
     async def lifespan(app):
@@ -102,9 +106,13 @@ def create_app(
         if revocations:
             thread = threading.Thread(target=retry, name="github-logout", daemon=True)
             thread.start()
+        if relay:
+            relay.start()
         try:
             yield
         finally:
+            if relay:
+                relay.stop()
             if read_cache is not None:
                 read_cache.close()
             stopped.set()
@@ -147,6 +155,9 @@ def create_app(
         return current
 
     def tasks(current: Annotated[Session, Depends(session)]) -> Tasks:
+        return reader_for(current)
+
+    def reader_for(current: Session) -> Tasks:
         return Tasks(
             settings,
             Access(reader_app, current.token, connection, current.credential),
@@ -310,6 +321,30 @@ def create_app(
     def issue_view(owner: str, repo: str, issue: int, reader: Annotated[Tasks, Depends(tasks)]):
         """Issue visibility and provider consent before or after enrollment."""
         return reader.issue_view(f"{owner}/{repo}", issue)
+
+    @app.get("/api/events")
+    async def events(request: Request, current: Annotated[Session, Depends(session)]):
+        """Server-sent changes for the targets this session's user can see; nothing without the list index."""
+        if relay is None:
+            raise HTTPException(404, "live updates are not enabled")
+        sid, seen = request.cookies.get(SESSION_COOKIE), {"until": 0.0, "targets": []}
+
+        def visible():
+            """The user's visible targets, decided again once the cached access decisions behind them expired."""
+            try:
+                if sessions.get(sid) is None:
+                    return None
+                if time.monotonic() >= seen["until"]:
+                    seen["targets"] = [target for target, _ in reader_for(current).visible_targets()]
+                    seen["until"] = time.monotonic() + REPOSITORY_SECONDS
+            except Exception as error:
+                # The stream ends; the browser reconnects and reloads, or is sent to sign in.
+                log.warning("live updates: access not decided (%s)", type(error).__name__)
+                return None
+            return seen["targets"]
+
+        headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(stream(relay, visible), media_type="text/event-stream", headers=headers)
 
     @app.get("/api/overview")
     def overview(reader: Annotated[Tasks, Depends(tasks)]):

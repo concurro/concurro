@@ -195,8 +195,25 @@ it costs one re-read or rebuild per list.
 - **State of a kind in `rows`:** `rebuilding` while a first or requested rebuild is owed,
   `failed` when its last attempt failed, otherwise as above, and `catching-up` also while
   an owed read is older than ten minutes.
-- **Endpoints:** `POST /lists/revisions`, `POST /lists` (the rows of one kind) and
-  `POST /lists/refresh` on the service's listener, which the edge does not forward. They require the bearer in
+- **Task progress:** the kind `tasks` has no list. It is raised, naming the issue, after
+  the registry commits a tick's outcome for a live generation (`Registry.end`) and after
+  the diagnostics store records a turn's submission, its result, or an observation that
+  changed its status or first assigned a runner. Like `sponsorships` it is a local
+  signal: at every start and after a queue overflow its revision is raised and a
+  repository-wide resynchronization change is logged.
+- **Changes feed:** every raised revision is also a row of `changes`, kept for an hour.
+  `POST /lists/changes` with `{incarnation, since}` answers with the rows after that
+  cursor, at most 500, and the cursor to continue from. With none it holds the request
+  for up to 25 seconds, without a lock or an open transaction, and then answers empty; a
+  stopping service answers held requests at once. A cursor it cannot continue from (none,
+  another incarnation's, or older than the rows kept) is answered with `resynchronize`
+  and the current cursor. A change without a kind is the repository-wide
+  resynchronization. A change of kind `state` says the states the repository's kinds
+  report moved without a list changing, as when a history check that found nothing makes
+  them `current`, an overdue read settles with unchanged content, or a rebuild fails; it is appended once the new state is reported and
+  raises no revision.
+- **Endpoints:** `POST /lists/revisions`, `POST /lists` (the rows of one kind),
+  `POST /lists/changes` and `POST /lists/refresh` on the service's listener, which the edge does not forward. They require the bearer in
   `lists_token_path` (32 random bytes as hex, shared with the backoffice) and answer 503
   when it is unset. They take no user token.
 

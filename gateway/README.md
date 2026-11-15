@@ -629,7 +629,7 @@ Concurro needs one HTTPS reverse proxy that:
 - Is attached to the Docker network `edge`. Create the network with `sudo docker network
   create edge` if the proxy's own Compose project does not.
 - Routes `/concurro/*` as [`concurro.caddy`](concurro.caddy) does, stripping the prefix and
-  streaming `/v1/*` responses unbuffered.
+  streaming `/v1/*` and `/api/events` responses unbuffered.
 
 Concurro publishes no host ports and its routes claim only `/concurro/*`, so the proxy can
 serve other applications too. The gateway's unauthenticated admin listener stays on the

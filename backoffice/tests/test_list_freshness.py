@@ -18,6 +18,7 @@ from test_backoffice import USER, FakeOAuth, settings  # noqa: E402
 from backoffice import app as app_module  # noqa: E402
 from backoffice.auth import Sessions  # noqa: E402
 from backoffice.commands import CommandError, IndexUnavailable, ServiceCommands  # noqa: E402
+from backoffice.live import Relay  # noqa: E402
 from backoffice.read_cache import LISTING, ReadCache  # noqa: E402
 from backoffice.tasks import Tasks  # noqa: E402
 from service.targets import Target  # noqa: E402
@@ -62,6 +63,9 @@ class Index:
         if self.down:
             raise IndexUnavailable("down")
         return self.rows[kind] if isinstance(self.rows, dict) else self.rows
+
+    def list_changes(self, incarnation, since):
+        raise IndexUnavailable("no feed")
 
     def list_refresh(self, repository):
         if self.down:
@@ -224,8 +228,17 @@ class ServiceClientTests(unittest.TestCase):
         self.assertEqual((held["mode"], held["built"] is not None), ("rows", True))
         self.assertEqual([item["run"]["id"] for item in service.list_rows("owner/project", "runs")], [77])
         before = service.list_revisions(["up/project"])["up/project"]
-        self.assertEqual(set(before), {"issues", "sponsorships", "pulls", "runs"})
+        self.assertEqual(set(before), {"issues", "sponsorships", "pulls", "runs", "tasks"})
+        start = service.list_changes(None, None)
+        self.assertTrue(start["resynchronize"])
         service.list_refresh("up/project")
+        index.signal("up/project", "tasks", 7)
+        index.pending.join()
+        relay, events = Relay(service.list_changes), []
+        relay.apply = lambda *change: (events.append(change), relay.stop())
+        relay.feed = lambda incarnation, since: service.list_changes(start["incarnation"], start["sequence"])
+        relay.run()
+        self.assertEqual(events[-1], ("up/project", "tasks", "7"), "the relay reads the service's own feed")
         self.assertNotEqual(
             service.list_revisions(["up/project"])["up/project"]["issues"]["revision"], before["issues"]["revision"]
         )

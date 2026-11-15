@@ -135,7 +135,9 @@ class Daemon:
             sponsored=self.registry.sponsor_issues,
             linked=self.registry.linked_pulls,
         )
-        self.registry.changed = lambda repository, issue: self.list_index.signal(repository, "sponsorships", issue)
+        self.registry.changed = lambda kind, repository, issue: self.list_index.signal(repository, kind, issue)
+        if diagnostics:
+            diagnostics.changed = lambda repository, issue: self.list_index.signal(repository, "tasks", issue)
         lists_token = read_token(settings.lists_token_path) if settings.lists_token_path else None
         self.recovery = Recovery(
             self.identity, self.registry, self.reconciler, installations, list_index=self.list_index
@@ -195,6 +197,8 @@ class Daemon:
     def stop(self):
         """Stop accepting work, let running ticks finish, then revoke tokens and release the registry."""
         self.stopping.set()
+        # Held feed requests answer at once instead of outliving the listener.
+        self.list_index.release()
         self.http.shutdown()
         self.control.shutdown()
         self.scheduler.shutdown()

@@ -107,9 +107,24 @@ class Store:
         self.root.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.db = connect(self.root)
         self.lock = threading.Lock()
+        # Called with `(repository, issue)` after a recorded change to one of the task's turns.
+        self.changed = None
 
     def close(self):
         self.db.close()
+
+    def note(self, identifier, task=None):
+        """Report a recorded change to the turn's task; a failing listener never fails the record."""
+        if not self.changed:
+            return
+        try:
+            if task is None:
+                with self.lock:
+                    task = self.db.execute("SELECT repository, issue FROM turns WHERE id = ?", (identifier,)).fetchone()
+            if task is not None:
+                self.changed(task["repository"], task["issue"])
+        except Exception as error:
+            log.warning("diagnostics: change to turn %s not signalled (%s)", identifier, type(error).__name__)
 
     def put_blob(self, archive):
         """Store a base64 archive once by its SHA-256; return (sha, size)."""
@@ -158,11 +173,17 @@ class Store:
             self.db.execute(
                 f"INSERT OR IGNORE INTO turns ({columns}) VALUES ({', '.join('?' * len(row))})", tuple(row.values())
             )
+        self.note(identifier, task)
 
     def observed(self, identifier, status, timing, sessions, runner=None):
-        """Record an exchange observation: status, timings and the runner sessions staffed for it."""
+        """Record an exchange observation: status, timings and the runner sessions staffed for it.
+
+        Reported as a change only when the status moved or a runner was first assigned.
+        """
         timing = timing or {}
+        shown = "SELECT status, runner IS NOT NULL FROM turns WHERE id = ?"
         with self.lock:
+            before = self.db.execute(shown, (identifier,)).fetchone()
             self.db.execute(
                 "UPDATE turns SET status = ?, created = coalesce(?, created), started = coalesce(?, started), "
                 "finished = coalesce(?, finished), runner_sessions = ?, runner = coalesce(?, runner) WHERE id = ?",
@@ -176,6 +197,9 @@ class Store:
                     identifier,
                 ),
             )
+            after = self.db.execute(shown, (identifier,)).fetchone()
+        if after is not None and tuple(after) != tuple(before):
+            self.note(identifier)
 
     def finished(self, identifier, result):
         """Record a turn's result; its transcript archive is stored once by SHA-256."""
@@ -203,6 +227,7 @@ class Store:
                     identifier,
                 ),
             )
+        self.note(identifier)
 
 
 class Recorder:

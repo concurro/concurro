@@ -21,6 +21,13 @@ handle /concurro/* {
 		}
 	}
 
+	handle /api/events {
+		reverse_proxy concurro-backoffice:8788 {
+			# Stream live updates as they arrive.
+			flush_interval -1
+		}
+	}
+
 	# The backoffice API and GitHub sign-in.
 	@backoffice path /api/* /auth/*
 	handle @backoffice {
