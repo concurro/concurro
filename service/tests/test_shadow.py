@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fixtures import ENGINE, KEY, ServiceFixture, target_files
+from fixtures import ENGINE, KEY, ServiceFixture, listed, target_files
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
@@ -96,7 +96,9 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
     def read_metadata(self, actor, at=None):
         """Record the exact initiation boundary used for route availability."""
         self.metadata_calls.append((actor, at))
-        return [deepcopy(m) for m in self.metadata if m["user_id"] == str(actor)]
+        rows = [deepcopy(m) for m in self.metadata if m["user_id"] == str(actor)]
+        # A boundary read predates entry lists unless a test lists it; current reads see the migrated vault's lists.
+        return rows if at and not getattr(self, "listed_boundary", False) else listed(rows)
 
     def controller(self, generation):
         """Use production persistence and command flow with the injected shadow adapter."""

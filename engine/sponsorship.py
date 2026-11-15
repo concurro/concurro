@@ -43,6 +43,67 @@ def credential_route(config, profile, stage, identity=None):
     return route
 
 
+def role_key(stage):
+    """The stable role key of a stage; other model-call stages keep their own name."""
+    return next((role for role, value in ROLES.items() if value == stage), stage)
+
+
+def candidates(records, provider, role, target, profile, routes=None, now=None):
+    """One owner's selectable list entries for a call, in priority order.
+
+    An entry qualifies when it is listed and enabled, its role and `(target, profile)` filters admit the
+    call, and its current record is usable on a route in `routes`. Position alone ranks the result.
+    """
+    found = []
+    for record in records:
+        route, roles, profiles = record.get("route"), record.get("roles") or [], record.get("profiles") or []
+        expiry = record.get("expires_at")
+        if (
+            record.get("provider") == provider
+            and record.get("position") is not None
+            and record.get("enabled")
+            and record.get("status") == "valid"
+            and route in ROUTES
+            and ROUTES[route]["sponsorship_provider"] == provider
+            and record.get("kind") == ROUTES[route]["kind"]
+            and (routes is None or route in routes)
+            and (not roles or role in roles)
+            and (not profiles or {"target": target, "profile": profile} in profiles)
+            and not (
+                record.get("expiry_known")
+                and now is not None
+                and (
+                    not isinstance(expiry, str)
+                    or datetime.fromisoformat(expiry.replace("Z", "+00:00")).timestamp() <= now
+                )
+            )
+        ):
+            found.append(record)
+    return sorted(found, key=lambda record: record["position"])
+
+
+def listed_routes(requirements, records, target):
+    """Resolve role requirements against the owner's entry lists as they stood at a boundary.
+
+    A provider with route-era records predates entry lists and keeps its configured requirements.
+    Any other provider's requirement takes its first candidate's route, and is dropped without a match.
+    """
+    legacy = {
+        ROUTES[record["route"]]["sponsorship_provider"]
+        for record in records
+        if not record.get("list_revision") and record.get("route") in ROUTES
+    }
+    result = []
+    for requirement in requirements:
+        if requirement["provider"] in legacy:
+            result.append(requirement)
+            continue
+        found = candidates(records, requirement["provider"], requirement["role"], target, requirement["profile"])
+        if found:
+            result.append({**requirement, "route": found[0]["route"]})
+    return result
+
+
 def selected_routes(config):
     """Resolve only selected roles through explicit profile-to-route settings and the trusted catalog."""
     result = []
@@ -227,8 +288,8 @@ def attribution(state, config, profile, stage):
     }
 
 
-def coverage(routes, slots, metadata):
-    """Project selected-route/model coverage without changing a payer, model or effort."""
+def coverage(routes, slots, metadata, target=None):
+    """Project each role requirement's selected entry without changing a payer, model or effort."""
     result = {provider: [] for provider in PROVIDERS}
     for route in routes:
         provider = route["provider"]
@@ -236,18 +297,35 @@ def coverage(routes, slots, metadata):
             continue
         actor = slots.get(provider, {}).get("sponsor_id")
         records = metadata.get(actor)
-        record = next((m for m in records or [] if m["route"] == route["route"]), None)
+        matching = [
+            record
+            for record in records or []
+            if record.get("provider") == provider and record.get("position") is not None and record.get("enabled")
+        ]
+        found = candidates(records or [], provider, route["role"], target, route["profile"])
+        record = found[0] if found else None
         if actor is None:
             status = "unassigned"
         elif records is None:
             status = "unknown"
-        elif record is None:
-            status = "missing"
-        elif record.get("status") != "valid":
+        elif record:
+            status = "available"
+        elif candidates(
+            [{**m, "status": "valid"} for m in matching], provider, route["role"], target, route["profile"]
+        ):
             status = "reconnect"
         else:
-            status = "available"
-        result[provider].append({**route, "status": status, "version": record.get("version") if record else None})
+            status = "missing"
+        result[provider].append(
+            {
+                **route,
+                "route": record["route"] if record else None,
+                "status": status,
+                "version": record.get("version") if record else None,
+                "entry_id": record.get("entry_id") if record else None,
+                "entry": record.get("name") if record else None,
+            }
+        )
     return result
 
 

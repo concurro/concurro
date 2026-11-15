@@ -680,9 +680,13 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.fake.comments.append(comment(99, "/concurro retry", "alice", "2026-11-12T10:00:20Z"))
         self.registry.enqueue(KEY, "fixture-writer-retry", self.clock())
         self.assertEqual(self.dispatch(), [KEY])
+        # Coverage is checked when a role's call is due: the retry resumes and its Anthropic call then pauses.
+        while self.state()["stage"] != "awaiting_credentials":
+            self.registry.enqueue(KEY, "fixture-next-call", self.clock())
+            self.assertEqual(self.dispatch(), [KEY])
         state = self.state()
-        self.assertEqual(state["stage"], "awaiting_credentials")
-        self.assertEqual(state["calls"], 1)
+        # The writer's retry ran the covered OpenAI call; the uncovered Anthropic call charged nothing.
+        self.assertEqual(state["calls"], 2)
         self.assertEqual(state["credential_recovery"]["failures"], [])
         self.registry.enqueue(KEY, "fixture-reinspection", self.clock())
         self.assertEqual(self.dispatch(), [KEY])
@@ -691,8 +695,10 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.validate(actor="303", route="anthropic-api-key")
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [KEY])
-        self.assertEqual(self.state()["calls"], 2)
-        self.assertEqual(self.state()["operation"]["admission"]["credential"]["version"], 1)
+        # The saved replacement resumes the paused planning call on that exact new version.
+        self.assertEqual(self.state()["calls"], 3)
+        credential = self.state()["operation"]["admission"]["credential"]
+        self.assertEqual((credential["route"], credential["version"]), ("anthropic-api-key", 2))
 
     def test_healthy_webhook_timer_reads_real_replacement_feed_and_schedules_once(self):
         """Normal delivery scans consume actual retired+stored pages before a real task can charge."""

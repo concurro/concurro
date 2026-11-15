@@ -37,6 +37,9 @@ def retryable(error):
     )
 
 
+NO_MATCH = "no matching enabled credential"
+
+
 class Metadata:
     """Read allow-listed vault metadata using a dedicated private service credential."""
 
@@ -64,35 +67,48 @@ class Metadata:
     def read(self, actor, at=None):
         """Return allow-listed evidence at the initiation boundary, never provider material."""
         try:
-            value = self.get("/metadata/" + str(int(actor)) + ("?" + urllib.parse.urlencode({"at": at}) if at else ""))
-            if (
-                not isinstance(value, dict)
-                or not isinstance(value.get("history_complete"), bool)
-                or not isinstance(value.get("credentials"), list)
-                or any(
-                    not isinstance(record, dict) or record.get("user_id") != str(actor)
-                    for record in value.get("credentials", [])
-                )
-            ):
-                raise ValueError()
-            keys = {
-                "record_id",
-                "user_id",
-                "route",
-                "version",
-                "status",
-                "models",
-                "created",
-                "updated",
-                "kind",
-                "expiry_known",
-                "expires_at",
-            }
-            return [
-                {key: record.get(key) for key in keys} for record in value["credentials"] if isinstance(record, dict)
-            ]
+            query = "?" + urllib.parse.urlencode({"at": at}) if at else ""
+            return self.records(self.get("/metadata/" + str(int(actor)) + query), actor)
         except (Blocked, OSError, ValueError, urllib.error.URLError):
             raise Transient("sponsorship metadata unavailable") from None
+
+    @staticmethod
+    def records(value, actor):
+        """Allow-list one owner's metadata response, adding list policy where entry lists governed it."""
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("history_complete"), bool)
+            or not isinstance(value.get("credentials"), list)
+            or any(
+                not isinstance(record, dict) or record.get("user_id") != str(actor)
+                for record in value.get("credentials", [])
+            )
+        ):
+            raise ValueError()
+        keys = {
+            "record_id",
+            "user_id",
+            "route",
+            "version",
+            "status",
+            "models",
+            "created",
+            "updated",
+            "kind",
+            "expiry_known",
+            "expires_at",
+        }
+        policy = {"entry_id", "provider", "name", "enabled", "roles", "profiles", "position", "removed"}
+        lists = value.get("lists") or {}
+        records = []
+        for record in value["credentials"]:
+            revision = (lists.get(record.get("provider")) or {}).get("revision")
+            selected = {key: record.get(key) for key in keys}
+            # A boundary before entry lists existed keeps its exact route-era evidence.
+            if type(revision) is int and revision > 0:
+                selected.update({key: record.get(key) for key in policy}, list_revision=revision)
+            records.append(selected)
+        return records
 
     def events(self, after):
         """Read strictly typed lifecycle metadata with the existing service principal only."""
@@ -178,7 +194,7 @@ class Shadow:
         key = controller.config["repository"], controller.issue["number"]
         controller.shadow_source_revision = self.registry.sponsorship(key)["source_revision"]
 
-    def coverage(self, routes, slots):
+    def coverage(self, routes, slots, target):
         """Read current nonsecret coverage separately from historical initiation availability."""
         metadata = {}
         for actor in {slot.get("sponsor_id") for slot in slots.values()} - {None}:
@@ -186,7 +202,7 @@ class Shadow:
                 metadata[actor] = self.metadata.read(actor) if self.metadata else None
             except Transient:
                 metadata[actor] = None
-        return sponsorship.coverage(routes, slots, metadata)
+        return sponsorship.coverage(routes, slots, metadata, target)
 
     def view(self, key):
         """Refresh coverage on a read without advancing a task or changing confirmed consent."""
@@ -197,7 +213,8 @@ class Shadow:
         routes = projection.get("routes")
         if routes:
             slots = projection.get("task", {}).get("slots") or projection.get("slots", {})
-            projection["coverage"] = self.coverage(routes, slots)
+            binding = self.registry.binding(key)
+            projection["coverage"] = self.coverage(routes, slots, binding.upstream if binding else key[0])
         projection["recovery"] = projection.get("task", {}).get("recovery")
         projection["charged_calls"] = [
             {
@@ -400,57 +417,27 @@ class Shadow:
             self.flush(controller)
             self.apply(controller, projection)
             funding = admissions.provider_modes(controller.config, controller.state)
+            target = controller.config.get("upstream", key[0])
+            checks = list(requests)
+            if recovering and not checks:
+                # Resumption rechecks the paused call's coverage, or every role when the pause named none.
+                paused = controller.state.get("credential_requirement") or {}
+                roster = sponsorship.selected_routes(controller.config)
+                roster = [
+                    r for r in roster if (r["role"], r["profile"]) == (paused.get("role"), paused.get("profile"))
+                ] or roster
+                checks = [(r["profile"], sponsorship.ROLES[r["role"]], {}) for r in roster]
             selected = []
-            for profile, stage, context in requests:
-                route = sponsorship.credential_route(
-                    controller.config, profile, stage, context.get("reviewer_identity")
-                )
+            for profile, stage, context in checks:
                 agent = resolve(controller.config, profile, stage, context.get("reviewer_identity"))
-                role = next((name for name, value in sponsorship.ROLES.items() if value == stage), stage)
-                requirement = {
-                    "provider": agent.profile.provider,
-                    "route": route,
-                    "role": role,
-                    "profile": profile,
-                    "model": agent.profile.model,
-                }
-                detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
-                if funding[agent.profile.provider] == "org":
-                    selected.append((None, agent.profile.provider, agent.profile, role, profile))
-                    continue
-                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
-                    raise CredentialsUnavailable(
-                        f"{detail}: contributed credential route adapter is unavailable", requirement
-                    )
-                provider = sponsorship.ROUTES[route]["sponsorship_provider"]
-                if agent.profile.provider != provider:
-                    raise CredentialsUnavailable(
-                        f"{detail}: credential route does not support selected profile", requirement
-                    )
-                selected.append((route, provider, agent.profile, role, profile))
-            requested_count = len(selected)
-            # Every configured role is required in the current pipeline. No optional evaluator
-            # participates in admission; the separate design_eval tool is diagnostic only.
-            for requirement in sponsorship.selected_routes(controller.config):
-                route = requirement["route"]
-                if funding[requirement["provider"]] == "org":
-                    continue
-                if route not in sponsorship.ROUTES or route not in capabilities.get("contributed_routes", []):
-                    detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
-                    raise CredentialsUnavailable(
-                        f"{detail}: required role credential route adapter is unavailable", requirement
-                    )
-                agent = resolve(controller.config, requirement["profile"], sponsorship.ROLES[requirement["role"]])
-                selected.append(
-                    (route, requirement["provider"], agent.profile, requirement["role"], requirement["profile"])
-                )
+                selected.append((agent.profile.provider, agent.profile, sponsorship.role_key(stage), profile))
             projection = getattr(controller, "shadow_projection", None)
             self.source_fence(key, projection)
-            self.flush(controller, {p for _, p, _, _, _ in selected})
-            self.cutover(controller, {p for _, p, _, _, _ in selected if funding[p] == "contributed"})
-            self.apply(controller, projection, {p for _, p, _, _, _ in selected})
+            self.flush(controller, {p for p, _, _, _ in selected})
+            self.cutover(controller, {p for p, _, _, _ in selected if funding[p] == "contributed"})
+            self.apply(controller, projection, {p for p, _, _, _ in selected})
             owners, metadata, choices = {}, {}, []
-            for route, provider, profile, role, profile_name in selected:
+            for provider, profile, role, profile_name in selected:
                 if funding[provider] == "org":
                     choices.append(
                         admissions.selection(
@@ -460,12 +447,12 @@ class Shadow:
                     continue
                 requirement = {
                     "provider": provider,
-                    "route": route,
+                    "route": None,
                     "role": role,
                     "profile": profile_name,
                     "model": profile.model,
                 }
-                detail = ", ".join(f"{name}={value}" for name, value in requirement.items())
+                detail = ", ".join(f"{name}={value}" for name, value in requirement.items() if value is not None)
                 if provider in controller.state.get("pending_sponsorships", {}):
                     raise CredentialsUnavailable(f"{detail}: provider sponsorship transition is pending", requirement)
                 slot = controller.state.get("sponsorships", {}).get(provider, {})
@@ -483,7 +470,7 @@ class Shadow:
                         f"{detail}: provider requires current contributed sponsorship", requirement
                     )
                 if actor not in owners:
-                    owners[actor] = self.writer(controller.config.get("upstream", key[0]), actor, slot.get("login"))
+                    owners[actor] = self.writer(target, actor, slot.get("login"))
                     if not owners[actor]:
                         self.revoke_authority(controller, projection, actor)
                         raise CredentialsUnavailable(
@@ -493,47 +480,56 @@ class Shadow:
                 rows = metadata[actor]
                 if rows is None:
                     raise Transient(f"{detail}: sponsorship metadata unavailable")
-                record = next((m for m in rows if m.get("route") == route), None)
-                if (
-                    record is None
-                    or record.get("status") != "valid"
-                    or record.get("kind") != sponsorship.ROUTES[route]["kind"]
-                ):
-                    raise CredentialsUnavailable(f"{detail}: provider credential is unavailable", requirement)
+                matching = sponsorship.candidates(
+                    rows, provider, role, target, profile_name, None, self.registry.clock()
+                )
+                found = [r for r in matching if r["route"] in capabilities.get("contributed_routes", [])]
+                if not found:
+                    reason = "contributed credential route adapter is unavailable" if matching else NO_MATCH
+                    raise CredentialsUnavailable(f"{detail}: {reason}", requirement)
                 if recovering:
-                    minimum = max(
-                        (
-                            item["minimum_version"]
-                            for item in controller.state["credential_recovery"]["requirements"]
-                            if item["sponsor"] == actor and item["route"] == route
-                        ),
-                        default=0,
-                    )
-                    if type(record.get("version")) is not int or record["version"] <= minimum:
+                    failed = controller.state["credential_recovery"]["requirements"]
+                    found = [
+                        record
+                        for record in found
+                        if type(record.get("version")) is int
+                        and record["version"]
+                        > max(
+                            (
+                                item["minimum_version"]
+                                for item in failed
+                                if item["sponsor"] == actor and item["route"] == record["route"]
+                            ),
+                            default=0,
+                        )
+                    ]
+                    if not found:
                         raise Transient(f"{detail}: saved credential version is not yet current")
-                if record.get("expiry_known") and (
-                    not isinstance(record.get("expires_at"), str)
-                    or datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp()
-                    <= self.registry.clock()
-                ):
-                    raise CredentialsUnavailable(f"{detail}: provider credential expired", requirement)
+                record = found[0]
                 credential = Credential(
-                    digest(["contributed", actor, route, record.get("record_id"), record.get("version")]),
+                    digest(["contributed", actor, record["route"], record.get("record_id"), record.get("version")]),
                     profile.harness,
                     "contributed",
                     ADAPTER,
                     actor,
-                    route,
+                    record["route"],
                     record.get("record_id"),
                     record.get("version"),
                 )
                 choice = admissions.selection(credential, provider, slot)
                 admissions.validate(choice)
+                # Explanation only: the frozen admission and its digest keep their exact shape.
+                controller.state.setdefault("credential_selections", {})[credential.id] = {
+                    "entry_id": record.get("entry_id"),
+                    "entry": record.get("name"),
+                    "list_revision": record.get("list_revision"),
+                    "target": target,
+                }
                 choices.append(choice)
             self.source_fence(key, projection)
             if getattr(controller.agents, "executor", None):
                 controller.agents.executor.check_owner()
-            return choices[:requested_count]
+            return choices[: len(requests)]
         except ExchangeError as error:
             if retryable(error):
                 raise Transient("sponsorship exchange unavailable") from None
@@ -723,7 +719,9 @@ class Shadow:
         document["digest"] = digest(document)
         if config is not None:
             document["routes"] = sponsorship.selected_routes(config)
-            document["coverage"] = self.coverage(sponsorship.selected_routes(config), document["slots"])
+            document["coverage"] = self.coverage(
+                sponsorship.selected_routes(config), document["slots"], config.get("upstream", key[0])
+            )
         if not self.registry.confirm_sponsorship(key, revision, document, comments):
             raise Transient("sponsorship source changed during observation")
         return {**document, "status": "confirmed" if complete else "provisional", "source_revision": revision}
@@ -930,14 +928,25 @@ class Shadow:
                 and not explicit_funding
                 or boundary.get("source_policy", {}).get("funding_mode") == "contributed"
             )
-            if explicit_funding or any(route["route"] is not None for route in routes):
-                routes = [route for route in routes if route["route"] is not None]
             if explicit_funding:
                 current = {
                     **admissions.provider_modes(controller.config, state),
                     **sponsorship.project(projection["facts"])["provider_funding"],
                 }
                 routes = [route for route in routes if current[route["provider"]] == "contributed"]
+            open_slots = implicit and any(
+                not earlier["slots"][route["provider"]].get("sponsor_id")
+                and boundary["actor_id"] not in earlier["tombstones"][route["provider"]]
+                for route in routes
+            )
+            evidence = []
+            if open_slots and self.metadata:
+                # Where the initiator's entry lists governed the boundary, they name each role's route.
+                evidence = self.metadata.read(boundary["actor_id"], boundary["at"])
+                target = controller.config.get("upstream", controller.config["repository"])
+                routes = sponsorship.listed_routes(routes, evidence, target)
+            if explicit_funding or any(route["route"] is not None for route in routes):
+                routes = [route for route in routes if route["route"] is not None]
             filling = {route["provider"] for route in routes}
             needs_fill = implicit and any(
                 provider in filling
@@ -962,7 +971,7 @@ class Shadow:
                 return
             if needs_fill and (not self.metadata or any(r["route"] is None for r in routes)):
                 return
-            metadata = self.metadata.read(boundary["actor_id"], boundary["at"]) if needs_fill else []
+            metadata = evidence if needs_fill else []
             if not implicit:
                 routes = []
                 boundary = {**boundary, "initializer_status": "unknown"}

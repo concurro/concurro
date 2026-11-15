@@ -367,24 +367,35 @@ Organization selection preserves personal consent and historical charges. Fundin
 does not resume a paused task: after changing funding, a writer uses `/concurro retry` when
 manual recovery is needed. Stale personal credential recovery receipts are cleared.
 
-Configure provider defaults once; existing profile overrides take precedence:
+For personal funding, the consenting sponsor's ordered credential list chooses the credential
+([vault guide](../../gateway/vault/README.md#entries-records-and-events)). For each call about
+to be admitted the service resolves its role, target and profile, reads that sponsor's current
+list for the profile's provider, and takes the first entry that is enabled, whose role and
+`(target upstream, profile)` filters admit the call, whose stored record is usable, and whose
+route the gateway's adapter supports. Position alone ranks entries; a more specific filter
+never outranks an earlier entry. Stages outside the five role keys match only entries without
+a role filter. The model and effort are never changed to suit an entry, and model access is
+checked during execution.
 
-```json
-{
-  "provider_credential_routes": {
-    "openai": "openai-api-key",
-    "anthropic": "claude-subscription"
-  },
-  "credential_routes": {
-    "optional-special-profile": "anthropic-api-key"
-  }
-}
-```
+Coverage is checked for the call or batch about to be charged, not for roles the task may reach
+later: intake runs with a triage-only credential, and planning pauses when it has no match.
+A call with no candidate pauses in `awaiting_credentials` with "no matching enabled
+credential"; there is no fallback to another sponsor or to organization credentials.
+Organization-funded providers require no personal coverage. Before a new charge, personal
+funding also requires confirmed consent and current upstream writer authority.
 
-Routes resolve against the profile's actual provider. Before a new charge, personal funding
-requires confirmed consent, current upstream writer authority, a supported adapter and a stored
-credential for the selected route. Model access is checked during execution. Organization-funded providers require no
-personal credential coverage. Missing coverage pauses calls without payer fallback.
+The chosen record's route, `record_id` and version are frozen in the admission exactly as
+before. The attempt additionally records the selected entry, its list revision and target
+beside that admission, as explanation only. Later reordering, filtering or disabling affects
+later selections; Exchange keeps serving an admitted record until its material is revoked,
+replaced or expired.
+
+`provider_credential_routes` and per-profile `credential_routes` are still accepted, and old
+bindings that name them stay readable, but they no longer choose or constrain the credential
+of a new personal selection. They still describe a task whose initiation boundary predates
+entry lists: there, the initiator fills a provider slot only with usable material on the
+configured route, as frozen grants already record. At a later boundary the initiator fills a
+slot when their list has a candidate for one of that provider's roles.
 
 Ordered commands work before enrollment and use the same durable checkpoint/Exchange transition
 receipts afterward. `provider_funding` freezes initial task choices; later explicit funding
@@ -409,7 +420,7 @@ service-authenticated nonsecret
 per owner/route and matching task queue receipts. The service has no gateway resolver bearer.
 A paused task records current provider grants, failed versions and its original retry deadline.
 Only eligible `awaiting_credentials` tasks are reconsidered. The owned tick processes writer
-commands/source changes first, then current authority, all selected route coverage, versions
+commands/source changes first, then current authority, the paused call's coverage, versions
 and budget before any new charge. Duplicate events, wrapping-key rotation and restart do not
 reset retry clocks or make an old failed token newly valid. Other suspended/human stages stay
 writer-controlled. [Phase 6](../proposals/per-user-credentials/phase-6.md) records the exact

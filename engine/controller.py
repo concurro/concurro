@@ -872,6 +872,9 @@ class Controller:
         if admission is not None:
             operation["admission"] = deepcopy(admission)
             operation["call"] = admission["call"]
+            selection = self.state.get("credential_selections", {}).get(admission["credential"]["id"])
+            if selection:
+                operation["credential_selection"] = deepcopy(selection)
             self.state["admission_version"] = 1
 
     def complete(self, operation, response, session=None):

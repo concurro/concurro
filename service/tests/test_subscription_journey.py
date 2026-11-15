@@ -27,6 +27,7 @@ import vault
 from agents import Agents, RunnerExecutor
 from exchange import Refused
 from policy import ProviderFailure
+from service.shadow import Metadata
 from test_shadow import comment
 from test_subscription_storage import TOKENS
 
@@ -86,7 +87,7 @@ class JourneyTests(admission_fixture.AdmissionTests):
 
     def read_metadata(self, actor, at=None):
         """Read current or exact source-era availability from the actual versioned vault."""
-        return self.credential_store.metadata(int(actor), at)["credentials"]
+        return Metadata.records(self.credential_store.metadata(int(actor), at), actor)
 
     def events(self, after):
         """Consume the real lifecycle ledger through Exchange's existing restart-safe cursor."""

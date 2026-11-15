@@ -393,6 +393,35 @@ class Inline:
         pass
 
 
+def listed(rows):
+    """Metadata rows as a vault with entry lists reports them.
+
+    A route-era row becomes one enabled, unfiltered entry in its provider's list, in row order;
+    fields a row already carries, such as filters or a position, are kept.
+    """
+    result, positions = [], {}
+    for row in rows:
+        provider = "openai" if row["route"] in ("openai-api-key", "chatgpt-subscription") else "anthropic"
+        position = positions.setdefault((row["user_id"], provider), 0)
+        positions[row["user_id"], provider] += 1
+        result.append(
+            {
+                "kind": "subscription" if row["route"].endswith("subscription") else "api_key",
+                "provider": provider,
+                "entry_id": f"{row['user_id']}-{row['route']}-{position}",
+                "name": row["route"],
+                "enabled": True,
+                "roles": [],
+                "profiles": [],
+                "position": position,
+                "removed": False,
+                "list_revision": 1,
+                **row,
+            }
+        )
+    return result
+
+
 class ServiceFixture:
     """A registry in a private temporary directory, a gateway over the REST fake, and engine fixtures."""
 

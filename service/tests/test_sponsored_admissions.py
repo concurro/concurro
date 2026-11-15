@@ -451,8 +451,10 @@ class AdmissionTests(ShadowTests):
             self.assertEqual(view["provider_funding"], controller.state["provider_funding"])
             self.metadata = []
             calls = controller.state["calls"]
-            with self.assertRaisesRegex(Blocked, "credential"):
-                controller.select_admissions([("claude", "plan", {})])
+            # Only the call about to run needs coverage: org-funded planning ignores the missing personal key.
+            self.assertEqual(controller.select_admissions([("claude", "plan", {})])[0]["funding"], "org")
+            with self.assertRaisesRegex(Blocked, "no matching enabled credential"):
+                controller.select_admissions([("codex", "intake", {})])
             self.assertEqual(controller.state["calls"], calls)
 
     def test_explicit_org_preserves_consent_and_frozen_personal_admission(self):
@@ -583,17 +585,20 @@ class AdmissionTests(ShadowTests):
             self.assertEqual(controller.state["calls"], calls)
             self.assertEqual(controller.state["sponsorships"]["anthropic"]["sponsor_id"], "303")
 
-    def test_initial_serial_call_preflights_every_required_role_before_charge(self):
-        """Even an OpenAI-only first call pauses when a required Anthropic route lacks coverage."""
+    def test_a_call_needs_coverage_for_its_own_role_not_for_future_roles(self):
+        """An OpenAI intake call is selected without Anthropic coverage; planning pauses when it is due."""
         self.sponsors()
         self.metadata = [row for row in self.metadata if row["route"] != "anthropic-api-key"]
         with self.current() as controller:
             calls = controller.state["calls"]
-            with self.assertRaisesRegex(Blocked, "credential") as error:
-                controller.ask("codex", "intake", {"purpose": "aggregate required roster"})
+            intake = controller.select_admissions([("codex", "intake", {})])[0]
+            self.assertEqual((intake["funding"], intake["route"]), ("contributed", "openai-api-key"))
+            with self.assertRaisesRegex(Blocked, "no matching enabled credential") as error:
+                controller.ask("claude", "plan", {"purpose": "planning has no match"})
             self.assertEqual(error.exception.pause_stage, "awaiting_credentials")
             self.assertEqual(error.exception.requirement["provider"], "anthropic")
-            self.assertEqual(error.exception.requirement["route"], "anthropic-api-key")
+            self.assertEqual(error.exception.requirement["role"], "planner")
+            self.assertIsNone(error.exception.requirement["route"])
             self.assertEqual(error.exception.requirement["model"], self.config["models"]["claude"])
             self.assertIn("role=", str(error.exception))
             self.assertIn("profile=claude", str(error.exception))
