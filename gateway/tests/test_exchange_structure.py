@@ -208,7 +208,8 @@ class HttpContractTests(HttpFixture, unittest.TestCase):
         for _ in range(2):
             self.assertTrue(first.slots.acquire(blocking=False))
         try:
-            self.assertEqual(self.request(first, "/exchange/unknown"), (503, b""))
+            # A busy server closes without reading: a body sent after the headers can meet the reset.
+            self.assertEqual(self.request(first, "/exchange/unknown", body=None), (503, b""))
             self.assertEqual(self.request(second, "/exchange/unknown"), (404, b'{"error": "not found"}'))
         finally:
             for _ in range(2):
