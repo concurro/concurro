@@ -17,6 +17,7 @@ in the design and operator docs.
 | ---- | ---- | ---- |
 | [Demo target policy](demo-target-policy.md) | Approved direction | Default-open text edits, explicit protections and configurable workload limits; rollout requires engine support and replacement tasks. |
 | [Per-user provider credentials](per-user-credentials.md) | Epic | Provider slots let different people fund OpenAI and Anthropic; explicit issue sponsors take precedence over initiator fill. [Implementation plan](per-user-credentials/implementation-plan.md): user-pasted CLI subscription tokens and manual replacement. |
+| [Sponsor-held credentials through a relay](sponsor-relay.md) | Epic | A sponsor's subscription token stays on their machine; a relay they run performs each admitted request and proves it to Concurro. The relay exists in `concurro-relay`; Concurro's side is not built, and a design finding and a cryptographic review are open. |
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
 | [Backoffice API surface](backoffice-api.md) | Epic (inventory) | Endpoints for a GitHub-authenticated backoffice: own credentials, task overview, commands and run diagnostics. |
