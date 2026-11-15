@@ -699,7 +699,7 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         store = vault.Store(Path(self.directory.name) / "recovery-vault.db", vault.Envelope(os.urandom(32)), self.clock)
         self.addCleanup(store.close)
         for row in self.metadata:
-            store.put(vault.User(int(row["user_id"]), "synthetic"), row["route"], "synthetic-token")
+            store.add(vault.User(int(row["user_id"]), "synthetic"), row["route"], "synthetic-token")
         with self.registry.transaction() as db:
             db.execute("DELETE FROM credential_versions")
             db.execute("DELETE FROM credential_cursor")
@@ -720,10 +720,12 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 self.pause()
                 prior = self.registry.credential_cursor()
                 row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
-                entry = store.put(vault.User(202, "alice"), row["route"], "synthetic-replacement")
+                target = next(e for e in store.group(202, "openai")["entries"] if e["route"] == row["route"])
+                entry = store.replace(vault.User(202, "alice"), target["entry_id"], "synthetic-replacement")["record"]
                 page = store.events(prior)
                 self.assertEqual(
-                    [(e["type"], e["status"]) for e in page["events"]], [("retired", "retired"), ("stored", "valid")]
+                    [(e["type"], e["status"]) for e in page["events"]],
+                    [("retired", "retired"), ("stored", "valid"), ("policy", "policy")],
                 )
                 self.assertEqual(self.registry.due(self.clock()), [])
                 self.clock.now += 300
@@ -734,7 +736,10 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                         "SELECT document FROM credential_versions WHERE user_id='202' AND route='openai-api-key'"
                     ).fetchone()[0]
                 )
-                self.assertEqual((cached["version"], cached["validation_sequence"]), (entry["version"], page["next"]))
+                self.assertEqual(
+                    (cached["version"], cached["validation_sequence"]),
+                    (entry["version"], page["events"][1]["sequence"]),
+                )
                 self.assertEqual([i.key for i in self.registry.due(self.clock())], [KEY])
                 self.assertEqual(self.dispatch(), [KEY])
                 self.assertEqual(self.state()["calls"], 2)

@@ -50,6 +50,7 @@ class CliRequestTests(unittest.TestCase):
             (["initialize"], b'{"command": "initialize"}'),
             (["status"], b'{"command": "status"}'),
             (["reconcile-once"], b'{"command": "reconcile-once"}'),
+            (["credential-order-manifest"], b'{"command": "credential-order-manifest"}'),
             (["adopt", "owner/repo"], b'{"command": "adopt", "repository": "owner/repo", "issues": []}'),
             (["adopt", "owner/repo", "7", "9"], b'{"command": "adopt", "repository": "owner/repo", "issues": [7, 9]}'),
             (["release", "owner/repo", "7"], b'{"command": "release", "repository": "owner/repo", "issue": 7}'),

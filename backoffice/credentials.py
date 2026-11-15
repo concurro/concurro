@@ -5,18 +5,27 @@ The vault resolves the user itself; the backoffice never stores or reads back a 
 
 import httpx
 
+import sponsorship
+
 from .auth import BearerAuth, TokenCredential
 
-# Stable UI identifiers map to exact fixed vault/provider routes.
-ROUTES = (
-    ("anthropic_api", "anthropic-api-key", "Anthropic API", "anthropic", "API key"),
-    ("claude_subscription", "claude-subscription", "Claude subscription", "anthropic", "Subscription"),
-    ("openai_api", "openai-api-key", "OpenAI API", "openai", "API key"),
-    ("chatgpt_subscription", "chatgpt-subscription", "ChatGPT subscription", "openai", "Subscription"),
-)
-VAULT_ROUTES = {ui: vault for ui, vault, *_ in ROUTES if vault}
+# Stable UI type identifiers for the vault's fixed routes.
+TYPES = {
+    "anthropic_api": "anthropic-api-key",
+    "claude_subscription": "claude-subscription",
+    "openai_api": "openai-api-key",
+    "chatgpt_subscription": "chatgpt-subscription",
+}
+PROVIDERS = {"anthropic": "Anthropic", "openai": "OpenAI"}
+ROLES = {
+    "triage": "Triage / intake",
+    "planner": "Planning",
+    "plan_reviewers": "Plan review",
+    "implementer": "Implementation",
+    "pr_reviewers": "PR review",
+}
 STATUS = {"valid": "valid", "invalid": "invalid", "revoked": "revoked"}
-USAGE = "Credentials are saved without contacting the provider. Token and model-access problems are reported during execution. Each issue selects funding per provider; organization-funded calls keep their organization credentials."
+STALE = "Credentials are now managed as a list. Reload the page to continue."
 
 
 class VaultError(Exception):
@@ -39,6 +48,7 @@ class Vault:
         token: str | TokenCredential,
         body: dict | None = None,
         *,
+        params: dict | None = None,
         timeout: float | None = None,
     ):
         if not self.url:
@@ -49,6 +59,7 @@ class Vault:
                 self.url + path,
                 auth=BearerAuth(token),
                 json=body,
+                params=params,
                 **({"timeout": timeout} if timeout is not None else {}),
             )
         except httpx.HTTPError:
@@ -62,60 +73,87 @@ class Vault:
             raise VaultError(response.status_code, reason if isinstance(reason, str) else "vault request failed")
         return payload
 
-    def routes(self, token: str | TokenCredential) -> list[dict]:
-        """Every UI route with its stored status; routes the vault doesn't hold show as missing."""
-        stored = {entry["route"]: entry for entry in self.call("GET", "/credentials", token) or []}
-        return [route(ui, stored.get(vault) if vault else None) for ui, vault, *_ in ROUTES]
+    def listing(self, token: str | TokenCredential) -> dict:
+        """The owner's ordered provider lists with the types and role filters a new entry may use."""
+        stored = self.call("GET", "/credentials", token)
+        return {
+            "providers": [group(value) for value in stored["providers"]],
+            "types": [
+                {
+                    "id": ui,
+                    "provider": kind["provider"],
+                    "kind": kind["kind"],
+                    "label": kind["label"],
+                    "accountId": route == "chatgpt-subscription",
+                }
+                for ui, route in TYPES.items()
+                for kind in stored["types"]
+                if kind["route"] == route
+            ],
+            "roles": [{"key": key, "label": ROLES[key]} for key in sponsorship.ROLES],
+        }
 
-    def put(
-        self,
-        token: str | TokenCredential,
-        ui_route: str,
-        secret: str,
-        account_id: str | None = None,
-    ) -> dict:
-        """Forward only this owner's candidate and route metadata; never retain the secret."""
-        body = {"secret": secret}
-        if ui_route in ("chatgpt_subscription", "claude_subscription"):
-            body.update(account_id=account_id)
-        return route(ui_route, self.call("PUT", f"/credentials/{self.vault_route(ui_route)}", token, body))
+    def add(self, token: str | TokenCredential, kind: str, fields: dict) -> dict:
+        """Forward only this owner's candidate and policy; never retain the secret."""
+        if kind not in TYPES:
+            raise VaultError(422, "this credential type can't be stored")
+        return entry(self.call("POST", "/credentials", token, {"route": TYPES[kind], **policy(fields)}))
 
-    def revoke(self, token: str | TokenCredential, ui_route: str) -> dict:
-        return route(ui_route, self.call("DELETE", f"/credentials/{self.vault_route(ui_route)}", token))
+    def edit(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
+        return entry(self.call("PATCH", f"/credentials/{entry_id}", token, policy(fields)))
 
-    @staticmethod
-    def vault_route(ui_route: str) -> str:
-        if ui_route not in VAULT_ROUTES:
-            raise VaultError(404, "this credential type can't be stored yet")
-        return VAULT_ROUTES[ui_route]
+    def replace(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
+        return entry(self.call("PUT", f"/credentials/{entry_id}/secret", token, fields))
+
+    def reorder(self, token: str | TokenCredential, provider: str, fields: dict) -> dict:
+        return group(self.call("PUT", f"/credentials/order/{provider}", token, fields))
+
+    def remove(self, token: str | TokenCredential, entry_id: str, revision: int) -> dict:
+        return entry(self.call("DELETE", f"/credentials/{entry_id}", token, params={"revision": revision}))
 
 
-def route(ui_route: str, entry: dict | None) -> dict:
-    """One `CredentialRoute` as the frontend expects it."""
-    _, vault, label, provider, kind = next(r for r in ROUTES if r[0] == ui_route)
-    result: dict = {
-        "id": ui_route,
-        "route": vault,
-        "label": label,
-        "provider": provider,
-        "kind": kind,
-        "registrationAvailable": vault is not None,
+def policy(fields: dict) -> dict:
+    """Refuse role filters outside the engine's role keys before they could silently match nothing."""
+    if any(role not in sponsorship.ROLES for role in fields.get("roles") or ()):
+        raise VaultError(422, "unknown role filter")
+    return fields
+
+
+def group(value: dict) -> dict:
+    """One provider's `CredentialList` as the frontend expects it."""
+    return {
+        "provider": value["provider"],
+        "label": PROVIDERS[value["provider"]],
+        "revision": value["revision"],
+        "entries": [entry(item) for item in value["entries"]],
     }
-    if entry is None:
-        result["status"] = "missing"
-        result["note"] = USAGE if vault else "Subscription credentials aren't supported yet."
-        return result
-    result["status"] = (
-        "expired" if entry.get("status_reason") == "expired" else STATUS.get(entry.get("status"), "invalid")
-    )
-    result["fingerprint"] = entry.get("fingerprint")
-    result["lastUpdated"] = entry.get("updated")
-    result["lastUsed"] = entry.get("last_used")
-    result["expiresAt"] = entry.get("expires_at")
-    result["expiryKnown"] = bool(entry.get("expiry_known"))
-    result["version"] = entry.get("version")
-    result["statusReason"] = entry.get("status_reason")
-    result["accountLabel"] = entry.get("account_label")
-    result["accountVerified"] = bool(entry.get("verified_account"))
-    result["note"] = USAGE
-    return result
+
+
+def entry(value: dict) -> dict:
+    """One `CredentialEntry` as the frontend expects it; `Saved` never claims provider authentication."""
+    record = value["record"]
+    return {
+        "id": value["entry_id"],
+        "provider": value["provider"],
+        "type": next(ui for ui, route in TYPES.items() if route == value["route"]),
+        "kind": value["kind"],
+        "name": value["name"],
+        "enabled": value["enabled"],
+        "roles": value["roles"],
+        "profiles": value["profiles"],
+        "revision": value["revision"],
+        "removed": value["removed"] is not None,
+        "created": value["created"],
+        "status": "expired"
+        if record.get("status_reason") == "expired"
+        else STATUS.get(record.get("status"), "invalid"),
+        "statusReason": record.get("status_reason"),
+        "fingerprint": record.get("fingerprint"),
+        "version": record.get("version"),
+        "lastUpdated": record.get("updated"),
+        "lastUsed": record.get("last_used"),
+        "expiresAt": record.get("expires_at"),
+        "expiryKnown": bool(record.get("expiry_known")),
+        "accountLabel": record.get("account_label"),
+        "accountVerified": bool(record.get("verified_account")),
+    }

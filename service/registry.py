@@ -351,6 +351,22 @@ class Registry:
         # repository, and `tasks` for a tick's recorded outcome.
         self.changed = None
         self.touched = set()
+        self.begin = "BEGIN IMMEDIATE"
+
+    @classmethod
+    def inspect(cls, state_dir):
+        """Open an existing store read-only, without its lock, migrations or recovery.
+
+        Works beside a running daemon and on a store older than this release; only reads succeed.
+        """
+        path = Path(state_dir) / DATABASE
+        if not path.exists():
+            raise RegistryError("registry is missing or empty; initialize a new one explicitly")
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+        # A plain directory handle stands in for the writer lock this reader never takes.
+        registry = cls(db, os.open(path.parent, os.O_RDONLY), time.time)
+        registry.begin = "BEGIN"
+        return registry
 
     @classmethod
     def open(cls, state_dir, registry_id, initialize=False, clock=time.time):
@@ -429,7 +445,7 @@ class Registry:
             if self.failed:
                 raise RegistryFailure("registry unavailable")
             try:
-                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute(self.begin)
                 yield self.db
                 self.db.execute("COMMIT")
                 touched = self.touched
@@ -627,6 +643,11 @@ class Registry:
                 )
             ]
 
+    def sponsor_repositories(self):
+        """Every repository holding issue sponsorship projections."""
+        with self.transaction() as db:
+            return [row[0] for row in db.execute("SELECT DISTINCT repository FROM issue_sponsorships ORDER BY 1")]
+
     def sponsor_issues(self, repository, active=False):
         """Poll facts/live tasks; show provisional hints until confirmation, retaining direct history reads."""
         with self.transaction() as db:
@@ -761,6 +782,8 @@ class Registry:
                 if event["sequence"] <= after:
                     continue
                 consumed = True
+                if event["type"] == "policy":
+                    continue
                 actor, route = str(event["user_id"]), event["route"]
                 value = dict(event)
                 # Retain the persisted field name for existing recovery receipts.

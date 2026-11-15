@@ -20,12 +20,12 @@ class SubscriptionTests(VaultFixture, unittest.TestCase):
         """Both subscription types store arbitrary tokens without claiming validation."""
         for route, tokens in TOKENS.items():
             for token, github, owner in zip(tokens, (ALICE, BOB), (101, 202), strict=True):
-                body = {"secret": token}
+                body = {}
                 if route == "chatgpt-subscription":
                     body["account_id"] = "supplied-account-" + str(owner)
-                reply = self.request("PUT", "/credentials/" + route, token=github, json=body)
+                reply = self.put(route, token, token=github, **body)
                 self.assertEqual(reply.status_code, 200, reply.text)
-                entry = reply.json()
+                entry = reply.json()["record"]
                 self.assertIsNone(entry["models"])
                 self.assertIsNone(entry["validated"])
                 self.assertEqual(entry["status_reason"], "stored")
@@ -36,57 +36,57 @@ class SubscriptionTests(VaultFixture, unittest.TestCase):
                 )
                 self.assertNotIn(token, reply.text)
         self.assertTrue(all(url == vault.GITHUB_USER for url, _ in self.transport.calls))
-        self.assertTrue(all(event["type"] == "stored" for event in self.store.events()["events"]))
+        self.assertTrue(all(event["type"] in ("stored", "policy") for event in self.store.events()["events"]))
 
     def test_replacement_ignores_old_model_field_and_retires_previous_version(self):
         """Older clients' model selections cannot constrain or certify newly stored material."""
         first = self.put("claude-subscription", "SYNTHETIC_OLD").json()
-        reply = self.request(
-            "PUT", "/credentials/claude-subscription", json={"secret": "SYNTHETIC_NEW", "models": ["irrelevant-model"]}
-        )
+        reply = self.replace(first, "SYNTHETIC_NEW", models=["irrelevant-model"])
         self.assertEqual(reply.status_code, 200)
-        self.assertEqual(reply.json()["version"], 2)
-        self.assertIsNone(reply.json()["models"])
+        self.assertEqual(reply.json()["record"]["version"], 2)
+        self.assertIsNone(reply.json()["record"]["models"])
         with self.assertRaises(vault.VaultError):
-            self.store.resolve(101, "claude-subscription", first["record_id"], 1)
+            self.store.resolve(101, "claude-subscription", first["record"]["record_id"], 1)
 
     def test_account_header_is_required_and_expiry_claims_are_ignored(self):
         """Only header syntax is checked; callers cannot assert trusted expiry or account identity."""
         for account in (None, "", "bad\r\nheader"):
-            reply = self.request(
-                "PUT", "/credentials/chatgpt-subscription", json={"secret": "SYNTHETIC", "account_id": account}
-            )
-            self.assertEqual(reply.status_code, 422)
-        reply = self.request(
-            "PUT",
-            "/credentials/chatgpt-subscription",
-            json={
-                "secret": "SYNTHETIC",
-                "account_id": "supplied",
-                "expires_at": "2099-01-01T00:00:00Z",
-                "expiry_known": True,
-            },
+            self.assertEqual(self.put("chatgpt-subscription", "SYNTHETIC", account_id=account).status_code, 422)
+        reply = self.put(
+            "chatgpt-subscription",
+            "SYNTHETIC",
+            account_id="supplied",
+            expires_at="2099-01-01T00:00:00Z",
+            expiry_known=True,
         )
         self.assertEqual(reply.status_code, 200)
-        self.assertFalse(reply.json()["expiry_known"])
-        self.assertIsNone(reply.json()["verified_account"])
+        self.assertFalse(reply.json()["record"]["expiry_known"])
+        self.assertIsNone(reply.json()["record"]["verified_account"])
         self.assertNotIn('"supplied"', json.dumps(self.store.metadata(101)))
+        # A replacement keeps the token and its account header one version.
+        self.assertEqual(self.replace(reply.json(), "SYNTHETIC_2").status_code, 422)
+        renewed = self.replace(reply.json(), "SYNTHETIC_2", account_id="other").json()["record"]
+        stored = self.store.resolve(101, "chatgpt-subscription", renewed["record_id"], renewed["version"])
+        self.assertEqual((stored["secret"], stored["account"]), ("SYNTHETIC_2", {"chatgpt_account_id": "other"}))
 
-    def test_revision_fence_preserves_concurrent_revoke_and_replacement(self):
-        """Removing network probes preserves the store's stale-write fence across connections."""
-        route = "claude-subscription"
-        revision = self.store.revision(101, route)
+    def test_entry_revisions_fence_stale_writes_without_blocking_other_entries(self):
+        """A write compares only its own entry's revision, across connections; removal stays final."""
+        alice, route = vault.User(101, "alice"), "claude-subscription"
+        first, second = (self.store.add(alice, route, token, name=token) for token in ("FIRST", "SECOND"))
         other = vault.Store(self.directory / "vault.db", self.envelope)
         self.addCleanup(other.close)
-        other.revoke(101, route)
+        other.edit(101, first["entry_id"], revision=first["revision"], name="Renamed")
         with self.assertRaises(vault.VaultError) as error:
-            self.store.put(vault.User(101, "alice"), route, "STALE", expected_revision=revision)
+            self.store.replace(alice, first["entry_id"], "STALE", revision=first["revision"])
         self.assertEqual(error.exception.status, 409)
-        self.assertEqual(self.store.listing(101), [])
-        revision = self.store.revision(101, route)
-        other.put(vault.User(101, "alice"), route, "NEW")
-        with self.assertRaises(vault.VaultError) as error:
-            self.store.put(vault.User(101, "alice"), route, "STALE", expected_revision=revision)
-        self.assertEqual(error.exception.status, 409)
-        entry = self.store.listing(101)[0]
-        self.assertEqual(self.store.resolve(101, route, entry["record_id"], 1)["secret"], "NEW")
+        renewed = self.store.replace(alice, second["entry_id"], "NEW", revision=second["revision"])["record"]
+        self.assertEqual(self.store.resolve(101, route, renewed["record_id"], renewed["version"])["secret"], "NEW")
+        other.remove(101, first["entry_id"], first["revision"] + 1)
+        for write in (
+            lambda: self.store.replace(alice, first["entry_id"], "STALE", revision=first["revision"] + 1),
+            lambda: self.store.edit(101, first["entry_id"], revision=first["revision"] + 1, enabled=True),
+        ):
+            with self.assertRaises(vault.VaultError) as error:
+                write()
+            self.assertEqual(error.exception.status, 410)
+        self.assertEqual([e["name"] for e in self.store.group(101, "anthropic")["entries"]], ["SECOND"])

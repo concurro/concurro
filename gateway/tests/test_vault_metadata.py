@@ -45,6 +45,14 @@ class MetadataTests(VaultFixture, unittest.TestCase):
                 "expires_at",
                 "expiry_known",
                 "token_revision",
+                "entry_id",
+                "provider",
+                "name",
+                "enabled",
+                "roles",
+                "profiles",
+                "position",
+                "removed",
             },
         )
         self.assertEqual(result["credentials"][0]["models"], None)
@@ -55,7 +63,8 @@ class MetadataTests(VaultFixture, unittest.TestCase):
         """The metadata principal cannot use user credential routes, including mistaken writes."""
         for method, path, kwargs in (
             ("GET", "/credentials", {}),
-            ("PUT", "/credentials/openai-api-key", {"json": {"secret": OPENAI}}),
+            ("POST", "/credentials", {"json": {"route": "openai-api-key", "name": "n", "secret": OPENAI}}),
+            ("DELETE", "/credentials/" + "0" * 32, {"params": {"revision": 1}}),
         ):
             self.assertEqual(self.request(method, path, token=SERVICE, **kwargs).status_code, 401)
         self.assertEqual(self.transport.calls, [])
@@ -63,8 +72,8 @@ class MetadataTests(VaultFixture, unittest.TestCase):
     def test_asof_replacement_preserves_original_route_evidence(self):
         """A later replacement cannot make credentials available retroactively at task initiation."""
         user = vault.User(101, "alice")
-        self.store.put(user, "openai-api-key", OPENAI)
-        self.store.put(user, "openai-api-key", OPENAI + "2")
+        entry = self.store.add(user, "openai-api-key", OPENAI)
+        self.store.replace(user, entry["entry_id"], OPENAI + "2")
         # Preserve actual pre-save-only metadata in the historical reader fixture.
         self.store.db.execute("UPDATE credential_metadata SET models='[\"model-old\"]' WHERE version=1")
         self.store.db.execute("UPDATE credentials SET created='2000-01-01T00:00:00Z' WHERE version=1")
@@ -78,7 +87,7 @@ class MetadataTests(VaultFixture, unittest.TestCase):
     def test_unknown_legacy_history_does_not_invent_an_available_grant(self):
         """Destroyed pre-migration material without retirement evidence remains explicitly unknown."""
         self.put("openai-api-key", OPENAI)
-        self.store.db.execute("DELETE FROM credential_metadata")
+        self.store.db.execute("UPDATE credential_metadata SET retired=NULL,status_reason=NULL")
         self.store.db.execute("UPDATE credentials SET ciphertext=NULL,created='2000-01-01T00:00:00Z'")
         result = self.request("GET", "/metadata/101?at=2001-01-01T00:00:00Z", token=SERVICE).json()
         self.assertFalse(result["history_complete"])

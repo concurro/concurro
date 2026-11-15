@@ -28,7 +28,7 @@ from service.settings import CHECKOUT
 from . import review_tasks
 from .auth import DEFAULT_TOKEN_SECONDS, AuthError, GitHubOAuth, Session, Sessions, TokenGrant, authorize_url
 from .commands import CommandError, IndexUnavailable, ServiceCommands
-from .credentials import Vault, VaultError
+from .credentials import STALE, Vault, VaultError
 from .github import REPOSITORY_SECONDS, Access
 from .live import Relay, stream
 from .read_cache import LISTING, ReadCache
@@ -57,6 +57,48 @@ class SecretBody(BaseModel):
 
     secret: str
     account_id: str | None = Field(default=None, description="Supplied ChatGPT account header for this token.")
+    mutation_id: str
+
+
+class ProfileFilter(BaseModel):
+    """One target's profile key."""
+
+    target: str
+    profile: str
+
+
+class EntryBody(SecretBody):
+    """A new credential list entry; empty filters match all work."""
+
+    type: str
+    name: str
+    roles: list[str] = []
+    profiles: list[ProfileFilter] = []
+
+
+class ReplaceBody(SecretBody):
+    """A replacement token for one entry at the revision last read."""
+
+    revision: int
+
+
+class EntryEdit(BaseModel):
+    """Name, enabled or filter changes to one entry at the revision last read."""
+
+    revision: int
+    mutation_id: str
+    name: str | None = None
+    enabled: bool | None = None
+    roles: list[str] | None = None
+    profiles: list[ProfileFilter] | None = None
+
+
+class OrderBody(BaseModel):
+    """A provider list's exact new order at the list revision last read."""
+
+    revision: int
+    entries: list[str]
+    mutation_id: str
 
 
 def create_app(
@@ -450,21 +492,45 @@ def create_app(
         if read_cache is not None:
             read_cache.outdate(LISTING + "sponsorships:")
 
+    def changed(result):
+        """Return a credential write's result once sponsorship coverage is marked stale."""
+        outdate_sponsorships()
+        return result
+
     @app.get("/api/me/credentials")
     def credentials(current: Annotated[Session, Depends(session)]):
-        return {"routes": vault.routes(current.credential or current.token), "usage": []}
+        return vault.listing(current.credential or current.token)
+
+    @app.post("/api/me/credentials")
+    def add_credential(body: EntryBody, current: Annotated[Session, Depends(writer)]):
+        fields = body.model_dump(exclude={"type"}, exclude_none=True)
+        return changed(vault.add(current.credential or current.token, body.type, fields))
+
+    @app.put("/api/me/credentials/order/{provider}")
+    def reorder_credentials(provider: str, body: OrderBody, current: Annotated[Session, Depends(writer)]):
+        return changed(vault.reorder(current.credential or current.token, provider, body.model_dump()))
 
     @app.put("/api/me/credentials/{route}")
-    def put_credential(route: str, body: SecretBody, current: Annotated[Session, Depends(writer)]):
-        result = vault.put(current.credential or current.token, route, body.secret, body.account_id)
-        outdate_sponsorships()
-        return result
+    def stale_put_credential(route: str, current: Annotated[Session, Depends(writer)]):
+        """Route-addressed saves cannot name one of several entries."""
+        raise VaultError(410, STALE)
 
-    @app.delete("/api/me/credentials/{route}")
-    def revoke_credential(route: str, current: Annotated[Session, Depends(writer)]):
-        result = vault.revoke(current.credential or current.token, route)
-        outdate_sponsorships()
-        return result
+    @app.patch("/api/me/credentials/{entry_id}")
+    def edit_credential(entry_id: str, body: EntryEdit, current: Annotated[Session, Depends(writer)]):
+        fields = body.model_dump(exclude_none=True)
+        return changed(vault.edit(current.credential or current.token, entry_id, fields))
+
+    @app.put("/api/me/credentials/{entry_id}/secret")
+    def replace_credential(entry_id: str, body: ReplaceBody, current: Annotated[Session, Depends(writer)]):
+        fields = body.model_dump(exclude_none=True)
+        return changed(vault.replace(current.credential or current.token, entry_id, fields))
+
+    @app.delete("/api/me/credentials/{entry_id}")
+    def remove_credential(entry_id: str, current: Annotated[Session, Depends(writer)], revision: int | None = None):
+        # Only a client older than entry lists removes without the revision it last read.
+        if revision is None:
+            raise VaultError(410, STALE)
+        return changed(vault.remove(current.credential or current.token, entry_id, revision))
 
     if settings.static_dir:
         mount_frontend(app, settings.static_dir)

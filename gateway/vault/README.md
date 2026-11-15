@@ -6,33 +6,118 @@ problems are reported during execution. ChatGPT tokens require their supplied ac
 other routes require only the secret. No CLI login, provider refresh or remote provider revoke
 runs in this service. See [phase 5](../../docs/proposals/per-user-credentials/phase-5.md).
 
-## Records and events
+## Entries, records and events
 
-SQLite schema 3 retains lifecycle metadata and a monotonic, paginated nonsecret event log to the
-existing owner/route/version rows. Migration preserves original ciphertext/AAD and unknown
-legacy model/validation evidence. Each accepted replacement atomically retires the prior version,
-destroys its usable material and emits retirement/stored events. Saving a nonworking replacement still retires the prior
-version. Public revoke events are idempotent. A private owner/route revision advances on every revoke,
-including an empty slot, and accepted replacement. Owner saves and revokes serialize in the
-store transaction; no separate pre-save revision check is needed without a provider call.
-Internal callers may still pass an expected revision to reject stale candidates. Schema 2 migrates forward without changing records or
-public events; no version-zero events are introduced. Destruction is logical; encrypted backups/WAL may
-retain old bytes and must remain protected with their keys.
+SQLite schema 4 keeps each owner's credentials as **entries**: a stable `entry_id`, a fixed
+route, a name, an enabled flag and optional role/profile filters. Each provider has one ordered
+list of its live entries; position is selection priority. An entry owns its **records**, the
+immutable encrypted versions keyed `(user_id, route, version)`. Versions are allocated per
+owner/route across all of that route's entries, so `record_id` and the encryption AAD stay
+unique; one entry's versions need not be consecutive.
+
+Replacing an entry's secret atomically retires its prior version, destroys that material and
+emits `retired`/`stored` events; other entries of the same route are untouched. Saving a
+nonworking replacement still retires the prior version. Removing an entry tombstones it,
+revokes its latest record and destroys its material; a removed entry cannot be written again,
+and a later save creates a new entry. Destruction is logical; encrypted backups/WAL may retain
+old bytes and must remain protected with their keys.
+
+Every entry write advances the entry's revision and its provider list's revision, records the
+list's policy (order, names, enabled flags and filters) at that revision and appends a `policy`
+event. Policy events carry `entry_id`, `provider`, the list `revision` and a reason (`added`,
+`edited`, `enabled`, `disabled`, `replaced`, `reordered`, `removed`); their `record_id` is empty
+and `version` is 0. They never revoke anything: Exchange advances past them. Record events
+(`stored`, `validated`, `snapshot`, `retired`, `revoked`, `unusable`, `rewrapped`) also name
+their `entry_id` and `provider`.
 
 Public owner responses include fingerprint, version, update time, known/unknown expiry,
-status reason and last resolution time. Metadata service responses exclude fingerprints,
-account headers and secrets. Known expiry makes metadata unusable immediately; private
+status reason and last resolution time. Known expiry makes metadata unusable immediately; private
 resolution commits destruction and one `unusable` event before denying. Unknown expiry stays
-unknown. Replacement and revoke affect personal records only; current org sessions are untouched.
+unknown. Writes affect personal records only; current org sessions are untouched.
 
 New records have `status_reason: stored`, with no validation timestamp or model coverage.
 The legacy `valid` status means stored and usable, not provider-verified. Historical validation
 fields remain readable. Consumers accept both `stored` and historical `validated` events;
-either records an available replacement for recovery. No database migration is needed.
+either records an available replacement for recovery.
 A replacement can schedule one automatic retry per eligible paused task using that owner/route.
 Even a mistyped replacement consumes a model-call attempt if execution starts and fails;
 provider billing depends on the response. Failed versions are not retried automatically again.
 See [save-only rollout](../README.md#save-only-credential-rollout) for component ordering.
+
+## Owner API
+
+Owner requests carry the owner's GitHub user token. Role filters are role keys; profile filters
+are `{target, profile}` with the target's canonical upstream repository. Empty filters match
+all of the provider's work.
+
+| Request | Body | Result |
+| ---- | ---- | ---- |
+| `GET /credentials` | | `{providers: [{provider, revision, entries}], types}` |
+| `POST /credentials` | `{route, name, secret, account_id?, roles?, profiles?, mutation_id}` | The new entry, appended and enabled |
+| `PATCH /credentials/{entry_id}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}` | The entry; material and version unchanged |
+| `PUT /credentials/{entry_id}/secret` | `{revision, secret, account_id?, mutation_id}` | The entry with its new record |
+| `PUT /credentials/order/{provider}` | `{revision, entries, mutation_id}` | The reordered list |
+| `DELETE /credentials/{entry_id}?revision=N` | | The tombstoned entry; repeating it returns the same |
+
+An entry carries `entry_id`, `provider`, `route`, `kind`, `name`, `enabled`, `roles`,
+`profiles`, `revision`, `position`, timestamps and `record`, its current version's nonsecret
+metadata. `revision` in a write is the entry's last-read revision, or the list's for ordering;
+a mismatch answers 409, and a write to a removed entry 410. Removal requires it too, so a
+removal cannot destroy a version saved after the owner last read the entry. A write to one entry never
+conflicts with a write to another. `entries` must be exactly the list's current entry IDs.
+
+`mutation_id` (16–64 URL-safe characters, scoped to the owner) makes a write replay-safe:
+repeating it with the same request returns the first result without a second entry or
+version, and reusing it for a different request answers 409. The journal stores a request
+digest and the nonsecret result only.
+
+## Metadata
+
+`GET /metadata/{user_id}[?at=...]` returns, with the service bearer only, each entry's current
+record as of now or `at`, joined with the policy in force then: `entry_id`, `provider`, `name`,
+`enabled`, `roles`, `profiles`, `position` and `removed`, plus `lists` with each provider's
+revision and ordered entry IDs. Responses exclude fingerprints, account headers and secrets.
+List revision 0 is the state adopted from schema 3: a boundary before the migration reads
+every adopted entry as enabled and unfiltered, with record status from the retained
+per-version evidence. Unknown legacy evidence stays unknown.
+
+## Migrating from schema 3
+
+Opening a schema 2 or 3 database adopts it in one transaction: each existing owner/route
+becomes one entry with a deterministic ID that owns all of that route's versions. Ciphertext,
+AAD, record identities, token revisions, timestamps, retirement evidence and event
+sequences are unchanged, no event is appended and no token needs re-entry. Routes whose latest
+record was revoked become tombstones; expired material stays expired. The former per-route
+write fence becomes the entry's starting revision. A failed migration rolls back completely;
+reopening a migrated database changes nothing.
+
+Each provider list starts with subscriptions before API keys unless the optional manifest
+named by `VAULT_ORDER_MANIFEST_FILE` says otherwise:
+
+```json
+{"format": 1, "owners": {"<user id>": {"<provider>": {"first": "api_key", "evidence": "agreement"}}}}
+```
+
+The service CLI of this release produces it before the vault migrates. It reads the registry
+database directly and read-only, without the daemon, its lock or a registry migration, so it
+runs from the new image against the deployed state directory while the earlier daemon is
+still installed:
+
+```bash
+python3 -m service --settings <settings file> credential-order-manifest > manifest.json
+```
+
+For every active personal grant on an unfinished task or issue it records the credential types
+that task's effective configuration selects for the provider, with the repository, issue and pinned
+configuration commit as sources. Selections that all name one type give `first` with
+`agreement`; differing types give `conflict`, and any grant without route evidence makes the
+provider `unavailable`. Only `agreement` changes the default order.
+Org-funded providers, withdrawn grants and finished tasks are not preferences.
+
+`first` is `api_key` or `subscription`; any other value keeps the default. The file is opened
+only while adopting schema 3 records: later starts neither read it nor need it to exist. The vault
+prints one `adopted_lists` JSON line naming each owner/provider order, whether it came from
+the manifest or the default, and the manifest's evidence.
 
 ## Service metadata events
 

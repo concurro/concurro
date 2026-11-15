@@ -347,19 +347,23 @@ and publishes no port: other `edge` services, such as the backoffice API, reach 
 
 | Request | Result |
 | ---- | ---- |
-| `GET /credentials` | `[{route, status, fingerprint, version, updated}]`, latest version per route |
-| `PUT /credentials/{route}` `{"secret": "..."}` | Stores a new version without provider requests and returns its entry; 422 for malformed input |
-| `DELETE /credentials/{route}` | Marks it `revoked` and destroys its ciphertext; returns its entry |
+| `GET /credentials` | `{providers: [{provider, revision, entries}], types}`: each provider's entries in priority order |
+| `POST /credentials` | Appends a new entry and stores its secret without provider requests; 422 for malformed input |
+| `PATCH /credentials/{entry_id}` | Changes name, enabled or role/profile filters |
+| `PUT /credentials/{entry_id}/secret` | Stores the entry's next version, retiring only its previous one |
+| `PUT /credentials/order/{provider}` | Commits the provider list's exact new order |
+| `DELETE /credentials/{entry_id}` | Removes the entry, marks its record `revoked` and destroys its ciphertext |
 | `GET /health` | `{"status": "ok"}` |
 
 Routes are `anthropic-api-key`, `openai-api-key`, `chatgpt-subscription` and
-`claude-subscription`. ChatGPT PUTs also require `account_id`. Saving requires no model selection;
-token and model-access failures are reported during execution. Each save atomically
-replaces the previous version. See [phase 5](../docs/proposals/per-user-credentials/phase-5.md).
+`claude-subscription`; an owner may hold several entries of one route. ChatGPT secrets also
+require `account_id`. Saving requires no model selection; token and model-access failures are
+reported during execution. The [vault guide](vault/README.md#owner-api) has the request fields,
+revisions and replay rules. A record's
 `status` is `valid`, `invalid` or
 `revoked`; `fingerprint` is the secret's last 4 characters and the first 8 hex characters
 of its SHA-256. Secrets are never returned or logged. Each version is sealed with its own
-AES-256-GCM data key, which the master key wraps; only the latest version keeps
+AES-256-GCM data key, which the master key wraps; only each entry's latest version keeps
 ciphertext. Records live in SQLite (WAL) at `/data/vault.db`. Configured contributed
 inference resolves exact admitted versions through the separate private listener; org-funded
 work keeps org credentials. The service metadata principal never receives secrets. See the
@@ -790,7 +794,7 @@ credential defaults and optional profile overrides are described in the
 `funding_mode: contributed` keeps its existing initialization semantics. The earlier [phase 1](../docs/proposals/per-user-credentials/phase-1.md)
 and [phase 3](../docs/proposals/per-user-credentials/phase-3.md) org-only boundaries are historical.
 Current checkpoints use format 9 and Registry schema 8. The [vault guide](vault/README.md)
-describes schema 3 and the isolated gateway principal used for private events and resolution.
+describes schema 4 and the isolated gateway principal used for private events and resolution.
 
 The release helper reads `/etc/concurro/gateway/compose.host.yaml`; merge the needed
 `compose.private.yaml` network/listener/mount entries into that existing override, preserving

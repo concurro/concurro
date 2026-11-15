@@ -22,7 +22,7 @@ log = logging.getLogger("concurro.service")
 
 
 class Control:
-    """Serve `status`, `resolve`, `reconcile-once`, `adopt` and `release` against the daemon's own registry."""
+    """Serve operator commands such as `status`, `resolve` and `adopt` against the daemon's own registry."""
 
     def __init__(self, registry, reconciler, cutover, evaluate=None, gateway=None):
         self.registry, self.reconciler, self.cutover = registry, reconciler, cutover

@@ -69,9 +69,20 @@ class JourneyTests(admission_fixture.AdmissionTests):
         body = {"secret": TOKENS[route][int(token == BOB)]}
         if route == "chatgpt-subscription":
             body["account_id"] = "account-bob" if token == BOB else "account-alice"
-        result = self.owner_api.put("/credentials/" + route, headers={"Authorization": "Bearer " + token}, json=body)
+        body["mutation_id"], headers = uuid.uuid4().hex, {"Authorization": "Bearer " + token}
+        saved = [
+            entry
+            for group in self.owner_api.get("/credentials", headers=headers).json()["providers"]
+            for entry in group["entries"]
+            if entry["route"] == route
+        ]
+        if saved:
+            path, body["revision"] = f"/credentials/{saved[0]['entry_id']}/secret", saved[0]["revision"]
+            result = self.owner_api.put(path, headers=headers, json=body)
+        else:
+            result = self.owner_api.post("/credentials", headers=headers, json={**body, "route": route, "name": route})
         self.assertEqual(result.status_code, 200, result.text)
-        return result.json()
+        return result.json()["record"]
 
     def read_metadata(self, actor, at=None):
         """Read current or exact source-era availability from the actual versioned vault."""

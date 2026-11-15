@@ -349,31 +349,75 @@ class CommandTests(unittest.TestCase):
 
 
 class CredentialTests(unittest.TestCase):
-    def test_routes_map_between_the_ui_and_the_vault(self):
+    def test_types_and_entries_map_between_the_ui_and_the_vault(self):
         seen = []
+        stored = {
+            "entry_id": "e" * 32,
+            "provider": "anthropic",
+            "route": "anthropic-api-key",
+            "kind": "api_key",
+            "name": "Credits",
+            "enabled": True,
+            "roles": ["triage"],
+            "profiles": [],
+            "revision": 2,
+            "position": 0,
+            "created": "t",
+            "updated": "t",
+            "removed": None,
+            "record": {
+                "status": "valid",
+                "fingerprint": "abcd",
+                "version": 2,
+                "updated": "t",
+                "status_reason": "stored",
+            },
+        }
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append((request.method, request.url.path, request.headers["authorization"]))
             if request.method == "GET":
-                entry = {
-                    "route": "anthropic-api-key",
-                    "status": "valid",
-                    "fingerprint": "abcd",
-                    "version": 2,
-                    "updated": "t",
-                }
-                return httpx.Response(200, json=[entry])
-            return httpx.Response(422, json={"error": "provider rejected the secret"})
+                types = [
+                    {
+                        "route": "anthropic-api-key",
+                        "provider": "anthropic",
+                        "kind": "api_key",
+                        "label": "Anthropic API key",
+                    },
+                    {"route": "chatgpt-subscription", "provider": "openai", "kind": "subscription", "label": "ChatGPT"},
+                ]
+                lists = [
+                    {"provider": "anthropic", "revision": 3, "entries": [stored]},
+                    {"provider": "openai", "revision": 0, "entries": []},
+                ]
+                return httpx.Response(200, json={"providers": lists, "types": types})
+            return httpx.Response(422, json={"error": "secret is empty or has unsupported characters"})
 
         vault = Vault("http://vault.invalid", httpx.Client(transport=httpx.MockTransport(handler)))
-        routes = {r["id"]: r for r in vault.routes("user-token")}
-        self.assertEqual(routes["anthropic_api"]["status"], "valid")
-        self.assertEqual(routes["openai_api"]["status"], "missing")
-        self.assertEqual(routes["claude_subscription"]["status"], "missing")
-        with self.assertRaises(Exception) as raised:
-            vault.put("user-token", "openai_api", "sk-test")
-        self.assertEqual(getattr(raised.exception, "status", None), 422)
-        self.assertEqual(seen[-1][:2], ("PUT", "/credentials/openai-api-key"))
+        listing = vault.listing("user-token")
+        self.assertEqual(
+            [(g["label"], g["revision"], len(g["entries"])) for g in listing["providers"]],
+            [("Anthropic", 3, 1), ("OpenAI", 0, 0)],
+        )
+        entry = listing["providers"][0]["entries"][0]
+        self.assertEqual(
+            (entry["id"], entry["type"], entry["status"], entry["roles"], entry["removed"]),
+            ("e" * 32, "anthropic_api", "valid", ["triage"], False),
+        )
+        self.assertEqual(
+            [(t["id"], t["accountId"]) for t in listing["types"]],
+            [("anthropic_api", False), ("chatgpt_subscription", True)],
+        )
+        self.assertEqual(len(listing["roles"]), 5)
+        for call in (
+            lambda: vault.add("user-token", "openai_api", {"secret": "sk-test"}),
+            lambda: vault.add("user-token", "gemini_api", {"secret": "sk-test"}),
+            lambda: vault.edit("user-token", "e" * 32, {"roles": ["evaluator"]}),
+        ):
+            with self.assertRaises(Exception) as raised:
+                call()
+            self.assertEqual(getattr(raised.exception, "status", None), 422)
+        self.assertEqual([row[:2] for row in seen], [("GET", "/credentials"), ("POST", "/credentials")])
         self.assertTrue(all(auth == "Bearer user-token" for _, _, auth in seen))
 
 

@@ -46,8 +46,19 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | POST | `/api/tasks/{owner}/{repo}/{issue}/commands` | `{command, argument?}` → `{posted, actor, url}`; also a reviewed PR's number |
 | GET | `/api/repos/{owner}/{repo}/issues/{issue}` | `{issue, target, issueWriter}` without requiring a checkpoint |
 | GET | `/api/me/sponsorships` | Visible current/historical provider consent for your stable actor ID |
-| GET | `/api/me/credentials` | `{routes, usage}` |
-| PUT, DELETE | `/api/me/credentials/{route}` | One route |
+| GET | `/api/me/credentials` | `{providers: [{provider, label, revision, entries}], types, roles}`; entries in priority order |
+| POST | `/api/me/credentials` | `{type, name, secret, account_id?, roles?, profiles?, mutation_id}` → the new entry, appended and enabled |
+| PATCH | `/api/me/credentials/{entry}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}`; material is untouched |
+| PUT | `/api/me/credentials/{entry}/secret` | `{revision, secret, account_id?, mutation_id}`: replace this entry's token |
+| PUT | `/api/me/credentials/order/{provider}` | `{revision, entries, mutation_id}`: the list's exact new order |
+| DELETE | `/api/me/credentials/{entry}?revision=N` | Remove the entry at its last-read revision and revoke its stored material; repeatable |
+
+Credential writes forward to the [vault's owner API](../gateway/vault/README.md#owner-api) with the
+caller's own token. `revision` is the entry's (or, for ordering, the list's) last-read revision;
+a 409 means it changed, and the client reloads while keeping its nonsecret draft. Replaying a
+`mutation_id` returns the first result. Role filters must be engine role keys. The former
+route-addressed `PUT`/`DELETE /api/me/credentials/{route}`, which carry no revision, answer 410
+with a reload instruction.
 | GET | `/api/openapi.json` | OpenAPI document |
 
 ## Standalone reviews

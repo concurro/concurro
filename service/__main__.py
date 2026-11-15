@@ -18,7 +18,7 @@ import private
 from identities import Actor
 from policy import Blocked
 
-from . import control, ingress, settings as settings_module, user_grant
+from . import control, credential_order, ingress, settings as settings_module, user_grant
 from .actions import Actions
 from .cutover import Cutover
 from .diagnostics import Store
@@ -286,6 +286,11 @@ def parser():
     )
     commands.add_parser("status", help="show every task the registry knows")
     commands.add_parser("reconcile-once", help="poll every target now")
+    commands.add_parser(
+        "credential-order-manifest",
+        help="print sponsors' current personal credential-type selections for the vault's list migration;"
+        " reads the registry directly, with or without a running daemon",
+    )
     adopt = commands.add_parser("adopt", help="move tasks from the Actions controller to this service")
     adopt.add_argument("repository")
     adopt.add_argument("issues", nargs="*", type=int)
@@ -325,8 +330,15 @@ def main():
             Registry.open(settings.state_dir, settings.registry_id, initialize=True).close()
             print("initialized the registry in", settings.state_dir)
             return 0
+        if arguments.command == "credential-order-manifest":
+            registry = Registry.inspect(settings.state_dir)
+            try:
+                print(json.dumps(credential_order.manifest(registry), indent=2))
+            finally:
+                registry.close()
+            return 0
         reply = control.request(settings.state_dir, command(arguments))
-    except (SettingsError, StartupError, RegistryError, IdentityError, Blocked, ConnectionError) as error:
+    except (SettingsError, StartupError, RegistryError, IdentityError, Blocked, ConnectionError, GatewayStop) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps(reply.get("result") if reply["ok"] else {"error": reply["error"]}, indent=2))

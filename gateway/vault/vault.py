@@ -124,6 +124,24 @@ def load_envelope(master_path: str | Path, keyring_path: str | Path | None = Non
         raise ConfigError("invalid wrapping keyring") from None
 
 
+def load_manifest(path: str | Path | None) -> dict:
+    """Read the service's nonsecret owner/provider ordering manifest for the schema 4 migration."""
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text())
+        if not isinstance(data, dict) or data.get("format") != 1 or not isinstance(data.get("owners"), dict):
+            raise ValueError()
+        if any(
+            not isinstance(lists, dict) or any(not isinstance(preference, dict) for preference in lists.values())
+            for lists in data["owners"].values()
+        ):
+            raise ValueError()
+        return data
+    except (OSError, ValueError):
+        raise ConfigError("invalid credential order manifest") from None
+
+
 def record_id(user_id: int, route: str, version: int) -> str:
     """The immutable opaque identity shared by metadata, events and exact-version resolution."""
     return digest(f"{user_id}/{route}/{version}")
@@ -239,91 +257,172 @@ CREATE TABLE IF NOT EXISTS credentials (
     created TEXT NOT NULL,
     updated TEXT NOT NULL,
     PRIMARY KEY (user_id, route, version)
-)
+);
+CREATE TABLE IF NOT EXISTS credential_metadata (user_id INTEGER,route TEXT,version INTEGER,models TEXT,retired TEXT,
+    PRIMARY KEY(user_id,route,version));
+CREATE TABLE IF NOT EXISTS credential_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,
+    record_id TEXT NOT NULL,user_id INTEGER NOT NULL,route TEXT NOT NULL,version INTEGER NOT NULL,type TEXT NOT NULL,
+    status TEXT NOT NULL,reason TEXT,at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS vault_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS credential_entries (entry_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,provider TEXT NOT NULL,
+    route TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,roles TEXT NOT NULL DEFAULT '[]',
+    profiles TEXT NOT NULL DEFAULT '[]',revision INTEGER NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,removed TEXT);
+CREATE TABLE IF NOT EXISTS credential_lists (user_id INTEGER NOT NULL,provider TEXT NOT NULL,revision INTEGER NOT NULL,
+    entries TEXT NOT NULL,PRIMARY KEY(user_id,provider));
+CREATE TABLE IF NOT EXISTS credential_policy (user_id INTEGER NOT NULL,provider TEXT NOT NULL,revision INTEGER NOT NULL,
+    at TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(user_id,provider,revision));
+CREATE TABLE IF NOT EXISTS credential_mutations (user_id INTEGER NOT NULL,id TEXT NOT NULL,digest TEXT NOT NULL,
+    response TEXT NOT NULL,PRIMARY KEY(user_id,id));
 """
 
-ROUTE_KINDS = {
-    "openai-api-key": "api_key",
-    "anthropic-api-key": "api_key",
-    "chatgpt-subscription": "subscription",
-    "claude-subscription": "subscription",
+# Columns added since a table was first created.
+COLUMNS = {
+    "credential_metadata": (
+        ("kind", "TEXT"),
+        ("account_label", "TEXT"),
+        ("verified_account", "TEXT"),
+        ("status_reason", "TEXT"),
+        ("validated", "TEXT"),
+        ("expires_at", "TEXT"),
+        ("expiry_known", "INTEGER NOT NULL DEFAULT 0"),
+        ("token_revision", "INTEGER NOT NULL DEFAULT 1"),
+        ("last_used", "TEXT"),
+        ("key_id", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("envelope_format", "INTEGER NOT NULL DEFAULT 1"),
+        ("entry_id", "TEXT"),
+    ),
+    "credential_events": (("entry_id", "TEXT"), ("provider", "TEXT"), ("revision", "INTEGER")),
 }
+
+# Route -> (provider, kind, default entry name).
+ROUTES = {
+    "openai-api-key": ("openai", "api_key", "OpenAI API key"),
+    "anthropic-api-key": ("anthropic", "api_key", "Anthropic API key"),
+    "chatgpt-subscription": ("openai", "subscription", "ChatGPT subscription"),
+    "claude-subscription": ("anthropic", "subscription", "Claude subscription"),
+}
+PROVIDERS = tuple(sorted({provider for provider, *_ in ROUTES.values()}))
+KINDS = ("subscription", "api_key")
+CONFLICT = "credential changed; refresh before retrying"
 
 
 class Store:
-    """Versioned owner/route records, encrypted material and atomic nonsecret lifecycle events."""
+    """Ordered per-provider entries, their versioned encrypted records and atomic nonsecret lifecycle events."""
 
-    def __init__(self, path: str | Path, envelope: Envelope, clock: Callable[[], float] = time.time):
-        """Migrate additively without guessing legacy validation or retirement evidence."""
+    def __init__(
+        self,
+        path: str | Path,
+        envelope: Envelope,
+        clock: Callable[[], float] = time.time,
+        manifest: Callable[[], Mapping] = dict,
+    ):
+        """Migrate forward without guessing legacy validation or retirement evidence.
+
+        `manifest` is read only to seed each owner's list order while schema 3 records are adopted.
+        """
         self.envelope, self.clock = envelope, clock
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA secure_delete=ON")
         self.lock = threading.RLock()
+        self.migration: list[dict] | None = None
         with self.transaction():
-            self.db.execute(SCHEMA)
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS credential_metadata (user_id INTEGER,route TEXT,version INTEGER,"
-                "models TEXT,retired TEXT,PRIMARY KEY(user_id,route,version))"
-            )
-            columns = {row[1] for row in self.db.execute("PRAGMA table_info(credential_metadata)")}
-            for name, definition in (
-                ("kind", "TEXT"),
-                ("account_label", "TEXT"),
-                ("verified_account", "TEXT"),
-                ("status_reason", "TEXT"),
-                ("validated", "TEXT"),
-                ("expires_at", "TEXT"),
-                ("expiry_known", "INTEGER NOT NULL DEFAULT 0"),
-                ("token_revision", "INTEGER NOT NULL DEFAULT 1"),
-                ("last_used", "TEXT"),
-                ("key_id", "TEXT NOT NULL DEFAULT 'legacy'"),
-                ("envelope_format", "INTEGER NOT NULL DEFAULT 1"),
-            ):
-                if name not in columns:
-                    self.db.execute(f"ALTER TABLE credential_metadata ADD COLUMN {name} {definition}")
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS credential_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "id TEXT NOT NULL UNIQUE,record_id TEXT NOT NULL,user_id INTEGER NOT NULL,route TEXT NOT NULL,"
-                "version INTEGER NOT NULL,type TEXT NOT NULL,status TEXT NOT NULL,reason TEXT,at TEXT NOT NULL)"
-            )
-            self.db.execute("CREATE TABLE IF NOT EXISTS vault_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            for statement in SCHEMA.split(";"):
+                self.db.execute(statement)
+            for table, additions in COLUMNS.items():
+                columns = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+                for name, definition in additions:
+                    if name not in columns:
+                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
             schema = self.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()
-            if schema and schema[0] not in ("2", "3"):
+            if schema and schema[0] not in ("2", "3", "4"):
                 raise ConfigError("unsupported vault schema")
-            legacy = (
-                self.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version").fetchall()
-                if schema is None
-                else []
+            if schema is None:
+                for row in self.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version").fetchall():
+                    self.event(
+                        row["user_id"],
+                        row["route"],
+                        row["version"],
+                        "snapshot",
+                        row["status"] if row["ciphertext"] is not None else "retired",
+                        "legacy_snapshot",
+                        "migration:" + record_id(row["user_id"], row["route"], row["version"]),
+                    )
+            if schema is None or schema[0] != "4":
+                self.migration = self.adopt(manifest())
+            self.db.execute(
+                "INSERT INTO vault_meta VALUES('schema','4') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
-            for row in legacy:
+
+    def adopt(self, manifest: Mapping) -> list[dict]:
+        """Give each legacy owner/route one entry holding all its versions; emits no events and saves nothing."""
+        self.db.execute(
+            "INSERT OR IGNORE INTO credential_metadata(user_id,route,version) SELECT user_id,route,version FROM credentials"
+        )
+        fences = {}
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='credential_fences'").fetchone():
+            fences = {
+                (r[0], r[1]): r[2] for r in self.db.execute("SELECT user_id,route,revision FROM credential_fences")
+            }
+        members: dict[tuple[int, str], list[dict]] = {}
+        for row in self.db.execute(
+            "SELECT c.user_id,c.route,c.status,c.updated,(SELECT MIN(created) FROM credentials f WHERE f.user_id=c.user_id"
+            " AND f.route=c.route) AS created FROM credentials c WHERE c.version=(SELECT MAX(version) FROM credentials l"
+            " WHERE l.user_id=c.user_id AND l.route=c.route) ORDER BY c.user_id,c.route"
+        ).fetchall():
+            user_id, route = row["user_id"], row["route"]
+            provider, kind, name = ROUTES[route]
+            entry_id = digest(f"entry/{user_id}/{route}")[:32]
+            removed = row["updated"] if row["status"] == "revoked" else None
+            self.db.execute(
+                "INSERT INTO credential_entries VALUES(?,?,?,?,?,1,'[]','[]',?,?,?,?)",
+                (
+                    entry_id,
+                    user_id,
+                    provider,
+                    route,
+                    name,
+                    max(1, fences.get((user_id, route), 0)),
+                    row["created"],
+                    row["updated"],
+                    removed,
+                ),
+            )
+            for table in ("credential_metadata", "credential_events"):
                 self.db.execute(
-                    "INSERT OR IGNORE INTO credential_metadata(user_id,route,version,kind) VALUES(?,?,?,?)",
-                    (row["user_id"], row["route"], row["version"], ROUTE_KINDS.get(row["route"])),
-                )
-                self.db.execute(
-                    "UPDATE credential_metadata SET kind=COALESCE(kind,?) WHERE user_id=? AND route=? AND version=?",
-                    (ROUTE_KINDS.get(row["route"]), row["user_id"], row["route"], row["version"]),
-                )
-                self.event(
-                    row["user_id"],
-                    row["route"],
-                    row["version"],
-                    "snapshot",
-                    row["status"] if row["ciphertext"] is not None else "retired",
-                    "legacy_snapshot",
-                    "migration:" + record_id(row["user_id"], row["route"], row["version"]),
+                    f"UPDATE {table} SET entry_id=? WHERE user_id=? AND route=?", (entry_id, user_id, route)
                 )
             self.db.execute(
-                "CREATE TABLE IF NOT EXISTS credential_fences(user_id INTEGER NOT NULL,route TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(user_id,route))"
+                "UPDATE credential_metadata SET kind=COALESCE(kind,?) WHERE user_id=? AND route=?",
+                (kind, user_id, route),
             )
             self.db.execute(
-                "INSERT OR IGNORE INTO credential_fences SELECT user_id,route,MAX(sequence) FROM credential_events GROUP BY user_id,route"
+                "UPDATE credential_events SET provider=? WHERE user_id=? AND route=?", (provider, user_id, route)
             )
-            self.db.execute(
-                "INSERT INTO vault_meta VALUES('schema','3') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            members.setdefault((user_id, provider), []).append(
+                {"entry_id": entry_id, "route": route, "kind": kind, "removed": removed}
             )
+        summary = []
+        for (user_id, provider), entries in members.items():
+            preference = manifest.get("owners", {}).get(str(user_id), {}).get(provider, {})
+            first = preference.get("first") if preference.get("first") in KINDS else None
+            entries.sort(key=lambda e: (e["kind"] != (first or KINDS[0]), e["route"]))
+            # Revision 0 is the legacy boundary: every adopted entry, for as-of reads before this migration.
+            self.snapshot(user_id, provider, 0, "", [e["entry_id"] for e in entries])
+            live = [e["entry_id"] for e in entries if not e["removed"]]
+            self.db.execute("INSERT INTO credential_lists VALUES(?,?,1,?)", (user_id, provider, json.dumps(live)))
+            self.snapshot(user_id, provider, 1, self.now(), live)
+            summary.append(
+                {
+                    "user_id": str(user_id),
+                    "provider": provider,
+                    "order": [e["route"] for e in entries if not e["removed"]],
+                    "source": "manifest" if first else "default",
+                    "evidence": preference.get("evidence", "unavailable"),
+                }
+            )
+        return summary
 
     def now(self) -> str:
         """A UTC instant from the injected clock."""
@@ -333,14 +432,23 @@ class Store:
         """Close this store's connection."""
         self.db.close()
 
-    def event(self, user_id, route, version, kind, status, reason=None, identifier=None):
-        """Append an immutable secret-free event in the caller's write transaction."""
+    def event(self, user_id, route, version, kind, status, reason=None, identifier=None, **policy):
+        """Append an immutable secret-free event in the caller's write transaction.
+
+        Record events name their entry; `policy` supplies entry, provider and list revision for selection events.
+        """
+        if version:
+            row = self.db.execute(
+                "SELECT entry_id FROM credential_metadata WHERE user_id=? AND route=? AND version=?",
+                (user_id, route, version),
+            ).fetchone()
+            policy = {"entry_id": row["entry_id"] if row else None, "provider": ROUTES[route][0]}
         self.db.execute(
-            "INSERT OR IGNORE INTO credential_events(id,record_id,user_id,route,version,type,status,reason,at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO credential_events(id,record_id,user_id,route,version,type,status,reason,at,"
+            "entry_id,provider,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 identifier or uuid.uuid4().hex,
-                record_id(user_id, route, version),
+                record_id(user_id, route, version) if version else "",
                 user_id,
                 route,
                 version,
@@ -348,6 +456,9 @@ class Store:
                 status,
                 reason,
                 self.now(),
+                policy.get("entry_id"),
+                policy.get("provider"),
+                policy.get("revision"),
             ),
         )
 
@@ -362,145 +473,369 @@ class Store:
         values = [dict(row) for row in rows[:100]]
         return {"events": values, "next": values[-1]["sequence"] if values else after, "more": len(rows) > 100}
 
-    def listing(self, user_id: int) -> list[dict[str, object]]:
-        """Only the owner's latest route/version metadata, never sealed columns or account secrets."""
-        with self.lock:
-            rows = self.db.execute(
-                "SELECT route,MAX(version) AS version FROM credentials WHERE user_id=? GROUP BY route ORDER BY route",
-                (user_id,),
-            ).fetchall()
-            return [self.entry(user_id, row["route"], row["version"]) for row in rows]
+    def order(self, user_id: int, provider: str) -> tuple[int, list[str]]:
+        """One provider list's revision and live entry IDs in priority order."""
+        row = self.db.execute(
+            "SELECT revision,entries FROM credential_lists WHERE user_id=? AND provider=?", (user_id, provider)
+        ).fetchone()
+        return (row["revision"], json.loads(row["entries"])) if row else (0, [])
 
-    def revision(self, user_id: int, route: str) -> int:
-        """Read the owner/route mutation fence before preparing a candidate replacement."""
-        with self.lock:
-            row = self.db.execute(
-                "SELECT revision FROM credential_fences WHERE user_id=? AND route=?", (user_id, route)
-            ).fetchone()
-            return row[0] if row else 0
-
-    def advance_revision(self, user_id: int, route: str) -> None:
-        """Fence older candidates inside the current replacement/revoke transaction."""
+    def snapshot(self, user_id: int, provider: str, revision: int, at: str, entries: list[str]) -> None:
+        """Record the selection policy a list revision carries, for as-of reads."""
+        rows = {
+            row["entry_id"]: row
+            for row in self.db.execute(
+                "SELECT * FROM credential_entries WHERE user_id=? AND provider=?", (user_id, provider)
+            )
+        }
+        document = [
+            {
+                "entry_id": entry_id,
+                "name": rows[entry_id]["name"],
+                "enabled": bool(rows[entry_id]["enabled"]),
+                "roles": json.loads(rows[entry_id]["roles"]),
+                "profiles": json.loads(rows[entry_id]["profiles"]),
+            }
+            for entry_id in entries
+        ]
         self.db.execute(
-            "INSERT INTO credential_fences VALUES(?,?,1) ON CONFLICT(user_id,route) DO UPDATE SET revision=revision+1",
-            (user_id, route),
+            "INSERT INTO credential_policy VALUES(?,?,?,?,?)",
+            (user_id, provider, revision, at, json.dumps(document, separators=(",", ":"))),
         )
 
-    def put(
-        self,
-        user: User,
-        route: str,
-        secret: str,
-        *,
-        account: dict | None = None,
-        account_label: str | None = None,
-        verified_account: str | None = None,
-        expires_at: str | None = None,
-        expiry_known=False,
-        expected_revision: int | None = None,
-    ) -> dict[str, object]:
-        """Store supplied material without provider validation; replacement retires only this owner's previous route version."""
-        if route not in ROUTE_KINDS:
-            raise VaultError(422, "unsupported credential kind")
+    def arrange(self, user_id: int, provider: str, entries: list[str], reason: str, entry_id: str | None = None):
+        """Commit a list revision with its policy snapshot and selection event in the caller's transaction."""
+        revision = self.order(user_id, provider)[0] + 1
+        self.db.execute(
+            "INSERT INTO credential_lists VALUES(?,?,?,?) ON CONFLICT(user_id,provider) DO UPDATE SET"
+            " revision=excluded.revision,entries=excluded.entries",
+            (user_id, provider, revision, json.dumps(entries)),
+        )
+        self.snapshot(user_id, provider, revision, self.now(), entries)
+        self.event(user_id, "", 0, "policy", "policy", reason, entry_id=entry_id, provider=provider, revision=revision)
+
+    def owned(self, user_id: int, entry_id: str, revision: int | None = None) -> sqlite3.Row:
+        """This owner's live entry; a tombstone or a stale revision refuses the write."""
+        row = self.db.execute(
+            "SELECT * FROM credential_entries WHERE entry_id=? AND user_id=?", (entry_id, user_id)
+        ).fetchone()
+        if row is None:
+            raise VaultError(404, "no such credential")
+        if row["removed"]:
+            raise VaultError(410, "credential was removed")
+        if revision is not None and row["revision"] != revision:
+            raise VaultError(409, CONFLICT)
+        return row
+
+    def route(self, user_id: int, entry_id: str) -> str:
+        """The fixed route of one of this owner's entries, removed or not."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT route FROM credential_entries WHERE entry_id=? AND user_id=?", (entry_id, user_id)
+            ).fetchone()
+        if row is None:
+            raise VaultError(404, "no such credential")
+        return row["route"]
+
+    def once(self, user_id: int, mutation: str | None, request: dict, action: Callable[[], dict]) -> dict:
+        """Apply an owner mutation once; a replay of the same request returns the first result."""
+        if mutation is None:
+            return action()
+        requested = digest(json.dumps(request, sort_keys=True))
+        row = self.db.execute(
+            "SELECT digest,response FROM credential_mutations WHERE user_id=? AND id=?", (user_id, mutation)
+        ).fetchone()
+        if row:
+            if row["digest"] != requested:
+                raise VaultError(409, "mutation ID was already used for a different request")
+            return json.loads(row["response"])
+        result = action()
+        self.db.execute(
+            "INSERT INTO credential_mutations VALUES(?,?,?,?)", (user_id, mutation, requested, json.dumps(result))
+        )
+        return result
+
+    def seal(self, user: User, entry: sqlite3.Row, material: dict) -> None:
+        """Store this entry's next version without provider validation, retiring only its own prior material."""
+        secret, account = material["secret"], material.get("account")
+        expires_at, expiry_known = material.get("expires_at"), material.get("expiry_known", False)
         if expiry_known and expires_at is None or expires_at is not None and not expiry_known:
             raise VaultError(422, "expiry requires trusted evidence")
         expiry = instant(expires_at) if expires_at else None
         if expiry and datetime.fromisoformat(expiry).timestamp() <= self.clock():
             raise VaultError(422, "credential is already expired")
-        now = self.now()
+        now, route = self.now(), entry["route"]
+        # Versions stay monotonic per owner/route across entries: record identities and AAD depend on it.
+        version = self.db.execute(
+            "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
+        ).fetchone()[0]
+        payload = json.dumps({"secret": secret, "account": account}, separators=(",", ":")) if account else secret
+        sealed = self.envelope.seal(payload, aad(user.id, route, version))
+        self.destroy(entry["entry_id"], "replaced")
+        self.db.execute(
+            "INSERT INTO credentials VALUES(?,?,?,?,'valid',?,?,?,?,?,?)",
+            (
+                user.id,
+                route,
+                version,
+                user.login,
+                fingerprint(secret),
+                sealed.wrapped_key,
+                sealed.nonce,
+                sealed.ciphertext,
+                now,
+                now,
+            ),
+        )
+        self.db.execute(
+            "INSERT INTO credential_metadata(user_id,route,version,kind,account_label,verified_account,"
+            "status_reason,expires_at,expiry_known,key_id,envelope_format,entry_id)"
+            " VALUES(?,?,?,?,?,?,'stored',?,?,?,?,?)",
+            (
+                user.id,
+                route,
+                version,
+                ROUTES[route][1],
+                material.get("account_label"),
+                material.get("verified_account"),
+                expiry,
+                int(expiry_known),
+                self.envelope.current,
+                2 if account else 1,
+                entry["entry_id"],
+            ),
+        )
+        self.event(user.id, route, version, "stored", "valid", "stored")
+
+    def touch(self, entry: sqlite3.Row, reason: str, entries: list[str] | None = None, **changes) -> dict:
+        """Advance an entry's revision with its list snapshot, applying `changes` to its policy columns."""
+        user_id, provider, entry_id = entry["user_id"], entry["provider"], entry["entry_id"]
+        assignments = "".join(f",{column}=?" for column in changes)
+        self.db.execute(
+            f"UPDATE credential_entries SET revision=revision+1,updated=?{assignments} WHERE entry_id=?",
+            (self.now(), *changes.values(), entry_id),
+        )
+        self.arrange(
+            user_id, provider, self.order(user_id, provider)[1] if entries is None else entries, reason, entry_id
+        )
+        return self.view(self.db.execute("SELECT * FROM credential_entries WHERE entry_id=?", (entry_id,)).fetchone())
+
+    def add(
+        self,
+        user: User,
+        route: str,
+        secret: str,
+        *,
+        name: str | None = None,
+        roles: list[str] | None = None,
+        profiles: list[dict] | None = None,
+        mutation: str | None = None,
+        **material,
+    ) -> dict:
+        """Append a new enabled entry holding `secret` to its provider's list."""
+        if route not in ROUTES:
+            raise VaultError(422, "unsupported credential kind")
+        provider, _, default = ROUTES[route]
+        policy = {"name": name or default, "roles": roles or [], "profiles": profiles or []}
+
+        def action():
+            entry_id, now = uuid.uuid4().hex, self.now()
+            self.db.execute(
+                "INSERT INTO credential_entries VALUES(?,?,?,?,?,1,?,?,0,?,?,NULL)",
+                (
+                    entry_id,
+                    user.id,
+                    provider,
+                    route,
+                    policy["name"],
+                    json.dumps(policy["roles"]),
+                    json.dumps(policy["profiles"]),
+                    now,
+                    now,
+                ),
+            )
+            entry = self.owned(user.id, entry_id)
+            self.seal(user, entry, {"secret": secret, **material})
+            return self.touch(entry, "added", [*self.order(user.id, provider)[1], entry_id])
+
+        request = {"add": route, "secret": secret, **policy, **material}
         with self.lock, self.transaction():
-            if expected_revision is not None and self.revision(user.id, route) != expected_revision:
-                raise VaultError(409, "credential changed during save; refresh status before retrying")
-            self.advance_revision(user.id, route)
+            return self.once(user.id, mutation, request, action)
+
+    def replace(
+        self,
+        user: User,
+        entry_id: str,
+        secret: str,
+        *,
+        revision: int | None = None,
+        mutation: str | None = None,
+        **material,
+    ) -> dict:
+        """Atomically give one entry a new token/account version; its policy and peers are untouched."""
+
+        def action():
+            entry = self.owned(user.id, entry_id, revision)
+            self.seal(user, entry, {"secret": secret, **material})
+            return self.touch(entry, "replaced")
+
+        request = {"replace": entry_id, "revision": revision, "secret": secret, **material}
+        with self.lock, self.transaction():
+            return self.once(user.id, mutation, request, action)
+
+    def edit(self, user_id: int, entry_id: str, *, revision: int | None = None, mutation: str | None = None, **policy):
+        """Change name, enabled or filters; stored material and versions are untouched."""
+        changes = {
+            key: json.dumps(value) if key in ("roles", "profiles") else int(value) if key == "enabled" else value
+            for key, value in policy.items()
+            if key in ("name", "enabled", "roles", "profiles") and value is not None
+        }
+
+        def action():
+            entry = self.owned(user_id, entry_id, revision)
+            toggled = "enabled" in changes and changes["enabled"] != entry["enabled"]
+            reason = ("enabled" if changes["enabled"] else "disabled") if toggled else "edited"
+            return self.touch(entry, reason, **changes)
+
+        request = {"edit": entry_id, "revision": revision, **changes}
+        with self.lock, self.transaction():
+            return self.once(user_id, mutation, request, action)
+
+    def reorder(self, user_id: int, provider: str, entries: list[str], *, revision: int, mutation: str | None = None):
+        """Commit an exact new priority order of the provider's current entries."""
+        if provider not in PROVIDERS:
+            raise VaultError(404, "unknown provider")
+
+        def action():
+            current, existing = self.order(user_id, provider)
+            if current != revision or sorted(entries) != sorted(existing):
+                raise VaultError(409, CONFLICT)
+            self.arrange(user_id, provider, entries, "reordered")
+            return self.group(user_id, provider)
+
+        request = {"reorder": provider, "revision": revision, "entries": entries}
+        with self.lock, self.transaction():
+            return self.once(user_id, mutation, request, action)
+
+    def remove(self, user_id: int, entry_id: str, revision: int) -> dict:
+        """Tombstone an entry and revoke only its material; repeating the removal changes nothing."""
+        with self.lock, self.transaction():
+            try:
+                entry = self.owned(user_id, entry_id, revision)
+            except VaultError as error:
+                if error.status != 410:
+                    raise
+                return self.view(
+                    self.db.execute("SELECT * FROM credential_entries WHERE entry_id=?", (entry_id,)).fetchone()
+                )
+            route = entry["route"]
+            self.destroy(entry_id, "revoked")
             version = self.db.execute(
-                "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
+                "SELECT MAX(version) FROM credential_metadata WHERE entry_id=?", (entry_id,)
             ).fetchone()[0]
-            material = json.dumps({"secret": secret, "account": account}, separators=(",", ":")) if account else secret
-            sealed = self.envelope.seal(material, aad(user.id, route, version))
-            self.destroy(user.id, route, "replaced")
             self.db.execute(
-                "INSERT INTO credentials VALUES(?,?,?,?,'valid',?,?,?,?,?,?)",
-                (
-                    user.id,
-                    route,
-                    version,
-                    user.login,
-                    fingerprint(secret),
-                    sealed.wrapped_key,
-                    sealed.nonce,
-                    sealed.ciphertext,
-                    now,
-                    now,
-                ),
+                "UPDATE credentials SET status='revoked',updated=? WHERE user_id=? AND route=? AND version=?",
+                (self.now(), user_id, route, version),
             )
             self.db.execute(
-                "INSERT INTO credential_metadata(user_id,route,version,models,kind,account_label,verified_account,"
-                "status_reason,validated,expires_at,expiry_known,key_id,envelope_format)"
-                " VALUES(?,?,?,?,?,?,?,'stored',?,?,?,?,?)",
-                (
-                    user.id,
-                    route,
-                    version,
-                    None,
-                    ROUTE_KINDS[route],
-                    account_label,
-                    verified_account,
-                    None,
-                    expiry,
-                    int(expiry_known),
-                    self.envelope.current,
-                    2 if account else 1,
-                ),
+                "UPDATE credential_metadata SET status_reason='revoked' WHERE user_id=? AND route=? AND version=?",
+                (user_id, route, version),
             )
-            self.event(user.id, route, version, "stored", "valid", "stored")
-            return self.entry(user.id, route, version)
+            self.event(user_id, route, version, "revoked", "revoked", "revoked")
+            remaining = [e for e in self.order(user_id, entry["provider"])[1] if e != entry_id]
+            return self.touch(entry, "removed", remaining, removed=self.now())
 
-    def revoke(self, user_id: int, route: str) -> dict[str, object] | None:
-        """Atomically revoke the latest version and destroy material; replay creates no second event."""
-        with self.lock, self.transaction():
-            self.advance_revision(user_id, route)
-            row = self.db.execute(
-                "SELECT version,status,ciphertext FROM credentials WHERE user_id=? AND route=?"
-                " ORDER BY version DESC LIMIT 1",
-                (user_id, route),
-            ).fetchone()
-            if row is None:
-                return None
-            if row["status"] != "revoked":
-                self.destroy(user_id, route, "revoked")
-                self.db.execute(
-                    "UPDATE credentials SET status='revoked',updated=? WHERE user_id=? AND route=? AND version=?",
-                    (self.now(), user_id, route, row["version"]),
-                )
-                self.db.execute(
-                    "UPDATE credential_metadata SET status_reason='revoked' WHERE user_id=? AND route=? AND version=?",
-                    (user_id, route, row["version"]),
-                )
-                self.event(user_id, route, row["version"], "revoked", "revoked", "revoked")
-            return self.entry(user_id, route, row["version"])
+    def destroy(self, entry_id: str, reason="revoked") -> None:
+        """Retire one entry's usable versions before deleting their sealed material, within the caller's transaction."""
+        for row in self.db.execute(
+            "SELECT c.user_id,c.route,c.version FROM credentials c JOIN credential_metadata m ON c.user_id=m.user_id"
+            " AND c.route=m.route AND c.version=m.version WHERE m.entry_id=? AND c.ciphertext IS NOT NULL",
+            (entry_id,),
+        ).fetchall():
+            key = (row["user_id"], row["route"], row["version"])
+            self.db.execute(
+                "UPDATE credential_metadata SET retired=COALESCE(retired,?),status_reason=?"
+                " WHERE user_id=? AND route=? AND version=?",
+                (self.now(), reason, *key),
+            )
+            if reason == "replaced":
+                self.event(*key, "retired", "retired", reason)
+            self.db.execute(
+                "UPDATE credentials SET wrapped_key=NULL,nonce=NULL,ciphertext=NULL WHERE user_id=? AND route=? AND version=?",
+                key,
+            )
 
-    def sealed(self, user_id: int, route: str) -> tuple[int, Sealed] | None:
-        """The latest usable ciphertext, retained for migration/rotation tooling only."""
+    def view(self, entry: sqlite3.Row) -> dict:
+        """Owner-facing entry policy with its current record's nonsecret metadata."""
+        entries = self.order(entry["user_id"], entry["provider"])[1]
+        version = self.db.execute(
+            "SELECT MAX(version) FROM credential_metadata WHERE entry_id=?", (entry["entry_id"],)
+        ).fetchone()[0]
+        value = {
+            key: entry[key]
+            for key in ("entry_id", "provider", "route", "name", "revision", "created", "updated", "removed")
+        }
+        value.update(
+            kind=ROUTES[entry["route"]][1],
+            enabled=bool(entry["enabled"]),
+            roles=json.loads(entry["roles"]),
+            profiles=json.loads(entry["profiles"]),
+            position=entries.index(entry["entry_id"]) if entry["entry_id"] in entries else None,
+            record=self.record(entry["user_id"], entry["route"], version),
+        )
+        return value
+
+    def group(self, user_id: int, provider: str) -> dict:
+        """One provider's list revision and entries in priority order."""
+        revision, entries = self.order(user_id, provider)
+        rows = {
+            row["entry_id"]: row
+            for row in self.db.execute(
+                "SELECT * FROM credential_entries WHERE user_id=? AND provider=?", (user_id, provider)
+            )
+        }
+        return {"provider": provider, "revision": revision, "entries": [self.view(rows[e]) for e in entries]}
+
+    def listing(self, user_id: int) -> dict:
+        """The owner's ordered provider lists and the types a new entry may take; never sealed columns."""
         with self.lock:
-            row = self.db.execute(
-                "SELECT version,wrapped_key,nonce,ciphertext FROM credentials "
-                "WHERE user_id=? AND route=? AND ciphertext IS NOT NULL ORDER BY version DESC LIMIT 1",
-                (user_id, route),
-            ).fetchone()
-        return (row["version"], Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"])) if row else None
+            return {
+                "providers": [self.group(user_id, provider) for provider in PROVIDERS],
+                "types": [
+                    {"route": r, "provider": p, "kind": k, "label": label} for r, (p, k, label) in ROUTES.items()
+                ],
+            }
+
+    def policy(self, user_id: int, cutoff: datetime) -> dict[str, dict]:
+        """Each provider's list revision and entry policy in force at `cutoff`."""
+        chosen = {}
+        for row in self.db.execute(
+            "SELECT provider,revision,at,document FROM credential_policy WHERE user_id=? ORDER BY revision", (user_id,)
+        ):
+            if not row["at"] or datetime.fromisoformat(row["at"]) <= cutoff:
+                chosen[row["provider"]] = {"revision": row["revision"], "entries": json.loads(row["document"])}
+        return chosen
 
     def metadata(self, user_id: int, at: str | None = None) -> dict:
-        """Private nonsecret status/model history; unknown legacy evidence stays unknown."""
+        """Private nonsecret status of each entry's current version with its list policy, now or as of `at`.
+
+        Unknown legacy evidence stays unknown. List revision 0 marks a boundary before entries existed.
+        """
         cutoff = datetime.fromisoformat(instant(at)) if at else datetime.fromtimestamp(self.clock(), UTC)
         with self.lock:
             rows = self.db.execute(
-                "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired,"
+                "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired,m.entry_id,"
                 "c.ciphertext IS NOT NULL AS usable,m.kind,m.status_reason,m.validated,m.expires_at,m.expiry_known,"
-                "m.token_revision FROM credentials c LEFT JOIN credential_metadata m "
+                "m.token_revision FROM credentials c JOIN credential_metadata m "
                 "ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
                 "WHERE c.user_id=? ORDER BY c.version",
                 (user_id,),
             ).fetchall()
+            lists = self.policy(user_id, cutoff)
+            entries = {
+                row["entry_id"]: row
+                for row in self.db.execute("SELECT * FROM credential_entries WHERE user_id=?", (user_id,))
+            }
         latest = {}
         for row in rows:
             if datetime.fromisoformat(row["created"].replace("Z", "+00:00")) > cutoff:
@@ -517,7 +852,20 @@ class Store:
                 status = "revoked" if status == "revoked" else "invalid"
             if row["expiry_known"] and row["expires_at"] and cutoff >= datetime.fromisoformat(row["expires_at"]):
                 status = "invalid"
-            latest[row["route"]] = {
+            entry = entries[row["entry_id"]]
+            listed = lists.get(entry["provider"], {}).get("entries", [])
+            position = next((i for i, e in enumerate(listed) if e["entry_id"] == row["entry_id"]), None)
+            policy = (
+                listed[position]
+                if position is not None
+                else {
+                    "name": entry["name"],
+                    "enabled": False,
+                    "roles": json.loads(entry["roles"]),
+                    "profiles": json.loads(entry["profiles"]),
+                }
+            )
+            latest[row["entry_id"]] = {
                 "record_id": record_id(user_id, row["route"], row["version"]),
                 "user_id": str(user_id),
                 "route": row["route"],
@@ -532,32 +880,23 @@ class Store:
                 "expires_at": row["expires_at"] if row["expiry_known"] else None,
                 "expiry_known": bool(row["expiry_known"]),
                 "token_revision": row["token_revision"],
+                "provider": entry["provider"],
+                **policy,
+                "entry_id": row["entry_id"],
+                "position": position,
+                "removed": position is None,
             }
         return {
             "history_complete": all(r["status"] != "unknown" for r in latest.values()),
             "credentials": list(latest.values()),
+            "lists": {
+                provider: {"revision": value["revision"], "entries": [e["entry_id"] for e in value["entries"]]}
+                for provider, value in lists.items()
+            },
         }
 
-    def destroy(self, user_id: int, route: str, reason="revoked") -> None:
-        """Retire usable versions before deleting sealed material, within the caller's transaction."""
-        versions = self.db.execute(
-            "SELECT version FROM credentials WHERE user_id=? AND route=? AND ciphertext IS NOT NULL", (user_id, route)
-        ).fetchall()
-        for row in versions:
-            self.db.execute(
-                "UPDATE credential_metadata SET retired=COALESCE(retired,?),status_reason=?"
-                " WHERE user_id=? AND route=? AND version=?",
-                (self.now(), reason, user_id, route, row["version"]),
-            )
-            if reason == "replaced":
-                self.event(user_id, route, row["version"], "retired", "retired", reason)
-        self.db.execute(
-            "UPDATE credentials SET wrapped_key=NULL,nonce=NULL,ciphertext=NULL WHERE user_id=? AND route=?",
-            (user_id, route),
-        )
-
-    def entry(self, user_id: int, route: str, version: int) -> dict[str, object]:
-        """Public owner metadata only; account headers remain inside the sealed payload."""
+    def record(self, user_id: int, route: str, version: int) -> dict[str, object]:
+        """Public owner metadata of one version; account headers remain inside the sealed payload."""
         row = self.db.execute(
             "SELECT c.route,c.status,c.fingerprint,c.version,c.updated,m.kind,m.status_reason,m.validated,m.expires_at,"
             "m.expiry_known,m.last_used,m.account_label,m.verified_account,m.models "
@@ -579,7 +918,7 @@ class Store:
 
     def resolve(self, user_id: int, route: str, identifier: str, version: int) -> dict:
         """Return one exact version only to the gateway listener; no selection or fallback occurs here."""
-        if identifier != record_id(user_id, route, version) or route not in ROUTE_KINDS:
+        if identifier != record_id(user_id, route, version) or route not in ROUTES:
             raise VaultError(404, "credential not found")
         result = None
         with self.lock, self.transaction():
@@ -694,6 +1033,82 @@ class SecretBody(BaseModel):
     account_id: str | None = Field(default=None, description="Candidate ChatGPT account header, not verified identity.")
 
 
+Mutation = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{16,64}$", description="Owner-chosen replay identity.")]
+Name = Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[^\x00-\x1f\x7f]*\S[^\x00-\x1f\x7f]*$")]
+Roles = Annotated[list[Annotated[str, Field(pattern=r"^[a-z_]{1,32}$")]], Field(max_length=16)]
+Revision = Annotated[int, Field(ge=0, strict=True)]
+
+
+class ProfileRef(BaseModel):
+    """One target's profile key; the canonical upstream repository keeps equal keys on other targets apart."""
+
+    target: str = Field(pattern=r"^[\w.-]{1,100}/[\w.-]{1,100}$")
+    profile: str = Field(min_length=1, max_length=100, pattern=r"^[\x21-\x7e]+$")
+
+
+Profiles = Annotated[list[ProfileRef], Field(max_length=64)]
+
+
+class AddBody(SecretBody):
+    """A new list entry; empty filters match all of the provider's work."""
+
+    route: str
+    name: Name
+    roles: Roles = []
+    profiles: Profiles = []
+    mutation_id: Mutation
+
+
+class EditBody(BaseModel):
+    """Policy changes to one entry at the revision the owner last read."""
+
+    revision: Revision
+    name: Name | None = None
+    enabled: bool | None = None
+    roles: Roles | None = None
+    profiles: Profiles | None = None
+    mutation_id: Mutation
+
+
+class ReplaceBody(SecretBody):
+    """A replacement token/account for one entry at the revision the owner last read."""
+
+    revision: Revision
+    mutation_id: Mutation
+
+
+class OrderBody(BaseModel):
+    """The provider list's exact new order at the list revision the owner last read."""
+
+    revision: Revision
+    entries: list[Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]]
+    mutation_id: Mutation
+
+
+def candidate(route: str, body: SecretBody) -> dict:
+    """Check a supplied token and its route's account header; the pair is sealed as one version."""
+    secret = body.secret.strip()
+    # Keys go into request headers: only printable ASCII without whitespace is a plausible key.
+    if not secret or not all(33 <= ord(c) <= 126 for c in secret):
+        raise VaultError(422, "secret is empty or has unsupported characters")
+    if route != "chatgpt-subscription":
+        if body.account_id is not None:
+            raise VaultError(422, "this route does not use an account ID")
+        return {"secret": secret}
+    if not body.account_id or not all(33 <= ord(c) <= 126 for c in body.account_id):
+        raise VaultError(422, "ChatGPT account ID is required and must be a valid header value")
+    return {
+        "secret": secret,
+        "account": {"chatgpt_account_id": body.account_id},
+        "account_label": "Supplied ChatGPT account " + digest(body.account_id)[:8],
+    }
+
+
+def distinct(values: list) -> list:
+    """Drop repeated filter selections, keeping first-seen order."""
+    return [value for index, value in enumerate(values) if value not in values[:index]]
+
+
 def create_app(
     store: Store,
     identity: Identity,
@@ -715,11 +1130,6 @@ def create_app(
         ):
             raise VaultError(401, "private credential cannot act as a user")
         return identity.resolve(token.strip())
-
-    def known(route: str) -> str:
-        if route not in ROUTE_KINDS:
-            raise VaultError(404, "unknown route")
-        return route
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -746,40 +1156,51 @@ def create_app(
         return store.metadata(user_id, at)
 
     @app.get("/credentials")
-    def list_credentials(caller: Annotated[User, Depends(user)]) -> list[dict[str, object]]:
+    def list_credentials(caller: Annotated[User, Depends(user)]) -> dict:
         return store.listing(caller.id)
 
-    @app.put("/credentials/{route}")
-    def put_credential(
-        route: Annotated[str, Depends(known)], body: SecretBody, caller: Annotated[User, Depends(user)]
-    ) -> dict[str, object]:
-        secret = body.secret.strip()
-        # Keys go into request headers: only printable ASCII without whitespace is a plausible key.
-        if not secret or not all(33 <= ord(c) <= 126 for c in secret):
-            raise VaultError(422, "secret is empty or has unsupported characters")
-        account = None
-        if route == "chatgpt-subscription":
-            if not body.account_id or not all(33 <= ord(c) <= 126 for c in body.account_id):
-                raise VaultError(422, "ChatGPT account ID is required and must be a valid header value")
-            account = {"chatgpt_account_id": body.account_id}
-        elif body.account_id is not None:
-            raise VaultError(422, "this route does not use an account ID")
-        return store.put(
+    @app.post("/credentials")
+    def add_credential(body: AddBody, caller: Annotated[User, Depends(user)]) -> dict:
+        if body.route not in ROUTES:
+            raise VaultError(422, "unsupported credential kind")
+        secret = candidate(body.route, body)
+        return store.add(
             caller,
-            route,
-            secret,
-            account=account,
-            account_label="Supplied ChatGPT account " + digest(body.account_id)[:8] if body.account_id else None,
+            body.route,
+            secret.pop("secret"),
+            name=body.name.strip(),
+            roles=distinct(body.roles),
+            profiles=distinct([profile.model_dump() for profile in body.profiles]),
+            mutation=body.mutation_id,
+            **secret,
         )
 
-    @app.delete("/credentials/{route}")
-    def revoke_credential(
-        route: Annotated[str, Depends(known)], caller: Annotated[User, Depends(user)]
-    ) -> dict[str, object]:
-        entry = store.revoke(caller.id, route)
-        if entry is None:
-            raise VaultError(404, "no such credential")
-        return entry
+    @app.put("/credentials/order/{provider}")
+    def reorder_credentials(provider: str, body: OrderBody, caller: Annotated[User, Depends(user)]) -> dict:
+        return store.reorder(caller.id, provider, body.entries, revision=body.revision, mutation=body.mutation_id)
+
+    @app.patch("/credentials/{entry_id}")
+    def edit_credential(entry_id: str, body: EditBody, caller: Annotated[User, Depends(user)]) -> dict:
+        policy = {
+            "name": body.name.strip() if body.name is not None else None,
+            "enabled": body.enabled,
+            "roles": distinct(body.roles) if body.roles is not None else None,
+            "profiles": distinct([p.model_dump() for p in body.profiles]) if body.profiles is not None else None,
+        }
+        if all(value is None for value in policy.values()):
+            raise VaultError(422, "no changes supplied")
+        return store.edit(caller.id, entry_id, revision=body.revision, mutation=body.mutation_id, **policy)
+
+    @app.put("/credentials/{entry_id}/secret")
+    def replace_secret(entry_id: str, body: ReplaceBody, caller: Annotated[User, Depends(user)]) -> dict:
+        secret = candidate(store.route(caller.id, entry_id), body)
+        return store.replace(
+            caller, entry_id, secret.pop("secret"), revision=body.revision, mutation=body.mutation_id, **secret
+        )
+
+    @app.delete("/credentials/{entry_id}")
+    def remove_credential(entry_id: str, revision: int, caller: Annotated[User, Depends(user)]) -> dict:
+        return store.remove(caller.id, entry_id, revision)
 
     return app
 
@@ -875,8 +1296,14 @@ def main(argv=None) -> None:
             raise ConfigError("metadata and gateway principals must differ")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         with ExitStack() as resources:
-            store = Store(state / "vault.db", envelope)
+            store = Store(
+                state / "vault.db",
+                envelope,
+                manifest=lambda: load_manifest(os.environ.get("VAULT_ORDER_MANIFEST_FILE")),
+            )
             resources.callback(store.close)
+            if store.migration:
+                print(json.dumps({"adopted_lists": store.migration}), flush=True)
             if args.rotate:
                 if not keyring:
                     raise ConfigError("rotation requires a named keyring")

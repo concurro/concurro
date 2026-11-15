@@ -683,9 +683,10 @@ class EndpointTests(unittest.TestCase):
     def test_credential_writes_outdate_saved_sponsorship_lists(self):
         cache, headers = Mock(), {app_module.CSRF_HEADER: "1"}
         client = self.client(Index(), cache)
-        self.vault.put.return_value = self.vault.revoke.return_value = {"id": "openai-api-key"}
-        client.put("/api/me/credentials/openai-api-key", json={"secret": "synthetic"}, headers=headers)
-        client.delete("/api/me/credentials/openai-api-key", headers=headers)
+        self.vault.add.return_value = self.vault.remove.return_value = {"id": "0" * 32}
+        body = {"type": "openai_api", "name": "Key", "secret": "synthetic", "mutation_id": "m" * 16}
+        client.post("/api/me/credentials", json=body, headers=headers)
+        client.delete("/api/me/credentials/" + "0" * 32, params={"revision": 1}, headers=headers)
         self.assertEqual([call.args for call in cache.outdate.call_args_list], [(LISTING + "sponsorships:",)] * 2)
 
 

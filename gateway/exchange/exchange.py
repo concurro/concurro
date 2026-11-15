@@ -570,16 +570,20 @@ class Exchange:
                     not isinstance(event, dict)
                     or type(event.get("sequence")) is not int
                     or event["sequence"] <= sequence
-                    or not isinstance(event.get("record_id"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", event["record_id"])
                     or type(event.get("user_id")) is not int
                     or event["user_id"] < 1
-                    or type(event.get("version")) is not int
-                    or event["version"] < 1
-                    or event.get("route") not in ROUTES
-                    or event.get("type")
-                    not in ("stored", "validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
-                    or event.get("status") not in ("valid", "invalid", "revoked", "retired")
+                    # Selection-policy events retire nothing; the cursor only advances past them.
+                    or event.get("type") != "policy"
+                    and (
+                        not isinstance(event.get("record_id"), str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", event["record_id"])
+                        or type(event.get("version")) is not int
+                        or event["version"] < 1
+                        or event.get("route") not in ROUTES
+                        or event.get("type")
+                        not in ("stored", "validated", "retired", "revoked", "unusable", "rewrapped", "snapshot")
+                        or event.get("status") not in ("valid", "invalid", "revoked", "retired")
+                    )
                 ):
                     raise Refused(503, "vault event identity incomplete")
                 sequence = event["sequence"]

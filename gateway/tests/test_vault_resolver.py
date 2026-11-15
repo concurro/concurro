@@ -12,7 +12,7 @@ import httpx
 import uvicorn
 from fastapi.testclient import TestClient
 
-from vault_fixtures import ALICE, BOB, OPENAI, VaultFixture
+from vault_fixtures import ALICE, BOB, OPENAI, SCHEMA_3, VaultFixture
 
 import vault
 from service.shadow import Metadata
@@ -53,7 +53,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
 
     def test_socket_boundary_cannot_be_selected_by_host_forwarded_headers_or_principal(self):
         """Only the accepted private socket plus gateway bearer may return material."""
-        entry = self.put("openai-api-key", OPENAI).json()
+        entry = self.put("openai-api-key", OPENAI).json()["record"]
         reference = {"user_id": 101, "route": "openai-api-key", "record_id": entry["record_id"], "version": 1}
         with listeners(self.public, self.private) as (public, private), httpx.Client(timeout=3) as client:
             for token in (ALICE, SERVICE, GATEWAY):
@@ -91,18 +91,21 @@ class ResolverTests(VaultFixture, unittest.TestCase):
         for token in (SERVICE, GATEWAY):
             for method, path, body in (
                 ("GET", "/credentials", None),
-                ("PUT", "/credentials/openai-api-key", {"secret": OPENAI}),
-                ("DELETE", "/credentials/openai-api-key", None),
+                ("POST", "/credentials", {"route": "openai-api-key", "name": "n", "secret": OPENAI}),
+                ("PATCH", "/credentials/" + "0" * 32, {"revision": 1, "enabled": False}),
+                ("PUT", "/credentials/" + "0" * 32 + "/secret", {"revision": 1, "secret": OPENAI}),
+                ("PUT", "/credentials/order/openai", {"revision": 1, "entries": []}),
+                ("DELETE", "/credentials/" + "0" * 32, None),
             ):
-                self.assertEqual(
-                    client.request(method, path, json=body, headers={"Authorization": "Bearer " + token}).status_code,
-                    401,
+                reply = client.request(
+                    method, path, json=body, params={"revision": 1}, headers={"Authorization": "Bearer " + token}
                 )
+                self.assertEqual(reply.status_code, 401)
         self.assertEqual(self.transport.calls, [])
 
     def test_version_events_and_errors_do_not_cross_owner_or_echo_material(self):
         """A replaced version is unusable, metadata cannot resolve it, and malformed errors are fixed."""
-        first = self.put("openai-api-key", OPENAI).json()
+        first = self.put("openai-api-key", OPENAI).json()["record"]
         self.put("openai-api-key", OPENAI + "2", token=BOB)
         private = TestClient(self.private)
         headers = {"Authorization": "Bearer " + GATEWAY}
@@ -130,7 +133,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
 
     def test_service_lifecycle_feed_is_nonsecret_and_cannot_resolve(self):
         """Scheduler feed auth stays on the metadata listener and never grants material resolution."""
-        entry = self.put("openai-api-key", OPENAI).json()
+        entry = self.put("openai-api-key", OPENAI).json()["record"]
         public = vault.create_app(self.store, self.identity, SERVICE, (GATEWAY,))
         with (
             listeners(public, vault.create_resolver(self.store, GATEWAY)) as (public_url, private_url),
@@ -148,17 +151,19 @@ class ResolverTests(VaultFixture, unittest.TestCase):
             self.assertEqual(feed["events"][0]["user_id"], "101")
             self.assertNotIn(OPENAI, response.text)
             self.assertNotIn("fingerprint", response.text)
-            replacement = self.put("openai-api-key", OPENAI + "2").json()
+            replacement = self.replace(self.entries()[0], OPENAI + "2").json()
             feed = Metadata(public_url, token_path).events(0)
             self.assertEqual(
-                [(e["type"], e["status"]) for e in feed["events"]],
+                [(e["type"], e["status"]) for e in feed["events"] if e["type"] != "policy"],
                 [("stored", "valid"), ("retired", "retired"), ("stored", "valid")],
             )
-            self.assertEqual(replacement["version"], 2)
-            self.request("DELETE", "/credentials/openai-api-key")
+            self.assertEqual([e["revision"] for e in feed["events"] if e["type"] == "policy"], [1, 2])
+            self.assertEqual(replacement["record"]["version"], 2)
+            self.remove(replacement)
             revoked = Metadata(public_url, token_path).events(feed["next"])
             self.assertEqual(
-                [(e["type"], e["version"], e["status"]) for e in revoked["events"]], [("revoked", 2, "revoked")]
+                [(e["type"], e["version"], e["status"]) for e in revoked["events"]],
+                [("revoked", 2, "revoked"), ("policy", 0, "policy")],
             )
             before = len(self.transport.github_calls())
             for token in (ALICE, GATEWAY, "wrong"):
@@ -187,7 +192,7 @@ class ResolverTests(VaultFixture, unittest.TestCase):
         """A destroyed legacy row cannot strand the new consumer before later usable credentials."""
         path = self.directory / "legacy-retired.db"
         with sqlite3.connect(path) as db:
-            db.execute(vault.SCHEMA)
+            db.executescript(SCHEMA_3[: SCHEMA_3.index("CREATE TABLE credential_metadata")])
             db.execute(
                 "INSERT INTO credentials VALUES(101,'openai-api-key',1,'alice','valid',?,?,?,?,?,?)",
                 ("synthetic-fingerprint", None, None, None, "2000-01-01T00:00:00Z", "2000-01-01T00:00:00Z"),
@@ -201,8 +206,10 @@ class ResolverTests(VaultFixture, unittest.TestCase):
         with listeners(public, vault.create_resolver(store, GATEWAY)) as (url, _):
             feed = Metadata(url, token).events(0)
             self.assertEqual([(e["type"], e["status"]) for e in feed["events"]], [("snapshot", "retired")])
-            store.put(vault.User(101, "alice"), "openai-api-key", OPENAI)
+            entry = store.group(101, "openai")["entries"][0]
+            store.replace(vault.User(101, "alice"), entry["entry_id"], OPENAI)
             later = Metadata(url, token).events(feed["next"])
             self.assertEqual(
-                [(e["type"], e["status"], e["version"]) for e in later["events"]], [("stored", "valid", 2)]
+                [(e["type"], e["status"], e["version"], e["revision"]) for e in later["events"]],
+                [("stored", "valid", 2, None), ("policy", "policy", 0, 2)],
             )

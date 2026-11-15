@@ -102,15 +102,23 @@ class Metadata:
             if not isinstance(rows, list) or type(cursor) is not int or cursor < after or type(more) is not bool:
                 raise ValueError()
             fields = {"sequence", "id", "record_id", "user_id", "route", "version", "type", "status", "reason", "at"}
+            fields |= {"entry_id", "provider", "revision"}
             for row in rows:
                 if (
                     not isinstance(row, dict)
                     or type(row.get("sequence")) is not int
                     or row["sequence"] < 1
                     or row["sequence"] > cursor
-                    or type(row.get("version")) is not int
-                    or row["version"] < 1
                     or not str(row.get("user_id", "")).isdigit()
+                ):
+                    raise ValueError()
+                # Selection-policy events name a provider list revision, never a credential record.
+                if row.get("type") == "policy":
+                    if row.get("provider") not in sponsorship.PROVIDERS or type(row.get("revision")) is not int:
+                        raise ValueError()
+                elif (
+                    type(row.get("version")) is not int
+                    or row["version"] < 1
                     or row.get("route") not in sponsorship.ROUTES
                     or row.get("status") not in ("valid", "invalid", "revoked", "retired")
                     or row.get("type")
