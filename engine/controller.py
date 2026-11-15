@@ -880,6 +880,8 @@ class Controller:
     def complete(self, operation, response, session=None):
         """Retain the result and its upload completion proof until the stage durably consumes it."""
         operation["status"] = "completed"
+        if self.sponsorship:
+            self.sponsorship.succeeded(self, operation)
         retained = deepcopy(response)
         if operation.get("stage") in classification.STAGES and isinstance(retained, dict):
             value = classification.normalize(retained.pop("classification", None))

@@ -36,7 +36,7 @@ HOP = {
     "trailer",
     "upgrade",
 }
-ERRORS = frozenset({"auth", "quota_exhausted", "rate_limited", "budget_denied"})
+ERRORS = frozenset({"auth", "quota_exhausted", "rate_limited", "budget_denied", "model_denied", "unavailable"})
 
 
 class Inference:

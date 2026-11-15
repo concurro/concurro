@@ -699,10 +699,9 @@ class Registry:
             document = json.loads(row[0]) if row and row[0] else dict(projection or {})
             previous = document.get("task", {}).get("recovery") or {}
             recovery = state.get("credential_recovery")
-            if recovery and recovery.get("failure_id") == previous.get("failure_id") and "retry_not_before" in previous:
-                recovery = {**recovery, "retry_not_before": previous["retry_not_before"]}
             if recovery and recovery.get("id") == previous.get("id"):
-                recovery = {**recovery, **{k: previous[k] for k in ("delivery", "enqueued") if k in previous}}
+                kept = ("delivery", "enqueued", "observed")
+                recovery = {**recovery, **{k: previous[k] for k in kept if k in previous}}
             document["task"] = {
                 "stage": state.get("stage"),
                 "recovery_bootstrapped": document.get("task", {}).get("recovery_bootstrapped", False),
@@ -746,25 +745,30 @@ class Registry:
             row = db.execute("SELECT sequence FROM credential_cursor WHERE id=1").fetchone()
             return row[0] if row else 0
 
-    def schedule_credential_recovery(self, db, key, document):
-        """Atomically queue one eligible receipt without shortening its recorded retry deadline."""
+    def schedule_credential_recovery(self, db, key, document, owners=(), observed=None):
+        """Atomically queue the plan's next unconsumed receipt at its due time.
+
+        `owners` are the sponsors whose credentials or lists changed up to event `observed`.
+        """
         task = document.get("task") or {}
         if task.get("funding") not in ("contributed", "mixed") or task.get("stage") != "awaiting_credentials":
             return
         plan = task.get("recovery")
-        versions = {
-            (row[0], row[1]): json.loads(row[2])
-            for row in db.execute("SELECT user_id,route,document FROM credential_versions")
-        }
-        ready = credential_recovery.receipt(plan, versions)
+        if plan and plan.get("version") != credential_recovery.VERSION and not plan.get("relisted"):
+            # A route-era plan is selected once more against the owner's whole list.
+            plan["relisted"] = True
+            queue(db, key, "credential-recovery", self.clock())
+            return
+        if plan and owners and set(plan.get("owners", [])) & owners:
+            plan["observed"] = observed
+        ready = credential_recovery.receipt(plan)
         if not ready:
             return
         outcome = db.execute(
             "SELECT kind,retry_after,recorded FROM outcomes WHERE repository=? AND issue=?", key
         ).fetchone()
         retry_at = outcome[2] + (outcome[1] or 0) if outcome and outcome[0] == "wait-until" else 0
-        ready["due_at"] = max(ready["due_at"], retry_at, plan.get("retry_not_before", 0))
-        plan["retry_not_before"] = ready["due_at"]
+        ready["due_at"] = max(ready["due_at"], retry_at)
         if plan.get("delivery") != ready:
             plan.update(delivery=ready, enqueued=False)
         live = db.execute("SELECT 1 FROM ownership WHERE repository=? AND issue=? AND live=1", key).fetchone()
@@ -773,40 +777,23 @@ class Registry:
             plan["enqueued"] = True
 
     def credential_events(self, batch):
-        """Commit nonsecret latest-version evidence, queue receipts and feed acknowledgment together."""
+        """Commit list-change wakeups for waiting plans, their queue receipts and feed acknowledgment together."""
         with self.transaction() as db:
             current = db.execute("SELECT sequence FROM credential_cursor WHERE id=1").fetchone()
             after = current[0] if current else 0
-            consumed = False
+            consumed, owners = False, set()
             for event in sorted(batch["events"], key=lambda e: e["sequence"]):
                 if event["sequence"] <= after:
                     continue
                 consumed = True
-                if event["type"] == "policy":
-                    continue
-                actor, route = str(event["user_id"]), event["route"]
-                value = dict(event)
-                # Retain the persisted field name for existing recovery receipts.
-                if event["type"] in ("stored", "validated"):
-                    value["validation_sequence"] = event["sequence"]
-                elif event["type"] == "rewrapped" and event["status"] == "valid":
-                    prior = db.execute(
-                        "SELECT document FROM credential_versions WHERE user_id=? AND route=?", (actor, route)
-                    ).fetchone()
-                    old = json.loads(prior[0]) if prior else {}
-                    if old.get("version") == event["version"] and old.get("status") == "valid":
-                        value["validation_sequence"] = old.get("validation_sequence") or old.get("sequence")
-                db.execute(
-                    "INSERT INTO credential_versions VALUES(?,?,?,?) ON CONFLICT(user_id,route) "
-                    "DO UPDATE SET sequence=excluded.sequence,document=excluded.document "
-                    "WHERE excluded.sequence>credential_versions.sequence",
-                    (actor, route, event["sequence"], json.dumps(value, sort_keys=True)),
-                )
+                # A rewrapped key is the same credential; every other change may expose a candidate.
+                if event["type"] != "rewrapped":
+                    owners.add(str(event["user_id"]))
             for repository, issue, raw in db.execute(
                 "SELECT repository,issue,document FROM issue_sponsorships"
             ).fetchall():
                 document = json.loads(raw or "{}")
-                self.schedule_credential_recovery(db, (repository, issue), document)
+                self.schedule_credential_recovery(db, (repository, issue), document, owners, batch["next"])
                 db.execute(
                     "UPDATE issue_sponsorships SET document=? WHERE repository=? AND issue=?",
                     (self.noted((repository, issue), raw, document), repository, issue),

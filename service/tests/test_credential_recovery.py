@@ -199,9 +199,12 @@ class RecoveryTests(admission_fixture.AdmissionTests):
     def test_auth_requires_new_version_and_duplicate_validation_never_retries_same_failed_version(self):
         """One new usable version authorizes one automatic paid attempt, not a loop on old validation."""
         original = self.pause()
-        self.validate(version=1)
+        failed = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
+        self.feed.add(failed)
         self.shadow.poll_credentials()
-        self.assertEqual(self.dispatch(), [])
+        # The repeated event earns a look at the list, never another attempt on the failed version.
+        self.dispatch()
+        self.assertEqual(self.state()["calls"], 1)
         self.faults = [("auth", None)]
         self.validate()
         self.shadow.poll_credentials()
@@ -216,8 +219,11 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.registry.credential_events(
             {"events": list(reversed(self.feed.rows)), "next": len(self.feed.rows), "more": False}
         )
-        self.assertEqual(self.dispatch(), [])
+        self.dispatch()
+        self.clock.now += 3600
+        self.dispatch()
         self.assertEqual(self.state()["calls"], 2)
+        self.assertEqual(sorted(e["version"] for e in self.state()["credential_exclusions"].values()), [1, 2])
 
     def test_validation_before_pause_is_not_lost_and_success_preserves_admitted_history(self):
         """A newer validated token arriving during an old turn queues after the owner releases."""
@@ -281,8 +287,8 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         for component in (self.gateway, self.shadow, self.worker, self.reconciler, self.scheduler):
             component.registry = self.registry
 
-    def test_unrelated_event_and_missing_peer_coverage_do_not_create_a_paid_retry(self):
-        """Readiness aggregates all required provider slots and does not borrow an unrelated owner's token."""
+    def test_only_the_paused_calls_sponsor_can_wake_it_and_no_other_owner_is_borrowed(self):
+        """Another owner's saves and a peer provider's missing coverage neither wake nor block the paused call."""
         self.pause()
         self.validate(actor="101")
         self.shadow.poll_credentials()
@@ -290,13 +296,15 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         peer = next(r for r in self.metadata if r["user_id"] == "303" and r["route"] == "anthropic-api-key")
         peer["status"] = "revoked"
         self.feed.add(peer, "revoked")
-        self.validate()
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [])
-        self.validate(actor="303", route="anthropic-api-key")
+        self.validate()
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [KEY])
-        self.assertEqual(self.state()["calls"], 2)
+        state = self.state()
+        self.assertEqual(state["calls"], 2)
+        charged = [(r["account"], r["version"]) for r in state["credentials"].values() if r["kind"] == "contributed"]
+        self.assertEqual(sorted(charged), [("202", 1), ("202", 2)])
 
     def test_saved_replacement_recovers_without_model_coverage(self):
         """A new stored version reaches execution without checking a preflight model list."""
@@ -373,33 +381,51 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [])
 
-    def test_no_hint_unknown_budget_and_global_budget_are_not_automatic_recovery(self):
-        """Only the accepted failure classes with real retry evidence can generate new paid work."""
-        for category, hint, limit in (
-            ("rate_limited", None, 20),
-            ("unknown", None, 20),
-            ("budget_denied", None, 20),
-            ("auth", None, 1),
-        ):
+    def test_unknown_budget_denial_and_spent_budget_are_not_automatic_recovery(self):
+        """Only classified credential failures within the task budget can generate new paid work."""
+        for category, limit in (("unknown", 20), ("budget_denied", 20), ("auth", 1)):
             # Use separate real fixture state for each independent terminal/paused category.
             with self.subTest(category=category, limit=limit):
-                case = RecoveryTests(
-                    "test_auth_requires_new_version_and_duplicate_validation_never_retries_same_failed_version"
-                )
+                case = RecoveryTests("test_saved_replacement_recovers_without_model_coverage")
                 case.setUp()
                 try:
                     case.config["max_model_calls"] = limit
                     case.backend.files = target_files(case.config)
-                    case.faults = [(category, hint)]
+                    case.faults = [(category, None)]
                     case.registry.enqueue(KEY, "fixture-start", case.clock())
                     case.dispatch()
                     before = case.state()["calls"]
                     case.validate()
                     case.shadow.poll_credentials()
-                    self.assertEqual(case.dispatch(), [])
+                    case.dispatch()
+                    case.clock.now += 3600
+                    case.dispatch()
                     self.assertEqual(case.state()["calls"], before)
                 finally:
                     case.doCleanups()
+
+    def test_throttling_without_a_provider_deadline_uses_persisted_local_backoff(self):
+        """The same record returns to selection when its local backoff is due, doubling per consecutive failure."""
+        self.faults = [("rate_limited", None), ("unavailable", None)]
+        self.pause()
+        first = next(iter(self.state()["credential_exclusions"].values()))
+        self.assertEqual((first["source"], first["until"] - self.clock(), first["failures"]), ("local", 60, 1))
+        self.registry.enqueue(KEY, "fixture-early", self.clock())
+        self.dispatch()
+        self.reopen_registry()
+        self.assertEqual(self.state()["calls"], 1)
+        self.assertEqual(next(iter(self.state()["credential_exclusions"].values())), first)
+        self.clock.now += 60
+        self.assertEqual(self.dispatch(), [KEY])
+        second = next(iter(self.state()["credential_exclusions"].values()))
+        self.assertEqual(self.state()["calls"], 2)
+        self.assertEqual((second["category"], second["source"], second["failures"]), ("unavailable", "local", 2))
+        self.assertEqual(second["until"] - self.clock(), 120)
+        # A completed call on that version ends the streak.
+        self.clock.now += 120
+        self.assertEqual(self.dispatch(), [KEY])
+        self.assertEqual(self.state()["calls"], 3)
+        self.assertEqual(self.state().get("credential_exclusions"), {})
 
     def test_full_restart_keeps_the_original_rate_deadline(self):
         """Closing and reopening SQLite cannot reset a queued provider backoff or recharge before it."""
@@ -458,10 +484,14 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.assertEqual([i.key for i in self.registry.due(self.clock())], [KEY])
         self.assertEqual(self.dispatch(), [KEY])
         self.assertEqual(self.state()["calls"], 1)
+        self.assertEqual([e["version"] for e in self.state()["credential_exclusions"].values()], [1])
         self.shadow.poll_credentials()
-        self.assertEqual(self.dispatch(), [])
+        self.dispatch()
         self.reopen_registry()
-        self.assertEqual(self.dispatch(), [])
+        self.dispatch()
+        self.clock.now += 3600
+        self.dispatch()
+        self.assertEqual(self.state()["calls"], 1)
         self.validate()
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [KEY])
@@ -530,22 +560,25 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.assertEqual(self.state()["calls"], 2)
 
     def test_other_provider_transfer_does_not_reset_recorded_rate_deadline(self):
-        """Reconciliation of a peer grant changes its receipt but never restarts the failing turn's clock."""
+        """Reconciliation of a peer grant never restarts or moves the failed record's own provider deadline."""
         self.faults = [("rate_limited", 30)]
         self.pause()
-        due = self.state()["credential_recovery"]["not_before"]
+        cooling = next(iter(self.state()["credential_exclusions"].values()))
+        due = cooling["until"]
+        self.assertEqual((cooling["source"], due - self.clock()), ("provider", 30))
         self.clock.now += 10
         self.fake.comments.append(comment(99, "/concurro sponsor anthropic", "writer", "2026-11-12T10:00:20Z"))
         self.reconciler.observe(KEY, cached=False)
         self.assertEqual(self.dispatch(), [KEY])
         self.assertEqual(self.state()["calls"], 1)
-        self.assertEqual(self.state()["credential_recovery"]["not_before"], due)
+        self.assertEqual(next(iter(self.state()["credential_exclusions"].values())), cooling)
+        self.assertEqual(self.state()["credential_recovery"]["wake_at"], due)
         self.assertEqual(
             self.registry.db.execute("SELECT due_at FROM queue WHERE repository=? AND issue=?", KEY).fetchone()[0], due
         )
 
-    def test_new_validation_restart_and_early_inspection_preserve_transient_backoff(self):
-        """Credential events cannot shorten the existing service retry deadline or turn it into a paid retry."""
+    def test_restart_and_early_inspection_never_charge_without_a_candidate(self):
+        """A list read that trails its event gets one later look; restarts and inspections spend nothing."""
         self.pause()
         current = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
         original = deepcopy(current)
@@ -554,22 +587,17 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.shadow.poll_credentials()
         self.assertEqual(self.dispatch(), [KEY])
         due = self.registry.db.execute("SELECT due_at FROM queue WHERE repository=? AND issue=?", KEY).fetchone()[0]
-        self.clock.now += 1
-        self.validate(version=3)
-        self.shadow.poll_credentials()
-        self.assertEqual(
-            self.registry.db.execute("SELECT due_at FROM queue WHERE repository=? AND issue=?", KEY).fetchone()[0], due
-        )
+        self.assertEqual(due - self.clock(), 60)
         self.reopen_registry()
         self.registry.enqueue(KEY, "fixture-early-inspection", self.clock())
         self.assertEqual(self.dispatch(), [KEY])
         self.assertEqual(self.state()["calls"], 1)
-        self.assertEqual(
-            self.registry.db.execute("SELECT due_at FROM queue WHERE repository=? AND issue=?", KEY).fetchone()[0], due
-        )
         self.clock.now = due
-        self.assertEqual(self.dispatch(), [KEY])
-        self.assertEqual(self.state()["calls"], 2)
+        self.dispatch()
+        self.clock.now += 3600
+        self.dispatch()
+        self.assertEqual(self.state()["calls"], 1)
+        self.assertEqual(self.registry.due(self.clock()), [])
 
     def test_service_event_client_rejects_incomplete_pages_and_allowlists_fields(self):
         """Malformed feed/cursor evidence is transient, while secret-shaped extra fields never persist."""
@@ -727,7 +755,7 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 prior = self.registry.credential_cursor()
                 row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
                 target = next(e for e in store.group(202, "openai")["entries"] if e["route"] == row["route"])
-                entry = store.replace(vault.User(202, "alice"), target["entry_id"], "synthetic-replacement")["record"]
+                store.replace(vault.User(202, "alice"), target["entry_id"], "synthetic-replacement")
                 page = store.events(prior)
                 self.assertEqual(
                     [(e["type"], e["status"]) for e in page["events"]],
@@ -737,15 +765,8 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 self.clock.now += 300
                 recovery.poll()
                 self.assertEqual(self.registry.credential_cursor(), page["next"])
-                cached = json.loads(
-                    self.registry.db.execute(
-                        "SELECT document FROM credential_versions WHERE user_id='202' AND route='openai-api-key'"
-                    ).fetchone()[0]
-                )
-                self.assertEqual(
-                    (cached["version"], cached["validation_sequence"]),
-                    (entry["version"], page["events"][1]["sequence"]),
-                )
+                waiting = self.registry.sponsorship(KEY)["task"]["recovery"]
+                self.assertEqual((waiting["observed"], waiting["owners"]), (page["next"], ["202"]))
                 self.assertEqual([i.key for i in self.registry.due(self.clock())], [KEY])
                 self.assertEqual(self.dispatch(), [KEY])
                 self.assertEqual(self.state()["calls"], 2)

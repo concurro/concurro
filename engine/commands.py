@@ -97,6 +97,10 @@ def acknowledge_provider_pause(state: TaskState) -> None:
     """A successful writer recovery acknowledges the pause, retaining pending session cleanup."""
     state.pop("provider_pause_pending", None)
     state.pop("credential_recovery", None)
+    # The writer permits reconsidering failed credentials; a provider or backoff deadline still applies.
+    exclusions = state.get("credential_exclusions", {})
+    for key in [key for key, item in exclusions.items() if item.get("until") is None]:
+        del exclusions[key]
 
 
 class CommandHandler:

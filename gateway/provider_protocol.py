@@ -22,8 +22,38 @@ def response_format(media, response):
     return streaming, prefix
 
 
+# Structured terminal rejections per route; docs/design/credential-failures.md records each shape's evidence.
+OPENAI_CODES = {
+    "invalid_api_key": "auth",
+    "insufficient_quota": "quota_exhausted",
+    "credit_balance_exhausted": "quota_exhausted",
+    "organization_spend_limit_exceeded": "quota_exhausted",
+    "project_spend_limit_exceeded": "quota_exhausted",
+    "organization_usage_limit_exceeded": "quota_exhausted",
+    "rate_limit_exceeded": "rate_limited",
+    "slow_down": "rate_limited",
+    "model_not_found": "model_denied",
+}
+# The ChatGPT backend's limit and entitlement rejections have no verified structured shape yet.
+CHATGPT_CODES = {"token_expired": "auth"}
+ANTHROPIC_TYPES = {
+    "authentication_error": "auth",
+    "billing_error": "quota_exhausted",
+    "permission_error": "model_denied",
+    "not_found_error": "model_denied",
+    # Request limits, the tier's spend cap and workspace limits share this type.
+    "rate_limit_error": "unavailable",
+}
+ANTHROPIC_DETAILS = {"enforced_spend_limit_reached": "quota_exhausted"}
+# Categories whose provider `Retry-After` is that credential's own deadline.
+DEADLINES = ("rate_limited", "unavailable")
+
+
 def category(value, route):
-    """Classify documented API structured codes; subscription taxonomy remains unverified."""
+    """Classify a structured terminal rejection by its route's codes; anything else stays unclassified.
+
+    Message text, bare HTTP statuses and shapes outside the tables are never failure authority.
+    """
     if not isinstance(value, dict):
         return None
     error = value.get("error")
@@ -32,23 +62,17 @@ def category(value, route):
         error = response.get("error") if isinstance(response, dict) else None
     if not isinstance(error, dict):
         return None
-    code, kind = error.get("code"), error.get("type")
-    code = code if isinstance(code, str) else None
-    kind = kind if isinstance(kind, str) else None
+    code, kind, details = error.get("code"), error.get("type"), error.get("details")
     if route == "openai-api-key":
-        return {
-            "invalid_api_key": "auth",
-            "insufficient_quota": "quota_exhausted",
-            "credit_balance_exhausted": "quota_exhausted",
-            "organization_spend_limit_exceeded": "quota_exhausted",
-            "project_spend_limit_exceeded": "quota_exhausted",
-            "organization_usage_limit_exceeded": "quota_exhausted",
-            "rate_limit_exceeded": "rate_limited",
-            "slow_down": "rate_limited",
-        }.get(code)
-    if route == "anthropic-api-key" and kind == "authentication_error":
-        return "auth"
-    # Anthropic rate_limit_error also covers spending limits; HTTP429 alone is ambiguous.
+        found = OPENAI_CODES.get(code) if isinstance(code, str) else None
+        return found or ("quota_exhausted" if kind == "insufficient_quota" else None)
+    if route == "chatgpt-subscription":
+        return CHATGPT_CODES.get(code) if isinstance(code, str) else None
+    if route in ("anthropic-api-key", "claude-subscription") and isinstance(kind, str):
+        detail = details.get("error_code") if isinstance(details, dict) else None
+        if kind == "rate_limit_error" and isinstance(detail, str) and detail in ANTHROPIC_DETAILS:
+            return ANTHROPIC_DETAILS[detail]
+        return ANTHROPIC_TYPES.get(kind)
     return None
 
 
@@ -79,7 +103,7 @@ class Observation:
         kind = value.get("type")
         if kind in ("error", "response.failed") or value.get("error") is not None:
             self.result["category"] = category(value, self.route) or "unknown"
-            if self.result["category"] == "rate_limited":
+            if self.result["category"] in DEADLINES:
                 self.result["retry_after"] = self.delay
             return True
         response = value.get("response", value) if kind == "response.completed" else value

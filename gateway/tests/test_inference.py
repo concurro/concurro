@@ -659,7 +659,7 @@ class ParserTests(unittest.TestCase):
                 self.assertNotIn("SYNTHETIC_SECRET_SENTINEL", str(handler.reply.call_args))
 
     def test_route_specific_codes_and_ambiguous_rate_limit(self):
-        """429 and spending-limit messages are not quota/rate evidence on either subscription route."""
+        """Each route classifies only its own structured codes; message text and bare statuses never do."""
         error = {"error": {"code": "insufficient_quota", "type": "rate_limit_error", "message": "secret"}}
         self.assertEqual(category(error, "openai-api-key"), "quota_exhausted")
         for code in (
@@ -669,9 +669,69 @@ class ParserTests(unittest.TestCase):
             "organization_usage_limit_exceeded",
         ):
             self.assertEqual(category({"error": {"code": code}}, "openai-api-key"), "quota_exhausted")
-        for route in ("anthropic-api-key", "claude-subscription", "chatgpt-subscription"):
-            self.assertIsNone(category(error, route))
-        self.assertEqual(category({"error": {"type": "authentication_error"}}, "anthropic-api-key"), "auth")
+        self.assertEqual(category({"error": {"type": "insufficient_quota"}}, "openai-api-key"), "quota_exhausted")
+        self.assertEqual(category({"error": {"code": "model_not_found"}}, "openai-api-key"), "model_denied")
+        # The ChatGPT backend's limit rejections are unverified: only its expired-token code is classified.
+        self.assertIsNone(category(error, "chatgpt-subscription"))
+        self.assertIsNone(category({"error": {"code": "model_not_found"}}, "chatgpt-subscription"))
+        self.assertEqual(category({"error": {"code": "token_expired"}}, "chatgpt-subscription"), "auth")
+        self.assertIsNone(category({"error": {"code": "token_expired"}}, "openai-api-key"))
+        for route in ("anthropic-api-key", "claude-subscription"):
+            with self.subTest(route=route):
+                kinds = {
+                    "authentication_error": "auth",
+                    "billing_error": "quota_exhausted",
+                    "permission_error": "model_denied",
+                    "not_found_error": "model_denied",
+                    # Request limits and spend caps share this type: unavailable, not a named cause.
+                    "rate_limit_error": "unavailable",
+                    "invalid_request_error": None,
+                    "overloaded_error": None,
+                    "api_error": None,
+                }
+                for kind, expected in kinds.items():
+                    self.assertEqual(
+                        category({"type": "error", "error": {"type": kind, "message": "secret"}}, route), expected
+                    )
+                capped = {
+                    "error": {"type": "rate_limit_error", "details": {"error_code": "enforced_spend_limit_reached"}}
+                }
+                self.assertEqual(category(capped, route), "quota_exhausted")
+                ramp = {"error": {"type": "rate_limit_error", "details": {"error_code": "ramp_limit_exceeded"}}}
+                self.assertEqual(category(ramp, route), "unavailable")
+                # A spend-limit detail under any other type, or as message text, is not evidence.
+                other = {
+                    "error": {
+                        "type": "invalid_request_error",
+                        "details": {"error_code": "enforced_spend_limit_reached"},
+                    }
+                }
+                self.assertIsNone(category(other, route))
+                self.assertIsNone(category({"error": {"message": "credit balance is too low"}}, route))
+                self.assertIsNone(category({"error": {"code": "insufficient_quota"}}, route))
+        for value in (None, [], {"error": "rate_limit_error"}, {"error": {"type": ["rate_limit_error"]}}):
+            self.assertIsNone(category(value, "anthropic-api-key"))
+
+    def test_provider_deadline_belongs_to_throttling_and_coarse_unavailability_only(self):
+        """A numeric Retry-After is kept for the failed credential; quota and auth never gain a deadline."""
+        cases = (
+            ("anthropic-api-key", {"type": "error", "error": {"type": "rate_limit_error"}}, "unavailable", 30),
+            ("openai-api-key", {"error": {"code": "rate_limit_exceeded"}}, "rate_limited", 30),
+            ("anthropic-api-key", {"type": "error", "error": {"type": "billing_error"}}, "quota_exhausted", None),
+            ("claude-subscription", {"type": "error", "error": {"type": "authentication_error"}}, "auth", None),
+        )
+        for route, body, expected, deadline in cases:
+            parser = Observation(route, 429, "30")
+            self.assertTrue(parser.accept(body))
+            result = parser.finish()
+            self.assertEqual((result["category"], result["retry_after"]), (expected, deadline))
+        parser = Observation("anthropic-api-key", 429, "Wed, 21 Oct 2026 07:28:00 GMT")
+        parser.accept({"type": "error", "error": {"type": "rate_limit_error"}})
+        self.assertEqual((parser.result["category"], parser.result["retry_after"]), ("unavailable", None))
+        # A bare 429 or an interrupted stream is not a classified rejection.
+        parser = Observation("anthropic-api-key", 429, "30")
+        self.assertFalse(parser.accept({"type": "message_start", "message": {}}))
+        self.assertEqual(parser.finish()["category"], "unknown")
 
     def test_non_null_structural_errors_are_redacted_unknown(self):
         """Scalar/list error shapes are failures even without a documented code; null remains success."""

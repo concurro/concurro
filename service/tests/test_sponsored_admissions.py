@@ -129,12 +129,26 @@ class AdmissionTests(ShadowTests):
         self.fake.comments.append(comment(2, "/concurro funding openai personal", "alice", "2026-11-12T10:00:00Z"))
         self.advance()
         with self.current(funded=False) as controller:
-            paused = {**controller.state, "stage": "awaiting_credentials", "retry_stage": "intake"}
-            plan = credential_recovery.intent(paused, controller.config, self.clock())
-            self.assertTrue(plan["eligible"])
-            self.assertEqual({r["provider"] for r in plan["requirements"]}, {"openai"})
-            self.assertEqual({r["sponsor"] for r in plan["requirements"]}, {"202"})
-            self.assertEqual(controller.state["provider_funding"]["anthropic"], "org")
+            state = controller.state
+            state.update(stage="awaiting_credentials", retry_stage="intake")
+            state["credential_requirement"] = {"provider": "openai", "role": "triage", "profile": "codex", "model": "m"}
+            self.shadow.prepare_recovery(controller)
+            plan = state["credential_recovery"]
+            self.assertEqual(
+                (plan["eligible"], plan["owners"], plan["version"]), (True, ["202"], credential_recovery.VERSION)
+            )
+            self.assertEqual(plan["candidate"]["version"], 1)
+            # An org-funded provider's call has no sponsor to wait for and is never an automatic recovery.
+            state["credential_requirement"] = {
+                "provider": "anthropic",
+                "role": "planner",
+                "profile": "claude",
+                "model": "m",
+            }
+            self.shadow.prepare_recovery(controller)
+            plan = state["credential_recovery"]
+            self.assertEqual((plan["eligible"], plan["owners"], plan["candidate"]), (False, [], None))
+            self.assertEqual(state["provider_funding"]["anthropic"], "org")
 
     def test_lost_funding_receipt_replays_without_changing_admitted_consent(self):
         """An accepted org selection with a lost response is adopted exactly once after reload."""

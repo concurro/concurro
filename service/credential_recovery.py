@@ -1,16 +1,110 @@
-"""Nonsecret recovery intents; task ownership and live admission remain authoritative."""
+"""Task-scoped credential failures and the nonsecret recovery plan they pause on.
+
+Ownership, consent and live admission remain authoritative: a plan only says when the paused
+call is worth selecting again.
+"""
 
 from copy import deepcopy
 
 import admissions
-import sponsorship
 from policy import digest
 
+from .failures import backoff
+
 RECOVERABLE_STAGES = frozenset(("intake", "plan", "plan_qc", "implement", "publish", "review", "gates"))
+# Failures that end without a deadline unless the provider supplies one, and those that only cool down.
+DEFINITE = ("auth", "model_denied", "quota_exhausted")
+TEMPORARY = ("rate_limited", "unavailable")
+FAILURES = DEFINITE + TEMPORARY
+VERSION = 2
 
 
-def intent(state, config, now, observations=None):
-    """Describe one paused attempt without granting consent or resetting any attempt allowance."""
+def identity(observation):
+    """The exact sponsor, record and version a trusted failure names, or None when any part is missing."""
+    binding = observation.get("binding") or {}
+    sponsor, record, version = binding.get("sponsor"), binding.get("credential"), binding.get("credential_version")
+    if isinstance(sponsor, str) and isinstance(record, str) and type(version) is int and version >= 1:
+        return sponsor, record, version
+    return None
+
+
+def exclude(state, observation, now):
+    """Record one trusted failure against its exact record version; a repeated turn changes nothing.
+
+    A model-access denial excludes the record for that model only. Temporary failures cool down until
+    the provider's own deadline, or a local backoff that doubles per consecutive failure of the record.
+    """
+    category, named = observation.get("category"), identity(observation)
+    if category not in FAILURES or not named:
+        return None
+    sponsor, record, version = named
+    model = observation.get("model") if category == "model_denied" else None
+    key = ":".join(str(part) for part in (sponsor, record, version, *((model,) if model else ())))
+    item = state.setdefault("credential_exclusions", {}).setdefault(
+        key,
+        {
+            "sponsor": sponsor,
+            "record_id": record,
+            "version": version,
+            "route": (observation.get("binding") or {}).get("route"),
+            "model": model,
+            "turns": [],
+            "failures": 0,
+        },
+    )
+    if observation.get("turn") in item["turns"]:
+        return item
+    item["turns"].append(observation.get("turn"))
+    hint = observation.get("retry_after")
+    if category in DEFINITE:
+        item.update(category=category, until=None, source=None)
+    elif type(hint) is int and 0 <= hint <= 999999999:
+        item.update(category=category, until=now + hint, source="provider", failures=item["failures"] + 1)
+    else:
+        item.update(category=category, until=now + backoff(item["failures"]), source="local")
+        item["failures"] += 1
+    return item
+
+
+def excluded(state, record, model, now):
+    """The exclusion that keeps a listed record from this task's selection for `model` now, if any."""
+    identity = record.get("user_id"), record.get("record_id"), record.get("version")
+    for item in state.get("credential_exclusions", {}).values():
+        if (
+            (item["sponsor"], item["record_id"], item["version"]) == identity
+            and item.get("model") in (None, model)
+            and (item.get("until") is None or now < item["until"])
+        ):
+            return item
+    return None
+
+
+def succeeded(state, credential):
+    """A version that completed a call starts its local backoff count afresh."""
+    exclusions = state.get("credential_exclusions", {})
+    for key, item in list(exclusions.items()):
+        if item.get("category") in TEMPORARY and (item["sponsor"], item["record_id"], item["version"]) == (
+            credential.get("account"),
+            credential.get("record_id"),
+            credential.get("version"),
+        ):
+            del exclusions[key]
+
+
+def adopt(state, previous):
+    """Carry a route-era plan's failed versions and retry deadline onto their exact records."""
+    for failure in previous.get("failures", []):
+        item = exclude(state, failure, 0)
+        if item and item.get("source") and "not_before" in previous:
+            item.update(until=previous["not_before"], source="provider")
+
+
+def intent(state, config, now, selection, observations=None):
+    """Describe the paused call's next selection without granting consent or resetting any allowance.
+
+    `selection` names the call's requirement and sponsor with the candidate found for it, the time a
+    cooling record is due, or the time to look again when the list could not be read.
+    """
     if (
         "contributed" not in admissions.provider_modes(config, state).values()
         or state.get("stage") != "awaiting_credentials"
@@ -20,93 +114,48 @@ def intent(state, config, now, observations=None):
     failures = deepcopy(observations if observations is not None else previous.get("failures", []))
     if observations is None and "failures" not in previous and state.get("provider_failure"):
         failures = [deepcopy(state["provider_failure"])]
-    requirements = {}
-    eligible = state.get("retry_stage") in RECOVERABLE_STAGES and state.get("calls", 0) < config["max_model_calls"]
-    waits = []
-    for requirement in sponsorship.selected_routes(config):
-        provider, route = requirement["provider"], requirement["route"]
-        if admissions.provider_modes(config, state)[provider] != "contributed":
-            continue
-        slot = state.get("sponsorships", {}).get(provider, {})
-        actor = slot.get("sponsor_id")
-        if not actor or route not in sponsorship.ROUTES or slot.get("status") != "active":
-            eligible = False
-        key = provider, route, actor
-        item = requirements.setdefault(
-            key,
-            {
-                "provider": provider,
-                "route": route,
-                "sponsor": actor,
-                "epoch": slot.get("epoch"),
-                "grant": slot.get("grant_id"),
-                "minimum_version": 0,
-                "models": [],
-                "roles": [],
-            },
-        )
-        for field, value in (("models", requirement["model"]), ("roles", requirement["role"])):
-            if value not in item[field]:
-                item[field].append(value)
-    for failure in failures:
-        category, binding = failure.get("category"), failure.get("binding", {})
-        if (
-            binding.get("route") not in sponsorship.ROUTES
-            or sponsorship.ROUTES.get(binding.get("route"), {}).get("sponsorship_provider")
-            != binding.get("sponsorship_provider")
-            or not isinstance(binding.get("sponsor"), str)
-            or not binding["sponsor"].isdigit()
-            or type(binding.get("credential_version")) is not int
-            or binding["credential_version"] < 1
-        ):
-            eligible = False
-        if category not in ("auth", "quota_exhausted", "rate_limited"):
-            eligible = False
-        if category == "rate_limited":
-            hint = failure.get("retry_after")
-            if type(hint) is not int or not 0 <= hint <= 999999999:
-                eligible = False
-            else:
-                waits.append(hint)
-        for item in requirements.values():
-            if (item["sponsor"], item["route"]) == (binding.get("sponsor"), binding.get("route")) and category in (
-                "auth",
-                "quota_exhausted",
-            ):
-                version = binding.get("credential_version")
-                if type(version) is not int or version < 1:
-                    eligible = False
-                else:
-                    item["minimum_version"] = max(item["minimum_version"], version)
-    rows = list(requirements.values())
-    identifier = digest([state.get("calls"), state.get("retry_stage"), rows, failures])
-    failure_id = digest(failures)
+    exclusions = sorted(
+        (key, item.get("until"), len(item["turns"])) for key, item in state.get("credential_exclusions", {}).items()
+    )
+    identifier = digest([state.get("calls"), state.get("retry_stage"), selection["requirement"], exclusions, failures])
     same = previous.get("id") == identifier
     return {
+        "version": VERSION,
         "id": identifier,
-        "requirements": rows,
+        "requirement": deepcopy(selection["requirement"]),
+        "owners": [selection["sponsor"]] if selection.get("sponsor") else [],
         "failures": failures,
-        "failure_id": failure_id,
-        "eligible": eligible and bool(rows),
-        "not_before": previous["not_before"]
-        if previous.get("failure_id") == failure_id
-        else now + max(waits, default=0),
-        "consumed": previous.get("consumed") if same else None,
+        "failure_id": digest(failures),
+        "eligible": state.get("retry_stage") in RECOVERABLE_STAGES
+        and state.get("calls", 0) < config["max_model_calls"]
+        and bool(selection.get("sponsor"))
+        and all(failure.get("category") in FAILURES and identity(failure) for failure in failures),
+        **{key: deepcopy(selection.get(key)) for key in ("candidate", "wake_at")},
+        # One later look stays scheduled until it is due, however often the plan is recomputed.
+        "recheck_at": previous["recheck_at"]
+        if same and (previous.get("recheck_at") or 0) > now
+        else selection.get("recheck_at"),
+        "consumed": previous.get("consumed", []) if same else [],
         **({"status": previous["status"]} if same and "status" in previous else {}),
     }
 
 
-def receipt(plan, versions):
-    """Require usable saved versions for every current slot; an old failed version never suffices."""
-    if not plan or not plan.get("eligible"):
+def receipt(plan):
+    """The next unconsumed reason to select again and when it is due; none while nothing can change.
+
+    A present candidate or a list change seen since the plan was made is due at once; a cooling
+    record or an unreadable list is due at its recorded time.
+    """
+    if not plan or plan.get("version") != VERSION or not plan.get("eligible"):
         return None
-    selected = []
-    for requirement in plan["requirements"]:
-        value = versions.get((requirement["sponsor"], requirement["route"]))
-        if not value or value.get("status") != "valid" or value.get("version", 0) <= requirement["minimum_version"]:
-            return None
-        selected.append(
-            (requirement["sponsor"], requirement["route"], value.get("validation_sequence") or value["sequence"])
-        )
-    identifier = digest([plan["id"], selected])
-    return None if identifier == plan.get("consumed") else {"id": identifier, "due_at": plan["not_before"]}
+    reasons = (
+        ("candidate", plan.get("candidate"), 0),
+        ("observed", plan.get("observed"), 0),
+        ("wake", plan.get("wake_at"), plan.get("wake_at")),
+        ("recheck", plan.get("recheck_at"), plan.get("recheck_at")),
+    )
+    for name, basis, due in reasons:
+        identifier = digest([plan["id"], name, basis])
+        if basis is not None and identifier not in plan.get("consumed", []):
+            return {"id": identifier, "due_at": due, "reason": name}
+    return None

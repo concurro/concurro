@@ -283,12 +283,71 @@ class Shadow:
             if batch["next"] <= after:
                 raise Transient("sponsorship event pagination did not advance")
 
+    def paused_call(self, controller):
+        """The role, profile and model of the call a credential pause stopped, as selection names them."""
+        requirement = controller.state.get("credential_requirement") or {}
+        role, profile = requirement.get("role"), requirement.get("profile")
+        if profile is None and isinstance(role, str) and ":" in role:
+            # A provider failure names its session role as `stage:profile`.
+            stage, profile = role.split(":", 1)
+            role = sponsorship.role_key(stage)
+        return {
+            "provider": requirement.get("provider"),
+            "role": role,
+            "profile": profile,
+            "model": requirement.get("model"),
+        }
+
+    def selectable(self, controller, rows, provider, role, profile, model, routes):
+        """Split one call's matching list entries into those selectable now and those excluded for this task."""
+        target = controller.config.get("upstream", controller.config["repository"])
+        now = self.registry.clock()
+        matching = sponsorship.candidates(rows, provider, role, target, profile, None, now)
+        supported = [record for record in matching if record["route"] in routes]
+        barred = [credential_recovery.excluded(controller.state, record, model, now) for record in supported]
+        return matching, [record for record, item in zip(supported, barred, strict=True) if not item], barred
+
+    def next_selection(self, controller):
+        """What the paused call could select now: a candidate, a cooling record's due time, or a later look."""
+        state, call = controller.state, self.paused_call(controller)
+        slot = state.get("sponsorships", {}).get(call["provider"], {})
+        sponsor = slot.get("sponsor_id") if slot.get("status") == "active" else None
+        selection = {"requirement": call, "sponsor": sponsor, "candidate": None, "wake_at": None, "recheck_at": None}
+        if not sponsor or call["role"] is None or call["profile"] is None:
+            return selection
+        try:
+            routes = self.operator().capabilities().get("contributed_routes", [])
+            rows = self.metadata.read(sponsor) if self.metadata else None
+            if rows is None:
+                raise Transient("sponsorship metadata unavailable")
+        except (Transient, ExchangeError):
+            # An unreadable list is neither a candidate nor proof that none exists.
+            return {**selection, "recheck_at": self.registry.clock() + backoff(0)}
+        _, free, barred = self.selectable(
+            controller, rows, call["provider"], call["role"], call["profile"], call["model"], routes
+        )
+        if free:
+            selection["candidate"] = {key: free[0].get(key) for key in ("entry_id", "record_id", "version")}
+        else:
+            selection["wake_at"] = min((item["until"] for item in barred if item and item.get("until")), default=None)
+        return selection
+
     def prepare_recovery(self, controller, error=None):
-        """Freeze current consent and failure requirements without changing spent work or authority."""
+        """Record trusted failures and plan the paused call's next selection; spent work and authority are unchanged."""
         state = controller.state
         if error is not None and getattr(error, "pause_stage", None) != "awaiting_credentials":
             state.pop("credential_recovery", None)
             return
+        now = self.registry.clock()
+        previous = state.get("credential_recovery") or {}
+        if previous and previous.get("version") != credential_recovery.VERSION:
+            credential_recovery.adopt(state, previous)
+        observed = getattr(error, "observations", []) if error is not None else []
+        if error is None and "failures" not in previous and state.get("provider_pause_pending"):
+            # A pause recorded before recovery plans existed still names its failed record.
+            observed = [state["provider_failure"]] if state.get("provider_failure") else []
+        for observation in observed:
+            credential_recovery.exclude(state, observation, now)
         view = state
         if error is not None:
             view = {
@@ -301,7 +360,8 @@ class Shadow:
         plan = credential_recovery.intent(
             view,
             controller.config,
-            self.registry.clock(),
+            now,
+            self.next_selection(controller),
             getattr(error, "observations", []) if error is not None else None,
         )
         if plan is not None:
@@ -309,8 +369,14 @@ class Shadow:
         else:
             state.pop("credential_recovery", None)
 
+    def succeeded(self, controller, operation):
+        """A completed personal call ends its record's temporary-failure streak."""
+        credential = (operation.get("admission") or {}).get("credential") or {}
+        if credential.get("kind") == "contributed":
+            credential_recovery.succeeded(controller.state, credential)
+
     def recover(self, controller, comments):
-        """Resume only a ready recorded receipt after current authority and whole-roster coverage checks."""
+        """Resume a paused call only on a due, unconsumed receipt, after current authority and coverage checks."""
         state = controller.state
         if not state or state.get("stage") != "awaiting_credentials":
             return
@@ -323,20 +389,29 @@ class Shadow:
         plan = state.get("credential_recovery")
         projected = self.registry.sponsorship(key).get("task", {}).get("recovery") or {}
         delivery = projected.get("delivery")
-        if not plan or not delivery or projected.get("id") != plan["id"] or delivery["id"] == plan.get("consumed"):
+        if not plan or not delivery or projected.get("id") != plan["id"] or delivery["id"] in plan["consumed"]:
             return
         if self.registry.clock() < delivery["due_at"]:
             return
+        plan["consumed"].append(delivery["id"])
         if state["calls"] >= controller.config["max_model_calls"]:
-            plan.update(consumed=delivery["id"], status="budget requires writer attention")
+            plan["status"] = "budget requires writer attention"
             controller.save()
+            return
+        if not plan.get("candidate"):
+            plan["status"] = "coverage still unavailable"
+            if delivery.get("reason") == "observed":
+                # A list read can trail the change that announced it: look once more.
+                plan["recheck_at"] = self.registry.clock() + backoff(0)
+            controller.save()
+            self.registry.record_shadow(key, state, funding=admissions.task_mode(controller.config, state))
             return
         target = state["retry_stage"]
         try:
             self.preflight(controller, [], recovering=True)
             if not controller._validate_authority(comments, stage=target):
                 if state.get("stage") == "awaiting_credentials":
-                    plan.update(consumed=delivery["id"], status="authority requires writer attention")
+                    plan["status"] = "authority requires writer attention"
                     controller.save()
                 return
             if state.get("stage") != "awaiting_credentials":
@@ -345,14 +420,14 @@ class Shadow:
             raise
         except CredentialsUnavailable as error:
             state.update(stage="awaiting_credentials", reason=str(error))
-            plan.update(consumed=delivery["id"], status="coverage still unavailable")
+            plan["status"] = "coverage still unavailable"
             controller.save()
             return
         state["stage"] = target
         state.pop("provider_pause_pending", None)
         state.pop("retry_stage", None)
         state.pop("reason", None)
-        plan.update(consumed=delivery["id"], status="resumed")
+        plan["status"] = "resumed"
         controller.save()
 
     def retire_pending(self, controller):
@@ -381,7 +456,7 @@ class Shadow:
                 failures = [
                     event
                     for event in observed
-                    if event.get("category") in ("auth", "quota_exhausted", "rate_limited", "budget_denied")
+                    if event.get("category") in (*credential_recovery.FAILURES, "budget_denied")
                     and event.get("turn") not in controller.state.get("provider_paused_turns", [])
                 ]
                 if fresh or failures:
@@ -421,10 +496,10 @@ class Shadow:
             checks = list(requests)
             if recovering and not checks:
                 # Resumption rechecks the paused call's coverage, or every role when the pause named none.
-                paused = controller.state.get("credential_requirement") or {}
+                paused = self.paused_call(controller)
                 roster = sponsorship.selected_routes(controller.config)
                 roster = [
-                    r for r in roster if (r["role"], r["profile"]) == (paused.get("role"), paused.get("profile"))
+                    r for r in roster if (r["role"], r["profile"]) == (paused["role"], paused["profile"])
                 ] or roster
                 checks = [(r["profile"], sponsorship.ROLES[r["role"]], {}) for r in roster]
             selected = []
@@ -480,31 +555,19 @@ class Shadow:
                 rows = metadata[actor]
                 if rows is None:
                     raise Transient(f"{detail}: sponsorship metadata unavailable")
-                matching = sponsorship.candidates(
-                    rows, provider, role, target, profile_name, None, self.registry.clock()
+                routes = capabilities.get("contributed_routes", [])
+                matching, found, barred = self.selectable(
+                    controller, rows, provider, role, profile_name, profile.model, routes
                 )
-                found = [r for r in matching if r["route"] in capabilities.get("contributed_routes", [])]
                 if not found:
-                    reason = "contributed credential route adapter is unavailable" if matching else NO_MATCH
+                    reason = (
+                        "every matching credential failed or is cooling down"
+                        if any(barred)
+                        else "contributed credential route adapter is unavailable"
+                        if matching
+                        else NO_MATCH
+                    )
                     raise CredentialsUnavailable(f"{detail}: {reason}", requirement)
-                if recovering:
-                    failed = controller.state["credential_recovery"]["requirements"]
-                    found = [
-                        record
-                        for record in found
-                        if type(record.get("version")) is int
-                        and record["version"]
-                        > max(
-                            (
-                                item["minimum_version"]
-                                for item in failed
-                                if item["sponsor"] == actor and item["route"] == record["route"]
-                            ),
-                            default=0,
-                        )
-                    ]
-                    if not found:
-                        raise Transient(f"{detail}: saved credential version is not yet current")
                 record = found[0]
                 credential = Credential(
                     digest(["contributed", actor, record["route"], record.get("record_id"), record.get("version")]),

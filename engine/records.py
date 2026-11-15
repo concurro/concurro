@@ -266,7 +266,9 @@ class TaskState(TypedDict, total=False):
 
     stage: str
     retry_stage: str
-    credential_recovery: Document  # Recorded consent, validation receipt and automatic retry deadline.
+    credential_recovery: Document  # The paused call's next selection, its receipts and due times.
+    credential_exclusions: Document  # Failed or cooling record versions, keyed by owner/record/version.
+    credential_selections: Document  # Selected list entry per credential identity, as explanation.
     mode: str
     issue: int
     pr: int

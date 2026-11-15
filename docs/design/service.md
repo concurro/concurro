@@ -414,16 +414,32 @@ queued commands show general pending confirmation until their transition is vali
 migration; no downgrade path is required. The optional `vault_metadata_url` and
 `vault_service_token_path` supply nonsecret coverage and credential-event recovery evidence.
 
-## Credential-event recovery
+## Credential fallback and recovery
 
-Every delivery-recovery timer tick runs current-policy observation and reads the vault's
-service-authenticated nonsecret
-`/metadata/events` feed. Registry schema 8 atomically persists its cursor, latest saved-version evidence
-per owner/route and matching task queue receipts. The service has no gateway resolver bearer.
-A paused task records current provider grants, failed versions and its original retry deadline.
-Only eligible `awaiting_credentials` tasks are reconsidered. The owned tick processes writer
-commands/source changes first, then current authority, the paused call's coverage, versions
-and budget before any new charge. Duplicate events, wrapping-key rotation and restart do not
-reset retry clocks or make an old failed token newly valid. Other suspended/human stages stay
-writer-controlled. [Phase 6](../proposals/per-user-credentials/phase-6.md) records the exact
-recovery and forward-migration contracts.
+A trusted provider failure settles its attempt, ends its execution session and excludes that
+exact record version on the task; the [classification guide](credential-failures.md) lists the
+categories, deadlines and supported response shapes. The task pauses in `awaiting_credentials`
+with a plan for the paused call, and fallback is that call's next admitted attempt through the
+ordinary queue and controller, never a gateway retry with another secret. When the sponsor's
+list already holds another matching entry, the registry queues the receipt at once, without
+waiting for a vault event. Each fallback is charged against `max_model_calls` and recorded with
+its actual owner, record and version; it never changes the sponsor, the funding mode or the
+model. Completed results and unaffected batch members are kept.
+
+Every delivery-recovery timer tick also reads the vault's service-authenticated nonsecret
+`/metadata/events` feed. The registry atomically persists its cursor and, for each waiting
+plan whose sponsor's credentials or list changed, one queue receipt. The service has no
+gateway resolver bearer. Only eligible `awaiting_credentials` tasks are reconsidered: the
+owned tick processes writer commands and source changes first, then current authority, the
+paused call's coverage and budget before any new charge. Duplicate events, wrapping-key
+rotation, renames and restart neither reset a deadline nor make a failed version selectable.
+Other suspended or human stages stay writer-controlled.
+
+A role's conversation is the transcript Concurro retains for it, so it continues on a different
+credential or credential type under a new execution session; no provider-side session
+identifier is carried between accounts.
+
+A pause recorded before entry lists is read forward: its failed versions become exclusions on
+their exact records, its retry deadline stays with the throttled record, and the task is
+selected once against the sponsor's whole list.
+

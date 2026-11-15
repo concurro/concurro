@@ -39,7 +39,8 @@ New records have `status_reason: stored`, with no validation timestamp or model 
 The legacy `valid` status means stored and usable, not provider-verified. Historical validation
 fields remain readable. Consumers accept both `stored` and historical `validated` events;
 either records an available replacement for recovery.
-A replacement can schedule one automatic retry per eligible paused task using that owner/route.
+A saved version, like any list change, wakes that owner's eligible paused tasks to select
+again ([fallback and recovery](../../docs/design/service.md#credential-fallback-and-recovery)).
 Even a mistyped replacement consumes a model-call attempt if execution starts and fails;
 provider billing depends on the response. Failed versions are not retried automatically again.
 See [save-only rollout](../README.md#save-only-credential-rollout) for component ordering.
