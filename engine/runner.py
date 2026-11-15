@@ -13,6 +13,7 @@ from pathlib import Path
 
 import protocol
 import run_display
+import runner_layout
 import turns
 from mirror import Mirror, git_environment
 from policy import runner_bound
@@ -103,7 +104,7 @@ class Loop:
         """Execute and acknowledge one turn; the provider journal remains recoverable in its result."""
         identifier, payload = turn["id"], turn["payload"]
         # Stable across turns and replacement jobs: Claude's transcript lookup includes the cwd.
-        directory = self.root / ("turn-" + "0" * 32)
+        directory = self.root / runner_layout.TURN
         directory.mkdir(parents=True, mode=0o700)
         record = run_display.start(self.root, identifier, payload["request"], self.task)
         log(f"turn {identifier}: {record['operation-label']} · {record['task-label']} · {record['agent-label']}")

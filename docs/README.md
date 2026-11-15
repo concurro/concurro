@@ -30,7 +30,8 @@ integration on the same coordinator and stronger crash recovery are separate fol
 [Other design-review follow-ups](design/design-review-corrections.md#deferred-follow-ups)
 include a defect/suggestion distinction and revision/convergence aids.
 
-[MCP tools](design/mcp-tools.md) is a proposal, not supported target configuration.
+[MCP tools](design/mcp-tools.md): stdio servers are supported target configuration; remote
+servers, tool guidance and the runner proof remain proposed.
 Optional status summarization, model routing and sub-issue decomposition remain future
 work in their respective designs. The current MVP does not implement automatic CI repair,
 automatic merge or repair triggered directly by PR-thread replies.

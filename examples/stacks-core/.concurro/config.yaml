@@ -38,6 +38,13 @@ limits:
   changed_files: null
   overlay_files: null
   workspace_files: null
+mcp:
+  servers:
+    lodestone:
+      transport: stdio
+      command: lode
+      args:
+      - mcp
 max_fix_rounds: 2
 max_model_calls: 48
 max_context_bytes: 350000

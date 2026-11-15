@@ -31,6 +31,7 @@ import feedback
 import file_inventory
 import implementation_bundle
 import markup
+import mcp_config
 import pr_template
 import prompts
 import protocol
@@ -123,6 +124,7 @@ def validate_config(config):
     """Reject unsafe or internally inconsistent operator configuration."""
     admissions.mode(config)
     pr_template.validate(config.get("pr_template_sections"))
+    mcp_config.servers(config)
     if "credential_routes" in config or "provider_credential_routes" in config:
         import sponsorship
 

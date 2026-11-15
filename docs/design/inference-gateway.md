@@ -135,5 +135,6 @@ Gateway and exchange databases are persistent; they are not disposable runner ca
 Back them up with the service registry according to the host's recovery procedure. An
 inference outage stops model progress; it does not grant runners a direct-provider fallback.
 
-MCP integration remains a [separate proposal](mcp-tools.md). An inference session key
-must not be assumed to authorize MCP administration or arbitrary tool traffic.
+Target [MCP servers](mcp-tools.md) are stdio children of the CLI on the runner and send
+nothing through the gateway. Remote MCP access remains a proposal; an inference session
+key must not be assumed to authorize MCP administration or arbitrary tool traffic.

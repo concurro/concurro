@@ -134,6 +134,42 @@ Named model profiles and reviewer lists have no count ceiling. Review rosters st
 at least two distinct provider/model identities. Policy-document lists and path-policy
 lists have no entry-count or string-length ceiling; structural path checks remain.
 
+### MCP servers
+
+An optional `mcp.servers` map gives every role's CLI the same stdio MCP servers:
+
+```yaml
+mcp:
+  servers:
+    lodestone:
+      transport: stdio
+      command: lode
+      args: [mcp]
+    rust-analyzer:
+      transport: stdio
+      command: rust-analyzer-mcp
+      args: ["{workspace}"]
+      env:
+        RA_LOG: error
+```
+
+`transport` must be `stdio`. `command` is required; `args` and non-secret `env` are
+optional. `{workspace}` in an argument becomes the turn's checkout path, within that one
+argument. The CLI starts each server as its own child, in the checkout, on every turn.
+The target's `.concurro/setup` installs the commands. With servers declared, Claude
+ignores every other MCP configuration, including a candidate's `.mcp.json`; Codex already
+ignores user configuration. Adding or changing servers changes the config digest;
+existing tasks adopt it with `/concurro resume`. Remote servers are a
+[proposal](design/mcp-tools.md).
+
+The [stacks-core example](../examples/stacks-core/) declares `lodestone`, a semantic code
+index. Its [index workflow](../examples/stacks-core/.github/workflows/lodestone-index.yml)
+runs on the fork's default branch, indexes the upstream base at the path role turns use,
+and saves the index to the Actions cache. Its
+[setup](../examples/stacks-core/.concurro/setup/action.yml) restores that cache read-only;
+each turn's server then indexes only what its checkout changed. On a cache miss the server
+is unavailable and the turn continues without it.
+
 ### Large changes and resource bounds
 
 Unlimited counts do not remove transport or memory bounds. Workspace extraction permits

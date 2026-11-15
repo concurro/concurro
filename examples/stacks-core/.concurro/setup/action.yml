@@ -13,3 +13,35 @@ runs:
       run: |
         rustup show active-toolchain
         rustup component add rustfmt clippy
+
+    # The lodestone index built by .github/workflows/lodestone-index.yml; cache paths and keys
+    # must stay identical to that workflow's. A miss leaves the `lodestone` MCP server
+    # unavailable; nothing here builds or indexes.
+    - name: Resolve the lodestone index
+      id: lodestone
+      shell: bash
+      working-directory: ${{ inputs.base }}
+      run: |
+        echo "rev=$(tr -d '[:space:]' < "$GITHUB_ACTION_PATH/lodestone-rev")" >> "$GITHUB_OUTPUT"
+        echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        echo "$HOME/.lodestone/bin" >> "$GITHUB_PATH"
+
+    - name: Restore lodestone and its model
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.lodestone/bin
+          ~/.lodestone/models
+        key: lodestone-tools-${{ steps.lodestone.outputs.rev }}
+
+    # The newest index when none matches this base: the first search of a turn then indexes
+    # only what differs.
+    - name: Restore the lodestone index
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.lodestone/worktrees
+          ~/.lodestone/cache.sqlite
+          ~/.lodestone/registry.json
+        key: lodestone-index-${{ steps.lodestone.outputs.rev }}-${{ steps.lodestone.outputs.sha }}
+        restore-keys: lodestone-index-${{ steps.lodestone.outputs.rev }}-

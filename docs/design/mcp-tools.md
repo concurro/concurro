@@ -1,6 +1,8 @@
 # MCP tools on ephemeral runners
 
-Status: proposal, 2026-11-06. Design only; no implementation or deployment.
+Status: stdio servers are implemented (configuration, validation and both CLI renderers);
+not yet proven on runners or deployed. Remote servers, tool guidance and the proof remain
+a proposal, 2026-11-06.
 
 Give Concurro agents normal MCP clients alongside their shell and native tools. Start
 with `cylewitruk/rust-analyzer-mcp` for the working repository and `cylewitruk/rust-mcp`
@@ -26,8 +28,9 @@ A runner-local HTTP service remains possible through target setup for other MCPs
 
 ## Configuration and installation
 
-Add an optional `mcp.servers` map to the existing target configuration. Existing
-configs remain valid. This is proposed syntax, not a supported configuration yet:
+The existing target configuration takes an optional `mcp.servers` map; configs without
+it are unchanged. `engine/mcp_config.py` validates it. The `stdio` entry below is
+supported; the `http` entry is proposed syntax:
 
 ```yaml
 mcp:
@@ -42,11 +45,11 @@ mcp:
 ```
 
 `{workspace}` is the current turn's checkout, substituted as one argument, never
-through shell interpolation. A local HTTP server can instead specify a literal URL.
-`service` names an operator-approved remote connection; its endpoint and credential
-are resolved centrally, not supplied by an issue or candidate. URL and service are
-mutually exclusive. The initial local fields are command, args and non-secret env;
-ordinary transport timeouts can be configured without provider-specific target files.
+through shell interpolation. The supported local fields are command, args and non-secret
+env. Proposed: a local HTTP server specifies a literal URL instead, and `service` names
+an operator-approved remote connection whose endpoint and credential are resolved
+centrally, not supplied by an issue or candidate. URL and service are mutually exclusive.
+Ordinary transport timeouts would be configured without provider-specific target files.
 
 Use one normalized server definition and two CLI renderers. MCP selection is independent
 of the named model profiles. Initially every role gets the configured servers; no
@@ -84,12 +87,13 @@ Do not retain analyzer processes, indexes, build output, generated client config
 or MCP credentials in the transcript archive. Build/download caches continue to use the
 target's existing read-only GitHub cache setup. No cache-writing permission is added.
 
-For Codex, retain `--ignore-user-config` and supply the normalized `mcp_servers` through
-explicit overrides rather than restoring ambient configuration. The current TOML value
-serializer will need array support. For Claude, use a generated scratch JSON file with
-`--mcp-config` and `--strict-mcp-config`. Keep hooks and unrelated configuration disabled.
-Prove both paths with the pinned CLI versions, including resume; current documentation
-alone is not proof that those exact binaries behave identically.
+`engine/agent_entry.py` renders the normalized servers on fresh and resumed calls. Codex
+keeps `--ignore-user-config` and receives one `-c mcp_servers.<name>=…` override per
+server. Claude receives them inline through `--mcp-config` with `--strict-mcp-config`, so
+no generated file reaches the scratch or retained directories. Hooks and unrelated
+configuration stay disabled. Both paths still need proof with the pinned CLI versions,
+including resume; current documentation alone is not proof that those exact binaries
+behave identically.
 
 ## Remote access
 
@@ -133,8 +137,8 @@ review and CI requirements are unchanged.
 
 ## Implementation and proof
 
-1. Add the optional server definitions, validation and shared renderers. Start with
-   stdio rust-analyzer, installed by target setup. Keep runtime changes small and testable.
+1. Done: optional stdio server definitions, validation and both renderers. Target setup
+   installs the server binaries.
 2. Add the operator-owned HTTP connection and session-scoped authentication for rust-mcp.
    Reuse the current claim/end/reconciliation lifecycle; no new scheduler or database.
 3. Update trusted tool guidance and run a dedicated proof with both configured CLIs.

@@ -1,0 +1,100 @@
+# Builds the lodestone index of the upstream base and saves it to the Actions cache. Role jobs
+# restore it read-only in .concurro/setup/action.yml, whose cache paths and keys must stay
+# identical to the ones here. It only parses the upstream's files; it never builds or runs them.
+name: Lodestone index
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: lodestone-index
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: stacks-network/stacks-core
+  BASE: main
+
+jobs:
+  index:
+    name: Index the upstream base
+    # The role jobs' image: they run this binary and restore to these absolute paths.
+    runs-on: ubuntu-24.04
+    cache-mode: write
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .concurro/setup
+          persist-credentials: false
+
+      - name: Resolve revisions
+        id: lodestone
+        run: |
+          set -euo pipefail
+          rev=$(tr -d '[:space:]' < .concurro/setup/lodestone-rev)
+          sha=$(git ls-remote "https://github.com/$UPSTREAM.git" "refs/heads/$BASE" | cut -f1)
+          [[ "$rev" =~ ^[0-9a-f]{40}$ && "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Restore lodestone and its model
+        id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.lodestone/bin
+            ~/.lodestone/models
+          key: lodestone-tools-${{ steps.lodestone.outputs.rev }}
+
+      - name: Build lodestone
+        if: steps.tools.outputs.cache-hit != 'true'
+        env:
+          REV: ${{ steps.lodestone.outputs.rev }}
+        run: |
+          cargo install --locked --git https://github.com/cylewitruk/lodestone --rev "$REV" \
+            --root "$HOME/.lodestone"
+
+      - name: Restore the previous index
+        id: index
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.lodestone/worktrees
+            ~/.lodestone/cache.sqlite
+            ~/.lodestone/registry.json
+          key: lodestone-index-${{ steps.lodestone.outputs.rev }}-${{ steps.lodestone.outputs.sha }}
+          restore-keys: lodestone-index-${{ steps.lodestone.outputs.rev }}-
+
+      - name: Index the upstream base
+        env:
+          SHA: ${{ steps.lodestone.outputs.sha }}
+          # The runner's turn checkout (engine/runner_layout.py under the launcher's --root):
+          # lodestone keys an index by its checkout's path, and the restored registry names it.
+          WORK: ${{ runner.temp }}/concurro-session/turns/turn-00000000000000000000000000000000/work
+        run: |
+          set -euo pipefail
+          git init -q "$WORK"
+          git -C "$WORK" fetch -q --depth 1 "https://github.com/$UPSTREAM.git" "$SHA"
+          git -C "$WORK" checkout -q --detach FETCH_HEAD
+          lode="$HOME/.lodestone/bin/lode"
+          "$lode" --local register "$WORK"
+          # Embeds a query: the model is downloaded even when every chunk came from the cache.
+          "$lode" --local search --repo "$WORK" --top-k 3 'retry a request with exponential backoff'
+          # The cache holds cache.sqlite alone, so fold its write-ahead log into it.
+          sqlite3 "$HOME/.lodestone/cache.sqlite" 'PRAGMA wal_checkpoint(TRUNCATE);'
+
+      - name: Save the index
+        if: steps.index.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.lodestone/worktrees
+            ~/.lodestone/cache.sqlite
+            ~/.lodestone/registry.json
+          key: lodestone-index-${{ steps.lodestone.outputs.rev }}-${{ steps.lodestone.outputs.sha }}

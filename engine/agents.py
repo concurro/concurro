@@ -10,6 +10,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 import admissions
+import mcp_config
 import protocol
 import review_timing
 import run_display
@@ -167,6 +168,7 @@ class Agents:
             raise Blocked("agent transport bundle differs from the approved bundle")
         if session and not self.retained:
             raise Blocked("retained sessions need a transcript store")
+        servers = mcp_config.servers(self.config)
         request = {
             **(
                 {"admission": admission, "attempt": attempt}
@@ -183,6 +185,7 @@ class Agents:
             "charter": self.bundle.charter_text,
             "instruction_texts": self.bundle.instruction_texts,
             "max_retained_bytes": self.config.get("max_retained_bytes", DEFAULT_RETAINED_BYTES),
+            **({"mcp_servers": servers} if servers else {}),
             "context": context,
             "session": session,
             "local_candidate": candidate is not None,

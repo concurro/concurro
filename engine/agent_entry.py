@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import mcp_config
 from bundle import Bundle
 from model_config import default_effort
 from policy import KEY_VARIABLE as KEY_VARIABLE, KILLED, TIMEOUT_EXIT, UNCERTAIN_EXIT
@@ -19,11 +20,13 @@ class ProviderUncertain(RuntimeError):
 
 
 def toml(value):
-    """A TOML value for `-c` overrides: strings, booleans and inline tables."""
+    """A TOML value for `-c` overrides: strings, booleans, arrays and inline tables."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
         return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml(v) for v in value) + "]"
     if isinstance(value, dict):
         return "{" + ", ".join(f"{json.dumps(k)} = {toml(v)}" for k, v in value.items()) + "}"
     raise ValueError("unsupported configuration value")
@@ -37,6 +40,9 @@ def command_for(request, schema_path, output_path):
     session = request.get("session")
     resume = request.get("resume_id")
     gateway = request["gateway"]
+    servers = request.get("mcp_servers")
+    if servers:
+        servers = mcp_config.resolved(servers, request["workspace"])
     if provider == "codex":
         endpoint = {
             "name": "Concurro gateway",
@@ -75,6 +81,7 @@ def command_for(request, schema_path, output_path):
             "-c",
             "model_reasoning_effort=" + toml(effort),
             *(["-c", "features.goals=true"] if request.get("stage") == "develop" else []),
+            *(arg for name, server in (servers or {}).items() for arg in ("-c", f"mcp_servers.{name}=" + toml(server))),
             *model,
             *([resume] if resume else []),
             "-",
@@ -91,6 +98,8 @@ def command_for(request, schema_path, output_path):
             json.dumps(settings),
             "--permission-mode",
             "bypassPermissions",
+            # The target's servers only: a candidate's `.mcp.json` adds none.
+            *(["--mcp-config", json.dumps({"mcpServers": servers}), "--strict-mcp-config"] if servers else []),
             *(
                 ["--resume", resume]
                 if resume
