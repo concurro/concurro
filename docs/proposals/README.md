@@ -22,6 +22,7 @@ in the design and operator docs.
 | [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
 | [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
 | [Backoffice API surface](backoffice-api.md) | Epic (inventory) | Endpoints for a GitHub-authenticated backoffice: own credentials, task overview, commands and run diagnostics. |
+| [Retrospective tuning](retrospective-tuning.md) | Feature | Analyse finished tasks and open a fork PR with evidence-backed `.concurro/` changes to instructions, models, panels and budgets. |
 | [Webhook-fed list index](list-index.md) | Feature | A persistent read-model projection in the service keeps backoffice lists current from webhooks. [Phase 0 evidence](list-index/phase-0.md) and per-phase briefs are in [`list-index/`](list-index/). |
 
 ## Completed, awaiting release
