@@ -31,6 +31,9 @@ def identity(observation):
 def exclude(state, observation, now):
     """Record one trusted failure against its exact record version; a repeated turn changes nothing.
 
+    Failures of one record merge: one without a deadline outlasts any cooldown, and cooldowns keep
+    the latest deadline.
+
     A model-access denial excludes the record for that model only. Temporary failures cool down until
     the provider's own deadline, or a local backoff that doubles per consecutive failure of the record.
     """
@@ -55,14 +58,18 @@ def exclude(state, observation, now):
     if observation.get("turn") in item["turns"]:
         return item
     item["turns"].append(observation.get("turn"))
-    hint = observation.get("retry_after")
+    if item.get("category") in DEFINITE and category in TEMPORARY:
+        return item
     if category in DEFINITE:
         item.update(category=category, until=None, source=None)
-    elif type(hint) is int and 0 <= hint <= 999999999:
-        item.update(category=category, until=now + hint, source="provider", failures=item["failures"] + 1)
-    else:
-        item.update(category=category, until=now + backoff(item["failures"]), source="local")
-        item["failures"] += 1
+        return item
+    hint = observation.get("retry_after")
+    provided = type(hint) is int and 0 <= hint <= 999999999
+    until = now + (hint if provided else backoff(item["failures"]))
+    item["failures"] += 1
+    # Failures of one record on concurrent turns keep its latest deadline.
+    if until >= (item.get("until") or 0):
+        item.update(category=category, until=until, source="provider" if provided else "local")
     return item
 
 

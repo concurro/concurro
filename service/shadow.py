@@ -393,17 +393,20 @@ class Shadow:
             return
         if self.registry.clock() < delivery["due_at"]:
             return
-        plan["consumed"].append(delivery["id"])
-        if state["calls"] >= controller.config["max_model_calls"]:
-            plan["status"] = "budget requires writer attention"
+
+        def settle(status):
+            """Spend the receipt only with the outcome it led to, so an interrupted look is delivered again."""
+            plan["consumed"].append(delivery["id"])
+            plan["status"] = status
             controller.save()
-            return
+
+        if state["calls"] >= controller.config["max_model_calls"]:
+            return settle("budget requires writer attention")
         if not plan.get("candidate"):
-            plan["status"] = "coverage still unavailable"
             if delivery.get("reason") == "observed":
                 # A list read can trail the change that announced it: look once more.
                 plan["recheck_at"] = self.registry.clock() + backoff(0)
-            controller.save()
+            settle("coverage still unavailable")
             self.registry.record_shadow(key, state, funding=admissions.task_mode(controller.config, state))
             return
         target = state["retry_stage"]
@@ -411,24 +414,21 @@ class Shadow:
             self.preflight(controller, [], recovering=True)
             if not controller._validate_authority(comments, stage=target):
                 if state.get("stage") == "awaiting_credentials":
-                    plan["status"] = "authority requires writer attention"
-                    controller.save()
+                    settle("authority requires writer attention")
                 return
             if state.get("stage") != "awaiting_credentials":
                 return
         except ProviderFailure:
+            plan["consumed"].append(delivery["id"])
             raise
         except CredentialsUnavailable as error:
             state.update(stage="awaiting_credentials", reason=str(error))
-            plan["status"] = "coverage still unavailable"
-            controller.save()
-            return
+            return settle("coverage still unavailable")
         state["stage"] = target
         state.pop("provider_pause_pending", None)
         state.pop("retry_stage", None)
         state.pop("reason", None)
-        plan["status"] = "resumed"
-        controller.save()
+        settle("resumed")
 
     def retire_pending(self, controller):
         """Confirm exact failed-session retirement before any replacement admission."""

@@ -2,12 +2,14 @@
 
 import unittest
 from copy import deepcopy
+from unittest.mock import patch
 
 from fixtures import KEY
 
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 from policy import digest
+from relay import ExchangeError
 from service import credential_recovery
 from test_credential_recovery import RecoveryTests
 from test_shadow import comment
@@ -219,6 +221,24 @@ class FallbackTests(RecoveryTests):
         self.assertEqual(len(self.served), 2)
         self.assertEqual(self.charged(state), sorted([("202", self.ROUTES[0], 1, 1), ("202", self.ROUTES[1], 1, 1)]))
 
+    def test_transient_failure_after_session_retirement_keeps_the_fallback_deliverable(self):
+        """An interrupted recovery spends neither its receipt nor a call; the next tick completes it."""
+        paused = self.start()
+        with self.current() as controller:
+            controller.state["provider_retire_sessions"] = [self.served[0][0]]
+            controller.save()
+        with patch.object(self.exchange, "observations", side_effect=ExchangeError(503, "synthetic outage")):
+            self.dispatch()
+        interrupted = self.state()
+        self.assertEqual((interrupted["stage"], interrupted["calls"]), ("awaiting_credentials", 1))
+        # The retirement checkpoint was written, and the receipt it carried is still unspent.
+        self.assertEqual(interrupted["provider_retire_sessions"], [])
+        self.assertEqual(interrupted["credential_recovery"]["consumed"], paused["credential_recovery"]["consumed"])
+        self.clock.now += 3600
+        state = self.resume()
+        self.assertEqual(state["calls"], 2)
+        self.assertEqual(self.charged(state), sorted([("202", self.ROUTES[0], 1, 1), ("202", self.ROUTES[1], 1, 1)]))
+
     def test_route_era_plan_maps_failed_versions_to_exact_records_and_is_selected_once(self):
         """A pause recorded before entry lists keeps its failed version excluded and finds an existing alternative."""
         self.second["enabled"] = False
@@ -262,11 +282,43 @@ class SameTypeFallbackTests(FallbackTests):
     ROUTES = ("chatgpt-subscription", "chatgpt-subscription")
 
 
+class ExclusionMergeTests(unittest.TestCase):
+    """Several turns can fail on one record version; their constraints merge whatever the arrival order."""
+
+    @staticmethod
+    def observe(turn, category, hint=None):
+        binding = {"sponsor": "202", "credential": "record", "credential_version": 1, "route": "openai-api-key"}
+        return {"turn": turn, "category": category, "retry_after": hint, "binding": binding, "model": "m"}
+
+    def merged(self, *failures):
+        state = {}
+        for turn, failure in enumerate(failures):
+            credential_recovery.exclude(state, self.observe(turn, *failure), 1000)
+        (item,) = state["credential_exclusions"].values()
+        return item["category"], item["until"], item["source"]
+
+    def test_a_failure_without_a_deadline_outlasts_cooldowns_in_either_order(self):
+        for definite in ("auth", "quota_exhausted"):
+            for temporary in (("rate_limited", 300), ("unavailable", None)):
+                self.assertEqual(self.merged((definite,), temporary), (definite, None, None))
+                self.assertEqual(self.merged(temporary, (definite,)), (definite, None, None))
+
+    def test_cooldowns_keep_the_latest_deadline_in_either_order(self):
+        expected = ("rate_limited", 1300, "provider")
+        self.assertEqual(self.merged(("rate_limited", 300), ("rate_limited", 60)), expected)
+        self.assertEqual(self.merged(("rate_limited", 60), ("rate_limited", 300)), expected)
+        # A provider deadline is not shortened by a concurrent turn's local backoff, nor the reverse.
+        self.assertEqual(self.merged(("rate_limited", 300), ("unavailable", None)), expected)
+        self.assertEqual(self.merged(("unavailable", None), ("rate_limited", 300)), expected)
+        self.assertEqual(self.merged(("unavailable", None), ("rate_limited", 30)), ("unavailable", 1060, "local"))
+
+
 def load_tests(loader, tests, pattern):
     """Run each journey once per direction while reusing the recovery fixture."""
     names = [name for name in FallbackTests.__dict__ if name.startswith("test_")]
-    return unittest.TestSuite(
+    journeys = unittest.TestSuite(
         case(name)
         for case in (FallbackTests, ReverseFallbackTests, SameTypeFallbackTests)
         for name in (names if case is FallbackTests else names[:1])
     )
+    return unittest.TestSuite((journeys, loader.loadTestsFromTestCase(ExclusionMergeTests)))

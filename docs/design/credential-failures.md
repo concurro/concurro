@@ -25,6 +25,9 @@ exclusion records which of the two set it. A completed call on that version ends
 No deadline is ever invented for `auth`, `model_denied` or `quota_exhausted`, and one record's
 deadline never applies to another.
 
+Several turns can fail on one record version. Their exclusions merge: a failure without a
+deadline is never replaced by a cooldown, and cooldowns keep the latest deadline.
+
 ## Supported response shapes
 
 "Documented" means the provider's public API reference describes the shape; fixtures are
@@ -87,5 +90,6 @@ one queued receipt at a time:
 | The list could not be read, or trailed its own event | 60 seconds later | One later look |
 
 The owned tick then rereads consent and the list, scans from the top and either resumes the
-paused call or stays paused. Each receipt is consumed once. `/concurro retry` forgets failures
+paused call or stays paused. Each receipt is consumed once, together with the outcome it led
+to; a tick interrupted by a transient error leaves it deliverable. `/concurro retry` forgets failures
 that have no deadline; a deadline still in force, spent calls and completed results remain.
