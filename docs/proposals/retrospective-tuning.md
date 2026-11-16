@@ -82,24 +82,29 @@ An operator command, alongside `evaluate`:
 python3 -m service --settings /absolute/path/to/settings.json retro OWNER/REPO --since 2026-11-01
 ```
 
-Each run belongs to a dedicated retrospective issue in the target's issue repository.
-That issue provides the session binding runner turns need, and its dashboard shows the
-run and links the PR. The run makes live model calls, so it needs operator
-authorization, like `evaluate`.
+Each run opens its own retrospective issue in the target's issue repository. That issue
+provides the session binding runner turns need, its dashboard shows the run and links
+the PR, and it closes when the run completes. The run makes live model calls, so it
+needs operator authorization, like `evaluate`.
 
 ### Population
 
-A run covers every task in the target whose latest state change falls in the window and
-whose stage is in `TERMINAL_STAGES`, `SUSPENDED_STAGES` or `JUDGED_STAGES`. Suspended
-and judged tasks may continue later, so each dossier records its **observation cutoff**:
-the snapshot time and the stage then. A later run re-reads them. Tasks still in active
-stages are excluded.
+A run covers:
+
+- tasks that reached a stage in `TERMINAL_STAGES` during the window
+- every task currently in `SUSPENDED_STAGES` or `JUDGED_STAGES`, whenever it entered
+  that stage
+
+Tasks still in active stages are excluded. Each dossier records its **observation
+cutoff**: the snapshot time and the stage then. A task that stays paused is read again
+by every run until it reaches a terminal stage.
 
 ### Collector
 
-The collector extends `design_audit`. It captures GitHub reads into a snapshot, verifies
-artifact authorship, and reads diagnostics and exchange records for the same tasks. The
-same snapshot reproduces the dossiers offline.
+The collector extends `design_audit`. One snapshot freezes everything the run reads: the
+GitHub responses, and the selected diagnostics rows and exchange observations for the
+same tasks. Dossiers are rebuilt offline from that snapshot alone, never from the live
+databases, which can still gain late inference observations.
 
 **Configuration segments.** Each task is split at its resume boundaries into segments,
 each with its configuration commit, digest and profiles per role. Every turn, finding and
@@ -128,7 +133,10 @@ defect. The collector reports candidates; it does not classify them.
 - enumerated or numeric fields from private stores: status, termination reason,
   correction codes, timings, token counts
 
-Prompts, responses, transcripts and correction prose are not included. Anything the
+The collector enforces this with a field allow-list. A string field from a private store
+is kept only when its value belongs to that field's fixed set of codes; any other value
+is replaced with `other`. Prompts, responses, transcripts and correction prose are not
+included. Anything the
 analyst writes, whether claims, patches or explanations, can only draw on public material.
 This loses transcript-level insight; see [Open questions](#open-questions).
 
@@ -157,6 +165,7 @@ proposals:
       "success_measure": "Post-approval human fixes under src/mempool",
       "possible_regression": "More low-value findings on unrelated mempool changes",
       "patch": "<unified diff limited to .concurro/>",
+      "supersedes": [],
       "loosens_review": false
     }
   ]
@@ -169,9 +178,22 @@ so a proposal resting only on interpretations is visible as such.
 
 ### Prior runs
 
-The collector reads earlier retro PRs in the fork. A closed PR's closing comment and
-any per-proposal review comments are its rejection reasons. The analyst receives them
-and must say what new evidence justifies repeating a rejected proposal.
+The collector reads earlier retro PRs in the fork and gives each of their proposals one
+status:
+
+| Status | Determined by |
+| ---- | ---- |
+| Applied | The PR merged and the proposal's patch is in the merged result |
+| Removed before merge | The PR merged without the proposal's patch |
+| Rejected | A writer commented `reject P<n>: <reason>` on the PR |
+| Superseded | A later run's proposal names it in `supersedes` |
+| Unmerged, reason unknown | The PR closed without merging and none of the above applies |
+| Open | The PR is still open |
+
+Only an explicit `reject` comment supplies a rejection reason; ordinary review comments
+are passed on as context, not as reasons. When the analyst repeats a rejected proposal,
+it must say what new evidence justifies it. A repeated proposal whose earlier status is
+unknown is labelled as a repeat.
 
 ### Verification
 
@@ -234,5 +256,3 @@ and must say what new evidence justifies repeating a rejected proposal.
   private destination. Is that worth it after Phase 0?
 - **Permissions.** Adding fork Pull requests write changes the App's grants and token
   permissions. Confirm the installation accepts it before deployment.
-- **Retrospective issue lifecycle.** One long-lived issue for all runs, or one issue
-  per run?
