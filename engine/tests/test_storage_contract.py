@@ -298,6 +298,39 @@ class StorageContractTests(unittest.TestCase):
             result = self.cp.decode(self.payload(state, [{**ref, "select": ["value"]}]))
         self.assertEqual(result, {"version": 2, "issue": 7, "qc": {"nested": ["evidence"]}})
 
+    def test_decode_logs_validation_locations_without_checkpoint_content(self):
+        """Operator logs identify the failed check while public errors and payloads stay separate."""
+        marker = "private-checkpoint-value"
+        for artifact, check, code, origin in (
+            ({"body": AUDIT + "\n```json\n" + marker + "\n```\n"}, "audit_json", "checkpoint_format", "raw_decode"),
+            (self.payload({"version": 3, "issue": 8}, []), "audit_envelope", "checkpoint_format", "audit_envelope"),
+            (self.payload({"version": -1, "issue": 7}, []), "state_identity", "state_identity", "validate_state"),
+            (
+                self.payload({"version": 3, "issue": 7, "qc": {"nested": marker}}, [self.reference(["qc", "nested"])]),
+                "report_hydration",
+                "checkpoint_format",
+                "graft_slot",
+            ),
+        ):
+            with self.subTest(check=check), self.assertLogs("concurro.checkpoints", level="WARNING") as logs:
+                with self.assertRaises(CheckpointError) as caught:
+                    self.cp.decode(artifact)
+            self.assertEqual(caught.exception.code, code)
+            message = "\n".join(logs.output)
+            self.assertIn("owner/repo#7", message)
+            self.assertIn(f"code={code} check={check}", message)
+            self.assertIn(f"at={origin}:", message)
+            self.assertNotIn(marker, message + caught.exception.public_detail())
+            self.assertNotIn("Traceback", message)
+
+        with patch.object(self.cp.reports, "get", side_effect=ReportDataError(marker)):
+            with self.assertLogs("concurro.checkpoints", level="WARNING") as logs:
+                with self.assertRaises(CheckpointError) as caught:
+                    self.cp.decode(self.payload({"version": 3, "issue": 7, "qc": None}, [self.reference(["qc"])]))
+        self.assertEqual(caught.exception.code, "report_data")
+        self.assertIn("code=report_data check=report_hydration", logs.output[0])
+        self.assertNotIn(marker, logs.output[0] + caught.exception.public_detail())
+
     def test_checkpoint_specific_overlap_and_annotation_checks(self):
         """Path overlap is checked before a second read, even if the first graft restored None."""
         state = {"version": 3, "issue": 7, "qc": {"nested": None}}

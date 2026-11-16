@@ -1,6 +1,7 @@
 """App-authored issue artifacts with legacy checkpoint migration and restart recovery."""
 
 import json
+import logging
 import re
 from copy import deepcopy
 
@@ -27,6 +28,7 @@ PLAN_NAME = "Concurro implementation plan"
 
 FORMAT = 3
 BATCH_FORMAT = 4
+log = logging.getLogger("concurro.checkpoints")
 
 
 DIAGNOSTICS = {
@@ -323,15 +325,19 @@ class Checkpoints:
 
     def decode(self, artifact):
         """Validate the checkpoint's repository, issue and schema identities."""
+        check = "audit_json"
         try:
-            payload = report_store.audit_envelope(
-                legacy_state(artifact["body"]), self.reports, self.config["repository"], self.issue
-            )
+            payload = legacy_state(artifact["body"])
+            check = "audit_envelope"
+            payload = report_store.audit_envelope(payload, self.reports, self.config["repository"], self.issue)
+            check = "state_identity"
             state = payload["state"]
             if payload["repository"] != self.config["repository"]:
                 raise ValueError()
             self.validate_state(state)
+            check = "report_hydration"
             self.hydrate(state, payload)
+            check = "plan_binding"
             binding = payload.get("plan_artifact")
             if binding is not None and (
                 not isinstance(binding, dict)
@@ -339,13 +345,16 @@ class Checkpoints:
                 or any(type(value) is not int or value < 1 for value in binding.values())
             ):
                 raise ValueError()
+            check = "publication_format"
             if ("dashboard" in payload or "plan_replacement" in payload) and state[
                 "version"
             ] not in report_store.READ_FORMATS:
                 raise ValueError()
             self.plan_binding = binding
+            check = "dashboard_receipts"
             self.dashboard = deepcopy(payload.get("dashboard", {}))
             self.validate_dashboard()
+            check = "plan_replacement"
             self.plan_replacement = deepcopy(payload.get("plan_replacement"))
             if self.plan_replacement is not None:
                 intent = self.plan_replacement
@@ -366,10 +375,30 @@ class Checkpoints:
                 self.preserved_plans = deepcopy(intent["preserved"])
             state["version"] = 2
             return state
-        except report_store.ReportDataError:
-            raise CheckpointError("report_data") from None
-        except (KeyError, IndexError, TypeError, ValueError):
-            raise CheckpointError("checkpoint_format") from None
+        except (CheckpointError, report_store.ReportDataError, KeyError, IndexError, TypeError, ValueError) as error:
+            code = (
+                error.code
+                if isinstance(error, CheckpointError)
+                else "report_data"
+                if isinstance(error, report_store.ReportDataError)
+                else "checkpoint_format"
+            )
+            origin = error.__traceback__
+            while origin.tb_next:
+                origin = origin.tb_next
+            log.warning(
+                "checkpoint validation failed for %s#%s (code=%s check=%s exception=%s at=%s:%s)",
+                self.config["repository"],
+                self.issue,
+                code,
+                check,
+                type(error).__name__,
+                origin.tb_frame.f_code.co_name,
+                origin.tb_lineno,
+            )
+            if isinstance(error, CheckpointError):
+                raise
+            raise CheckpointError(code) from None
 
     def restore_reports(self, state, payload, *, fields=None):
         """Validate the checkpoint format and restore selected or complete report evidence."""

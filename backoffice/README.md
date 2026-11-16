@@ -176,7 +176,10 @@ refresh runs per issue/configuration in the API process. Cold concurrent request
 same refresh. Failures retain the last verified snapshot with an error and observation time;
 confirmed missing issues discard it. Retry deadlines survive restarts and honor GitHub's
 requested delay (at least 60 seconds). Checkpoint verification failures retain their diagnostic
-codes and use a short two-second retry interval. Unexpected refresh failures wait 60 seconds
+codes and use a short two-second retry interval. The `concurro.checkpoints` logger records
+the failed decoding/validation step, exception type and source function/line with the issue
+identity. Checkpoint contents and exception messages are omitted; the public diagnostic stays
+unchanged. Unexpected refresh failures wait 60 seconds
 before another attempt. Successful commands, and deliveries whose
 outcome is uncertain, invalidate every cached configuration for that issue. Saved data and
 GitHub retry deadlines survive invalidation; older in-flight refreshes cannot overwrite it.

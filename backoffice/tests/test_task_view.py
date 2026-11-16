@@ -236,6 +236,25 @@ class TaskViewTests(fixtures.ServiceFixture, unittest.TestCase):
         self.assertEqual(self.wire.paths, [])
         self.assertEqual(reader.read_cache.read.call_count, 1)
 
+    def test_deferred_snapshot_retains_the_issue_repository_binding(self):
+        """A refresh queued behind a saved response keeps the issue identity, not the fork's config."""
+        self.large_checkpoint()
+        reader = self.tasks()
+        target = Target(KEY[0], "fork/project", "upstream")
+        reader.configs[target.fork] = (self.config | {"repository": target.fork}, "main")
+        config = reader.task_config(target, KEY[0])
+        snapshot = reader.snapshot(KEY[0], 7, config)
+        reader.read_cache = Mock()
+        reader.read_cache.read.return_value = (snapshot, {"error": None})
+        with patch.object(reader, "find_target", return_value=(target, {})):
+            with patch.object(reader, "target_record", return_value={}):
+                reader.task_view(KEY[0], 7, "summary")
+        # Run the queued read only after the response has used the fork's display configuration.
+        refresh = reader.read_cache.read.call_args.args[3]
+        refreshed = refresh()
+        self.assertEqual(refreshed["state"], snapshot["state"])
+        self.assertEqual(refreshed["state"]["_audit"], snapshot["state"]["_audit"])
+
     def test_unavailable_database_falls_back_to_direct_reads(self):
         """The optional display store cannot prevent an otherwise valid issue read."""
         self.large_checkpoint()

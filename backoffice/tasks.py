@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import UTC, datetime
+from functools import partial
 
 import report_store
 from checkpoints import MARKER, CheckpointError, Checkpoints
@@ -690,7 +691,7 @@ class Tasks:
             scope = hashlib.sha256(
                 json.dumps([1, self.settings.reader.app_id, config], sort_keys=True).encode()
             ).hexdigest()
-            load = lambda: self.snapshot(repository, number, config)
+            load = partial(self.snapshot, repository, number, config)
             try:
                 snapshot, cache_status = self.read_cache.read(scope, repository, number, load)
                 if SECTION_FIELDS[section] <= SECTION_FIELDS["summary"]:
