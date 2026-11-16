@@ -165,7 +165,7 @@ proposals:
       "success_measure": "Post-approval human fixes under src/mempool",
       "possible_regression": "More low-value findings on unrelated mempool changes",
       "patch": "<unified diff limited to .concurro/>",
-      "supersedes": [],
+      "supersedes": ["retro-2026-11-02/P3"],
       "loosens_review": false
     }
   ]
@@ -178,27 +178,31 @@ so a proposal resting only on interpretations is visible as such.
 
 ### Prior runs
 
-The collector reads earlier retro PRs in the fork and gives each of their proposals one
-status:
+The collector reads earlier retro PRs in the fork. Each of their proposals is identified
+by run and proposal ID (`<run-id>/P<n>`), since every run numbers from `P1`. A proposal
+carries three independent records, none of which overrides another:
 
-| Status | Determined by |
-| ---- | ---- |
-| Applied | The PR merged and the proposal's patch is in the merged result |
-| Removed before merge | The PR merged without the proposal's patch |
-| Rejected | A writer commented `reject P<n>: <reason>` on the PR |
-| Superseded | A later run's proposal names it in `supersedes` |
-| Unmerged, reason unknown | The PR closed without merging and none of the above applies |
-| Open | The PR is still open |
+| Record | Values | Determined by |
+| ---- | ---- | ---- |
+| Publication | `open`, `applied`, `removed_before_merge`, `unmerged` | PR state, and whether the proposal's patch is in the merged result |
+| Rejections | Zero or more: author, reason, comment URL | A writer comment `reject P<n>: <reason>` on the PR |
+| Superseded by | Zero or more `<run-id>/P<n>` | Later proposals whose `supersedes` names this one |
+
+For example, a proposal can be rejected and still applied, or rejected and later
+superseded; all of that is reported as recorded. `unmerged` without a rejection means the
+reason is unknown.
 
 Only an explicit `reject` comment supplies a rejection reason; ordinary review comments
-are passed on as context, not as reasons. When the analyst repeats a rejected proposal,
-it must say what new evidence justifies it. A repeated proposal whose earlier status is
-unknown is labelled as a repeat.
+are passed on as context, not as reasons. `supersedes` is the analyst's claim and never
+clears a rejection: a proposal that repeats or supersedes a rejected one must say what new
+evidence justifies it. A proposal that repeats an `unmerged` one with no rejection is
+labelled as a repeat.
 
 ### Verification
 
 - Every evidence `ref` resolves to an observation, candidate or interpretation in this
   run. A cited `quote` appears literally in the referenced public text.
+- Every `supersedes` entry names a proposal from an earlier run's PR.
 - Patches touch only `.concurro/` and apply cleanly to the analysed configuration
   commit.
 - The **combined** patch is validated through the `load_target` contract, using a
