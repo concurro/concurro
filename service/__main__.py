@@ -18,7 +18,7 @@ import private
 from identities import Actor
 from policy import Blocked
 
-from . import control, credential_order, ingress, settings as settings_module, user_grant
+from . import control, credential_order, ingress, retro, settings as settings_module, user_grant
 from .actions import Actions
 from .cutover import Cutover
 from .diagnostics import Store
@@ -34,7 +34,7 @@ from .shadow import Metadata, Shadow
 from .targets import review_targets, verify
 from .transport import Transport
 from .webhook_recovery import Recovery
-from .worker import Worker
+from .worker import Worker, operator
 
 POLL_SECONDS = 300
 DISPATCH_SECONDS = 1
@@ -236,6 +236,18 @@ class Daemon:
         self.registry.close()
 
 
+def retro_sources(settings):
+    """Live retrospective sources: App read transports, run diagnostics and the exchange's operator channel."""
+
+    def build(target):
+        identity = Identity(settings)
+        bot_login = identity.verify()
+        readers = {r: Transport(r, identity.credential(r, "read"), time.time) for r in target.repositories}
+        return retro.Live(readers, settings.diagnostics_dir, operator(settings)), bot_login
+
+    return build
+
+
 def app_actor(reader, bot_login):
     """The App's account with its REST numeric ID and GraphQL node ID; either stays unset when unavailable."""
     try:
@@ -291,6 +303,15 @@ def parser():
         help="print sponsors' current personal credential-type selections for the vault's list migration;"
         " reads the registry directly, with or without a running daemon",
     )
+    retro_collect = commands.add_parser(
+        "retro-collect",
+        help="snapshot a target's tasks and write retrospective dossiers and metrics, with or without a running daemon",
+    )
+    retro_collect.add_argument("target", help="the target's upstream or fork repository")
+    retro_collect.add_argument("--since", required=True, help="window start, ISO date or time")
+    retro_collect.add_argument("--until", help="window end, ISO date or time; default now")
+    retro_collect.add_argument("--snapshot", required=True, help="new directory for the frozen reads")
+    retro_collect.add_argument("--output", required=True, help="new directory for run.json and dossiers")
     adopt = commands.add_parser("adopt", help="move tasks from the Actions controller to this service")
     adopt.add_argument("repository")
     adopt.add_argument("issues", nargs="*", type=int)
@@ -336,6 +357,22 @@ def main():
                 print(json.dumps(credential_order.manifest(registry), indent=2))
             finally:
                 registry.close()
+            return 0
+        if arguments.command == "retro-collect":
+            try:
+                run = retro.capture(
+                    settings,
+                    arguments.target,
+                    arguments.since,
+                    arguments.until,
+                    arguments.snapshot,
+                    arguments.output,
+                    retro_sources(settings),
+                )
+            except ValueError as error:
+                print(f"retro: {error}", file=sys.stderr)
+                return 1
+            print(retro.describe(run))
             return 0
         reply = control.request(settings.state_dir, command(arguments))
     except (SettingsError, StartupError, RegistryError, IdentityError, Blocked, ConnectionError, GatewayStop) as error:

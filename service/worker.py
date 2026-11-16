@@ -46,6 +46,12 @@ RENEW_SECONDS = LEASE_SECONDS // 3
 log = logging.getLogger("concurro.service")
 
 
+def operator(settings):
+    """The exchange's operator client, reading its credential when called."""
+    gateway = settings.gateway
+    return Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+
+
 class DeferredExecutor:
     """Build runner authorization only when an enrolled task first asks for a model turn."""
 
@@ -142,8 +148,7 @@ class Worker:
 
     def _operator(self):
         """Read the operator credential when starting runner authorization or cleanup."""
-        gateway = self.settings.gateway
-        return Operator(gateway.url, private.read(gateway.operator_token_path, (CHECKOUT,)).decode().strip())
+        return operator(self.settings)
 
     def consumed(self, snapshot, controller):
         """The pre-tick snapshot with the comments the controller actually read, when it read them.

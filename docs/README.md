@@ -21,6 +21,7 @@ authoritative for exact limits and behavior.
 | [Issue dashboard](design/issue-dashboard.md) | Current-run display, diagnostics and durable report storage |
 | [Comment format](design/comment-format.md) | Rendering and compatibility rules |
 | [Design evaluation](design-evaluation.md) | Current operator-run review smoke test |
+| [Retrospective collection](retrospective-collection.md) | Operator-run task dossiers and metrics from a frozen snapshot |
 | [Complexity and change risk](design/complexity-risk.md) | Advisory assessments; no model routing or extra gates |
 
 ## Pending work
