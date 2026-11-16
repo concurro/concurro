@@ -240,6 +240,7 @@ labelled as a repeat.
 1. **Phase 0: signal check.** Confirm diagnostics are enabled and retained for the
    window. Build the collector and run it over existing tasks. Read the metrics and
    candidates by hand and decide whether there is enough signal to justify the analyst.
+   The collector is implemented: see [retrospective collection](../retrospective-collection.md).
 2. **Phase 1: MVP.** Retrospective issue binding, analyst skill and schema, verifier,
    publisher, App permission change. Manual trigger, one target, `.concurro/` only.
 3. **Phase 2: validation**, advisory and not a merge gate:

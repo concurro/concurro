@@ -116,8 +116,11 @@ def archived_report(snapshot, store, number, entry=None):
     return store.get(marker[1], numbers)
 
 
-def measure(snapshot, author="concurro[bot]"):
-    """Measure indexed review outcomes, explicitly separating unavailable or ambiguous data."""
+def task_state(snapshot, author="concurro[bot]"):
+    """The task's hydrated state, its report store and the audit's latest version, from verified artifacts.
+
+    `snapshot` needs `repository`, `issue` and a `repo(path)` that answers artifact GETs.
+    """
     response = snapshot.repo(f"issues/{snapshot.issue}/artifacts/1")
     audit, latest = response["artifact"], response["versions"][0]
     if (
@@ -133,6 +136,12 @@ def measure(snapshot, author="concurro[bot]"):
     envelope = audit_envelope(envelope, store, snapshot.repository, snapshot.issue)
     state = envelope["state"]
     restore(state, envelope.get("report_data", []), store)
+    return state, store, latest
+
+
+def measure(snapshot, author="concurro[bot]"):
+    """Measure indexed review outcomes, explicitly separating unavailable or ambiguous data."""
+    state, store, latest = task_state(snapshot, author)
     seen, records, counts = set(), [], {}
     boundaries = dashboard_runs.boundaries(state)
     for entry in state.get("reports", []):

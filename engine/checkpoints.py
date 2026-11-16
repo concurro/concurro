@@ -90,6 +90,46 @@ def artifact_metadata(kind):
     return (AUDIT_NAME, AUDIT_MARKER) if kind == "generic" else (PLAN_NAME, PLAN_MARKER)
 
 
+def artifact_history(request, issue, artifact):
+    """Read an artifact's older versions lazily, newest first, refusing pages from a changed current artifact.
+
+    `artifact` is a verified current read carrying its latest version as `versions[0]` and its `revision`;
+    `request(path)` answers GETs relative to the repository.
+    """
+    yield artifact["versions"][0]
+    if artifact["revision"] == 1:
+        return
+    previous = artifact["revision"]
+    page = 1
+    while True:
+        response = request(f"issues/{issue}/artifacts/{artifact['number']}?per_page=30&page={page}")
+        try:
+            current, versions = response["artifact"], response["versions"]
+            if any(
+                current[k] != artifact[k]
+                for k in ("id", "number", "type", "name", "body", "creator", "updated_by_actor")
+            ):
+                raise CheckpointError("concurrent_change")
+            if not isinstance(versions, list) or type(response["has_next_page"]) is not bool:
+                raise ValueError()
+            if page == 1:
+                if not versions or versions[0] != artifact["versions"][0]:
+                    raise CheckpointError("concurrent_change")
+                versions = versions[1:]
+            for version in versions:
+                if type(version["version"]) is not int or not 0 < version["version"] < previous:
+                    raise CheckpointError("concurrent_change")
+                previous = version["version"]
+                yield version
+            if not response["has_next_page"]:
+                return
+            if not versions:
+                raise ValueError()
+            page += 1
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise CheckpointError("artifact_identity") from None
+
+
 class Checkpoints:
     """Persist one authoritative audit artifact and a derived human-readable plan."""
 
@@ -184,38 +224,7 @@ class Checkpoints:
 
     def history(self, artifact):
         """Read older versions lazily, refusing pages from a changed current artifact."""
-        yield artifact["versions"][0]
-        if artifact["revision"] == 1:
-            return
-        previous = artifact["revision"]
-        page = 1
-        while True:
-            response = self.request(f"issues/{self.issue}/artifacts/{artifact['number']}?per_page=30&page={page}")
-            try:
-                current, versions = response["artifact"], response["versions"]
-                if any(
-                    current[k] != artifact[k]
-                    for k in ("id", "number", "type", "name", "body", "creator", "updated_by_actor")
-                ):
-                    raise CheckpointError("concurrent_change")
-                if not isinstance(versions, list) or type(response["has_next_page"]) is not bool:
-                    raise ValueError()
-                if page == 1:
-                    if not versions or versions[0] != artifact["versions"][0]:
-                        raise CheckpointError("concurrent_change")
-                    versions = versions[1:]
-                for version in versions:
-                    if type(version["version"]) is not int or not 0 < version["version"] < previous:
-                        raise CheckpointError("concurrent_change")
-                    previous = version["version"]
-                    yield version
-                if not response["has_next_page"]:
-                    return
-                if not versions:
-                    raise ValueError()
-                page += 1
-            except (KeyError, IndexError, TypeError, ValueError):
-                raise CheckpointError("artifact_identity") from None
+        return artifact_history(self.request, self.issue, artifact)
 
     def discover(self, items, kind):
         """Find a unique App-owned artifact, ignoring unrelated human artifacts."""
