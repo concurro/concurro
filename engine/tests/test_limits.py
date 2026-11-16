@@ -92,6 +92,24 @@ class OutputTests(PipelineFixture, unittest.TestCase):
         self.assertIn("Complete plan data, part", view)
         self.assertIn('"version": 9', controller.checkpoints.audit_body(controller.state))
 
+    def test_list_selection_state_writes_format_10_and_reloads_beside_earlier_formats(self):
+        controller = self.reach("plan")
+        earlier = controller.checkpoints.audit_body(controller.state)
+        self.assertNotIn('"version": 10', earlier)
+        for field, value in (
+            ("credential_selections", {"id": {"entry_id": "first"}}),
+            ("credential_exclusions", {"202:record:1": {"turns": []}}),
+            ("credential_recovery", {"version": 2, "id": "plan"}),
+        ):
+            with self.subTest(field=field):
+                self.assertIn('"version": 10', controller.checkpoints.audit_body({**controller.state, field: value}))
+        # A route-era recovery plan alone keeps the format its readers already accept.
+        legacy = {**controller.state, "credential_recovery": {"id": "legacy", "requirements": []}}
+        self.assertEqual(controller.checkpoints.audit_body(legacy).count('"version": 10'), 0)
+        controller.state["credential_selections"] = {"id": {"entry_id": "first"}}
+        controller.save()
+        self.assertEqual(self.loaded().state["credential_selections"], {"id": {"entry_id": "first"}})
+
     def test_pending_events_persist_and_publish_beyond_eight(self):
         controller = self.reach("plan")
         for i in range(12):

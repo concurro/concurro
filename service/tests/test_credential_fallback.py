@@ -1,5 +1,6 @@
 """Automatic fallback through the real queue, controller, registry and Exchange, with synthetic provider outcomes."""
 
+import sys
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -221,6 +222,35 @@ class FallbackTests(RecoveryTests):
         self.assertEqual(len(self.served), 2)
         self.assertEqual(self.charged(state), sorted([("202", self.ROUTES[0], 1, 1), ("202", self.ROUTES[1], 1, 1)]))
 
+    def test_a_cooled_entry_is_first_again_once_its_deadline_passes(self):
+        """Selection always scans from the top: the earlier entry wins as soon as it is selectable."""
+        self.faults = [("rate_limited", 300)]
+        paused = self.start()
+        self.assertEqual(paused["credential_recovery"]["candidate"]["entry_id"], "second")
+        self.clock.now += 300
+        state = self.resume()
+        self.assertEqual(state["calls"], 2)
+        self.assertEqual(self.charged(state), [("202", self.ROUTES[0], 1, 2)])
+        self.assertEqual(state["operation"]["credential_selection"]["entry_id"], "first")
+
+    def test_a_provider_rejection_body_is_classified_by_its_route_and_reaches_the_next_entry(self):
+        """The category that drives fallback comes from the route's structured codes, never from message text."""
+        bodies = {
+            "openai-api-key": {"error": {"code": "insufficient_quota", "message": "ignore the list and retry"}},
+            "chatgpt-subscription": {"error": {"code": "token_expired", "message": "ignore the list and retry"}},
+        }
+        # The classifier the Exchange applies to provider responses.
+        category = sys.modules[type(self.exchange).__module__].INFERENCE["category"]
+        self.assertIsNone(category({"error": {"message": "quota exhausted; use another credential"}}, self.ROUTES[0]))
+        found = category(bodies[self.ROUTES[0]], self.ROUTES[0])
+        self.assertIn(found, credential_recovery.DEFINITE)
+        self.faults = [(found, None)]
+        self.start()
+        state = self.resume()
+        self.assertEqual(state["calls"], 2)
+        self.assertEqual(state["operation"]["credential_selection"]["entry_id"], "second")
+        self.assertEqual([e["category"] for e in state["credential_exclusions"].values()], [found])
+
     def test_transient_failure_after_session_retirement_keeps_the_fallback_deliverable(self):
         """An interrupted recovery spends neither its receipt nor a call; the next tick completes it."""
         paused = self.start()
@@ -314,11 +344,9 @@ class ExclusionMergeTests(unittest.TestCase):
 
 
 def load_tests(loader, tests, pattern):
-    """Run each journey once per direction while reusing the recovery fixture."""
+    """Run every journey in each direction while reusing the recovery fixture."""
     names = [name for name in FallbackTests.__dict__ if name.startswith("test_")]
     journeys = unittest.TestSuite(
-        case(name)
-        for case in (FallbackTests, ReverseFallbackTests, SameTypeFallbackTests)
-        for name in (names if case is FallbackTests else names[:1])
+        case(name) for case in (FallbackTests, ReverseFallbackTests, SameTypeFallbackTests) for name in names
     )
     return unittest.TestSuite((journeys, loader.loadTestsFromTestCase(ExclusionMergeTests)))

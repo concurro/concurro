@@ -25,7 +25,17 @@ BLOCK_ENTRIES = 8
 FORMAT = 7
 SPONSORSHIP_FORMAT = 8
 ADMISSION_FORMAT = 9
-READ_FORMATS = (FORMAT, SPONSORSHIP_FORMAT, ADMISSION_FORMAT)
+CREDENTIAL_LIST_FORMAT = 10
+READ_FORMATS = (FORMAT, SPONSORSHIP_FORMAT, ADMISSION_FORMAT, CREDENTIAL_LIST_FORMAT)
+
+
+def selects_from_lists(state):
+    """Whether the state holds selection or recovery data only a reader of ordered credential lists understands."""
+    return bool({"credential_exclusions", "credential_selections"} & set(state)) or (
+        (state.get("credential_recovery") or {}).get("version", 1) >= 2
+    )
+
+
 EXTENDED_FIELDS = {
     "funding_initialization",
     "sponsorship_history",

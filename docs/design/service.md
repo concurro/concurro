@@ -346,8 +346,9 @@ Exact endpoint bounds live in `service/transport.py`.
 
 Report storage is described in [the dashboard contract](issue-dashboard.md#report-archive).
 Report detachment uses checkpoint format 3, parallel review batches require format 4,
-large Git-backed file inventories require format 5, and writer-directed resume receipts
-require format 6. Older engines reject unknown
+large Git-backed file inventories require format 5, writer-directed resume receipts
+require format 6, and list selection, exclusions or a version 2 recovery plan require
+format 10. Older engines reject unknown
 formats. Rollback must preserve
 consumed calls and publication progress and use a compatible engine, not an older audit.
 Legacy `adopt`/`release` commands support old controller markers; they are not a supported

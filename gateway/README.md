@@ -255,6 +255,107 @@ Preserve vault, registry and Exchange state and their event cursors. Recovery is
 only: once `stored` events exist, every corrective consumer release must understand them.
 This change requires no new App grants, settings or database migration.
 
+### Ordered credential lists rollout
+
+This release moves the vault to schema 4, writes checkpoint format 10 for tasks that select
+from a credential list, and replaces the route-addressed credential API and page. Registry
+schema 9 and the Exchange database are unchanged; no settings, secrets or App permissions
+change. Earlier services, Exchanges, backoffice APIs and frontends cannot read the new vault,
+its `policy` events or format 10, so the service and web releases deploy as one pair in one
+idle window, and recovery is roll-forward only.
+
+Both releases must have passed `main` push CI. `SERVICE_FULL_SHA` and `WEB_FULL_SHA` are
+their commits; `gw` and `svc` are the shell functions defined under
+[Upgrade from the workbench release](#upgrade-from-the-workbench-release).
+
+1. Stop credential writes and commands, and let work drain:
+
+   ```bash
+   svc stop backoffice
+   ```
+
+   ```bash
+   svc exec service python3 -m service --settings /etc/concurro/service/settings.json status
+   ```
+
+   Wait until no task has a running turn or batch. Tasks paused in `awaiting_credentials`
+   may stay paused; they are selected again once after the update.
+
+2. Stop dispatch and capture the ordering manifest with the new service image. The command
+   only reads the registry:
+
+   ```bash
+   svc stop service
+   ```
+
+   ```bash
+   sudo docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro --volume /var/lib/concurro/service:/var/lib/concurro/service ghcr.io/concurro/service:SERVICE_FULL_SHA credential-order-manifest > ~/order-manifest.json
+   ```
+
+   Read the file. Each owner/provider is `agreement` (that type goes first), `conflict` or
+   `unavailable` (subscriptions go first); owners without a personal grant are absent and
+   also get subscriptions first.
+
+3. Stop the gateway stack and back up `/etc/concurro` and `/var/lib/concurro` with
+   owner-only access, including SQLite WAL files and the vault master key:
+
+   ```bash
+   gw stop
+   ```
+
+4. Give the vault the manifest for its one migration start. Copy it into the vault state
+   directory, readable by uid 65532:
+
+   ```bash
+   sudo install -o 65532 -g 65532 -m 0400 ~/order-manifest.json /var/lib/concurro/gateway/vault/order-manifest.json
+   ```
+
+   and add this to the `vault` service in `/etc/concurro/gateway/compose.host.yaml`:
+
+   ```yaml
+   environment:
+     VAULT_ORDER_MANIFEST_FILE: /data/order-manifest.json
+   ```
+
+   With the variable set, a missing or malformed file stops the vault before it migrates.
+   Without it, every list starts with subscriptions first.
+
+5. Deploy the pair:
+
+   ```bash
+   update-concurro.sh SERVICE_FULL_SHA WEB_FULL_SHA || printf '\nUpdate failed; inspect the output above.\n'
+   ```
+
+   If it fails, keep the backoffice stopped, correct the reported problem and rerun the same
+   pair. A vault that already migrated does not read the manifest again.
+
+6. Verify before reopening. The vault's first start prints one `adopted_lists` line naming
+   every owner/provider order and whether the manifest or the default set it:
+
+   ```bash
+   gw logs vault | grep adopted_lists
+   ```
+
+   ```bash
+   svc logs --tail 50 service
+   ```
+
+   Confirm the service serves `SERVICE_FULL_SHA`, the vault is healthy (`gw ps vault`) and
+   the backoffice and frontend are running the pair (`svc ps`). The updater starts the
+   backoffice; credential writes are open from that point.
+
+7. Remove the `VAULT_ORDER_MANIFEST_FILE` entry and the copied file at any later time; the
+   vault never reads either again.
+
+After the update, each sponsor's saved credentials appear as entries in their previous
+versions and state, enabled and unfiltered. Tasks admitted before the update keep their frozen
+credential; new selections use list order, so a target's `provider_credential_routes` and
+`credential_routes` settings no longer choose the personal credential type. A task paused for
+credentials under the earlier rules is selected once against the sponsor's whole list, with
+its failed versions still excluded. No live provider call is part of this rollout; the
+classification gaps listed in [credential failures](../docs/design/credential-failures.md)
+need a separately authorized check.
+
 ### Individual component deployments from a workstation
 
 The existing workstation helper remains available for a selected service or web release.
@@ -660,7 +761,8 @@ and instructions while preserving completed work and original approval bindings.
 It records explicit writer authority, without a release compatibility certificate.
 Resume receipts require at least checkpoint format 6; large inventories require format 5.
 Artifact consolidation introduced format 7; shadow sponsorship introduced format 8.
-Frozen admissions now write **format 9 on every charged checkpoint save**; Registry schema 8
+Frozen admissions write **format 9 on every charged checkpoint save**, and a task that selects
+from a credential list writes format 10; Registry schema 9
 is current (provider fences/admission support first shipped with schema 7). This applies to ordinary calls as well as contributed-mode tests.
 Corrective releases must preserve phase 1's comment-encoded audits and publication
 receipts for all such tasks. Tasks
@@ -793,7 +895,7 @@ credential defaults and optional profile overrides are described in the
 [service design](../docs/design/service.md#provider-funding-and-credential-routes). Legacy
 `funding_mode: contributed` keeps its existing initialization semantics. The earlier [phase 1](../docs/proposals/per-user-credentials/phase-1.md)
 and [phase 3](../docs/proposals/per-user-credentials/phase-3.md) org-only boundaries are historical.
-Current checkpoints use format 9 and Registry schema 8. The [vault guide](vault/README.md)
+Current checkpoints use format 9, or 10 once a task selects from a credential list, and Registry schema 9. The [vault guide](vault/README.md)
 describes schema 4 and the isolated gateway principal used for private events and resolution.
 
 The release helper reads `/etc/concurro/gateway/compose.host.yaml`; merge the needed

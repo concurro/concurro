@@ -284,6 +284,23 @@ class FundingTests(StateFixture, HttpFixture, unittest.TestCase):
         self.assertIsNone(restarted.row(first["dispatch"])["key"])
         self.assertIsNotNone(restarted.row(other["dispatch"])["key"])
 
+    def test_list_policy_events_end_nothing_and_a_sibling_entrys_removal_spares_the_admitted_record(self):
+        """Disabling, refiltering or reordering an admitted record's entry never ends its session."""
+        admitted = self.send()
+        self.claim(admitted["dispatch"])
+        policy = {"user_id": 101, "type": "policy", "route": "", "record_id": "", "version": 0, "status": ""}
+        for _ in range(3):
+            self.vault.log.append({**policy, "sequence": len(self.vault.log) + 1})
+        # Another entry on the same owner and route is removed; its record is not the admitted one.
+        sibling = {**self.vault.records[0], "user_id": 101, "record_id": "d" * 64, "status": "revoked"}
+        self.vault.log.append({**sibling, "sequence": len(self.vault.log) + 1, "type": "revoked"})
+        self.exchange.consume_events()
+        self.assertEqual(self.exchange.db.execute("SELECT sequence FROM vault_cursor").fetchone()[0], 4)
+        self.assertIsNone(self.exchange.row(admitted["dispatch"])["ended"])
+        self.vault.revoke()
+        self.exchange.consume_events()
+        self.assertIsNotNone(self.exchange.row(admitted["dispatch"])["ended"])
+
     def test_event_cursor_and_retirement_insert_rollback_together(self):
         """A failed transaction cannot consume an event without its exact-version cutoff."""
         self.vault.revoke()

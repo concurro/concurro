@@ -124,6 +124,40 @@ class MigrationTests(VaultFixture, unittest.TestCase):
         self.assertEqual(order(reopened), ["anthropic-api-key", "claude-subscription"])
         self.assertEqual(reopened.db.execute("SELECT COUNT(*) FROM credential_entries").fetchone()[0], 4)
 
+    def test_version_metadata_is_unchanged_and_a_reopened_store_is_identical(self):
+        path = self.directory / "legacy.db"
+        legacy_vault(path, self.envelope, LEGACY)
+
+        def dump(db, table, columns="*"):
+            order = "rowid" if columns == "*" else columns
+            return [tuple(row) for row in db.execute(f"SELECT {columns} FROM {table} ORDER BY {order}")]
+
+        raw = vault.sqlite3.connect(path)
+        columns = ",".join(row[1] for row in raw.execute("PRAGMA table_info(credential_metadata)"))
+        before = dump(raw, "credential_metadata", columns)
+        raw.close()
+        store = self.migrate()
+        # Retirement, token revision, expiry and status evidence of every historical version survive adoption.
+        self.assertEqual(dump(store.db, "credential_metadata", columns), before)
+        tables = [row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        adopted = {table: dump(store.db, table) for table in tables}
+        as_of = store.metadata(101, OLD)
+        store.close()
+        reopened = vault.Store(path, self.envelope)
+        self.addCleanup(reopened.close)
+        self.assertEqual({table: dump(reopened.db, table) for table in tables}, adopted)
+        # Pre-migration boundaries and exact-version resolution read the same after a restart.
+        self.assertEqual(reopened.metadata(101, OLD), as_of)
+        first = vault.record_id(101, "anthropic-api-key", 1)
+        self.assertEqual(reopened.resolve(101, "anthropic-api-key", first, 1)["secret"], ANTHROPIC)
+
+    def test_an_agreed_subscription_preference_is_reported_as_the_manifests(self):
+        manifest = {"format": 1, "owners": {"101": {"anthropic": {"first": "subscription", "evidence": "agreement"}}}}
+        store = self.migrate(manifest)
+        report = next(r for r in store.migration if (r["user_id"], r["provider"]) == ("101", "anthropic"))
+        self.assertEqual(report["order"], ["claude-subscription", "anthropic-api-key"])
+        self.assertEqual((report["source"], report["evidence"]), ("manifest", "agreement"))
+
     def test_conflicting_or_absent_evidence_uses_the_reported_default(self):
         manifest = {"format": 1, "owners": {"101": {"anthropic": {"first": None, "evidence": "conflict"}}}}
         store = self.migrate(manifest)

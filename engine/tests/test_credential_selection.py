@@ -83,6 +83,30 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(names(both, "triage", "a"), [])
         self.assertEqual(names(both, "triage", "b"), ["x"])
 
+    def test_deleted_or_renamed_profile_matches_nothing_and_never_widens_the_filter(self):
+        kept = {"target": TARGET, "profile": "kept"}
+        records = [
+            entry("filtered", "anthropic-api-key", 0, profiles=[{"target": TARGET, "profile": "old-name"}, kept]),
+            entry("open", "claude-subscription", 1),
+        ]
+        # The configuration now calls the profile `new-name`; the saved selection is neither followed nor dropped.
+        self.assertEqual(names(records, "planner", "new-name"), ["open"])
+        self.assertEqual(names(records, "planner", "kept"), ["filtered", "open"])
+        only_gone = [entry("gone", "anthropic-api-key", 0, profiles=[{"target": TARGET, "profile": "old-name"}])]
+        self.assertEqual(names(only_gone, "planner", "new-name"), [])
+        # It matches again once the profile returns under its saved key.
+        self.assertEqual(names(only_gone, "planner", "old-name"), ["gone"])
+
+    def test_a_correction_call_keeps_the_role_of_the_stage_it_repeats(self):
+        """Corrections rerun their originating stage, so the stage alone names the role."""
+        triage_only = [
+            entry("triage", "anthropic-api-key", 0, roles=["triage"]),
+            entry("open", "claude-subscription", 1),
+        ]
+        for stage, expected in (("intake", ["triage", "open"]), ("plan", ["open"]), ("plan_qc", ["open"])):
+            with self.subTest(stage=stage):
+                self.assertEqual(names(triage_only, sponsorship.role_key(stage), "p"), expected)
+
     def test_other_model_call_roles_match_only_unrestricted_entries(self):
         self.assertEqual(sponsorship.role_key("review"), "pr_reviewers")
         self.assertEqual(sponsorship.role_key("plan_qc"), "plan_reviewers")
