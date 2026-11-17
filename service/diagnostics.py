@@ -17,6 +17,7 @@ from pathlib import Path
 
 from bundle import Bundle
 from prompts import prompt_for
+from vocab import CONTRIBUTION
 
 log = logging.getLogger("concurro.diagnostics")
 
@@ -89,14 +90,17 @@ def encoded(value):
 
 
 def prompt(request, feedback):
-    """The prompt the runner builds (`prompts.prompt_for`), from the request's own bundle texts.
+    """Rebuild the runner prompt and native response schema for the diagnostics viewer.
 
     Session turns after the first send only the changed context; the transcript shows what was sent.
     """
     bundle = Bundle(charter_text=request["charter"], instruction_texts=request.get("instruction_texts") or {})
     if bundle.identity != request.get("bundle_id"):
         return None
-    return json.loads(prompt_for({**request, "feedback_directory": bool(feedback)}, bundle))
+    return {
+        **json.loads(prompt_for({**request, "feedback_directory": bool(feedback)}, bundle)),
+        "response_schema": bundle.schema(request["stage"], request.get("task_kind", CONTRIBUTION)),
+    }
 
 
 class Store:

@@ -18,7 +18,6 @@ models:
     model: gpt-6.1-sol
     effort: high
 policy_documents:
-- CONTRIBUTING.md
 - .github/copilot-instructions.md
 - .agents/skills/stacks-pr-review/SKILL.md
 paths:

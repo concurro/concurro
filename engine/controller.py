@@ -1996,9 +1996,6 @@ class Controller:
                 "checks still validate the contribution. These paths are editable under the target policy."
             )
         context["published_pr_body"] = self.published_body(head)
-        context["pr_description_criterion"] = (
-            "The published PR description accurately describes the whole base-to-head change and its validation."
-        )
         context["own_findings"] = review_rules.context(self.state, provider)
         context["review_output_budget"] = self.review_output_budget()
         context["prior_outcomes_untrusted"] = classification.without_hints(context["prior_outcomes_untrusted"])

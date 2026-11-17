@@ -69,7 +69,15 @@ for inspection in the checkout instead of rendered.
 `standalone.md`, selected by the controller's task kind and carried outside the request
 context (`task_kind`), so PR text cannot select it. A request without a kind is a
 contribution. The standalone response schema has no `reopen` verdict. Prompt sizing counts
-the selected addendum.
+the selected addendum and the native response schema. Codex receives the schema through
+`--output-schema`; Claude receives it through `--json-schema`. It is omitted from prompt JSON
+but retained in the private session journal for compatibility and replay checks.
+
+Rendered prompts carry the charter only in `instructions.charter` and checkout metadata
+only in `repository_snapshot`. Standalone reviews carry the frozen PR description in
+`published_pr_body`; the duplicate `issue.body` is omitted while its title and discussion
+remain. Contribution reviews retain both the issue requirements and the PR description.
+Checkpoint and transport context retain their original fields.
 
 This split changes the bundle identity: deploy while idle, or have a writer
 `/concurro resume` each active task ([bundle rollout](pr-reviews.md#bundle-rollout)).

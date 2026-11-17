@@ -26,6 +26,9 @@ authoritative for exact limits and behavior.
 
 ## Pending work
 
+[Prompt optimization release notes](releases/prompt-optimizations.md) cover the pending
+update and its one-time deployment requirements.
+
 [Parallel review dispatch](design/parallel-reviews.md) provides optional turn timing and
 parallel design reviews at current recovery guarantees. PR reviews remain serial; their
 integration on the same coordinator and stronger crash recovery are separate follow-ups.

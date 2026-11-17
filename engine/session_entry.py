@@ -6,6 +6,7 @@ import os
 import uuid
 from pathlib import Path
 
+import prompts
 from policy import digest
 from runtime_defaults import DEFAULT_RETAINED_BYTES
 
@@ -13,9 +14,11 @@ from runtime_defaults import DEFAULT_RETAINED_BYTES
 class SessionTurn:
     """Serialize a turn and detect interrupted or repeated provider invocations."""
 
-    def __init__(self, session, prompt, root=Path("/retained"), max_bytes=DEFAULT_RETAINED_BYTES):
-        """Lock storage before inspecting the last completed turn."""
+    def __init__(self, session, prompt, root=Path("/retained"), max_bytes=DEFAULT_RETAINED_BYTES, schema=None):
+        """Bind the native schema into the journal and lock storage before inspecting the last turn."""
         self.root, self.session, self.prompt = root, session, json.loads(prompt)
+        if schema is not None:
+            self.prompt["response_schema"] = schema
         self.max_bytes = max_bytes
         self.lock = root.joinpath("turn.lock").open("a")
         self.path = root / "turn.json"
@@ -61,14 +64,14 @@ class SessionTurn:
         """Mark ambiguous failures before the paid call and append only changed context."""
         if not self.previous:
             self.write({"scope": self.session["scope"], "status": "pending"})
-            return json.dumps(self.prompt)
+            return prompts.serialize({k: v for k, v in self.prompt.items() if k != "response_schema"})
         before = self.previous["prompt"]
-        # Stable instructions/schema remain in the official harness's conversation.
+        # The journal binds native schema delivery as well as the retained instructions.
         if any(before.get(k) != self.prompt.get(k) for k in ("instructions", "response_schema")):
             raise ValueError("retained instruction contract changed")
         prior, current = before["untrusted_context"], self.prompt["untrusted_context"]
         self.write({"scope": self.session["scope"], "status": "pending"})
-        return json.dumps(
+        return prompts.serialize(
             {
                 "context_update": {k: v for k, v in current.items() if prior.get(k) != v},
                 "removed_context_keys": [k for k in prior if k not in current],
