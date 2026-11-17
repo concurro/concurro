@@ -48,10 +48,13 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | GET | `/api/me/sponsorships` | Visible current/historical provider consent for your stable actor ID |
 | GET | `/api/me/credentials` | `{providers: [{provider, label, revision, entries}], types, roles}`; entries in priority order |
 | POST | `/api/me/credentials` | `{type, name, secret, account_id?, roles?, profiles?, mutation_id}` → the new entry, appended and enabled |
+| POST | `/api/me/credentials/relay` | `{code, routes, name, roles?, profiles?, mutation_id}` → one owner approval and an entry for each exact registered route |
 | PATCH | `/api/me/credentials/{entry}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}`; material is untouched |
 | PUT | `/api/me/credentials/{entry}/secret` | `{revision, secret, account_id?, mutation_id}`: replace this entry's token |
+| PUT | `/api/me/credentials/{entry}/relay` | `{revision, code, mutation_id}`: replace one Sponsor entry's approval |
 | PUT | `/api/me/credentials/order/{provider}` | `{revision, entries, mutation_id}`: the list's exact new order |
 | DELETE | `/api/me/credentials/{entry}?revision=N` | Remove the entry at its last-read revision and revoke its stored material; repeatable |
+| GET | `/api/openapi.json` | OpenAPI document |
 
 Credential writes forward to the [vault's owner API](../gateway/vault/README.md#owner-api) with the
 caller's own token. `revision` is the entry's (or, for ordering, the list's) last-read revision;
@@ -59,7 +62,15 @@ a 409 means it changed, and the client reloads while keeping its nonsecret draft
 `mutation_id` returns the first result. Role filters must be engine role keys. The former
 route-addressed `PUT`/`DELETE /api/me/credentials/{route}`, which carry no revision, answer 410
 with a reload instruction.
-| GET | `/api/openapi.json` | OpenAPI document |
+
+Sponsor prints a public verification URL and a short code. The owner signs in at that URL,
+enters the code once, selects the routes Sponsor registered, and sees a relay custody entry
+in each selected provider list. Name and filters can then be edited per entry. To replace
+one entry, register a Sponsor for that one route in a
+separate local state directory and use its new code from the entry menu. Removing an entry
+retires its approval; removing both ends the combined registration's access. The existing
+token-paste and API-key flows remain
+available in the same lists.
 
 ## Standalone reviews
 

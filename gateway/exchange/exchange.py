@@ -1711,6 +1711,9 @@ def main():
             if host not in ("127.0.0.1", "::1"):
                 raise ValueError("inference hooks require a loopback listener")
             exchange.inference.native_database = env("EXCHANGE_NATIVE_LOG")
+            if env("EXCHANGE_VERIFIER_URL") and env("EXCHANGE_VERIFIER_TOKEN_FILE"):
+                exchange.inference.verifier_url = env("EXCHANGE_VERIFIER_URL").rstrip("/")
+                exchange.inference.verifier_token = Path(env("EXCHANGE_VERIFIER_TOKEN_FILE")).read_text().strip()
             private = Bounded((host, int(port)), InferenceHandler)
             private.inference, private.max_body = exchange.inference, MAX_BODY
             private.body_budget = Budget(BODY_BUDGET)

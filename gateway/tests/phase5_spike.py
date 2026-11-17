@@ -31,6 +31,7 @@ from backoffice.app import CSRF_HEADER, SESSION_COOKIE, create_app as portal_app
 from backoffice.auth import Sessions, User
 from backoffice.credentials import Vault as PortalVault
 from credentials import Credential
+from exchange_fixtures import BINDING
 from exchange import Vault as GatewayVault
 from phase4_spike import CLI_VERSIONS, IMAGE, RuntimeTests as InferenceTests
 from policy import digest
@@ -64,6 +65,9 @@ class RecordingVault(GatewayVault):
 class RuntimeTests(InferenceTests):
     """Reuse native config/headers/scans, replacing the fake vault with real HTTP owner storage."""
 
+    # Optional local Rust approver for the hosted relay acceptance fixture.
+    relay_approve = None
+
     def setUp(self):
         """Bind separate real public/private vault sockets and a real BFF over synthetic identities."""
         super().setUp()
@@ -74,6 +78,7 @@ class RuntimeTests(InferenceTests):
             vault.Identity(FakeTransport()),
             METADATA,
             (GATEWAY,),
+            relay_approve=self.relay_approve,
         )
         private = vault.create_resolver(self.store, GATEWAY)
         self.public_url, self.private_url = self.context.enter_context(listeners(public, private))
@@ -119,15 +124,18 @@ class RuntimeTests(InferenceTests):
         self.assertFalse(reply.json()["expiryKnown"])
         self.assertFalse(reply.json()["accountVerified"])
         self.assertIsNone(reply.json()["models"])
-        self.candidates[route, owner] = self.store.listing(int(owner))[-1]
+        provider = "openai" if route == "chatgpt-subscription" else "anthropic"
+        self.candidates[route, owner] = self.store.group(int(owner), provider)["entries"][-1]
         self.tokens[route, owner] = secret
         return reply.json()
 
-    def admit(self, route, owner):
-        """Freeze the real stored version; only an explicit owner change advances the provider epoch."""
+    def admit(self, route, owner, issue=None, budget=1000):
+        """Freeze one task's stored version; only an owner change advances its provider epoch."""
         provider = "openai" if route == "chatgpt-subscription" else "anthropic"
+        task_issue = BINDING["issue"] if issue is None else issue
         current = self.exchange.db.execute(
-            "SELECT epoch,slot FROM sponsorship WHERE provider=?", (provider,)
+            "SELECT epoch,slot FROM sponsorship WHERE repository=? AND issue=? AND provider=?",
+            (BINDING["repository"], task_issue, provider),
         ).fetchone()
         slot = json.loads(current[1]) if current else None
         transfer = slot is not None and slot["sponsor_id"] != owner
@@ -135,6 +143,7 @@ class RuntimeTests(InferenceTests):
         identifier, binding, payload = funded_turn(
             provider, actor=owner, epoch=epoch, grant=slot["grant_id"] if slot and not transfer else None
         )
+        binding["issue"] = task_issue
         if slot and not transfer:
             payload["request"]["admission"]["grant"] = slot
         else:
@@ -144,25 +153,26 @@ class RuntimeTests(InferenceTests):
                 payload["request"]["admission"]["grant"],
                 reason="sponsor" if current else "initialize",
             )
-        entry = next(row for row in self.store.listing(int(owner)) if row["route"] == route)
+        entry = next(row for row in self.store.group(int(owner), provider)["entries"] if row["route"] == route)
+        record = entry["record"]
         model = "gpt-test" if provider == "openai" else "claude-test"
         credential = Credential(
-            digest(["contributed", owner, route, entry["record_id"], entry["version"]]),
+            digest(["contributed", owner, route, record["record_id"], record["version"]]),
             "codex" if provider == "openai" else "claude",
             "contributed",
             "gateway",
             owner,
             route,
-            entry["record_id"],
-            entry["version"],
+            record["record_id"],
+            record["version"],
         )
         slot = payload["request"]["admission"]["grant"]
         payload["request"].update(
             model=model,
             admission=admissions.freeze(admissions.selection(credential, provider, slot), len(self.sessions) + 1, 1),
         )
-        binding.update(route=route, credential=entry["record_id"], credential_version=entry["version"])
-        reply = self.exchange.submit(identifier, self.expected(), [model], 1000, 3600, payload, binding=binding)
+        binding.update(route=route, credential=record["record_id"], credential_version=record["version"])
+        reply = self.exchange.submit(identifier, self.expected(), [model], budget, 3600, payload, binding=binding)
         session = reply.get("dispatch")
         if session:
             grant = self.exchange.key(
@@ -187,7 +197,7 @@ class RuntimeTests(InferenceTests):
             "model": model,
             "provider": credential.provider,
             "binding": binding,
-            "record": entry["record_id"],
+            "record": record["record_id"],
         }
         self.sessions.append(result)
         return result

@@ -1,4 +1,4 @@
-"""Ordered credential entries: schema 4 migration, list policy, as-of reconstruction and replay-safe writes."""
+"""Ordered credential entries: forward migration, list policy, as-of reconstruction and replay-safe writes."""
 
 import json
 import os
@@ -42,7 +42,7 @@ class MigrationTests(VaultFixture, unittest.TestCase):
         events = raw.execute("SELECT sequence,id,record_id,type,at FROM credential_events ORDER BY sequence").fetchall()
         raw.close()
         store = self.migrate()
-        self.assertEqual(store.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()[0], "4")
+        self.assertEqual(store.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()[0], "6")
         after = [tuple(r) for r in store.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version")]
         self.assertEqual(after, before)
         feed = store.db.execute("SELECT sequence,id,record_id,type,at FROM credential_events ORDER BY sequence")

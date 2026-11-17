@@ -579,7 +579,7 @@ class Shadow:
                     record.get("record_id"),
                     record.get("version"),
                 )
-                choice = admissions.selection(credential, provider, slot)
+                choice = admissions.selection(credential, provider, slot, record.get("custody"))
                 admissions.validate(choice)
                 # Explanation only: the frozen admission and its digest keep their exact shape.
                 controller.state.setdefault("credential_selections", {})[credential.id] = {

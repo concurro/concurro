@@ -12,6 +12,7 @@ from test_backoffice import USER, FakeOAuth, settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
 from vault_fixtures import ALICE, BOB, OPENAI, VaultFixture
+from vault import create_app as create_vault_app
 
 from backoffice.app import CSRF_HEADER, SESSION_COOKIE, create_app  # noqa: E402
 from backoffice.auth import Sessions, User  # noqa: E402
@@ -52,6 +53,49 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
         """One CSRF-protected owner write with a fresh mutation ID."""
         body.setdefault("mutation_id", uuid.uuid4().hex)
         return client.request(method, "/api/me/credentials" + path, headers={CSRF_HEADER: "1"}, json=body)
+
+    def test_one_sponsor_approval_appears_in_both_lists_and_keeps_owner_bound_lifecycle(self):
+        """The portal forwards one authenticated approval and reads both relay entries through the normal lists."""
+        approvals = []
+
+        def approve(code, bindings):
+            approvals.append((code, bindings))
+            return "relay-" + str(len(approvals))
+
+        vault_client = TestClient(create_vault_app(self.store, self.identity, relay_approve=approve))
+        client, alice, bob = self.browser(vault_client)
+        client.cookies.set(SESSION_COOKIE, alice)
+        body = {"code": "BCDF-GHJK", "name": "Laptop Sponsor", "routes": ["claude-subscription", "chatgpt-subscription"],
+                "mutation_id": "a" * 16}
+        self.assertEqual(client.post("/api/me/credentials/relay", json=body).status_code, 403)
+        added = self.write(client, "POST", "/relay", **body)
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual({binding["route"] for binding in approvals[0][1]},
+                         {"claude-subscription", "chatgpt-subscription"})
+        entries = added.json()["entries"]
+        self.assertEqual(set(entries), {"claude-subscription", "chatgpt-subscription"})
+        self.assertEqual({item["custody"] for item in entries.values()}, {"relay"})
+        self.assertEqual(self.write(client, "POST", "/relay", **body).json(), added.json())
+        listed = client.get("/api/me/credentials").json()["providers"]
+        self.assertEqual([(group["provider"], len(group["entries"])) for group in listed],
+                         [("anthropic", 1), ("openai", 1)])
+        claude = entries["claude-subscription"]
+        client.cookies.clear()
+        client.cookies.set(SESSION_COOKIE, bob)
+        self.assertEqual(self.write(client, "PUT", "/" + claude["id"] + "/relay",
+                                    code="LMNP-QRST", revision=claude["revision"]).status_code, 404)
+        self.assertEqual(self.remove(client, claude).status_code, 404)
+        client.cookies.clear()
+        client.cookies.set(SESSION_COOKIE, alice)
+        replaced = self.write(client, "PUT", "/" + claude["id"] + "/relay",
+                              code="LMNP-QRST", revision=claude["revision"])
+        self.assertEqual((replaced.status_code, replaced.json()["version"]), (200, 2))
+        self.assertEqual(self.remove(client, claude).status_code, 409)
+        self.assertEqual(self.remove(client, replaced.json()).status_code, 200)
+        self.assertEqual(self.remove(client, entries["chatgpt-subscription"]).status_code, 200)
+        self.assertEqual([group["entries"] for group in client.get("/api/me/credentials").json()["providers"]],
+                         [[], []])
 
     def test_browser_to_vault_entry_lifecycle_and_private_separation(self):
         """No browser owner field or service bearer can select another person's entry or secret version."""

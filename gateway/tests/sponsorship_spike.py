@@ -608,7 +608,11 @@ class SpikeTests(unittest.TestCase):
             "session_id": identifier or str(uuid.uuid4()),
             "resume_id": resume,
             "schema": SCHEMA,
-            "gateway": {"url": self.runtime.inference, "headers": {}},
+            "gateway": {"url": self.runtime.inference, "headers": {},
+                        **({"codex_ws_url": self.codex_ws_bridge} if provider == "codex"
+                           and getattr(self, "codex_ws_bridge", None) else {})},
+            **({"admission": {"route": grant["binding"]["route"], "custody": "relay"}} if provider == "codex"
+               and getattr(self, "codex_ws_bridge", None) else {}),
         }
         command = agent_entry.command_for(configured, str(schema), str(output))
         command[0] = str(self.options.clients / provider)

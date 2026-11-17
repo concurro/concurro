@@ -81,6 +81,20 @@ class SelectionTests(AdmissionTests):
             self.assertEqual(self.choose(controller)["route"], "anthropic-api-key")
             self.assertEqual(self.choose(controller, "intake", "codex")["route"], "openai-api-key")
 
+    def test_chatgpt_selection_freezes_relay_custody_only_for_relay_records(self):
+        """The real metadata selection distinguishes relay and Vault ChatGPT records."""
+        self.exchange.gateway.contributed_routes += ("chatgpt-subscription",)
+        record = next(row for row in self.metadata if row["user_id"] == "202" and row["route"] == "openai-api-key")
+        record.update(route="chatgpt-subscription", kind="subscription", custody="vault")
+        with self.current() as controller:
+            vault = self.choose(controller, "intake", "codex")
+            self.assertEqual(vault["route"], "chatgpt-subscription")
+            self.assertNotIn("custody", vault)
+            record["custody"] = "relay"
+            relay = self.choose(controller, "intake", "codex")
+            self.assertEqual(relay["custody"], "relay")
+            self.assertEqual(admissions.freeze(relay, 1, controller.agents.generation)["custody"], "relay")
+
     def test_no_match_pauses_only_that_call_and_never_switches_sponsor_or_org(self):
         for row in (self.credits, self.personal, self.work):
             row["roles"] = ["triage"]

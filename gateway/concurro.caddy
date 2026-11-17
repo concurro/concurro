@@ -14,6 +14,14 @@ handle /concurro/* {
 		reverse_proxy concurro-gateway:8080
 	}
 
+	@codex_websocket {
+		path /v1/responses
+		header Upgrade websocket
+	}
+	handle @codex_websocket {
+		reverse_proxy concurro-responses-bridge:7451
+	}
+
 	handle /v1/* {
 		reverse_proxy concurro-gateway:4000 {
 			# Stream server-sent events as they arrive.

@@ -273,6 +273,11 @@ CREATE TABLE IF NOT EXISTS credential_policy (user_id INTEGER NOT NULL,provider 
     at TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(user_id,provider,revision));
 CREATE TABLE IF NOT EXISTS credential_mutations (user_id INTEGER NOT NULL,id TEXT NOT NULL,digest TEXT NOT NULL,
     response TEXT NOT NULL,PRIMARY KEY(user_id,id));
+CREATE TABLE IF NOT EXISTS relay_approval_intents (user_id INTEGER NOT NULL,id TEXT NOT NULL,digest TEXT NOT NULL,
+    route TEXT NOT NULL,version INTEGER NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(user_id,id),
+    UNIQUE(user_id,route,version));
+CREATE TABLE IF NOT EXISTS relay_approval_routes (user_id INTEGER NOT NULL,id TEXT NOT NULL,route TEXT NOT NULL,
+    version INTEGER NOT NULL,binding TEXT NOT NULL,PRIMARY KEY(user_id,id,route),UNIQUE(user_id,route,version));
 """
 
 # Columns added since a table was first created.
@@ -290,6 +295,8 @@ COLUMNS = {
         ("key_id", "TEXT NOT NULL DEFAULT 'legacy'"),
         ("envelope_format", "INTEGER NOT NULL DEFAULT 1"),
         ("entry_id", "TEXT"),
+        ("custody", "TEXT NOT NULL DEFAULT 'vault'"),
+        ("relay_id", "TEXT"),
     ),
     "credential_events": (("entry_id", "TEXT"), ("provider", "TEXT"), ("revision", "INTEGER")),
 }
@@ -336,7 +343,7 @@ class Store:
                     if name not in columns:
                         self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
             schema = self.db.execute("SELECT value FROM vault_meta WHERE key='schema'").fetchone()
-            if schema and schema[0] not in ("2", "3", "4"):
+            if schema and schema[0] not in ("2", "3", "4", "5", "6"):
                 raise ConfigError("unsupported vault schema")
             if schema is None:
                 for row in self.db.execute("SELECT * FROM credentials ORDER BY user_id,route,version").fetchall():
@@ -349,10 +356,10 @@ class Store:
                         "legacy_snapshot",
                         "migration:" + record_id(row["user_id"], row["route"], row["version"]),
                     )
-            if schema is None or schema[0] != "4":
+            if schema is None or schema[0] not in ("4", "5", "6"):
                 self.migration = self.adopt(manifest())
             self.db.execute(
-                "INSERT INTO vault_meta VALUES('schema','4') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                "INSERT INTO vault_meta VALUES('schema','6') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
 
     def adopt(self, manifest: Mapping) -> list[dict]:
@@ -549,11 +556,88 @@ class Store:
             if row["digest"] != requested:
                 raise VaultError(409, "mutation ID was already used for a different request")
             return json.loads(row["response"])
+        intent = self.db.execute(
+            "SELECT digest FROM relay_approval_intents WHERE user_id=? AND id=?", (user_id, mutation)
+        ).fetchone()
+        if intent and intent["digest"] != requested:
+            raise VaultError(409, "mutation ID was already used for a different request")
         result = action()
         self.db.execute(
             "INSERT INTO credential_mutations VALUES(?,?,?,?)", (user_id, mutation, requested, json.dumps(result))
         )
         return result
+
+    def next_version(self, user_id: int, route: str) -> int:
+        """Allocate after committed records and durable pending relay approvals."""
+        return self.db.execute(
+            "SELECT COALESCE(MAX(version),0)+1 FROM ("
+            "SELECT version FROM credentials WHERE user_id=? AND route=? UNION ALL "
+            "SELECT version FROM relay_approval_intents WHERE user_id=? AND route=? UNION ALL "
+            "SELECT version FROM relay_approval_routes WHERE user_id=? AND route=?)",
+            (user_id, route, user_id, route, user_id, route),
+        ).fetchone()[0]
+
+    def relay_intent(
+        self, user: User, mutation: str, request: dict, entry_id: str, revision: int | None = None,
+        routes: list[str] | None = None,
+    ) -> tuple[dict | list[dict] | None, dict | None]:
+        """Durably reserve every route binding before one external registry approval."""
+        requested = digest(json.dumps(request, sort_keys=True))
+        with self.transaction():
+            completed = self.db.execute(
+                "SELECT digest,response FROM credential_mutations WHERE user_id=? AND id=?", (user.id, mutation)
+            ).fetchone()
+            if completed:
+                if completed["digest"] != requested:
+                    raise VaultError(409, "mutation ID was already used for a different request")
+                return None, json.loads(completed["response"])
+            intent = self.db.execute(
+                "SELECT digest,binding FROM relay_approval_intents WHERE user_id=? AND id=?", (user.id, mutation)
+            ).fetchone()
+            if intent:
+                if intent["digest"] != requested:
+                    raise VaultError(409, "mutation ID was already used for a different request")
+                bindings = [json.loads(intent["binding"]), *[
+                    json.loads(row["binding"]) for row in self.db.execute(
+                        "SELECT binding FROM relay_approval_routes WHERE user_id=? AND id=? ORDER BY route",
+                        (user.id, mutation),
+                    )
+                ]]
+                return bindings[0] if len(bindings) == 1 else bindings, None
+            if revision is not None:
+                entry = self.owned(user.id, entry_id, revision)
+                routes = routes or [entry["route"]]
+                if len(routes) != 1 or entry["route"] not in routes:
+                    raise VaultError(422, "relay custody is unavailable for this route")
+            else:
+                routes = routes or ["claude-subscription"]
+            if not routes or len(set(routes)) != len(routes) or any(
+                route not in ("claude-subscription", "chatgpt-subscription") for route in routes
+            ):
+                raise VaultError(422, "relay custody is unavailable for this route")
+            bindings = []
+            for index, route in enumerate(routes):
+                version = self.next_version(user.id, route)
+                binding = {
+                    "user_id": user.id,
+                    "login": user.login,
+                    "route": route,
+                    "entry_id": entry_id if index == 0 else digest(f"relay-entry/{user.id}/{mutation}/{route}")[:32],
+                    "record_id": record_id(user.id, route, version),
+                    "version": version,
+                }
+                if index == 0:
+                    self.db.execute(
+                        "INSERT INTO relay_approval_intents VALUES(?,?,?,?,?,?)",
+                        (user.id, mutation, requested, route, version, json.dumps(binding)),
+                    )
+                else:
+                    self.db.execute(
+                        "INSERT INTO relay_approval_routes VALUES(?,?,?,?,?)",
+                        (user.id, mutation, route, version, json.dumps(binding)),
+                    )
+                bindings.append(binding)
+            return bindings[0] if len(bindings) == 1 else bindings, None
 
     def seal(self, user: User, entry: sqlite3.Row, material: dict) -> None:
         """Store this entry's next version without provider validation, retiring only its own prior material."""
@@ -566,9 +650,7 @@ class Store:
             raise VaultError(422, "credential is already expired")
         now, route = self.now(), entry["route"]
         # Versions stay monotonic per owner/route across entries: record identities and AAD depend on it.
-        version = self.db.execute(
-            "SELECT COALESCE(MAX(version),0)+1 FROM credentials WHERE user_id=? AND route=?", (user.id, route)
-        ).fetchone()[0]
+        version = self.next_version(user.id, route)
         payload = json.dumps({"secret": secret, "account": account}, separators=(",", ":")) if account else secret
         sealed = self.envelope.seal(payload, aad(user.id, route, version))
         self.destroy(entry["entry_id"], "replaced")
@@ -604,6 +686,31 @@ class Store:
                 2 if account else 1,
                 entry["entry_id"],
             ),
+        )
+        self.event(user.id, route, version, "stored", "valid", "stored")
+
+    def relay_record(self, user: User, entry: sqlite3.Row, binding: dict, relay: str) -> None:
+        """Bind a new immutable entry version to an approved relay, without provider material."""
+        route = entry["route"]
+        if route not in ("claude-subscription", "chatgpt-subscription"):
+            raise VaultError(422, "relay custody is unavailable for this route")
+        version = binding["version"]
+        if (binding["user_id"] != user.id or binding["route"] != route
+                or binding["entry_id"] != entry["entry_id"]
+                or binding["record_id"] != record_id(user.id, route, version)):
+            raise VaultError(409, "relay approval binding changed")
+        if not isinstance(relay, str) or not relay.startswith("relay-") or len(relay) > 80:
+            raise VaultError(503, "relay approval returned an invalid identity")
+        self.destroy(entry["entry_id"], "replaced")
+        now = self.now()
+        self.db.execute(
+            "INSERT INTO credentials VALUES(?,?,?,?,'valid',?,NULL,NULL,NULL,?,?)",
+            (user.id, route, version, binding["login"], "relay:" + digest(relay)[:8], now, now),
+        )
+        self.db.execute(
+            "INSERT INTO credential_metadata(user_id,route,version,kind,status_reason,entry_id,custody,relay_id)"
+            " VALUES(?,?,?,'subscription','stored',?,'relay',?)",
+            (user.id, route, version, entry["entry_id"], relay),
         )
         self.event(user.id, route, version, "stored", "valid", "stored")
 
@@ -661,6 +768,87 @@ class Store:
         request = {"add": route, "secret": secret, **policy, **material}
         with self.lock, self.transaction():
             return self.once(user.id, mutation, request, action)
+
+    def add_relay(
+        self,
+        user: User,
+        code: str,
+        approve: Callable[[str, dict | list[dict]], str],
+        *,
+        name: str,
+        roles: list[str],
+        profiles: list[dict],
+        mutation: str,
+        routes: list[str] | None = None,
+    ) -> dict:
+        """Append every route of one owner-approved relay in one Vault transaction."""
+        routes = routes or ["claude-subscription"]
+        if not routes or len(set(routes)) != len(routes) or any(
+            route not in ("claude-subscription", "chatgpt-subscription") for route in routes
+        ):
+            raise VaultError(422, "relay custody is unavailable for this route")
+        routes = sorted(routes)
+
+        request = {"add_relay": code, "name": name, "roles": roles, "profiles": profiles}
+        if routes != ["claude-subscription"]:
+            request["routes"] = routes
+        entry_id = digest(f"relay-entry/{user.id}/{mutation}")[:32]
+        with self.lock:
+            binding, completed = self.relay_intent(user, mutation, request, entry_id, routes=routes)
+            if completed is not None:
+                return completed
+            relay = approve(code, binding)
+
+            def action():
+                now = self.now()
+                entries = {}
+                for selected in binding if isinstance(binding, list) else [binding]:
+                    route = selected["route"]
+                    provider = ROUTES[route][0]
+                    selected_id = selected["entry_id"]
+                    self.db.execute(
+                        "INSERT INTO credential_entries VALUES(?,?,?,?,?,1,?,?,0,?,?,NULL)",
+                        (selected_id, user.id, provider, route, name, json.dumps(roles), json.dumps(profiles), now, now),
+                    )
+                    entry = self.owned(user.id, selected_id)
+                    self.relay_record(user, entry, selected, relay)
+                    entries[route] = self.touch(entry, "added", [*self.order(user.id, provider)[1], selected_id])
+                return entries[routes[0]] if len(routes) == 1 else {"entries": entries}
+
+            with self.transaction():
+                result = self.once(user.id, mutation, request, action)
+                self.db.execute("DELETE FROM relay_approval_intents WHERE user_id=? AND id=?", (user.id, mutation))
+                self.db.execute("DELETE FROM relay_approval_routes WHERE user_id=? AND id=?", (user.id, mutation))
+                return result
+
+    def replace_relay(
+        self,
+        user: User,
+        entry_id: str,
+        code: str,
+        approve: Callable[[str, dict], str],
+        *,
+        revision: int,
+        mutation: str,
+    ) -> dict:
+        """Replace only this entry's version with a newly approved relay key."""
+
+        request = {"replace_relay": entry_id, "revision": revision, "code": code}
+        with self.lock:
+            binding, completed = self.relay_intent(user, mutation, request, entry_id, revision)
+            if completed is not None:
+                return completed
+            relay = approve(code, binding)
+
+            def action():
+                entry = self.owned(user.id, entry_id, revision)
+                self.relay_record(user, entry, binding, relay)
+                return self.touch(entry, "replaced")
+
+            with self.transaction():
+                result = self.once(user.id, mutation, request, action)
+                self.db.execute("DELETE FROM relay_approval_intents WHERE user_id=? AND id=?", (user.id, mutation))
+                return result
 
     def replace(
         self,
@@ -749,7 +937,8 @@ class Store:
         """Retire one entry's usable versions before deleting their sealed material, within the caller's transaction."""
         for row in self.db.execute(
             "SELECT c.user_id,c.route,c.version FROM credentials c JOIN credential_metadata m ON c.user_id=m.user_id"
-            " AND c.route=m.route AND c.version=m.version WHERE m.entry_id=? AND c.ciphertext IS NOT NULL",
+            " AND c.route=m.route AND c.version=m.version WHERE m.entry_id=?"
+            " AND (c.ciphertext IS NOT NULL OR (m.custody='relay' AND m.relay_id IS NOT NULL AND m.retired IS NULL))",
             (entry_id,),
         ).fetchall():
             key = (row["user_id"], row["route"], row["version"])
@@ -825,8 +1014,9 @@ class Store:
         with self.lock:
             rows = self.db.execute(
                 "SELECT c.user_id,c.route,c.version,c.status,c.created,c.updated,m.models,m.retired,m.entry_id,"
-                "c.ciphertext IS NOT NULL AS usable,m.kind,m.status_reason,m.validated,m.expires_at,m.expiry_known,"
-                "m.token_revision FROM credentials c JOIN credential_metadata m "
+                "(c.ciphertext IS NOT NULL OR (m.custody='relay' AND m.relay_id IS NOT NULL AND m.retired IS NULL))"
+                " AS usable,m.kind,m.status_reason,m.validated,m.expires_at,m.expiry_known,"
+                "m.token_revision,m.custody FROM credentials c JOIN credential_metadata m "
                 "ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
                 "WHERE c.user_id=? ORDER BY c.version",
                 (user_id,),
@@ -875,6 +1065,7 @@ class Store:
                 "created": row["created"],
                 "updated": row["updated"],
                 "kind": row["kind"],
+                "custody": row["custody"],
                 "status_reason": row["status_reason"],
                 "validated": row["validated"],
                 "expires_at": row["expires_at"] if row["expiry_known"] else None,
@@ -899,7 +1090,7 @@ class Store:
         """Public owner metadata of one version; account headers remain inside the sealed payload."""
         row = self.db.execute(
             "SELECT c.route,c.status,c.fingerprint,c.version,c.updated,m.kind,m.status_reason,m.validated,m.expires_at,"
-            "m.expiry_known,m.last_used,m.account_label,m.verified_account,m.models "
+            "m.expiry_known,m.last_used,m.account_label,m.verified_account,m.models,m.custody "
             "FROM credentials c LEFT JOIN credential_metadata m ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version"
             " WHERE c.user_id=? AND c.route=? AND c.version=?",
             (user_id, route, version),
@@ -923,14 +1114,18 @@ class Store:
         result = None
         with self.lock, self.transaction():
             row = self.db.execute(
-                "SELECT c.*,m.key_id,m.expires_at,m.expiry_known,m.envelope_format,m.token_revision "
+                "SELECT c.*,m.key_id,m.expires_at,m.expiry_known,m.envelope_format,m.token_revision,"
+                "m.custody,m.relay_id,m.retired,m.entry_id "
                 "FROM credentials c JOIN credential_metadata m ON c.user_id=m.user_id AND c.route=m.route AND c.version=m.version "
                 "WHERE c.user_id=? AND c.route=? AND c.version=?",
                 (user_id, route, version),
             ).fetchone()
             if row is None:
                 raise VaultError(404, "credential not found")
-            if row["status"] == "valid" and row["ciphertext"] is not None:
+            if row["status"] == "valid" and (
+                row["ciphertext"] is not None
+                or row["custody"] == "relay" and row["relay_id"] is not None and row["retired"] is None
+            ):
                 expired = (
                     row["expiry_known"]
                     and row["expires_at"]
@@ -949,6 +1144,21 @@ class Store:
                     )
                     self.event(user_id, route, version, "unusable", "invalid", "expired")
                 else:
+                    if row["custody"] == "relay":
+                        result = {
+                            "record_id": identifier,
+                            "user_id": str(user_id),
+                            "route": route,
+                            "version": version,
+                            "custody": "relay",
+                            "relay_id": row["relay_id"],
+                            "entry_id": row["entry_id"],
+                        }
+                        self.db.execute(
+                            "UPDATE credential_metadata SET last_used=? WHERE user_id=? AND route=? AND version=?",
+                            (self.now(), user_id, route, version),
+                        )
+                        return result
                     try:
                         material = self.envelope.open(
                             Sealed(row["wrapped_key"], row["nonce"], row["ciphertext"]),
@@ -1059,6 +1269,25 @@ class AddBody(SecretBody):
     mutation_id: Mutation
 
 
+class RelayBody(BaseModel):
+    """Owner approval of one displayed Sponsor code for its listed provider routes."""
+
+    code: str = Field(pattern=r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
+    name: Name
+    roles: Roles = []
+    profiles: Profiles = []
+    routes: list[str] = Field(default=["claude-subscription"], min_length=1, max_length=2)
+    mutation_id: Mutation
+
+
+class ReplaceRelayBody(BaseModel):
+    """Owner approval of a replacement relay at an exact entry revision."""
+
+    code: str = Field(pattern=r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
+    revision: Revision
+    mutation_id: Mutation
+
+
 class EditBody(BaseModel):
     """Policy changes to one entry at the revision the owner last read."""
 
@@ -1109,11 +1338,37 @@ def distinct(values: list) -> list:
     return [value for index, value in enumerate(values) if value not in values[:index]]
 
 
+def relay_approver(url: str, token: str) -> Callable[[str, dict | list[dict]], str]:
+    """Call the private Rust registry after the owner API has selected an exact Vault version."""
+
+    def approve(code: str, binding: dict | list[dict]) -> str:
+        approval = {"code": code, "bindings": binding} if isinstance(binding, list) else {"code": code, **binding}
+        request = urllib.request.Request(
+            url.rstrip("/") + "/approve",
+            data=json.dumps(approval).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Concurro-Verifier-Auth": "Bearer " + token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+                return json.load(response)["relay"]
+        except urllib.error.HTTPError as error:
+            raise VaultError(409 if error.code == 409 else 503, "relay approval unavailable") from None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError):
+            raise VaultError(503, "relay verifier unavailable") from None
+
+    return approve
+
+
 def create_app(
     store: Store,
     identity: Identity,
     service_token: str | None = None,
     private_tokens: tuple[str, ...] = (),
+    relay_approve: Callable[[str, dict], str] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Concurro credentials vault", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -1175,6 +1430,22 @@ def create_app(
             **secret,
         )
 
+    @app.post("/credentials/relay")
+    def add_relay(body: RelayBody, caller: Annotated[User, Depends(user)]) -> dict:
+        """Use the existing owner identity and list policy to approve all registered routes."""
+        if relay_approve is None:
+            raise VaultError(503, "relay verifier unavailable")
+        return store.add_relay(
+            caller,
+            body.code,
+            relay_approve,
+            name=body.name.strip(),
+            roles=distinct(body.roles),
+            profiles=distinct([profile.model_dump() for profile in body.profiles]),
+            mutation=body.mutation_id,
+            routes=body.routes,
+        )
+
     @app.put("/credentials/order/{provider}")
     def reorder_credentials(provider: str, body: OrderBody, caller: Annotated[User, Depends(user)]) -> dict:
         return store.reorder(caller.id, provider, body.entries, revision=body.revision, mutation=body.mutation_id)
@@ -1196,6 +1467,15 @@ def create_app(
         secret = candidate(store.route(caller.id, entry_id), body)
         return store.replace(
             caller, entry_id, secret.pop("secret"), revision=body.revision, mutation=body.mutation_id, **secret
+        )
+
+    @app.put("/credentials/{entry_id}/relay")
+    def replace_relay(entry_id: str, body: ReplaceRelayBody, caller: Annotated[User, Depends(user)]) -> dict:
+        """Replace one entry's custody using a newly owner-approved device code."""
+        if relay_approve is None:
+            raise VaultError(503, "relay verifier unavailable")
+        return store.replace_relay(
+            caller, entry_id, body.code, relay_approve, revision=body.revision, mutation=body.mutation_id
         )
 
     @app.delete("/credentials/{entry_id}")
@@ -1292,6 +1572,10 @@ def main(argv=None) -> None:
         service_token = load_master_key(service_path).hex() if service_path else None
         gateway_path = os.environ.get("VAULT_RESOLVER_TOKEN_FILE")
         gateway_token = load_master_key(gateway_path).hex() if gateway_path else None
+        verifier_path = os.environ.get("VAULT_VERIFIER_TOKEN_FILE")
+        verifier_token = load_master_key(verifier_path).hex() if verifier_path else None
+        verifier_url = os.environ.get("VAULT_VERIFIER_URL")
+        approve = relay_approver(verifier_url, verifier_token) if verifier_url and verifier_token else None
         if gateway_token and gateway_token == service_token:
             raise ConfigError("metadata and gateway principals must differ")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1309,7 +1593,7 @@ def main(argv=None) -> None:
                     raise ConfigError("rotation requires a named keyring")
                 print(json.dumps({"rewrapped": store.rotate(envelope)}))
                 return
-            public = create_app(store, Identity(http_get), service_token, (gateway_token,) if gateway_token else ())
+            public = create_app(store, Identity(http_get), service_token, (gateway_token,) if gateway_token else (), approve)
             host, _, port = os.environ.get("VAULT_LISTEN", "0.0.0.0:8090").rpartition(":")
             sockets = [resources.enter_context(socket.create_server((host, int(port))))]
             private, private_port = None, None

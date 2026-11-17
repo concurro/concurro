@@ -70,10 +70,10 @@ class MetadataVault:
         self.log.append({**record, "user_id": int(actor), "sequence": len(self.log) + 1, "type": "revoked"})
 
 
-def funded_turn(provider="openai", actor=None, epoch=1, generation=1, grant=None):
+def funded_turn(provider="openai", actor=None, epoch=1, generation=1, grant=None, route=None):
     """Use production admission freezing and credential identity for a synthetic native turn."""
     actor = actor or ("101" if provider == "openai" else "202")
-    route = provider + "-api-key"
+    route = route or provider + "-api-key"
     record = ("c" if actor == "303" else "a" if provider == "openai" else "b") * 64
     harness = "codex" if provider == "openai" else "claude"
     slot = {

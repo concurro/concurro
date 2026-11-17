@@ -52,6 +52,83 @@ class SecretVault(MetadataVault):
         }
 
 
+class RelayVault(SecretVault):
+    """Synthetic private resolver for an exact Claude relay custody record."""
+
+    def resolve(self, binding):
+        """Return only a relay identity and no provider material."""
+        self.calls.append(deepcopy(binding))
+        if self.denied:
+            raise Refused(self.denied, "synthetic relay denial")
+        return {
+            "user_id": binding["sponsor"],
+            "record_id": binding["credential"],
+            "version": binding["credential_version"],
+            "route": binding["route"],
+            "custody": "relay",
+            "entry_id": "e" * 32,
+            "relay_id": "relay-" + "f" * 32,
+        }
+
+
+class RelayInferenceTests(StateFixture, unittest.TestCase):
+    """Use the real admitted turn and one-use request path with relay custody."""
+
+    def setUp(self):
+        """Admit an Anthropic subscription turn under a synthetic exact relay record."""
+        super().setUp()
+        self.exchange.gateway = FundedGateway()
+        self.exchange.gateway.contributed_routes = (*FundedGateway.contributed_routes, "claude-subscription")
+        self.exchange.vault = RelayVault()
+        self.turn, self.binding, self.payload = funded_turn("anthropic", route="claude-subscription")
+        self.exchange.vault.records.append(
+            {
+                "user_id": self.binding["sponsor"],
+                "route": "claude-subscription",
+                "record_id": self.binding["credential"],
+                "version": 1,
+                "kind": "subscription",
+                "status": "valid",
+                "models": ["synthetic-model"],
+                "expiry_known": False,
+                "expires_at": None,
+            }
+        )
+        reply = self.exchange.submit(
+            self.turn, EXPECTED_RUNNER, ["synthetic-model"], 1000, 3600, self.payload, binding=self.binding
+        )
+        self.session = reply["dispatch"]
+        grant = self.exchange.key(self.session, self.token(self.session), engine=self.binding["engine"])
+        self.exchange.next(self.session, grant["token"], 1, 0)
+        self.key = grant["key"]
+        self.exchange.inference.verifier_url = "http://127.0.0.1:7450"
+        self.exchange.inference.verifier_token = "synthetic-private-token"
+
+    def test_exact_relay_binding_is_rechecked_on_claim(self):
+        """The gateway receives only a placeholder and a stale relay is refused before forwarding."""
+        request = self.exchange.inference.start(self.key, "POST", "/v1/messages")["request"]
+        resolved = self.exchange.inference.resolve(request, self.session)
+        self.assertEqual(resolved["token"], "local-relay-placeholder")
+        self.assertEqual(resolved["route"], "claude-subscription")
+        snapshot = self.exchange.inference.snapshot(request)
+        self.assertEqual(snapshot["custody"], "relay")
+        self.assertEqual(snapshot["relay_id"], "relay-" + "f" * 32)
+        self.exchange.vault.denied = 410
+        with self.assertRaises(Refused):
+            self.exchange.inference.claim(request, "claude-subscription")
+        self.assertEqual(self.exchange.inference.snapshot(request)["claimed"], 0)
+        self.assertEqual(self.exchange.inference.failure(self.turn)["category"], "auth")
+
+    def test_relay_claim_is_one_use_and_bound_to_frozen_turn(self):
+        """No client-chosen owner, route, or second forwarding claim is accepted."""
+        request = self.exchange.inference.start(self.key, "POST", "/v1/messages")["request"]
+        self.exchange.inference.resolve(request, self.session)
+        snapshot = self.exchange.inference.claim(request, "claude-subscription")
+        self.assertEqual(snapshot["binding"]["credential"], self.binding["credential"])
+        with self.assertRaises(Refused):
+            self.exchange.inference.claim(request, "claude-subscription")
+
+
 class InferenceTests(StateFixture, unittest.TestCase):
     """Run real Exchange/session/turn transitions behind the private inference boundary."""
 

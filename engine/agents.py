@@ -385,6 +385,8 @@ class RunnerExecutor:
             raise Blocked("contributed turn lacks its frozen admission")
         if admission is not None:
             selected = {key: admission[key] for key in admissions.FIELDS}
+            if "custody" in admission:
+                selected["custody"] = admission["custody"]
             credential = admissions.validate(selected)
             if admission.get("version") != 1 or admission.get("owner_generation") != self.task["generation"]:
                 raise Blocked("admission differs from current task ownership")

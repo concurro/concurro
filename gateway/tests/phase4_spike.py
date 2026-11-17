@@ -186,13 +186,18 @@ class CapturingHandler(Handler):
     def forward(self, snapshot, url, body):
         """Observe native metadata composition without writing any provider credential bytes."""
         material = self.server.inference.exchange.vault.material[snapshot["binding"]["credential"]]
+        secret = material.get("secret")
         self.server.hop_headers.append(
             {
                 "request": snapshot["request"],
                 "names": sorted(name.lower() for name in self.headers),
                 "secret_header_present": self.headers.get("x-concurro-token") is not None,
-                "auth_matches": self.headers.get("authorization") == "Bearer " + material["secret"]
-                or self.headers.get("x-api-key") == material["secret"],
+                "auth_matches": (
+                    self.headers.get("authorization") == "Bearer local-relay-placeholder"
+                    if secret is None
+                    else self.headers.get("authorization") == "Bearer " + secret
+                    or self.headers.get("x-api-key") == secret
+                ),
                 "anthropic_beta": self.headers.get_all("anthropic-beta"),
             }
         )
@@ -459,7 +464,7 @@ class RuntimeTests(unittest.TestCase):
         (self.root / "trace.json").write_text(json.dumps(trace, indent=2) + "\n")
         needles = (
             [b"synthetic-operator-poison"]
-            + [m["secret"].encode() for m in self.vault.material.values()]
+            + [m["secret"].encode() for m in self.vault.material.values() if "secret" in m]
             + [s["key"].encode() for s in self.sessions]
         )
         paths = [
@@ -474,7 +479,9 @@ class RuntimeTests(unittest.TestCase):
         control.unlink()
         if databases:
             with closing(sqlite3.connect(databases[0])) as db:
-                self.assertGreater(db.execute("SELECT count(*) FROM request_logs").fetchone()[0], 0)
+                # Owner approval fixtures exercise registration without an inference request.
+                if getattr(self, "expect_inference", True):
+                    self.assertGreater(db.execute("SELECT count(*) FROM request_logs").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM request_logs WHERE has_payload<>0").fetchone()[0], 0)
         self.assertEqual(
             sum(c["route"] == "operator" for c in self.state.calls),

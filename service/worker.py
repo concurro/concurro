@@ -203,6 +203,8 @@ class Worker:
         gateway = self.settings.gateway
         operator = self._operator()
         request = {"url": gateway.url, "headers": gateway.headers}
+        if gateway.codex_ws_url:
+            request["codex_ws_url"] = gateway.codex_ws_url
         binding = self.registry.binding(github.key)
         if binding is None:
             raise Blocked("runner task has no recorded target binding")

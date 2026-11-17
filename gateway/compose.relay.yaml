@@ -1,0 +1,77 @@
+# Hosted Claude and Codex relay slice. Layer over compose.yaml and compose.private.yaml
+# after a Linux amd64 verifier image and private service identity are qualified.
+services:
+  gateway:
+    networks:
+      credential-private: {}
+
+  exchange:
+    environment:
+      EXCHANGE_VERIFIER_URL: http://concurro-verifier-private:7450
+      EXCHANGE_VERIFIER_TOKEN_FILE: /run/secrets/relay-verifier-token
+    volumes:
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/relay-verifier-token:/run/secrets/relay-verifier-token:ro
+
+  vault:
+    environment:
+      VAULT_VERIFIER_URL: http://concurro-verifier-private:7450
+      VAULT_VERIFIER_TOKEN_FILE: /run/secrets/relay-verifier-token
+    volumes:
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/relay-verifier-token:/run/secrets/relay-verifier-token:ro
+
+  verifier:
+    image: ${CONCURRO_VERIFIER_IMAGE:?qualified Linux amd64 verifier image required}
+    command:
+      - --certificate
+      - /run/secrets/relay-verifier-cert.pem
+      - --private-key
+      - /run/secrets/relay-verifier-key.pem
+      - --registry
+      - /data/registry.json
+      - --service-token
+      - /run/secrets/relay-verifier-token
+      - --verification-url
+      - ${CONCURRO_RELAY_VERIFICATION_URL:?public Sponsor approval URL required}
+    environment:
+      CONCURRO_NATIVE_BUNDLE: /opt/concurro/native-runtime
+      CONCURRO_NATIVE_OUTPUT: /data/sessions
+    ports:
+      - ${CONCURRO_RELAY_PORT:-7443}:7443
+    volumes:
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/relay-verifier-cert.pem:/run/secrets/relay-verifier-cert.pem:ro
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/relay-verifier-key.pem:/run/secrets/relay-verifier-key.pem:ro
+      - ${CONCURRO_GATEWAY_ETC:-/etc/concurro/gateway}/relay-verifier-token:/run/secrets/relay-verifier-token:ro
+      - verifier-data:/data
+    networks:
+      credential-private:
+        aliases:
+          - concurro-verifier-private
+      relay-public: {}
+    restart: unless-stopped
+
+  responses-bridge:
+    image: ${CONCURRO_VERIFIER_IMAGE:?qualified Linux amd64 verifier image required}
+    entrypoint: ["responses-bridge"]
+    command: ["--listen", "0.0.0.0:7451", "--gateway", "http://concurro-gateway:4000"]
+    networks:
+      edge:
+        aliases:
+          - concurro-responses-bridge
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  verifier-data:
+
+networks:
+  edge:
+    external: true
+    name: edge
+  credential-private:
+    name: concurro-credential-private
+    internal: true
+  relay-public: {}

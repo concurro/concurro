@@ -78,6 +78,17 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(ROUTES["chatgpt-subscription"]["sponsorship_provider"], "openai")
         self.assertEqual(ROUTES["claude-subscription"]["sponsorship_provider"], "anthropic")
 
+    def test_relay_custody_is_frozen_without_changing_vault_admissions(self):
+        """Only selected relay records carry the transport marker into a frozen attempt."""
+        original = selection()
+        self.assertNotIn("custody", original)
+        credential = Credential.parse(original["credential"])
+        relay = admissions.selection(credential, "openai", original["grant"], custody="relay")
+        self.assertEqual(admissions.validate(relay), credential)
+        self.assertEqual(admissions.freeze(relay, 1, 1)["custody"], "relay")
+        with self.assertRaises(Blocked):
+            admissions.validate({**original, "custody": "vault"})
+
     def test_transcript_scope_survives_provider_transfer_and_credential_replacement(self):
         """Funding identity freezes independently of the task-scoped retained transcript."""
         state = {"issue": 7, "base": "a" * 40, "requirements": {}, "bundle_id": "bundle", "config_digest": "config"}

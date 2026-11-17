@@ -139,7 +139,11 @@ sudo chown 65533:65533 /etc/concurro/service/delegation-key
 ```
 
 `headers.codex` selects the ChatGPT subscription route; use `"headers": {}` with an OpenAI
-API key. `issues` is `upstream`, `fork` or `both`. Omit `engine`: the service then serves
+API key. With the relay overlay enabled, set `gateway.codex_ws_url` to the same
+`https://<host>/concurro` URL. The edge sends Codex WebSocket upgrades to
+`responses-bridge`, which POSTs each turn to the real gateway for key, model,
+budget and usage handling. Ordinary HTTP inference stays on agentgateway.
+`issues` is `upstream`, `fork` or `both`. Omit `engine`: the service then serves
 the release it was deployed with. An optional `reviewer` block enables
 [standalone PR reviews](#standalone-pr-reviews). Backoffice settings are in
 [`backoffice/README.md`](../backoffice/README.md#settings).
@@ -450,8 +454,10 @@ and publishes no port: other `edge` services, such as the backoffice API, reach 
 | ---- | ---- |
 | `GET /credentials` | `{providers: [{provider, revision, entries}], types}`: each provider's entries in priority order |
 | `POST /credentials` | Appends a new entry and stores its secret without provider requests; 422 for malformed input |
+| `POST /credentials/relay` | Approves one displayed Sponsor code for its registered routes and appends an owner-bound entry per route without stored provider secrets |
 | `PATCH /credentials/{entry_id}` | Changes name, enabled or role/profile filters |
 | `PUT /credentials/{entry_id}/secret` | Stores the entry's next version, retiring only its previous one |
+| `PUT /credentials/{entry_id}/relay` | Approves a replacement Sponsor for that one route at the entry's current revision |
 | `PUT /credentials/order/{provider}` | Commits the provider list's exact new order |
 | `DELETE /credentials/{entry_id}` | Removes the entry, marks its record `revoked` and destroys its ciphertext |
 | `GET /health` | `{"status": "ok"}` |
@@ -469,6 +475,19 @@ ciphertext. Records live in SQLite (WAL) at `/data/vault.db`. Configured contrib
 inference resolves exact admitted versions through the separate private listener; org-funded
 work keeps org credentials. The service metadata principal never receives secrets. See the
 [vault lifecycle/private-listener guide](vault/README.md).
+
+The optional [hosted relay overlay](compose.relay.yaml) adds a Rust verifier for
+`claude-subscription` and `chatgpt-subscription` entries with `custody=relay`.
+Set `CONCURRO_VERIFIER_IMAGE` to the qualified Linux amd64 image and
+`CONCURRO_RELAY_VERIFICATION_URL` to the full public backoffice URL ending in
+`/concurro/credentials/relay` (or `/credentials/relay` when mounted at root).
+The owner approves one displayed Sponsor code for exactly the routes Sponsor registered
+in the portal. Exchange admits one request using its existing
+model, budget, turn and exact-version checks, then forwards it to the verifier on
+the private network. A live Sponsor link is required; one task retains one native
+provider session for cold and warm requests. The overlay requires a TLS certificate
+and key, and a shared private service token.
+It is not part of the base deployment.
 
 The vault refuses to start unless its master key file holds 64 hex characters and is a
 regular file owned by uid 65532 with no group or other access. Losing the key loses every

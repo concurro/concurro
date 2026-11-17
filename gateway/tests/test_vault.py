@@ -133,6 +133,7 @@ class StorageTest(VaultFixture, unittest.TestCase):
                 "account_label",
                 "verified_account",
                 "models",
+                "custody",
             },
         )
         digest = hashlib.sha256(ANTHROPIC.encode()).hexdigest()

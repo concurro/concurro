@@ -76,6 +76,25 @@ class EntryBody(SecretBody):
     profiles: list[ProfileFilter] = []
 
 
+class RelayBody(BaseModel):
+    """One Sponsor device code approving its selected subscription routes."""
+
+    code: str
+    routes: list[str] = Field(min_length=1, max_length=2)
+    name: str
+    roles: list[str] = []
+    profiles: list[ProfileFilter] = []
+    mutation_id: str
+
+
+class RelayReplaceBody(BaseModel):
+    """New Sponsor code for one existing relay entry at the revision last read."""
+
+    code: str
+    revision: int
+    mutation_id: str
+
+
 class ReplaceBody(SecretBody):
     """A replacement token for one entry at the revision last read."""
 
@@ -506,6 +525,11 @@ def create_app(
         fields = body.model_dump(exclude={"type"}, exclude_none=True)
         return changed(vault.add(current.credential or current.token, body.type, fields))
 
+    @app.post("/api/me/credentials/relay")
+    def add_relay(body: RelayBody, current: Annotated[Session, Depends(writer)]):
+        """Approve the Sponsor's exact route set for the signed-in owner."""
+        return changed(vault.add_relay(current.credential or current.token, body.model_dump()))
+
     @app.put("/api/me/credentials/order/{provider}")
     def reorder_credentials(provider: str, body: OrderBody, current: Annotated[Session, Depends(writer)]):
         return changed(vault.reorder(current.credential or current.token, provider, body.model_dump()))
@@ -524,6 +548,11 @@ def create_app(
     def replace_credential(entry_id: str, body: ReplaceBody, current: Annotated[Session, Depends(writer)]):
         fields = body.model_dump(exclude_none=True)
         return changed(vault.replace(current.credential or current.token, entry_id, fields))
+
+    @app.put("/api/me/credentials/{entry_id}/relay")
+    def replace_relay(entry_id: str, body: RelayReplaceBody, current: Annotated[Session, Depends(writer)]):
+        """Replace one relay entry after a fresh Sponsor approval."""
+        return changed(vault.replace_relay(current.credential or current.token, entry_id, body.model_dump()))
 
     @app.delete("/api/me/credentials/{entry_id}")
     def remove_credential(entry_id: str, current: Annotated[Session, Depends(writer)], revision: int | None = None):

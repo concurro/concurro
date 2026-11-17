@@ -412,5 +412,6 @@ It preserves the [cross-cutting admission rules](README.md#cross-cutting-rules):
 credential fallback is separate from choosing a different sponsor or funding mode.
 [Risk-driven routing](risk-driven-routing.md) supplies the effective profile to match, and
 [consolidated reviews](consolidated-pr-reviews.md) retains its optional-model behavior.
-[Sponsor-held relay credentials](sponsor-relay.md) remain separate work; this implementation
-handles the four existing vault-backed types without adding relay registration or custody fallback.
+The original list rollout covered the four vault-backed types. The
+[relay integration](sponsor-relay.md) now uses the same entry/list policy and
+immutable record versions for Claude subscription custody.

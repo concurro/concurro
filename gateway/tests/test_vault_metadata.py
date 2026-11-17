@@ -40,6 +40,7 @@ class MetadataTests(VaultFixture, unittest.TestCase):
                 "created",
                 "updated",
                 "kind",
+                "custody",
                 "status_reason",
                 "validated",
                 "expires_at",

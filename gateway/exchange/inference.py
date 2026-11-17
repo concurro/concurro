@@ -3,6 +3,7 @@
 import http.client
 import json
 import runpy
+import select
 import socket
 import sqlite3
 import threading
@@ -49,11 +50,17 @@ class Inference:
         self.import_guard = threading.Lock()
         self.connections_guard = threading.Lock()
         self.connections = {}
+        self.leased = {}
+        self.verifier_url = None
+        self.verifier_token = None
         exchange.db.executescript("""
             CREATE TABLE IF NOT EXISTS inference_requests(id TEXT PRIMARY KEY,session TEXT NOT NULL,turn TEXT,binding TEXT NOT NULL,created REAL NOT NULL,resolved INTEGER NOT NULL DEFAULT 0,claimed INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS inference_observations(sequence INTEGER PRIMARY KEY AUTOINCREMENT,request TEXT NOT NULL,source TEXT NOT NULL,body TEXT NOT NULL,UNIQUE(request,source));
         """)
         exchange.add_columns("inference_requests", (("model", "TEXT"), ("repository", "TEXT"), ("issue", "INTEGER")))
+        exchange.add_columns(
+            "inference_requests", (("custody", "TEXT"), ("relay_id", "TEXT"), ("entry_id", "TEXT"))
+        )
         exchange.add_columns("inference_observations", (("turn", "TEXT"), ("repository", "TEXT"), ("issue", "INTEGER")))
         exchange.db.executescript("""
             UPDATE inference_observations SET turn=json_extract(body,'$.turn'),repository=json_extract(body,'$.binding.repository'),issue=json_extract(body,'$.binding.issue') WHERE turn IS NULL;
@@ -115,7 +122,8 @@ class Inference:
     def snapshot(self, identifier):
         """Load an immutable request identity; callers hold the lifecycle lock."""
         row = self.exchange.db.execute(
-            "SELECT session,turn,binding,resolved,claimed,model FROM inference_requests WHERE id=?", (identifier,)
+            "SELECT session,turn,binding,resolved,claimed,model,custody,relay_id,entry_id"
+            " FROM inference_requests WHERE id=?", (identifier,)
         ).fetchone()
         if row is None:
             raise self.exchange.refusal_type(403, "unknown private request")
@@ -127,6 +135,9 @@ class Inference:
             "resolved": row[3],
             "claimed": row[4],
             "model": row[5],
+            "custody": row[6],
+            "relay_id": row[7],
+            "entry_id": row[8],
         }
 
     def resolve(self, identifier, session):
@@ -167,26 +178,45 @@ class Inference:
             "route": bound["route"],
             "version": bound["credential_version"],
         }
-        if (
-            not isinstance(material, dict)
-            or any(material.get(k) != v for k, v in required.items())
-            or not isinstance(material.get("secret"), str)
-            or not material["secret"]
-            or any(c in material["secret"] for c in "\r\n")
-        ):
+        if not isinstance(material, dict) or any(material.get(k) != v for k, v in required.items()):
             self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
             raise ex.refusal_type(503, "resolver identity incomplete")
-        account = material.get("account") or ""
-        if isinstance(account, dict) and bound["route"] == "chatgpt-subscription":
-            account = account.get("chatgpt_account_id")
-        if (
-            not isinstance(account, str)
-            or any(c in account for c in "\r\n")
-            or bound["route"] == "chatgpt-subscription"
-            and not account
-        ):
-            self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
-            raise ex.refusal_type(503, "credential account metadata unavailable")
+        custody = material.get("custody", "vault")
+        if custody == "relay":
+            if not self.verifier_url or not self.verifier_token:
+                self.finish(identifier, "resolver", {"category": "unavailable", "status": 503, "completed": False})
+                raise ex.refusal_type(503, "relay verifier unavailable")
+            if (
+                bound["route"] not in ("claude-subscription", "chatgpt-subscription")
+                or not isinstance(material.get("relay_id"), str)
+                or not material["relay_id"].startswith("relay-")
+                or not isinstance(material.get("entry_id"), str)
+                or len(material["entry_id"]) != 32
+                or material.get("secret") is not None
+            ):
+                self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
+                raise ex.refusal_type(503, "relay identity incomplete")
+            token, account = "local-relay-placeholder", ""
+        else:
+            if (
+                custody != "vault"
+                or not isinstance(material.get("secret"), str)
+                or not material["secret"]
+                or any(c in material["secret"] for c in "\r\n")
+            ):
+                self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
+                raise ex.refusal_type(503, "resolver identity incomplete")
+            token, account = material["secret"], material.get("account") or ""
+            if isinstance(account, dict) and bound["route"] == "chatgpt-subscription":
+                account = account.get("chatgpt_account_id")
+            if (
+                not isinstance(account, str)
+                or any(c in account for c in "\r\n")
+                or bound["route"] == "chatgpt-subscription"
+                and not account
+            ):
+                self.finish(identifier, "resolver", {"category": "unknown", "status": 503, "completed": False})
+                raise ex.refusal_type(503, "credential account metadata unavailable")
         with ex.locked():
             row = ex.row(session)
             active = ex.db.execute(
@@ -195,12 +225,37 @@ class Inference:
             if not active or row["ended"] or row["deadline"] <= time.time() or not ex.allowed(bound):
                 self.finish_locked(identifier, "resolver", {"category": "unknown", "status": 403, "completed": False})
                 raise ex.refusal_type(403, "request authority ended during resolution")
-            ex.db.execute("UPDATE inference_requests SET resolved=1 WHERE id=?", (identifier,))
-        return {"token": material["secret"], "account": account, "route": bound["route"], "request": identifier}
+            ex.db.execute(
+                "UPDATE inference_requests SET resolved=1,custody=?,relay_id=?,entry_id=? WHERE id=?",
+                (custody, material.get("relay_id"), material.get("entry_id"), identifier),
+            )
+        return {"token": token, "account": account, "route": bound["route"], "request": identifier}
 
     def claim(self, identifier, route):
         """Allow the loopback observer to consume one successfully resolved request exactly once."""
         ex = self.exchange
+        with ex.locked():
+            snap = self.snapshot(identifier)
+        if snap["custody"] == "relay":
+            try:
+                material = ex.vault.resolve(snap["binding"])
+            except ex.refusal_type as error:
+                self.finish(
+                    identifier,
+                    "resolver",
+                    {"category": "auth" if error.status in (404, 410) else "unknown", "status": error.status,
+                     "completed": False},
+                )
+                raise
+            if (
+                material.get("custody") != "relay"
+                or material.get("relay_id") != snap["relay_id"]
+                or material.get("entry_id") != snap["entry_id"]
+                or material.get("record_id") != snap["binding"]["credential"]
+                or material.get("version") != snap["binding"]["credential_version"]
+            ):
+                self.finish(identifier, "resolver", {"category": "auth", "status": 403, "completed": False})
+                raise ex.refusal_type(403, "relay binding changed")
         with ex.locked():
             snap = self.snapshot(identifier)
             if snap["binding"]["route"] != route or snap["resolved"] != 1 or snap["claimed"]:
@@ -227,6 +282,8 @@ class Inference:
                 raise ex.refusal_type(403, "upstream authority ended")
             with self.connections_guard:
                 self.connections[snapshot["request"]] = (snapshot["session"], snapshot["turn"], stream)
+                if snapshot.get("custody") == "relay":
+                    self.leased[snapshot["session"], snapshot["turn"]] = snapshot["deadline"]
 
     def detach(self, identifier):
         """Forget a completed socket without changing its durable request evidence."""
@@ -235,6 +292,11 @@ class Inference:
 
     def stop(self, session=None, identifier=None, turn=None):
         """Interrupt only matching admitted sockets on retirement or their frozen deadline."""
+        requested = None
+        if identifier is not None:
+            with self.exchange.locked():
+                requested = self.snapshot(identifier)
+        releases = {}
         with self.connections_guard:
             for request, (owner, active_turn, stream) in list(self.connections.items()):
                 if (
@@ -252,6 +314,34 @@ class Inference:
                     pass
                 stream.close()
                 self.connections.pop(request, None)
+            for (owner, active_turn), deadline in list(self.leased.items()):
+                if session is not None and owner != session or turn is not None and active_turn != turn:
+                    continue
+                if requested is not None and (requested["session"] != owner or requested["turn"] != active_turn):
+                    continue
+                del self.leased[owner, active_turn]
+                releases[owner, active_turn] = deadline
+        for (owner, active_turn), deadline in releases.items():
+            self.release(owner, active_turn, deadline)
+
+    def release(self, session, turn, deadline):
+        """Close one retained native provider session after Exchange ends its authority."""
+        if not self.verifier_url or not self.verifier_token:
+            return
+        request = urllib.request.Request(
+            self.verifier_url + "/release",
+            method="POST",
+            data=json.dumps({"session": session, "turn": turn, "deadline": deadline}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Concurro-Verifier-Auth": "Bearer " + self.verifier_token,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5):
+                pass
+        except (OSError, urllib.error.URLError):
+            pass
 
     def finish(self, identifier, source, result):
         """Append sanitized metadata under the existing lifecycle lock."""
@@ -430,6 +520,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def forward(self, snapshot, url, body):
         """Relay bounded JSON/SSE with backpressure; close upstream promptly on cancellation."""
+        relay = snapshot.get("custody") == "relay"
+        if relay:
+            path = ("/v1/responses" if snapshot["binding"]["route"] == "chatgpt-subscription"
+                    else urllib.parse.urlsplit(url).path)
+            url = self.server.inference.verifier_url + "/dispatch" + path
         parsed = urllib.parse.urlsplit(url)
         cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
         connection = cls(parsed.hostname, parsed.port, timeout=max(1, snapshot["deadline"] - time.time()))
@@ -438,6 +533,8 @@ class Handler(BaseHTTPRequestHandler):
             if snapshot["binding"]["route"] != "chatgpt-subscription"
             else HOP | {"origin", "accept-encoding"}
         )
+        if relay:
+            excluded |= {"authorization", "x-api-key"}
         headers = {
             k.lower(): v
             for k, v in self.headers.items()
@@ -446,11 +543,46 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_all("anthropic-beta"):
             headers["anthropic-beta"] = ", ".join(self.headers.get_all("anthropic-beta"))
         headers["accept-encoding"] = "identity"
+        if relay:
+            bound = snapshot["binding"]
+            headers["x-concurro-verifier-auth"] = "Bearer " + self.server.inference.verifier_token
+            headers["x-concurro-binding"] = json.dumps(
+                {
+                    "session": snapshot["session"],
+                    "turn": snapshot["turn"],
+                    "user_id": int(bound["sponsor"]),
+                    "route": bound["route"],
+                    "entry_id": snapshot["entry_id"],
+                    "record_id": bound["credential"],
+                    "relay_id": snapshot["relay_id"],
+                    "version": bound["credential_version"],
+                    "deadline": snapshot["deadline"],
+                },
+                separators=(",", ":"),
+            )
         observer = Observation(snapshot["binding"]["route"], 502)
         timer = None
+        disconnect_watch = None
+        watch_done = threading.Event()
+        disconnected = threading.Event()
         try:
             connection.connect()
             self.server.inference.attach(snapshot, connection.sock)
+            if relay:
+                def watch_disconnect():
+                    """Stop a relay request when its gateway peer closes before the provider finishes."""
+                    while not watch_done.is_set():
+                        try:
+                            readable, _, _ = select.select([self.connection], [], [], .1)
+                            if readable and not self.connection.recv(1, socket.MSG_PEEK):
+                                disconnected.set()
+                                self.server.inference.stop(identifier=snapshot["request"])
+                                return
+                        except OSError:
+                            return
+
+                disconnect_watch = threading.Thread(target=watch_disconnect, daemon=True)
+                disconnect_watch.start()
             timer = threading.Timer(
                 max(0, snapshot["deadline"] - time.time()),
                 self.server.inference.stop,
@@ -525,6 +657,11 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, http.client.HTTPException):
             observer.ambiguous = True
         finally:
+            watch_done.set()
+            if disconnect_watch:
+                disconnect_watch.join()
+            if disconnected.is_set():
+                observer.ambiguous = True
             self.close_connection = True
             if timer:
                 timer.cancel()

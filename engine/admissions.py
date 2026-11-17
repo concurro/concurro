@@ -46,9 +46,11 @@ def funding_notice(config, state=None):
     )
 
 
-def selection(credential, provider=None, slot=None):
+def selection(credential, provider=None, slot=None, custody=None):
     """Snapshot one selected provider grant without copying the whole task's slot map."""
     slot = slot or {}
+    if custody not in (None, "vault", "relay"):
+        raise Blocked("unknown credential custody")
     return {
         "funding": credential.kind,
         "credential": credential.record(),
@@ -58,14 +60,17 @@ def selection(credential, provider=None, slot=None):
         "grant_id": slot.get("grant_id"),
         "route": credential.route,
         "grant": deepcopy(slot) if credential.kind == "contributed" else None,
+        **({"custody": "relay"} if custody == "relay" else {}),
     }
 
 
 def validate(value):
     """Validate the exact selection and its route/provider/owner identity without resolving material."""
-    if not isinstance(value, dict) or set(value) != FIELDS:
+    if not isinstance(value, dict) or set(value) not in (FIELDS, FIELDS | {"custody"}):
         raise Blocked("invalid admission selection")
     credential = Credential.parse(value["credential"])
+    if "custody" in value and (value["custody"] != "relay" or credential.kind != "contributed"):
+        raise Blocked("invalid credential custody")
     if value["funding"] != credential.kind or value["route"] != credential.route:
         raise Blocked("admission credential differs from its funding policy")
     if credential.kind == "org":

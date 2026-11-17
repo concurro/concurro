@@ -99,11 +99,24 @@ class Vault:
             raise VaultError(422, "this credential type can't be stored")
         return entry(self.call("POST", "/credentials", token, {"route": TYPES[kind], **policy(fields)}))
 
+    def add_relay(self, token: str | TokenCredential, fields: dict) -> dict:
+        """Approve one Sponsor code for its selected subscription routes in the owner Vault."""
+        result = self.call(
+            "POST", "/credentials/relay", token, policy(fields),
+            timeout=60,
+        )
+        entries = result["entries"] if "entries" in result else {result["route"]: result}
+        return {"entries": {route: entry(value) for route, value in entries.items()}}
+
     def edit(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
         return entry(self.call("PATCH", f"/credentials/{entry_id}", token, policy(fields)))
 
     def replace(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
         return entry(self.call("PUT", f"/credentials/{entry_id}/secret", token, fields))
+
+    def replace_relay(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
+        """Replace a relay entry at its current revision with a new owner approval."""
+        return entry(self.call("PUT", f"/credentials/{entry_id}/relay", token, fields, timeout=60))
 
     def reorder(self, token: str | TokenCredential, provider: str, fields: dict) -> dict:
         return group(self.call("PUT", f"/credentials/order/{provider}", token, fields))
@@ -156,4 +169,5 @@ def entry(value: dict) -> dict:
         "expiryKnown": bool(record.get("expiry_known")),
         "accountLabel": record.get("account_label"),
         "accountVerified": bool(record.get("verified_account")),
+        "custody": record.get("custody", "vault"),
     }

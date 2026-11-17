@@ -1,7 +1,8 @@
 # Inference gateway
 
-Status: implemented. The gateway holds provider credentials centrally; agents use
-scoped session keys on GitHub-hosted runners. There are no service-host model sessions.
+Status: vault-backed inference is implemented; the sponsor-held Claude relay path is
+under development and not deployed. Agents use scoped session keys on GitHub-hosted
+runners. There are no service-host model sessions.
 See [execution](mvp-execution.md) for runner lifecycle and [deployment](../../gateway/README.md)
 for host setup, secret files and release commands.
 
@@ -12,7 +13,7 @@ exchange. Claude Code uses native Anthropic Messages; Codex uses OpenAI Response
 WebSockets disabled. The implementation supports these two harnesses; Copilot is not a
 supported gateway route. Target profiles select explicit models and efforts.
 
-Provider API keys or subscription credentials stay in the gateway deployment. The configured
+Vault-backed API keys and subscription credentials stay in the gateway deployment. Those
 routes inject the provider credential and remove/replace the client's session credential.
 The ChatGPT route also supplies the account header; the Claude subscription route appends
 its OAuth beta header. Subscription refresh and availability are operator responsibilities;
@@ -138,3 +139,27 @@ inference outage stops model progress; it does not grant runners a direct-provid
 Target [MCP servers](mcp-tools.md) are stdio children of the CLI on the runner and send
 nothing through the gateway. Remote MCP access remains a proposal; an inference session
 key must not be assumed to authorize MCP administration or arbitrary tool traffic.
+
+## Sponsor-held Claude relay slice
+
+The [relay design](../proposals/sponsor-relay.md) uses the same admitted turn, virtual key,
+native model/budget enforcement and one-use Exchange forwarding hop. Vault schema 5
+adds relay custody to the current ordered entries and exact immutable record versions.
+Its owner-authenticated API approves a displayed Sponsor code against one record; only
+the private resolver returns the resulting relay ID to Exchange. No provider credential
+is stored or returned for that record.
+
+Exchange's `/resolve` gives agentgateway a local placeholder for relay custody.
+`/claim` rechecks the exact Vault binding and running turn before Exchange forwards
+the provider request to the private Rust verifier. Exchange keeps sanitized provider
+observations and closes the request socket on cancellation. Rust authenticates the
+Sponsor's protocol v4 links and leases one native TLS 1.3 session to the exact
+session, turn, sponsor and record version. Consecutive Claude requests in that turn
+reuse one provider bootstrap; another task cannot share it. Exchange releases the
+lease when the turn ends. No live link or invalid binding ends the request without
+another payer or inference attempt.
+
+The raw Sponsor TLS listener is separate from the HTTP edge. Rust's approval,
+release and dispatch endpoints require a private service bearer on the credential
+network. This slice has no portal UI or Codex WebSocket route; Linux amd64 native
+runtime qualification is pending.
