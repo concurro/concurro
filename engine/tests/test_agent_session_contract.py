@@ -118,6 +118,15 @@ class SessionEntryTests(unittest.TestCase):
 
         def run(*args, **kwargs):
             self.assert_lock(root, True)
+            self.assertNotIn("response_schema", json.loads(kwargs["input"]))
+            command = args[0]
+            native_schema = (
+                json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
+                if provider == "codex"
+                else json.loads(command[command.index("--json-schema") + 1])
+            )
+            self.assertEqual(native_schema, self.bundle.schema(request["stage"]))
+            self.assertEqual(self.opened[-1].prompt["response_schema"], native_schema)
             raw = (root / "turn.json").read_bytes()
             self.assertEqual(raw, b'{"scope": "' + b"a" * 64 + b'", "status": "pending"}')
             self.pending.append(raw)

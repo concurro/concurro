@@ -25,7 +25,7 @@ missing. Credential management builds on [per-user credentials](per-user-credent
 | Service registry (SQLite, daemon-locked) | Bindings, queue/due times, ownership leases, last outcome, mutation intents, PR mapping | Exclusive writer lock; reads must go through the daemon |
 | Exchange DB | Runner sessions, turns (`payload` = full request, `result`, timings, binding, staffing) | **Finished turns are deleted after 24 h** (`FINISHED_RETENTION_SECONDS`) |
 | Retained transcripts | `state_dir/sessions/<repo>/<scope>.tar.gz` (Claude Code / Codex homes) | **One archive per role scope, overwritten each turn**; no per-turn history |
-| Bundle at `bundle_id` | Role instructions, skills, response schemas | Needed to reconstruct the exact prompt (`agent_entry.prompt_for`) |
+| Bundle at `bundle_id` | Role instructions, skills, response schemas | Diagnostics rebuild prompt JSON with `prompts.prompt_for` and the native schema separately with `Bundle.schema` |
 | Target config at `config_sha` | `.concurro/config.yaml`, charter, instructions | Fork default branch or pinned commit |
 | agentgateway | Per-session token budgets; stats listener (loopback) | Concurro records **no per-turn token usage** today |
 | `state_dir/evaluations/` | Design-evaluation reports | Operator-only |

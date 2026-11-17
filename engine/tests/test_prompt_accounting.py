@@ -15,7 +15,7 @@ from bundle import Bundle
 from controller import Controller
 from fakes import FakeAgents, FakeGitHub
 from pipeline_fixtures import PipelineFixture
-from policy import Blocked
+from policy import Blocked, plan_output_contract
 from test_turns import MODELS, FakeExecutor
 
 
@@ -30,6 +30,9 @@ class AccountingTests(PipelineFixture, unittest.TestCase):
             )
             for stage in ("intake", "plan", "plan_qc", "develop", "review"):
                 context = controller.prepare_context("codex", stage, controller.context())
+                context["issue"] = {**context["issue"], "title": "Review café 🌍"}
+                if stage == "plan":
+                    context["plan_output_contract"] = plan_output_contract(self.config)
                 if stage == "develop":
                     context["controller_candidate"] = {"docs/guide.md": "Candidate"}
                     context["design_authorization"] = {"binding": "controller-proof"}
@@ -41,13 +44,35 @@ class AccountingTests(PipelineFixture, unittest.TestCase):
                     "workspace": "/arbitrary/runner/path/work",
                     "feedback_directory": "/arbitrary/runner/path/feedback",
                 }
+                original = deepcopy(request)
                 rendered = prompts.prompt_for(request, agents.bundle)
                 with self.subTest(stage=stage):
-                    self.assertEqual(prompts.size(stage, context, agents.bundle), len(rendered.encode()))
+                    schema_bytes = len(prompts.serialize(agents.bundle.schema(stage)).encode())
+                    self.assertEqual(prompts.size(stage, context, agents.bundle), len(rendered.encode()) + schema_bytes)
                     value = json.loads(rendered)
+                    self.assertNotIn("response_schema", value)
+                    self.assertIn('"title":"Review café 🌍"', rendered)
+                    self.assertEqual(value["untrusted_context"]["issue"], context["issue"])
+                    if stage == "plan":
+                        self.assertEqual(
+                            value["untrusted_context"]["plan_output_contract"], context["plan_output_contract"]
+                        )
+                    for key in ("edit_policy", "limits"):
+                        if stage == "plan":
+                            self.assertNotIn(key, value["untrusted_context"])
+                        else:
+                            self.assertEqual(value["untrusted_context"][key], context[key])
                     self.assertEqual(value["repository_snapshot"]["workspace"], ".")
                     self.assertEqual(value["feedback_files"]["directory"], "../feedback")
                     self.assertFalse(any(k.startswith("controller_") for k in value["untrusted_context"]))
+                    self.assertEqual(request, original)
+                    self.assertEqual(value["instructions"]["charter"], controller.bundle.charter)
+                    for key in ("charter", "repository", "repository_commit", "local_commit"):
+                        self.assertNotIn(key, value["untrusted_context"])
+                    self.assertEqual(value["repository_snapshot"]["commit"], context["repository_commit"])
+                    self.assertEqual(value["repository_snapshot"]["refs"], context["repository"]["refs"])
+                    self.assertEqual(value["repository_snapshot"]["head"], context["repository"]["head"])
+                    self.assertEqual(value["repository_snapshot"]["local_checkpoint"], context.get("local_commit"))
 
     def test_formerly_fitting_context_is_rejected_before_call_or_dispatch(self):
         controller = self.reach("plan")

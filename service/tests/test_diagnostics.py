@@ -14,11 +14,13 @@ import fixtures  # noqa: F401 -- initializes the service and engine test paths
 from support import setUpModule as setUpModule, tearDownModule as tearDownModule
 
 from agents import RunnerExecutor
+from backoffice.turns import Diagnostics
 from bundle import Bundle
 from prompts import prompt_for
 from runner_fixtures import GATEWAY, TASK, TURN, FakeOperator
 from service import diagnostics
 from service.settings import CHECKOUT
+from vocab import CONTRIBUTION, STANDALONE_REVIEW
 
 TURN_ID = "12345678-1234-1234-1234-123456789abc"
 ARCHIVE = b"archive bytes"
@@ -73,6 +75,7 @@ class StoreTests(unittest.TestCase):
         self.assertFalse({"gateway", "charter", "instruction_texts"} & set(request))
         prompt = json.loads(row["prompt"])
         bundle = Bundle(charter_text=turn["request"]["charter"], instruction_texts=turn["request"]["instruction_texts"])
+        self.assertEqual(prompt.pop("response_schema"), bundle.schema("plan"))
         self.assertEqual(prompt, json.loads(prompt_for({**turn["request"], "feedback_directory": True}, bundle)))
         self.assertIn("feedback_files", prompt)
         self.assertEqual(prompt["instructions"]["role"], "plan")
@@ -87,6 +90,21 @@ class StoreTests(unittest.TestCase):
         row = self.row()
         self.assertIsNone(row["prompt"])
         self.assertEqual(json.loads(row["request"])["bundle_id"], "other")
+
+    def test_native_schema_is_visible_in_the_backoffice_panel(self):
+        """Diagnostics retain each task kind's native contract without putting it in model prompts."""
+        for stage, kind in (("plan", CONTRIBUTION), ("review", CONTRIBUTION), ("review", STANDALONE_REVIEW)):
+            with self.subTest(stage=stage, kind=kind):
+                turn = bundled_turn()
+                request = turn["request"]
+                request.update(stage=stage, task_kind=kind)
+                self.assertNotIn("schema", request)
+                bundle = Bundle(charter_text=request["charter"], instruction_texts=request["instruction_texts"])
+                identifier = f"{stage}-{kind}"
+                self.store.submitted(identifier, turn, TASK)
+                panel = next(row for row in Diagnostics(self.root).turns("up/project", 7) if row["id"] == identifier)
+                self.assertEqual(json.loads(panel["prompt"]["schema"]), bundle.schema(stage, kind))
+                self.assertNotIn("response_schema", json.loads(prompt_for(request, bundle)))
 
     def test_a_fresh_turn_transcript_is_stored(self):
         self.store.submitted(TURN_ID, deepcopy(TURN), TASK)

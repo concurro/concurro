@@ -92,6 +92,10 @@ paths, prefixes name directories ending in `/`, and `protected` accepts globs.
 under this policy. Add any desired protection explicitly. `.concurro` and `.git` path
 components remain reserved regardless of configuration, and traversal is never allowed.
 
+Policy documents are included in each prompt. The stacks-core example omits the full
+`CONTRIBUTING.md`; keep routinely supplied guidance concise and inspect that file in the
+checkout when its details are relevant.
+
 | Limit | Meaning | Default |
 | ---- | ---- | ---- |
 | `primary_files` | Entries in the plan's primary-file list | No cap |
@@ -475,14 +479,20 @@ See the [closeout evidence and recovery costs](reports/limits-cleanup/README.md#
 
 Instruction, charter, configuration and template files have no separate policy-size ceiling.
 HTTP transport, model-response (300,000 UTF-8 bytes), extraction and checkpoint capacities
-remain. `max_context_bytes` counts the complete constructed stage prompt: controller context,
-role instructions, target charter/instructions, response schema, repository metadata and
-feedback-file indexes, serialized exactly as supplied to the harness. Controller-only fields,
-file contents read later with tools, CLI-added framing and retained conversation history are
-excluded. The full prompt is counted even when a retained session sends only changed fields.
+remain. `max_context_bytes` counts the constructed stage prompt plus one response schema:
+controller context, role instructions, target charter/instructions, repository metadata and
+feedback-file indexes, all measured as compact UTF-8 JSON. The response schema travels through
+the native CLI schema option, without a duplicate in the prompt. The private session journal
+still binds it for replay and compatibility checks, including existing journals.
+Initial prompts and retained-session updates use the same compact encoding. Planner prompts include
+edit policy and limits once in `plan_output_contract`, omitting identical top-level copies.
+Controller-only fields, file contents read later with tools, CLI-added framing and retained
+conversation history are excluded. The full prompt plus schema is counted even when a retained
+session sends only changed fields.
 Paths in the prompt are relative to the runner workspace, making accounting independent of
 its temporary directory name. Candidate preflight uses the same representation with its
-existing dispatch allowance for prospective metadata.
+existing dispatch allowance for prospective metadata. Diagnostics retain the native schema
+separately from model-facing prompt JSON so the backoffice schema panel remains available.
 
 This expands the setting's former context-only meaning. A previously near-capacity stage
 may now need a higher operator-selected budget. Admission fails before spending a call;

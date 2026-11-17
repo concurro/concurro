@@ -127,21 +127,80 @@ class SessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             session = {"scope": "a" * 64, "turn": 0}
-            first_prompt = self.prompt(plan="v1", stable="unchanged", obsolete=True)
+            first_prompt = self.prompt(plan="v1 🌍", stable="unchanged", obsolete=True)
             turn = SessionTurn(session, first_prompt, root)
-            self.assertEqual(json.loads(turn.start()), json.loads(first_prompt))
+            initial = turn.start()
+            expected = json.loads(first_prompt)
+            expected.pop("response_schema")
+            self.assertEqual(json.loads(initial), expected)
+            self.assertIn('"plan":"v1 🌍"', initial)
             turn.finish({"decision": "revise"}, turn.identifier)
             turn.close()
-            replay = SessionTurn(session, first_prompt, root)
+            replay = SessionTurn(session, json.dumps(expected), root, schema={})
             self.assertEqual(replay.cached, {"decision": "revise"})
             replay.close()
-            revised = SessionTurn({**session, "turn": 1}, self.prompt(plan="v2", stable="unchanged"), root)
-            delta = json.loads(revised.start())
-            self.assertEqual(delta["context_update"], {"plan": "v2"})
+            revised = SessionTurn({**session, "turn": 1}, self.prompt(plan="v2 café", stable="unchanged"), root)
+            update = revised.start()
+            self.assertIn('"plan":"v2 café"', update)
+            delta = json.loads(update)
+            self.assertEqual(delta["context_update"], {"plan": "v2 café"})
             self.assertEqual(delta["removed_context_keys"], ["obsolete"])
             self.assertNotIn("instructions", delta)
             revised.finish({"decision": "approve"}, revised.identifier)
             revised.close()
+
+    def test_native_schema_changes_invalidate_replay_and_resume(self):
+        """A schema delivered outside the prompt still binds cached responses and retained turns."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = {"scope": "a" * 64, "turn": 0}
+            prompt = json.loads(self.prompt(plan="v1"))
+            prompt.pop("response_schema")
+            prompt = json.dumps(prompt)
+            turn = SessionTurn(session, prompt, root, schema={"type": "object"})
+            self.assertNotIn("response_schema", json.loads(turn.start()))
+            turn.finish({"decision": "approve"}, turn.identifier)
+            turn.close()
+            journal = (root / "turn.json").read_bytes()
+            with self.assertRaisesRegex(ValueError, "retained turn does not match checkpoint"):
+                SessionTurn(session, prompt, root, schema={"type": "string"})
+            revised = SessionTurn({**session, "turn": 1}, prompt, root, schema={"type": "string"})
+            try:
+                with self.assertRaisesRegex(ValueError, "retained instruction contract changed"):
+                    revised.start()
+                self.assertEqual((root / "turn.json").read_bytes(), journal)
+            finally:
+                revised.close()
+
+    def test_pre_optimization_journal_continues_but_cannot_replay_changed_input(self):
+        """Old context copies are removed on continuation; exact replay still requires identical input."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = {"scope": "a" * 64, "turn": 0}
+            removed = {
+                "charter": {"id": "example"},
+                "repository": {"refs": {}, "head": "main"},
+                "repository_commit": "a" * 40,
+                "local_commit": None,
+                "pr_description_criterion": "Check the published description.",
+            }
+            legacy_prompt = self.prompt(plan="v1", **removed)
+            legacy = SessionTurn(session, legacy_prompt, root)
+            legacy.finish({"decision": "approve"}, legacy.identifier)
+            legacy.close()
+            current = json.loads(self.prompt(plan="v1"))
+            current.pop("response_schema")
+            current = json.dumps(current)
+            with self.assertRaisesRegex(ValueError, "retained turn does not match checkpoint"):
+                SessionTurn(session, current, root, schema={})
+            next_turn = SessionTurn({**session, "turn": 1}, current, root, schema={})
+            try:
+                update = json.loads(next_turn.start())
+                self.assertEqual(set(update["removed_context_keys"]), set(removed))
+                self.assertEqual(update["context_update"], {})
+                self.assertNotIn("response_schema", update)
+            finally:
+                next_turn.close()
 
     def test_ambiguous_turn_and_missing_transcript_fail_closed(self):
         """A partial provider turn is never silently replayed as a fresh request."""

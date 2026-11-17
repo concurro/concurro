@@ -167,6 +167,7 @@ def main():
             prompt,
             Path(request["retained_root"]),
             request.get("max_retained_bytes", DEFAULT_RETAINED_BYTES),
+            request["schema"],
         )
         if request.get("session")
         else None
