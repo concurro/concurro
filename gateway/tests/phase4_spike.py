@@ -247,9 +247,11 @@ class RuntimeTests(unittest.TestCase):
             vault=self.vault,
         )
         self.addCleanup(self.exchange.db.close)
-        private = Bounded(("127.0.0.1", 0), CapturingHandler)
+        private = Bounded(("127.0.0.1", 0), getattr(self, "inference_handler", CapturingHandler))
         private.hop_headers = []
+        private.hop_timings = []
         self.hop_headers = private.hop_headers
+        self.hop_timings = private.hop_timings
         private.inference, private.max_body, private.body_budget = (
             self.exchange.inference,
             MAX_BODY,

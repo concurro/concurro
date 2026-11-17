@@ -1,6 +1,6 @@
 # Sponsor-held Claude credentials
 
-**Status:** first Concurro integration slice is under development and has not been
+**Status:** local synthetic and bounded live-provider integration passed and has not been
 deployed. The frozen Sponsor relay at `5d57cfab313d69c16a3b3e39fda5eb721e83c070`
 speaks protocol v4. Earlier TLSNotary spike measurements and the superseded
 design remain in Git history; the current native transport uses TLS 1.3 MPC
@@ -9,10 +9,13 @@ and proof verification.
 The sponsor runs `concurro-relay` on their machine. Its provider credential
 stays there. Concurro's Rust hosted verifier authenticates its two outbound
 TLS links, starts the existing native Concurro role, verifies each provider
-response, and leases that proved session to one admitted task turn. The first
-hosted route is Claude subscription over HTTP. Portal UI and hosted
-ChatGPT/Codex WebSocket integration are in local qualification. Rollout and
-live-provider qualification remain later work.
+response, and leases that proved session to one admitted task turn. The local
+integration covers Claude HTTP and ChatGPT/Codex WebSocket routes, including
+the portal's exact-route approval. The [sustained synthetic CLI report](sponsor-relay-sustained.md)
+records 25 tool turns per CLI. The five-file live reports cover
+[Claude compact Message Threads](sponsor-relay-message-threads.md) and
+[Codex compact continuations](sponsor-relay-codex-compact.md), including their
+validation limits. Rollout remains later work.
 
 ## Authority and custody
 
@@ -63,5 +66,5 @@ choice or reported usage.
 The hosted Rust listener for Sponsor links is raw TLS, separate from the
 HTTP edge. Its private control/dispatch listener is reachable only on the
 credential network and requires a service bearer. The current qualified
-native package is macOS arm64. A Linux amd64 Concurro role bundle and local
-end-to-end gateway fixture remain required before deployment.
+native package includes a locally tested Linux amd64 Concurro role bundle.
+Deployment and live-provider calls require separate authorization.

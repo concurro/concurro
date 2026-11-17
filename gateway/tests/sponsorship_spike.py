@@ -642,7 +642,7 @@ class SpikeTests(unittest.TestCase):
             start_new_session=True,
         )
         try:
-            stdout, stderr = process.communicate(prompt, timeout=40)
+            stdout, stderr = process.communicate(prompt, timeout=getattr(self.options, "native_timeout", 40))
         finally:
             processes.kill_group(process.pid)
             process.wait()

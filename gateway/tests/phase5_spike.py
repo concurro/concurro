@@ -129,8 +129,8 @@ class RuntimeTests(InferenceTests):
         self.tokens[route, owner] = secret
         return reply.json()
 
-    def admit(self, route, owner, issue=None, budget=1000):
-        """Freeze one task's stored version; only an owner change advances its provider epoch."""
+    def admit(self, route, owner, issue=None, budget=1000, claim_session=None, engine=None, model=None):
+        """Freeze one task's stored version and optionally claim it through a runner client."""
         provider = "openai" if route == "chatgpt-subscription" else "anthropic"
         task_issue = BINDING["issue"] if issue is None else issue
         current = self.exchange.db.execute(
@@ -143,6 +143,8 @@ class RuntimeTests(InferenceTests):
         identifier, binding, payload = funded_turn(
             provider, actor=owner, epoch=epoch, grant=slot["grant_id"] if slot and not transfer else None
         )
+        if engine is not None:
+            binding["engine"] = engine
         binding["issue"] = task_issue
         if slot and not transfer:
             payload["request"]["admission"]["grant"] = slot
@@ -155,7 +157,7 @@ class RuntimeTests(InferenceTests):
             )
         entry = next(row for row in self.store.group(int(owner), provider)["entries"] if row["route"] == route)
         record = entry["record"]
-        model = "gpt-test" if provider == "openai" else "claude-test"
+        model = model or ("gpt-test" if provider == "openai" else "claude-test")
         credential = Credential(
             digest(["contributed", owner, route, record["record_id"], record["version"]]),
             "codex" if provider == "openai" else "claude",
@@ -174,21 +176,26 @@ class RuntimeTests(InferenceTests):
         binding.update(route=route, credential=record["record_id"], credential_version=record["version"])
         reply = self.exchange.submit(identifier, self.expected(), [model], budget, 3600, payload, binding=binding)
         session = reply.get("dispatch")
+        claimed = None
         if session:
-            grant = self.exchange.key(
-                session,
-                self.signer.token(
-                    ref="refs/heads/concurro/runs/" + session, actor_id="3003", run_id=str(len(self.sessions) + 77)
-                ),
-                engine=binding["engine"],
-            )
+            if claim_session:
+                grant, claimed = claim_session(session, binding["engine"], len(self.sessions) + 77)
+            else:
+                grant = self.exchange.key(
+                    session,
+                    self.signer.token(
+                        ref="refs/heads/concurro/runs/" + session, actor_id="3003", run_id=str(len(self.sessions) + 77)
+                    ),
+                    engine=binding["engine"],
+                )
         else:
             staffing = self.exchange.db.execute("SELECT staffing FROM turns WHERE id=?", (identifier,)).fetchone()[0]
             session = self.exchange.db.execute(
                 "SELECT id FROM sessions WHERE staffing=? AND ended IS NULL", (staffing,)
             ).fetchone()[0]
             grant = next(g for g in self.sessions if g["session"] == session)
-        claimed = self.exchange.next(session, grant["token"], 1, 0)["turns"]
+        if claimed is None:
+            claimed = self.exchange.next(session, grant["token"], 1, 0)["turns"]
         self.assertEqual([turn["id"] for turn in claimed], [identifier])
         result = {
             **grant,
