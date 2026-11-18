@@ -17,6 +17,12 @@ records 25 tool turns per CLI. The five-file live reports cover
 [Codex compact continuations](sponsor-relay-codex-compact.md), including their
 validation limits. Rollout remains later work.
 
+> The [architecture review](architecture.md#services) changes this integration in its
+> target: funding takes over the Vault's relay approvals and credential selection, the
+> inference gateway calls the verifier in place of the Exchange, and the verifier checks
+> a session claim signed by the Exchange. The relay and the verifier's link handling
+> below are unchanged.
+
 ## Authority and custody
 
 The [Vault](../../gateway/vault/README.md) owns current ordered/filterable

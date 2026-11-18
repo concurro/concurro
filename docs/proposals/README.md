@@ -24,6 +24,9 @@ in the design and operator docs.
 | [Backoffice API surface](backoffice-api.md) | Epic (inventory) | Endpoints for a GitHub-authenticated backoffice: own credentials, task overview, commands and run diagnostics. |
 | [Retrospective tuning](retrospective-tuning.md) | Feature | Analyse past tasks and open a fork PR with evidence-backed `.concurro/` changes to instructions, models, panels and budgets. |
 | [Webhook-fed list index](list-index.md) | Feature | A persistent read-model projection in the service keeps backoffice lists current from webhooks. [Phase 0 evidence](list-index/phase-0.md) and per-phase briefs are in [`list-index/`](list-index/). |
+| [Architecture review](architecture.md) | Epic | Postgres as system of record, GitHub as projection, an event bus and services split by domain and trust boundary, migrated alongside the Rust port. |
+| [Request intake](request-intake.md) | Feature | A `requests` table fed by independent channels (comments, backoffice, labels, assignment, review requests, mentions), replacing GitHub comments as the only command transport. |
+| [Mentions and assignment](mentions.md) | Feature | Enroll issues by assigning Concurro's account; `@` mentions map to requests, interpreted by a model the commenter pays for. Builds on request intake. |
 
 ## Completed, awaiting release
 
