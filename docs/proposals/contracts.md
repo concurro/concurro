@@ -153,19 +153,28 @@ The NATS subject is the architecture's (`task.<task>.<event>` and so on). The me
 
 ## Format
 
-Recommendation for [open question 1](architecture.md#open-questions): **JSON, with Rust
-types as the source.**
+**Decided: JSON, with Rust types as the source** ([architecture](architecture.md#decided)).
+Rust is the authoring language; the versioned JSON contract is what services depend on, so
+Python consumers need neither Rust source nor a Rust toolchain.
 
-- **Dedicated Rust wire types define each contract** (`serde`), separate from service
-  domain types. `schemars` (1.2.3, October 2026) generates JSON Schema (draft 2020-12)
-  into a committed `contracts/` directory, with one pinned generator configuration, and
-  schemas for deserialization where they differ from serialization.
-- **Python gets generated models:** Pydantic, from the committed schemas, with
-  `datamodel-code-generator`, pinned.
+- **Dedicated Rust wire types define each contract** (`serde`), separate from database
+  models and service domain types, so refactoring a service can't change its protocol.
+- **One direction: Rust → JSON Schema → Python.** `schemars` (1.2.3, October 2026)
+  generates JSON Schema (draft 2020-12, set explicitly) into a committed `contracts/`
+  directory, with one pinned generator configuration, and schemas for deserialization
+  where they differ from serialization. Python's Pydantic models are generated from those
+  schemas with `datamodel-code-generator`, pinned; nobody writes a second definition by
+  hand.
+- **Generated Python models are strict:** no coercion, so `"123"` isn't accepted as an
+  integer. Unknown fields follow the [versioning](#versioning) rule.
 - **Fixture tests across languages:** each contract has serialized fixtures that Rust
-  round-trips and Python parses, so the schemas aren't the only evidence the two agree.
+  round-trips and Python parses. Between them they cover tagged variants, a missing
+  field versus `null`, defaults, integer bounds and unknown fields, so the schemas aren't
+  the only evidence the two languages agree.
 - **CI fails** on drift between the types and the committed schemas, and on a change that
   isn't additive within a version.
+- **Schemas check shape, not behavior.** Consent, ordering, idempotency and withdrawal
+  are guaranteed by these contracts and their [scenario](contract-scenarios.md) tests.
 - **Why not protobuf:** JSON keeps outbox rows, parked events and the bus readable with
   standard tools, and Rust types as the source keep one definition without generating
   Rust. Protobuf's evolution rules are the additive rule above, so they wouldn't buy more.
@@ -173,8 +182,8 @@ types as the source.**
   2026) is young, and hand-written types give us the tagged enums and newtypes we want.
   The committed schemas stay the language-neutral record.
 
-This changes the architecture's "Rust types and Python models are generated from" the
-schemas to "the schemas and Python models are generated from the Rust types".
+Phase 1 proves the chain on one representative event, with a tagged variant and optional
+fields, through the outbox and bus round trip.
 
 ## Target catalog
 
@@ -216,7 +225,7 @@ All facts on `github.<event>.<action>`, identified by delivery ID and mapping re
 | `task.<task>.notice` | Snapshot per notice | → publisher, read model | 3/M1 | Full (M1 kinds) |
 | `task.<task>.finding` | Snapshot per finding | → publisher (review threads), read model | 3/M3 | Sketch: seat, origin profile, status, location, body, disposition |
 | `task.<task>.review` | Fact | → publisher | 3/M3 | Sketch: round, commit, body, finding IDs; reviewer account or App |
-| `task.<task>.report` | Snapshot per report | → publisher, read model | 3/M3 | Sketch: kind, step, blob ref, digest; where it's published is [open question 2](architecture.md#open-questions) |
+| `task.<task>.report` | Snapshot per report | → publisher, read model | 3/M3 | Sketch: kind, step, blob ref, digest; where it's published is an [open question](architecture.md#open-questions) |
 | `task.<task>.branch` | Snapshot | → publisher | 3/M3 | Sketch: base, parent commit, tree edits blob, message. The publisher records the exact commit it will write (fixed author and committer times, so recreating it gives the same SHA) before writing, and settles an uncertain ref update only if the ref points at that SHA |
 | `task.<task>.pull_request` | Snapshot | → publisher | 3/M3 | Sketch: title, body, head, base, draft or ready |
 | `task.<task>.check` | Snapshot | → publisher | 3/M3 | Sketch: standalone review check, status, conclusion `neutral` |
@@ -992,10 +1001,9 @@ for phase 3:
 
 ## Open items
 
-1. **Format.** The [recommendation above](#format) answers open question 1 if accepted.
-2. **Timeline check.** The [enrollment channels](#enrollment-channels) depend on GitHub's
+1. **Timeline check.** The [enrollment channels](#enrollment-channels) depend on GitHub's
    issue events API behaving as described; check it against a real repository before M1.
-3. **Bridge tests.** A test drives today's exchange with the
+2. **Bridge tests.** A test drives today's exchange with the
    [Python exchange](#python-exchange) mappings: slot grants shared by attempts, ordered
    changes from the adapter's own record over HTTP (out of order, a lost reply, renewed
    consent, the cutoff), a replacement credential, org grants, the stored body, and both

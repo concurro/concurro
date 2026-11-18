@@ -428,11 +428,11 @@ How one event moves from the orchestrator to the publisher:
 - **Jobs inside a service** use a Postgres job queue. Maintained Rust options include
   `apalis-postgres` (1.1.0, November 2026) and `graphile_worker` (0.14.2, November 2026);
   `pgmq` is in alpha (0.34.0-alpha.7). Choosing one is part of phase 1.
-- **Contracts are language-neutral.** Events and APIs are defined as versioned JSON
-  Schema (or protobuf) in one place, so Python and Rust services interoperate during the
-  migration and each event has one definition. The publishing service owns its events'
-  schemas (ingress owns the GitHub event models); Rust types and Python models are
-  generated from them.
+- **Contracts are language-neutral.** Events and APIs are versioned JSON, each with one
+  definition, so Python and Rust services interoperate during the migration. The
+  publishing service owns its contracts (ingress owns the GitHub event models), written as
+  Rust wire types; JSON Schema and the Python models are generated from them
+  ([contracts](contracts.md#format)).
 
 ### Code layout
 
@@ -471,16 +471,18 @@ The architecture change and the Rust port are done together, one service at a ti
 no Python service is re-platformed only to be rewritten. Each phase leaves a working
 deployment.
 
-1. **Contracts and platform.** Event catalog and request API in the chosen format
-   ([open question 1](#open-questions)); a database
-   and role per service; NATS JetStream and its streams; the `concurro` Cargo workspace,
-   pinned to `concurro-relay`'s crates; shared Rust crates for events (outbox forwarder
+1. **Contracts and platform.** The [contracts](contracts.md) as Rust wire types with
+   their generated schemas and Python models; a database and role per service; NATS
+   JetStream and its streams; the `concurro` Cargo workspace, pinned to
+   `concurro-relay`'s crates; shared Rust crates for events (outbox forwarder
    and subscriptions), database access, configuration and telemetry; job queue choice.
    Done when an event a Rust service commits with its state change reaches a Rust and a
    Python consumer through its outbox and the bus, each using models generated from the
    same contract, and a duplicate delivery or a restart of the forwarder or a consumer
    changes nothing. Python only consumes events in every phase
-   ([contracts](contracts.md#what-the-code-inventory-changed)).
+   ([contracts](contracts.md#what-the-code-inventory-changed)). The event is a
+   representative one, with a tagged variant and optional fields, so the whole generation
+   chain is proved with it.
 2. **GitHub ingress in Rust.** It receives webhooks, recovers deliveries, and publishes
    typed GitHub events to `github.*`. The first models cover the fields today's service
    reads; the Python service, its list index included, consumes those events instead of
@@ -615,11 +617,12 @@ designed against the target and built on the new orchestrator.
   webhook deliveries for ingress and issues the orchestrator read-only tokens scoped to
   one repository, with today's repository and permission checks
   (`service/identity.py:135`).
+- **Contracts are JSON, written as Rust types.** Dedicated wire types generate JSON Schema,
+  which generates strict Python models, with fixture tests in both languages
+  ([contracts](contracts.md#format)). JSON keeps outboxes, parked events and the bus
+  readable; protobuf's evolution rules wouldn't add to the additive rule.
 
 ## Open questions
 
-1. **Event format.** JSON Schema keeps events readable in outboxes and on the bus;
-   protobuf gives stronger typing across languages. Which one? The
-   [contracts](contracts.md#format) recommend JSON with Rust types as the source.
-2. **Reports on GitHub.** Keep publishing full reports as issue artifacts (a public audit
+1. **Reports on GitHub.** Keep publishing full reports as issue artifacts (a public audit
    trail), or publish summaries and keep full reports in Concurro's own storage?
