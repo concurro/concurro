@@ -208,12 +208,14 @@ All facts on `github.<event>.<action>`, identified by delivery ID and mapping re
 | Contract | Consumers | Phase | Level |
 | ---- | ---- | ---- | ---- |
 | `github.issue_comment.{created,edited,deleted}` | Comment and mention channels | 2 | Full |
-| `github.issues.{opened,edited,closed,reopened,labeled,unlabeled,assigned,unassigned,transferred,deleted}` | Label and assignment channels, orchestrator | 2 | Full |
+| `github.issues.*`: `opened`, `edited`, `closed`, `reopened`, `labeled`, `unlabeled`, `assigned`, `unassigned`, `transferred`, `deleted` with their own fields, and any other action with the issue | Label and assignment channels, orchestrator, Python list index | 2 | Full |
 | `github.pull_request.*`, including `review_requested` and `review_request_removed` | Review-request channel, orchestrator | 2 | Full |
 | `github.pull_request_review.*`, `github.pull_request_review_comment.*`, `github.pull_request_review_thread.*` | Orchestrator, mention channel | 2 | Full |
 | `github.push`, `github.status`, `github.check_run.*`, `github.check_suite.*`, `github.workflow_run.*` | Orchestrator (when to re-read gates), read model (runs) | 2 | Full |
 | `github.installation.*`, `github.installation_repositories.*` | Orchestrator (targets) | 3 | Sketch |
-| `ingress.coverage.gap` | Orchestrator, backoffice read model | 3 | Full ([below](#coverage-gaps)) |
+| `ingress.coverage.gap` | Python service (2–4), orchestrator and backoffice read model (3) | 2 | Full ([below](#coverage-gaps)) |
+| `ingress.coverage.advanced` | Python list index (2–4), backoffice read model (3): everything up to `covered_until` is on the stream before it | 2 | Full ([phase 2 plan](architecture/phase-2-plan.md#coverage)) |
+| `POST /v1/replays` | API: a consumer that lost events from the stream → ingress | 2 | Full ([phase 2 plan](architecture/phase-2-plan.md#replays)) |
 
 ### Orchestrator
 
@@ -312,7 +314,7 @@ Released by `concurro-relay` for phase 5.
 
 | Bridge | Between | Stands in for | Adapter | Retires |
 | ---- | ---- | ---- | ---- | ---- |
-| `github.*` consumers | Ingress → Python service, list index | Nothing: Python consumes target events through generated models | None | 4 |
+| `github.*` and `ingress.*` consumers | Ingress → Python service, list index | Nothing: Python consumes target events through generated models | None | 4 |
 | [Delivery recovery](#delivery-recovery), served by Python | Ingress → Python service | The publisher's delivery recovery API | None: Python implements the target contract | 3 |
 | [Ownership](#ownership) | Channels, Python service, both backoffices, Python exchange → orchestrator | Nothing: after phase 4 every task is the orchestrator's | Orchestrator | 4; the exchange's lookup with the exchange in 5 |
 | [Python exchange](#python-exchange) operator API, capabilities and observations | Orchestrator, funding → Python exchange | Exchange operator API, `funding.grant`, `inference.*` | Orchestrator's exchange adapter; funding's slot adapter | 5 |
@@ -367,7 +369,7 @@ event type adds:
 
 | Type | Fields |
 | ---- | ---- |
-| `issue_comment` | `issue {number, title, state, is_pull_request, user, labels}`, `comment {id, body, user, author_association, created_at, updated_at, html_url}`, `previous_body` on `edited` |
+| `issue_comment` | `issue {number, title, state, is_pull_request, user, labels, created_at, updated_at}`, `comment {id, body, user, author_association, created_at, updated_at, html_url}`, `previous_body` on `edited` |
 | `issues` | `issue {number, title, body, state, state_reason, user, labels, assignees, created_at, updated_at, is_pull_request}`; `label {name}` on `labeled`/`unlabeled`; `assignee` on `assigned`/`unassigned`; `changes {title_from, body_from}` on `edited`; `new_issue {repository_id, number}` on `transferred` |
 | `pull_request` | `pull_request {number, node_id, title, body, state, draft, merged, merge_commit_sha, user, head {ref, sha, repository_id, full_name}, base {ref, sha}, additions, deletions, updated_at}`; `requested_reviewer` or `requested_team {id, slug}` on review-request actions |
 | `pull_request_review` | `review {id, state, body, user, commit_id, submitted_at}`, `pull_request {number, head_sha}` |
@@ -388,17 +390,19 @@ Concurro's own accounts is the consumer's decision.
 ### Delivery recovery
 
 Served by whoever holds the App's private key: the publisher, and the Python service
-until the publisher exists. Ingress decides what's missing by comparing with its receipts.
+until the publisher exists. Ingress redelivers a delivery that has no receipt and no
+successful or pending attempt ([phase 2 plan](architecture/phase-2-plan.md#recovery)).
 
 | Call | Request | Response |
 | ---- | ---- | ---- |
-| `GET /v1/deliveries?cursor=` | | `{deliveries: [{id, guid, event, action, delivered_at, status_code, redelivery}], next_cursor}`, from GitHub's `app/hook/deliveries` |
+| `GET /v1/deliveries?cursor=` | | `{deliveries: [{id, guid, event, action, delivered_at, status, status_code, redelivery}], next_cursor}`, from GitHub's `app/hook/deliveries`; `status` tells a pending attempt from a failed one |
 | `POST /v1/deliveries/{id}/redeliver` | | `202 {}`. Repeating it is harmless: a redelivery keeps its GUID, which ingress deduplicates |
 
 ### Coverage gaps
 
-GitHub keeps deliveries for three days. When ingress can't recover a period, it publishes
-`ingress.coverage.gap {from, to, installation_id}`, a fact. Reconciliation doesn't depend
+GitHub keeps deliveries for three days. When ingress can't recover a period, and once at
+its first start, it publishes `ingress.coverage.gap {from, to, installation_id}`, a fact
+([phase 2 plan](architecture/phase-2-plan.md#coverage)). Reconciliation doesn't depend
 on knowing which issues are enrolled. For every target repository, the orchestrator lists
 what changed since `from`:
 

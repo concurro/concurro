@@ -185,10 +185,11 @@ database and a bus provide directly.
     only the fields Concurro uses (IDs, logins, author association, bodies, labels,
     timestamps), so consumers never parse webhook JSON. A delivery type without a model
     is recorded and not published.
-  - **Ingress parses deliveries with `octocrab`'s webhook models** (0.54.9, October
-    2026) and maps them to its own. `octocrab`'s types stay inside ingress: they're
-    Rust-only, change with its 0.x releases and mirror GitHub's full payloads. The
-    publisher uses the same crate's delivery listing and redelivery calls.
+  - **Ingress parses deliveries with its own input types,** `serde` structs with only
+    the fields its models carry, so a new action or a change to a field Concurro doesn't
+    read never fails a delivery. `octocrab`'s webhook models parse GitHub's full payloads
+    with closed action enums and are documented as beta
+    ([phase 2 plan](architecture/phase-2-plan.md#decisions)).
   - **Mapping is stateless.** Anything that needs another service's state (is the issue
     enrolled, is the author a writer, is this comment a command) is the consumer's
     decision.
@@ -488,7 +489,7 @@ deployment.
    reads; the Python service, its list index included, consumes those events instead of
    webhooks, and performs redeliveries for ingress until the publisher exists. This
    proves the bus and the contract tooling with a small, well-bounded service (about 570
-   lines today).
+   lines today). [Implementation plan](architecture/phase-2-plan.md).
 3. **Orchestrator, publisher, funding and the backoffice API in Rust, for new tasks,**
    with Postgres as the authority. This is the core of the change (about 19,000 engine
    lines plus the service's scheduler and gateway). It's built as milestones, each a

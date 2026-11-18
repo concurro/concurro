@@ -21,7 +21,7 @@ proved with it.
 | ---- | ---- |
 | The Cargo workspace and its CI | Any service, ingress included (phase 2) |
 | `concurro-contracts`: the envelope, identifiers and `github.issues`, with schemas, fixtures and Python models | The other contracts, added by the phase that first needs them |
-| `concurro-events`: outbox, forwarder, consumers, deduplication, held events, parking, snapshot revisions | Ordered per-task consumption (phase 3) |
+| The events crates (`concurro-events`, `-events-postgres`, `-events-nats`): outbox, forwarder, consumers, deduplication, held events, parking, snapshot revisions | Ordered per-task consumption (phase 3) |
 | `concurro-db`, `concurro-config`, `concurro-telemetry`, `concurro-testkit` | Blob storage (phase 3), OpenBao (phase 5) |
 | The job queue decision, with a spike | Using the job queue in a service |
 | Postgres and NATS for development and tests; the minimum-requirements doc | Production deployment of either |
@@ -45,12 +45,27 @@ These are taken here; each is cheap to revisit before code depends on it.
   when a service first needs one (`provider-protocol` for the gateway, phase 5). Phase 1
   has none.
 - **Crates are named `concurro-<name>`** in `crates/<name>`.
+- **Each crate has one responsibility and an explicit public API.** Shared crates own
+  reusable mechanisms; domain rules stay in their service's crates. A crate or module
+  that passes about 1,000 lines is a prompt to reconsider its responsibilities, not a
+  limit.
+- **SQLx stays in storage crates.** Business code gets typed operations, or a
+  `concurro_db::UnitOfWork`: an opaque handle on one open transaction that storage crates
+  turn into their typed operations, so writes from several crates still commit together.
+  - `concurro-db` is shared database infrastructure only: pools, migrations, transactions
+    and savepoints, and the unit of work. It holds no service's queries and no generic
+    CRUD layer.
+  - A service's storage traits live in its core crate; their schema and SQL live in its
+    storage crate.
+  - One owner opens and commits or rolls back each unit of work; storage crates write
+    through it and never commit it. An atomic operation called without one may open and
+    commit its own transaction.
 - **Database access is `sqlx`** (0.9.0, May 2026) with runtime-checked queries, so builds
   need no database.
 - **Migrations:** each service embeds its own `sqlx::migrate!` and runs it at start.
   Library crates keep their tables in their own Postgres schema with their own migrations
-  table (`events._sqlx_migrations` for `concurro-events`), so their version numbers never
-  collide with a service's. The job queue manages its own schema.
+  table (`events._sqlx_migrations` for `concurro-events-postgres`), so their version
+  numbers never collide with a service's. The job queue manages its own schema.
 - **NATS is `async-nats`** (0.52.0 or later; 0.53.0 is from November 2026).
 - **Identifiers are `uuid`** 1.29 with the `v7` and `v5` features, behind newtypes in
   `concurro-contracts`. A GitHub event's ID is derived from its delivery ID and mapping
@@ -81,8 +96,10 @@ Cargo.toml                    workspace, pinned dependencies
 rust-toolchain.toml
 crates/
   contracts/                  wire types; the `generate` binary
-  events/                     outbox, forwarder, consumer, held events, parking
-  db/                         pool, migrations runner, transaction helpers
+  events/                     envelope handling, outcomes, handler trait, consumer policy
+  events-postgres/            outbox, deduplication, attempts, held, parked, revisions
+  events-nats/                the forwarder's publisher, streams and JetStream consumers
+  db/                         pool, migrations runner, unit of work
   config/                     settings loading and secret files
   telemetry/                  tracing setup
   testkit/                    Postgres and NATS containers, fixtures, a test producer
@@ -153,7 +170,11 @@ docs/platform.md              minimum requirements and setup
   version file. The checker has its own tests: pairs of schemas, each with the verdict it
   must give.
 
-## Events crate
+## Events crates
+
+`concurro-events` holds what doesn't depend on storage or transport: the handler trait,
+outcomes and the consumer's decisions. `concurro-events-postgres` holds the tables below
+and their operations; `concurro-events-nats` publishes and consumes with `async-nats`.
 
 ### Outbox and forwarder
 
@@ -174,7 +195,7 @@ create table events.outbox (
 create index outbox_unpublished on events.outbox (sequence) where published_at is null;
 ```
 
-- **`Outbox::append(&mut tx, &Envelope<T>)`** inserts in the caller's transaction and
+- **`Outbox::append(&mut uow, &Envelope<T>)`** inserts in the caller's transaction and
   issues `NOTIFY`. It refuses a message larger than the configured maximum message size
   (which must not exceed the server's `max_payload`) or a subject outside the service's
   configured stream subjects, catching a bad event in the producer's transaction.
@@ -214,8 +235,10 @@ create index outbox_unpublished on events.outbox (sequence) where published_at i
 - **Version first.** The consumer reads `type` and `version` from the message before
   decoding `data`. A version it doesn't read is acknowledged and skipped, so publishing
   two versions of one event during a breaking change parks nothing.
-- **A handler** gets the decoded envelope and the open transaction:
-  `async fn handle(&self, tx: &mut Transaction, event: Envelope<T>) -> Outcome`.
+- **A handler** gets the decoded envelope and the open transaction as a unit of work:
+  `async fn handle(&self, uow: &mut UnitOfWork, event: Envelope<T>) -> Outcome`. The
+  events crates own the transaction; the handler writes through its service's typed
+  operations.
 - **One state change per event at a time.** Every transaction that changes an event's
   state (applying, holding, parking, re-running, replaying or discarding it) first takes
   `pg_advisory_xact_lock` on `(consumer, event_id)`, hashed to one `bigint`, so a
@@ -246,7 +269,7 @@ create index outbox_unpublished on events.outbox (sequence) where published_at i
 | `Reject` | Roll back, then park |
 
 - **Held events** are re-run when the prerequisite is applied: a handler calls
-  `Held::release(&mut tx, key)` in the transaction that applies it.
+  `Held::release(&mut uow, key)` in the transaction that applies it.
   - **Holding** discards everything the handler wrote, its `events.consumed` row included,
     by rolling back. In a new transaction the consumer takes the event's lock, then
     `pg_advisory_xact_lock` on `(consumer, key)` (always in that order), sets a savepoint
@@ -280,7 +303,7 @@ create index outbox_unpublished on events.outbox (sequence) where published_at i
   republish doesn't run it, until it's replayed or discarded. A message whose envelope
   can't be decoded at all is keyed by its `Nats-Msg-Id`, or its stream sequence if it has
   none.
-- **Snapshots:** `Snapshots::apply(&mut tx, &envelope)` records the highest revision per
+- **Snapshots:** `Snapshots::apply(&mut uow, &envelope)` records the highest revision per
   `(consumer, type, entity)` in `events.revisions` and tells the handler whether the event
   is newer; older revisions are skipped but still marked consumed.
 - **`events.consumed` is kept.** A copy of an event can arrive arbitrarily late: an
@@ -290,7 +313,7 @@ create index outbox_unpublished on events.outbox (sequence) where published_at i
 
 ### Parked events
 
-`concurro-events` ships a command each service exposes:
+The events crates ship a command each service exposes:
 `<service> parked list|show|replay|discard`. `events.parked` keeps a row per parking, as
 history.
 
@@ -307,10 +330,10 @@ This is the phase 1 part of the operations catalog's parked-event call.
 
 ### Fault injection
 
-The crate has a test-only feature with named failure points: after publishing before
-marking, after committing before acknowledging, after holding before acknowledging, and
-after parking before terminating. The exit test uses them to stop a forwarder or consumer
-at exactly those points.
+The events crates have a test-only feature with named failure points: after publishing
+before marking, after committing before acknowledging, after holding before acknowledging,
+and after parking before terminating. The exit test uses them to stop a forwarder or
+consumer at exactly those points.
 
 ## Python consumer
 
@@ -336,10 +359,11 @@ runs the consumer on an asyncio loop in a thread of its own.
 ## Job queue
 
 A spike decides between `graphile_worker` and a small queue of our own in
-`concurro-events`. `graphile_worker` deletes a job when it completes, and a job key only
-replaces a job that's still pending, so neither makes a job run once. Like an event, a job
-runs once because its effect commits with a record of its stable ID. The spike checks that
-pattern and the library around it, against a service's own database and role:
+`concurro-events-postgres`. `graphile_worker` deletes a job when it completes, and a job
+key only replaces a job that's still pending, so neither makes a job run once. Like an
+event, a job runs once because its effect commits with a record of its stable ID. The
+spike checks that pattern and the library around it, against a service's own database and
+role:
 
 1. A job enqueued with `with_executor` in a transaction that rolls back never runs.
 2. A job key replaces a pending job with the same key, rather than adding a second.
@@ -354,8 +378,8 @@ stable job ID as the primary key, a run-after time, attempts and the last error.
 
 ## Exit test
 
-`concurro-testkit` starts Postgres and NATS. A test producer uses `concurro-events` exactly
-as a service would. The Rust consumer is built on `concurro-events`; the Python consumer
+`concurro-testkit` starts Postgres and NATS. A test producer uses the events crates exactly
+as a service would. The Rust consumer is built on them; the Python consumer
 is the reference consumer above.
 
 | # | Step | Expected |
@@ -385,7 +409,8 @@ Each step is reviewable on its own and leaves CI green.
    settled.
 4. **Fixtures** with their Rust and Python tests, in a `contracts` CI job.
 5. **Compatibility check** in CI.
-6. **`concurro-db`, `concurro-config`, `concurro-telemetry`, `concurro-testkit`.**
+6. **`concurro-db`, `concurro-config`, `concurro-telemetry`, `concurro-testkit`,** with a
+   test that writes through two storage crates in one unit of work and rolls both back.
 7. **Outbox and forwarder** with fault injection, tested against the stream directly: a
    rolled-back append publishes nothing, and a forwarder stopped between publish and mark
    leaves one message.
