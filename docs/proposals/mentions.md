@@ -98,7 +98,8 @@ or assigned, which is why a user account is needed.
   Upstreams where it is none of these keep using the label.
 - **Pull requests.** Assigning the account to a PR does nothing; a review request
   already covers that.
-- **List index.** The [list index](list-index.md) must treat assignment as enrollment.
+- **Lists.** The backoffice read model lists assigned issues as enrolled. Assignment
+  exists only on the new orchestrator, so the [list index](list-index.md) never sees it.
 
 ### Mentions
 
@@ -291,7 +292,9 @@ Each phase is usable on its own, and phases 1 and 2 need no credential changes.
    but a job adds startup latency to each reply), or call the inference gateway directly
    (fast, but only for routes usable outside a CLI harness, the gateway then needs a
    session for the orchestrator, and it must store each response under its attempt ID
-   so a restart doesn't pay twice)?
+   so a restart doesn't pay twice)? If the interpreter is built before architecture
+   [phase 5](architecture.md#migration), it runs as a turn on the Python exchange; the
+   longer-term path stays open.
 2. **Admission without a task.** Charge interpreter calls on unenrolled issues to a
    per-commenter record, or open the task first and charge it there?
 3. **Org-funded targets.** Should the org pay for interpretation where it pays for task

@@ -169,7 +169,7 @@ database and a bus provide directly.
 | GitHub ingress | Webhook receipt: signature check, deduplication and delivery recovery; maps each delivery to a typed GitHub event | Public endpoint; holds the webhook secret only; asks the publisher for redeliveries | Delivery receipts, raw payloads, recovery coverage, the GitHub event models |
 | Orchestrator | Tasks: requests, enrollment, stages, plans, findings, and who consented to pay (sponsorship, funding choices, the funding boundary); turns webhooks it cares about into requests; asks funding for a grant per attempt | Authority on task consent; reads repositories with read-only tokens the publisher issues; no GitHub write access | Tasks, requests, consent logs, task events |
 | Funding | Whether and how consent is charged: users' credential entries, lists and filters, the route catalog, selection, fallback and recovery, call and token budgets, grants and charges | Payment authority; hands new secret material to the secret store on save but can't read it back | Credential metadata, grants, consent cutoffs, the charge ledger |
-| GitHub publisher | Projects events onto GitHub: dashboard, notices, replies, reviews, threads, labels, check runs, branches and PRs; creates run branches and dispatches runner workflows for the exchange; lists and redelivers webhook deliveries for ingress | Sole holder of the App's private key, which mints its write tokens and the orchestrator's read tokens, and of the reviewer account's token | Write intents and their outcomes |
+| GitHub publisher | Projects events onto GitHub: dashboard, notices, replies, reviews, threads, labels, check runs, branches and PRs; creates run branches and dispatches runner workflows for the exchange; lists and redelivers webhook deliveries for ingress | In the target, sole holder of the App's private key, which mints its write tokens and the orchestrator's read tokens, and of the reviewer account's token; the Python service keeps its existing App signing credentials until it retires in phase 4 | Write intents and their outcomes |
 | Exchange | Runner sessions, turn queue, turn results, transcripts and turn diagnostics; publishes turn results as events | Runner OIDC; issues session keys bound to a grant | Sessions, turns |
 | Inference gateway | Authenticates session keys, enforces token budgets, routes and forwards to providers or the relay verifier, records usage | Org provider secrets; reads personal secret material | Inference requests and their usage |
 | Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime | Relay registrations and sessions |
@@ -292,8 +292,10 @@ database and a bus provide directly.
     enforces the claim's scope, expiry and allowance. `/release` either cancels one turn,
     as today, or revokes a whole session claim; revoked claims and spent allowance are
     stored, survive a verifier restart and are kept until the claim expires (today's
-    release list is per turn and in memory, `pool.rs`). Relay inference doesn't go live
-    without it.
+    release list is per turn and in memory, `pool.rs`). The gateway doesn't become the
+    verifier's caller without it. Today's arrangement is a separate one: the exchange's
+    forwarder consumes its own one-use nonce and checks turn and session authority
+    before it calls the verifier, so it deploys on its own schedule.
 - **Splitting the orchestrator and publisher** separates task logic from GitHub write
   credentials, and isolates the remaining unknown-outcome handling in the one service
   that writes to GitHub. A lost projection write then delays display; it can't corrupt
@@ -474,6 +476,9 @@ deployment.
    and role per service; NATS JetStream and its streams; the `concurro` Cargo workspace,
    pinned to `concurro-relay`'s crates; shared Rust crates for events (outbox forwarder
    and subscriptions), database access, configuration and telemetry; job queue choice.
+   Done when one event schema round-trips between Python and Rust through an outbox and
+   the bus, committed with its state change, and a duplicate delivery or a restart of the
+   forwarder or consumer changes nothing.
 2. **GitHub ingress in Rust.** It receives webhooks, recovers deliveries, and publishes
    typed GitHub events to `github.*`. The first models cover the fields today's service
    reads; the Python service, its list index included, consumes those events instead of
@@ -484,9 +489,11 @@ deployment.
    with Postgres as the authority. This is the core of the change (about 19,000 engine
    lines plus the service's scheduler and gateway). It's built as milestones, each a
    working path end to end:
-   1. **One task.** A writer's `start` goes through intake, funding grants an attempt,
-      the Python exchange runs it, the publisher posts the result and the backoffice
-      shows it, with minimal versions of each service. Alongside it, contract tests feed
+   1. **One task.** An issue enrolled by label and a writer's `start` go through intake,
+      funding grants an attempt, the Python exchange runs it, the publisher posts the
+      result and the backoffice shows it, with minimal versions of each service. A
+      manual `start` alone can initialize a task; the label channel is included so
+      enrollment is exercised from the start. Alongside it, contract tests feed
       schema-valid events through the real outbox, bus and publisher into a test
       repository, including duplicate delivery and an uncertain write. Done when
       replaying an attempt keeps its payer and grant, a turn submitted before funding
@@ -496,10 +503,12 @@ deployment.
       write, a missed webhook. Done when a crash during a withdrawal can't restore
       spending authority after funding has acknowledged the revocation, and two first
       inputs for one issue arriving across the pilot switch end with one owner.
-   3. **The rest of a task's behavior** (stages, reviews, retries), service by service.
+   3. **The rest of a task's behavior** (stages, reviews, retries). Done when the new
+      path matches a fixed baseline, a named release of the Python service, on every
+      command and stage it supports, with their recovery and authorization behavior.
 
-   Until milestone 2 and every supported lifecycle path are complete, only pilot tasks
-   take the new path; ordinary new tasks switch after that.
+   Until milestone 3 is complete, only pilot tasks take the new path; ordinary new tasks
+   switch after that.
 
    - **Ownership is claimed once per task.** The orchestrator's ownership table is the
      only record: an insert-if-absent claim returns the winner, and the orchestrator's
@@ -509,7 +518,9 @@ deployment.
      after the switch, every unowned task. The Python service's existing tasks are
      recorded before the pilot starts. The claim happens on the first routed input for
      the task, a sponsorship comment before enrollment included, and a recorded owner
-     always wins over later changes to the rule.
+     always wins over later changes to the rule. Claims are keyed by the issue
+     (repository ID and issue number), all a task has before enrollment. Callers,
+     the Python service included, claim synchronously and act on the owner returned.
    - **Existing tasks drain** on the Python service. An import tool is built only if some
      tasks can't drain; it would need `cutover`'s guarantees (a fresh generation, no
      write in flight or unresolved, `service/cutover.py`).
@@ -526,10 +537,12 @@ deployment.
        turn included, the exchange reads the task's owner from the orchestrator's
        ownership table, records it, and refuses the other token's operations on that
        task.
-     - **Grants come from funding.** For new tasks, a contributed turn is accepted only
-       once funding has recorded its sponsorship; the exchange never takes the grant
-       from the submitted turn, as `current_grant` does today when it has no row
-       (`:662`).
+     - **Grants come from funding.** For new tasks, a contributed turn (paid with a
+       user's credential, the initiator's own or a sponsor's) is accepted only once
+       funding has recorded its sponsorship; the exchange never takes the grant from the
+       submitted turn, as `current_grant` does today when it has no row (`:662`).
+       Org-funded turns need no sponsorship record and still pass admission and budget
+       checks.
      - **Provenance.** It accepts `assignment` and `mention` grant provenance (`:669`).
      - **Turn results.** The orchestrator polls them and publishes the same `turn.*`
        events the Rust exchange will, carrying what the service records in diagnostics
@@ -541,7 +554,11 @@ deployment.
      grant, route, record and version; the publisher takes over runner workflow
      dispatch.
    - **The backoffice API serves new tasks** from its event-fed read model; the frontend
-     calls it or the Python backoffice by the task's owner.
+     calls it or the Python backoffice by the task's owner. Lists span both owners: the
+     backoffice API combines the Python list API's entries for Python-owned tasks with
+     its read model's, keeping one entry per issue by the ownership table, then sorts
+     and filters as the lists do today. The Python list API returns whole lists, so no
+     pagination spans the two.
 4. **The Python service and backoffice retire** once the last task drains, with the list
    index, read caches and diagnostics store. Credential writes move to the Rust
    backoffice API, through funding to the vault until phase 5.
@@ -557,8 +574,11 @@ deployment.
    holding the vault's keyring decrypts each usable version and writes it to OpenBao
    under a migration-only policy, keeping record and version IDs (relay-custody versions
    hold no material and move as metadata only); credential writes pause
-   while it runs. The vault is then retired with the exchange's own sponsorship tables
-   and vault feed.
+   while it runs. Done when the handover publishes each outstanding turn's completion
+   once, diagnostics come from turn records, every funding mode and inference route
+   works through the gateway, and a revocation holds across a gateway and verifier
+   restart. Only then are agentgateway, the vault (with the exchange's own sponsorship
+   tables and vault feed) and the Python exchange retired, and the polling stopped.
 
 Until phase 3 lands, the Python service gets fixes and the bridges above only. New
 features such as [request intake](request-intake.md) and [mentions](mentions.md) are
@@ -586,7 +606,8 @@ designed against the target and built on the new orchestrator.
   if some can't.
 - **One orchestrator.** Planning, implementation and review share task, approval and
   finding state, so review doesn't become its own service.
-- **The publisher mints GitHub tokens.** It alone holds the App's private key, recovers
+- **The publisher mints GitHub tokens.** In the target it alone holds the App's private
+  key (the Python service keeps its signing credentials until phase 4), recovers
   webhook deliveries for ingress and issues the orchestrator read-only tokens scoped to
   one repository, with today's repository and permission checks
   (`service/identity.py:135`).

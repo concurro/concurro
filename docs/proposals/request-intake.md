@@ -276,10 +276,11 @@ the Python service already owns drain there on today's comment path. Roll-forwar
 
 ## Phasing
 
-1. **Requests, comment and backoffice channels.** Commands go through requests; the
-   backoffice uses `POST /requests`.
-2. **Enrollment channels.** Label and review requests move over; assignment arrives as a
-   new channel.
+1. **Requests, and the comment, label and backoffice channels.** Commands go through
+   requests; the backoffice uses `POST /requests`; labels enroll, so the architecture
+   review's first milestone exercises enrollment.
+2. **Enrollment channels.** Review requests move over; assignment arrives as a new
+   channel.
 3. **[Mentions](mentions.md).** Exact mentions; the interpreter waits until they show
    what people ask for.
 4. **Further channels**, such as Slack or conditional starts.
