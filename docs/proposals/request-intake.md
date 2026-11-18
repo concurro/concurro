@@ -241,7 +241,9 @@ from each issue's events timeline (`issues/{n}/events`, which records who labele
 assigned or requested a review and when, as `Controller.enrollment` reads today) and
 stores the difference as `enroll` or `unenroll` requests, with the reconciliation as
 evidence. If the timeline can't establish who enrolled a task and when, its funding
-boundary stays pending and nothing is charged.
+boundary stays pending and nothing is charged. Ingress reports such a gap as an event, and
+the orchestrator reconciles comments from the gap as well
+([coverage gaps](contracts.md#coverage-gaps)).
 
 ## Invariants
 

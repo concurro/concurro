@@ -476,9 +476,11 @@ deployment.
    and role per service; NATS JetStream and its streams; the `concurro` Cargo workspace,
    pinned to `concurro-relay`'s crates; shared Rust crates for events (outbox forwarder
    and subscriptions), database access, configuration and telemetry; job queue choice.
-   Done when one event schema round-trips between Python and Rust through an outbox and
-   the bus, committed with its state change, and a duplicate delivery or a restart of the
-   forwarder or consumer changes nothing.
+   Done when an event a Rust service commits with its state change reaches a Rust and a
+   Python consumer through its outbox and the bus, each using models generated from the
+   same contract, and a duplicate delivery or a restart of the forwarder or a consumer
+   changes nothing. Python only consumes events in every phase
+   ([contracts](contracts.md#what-the-code-inventory-changed)).
 2. **GitHub ingress in Rust.** It receives webhooks, recovers deliveries, and publishes
    typed GitHub events to `github.*`. The first models cover the fields today's service
    reads; the Python service, its list index included, consumes those events instead of
@@ -558,7 +560,9 @@ deployment.
      backoffice API combines the Python list API's entries for Python-owned tasks with
      its read model's, keeping one entry per issue by the ownership table, then sorts
      and filters as the lists do today. The Python list API returns whole lists, so no
-     pagination spans the two.
+     pagination spans the two. Live updates merge the same way: the backoffice API's
+     change feed combines its read model's changes with the Python list API's
+     `/lists/changes`.
 4. **The Python service and backoffice retire** once the last task drains, with the list
    index, read caches and diagnostics store. Credential writes move to the Rust
    backoffice API, through funding to the vault until phase 5.
@@ -615,6 +619,7 @@ designed against the target and built on the new orchestrator.
 ## Open questions
 
 1. **Event format.** JSON Schema keeps events readable in outboxes and on the bus;
-   protobuf gives stronger typing across languages. Which one?
+   protobuf gives stronger typing across languages. Which one? The
+   [contracts](contracts.md#format) recommend JSON with Rust types as the source.
 2. **Reports on GitHub.** Keep publishing full reports as issue artifacts (a public audit
    trail), or publish summaries and keep full reports in Concurro's own storage?
