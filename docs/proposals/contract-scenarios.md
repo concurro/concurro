@@ -413,7 +413,8 @@ deleted.
 
 1. Ingress can't recover the period and publishes `ingress.coverage.gap {from, to}`.
 2. For each target repository the orchestrator lists issue comments, review comments,
-   issue events and updated PRs since `from` ([finding 8](#findings)):
+   issues updated since `from` with each one's events, and updated PRs
+   ([finding 8](#findings)):
    - U's comment becomes a `sponsor` request with its comment source; I is claimed by
      that input.
    - W's `labeled` event becomes an `enroll` request with its timeline source.

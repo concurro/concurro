@@ -357,7 +357,7 @@ and redeliveries for ingress; funding calls the verifier's owner endpoints.
   (the backoffice read model).
 - **Each service publishes through its own outbox.** A state change and its events commit
   in one transaction in the service's database; its forwarder moves outbox rows onto
-  the bus in order.
+  the bus.
 - **OpenBao's unseal key stays outside Postgres,** so access to any database, OpenBao's
   storage included, never reaches credential material.
 - **One server to start.** A service moves to its own server by changing its connection
@@ -482,7 +482,7 @@ deployment.
    changes nothing. Python only consumes events in every phase
    ([contracts](contracts.md#what-the-code-inventory-changed)). The event is a
    representative one, with a tagged variant and optional fields, so the whole generation
-   chain is proved with it.
+   chain is proved with it. [Implementation plan](architecture/phase-1-plan.md).
 2. **GitHub ingress in Rust.** It receives webhooks, recovers deliveries, and publishes
    typed GitHub events to `github.*`. The first models cover the fields today's service
    reads; the Python service, its list index included, consumes those events instead of

@@ -86,7 +86,7 @@ These apply to target contracts. Bridges keep their own.
 | Session ID | UUIDv7 | Exchange | |
 | Credential IDs | Entry, record, version | Funding | Opaque to consumers; existing IDs carry over unchanged |
 | Relay ID | `relay-<32 hex>` | Verifier | |
-| Event ID | UUIDv7, or UUIDv5 | Producer | UUIDv5 where two producers can publish the same event (turn events across the phase 5 handover): of `(entity, type)` for a fact, `(entity, type, revision)` for a snapshot |
+| Event ID | UUIDv7, or UUIDv5 | Producer | UUIDv5 where the ID must be reproducible: a GitHub event's, of its delivery ID and mapping revision, so a re-mapping is a new event and a redelivery isn't; and where two producers can publish the same event (turn events across the phase 5 handover), of `(entity, type)` for a fact and `(entity, type, revision)` for a snapshot |
 | Delivery ID | GitHub GUID | GitHub | Ingress's deduplication key |
 
 ### Event envelope
@@ -100,7 +100,7 @@ Every event on the bus is a JSON object:
 | `version` | integer | Schema major version |
 | `kind` | `snapshot` \| `fact` | How consumers apply it ([architecture](architecture.md#events-and-the-bus)) |
 | `producer` | string | Publishing service |
-| `occurred_at` | RFC 3339 UTC | Producer's commit time; informational, never used for ordering |
+| `occurred_at` | RFC 3339 UTC | Producer's transaction time; informational, never used for ordering |
 | `entity` | string | The ID a snapshot's revision belongs to (task, notice, turn, grant) |
 | `revision` | integer | Snapshots only; strictly increasing per `entity` and `type` |
 | `causation` | string | The request or event that caused it |
@@ -134,8 +134,10 @@ The NATS subject is the architecture's (`task.<task>.<event>` and so on). The me
   field is documented as open.
 - **Consumers ignore unknown fields.** An unknown value in a closed enum parks a fact
   and leaves a snapshot at its last understood revision; neither is dropped silently.
-- **A breaking change is a new version** of the type, published alongside the old one
-  under the same event ID until every consumer has moved. A consumer reads one version.
+- **A breaking change is a new version** of the contract, which covers every `type` it
+  publishes (`github.issues` covers `github.issues.labeled` and the other actions). Its
+  events are published in both versions under the same event ID until every consumer has
+  moved. A consumer reads one version.
 - **CI enforces it:** generated schemas are committed, and a change that isn't additive
   within a version fails the build.
 
@@ -404,7 +406,7 @@ what changed since `from`:
 | ---- | ---- |
 | `issues/comments?since=` | Commands, sponsorship, mentions and discussion on issues and PR conversations, enrolled or not |
 | `pulls/comments?since=` | Mentions and commands in review comments |
-| `issues/events`, back to `from` | Labels, assignments and review requests, through the [enrollment channels](#enrollment-channels) |
+| `issues?state=all&since=` and each listed issue's `issues/{n}/events` | Labels, assignments and review requests, through the [enrollment channels](#enrollment-channels). This relies on labeling, assigning and requesting a review updating the issue's `updated_at`, so `since` lists every issue that has one ([checked before M1](#enrollment-channels)). The repository-wide `issues/events` listing isn't used: GitHub stops it after 300 pages of 100 (HTTP 422), with no `since` |
 | `pulls?state=all&sort=updated`, back to `from`, and each PR's reviews | Review bodies with mentions; PR closes, merges and head changes |
 
 Each comment becomes a request with its own source, so whatever arrived anyway is
@@ -435,9 +437,27 @@ timeline, not from deliveries:
 - If the delivery's action isn't in the timeline yet, the channel reads again with
   backoff; it never matches by nearest time. Reconciliation runs the same step, so a
   delivery and a reconciliation create one request between them.
-- That GitHub lists these events with stable IDs, promptly enough after delivery, is
-  checked against a real repository before M1: repeated labeling by one actor, a delayed
-  delivery, and a review request removed and added again.
+- **Checked against the demo target's history (November 2026, read-only;
+  [evidence](contracts/timeline-check.md)):**
+  - Every `labeled`, `unlabeled`, `review_requested` and `review_request_removed` event
+    has a numeric ID, its actor, `created_at`, and the label or requested reviewer (and
+    the requester).
+  - Repeated actions get distinct IDs: the same stage label added and removed several
+    times (by Concurro's App), and a review request removed and re-added two seconds
+    apart. The `concurro` label itself was only ever added once per issue there, so a
+    person removing and re-adding it wasn't observed.
+  - IDs are stable across reads, and `issues/{n}/timeline` returns the same IDs as
+    `issues/{n}/events`.
+  - The repository-wide `issues/events` listing carries each event's issue number, but
+    is capped: on a larger repository it stops after 300 pages of 100 events, about
+    22 months back there. Reconciliation lists issues by `since` and reads each one's
+    events instead ([coverage gaps](#coverage-gaps)).
+- **Not yet checked:** how soon after its webhook an event is listed, which needs a
+  controlled label change on a test repository; that each of these actions updates the
+  issue's `updated_at`, which reconciliation relies on; `assigned`/`unassigned` events,
+  and a person removing and re-adding `concurro`, which that history doesn't contain.
+  All are checked before M1; the read-again-with-backoff rule doesn't depend on the delay
+  being short.
 
 ### Requests
 
@@ -1001,8 +1021,11 @@ for phase 3:
 
 ## Open items
 
-1. **Timeline check.** The [enrollment channels](#enrollment-channels) depend on GitHub's
-   issue events API behaving as described; check it against a real repository before M1.
+1. **Timeline check.** The read-only part is done
+   ([enrollment channels](#enrollment-channels)). Before M1, with controlled changes on a
+   test repository: measure the delay between a webhook and its event being listed;
+   confirm each action updates the issue's `updated_at`; and confirm assignment events and
+   a removed and re-added `concurro` label.
 2. **Bridge tests.** A test drives today's exchange with the
    [Python exchange](#python-exchange) mappings: slot grants shared by attempts, ordered
    changes from the adapter's own record over HTTP (out of order, a lost reply, renewed
