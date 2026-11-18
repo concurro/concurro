@@ -127,6 +127,12 @@ class RelayInferenceTests(StateFixture, unittest.TestCase):
         self.assertEqual(snapshot["binding"]["credential"], self.binding["credential"])
         with self.assertRaises(Refused):
             self.exchange.inference.claim(request, "claude-subscription")
+        dispatched = json.loads(self.exchange.inference.relay_binding(snapshot))
+        self.assertEqual(
+            (dispatched["relay_id"], dispatched["record_id"], dispatched["repository"], dispatched["issue"]),
+            ("relay-" + "f" * 32, self.binding["credential"], self.binding["repository"], self.binding["issue"]),
+        )
+        self.assertEqual((dispatched["session"], dispatched["turn"]), (self.session, self.turn))
 
 
 class InferenceTests(StateFixture, unittest.TestCase):

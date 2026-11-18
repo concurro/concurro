@@ -1,7 +1,10 @@
 """Backoffice settings: a JSON file outside the repository, validated before anything starts."""
 
+import ipaddress
 import json
 import os
+import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,8 +29,13 @@ FIELDS = {
     "auth_state_dir",
     "auth_key_path",
     "lists_token_path",
+    "relay_server",
+    "relay_download_url",
 }
 REQUIRED = {"public_url", "client_id", "client_secret_path", "reader", "targets"}
+DNS_NAME = re.compile(
+    r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+)
 
 
 class SettingsError(ValueError):
@@ -64,11 +72,21 @@ class Settings:
     auth_key_path: Path | None = None
     # The shared bearer for the service's list index; setting it switches list freshness to the index.
     lists_token: str | None = None
+    # Public `host:port` Sponsor relays connect to, shown in the portal's launch command.
+    relay_server: str | None = None
+    # Where owners download Sponsor; the portal says none is configured when absent.
+    relay_download_url: str | None = None
 
     @property
     def base_path(self) -> str:
         """The path prefix of `public_url`, without a trailing slash."""
         return urlsplit(self.public_url).path.rstrip("/")
+
+    def relay_command(self, *arguments: str) -> str | None:
+        """A copyable `concurro-relay` command naming the configured relay address, if any."""
+        if not self.relay_server:
+            return None
+        return shlex.join(["concurro-relay", *arguments, "--server", self.relay_server])
 
     @property
     def secure(self) -> bool:
@@ -82,6 +100,26 @@ class Settings:
 def require(condition: object, field: str) -> None:
     if not condition:
         raise SettingsError("invalid settings field: " + field)
+
+
+def relay_address(value: object) -> bool:
+    """Whether `value` is `host:port` with a DNS name, IPv4 address or bracketed IPv6 address."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit("//" + value)
+        port = parts.port
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    if parts.netloc != value or parts.username is not None or not port or ":" not in value:
+        return False
+    if value.startswith("["):
+        try:
+            return isinstance(ipaddress.ip_address(host), ipaddress.IPv6Address)
+        except ValueError:
+            return False
+    return bool(DNS_NAME.fullmatch(host))
 
 
 def load(path: str | Path) -> Settings:
@@ -133,6 +171,18 @@ def load(path: str | Path) -> Settings:
     if cache_dir == "":
         cache_dir = None
     require(cache_dir is None or isinstance(cache_dir, str) and bool(cache_dir), "read_cache_dir")
+    # Absent or empty means not configured; anything else must be a valid address.
+    relay_server = None if data.get("relay_server") in (None, "") else data["relay_server"]
+    require(relay_server is None or relay_address(relay_server), "relay_server")
+    download = None if data.get("relay_download_url") in (None, "") else data["relay_download_url"]
+    require(
+        download is None
+        or isinstance(download, str)
+        and urlsplit(download).scheme == "https"
+        and bool(urlsplit(download).netloc)
+        and not any(c.isspace() for c in download),
+        "relay_download_url",
+    )
     return Settings(
         public_url=url.rstrip("/"),
         client_id=data["client_id"],
@@ -143,5 +193,7 @@ def load(path: str | Path) -> Settings:
         vault_url=data.get("vault_url") or None,
         service_url=data.get("service_url") or None,
         lists_token=lists_token,
+        relay_server=relay_server,
+        relay_download_url=download,
         **optional_path,
     )

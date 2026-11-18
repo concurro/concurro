@@ -87,6 +87,27 @@ class RelayBody(BaseModel):
     mutation_id: str
 
 
+class RelayCodeBody(BaseModel):
+    """One displayed Sponsor code to look up before approval."""
+
+    code: str
+
+
+class RelayEntry(BaseModel):
+    """One entry of a paired device at the revision last read."""
+
+    id: str
+    revision: int
+
+
+class RelayDeviceBody(BaseModel):
+    """New Sponsor code for the paired device's entries, one per registered route."""
+
+    code: str
+    entries: list[RelayEntry] = Field(min_length=1, max_length=2)
+    mutation_id: str
+
+
 class RelayReplaceBody(BaseModel):
     """New Sponsor code for one existing relay entry at the revision last read."""
 
@@ -529,6 +550,28 @@ def create_app(
     def add_relay(body: RelayBody, current: Annotated[Session, Depends(writer)]):
         """Approve the Sponsor's exact route set for the signed-in owner."""
         return changed(vault.add_relay(current.credential or current.token, body.model_dump()))
+
+    @app.get("/api/me/relays")
+    def relays(current: Annotated[Session, Depends(session)]):
+        """Setup details and live link telemetry of the owner's Sponsor devices."""
+        status = vault.relay_status(current.credential or current.token)
+        setup = {
+            "server": settings.relay_server,
+            "download": settings.relay_download_url,
+            "command": settings.relay_command(),
+            "login": settings.relay_command("login"),
+        }
+        return {"setup": setup, **status}
+
+    @app.post("/api/me/credentials/relay/pending")
+    def pending_relay(body: RelayCodeBody, current: Annotated[Session, Depends(writer)]):
+        """Read what a displayed code registered, so approval needs no guessed routes."""
+        return vault.pending_relay(current.credential or current.token, body.code)
+
+    @app.put("/api/me/credentials/relay/device")
+    def replace_device(body: RelayDeviceBody, current: Annotated[Session, Depends(writer)]):
+        """Replace a paired device's approvals with one new Sponsor code."""
+        return changed(vault.replace_device(current.credential or current.token, body.model_dump()))
 
     @app.put("/api/me/credentials/order/{provider}")
     def reorder_credentials(provider: str, body: OrderBody, current: Annotated[Session, Depends(writer)]):

@@ -22,6 +22,7 @@ sys.path[:0] = [
 from fastapi.testclient import TestClient
 from test_backoffice import FakeOAuth, settings
 
+from exchange_fixtures import BINDING
 from vault_fixtures import ALICE, BOB, FakeTransport
 
 import admissions
@@ -31,7 +32,6 @@ from backoffice.app import CSRF_HEADER, SESSION_COOKIE, create_app as portal_app
 from backoffice.auth import Sessions, User
 from backoffice.credentials import Vault as PortalVault
 from credentials import Credential
-from exchange_fixtures import BINDING
 from exchange import Vault as GatewayVault
 from phase4_spike import CLI_VERSIONS, IMAGE, RuntimeTests as InferenceTests
 from policy import digest

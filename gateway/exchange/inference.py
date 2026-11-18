@@ -58,9 +58,7 @@ class Inference:
             CREATE TABLE IF NOT EXISTS inference_observations(sequence INTEGER PRIMARY KEY AUTOINCREMENT,request TEXT NOT NULL,source TEXT NOT NULL,body TEXT NOT NULL,UNIQUE(request,source));
         """)
         exchange.add_columns("inference_requests", (("model", "TEXT"), ("repository", "TEXT"), ("issue", "INTEGER")))
-        exchange.add_columns(
-            "inference_requests", (("custody", "TEXT"), ("relay_id", "TEXT"), ("entry_id", "TEXT"))
-        )
+        exchange.add_columns("inference_requests", (("custody", "TEXT"), ("relay_id", "TEXT"), ("entry_id", "TEXT")))
         exchange.add_columns("inference_observations", (("turn", "TEXT"), ("repository", "TEXT"), ("issue", "INTEGER")))
         exchange.db.executescript("""
             UPDATE inference_observations SET turn=json_extract(body,'$.turn'),repository=json_extract(body,'$.binding.repository'),issue=json_extract(body,'$.binding.issue') WHERE turn IS NULL;
@@ -123,7 +121,8 @@ class Inference:
         """Load an immutable request identity; callers hold the lifecycle lock."""
         row = self.exchange.db.execute(
             "SELECT session,turn,binding,resolved,claimed,model,custody,relay_id,entry_id"
-            " FROM inference_requests WHERE id=?", (identifier,)
+            " FROM inference_requests WHERE id=?",
+            (identifier,),
         ).fetchone()
         if row is None:
             raise self.exchange.refusal_type(403, "unknown private request")
@@ -243,8 +242,11 @@ class Inference:
                 self.finish(
                     identifier,
                     "resolver",
-                    {"category": "auth" if error.status in (404, 410) else "unknown", "status": error.status,
-                     "completed": False},
+                    {
+                        "category": "auth" if error.status in (404, 410) else "unknown",
+                        "status": error.status,
+                        "completed": False,
+                    },
                 )
                 raise
             if (
@@ -323,6 +325,27 @@ class Inference:
                 releases[owner, active_turn] = deadline
         for (owner, active_turn), deadline in releases.items():
             self.release(owner, active_turn, deadline)
+
+    @staticmethod
+    def relay_binding(snapshot):
+        """The claimed request's exact relay identity, and its task for the owner's live status."""
+        bound = snapshot["binding"]
+        return json.dumps(
+            {
+                "session": snapshot["session"],
+                "turn": snapshot["turn"],
+                "user_id": int(bound["sponsor"]),
+                "route": bound["route"],
+                "entry_id": snapshot["entry_id"],
+                "record_id": bound["credential"],
+                "relay_id": snapshot["relay_id"],
+                "version": bound["credential_version"],
+                "deadline": snapshot["deadline"],
+                "repository": bound["repository"],
+                "issue": bound["issue"],
+            },
+            separators=(",", ":"),
+        )
 
     def release(self, session, turn, deadline):
         """Close one retained native provider session after Exchange ends its authority."""
@@ -522,8 +545,11 @@ class Handler(BaseHTTPRequestHandler):
         """Relay bounded JSON/SSE with backpressure; close upstream promptly on cancellation."""
         relay = snapshot.get("custody") == "relay"
         if relay:
-            path = ("/v1/responses" if snapshot["binding"]["route"] == "chatgpt-subscription"
-                    else urllib.parse.urlsplit(url).path)
+            path = (
+                "/v1/responses"
+                if snapshot["binding"]["route"] == "chatgpt-subscription"
+                else urllib.parse.urlsplit(url).path
+            )
             url = self.server.inference.verifier_url + "/dispatch" + path
         parsed = urllib.parse.urlsplit(url)
         cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
@@ -544,22 +570,8 @@ class Handler(BaseHTTPRequestHandler):
             headers["anthropic-beta"] = ", ".join(self.headers.get_all("anthropic-beta"))
         headers["accept-encoding"] = "identity"
         if relay:
-            bound = snapshot["binding"]
             headers["x-concurro-verifier-auth"] = "Bearer " + self.server.inference.verifier_token
-            headers["x-concurro-binding"] = json.dumps(
-                {
-                    "session": snapshot["session"],
-                    "turn": snapshot["turn"],
-                    "user_id": int(bound["sponsor"]),
-                    "route": bound["route"],
-                    "entry_id": snapshot["entry_id"],
-                    "record_id": bound["credential"],
-                    "relay_id": snapshot["relay_id"],
-                    "version": bound["credential_version"],
-                    "deadline": snapshot["deadline"],
-                },
-                separators=(",", ":"),
-            )
+            headers["x-concurro-binding"] = self.server.inference.relay_binding(snapshot)
         observer = Observation(snapshot["binding"]["route"], 502)
         timer = None
         disconnect_watch = None
@@ -569,11 +581,12 @@ class Handler(BaseHTTPRequestHandler):
             connection.connect()
             self.server.inference.attach(snapshot, connection.sock)
             if relay:
+
                 def watch_disconnect():
                     """Stop a relay request when its gateway peer closes before the provider finishes."""
                     while not watch_done.is_set():
                         try:
-                            readable, _, _ = select.select([self.connection], [], [], .1)
+                            readable, _, _ = select.select([self.connection], [], [], 0.1)
                             if readable and not self.connection.recv(1, socket.MSG_PEEK):
                                 disconnected.set()
                                 self.server.inference.stop(identifier=snapshot["request"])

@@ -458,6 +458,9 @@ and publishes no port: other `edge` services, such as the backoffice API, reach 
 | `PATCH /credentials/{entry_id}` | Changes name, enabled or role/profile filters |
 | `PUT /credentials/{entry_id}/secret` | Stores the entry's next version, retiring only its previous one |
 | `PUT /credentials/{entry_id}/relay` | Approves a replacement Sponsor for that one route at the entry's current revision |
+| `PUT /credentials/relay/device` | Approves one new Sponsor code for a paired device's entries, one per registered route |
+| `POST /credentials/relay/pending` | Shows the device name and exact routes of a pending Sponsor code |
+| `GET /credentials/relay/status` | Live links, capacity and active leases of the owner's current Sponsor approvals |
 | `PUT /credentials/order/{provider}` | Commits the provider list's exact new order |
 | `DELETE /credentials/{entry_id}` | Removes the entry, marks its record `revoked` and destroys its ciphertext |
 | `GET /health` | `{"status": "ok"}` |
@@ -485,8 +488,11 @@ The owner approves one displayed Sponsor code for exactly the routes Sponsor reg
 in the portal. Exchange admits one request using its existing
 model, budget, turn and exact-version checks, then forwards it to the verifier on
 the private network. A live Sponsor link is required; one task retains one native
-provider session for cold and warm requests. The overlay requires a TLS certificate
-and key, and a shared private service token.
+provider session for cold and warm requests. The verifier ends an idle link whose relay
+disconnects, or stops answering TCP keepalive within about a minute, and reports live links
+only to their owner through the Vault. Set the backoffice's `relay_server` to the public
+`<host>:<port>` of the relay listener so the portal shows the launch command. The overlay
+requires a TLS certificate and key, and a shared private service token.
 It is not part of the base deployment.
 
 The vault refuses to start unless its master key file holds 64 hex characters and is a

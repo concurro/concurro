@@ -599,19 +599,25 @@ class EntryTests(unittest.TestCase):
     def test_chatgpt_relay_uses_gateway_backed_websocket_ingress(self):
         """Only the contributed ChatGPT route selects the configured WS ingress."""
         gateway = {**GATEWAY, "codex_ws_url": "https://relay.invalid"}
-        request = self.request("codex", gateway=gateway,
-                               admission={"route": "chatgpt-subscription", "custody": "relay"})
+        request = self.request(
+            "codex", gateway=gateway, admission={"route": "chatgpt-subscription", "custody": "relay"}
+        )
         command = agent_entry.command_for(request, "schema", "out")
         provider = next(value for value in command if value.startswith("model_providers.concurro="))
         self.assertIn('"base_url" = "https://relay.invalid/v1"', provider)
         self.assertIn('"supports_websockets" = true', provider)
         ordinary = agent_entry.command_for(self.request("codex", gateway=gateway), "schema", "out")
-        self.assertIn('"supports_websockets" = false', next(value for value in ordinary
-                      if value.startswith("model_providers.concurro=")))
-        vault = agent_entry.command_for(self.request("codex", gateway=gateway,
-                                              admission={"route": "chatgpt-subscription"}), "schema", "out")
-        self.assertIn('"supports_websockets" = false', next(value for value in vault
-                      if value.startswith("model_providers.concurro=")))
+        self.assertIn(
+            '"supports_websockets" = false',
+            next(value for value in ordinary if value.startswith("model_providers.concurro=")),
+        )
+        vault = agent_entry.command_for(
+            self.request("codex", gateway=gateway, admission={"route": "chatgpt-subscription"}), "schema", "out"
+        )
+        self.assertIn(
+            '"supports_websockets" = false',
+            next(value for value in vault if value.startswith("model_providers.concurro=")),
+        )
 
     def test_claude_gets_native_tools_and_the_key_as_its_token(self):
         command = agent_entry.command_for(self.request("claude"), "schema", "out")

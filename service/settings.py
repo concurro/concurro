@@ -257,8 +257,10 @@ def gateway_settings(data, identities):
     require(isinstance(data, dict) and set(data) in (GATEWAY_FIELDS, GATEWAY_FIELDS | {"codex_ws_url"}), "gateway")
     require(isinstance(data["url"], str) and GATEWAY_URL.fullmatch(data["url"]), "gateway.url")
     if "codex_ws_url" in data:
-        require(isinstance(data["codex_ws_url"], str) and GATEWAY_URL.fullmatch(data["codex_ws_url"]),
-                "gateway.codex_ws_url")
+        require(
+            isinstance(data["codex_ws_url"], str) and GATEWAY_URL.fullmatch(data["codex_ws_url"]),
+            "gateway.codex_ws_url",
+        )
     token, identity = secret(data["operator_token_path"], "gateway.operator_token_path")
     require(identity not in identities, "gateway.operator_token_path")
     require(data["executor"] == "runner", "gateway.executor")

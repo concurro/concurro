@@ -102,11 +102,61 @@ class Vault:
     def add_relay(self, token: str | TokenCredential, fields: dict) -> dict:
         """Approve one Sponsor code for its selected subscription routes in the owner Vault."""
         result = self.call(
-            "POST", "/credentials/relay", token, policy(fields),
+            "POST",
+            "/credentials/relay",
+            token,
+            policy(fields),
             timeout=60,
         )
         entries = result["entries"] if "entries" in result else {result["route"]: result}
         return {"entries": {route: entry(value) for route, value in entries.items()}}
+
+    def pending_relay(self, token: str | TokenCredential, code: str) -> dict:
+        """The device name and exact routes a displayed Sponsor code would approve."""
+        return self.call("POST", "/credentials/relay/pending", token, {"code": code})
+
+    def relay_status(self, token: str | TokenCredential) -> dict:
+        """Live links of the owner's current Sponsor approvals; an unreadable vault is reported as unavailable."""
+        try:
+            value = self.call("GET", "/credentials/relay/status", token)
+        except VaultError as error:
+            if error.status != 503:
+                raise
+            return {"service": "unavailable", "relays": []}
+        return {
+            "service": value["service"],
+            "started": value.get("started"),
+            "checked": value.get("checked"),
+            "relays": [
+                {
+                    "relay": relay["relay"],
+                    "idle": relay["idle"],
+                    "lastSeen": relay["last_seen"],
+                    "active": [
+                        {
+                            "slot": lease["slot"],
+                            "entry": lease["entry_id"],
+                            "route": lease["route"],
+                            "version": lease["version"],
+                            "since": lease["since"],
+                            "task": task(lease.get("task")),
+                        }
+                        for lease in relay["active"]
+                    ],
+                }
+                for relay in value["relays"]
+            ],
+        }
+
+    def replace_device(self, token: str | TokenCredential, fields: dict) -> dict:
+        """Rebind one entry per route of a paired device with a new Sponsor code."""
+        body = {
+            "code": fields["code"],
+            "mutation_id": fields["mutation_id"],
+            "entries": [{"entry_id": item["id"], "revision": item["revision"]} for item in fields["entries"]],
+        }
+        result = self.call("PUT", "/credentials/relay/device", token, body, timeout=60)
+        return {"entries": {route: entry(value) for route, value in result["entries"].items()}}
 
     def edit(self, token: str | TokenCredential, entry_id: str, fields: dict) -> dict:
         return entry(self.call("PATCH", f"/credentials/{entry_id}", token, policy(fields)))
@@ -170,4 +220,13 @@ def entry(value: dict) -> dict:
         "accountLabel": record.get("account_label"),
         "accountVerified": bool(record.get("verified_account")),
         "custody": record.get("custody", "vault"),
+        "relay": record.get("relay_id"),
     }
+
+
+def task(value: dict | None) -> dict | None:
+    """Exchange's `owner/repo` task identity as the frontend's issue reference."""
+    if not isinstance(value, dict) or "/" not in str(value.get("repository")):
+        return None
+    owner, repo = value["repository"].split("/", 1)
+    return {"owner": owner, "repo": repo, "issue": value["issue"]}

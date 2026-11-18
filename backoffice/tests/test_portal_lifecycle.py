@@ -12,12 +12,12 @@ from test_backoffice import USER, FakeOAuth, settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gateway/tests"))
 from vault_fixtures import ALICE, BOB, OPENAI, VaultFixture
-from vault import create_app as create_vault_app
 
 from backoffice.app import CSRF_HEADER, SESSION_COOKIE, create_app  # noqa: E402
 from backoffice.auth import Sessions, User  # noqa: E402
 from backoffice.credentials import Vault  # noqa: E402
 from test_subscription_storage import TOKENS
+from vault import create_app as create_vault_app
 
 
 class PortalLifecycleTests(VaultFixture, unittest.TestCase):
@@ -54,6 +54,105 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
         body.setdefault("mutation_id", uuid.uuid4().hex)
         return client.request(method, "/api/me/credentials" + path, headers={CSRF_HEADER: "1"}, json=body)
 
+    def test_paired_device_lookup_status_and_replacement_through_the_portal(self):
+        """Lookup names the code's routes, status stays owner-scoped and one code replaces both approvals."""
+        approvals, asked = [], []
+
+        def approve(code, bindings):
+            approvals.append((code, bindings))
+            return "relay-" + str(len(approvals))
+
+        def pending(code):
+            return {"name": "studio", "routes": ["chatgpt-subscription", "claude-subscription"], "expires_at": None}
+
+        def status(user_id, relays):
+            asked.append((user_id, relays))
+            lease = {
+                "route": "claude-subscription",
+                "entry_id": "e" * 32,
+                "version": 1,
+                "since": "2026-11-17T00:00:00+00:00",
+                "task": {"repository": "acme/demo", "issue": 4},
+            }
+            # Two sessions of one approval in the same second differ only by link slot.
+            return {
+                "started": "2026-11-17T00:00:00+00:00",
+                "checked": "2026-11-17T00:01:00+00:00",
+                "relays": [
+                    {
+                        "relay": relay,
+                        "idle": 1,
+                        "last_seen": "2026-11-17T00:01:00+00:00",
+                        "active": [{**lease, "slot": 1}, {**lease, "slot": 2}],
+                    }
+                    for relay in relays
+                ],
+            }
+
+        vault_client = TestClient(
+            create_vault_app(
+                self.store, self.identity, relay_approve=approve, relay_pending=pending, relay_status=status
+            )
+        )
+        client, alice, bob = self.browser(vault_client)
+        client.cookies.set(SESSION_COOKIE, alice)
+        found = client.post(
+            "/api/me/credentials/relay/pending", headers={CSRF_HEADER: "1"}, json={"code": "BCDF-GHJK"}
+        ).json()
+        self.assertEqual((found["name"], found["routes"]), ("studio", ["chatgpt-subscription", "claude-subscription"]))
+        empty = client.get("/api/me/relays").json()
+        self.assertEqual(
+            (empty["service"], empty["relays"], empty["setup"]),
+            ("available", [], {"server": None, "download": None, "command": None, "login": None}),
+        )
+        added = self.write(
+            client,
+            "POST",
+            "/relay",
+            code="BCDF-GHJK",
+            name="Studio",
+            routes=["claude-subscription", "chatgpt-subscription"],
+        ).json()["entries"]
+        self.assertEqual({entry["relay"] for entry in added.values()}, {"relay-1"})
+        live = client.get("/api/me/relays").json()
+        self.assertEqual(asked, [(101, ["relay-1"])])
+        self.assertEqual(live["relays"][0]["active"][0]["task"], {"owner": "acme", "repo": "demo", "issue": 4})
+        self.assertEqual([lease["slot"] for lease in live["relays"][0]["active"]], [1, 2])
+        client.cookies.clear()
+        client.cookies.set(SESSION_COOKIE, bob)
+        self.assertEqual(client.get("/api/me/relays").json()["relays"], [])
+        entries = [{"id": entry["id"], "revision": entry["revision"]} for entry in added.values()]
+        self.assertEqual(self.write(client, "PUT", "/relay/device", code="LMNP-QRST", entries=entries).status_code, 404)
+        client.cookies.clear()
+        client.cookies.set(SESSION_COOKIE, alice)
+        replaced = self.write(client, "PUT", "/relay/device", code="LMNP-QRST", entries=entries)
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual({entry["relay"] for entry in replaced.json()["entries"].values()}, {"relay-2"})
+        self.assertEqual({entry["id"] for entry in replaced.json()["entries"].values()}, {e["id"] for e in entries})
+        self.assertEqual(len(approvals[-1][1]), 2)
+
+    def test_unavailable_vault_reports_unknown_relay_status_with_configured_setup(self):
+        """A vault that cannot be reached leaves live status unavailable rather than offline."""
+        client, alice, _ = self.browser()
+        client.cookies.set(SESSION_COOKIE, alice)
+        self.assertEqual(client.get("/api/me/relays").json()["service"], "unconfigured")
+        api = Vault("http://vault.invalid", httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(503))))
+        sessions = Sessions()
+        configured = settings(public_url="http://testserver", relay_server="relay.invalid:7443")
+        portal = TestClient(create_app(configured, oauth=FakeOAuth(), vault=api, sessions=sessions))
+        portal.cookies.set(SESSION_COOKIE, sessions.create(ALICE, USER, 3600))
+        reply = portal.get("/api/me/relays").json()
+        self.assertEqual((reply["service"], reply["relays"]), ("unavailable", []))
+        self.assertEqual(
+            reply["setup"],
+            {
+                "server": "relay.invalid:7443",
+                "download": None,
+                "command": "concurro-relay --server relay.invalid:7443",
+                "login": "concurro-relay login --server relay.invalid:7443",
+            },
+        )
+
     def test_one_sponsor_approval_appears_in_both_lists_and_keeps_owner_bound_lifecycle(self):
         """The portal forwards one authenticated approval and reads both relay entries through the normal lists."""
         approvals = []
@@ -65,37 +164,49 @@ class PortalLifecycleTests(VaultFixture, unittest.TestCase):
         vault_client = TestClient(create_vault_app(self.store, self.identity, relay_approve=approve))
         client, alice, bob = self.browser(vault_client)
         client.cookies.set(SESSION_COOKIE, alice)
-        body = {"code": "BCDF-GHJK", "name": "Laptop Sponsor", "routes": ["claude-subscription", "chatgpt-subscription"],
-                "mutation_id": "a" * 16}
+        body = {
+            "code": "BCDF-GHJK",
+            "name": "Laptop Sponsor",
+            "routes": ["claude-subscription", "chatgpt-subscription"],
+            "mutation_id": "a" * 16,
+        }
         self.assertEqual(client.post("/api/me/credentials/relay", json=body).status_code, 403)
         added = self.write(client, "POST", "/relay", **body)
         self.assertEqual(added.status_code, 200, added.text)
         self.assertEqual(len(approvals), 1)
-        self.assertEqual({binding["route"] for binding in approvals[0][1]},
-                         {"claude-subscription", "chatgpt-subscription"})
+        self.assertEqual(
+            {binding["route"] for binding in approvals[0][1]}, {"claude-subscription", "chatgpt-subscription"}
+        )
         entries = added.json()["entries"]
         self.assertEqual(set(entries), {"claude-subscription", "chatgpt-subscription"})
         self.assertEqual({item["custody"] for item in entries.values()}, {"relay"})
         self.assertEqual(self.write(client, "POST", "/relay", **body).json(), added.json())
         listed = client.get("/api/me/credentials").json()["providers"]
-        self.assertEqual([(group["provider"], len(group["entries"])) for group in listed],
-                         [("anthropic", 1), ("openai", 1)])
+        self.assertEqual(
+            [(group["provider"], len(group["entries"])) for group in listed], [("anthropic", 1), ("openai", 1)]
+        )
         claude = entries["claude-subscription"]
         client.cookies.clear()
         client.cookies.set(SESSION_COOKIE, bob)
-        self.assertEqual(self.write(client, "PUT", "/" + claude["id"] + "/relay",
-                                    code="LMNP-QRST", revision=claude["revision"]).status_code, 404)
+        self.assertEqual(
+            self.write(
+                client, "PUT", "/" + claude["id"] + "/relay", code="LMNP-QRST", revision=claude["revision"]
+            ).status_code,
+            404,
+        )
         self.assertEqual(self.remove(client, claude).status_code, 404)
         client.cookies.clear()
         client.cookies.set(SESSION_COOKIE, alice)
-        replaced = self.write(client, "PUT", "/" + claude["id"] + "/relay",
-                              code="LMNP-QRST", revision=claude["revision"])
+        replaced = self.write(
+            client, "PUT", "/" + claude["id"] + "/relay", code="LMNP-QRST", revision=claude["revision"]
+        )
         self.assertEqual((replaced.status_code, replaced.json()["version"]), (200, 2))
         self.assertEqual(self.remove(client, claude).status_code, 409)
         self.assertEqual(self.remove(client, replaced.json()).status_code, 200)
         self.assertEqual(self.remove(client, entries["chatgpt-subscription"]).status_code, 200)
-        self.assertEqual([group["entries"] for group in client.get("/api/me/credentials").json()["providers"]],
-                         [[], []])
+        self.assertEqual(
+            [group["entries"] for group in client.get("/api/me/credentials").json()["providers"]], [[], []]
+        )
 
     def test_browser_to_vault_entry_lifecycle_and_private_separation(self):
         """No browser owner field or service bearer can select another person's entry or secret version."""

@@ -52,6 +52,9 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 | PATCH | `/api/me/credentials/{entry}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}`; material is untouched |
 | PUT | `/api/me/credentials/{entry}/secret` | `{revision, secret, account_id?, mutation_id}`: replace this entry's token |
 | PUT | `/api/me/credentials/{entry}/relay` | `{revision, code, mutation_id}`: replace one Sponsor entry's approval |
+| PUT | `/api/me/credentials/relay/device` | `{code, entries: [{id, revision}], mutation_id}`: one new code for a paired device's entries |
+| POST | `/api/me/credentials/relay/pending` | `{code}` → `{name, routes, expires_at}` registered by a pending Sponsor code |
+| GET | `/api/me/relays` | `{setup: {server, download, command, login}, service, started, checked, relays}`: Sponsor setup and live links |
 | PUT | `/api/me/credentials/order/{provider}` | `{revision, entries, mutation_id}`: the list's exact new order |
 | DELETE | `/api/me/credentials/{entry}?revision=N` | Remove the entry at its last-read revision and revoke its stored material; repeatable |
 | GET | `/api/openapi.json` | OpenAPI document |
@@ -63,14 +66,22 @@ a 409 means it changed, and the client reloads while keeping its nonsecret draft
 route-addressed `PUT`/`DELETE /api/me/credentials/{route}`, which carry no revision, answer 410
 with a reload instruction.
 
-Sponsor prints a public verification URL and a short code. The owner signs in at that URL,
-enters the code once, selects the routes Sponsor registered, and sees a relay custody entry
-in each selected provider list. Name and filters can then be edited per entry. To replace
-one entry, register a Sponsor for that one route in a
-separate local state directory and use its new code from the entry menu. Removing an entry
-retires its approval; removing both ends the combined registration's access. The existing
-token-paste and API-key flows remain
-available in the same lists.
+Sponsor prints a public verification URL and a short code. The owner signs in at that URL and
+enters the code; the portal looks it up and approves exactly the device name and routes it
+registered, adding a relay custody entry to each provider list. Name and filters can then be
+edited per entry. The portal groups a device's entries with its live status: connected with
+free links, offline since a time, not seen since the verifier started, or unknown when status
+cannot be read. An approval alone never shows as connected. To replace a device, run
+`concurro-relay login` on it again (provider sign-ins are kept) and enter the new code under
+the device's Replace action; its entries keep their names, filters and positions. Removing an
+entry retires its approval; removing both ends the registration's access. The existing
+token-paste and API-key flows remain available in the same lists.
+
+Optional settings `relay_server` and `relay_download_url` (https) feed the portal's setup
+steps. `relay_server` is the public relay listener as `host:port`: a DNS name, IPv4 address or
+bracketed IPv6 address; anything else fails settings validation. The API returns the launch and
+re-registration commands shell-quoted. Without these settings the portal tells the sponsor that
+Sponsor is not yet available or set up here.
 
 ## Standalone reviews
 

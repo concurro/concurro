@@ -67,6 +67,9 @@ all of the provider's work.
 | `PATCH /credentials/{entry_id}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}` | The entry; material and version unchanged |
 | `PUT /credentials/{entry_id}/secret` | `{revision, secret, account_id?, mutation_id}` | The entry with its new record |
 | `PUT /credentials/{entry_id}/relay` | `{revision, code, mutation_id}` | Replaces that entry's record with a newly approved relay |
+| `PUT /credentials/relay/device` | `{code, entries: [{entry_id, revision}], mutation_id}` | Rebinds one entry per route the code registered to the new relay in one approval; `{entries: {route: entry}}` |
+| `POST /credentials/relay/pending` | `{code}` | `{name, routes, expires_at}` of an unapproved, unexpired code; 404 otherwise |
+| `GET /credentials/relay/status` | | `{service, started?, checked?, relays}`: live links of the caller's current relay approvals |
 | `PUT /credentials/order/{provider}` | `{revision, entries, mutation_id}` | The reordered list |
 | `DELETE /credentials/{entry_id}?revision=N` | | The tombstoned entry; repeating it returns the same |
 
@@ -90,6 +93,18 @@ The same code can approve only that set. If the private call fails, the
 Vault write rolls back; no incomplete relay record enters the list. A mixed
 approval commits both route entries in one transaction. The
 verifier persists pending and approved registrations across restarts.
+
+A device replacement names the entries to rebind, each at its last-read revision; their
+routes must equal the code's registered routes or the verifier refuses the approval and
+nothing changes. Names, filters, enablement and positions stay. An entry's `record.relay_id`
+groups the entries of one device.
+
+Code lookup and live status call the verifier's private `POST /pending` and `POST /status`.
+Status asks only for the caller's current, unretired relay IDs, and the verifier answers only
+for relays approved to that owner. Each relay reports idle links (shared by its routes),
+active task leases with link slot (distinct per relay), route, entry, version, start and task, and `last_seen`. Live state is
+in memory: `started` marks the verifier's start, and a relay not seen since then is unknown.
+`service` is `unconfigured` without a verifier and `unavailable` when it cannot be read.
 
 ## Metadata
 

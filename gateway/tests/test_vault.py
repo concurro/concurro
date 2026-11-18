@@ -134,8 +134,10 @@ class StorageTest(VaultFixture, unittest.TestCase):
                 "verified_account",
                 "models",
                 "custody",
+                "relay_id",
             },
         )
+        self.assertIsNone(entry["record"]["relay_id"])
         digest = hashlib.sha256(ANTHROPIC.encode()).hexdigest()
         self.assertEqual(entry["record"]["fingerprint"], f"AAAA:{digest[:8]}")
         self.assertEqual(

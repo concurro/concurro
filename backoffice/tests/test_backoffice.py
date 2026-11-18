@@ -222,13 +222,46 @@ class SettingsTests(unittest.TestCase):
             path.chmod(0o600)
         target = {"upstream": "up/project", "fork": "owner/project", "issues": "fork"}
 
-        def loaded(**reader):
+        def loaded(relay=None, **reader):
             path = root / "settings.json"
             body = {"public_url": "https://host.invalid/concurro", "client_id": "client", "targets": [target]}
-            path.write_text(json.dumps({**body, "client_secret_path": str(secret), "reader": reader}))
+            path.write_text(json.dumps({**body, **(relay or {}), "client_secret_path": str(secret), "reader": reader}))
             return load(path)
 
         configured = loaded(app_id=7, private_key_path=str(key))
+        self.assertEqual((configured.relay_server, configured.relay_download_url), (None, None))
+        relay = {"relay_server": "relay.invalid:7443", "relay_download_url": "https://downloads.invalid/sponsor"}
+        configured_relay = loaded(relay, app_id=7, private_key_path=str(key))
+        self.assertEqual(configured_relay.relay_server, "relay.invalid:7443")
+        self.assertEqual(configured_relay.relay_command(), "concurro-relay --server relay.invalid:7443")
+        self.assertEqual(configured_relay.relay_command("login"), "concurro-relay login --server relay.invalid:7443")
+        for address in ("192.0.2.1:7443", "[2001:db8::1]:7443"):
+            ipv = loaded({"relay_server": address}, app_id=7, private_key_path=str(key))
+            self.assertEqual(ipv.relay_server, address)
+        # Brackets are shell glob characters, so the copyable command quotes them.
+        self.assertEqual(ipv.relay_command(), "concurro-relay --server '[2001:db8::1]:7443'")
+        self.assertIsNone(configured.relay_command())
+        for invalid, field in (
+            ({"relay_server": "relay.invalid"}, "relay_server"),
+            ({"relay_server": "https://relay.invalid:7443"}, "relay_server"),
+            ({"relay_server": "relay.invalid :7443"}, "relay_server"),
+            ({"relay_server": "relay.invalid:7443\n"}, "relay_server"),
+            ({"relay_server": "relay;rm -rf:7443"}, "relay_server"),
+            ({"relay_server": "$(id):7443"}, "relay_server"),
+            ({"relay_server": "user@relay.invalid:7443"}, "relay_server"),
+            ({"relay_server": "relay.invalid:0"}, "relay_server"),
+            ({"relay_server": "relay.invalid:99999"}, "relay_server"),
+            ({"relay_server": "2001:db8::1:7443"}, "relay_server"),
+            ({"relay_server": "[relay.invalid]:7443"}, "relay_server"),
+            ({"relay_server": 7443}, "relay_server"),
+            ({"relay_server": ["relay.invalid:7443"]}, "relay_server"),
+            ({"relay_server": False}, "relay_server"),
+            ({"relay_download_url": "http://downloads.invalid/sponsor"}, "relay_download_url"),
+            ({"relay_download_url": 1}, "relay_download_url"),
+            ({"relay_download_url": "https://downloads.invalid/a b"}, "relay_download_url"),
+        ):
+            with self.subTest(field=field), self.assertRaisesRegex(SettingsError, field + "$"):
+                loaded(invalid, app_id=7, private_key_path=str(key))
         self.assertEqual((configured.reader.app_id, configured.reader.private_key_path), (7, key))
         self.assertEqual(configured.reader.targets, configured.targets)
         with patch.dict("os.environ", {"CONCURRO_READ_CACHE_DIR": str(root / "reads")}):

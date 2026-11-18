@@ -46,9 +46,11 @@ def command_for(request, schema_path, output_path):
         servers = mcp_config.resolved(servers, request["workspace"])
     if provider == "codex":
         admission = request.get("admission") or {}
-        bridge = (gateway.get("codex_ws_url")
-                  if admission.get("route") == "chatgpt-subscription" and admission.get("custody") == "relay"
-                  else None)
+        bridge = (
+            gateway.get("codex_ws_url")
+            if admission.get("route") == "chatgpt-subscription" and admission.get("custody") == "relay"
+            else None
+        )
         endpoint = {
             "name": "Concurro gateway",
             "base_url": (bridge or gateway["url"]) + "/v1",

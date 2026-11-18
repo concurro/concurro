@@ -222,7 +222,9 @@ class WorkerHelperTests(unittest.TestCase):
         worker = Worker.__new__(Worker)
         worker.sponsorship = None
         worker.settings = SimpleNamespace(
-            gateway=SimpleNamespace(url="https://example.invalid", headers={}, operator_token_path=Path("operator"))
+            gateway=SimpleNamespace(
+                url="https://example.invalid", headers={}, operator_token_path=Path("operator"), codex_ws_url=None
+            )
         )
         events = []
         worker.registry = SimpleNamespace(

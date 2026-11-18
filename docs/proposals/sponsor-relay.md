@@ -33,6 +33,17 @@ version binding only from the owner-authenticated Vault API. A Sponsor must
 prove possession of that key on both live links. A withdrawn relay loses its
 active link leases. Vault retirement makes the old exact record unusable.
 
+## Owner portal
+
+The credentials page groups each device's route entries. Approval looks up the code
+and binds exactly the routes it registered; a reinstalled device is replaced with one
+new code, keeping entry policy and order. Live status comes from the verifier's
+authenticated links and task leases, reported only to their owner: connected with
+free links, offline since a time, or unknown before it reconnects after a verifier
+restart. Device usage reuses task funding evidence and keeps Concurro's charged
+calls apart from provider-reported tokens. No Sponsor release is published; the
+setup steps show only the configured relay address and download location.
+
 ## Inference path
 
 1. The existing controller freezes the selected sponsor and credential version

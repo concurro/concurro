@@ -496,19 +496,30 @@ class ExecutorTests(unittest.TestCase):
         github = type("GitHub", (), {"key": ("owner/one", 7), "generation": 1})()
         runner = self.worker("runner", "https://relay.invalid").executor("owner/one", github)
         self.assertEqual(runner.gateway["codex_ws_url"], "https://relay.invalid")
-        request = {"provider": "codex", "model": "gpt-test", "gateway": runner.gateway,
-                   "admission": {"route": "chatgpt-subscription"}}
+        request = {
+            "provider": "codex",
+            "model": "gpt-test",
+            "gateway": runner.gateway,
+            "admission": {"route": "chatgpt-subscription"},
+        }
         vault = command_for(request, "schema", "out")
-        relay = command_for({**request, "admission": {**request["admission"], "custody": "relay"}},
-                            "schema", "out")
-        self.assertIn('"supports_websockets" = false', next(value for value in vault
-                      if value.startswith("model_providers.concurro=")))
-        self.assertIn('"base_url" = "https://gateway.invalid/concurro/v1"', next(value for value in vault
-                      if value.startswith("model_providers.concurro=")))
-        self.assertIn('"supports_websockets" = true', next(value for value in relay
-                      if value.startswith("model_providers.concurro=")))
-        self.assertIn('"base_url" = "https://relay.invalid/v1"', next(value for value in relay
-                      if value.startswith("model_providers.concurro=")))
+        relay = command_for({**request, "admission": {**request["admission"], "custody": "relay"}}, "schema", "out")
+        self.assertIn(
+            '"supports_websockets" = false',
+            next(value for value in vault if value.startswith("model_providers.concurro=")),
+        )
+        self.assertIn(
+            '"base_url" = "https://gateway.invalid/concurro/v1"',
+            next(value for value in vault if value.startswith("model_providers.concurro=")),
+        )
+        self.assertIn(
+            '"supports_websockets" = true',
+            next(value for value in relay if value.startswith("model_providers.concurro=")),
+        )
+        self.assertIn(
+            '"base_url" = "https://relay.invalid/v1"',
+            next(value for value in relay if value.startswith("model_providers.concurro=")),
+        )
 
 
 class FairnessTests(unittest.TestCase):
