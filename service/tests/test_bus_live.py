@@ -410,6 +410,12 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
             """Change only the test stream's retention clock."""
             client = await nats.connect(self.nats_url, user="service", password="test")
             try:
+                if seconds == 0:
+                    deadline = time.monotonic() + 10
+                    while (await client.jetstream().stream_info("GITHUB")).state.messages:
+                        if time.monotonic() >= deadline:
+                            self.fail("Test stream did not expire before disabling retention")
+                        await asyncio.sleep(0.05)
                 await client.jetstream().update_stream(
                     name="GITHUB", subjects=["github.>", "ingress.>"], max_age=seconds
                 )
@@ -419,7 +425,6 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         asyncio.run(age(2))
         missing = self.github_event("age-missing", 403)
         asyncio.run(self.publish([missing]))
-        time.sleep(2.3)
         asyncio.run(age(0))
         self.now[0] = (self.start_time + timedelta(minutes=1)).timestamp()
 
@@ -477,7 +482,9 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
             return result.stdout.strip()
 
         for _ in range(100):
-            ready = subprocess.run(["docker", "exec", postgres, "pg_isready", "-U", "postgres"], capture_output=True)
+            ready = subprocess.run(
+                ["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"], capture_output=True
+            )
             if ready.returncode == 0:
                 break
             time.sleep(0.1)
@@ -756,7 +763,9 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         recovery["failed"] = True
         subprocess.run(["docker", "start", postgres], capture_output=True, check=True)
         for _ in range(100):
-            ready = subprocess.run(["docker", "exec", postgres, "pg_isready", "-U", "postgres"], capture_output=True)
+            ready = subprocess.run(
+                ["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"], capture_output=True
+            )
             if ready.returncode == 0:
                 break
             time.sleep(0.1)

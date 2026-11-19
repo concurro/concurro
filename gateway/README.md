@@ -98,7 +98,7 @@ and event subscriptions in [Target and App prerequisites](#target-and-app-prereq
 - Webhook URL `https://<host>/concurro/webhook`, with a generated webhook secret.
 - Install it on each upstream and fork.
 
-Store the webhook secret with Rust ingress. Follow the [release 1 cutover](../docs/platform.md#production-ingress)
+Store the webhook secret with Rust ingress. Follow the [release 1 cutover](../docs/platform.md#compose-ingress-example)
 before deploying release 2; this checkout's edge route targets Rust ingress.
 
 Backoffice sign-in uses a separate OAuth App; repository reads use a separate read-only
@@ -712,7 +712,7 @@ The webhook URL is `https://<host>/concurro/webhook`; after the release 1 cutove
 Rust ingress receives it and owns delivery receipts. Python service consumes durable
 bus events and uses applied producer coverage to verify list freshness. Its private
 App delivery API remains available for Rust ingress to list and redeliver deliveries.
-Unchanged idle PRs are not polled. [Platform setup](../docs/platform.md#production-ingress)
+Unchanged idle PRs are not polled. [Compose example](../docs/platform.md#compose-ingress-example)
 gives the required release 1 first deployment, parity, edge switch, reconciliation,
 and duplicate GUID checks before release 2. Release 2 removes Python's webhook intake
 and delivery scan.
@@ -792,7 +792,7 @@ svc logs --tail 30 service
 ```
 
 A non-fast-forward release move needs explicit operator reconciliation, not a blind
-force push. The current registry migrates schemas 2–7 to schema 8 transactionally. Exchange columns are
+force push. The current registry migrates schemas 2–8 to schema 9 transactionally. Exchange columns are
 added without clearing history; old unbound pending turns are lost rather than staffed
 under new authority. In-flight checkpoints retain their old bundle identity and block
 for reconciliation. A fresh issue is the straightforward pilot path; never replace a

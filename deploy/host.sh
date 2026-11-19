@@ -27,7 +27,13 @@ svc() {
   sudo -n docker compose --env-file "$releases" "${files[@]}" "$@"
 }
 gw() { sudo -n docker compose --env-file "$releases" -p concurro-gateway -f "$HOME/concurro/gateway/compose.yaml" -f /etc/concurro/gateway/compose.host.yaml "$@"; }
-plat() { sudo -n docker compose -f "$HOME/concurro/deploy/compose.platform.yaml" "$@"; }
+plat() {
+  local files=(-f "$HOME/concurro/deploy/compose.platform.yaml")
+  if [[ -f /etc/concurro/compose.platform.host.yaml ]]; then
+    files+=(-f /etc/concurro/compose.platform.host.yaml)
+  fi
+  sudo -n docker compose "${files[@]}" "$@"
+}
 record() {
   { grep -v "^$1=" "$releases" || true; echo "$1=$2"; } > "$releases.tmp"
   mv "$releases.tmp" "$releases"
