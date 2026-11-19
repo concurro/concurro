@@ -1,0 +1,19 @@
+public_listen = "0.0.0.0:8789"
+internal_listen = "concurro-ingress-platform:8790"
+database_url_file = "/etc/concurro/ingress/database-url"
+nats_url = "nats://concurro-nats:4222"
+nats_credentials_file = "/etc/concurro/ingress/nats-credentials.json"
+webhook_secret_file = "/etc/concurro/ingress/webhook-secret"
+accepted_installations = [123456]
+max_message_bytes = 30000000
+published_retention_seconds = 2592000
+payload_retention_seconds = 2592000
+stream_max_age_seconds = 604800
+duplicate_window_seconds = 120
+forwarder_poll_ms = 1000
+delivery_recovery_url = "http://concurro-service:8787"
+delivery_recovery_bearer_file = "/etc/concurro/ingress/delivery-recovery-bearer"
+recovery_interval_seconds = 300
+
+[replay_bearer_files]
+service = "/etc/concurro/ingress/service-replay-bearer"

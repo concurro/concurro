@@ -381,6 +381,13 @@ bash deploy/deploy.sh web WEB_FULL_SHA || printf '\nDeployment failed; this term
   retaining the recorded web release. It uses the same host deployment checks as the
   combined updater.
 
+When a release changes the service settings format, place the new file at
+`/etc/concurro/service/settings.next.json` with the same ownership and permissions as
+`settings.json`. The host helper validates it using the release image while the current
+service is running, then stops the old service and atomically promotes it. It keeps the
+previous file as `settings.json.previous` for recovery. Without a staged file, the helper
+validates the current settings before stopping services.
+
 Host Docker commands use non-interactive `sudo docker` only. Execute the scripts; never
 source them. The Compose `build` sections remain for local builds.
 
@@ -698,7 +705,13 @@ five minutes; unchanged idle PRs are not polled. Bootstrap and gaps beyond GitHu
 three-day delivery history use state reconciliation. The existing App JWT signs recovery
 requests; no installation-token permission expansion is required.
 
-The current service upgrades the registry to schema 8, retaining the coverage/observation
+The phase 2 first release adds a bus consumer and an App-delivery API while this webhook
+path remains active. [Platform setup](../docs/platform.md#production-ingress) describes
+PostgreSQL, JetStream, ingress, backups and the later edge switch. After the switch,
+ingress owns delivery receipt; release 2 retires the Python webhook and scan only after
+the initial gap reconciliation and duplicate-redelivery check are recorded.
+
+The current service upgrades the registry to schema 9, retaining the coverage/observation
 jobs introduced in schema 5. Back up the stopped registry and preserve its identity; use
 corrective releases and forward migrations.
 When combining with delegated backoffice commands, wire the command predicate and durable
@@ -773,7 +786,7 @@ svc logs --tail 30 service
 ```
 
 A non-fast-forward release move needs explicit operator reconciliation, not a blind
-force push. The current registry migrates schemas 2–7 to schema 8 transactionally. Exchange columns are
+force push. The current registry migrates schemas 2–8 to schema 9 transactionally. Exchange columns are
 added without clearing history; old unbound pending turns are lost rather than staffed
 under new authority. In-flight checkpoints retain their old bundle identity and block
 for reconciliation. A fresh issue is the straightforward pilot path; never replace a

@@ -1,0 +1,43 @@
+{
+  "action": "edited",
+  "changes": {
+    "body": {
+      "from": "old"
+    }
+  },
+  "comment": {
+    "author_association": "OWNER",
+    "body": "new",
+    "commit_id": "abc",
+    "created_at": "2026-11-19T10:00:00Z",
+    "id": 13,
+    "in_reply_to_id": null,
+    "line": 3,
+    "path": "src/main.rs",
+    "updated_at": "2026-11-19T10:00:00Z",
+    "user": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    },
+    "pull_request_review_id": 12
+  },
+  "installation": {
+    "id": 7
+  },
+  "pull_request": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  }
+}

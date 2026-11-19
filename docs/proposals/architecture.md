@@ -173,7 +173,7 @@ database and a bus provide directly.
 | Exchange | Runner sessions, turn queue, turn results, transcripts and turn diagnostics; publishes turn results as events | Runner OIDC; issues session keys bound to a grant | Sessions, turns |
 | Inference gateway | Authenticates session keys, enforces token budgets, routes and forwards to providers or the relay verifier, records usage | Org provider secrets; reads personal secret material | Inference requests and their usage |
 | Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime | Relay registrations and sessions |
-| Secret store (OpenBao) | Personal credential material, versioned and destroyable | Unseal key outside the database; a policy per client service | Encrypted material |
+| Secret store (OpenBao) | Personal credential material and routinely rotated operational secrets | Unseal key and service bootstrap identities outside the database; a least-privilege policy per client service | Encrypted material |
 | Backoffice API | Signed-in users, their views and their requests | User sessions and OAuth tokens | Sessions, a read model fed by events |
 
 - **Ingress publishes typed GitHub facts; consumers decide what they mean.** Ingress
@@ -237,20 +237,24 @@ database and a bus provide directly.
     selection treats like any other, and serves relay status to the backoffice
     ([sponsor relay](sponsor-relay.md)).
 - **Secret material lives in OpenBao.** Each credential version is its own KV path, named
-  by a version ID funding assigns. Funding writes and destroys versions; the inference
-  gateway reads one exact version per request; each signs in with its own role and
-  policy, and every read is audited. Static-key auto-unseal keeps the unseal key in a
-  file outside the database, and OpenBao stores its data in its own database on the
-  shared Postgres server. Both clients use it through a small interface (with the
-  `vaultrs` client), so another store can replace it.
+  by a version ID funding assigns. Operational secrets live under separate, per-service
+  paths. Funding writes and destroys credential versions; the inference gateway reads
+  one exact credential version per request. Their policies grant no access to other
+  services' operational paths; each service reads only its own operational path under
+  a separate policy. Each client signs in with its own role and policy, and every read
+  is audited. Static-key auto-unseal keeps the unseal key in a file outside the
+  database, and OpenBao stores its data in its own database on the shared Postgres
+  server. Clients use it through a small interface (with the `vaultrs` client), so
+  another store can replace it.
   - **New material goes backoffice API → funding → OpenBao;** the backoffice already
     proxies it to the vault today.
   - **Writes are idempotent across the two stores.** Funding records the version as
     pending, writes it with check-and-set so its path can be created only once, then
     marks it active. A retry writes the same path; funding settles a pending version by
     reading OpenBao's metadata, which its policy allows, never the material.
-  - **The gateway can read any version,** as the exchange's resolver bearer can today; it
-    reads only the version a session's grant names. Scoping reads per grant (a
+  - **The gateway can read any credential version,** as the exchange's resolver bearer
+    can today; it reads only the version a session's grant names. Its policy cannot
+    read operational-secret paths. Scoping credential reads per grant (a
     short-lived token or response wrapping issued at session bind) is a later
     hardening. Relay sponsors' tokens never enter OpenBao, so this access doesn't reach
     them; the verifier's own admission check protects them.
@@ -581,8 +585,12 @@ deployment.
    holding the vault's keyring decrypts each usable version and writes it to OpenBao
    under a migration-only policy, keeping record and version IDs (relay-custody versions
    hold no material and move as metadata only); credential writes pause
-   while it runs. Done when the handover publishes each outstanding turn's completion
-   once, diagnostics come from turn records, every funding mode and inference route
+   while it runs. Routinely rotated operational secrets also move from host files to
+   service-specific OpenBao paths; each service reads only the credentials its role needs.
+   Bootstrap identities remain outside OpenBao and must avoid a circular startup dependency.
+   Done when routine secret rotation no longer requires editing host files, the handover
+   publishes each outstanding turn's completion once, diagnostics come from turn records,
+   every funding mode and inference route
    works through the gateway, and a revocation holds across a gateway and verifier
    restart. Only then are agentgateway, the vault (with the exchange's own sponsorship
    tables and vault feed) and the Python exchange retired, and the polling stopped.
@@ -590,6 +598,12 @@ deployment.
 Until phase 3 lands, the Python service gets fixes and the bridges above only. New
 features such as [request intake](request-intake.md) and [mentions](mentions.md) are
 designed against the target and built on the new orchestrator.
+
+Mutable target settings, funding policy and pilot membership belong in their owning
+services' databases, changed through authenticated APIs with validation and audit.
+File settings remain for bootstrap. A future `concurro` CLI should call the owning
+service APIs for setup and operator actions once those APIs are stable. An
+installation-specific migration script need not be a product command.
 
 ## Effect on open proposals
 

@@ -1,0 +1,46 @@
+{
+  "data": {
+    "action": "opened\n",
+    "delivery_id": "delivery-1",
+    "installation_id": 4294967302,
+    "issue": {
+      "assignees": [],
+      "body": null,
+      "created_at": "2026-11-18T10:00:00Z",
+      "is_pull_request": false,
+      "labels": [
+        {
+          "name": "concurro"
+        }
+      ],
+      "number": 4294967301,
+      "state": "open",
+      "state_reason": null,
+      "title": "Build a thing",
+      "updated_at": "2026-11-18T10:05:00Z",
+      "user": {
+        "id": 4294967300,
+        "login": "writer",
+        "type": "Enterprise"
+      }
+    },
+    "mapping_revision": 1,
+    "received_at": "2026-11-18T10:05:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 4294967303,
+      "owner_id": 4294967304
+    },
+    "sender": {
+      "id": 4294967300,
+      "login": "writer",
+      "type": "User"
+    }
+  },
+  "id": "669a0c7f-922d-5b0c-a579-4e19e2807e31",
+  "kind": "fact",
+  "occurred_at": "2026-11-18T10:05:01Z",
+  "producer": "ingress",
+  "type": "github.issues.opened\n",
+  "version": 1
+}

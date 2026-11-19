@@ -1,0 +1,36 @@
+{
+  "action": "submitted",
+  "installation": {
+    "id": 7
+  },
+  "pull_request": {
+    "head": {
+      "sha": "abc"
+    },
+    "number": 4
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "review": {
+    "body": "LGTM",
+    "commit_id": "abc",
+    "id": 12,
+    "state": "approved",
+    "submitted_at": "2026-11-19T10:00:00Z",
+    "user": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    }
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  }
+}

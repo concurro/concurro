@@ -1,0 +1,93 @@
+[
+  {
+    "family": "github.issues",
+    "python_decoder": "decode_github_issues",
+    "python_module": "github_issues_v1",
+    "stem": "github.issues.v1",
+    "version": 1
+  },
+  {
+    "family": "github.issue_comment",
+    "python_decoder": "decode_github_issue_comment",
+    "python_module": "github_issue_comment_v1",
+    "stem": "github.issue_comment.v1",
+    "version": 1
+  },
+  {
+    "family": "github.pull_request",
+    "python_decoder": "decode_github_pull_request",
+    "python_module": "github_pull_request_v1",
+    "stem": "github.pull_request.v1",
+    "version": 1
+  },
+  {
+    "family": "github.pull_request_review",
+    "python_decoder": "decode_github_pull_request_review",
+    "python_module": "github_pull_request_review_v1",
+    "stem": "github.pull_request_review.v1",
+    "version": 1
+  },
+  {
+    "family": "github.pull_request_review_comment",
+    "python_decoder": "decode_github_pull_request_review_comment",
+    "python_module": "github_pull_request_review_comment_v1",
+    "stem": "github.pull_request_review_comment.v1",
+    "version": 1
+  },
+  {
+    "family": "github.pull_request_review_thread",
+    "python_decoder": "decode_github_pull_request_review_thread",
+    "python_module": "github_pull_request_review_thread_v1",
+    "stem": "github.pull_request_review_thread.v1",
+    "version": 1
+  },
+  {
+    "family": "github.push",
+    "python_decoder": "decode_github_push",
+    "python_module": "github_push_v1",
+    "stem": "github.push.v1",
+    "version": 1
+  },
+  {
+    "family": "github.status",
+    "python_decoder": "decode_github_status",
+    "python_module": "github_status_v1",
+    "stem": "github.status.v1",
+    "version": 1
+  },
+  {
+    "family": "github.check_run",
+    "python_decoder": "decode_github_check_run",
+    "python_module": "github_check_run_v1",
+    "stem": "github.check_run.v1",
+    "version": 1
+  },
+  {
+    "family": "github.check_suite",
+    "python_decoder": "decode_github_check_suite",
+    "python_module": "github_check_suite_v1",
+    "stem": "github.check_suite.v1",
+    "version": 1
+  },
+  {
+    "family": "github.workflow_run",
+    "python_decoder": "decode_github_workflow_run",
+    "python_module": "github_workflow_run_v1",
+    "stem": "github.workflow_run.v1",
+    "version": 1
+  },
+  {
+    "family": "ingress.coverage.advanced",
+    "python_decoder": "decode_coverage_advanced",
+    "python_module": "ingress_coverage_advanced_v1",
+    "stem": "ingress.coverage.advanced.v1",
+    "version": 1
+  },
+  {
+    "family": "ingress.coverage.gap",
+    "python_decoder": "decode_coverage_gap",
+    "python_module": "ingress_coverage_gap_v1",
+    "stem": "ingress.coverage.gap.v1",
+    "version": 1
+  }
+]

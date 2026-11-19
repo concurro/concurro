@@ -1,0 +1,36 @@
+{
+  "data": {
+    "action": "completed",
+    "app_id": 2,
+    "check_suite_id": 16,
+    "conclusion": "success",
+    "delivery_id": "delivery",
+    "external_id": null,
+    "head_sha": "abc",
+    "id": 15,
+    "installation_id": 7,
+    "mapping_revision": 1,
+    "name": "build",
+    "pull_requests": [
+      4
+    ],
+    "received_at": "2026-11-19T10:01:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 8,
+      "owner_id": 9
+    },
+    "sender": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    },
+    "status": "completed"
+  },
+  "id": "c045e324-ee3d-51f1-a8bb-a23bf3d88506",
+  "kind": "fact",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "producer": "ingress",
+  "type": "github.check_run.completed",
+  "version": 1
+}

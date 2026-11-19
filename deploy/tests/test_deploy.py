@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 DEPLOY = Path(__file__).resolve().parents[1]
 SHA = "f190af41f16ed20848cf68c8be386c4d6dfc6d5c"
 MOCK = """#!/bin/bash
@@ -82,6 +84,11 @@ if [[ "$name" == python3 ]]; then
 elif [[ "$name" == sudo ]]; then
   [[ "$1" == -n && "$2" == docker ]] || { echo 'Would request a password' >&2; exit 90; }
   [[ "$FAIL" != sudo ]] || { echo 'sudo: a password is required' >&2; exit 1; }
+  if [[ " $* " == *' sys.exit(not os.path.isfile('* ]]; then
+    [[ "${STAGED:-}" == 1 ]]
+    exit $?
+  fi
+  [[ "$FAIL" != preflight || " $* " != *' --entrypoint python3 '* ]] || exit 1
   # Compose refuses the release's files until its image tag is recorded.
   if [[ "$3" == compose ]] && ! grep -q '^CONCURRO_RELEASE=' "$5"; then
     echo 'required variable CONCURRO_RELEASE is missing a value' >&2
@@ -104,7 +111,14 @@ class HostTests(unittest.TestCase):
     """Run the server helper against passwordless-Docker-only sudo, without a server."""
 
     def run_host(
-        self, phase, failure="", releases=WEB, service_override=False, private_settings=False, installed=False
+        self,
+        phase,
+        failure="",
+        releases=WEB,
+        service_override=False,
+        private_settings=False,
+        installed=False,
+        staged=False,
     ):
         """Return helper output, calls and the release file from an isolated fake host."""
         with tempfile.TemporaryDirectory() as directory:
@@ -126,6 +140,7 @@ class HostTests(unittest.TestCase):
                 SHA=SHA,
                 WEB_SHA="3" * 40,
                 FAIL=failure,
+                STAGED="1" if staged else "0",
             )
             private = root / "private-service"
             private.mkdir(mode=0o700)
@@ -140,6 +155,11 @@ class HostTests(unittest.TestCase):
                 private.chmod(0)
                 if os.geteuid() != 0:
                     self.assertFalse(os.access(private, os.X_OK))
+            config = root / "service-config"
+            if staged:
+                config.mkdir()
+                (config / "settings.json").write_text("{}")
+                (config / "settings.next.json").write_text("{}")
             helper = root / "host.sh"
             # Substitute only the external fixture path; execute the production argument construction.
             helper.write_text(
@@ -147,6 +167,7 @@ class HostTests(unittest.TestCase):
                 .read_text()
                 .replace("/etc/concurro/service/compose.host.yaml", str(private_override))
                 .replace("/etc/concurro/compose.service.host.yaml", str(override))
+                .replace("/etc/concurro/service", str(config) if staged else "/etc/concurro/service")
             )
             command = ["bash", str(helper), phase, SHA]
             if phase == "all":
@@ -268,12 +289,45 @@ class HostTests(unittest.TestCase):
         self.assertIn("password is required", result.stderr)
         self.assertNotIn(" stop service", trace)
 
-    def test_service_records_the_release_pulls_while_stopped_and_starts(self):
+    def test_service_preflights_before_stop_then_pulls_and_starts(self):
         result, trace, releases = self.run_host("service")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(releases, WEB + f"CONCURRO_RELEASE={SHA}\n")
-        self.assertLess(trace.index(" stop service"), trace.index(" pull"))
-        self.assertLess(trace.index(" pull"), trace.index(" up -d"))
+        stop = trace.index(" stop service")
+        self.assertLess(trace.index(f"docker pull ghcr.io/concurro/service:{SHA}"), stop)
+        self.assertLess(trace.index(" --entrypoint python3 "), stop)
+        self.assertLess(stop, trace.index(" pull", stop))
+        self.assertLess(trace.index(" pull", stop), trace.index(" up -d"))
+
+    def test_preflight_mounts_service_runtime_paths_read_only(self):
+        """The target image can validate settings against every service host volume."""
+        result, trace, _ = self.run_host("service")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        service = yaml.safe_load((DEPLOY.parent / "service/compose.yaml").read_text())["services"]["service"]
+        preflight = next(line for line in trace.splitlines() if "from service.settings import load" in line)
+        for volume in service["volumes"]:
+            source, target, *_ = volume.split(":")
+            self.assertIn(f"--volume {source}:{target}:ro", preflight)
+        self.assertLess(trace.index(preflight), trace.index(" stop service"))
+
+    def test_preflight_failure_keeps_running_release(self):
+        """Invalid target settings fail before the old service is stopped or its tag changes."""
+        before = WEB + f"CONCURRO_RELEASE={'2' * 40}\n"
+        result, trace, releases = self.run_host("service", "preflight", releases=before)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(releases, before)
+        self.assertNotIn(" stop service", trace)
+
+    def test_staged_settings_promote_only_after_stop(self):
+        """A format-changing release validates staged settings before the old service stops."""
+        before = WEB + f"CONCURRO_RELEASE={'2' * 40}\n"
+        result, trace, releases = self.run_host("service", releases=before, staged=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("settings.next.json", trace)
+        self.assertLess(trace.index("settings.next.json"), trace.index(" stop service"))
+        self.assertLess(trace.index(" stop service"), trace.index("shutil.copy2"))
+        self.assertNotIn(" --user 0 ", trace)
+        self.assertEqual(releases, WEB + f"CONCURRO_RELEASE={SHA}\n")
 
     def test_service_needs_a_web_release_before_stopping(self):
         result, trace, _ = self.run_host("service", releases="")

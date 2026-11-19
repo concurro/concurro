@@ -1,0 +1,56 @@
+{
+  "action": "review_request_removed",
+  "installation": {
+    "id": 7
+  },
+  "pull_request": {
+    "additions": 2,
+    "base": {
+      "ref": "main",
+      "sha": "def"
+    },
+    "body": null,
+    "deletions": 1,
+    "draft": false,
+    "head": {
+      "ref": "work",
+      "repo": {
+        "full_name": "example/project",
+        "id": 8,
+        "owner": {
+          "id": 9
+        }
+      },
+      "sha": "abc"
+    },
+    "merge_commit_sha": null,
+    "merged": false,
+    "node_id": "P_4",
+    "number": 4,
+    "state": "open",
+    "title": "PR",
+    "updated_at": "2026-11-19T10:00:00Z",
+    "user": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    }
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "requested_reviewer": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  }
+}

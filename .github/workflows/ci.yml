@@ -16,6 +16,55 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  rust:
+    name: Rust workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install cargo-nextest
+        run: cargo install --locked cargo-nextest@0.9.145
+      - name: Install Python reference consumer
+        run: python3 -m pip install -r contracts/python/requirements.txt
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Test Rust workspace
+        run: cargo nextest run --workspace --locked
+      - name: Test event fault injection
+        run: cargo nextest run -p concurro-events-nats --features fault-injection --locked
+
+  contracts:
+    name: Wire contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Python generator and runtime
+        run: python3 -m pip install -r contracts/python/requirements.txt -r contracts/python/requirements-dev.txt
+      - name: Check generated files
+        env:
+          DATAMODEL_CODEGEN: datamodel-codegen
+        run: |
+          cargo run -p concurro-contracts --bin generate --locked
+          bash contracts/python/generate.sh
+          test -z "$(git status --porcelain -- contracts/registry.json contracts/schemas contracts/python/concurro_contracts)"
+      - name: Test Python contract fixtures and compatibility checker
+        env:
+          PYTHONPATH: contracts/python
+        run: python3 -m unittest discover -s contracts/python/tests -v
+      - name: Check schema compatibility
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 contracts/check_compat.py "$BASE_SHA"
+
   checks:
     name: Checks
     runs-on: ubuntu-24.04
@@ -25,7 +74,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
+      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
       - name: Lint Python
         run: ruff check engine service gateway backoffice deploy
       - name: Check Python formatting
@@ -50,11 +99,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0
+      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0
       # One process per test file, one file per core; each file's output is printed whole.
       - name: Run tests
         env:
           SUITE: ${{ matrix.suite }}
+          PYTHONPATH: contracts/python
         run: |
           # shellcheck disable=SC2016
           find "$SUITE/tests" -name 'test*.py' -print0 | xargs -0 -P "$(nproc)" -n 1 sh -c '
@@ -64,7 +114,7 @@ jobs:
   # Release images, tagged with the commit. Hosts pull them; see gateway/README.md.
   images:
     name: Image (${{ matrix.image }})
-    needs: [checks, tests]
+    needs: [checks, tests, rust, contracts]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -77,6 +127,9 @@ jobs:
           - image: service
             context: .
             dockerfile: service/Dockerfile
+          - image: ingress
+            context: .
+            dockerfile: crates/ingress/Dockerfile
           - image: backoffice-api
             context: .
             dockerfile: backoffice/Dockerfile

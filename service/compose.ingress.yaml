@@ -1,0 +1,41 @@
+# Add this override only after the private platform network and ingress settings exist.
+services:
+  service:
+    networks:
+      platform: {}
+
+  ingress:
+    image: ghcr.io/concurro/ingress:${CONCURRO_RELEASE:?}
+    build:
+      context: ..
+      dockerfile: crates/ingress/Dockerfile
+    environment:
+      CONCURRO_INGRESS_CONFIG: /etc/concurro/ingress/settings.toml
+    volumes:
+      - /etc/concurro/ingress:/etc/concurro/ingress:ro
+    networks:
+      edge:
+        aliases:
+          - concurro-ingress
+      platform:
+        aliases:
+          - concurro-ingress-platform
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8789/health"]
+      interval: 30s
+      timeout: 5s
+    restart: unless-stopped
+
+networks:
+  platform:
+    external: true
+    name: platform

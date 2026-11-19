@@ -1,0 +1,59 @@
+{
+  "data": {
+    "action": "review_requested",
+    "delivery_id": "delivery",
+    "installation_id": 7,
+    "mapping_revision": 1,
+    "pull_request": {
+      "additions": 2,
+      "base": {
+        "ref": "main",
+        "sha": "def"
+      },
+      "body": null,
+      "deletions": 1,
+      "draft": false,
+      "head": {
+        "full_name": "example/project",
+        "ref": "work",
+        "repository_id": 8,
+        "sha": "abc"
+      },
+      "merge_commit_sha": null,
+      "merged": false,
+      "node_id": "P_4",
+      "number": 4,
+      "state": "open",
+      "title": "PR",
+      "updated_at": "2026-11-19T10:00:00Z",
+      "user": {
+        "id": 10,
+        "login": "writer",
+        "type": "User"
+      }
+    },
+    "received_at": "2026-11-19T10:01:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 8,
+      "owner_id": 9
+    },
+    "requested_reviewer": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    },
+    "requested_team": null,
+    "sender": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    }
+  },
+  "id": "c045e324-ee3d-51f1-a8bb-a23bf3d88506",
+  "kind": "fact",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "producer": "ingress",
+  "type": "github.pull_request.review_requested",
+  "version": 1
+}

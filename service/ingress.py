@@ -46,6 +46,10 @@ ACTION_LIMIT = 16 * 1024
 log = logging.getLogger("concurro.service")
 
 
+class NotServed(Exception):
+    """The signed delivery belongs to a repository or installation outside this service."""
+
+
 class Ingress:
     """Map verified deliveries from enabled repositories and the App's own installations to tasks."""
 
@@ -92,32 +96,38 @@ class Ingress:
             return 400, "missing delivery"
         try:
             payload = json.loads(body)
-            name = payload["repository"]["full_name"]
-            installation = payload["installation"]["id"]
         except (ValueError, KeyError, TypeError):
             return 400, "malformed payload"
+        try:
+            outcome = self.route(delivery, event, payload, self.list_index)
+        except (KeyError, TypeError, AttributeError, ValueError):
+            return 400, "malformed payload"
+        except NotServed:
+            return 403, "repository or installation not enabled"
+        return (200 if outcome == "duplicate" else 202), outcome
+
+    def route(self, delivery, event, payload, list_index=None, *, strict_list_index=False):
+        """Route a verified delivery; return accepted, duplicate, or ignored."""
+        name = payload["repository"]["full_name"]
+        installation = payload["installation"]["id"]
         repository = self.repositories.get(name.lower()) if isinstance(name, str) else None
         if repository is None or installation != self.installations[repository]:
-            return 403, "repository or installation not enabled"
-        try:
-            # Recorded first, so the list index already finds the PR linked to its task.
-            requested = self.review_request(delivery, repository, event, payload)
-        except (KeyError, TypeError, AttributeError):
-            return 400, "malformed payload"
-        if self.list_index is not None:
+            raise NotServed("repository or installation not enabled")
+        # Recorded first, so the list index already finds the PR linked to its task.
+        requested = self.review_request(delivery, repository, event, payload)
+        if list_index is not None:
             # Before the task filter, so Concurro's own label changes count; never part of the delivery's outcome.
             try:
-                self.list_index.offer(delivery, event, repository, payload)
+                list_index.offer(delivery, event, repository, payload)
             except Exception as error:
+                if strict_list_index:
+                    raise
                 log.warning("list index offer failed: %s", type(error).__name__)
         if requested is not None:
-            return requested
-        try:
-            keys = self.keys(repository, event, payload)
-        except (KeyError, TypeError, AttributeError):
-            return 400, "malformed payload"
+            return requested[1]
+        keys = self.keys(repository, event, payload)
         if not keys:
-            return 202, "ignored"
+            return "ignored"
         source = None
         if event == "issue_comment":
             previous = ((payload.get("changes") or {}).get("body") or {}).get("from")
@@ -151,8 +161,8 @@ class Ingress:
             expectation=expectation,
             sponsorship_hint=source,
         ):
-            return 200, "duplicate"
-        return 202, "accepted"
+            return "duplicate"
+        return "accepted"
 
     def ours(self, user):
         """Whether a webhook `user` object, or a bare login, is a Concurro account."""
@@ -330,6 +340,8 @@ class Handler(BaseHTTPRequestHandler):
     """Deliveries, backoffice commands at `/actions` (internal network only) and a health endpoint."""
 
     def do_POST(self):
+        if self.path.startswith("/v1/deliveries/"):
+            return self.delivery_bridge("POST")
         length = self.headers.get("Content-Length", "")
         if not length.isdecimal():
             return self.reply(411, "length required")
@@ -390,7 +402,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path.startswith("/v1/deliveries"):
+            return self.delivery_bridge("GET")
         self.reply(200, "ok") if self.path == "/health" else self.reply(404, "not found")
+
+    def delivery_bridge(self, method):
+        """Serve the private delivery recovery API when configured."""
+        bridge = self.server.delivery_bridge
+        if bridge is None:
+            return self.reply_json(503, {"error": "delivery bridge is not configured"})
+        try:
+            status, payload = bridge.handle(method, self.path, self.headers.get("Authorization", ""))
+        except Exception as error:
+            log.warning("delivery bridge failed: %s", type(error).__name__)
+            status, payload = 503, {"error": "unavailable"}
+        self.reply_json(status, payload)
 
     def reply(self, status, text):
         data = (text + "\n").encode()
@@ -404,10 +430,11 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("ingress: " + format, *args)
 
 
-def server(ingress, host, port, actions=None, lists=None):
+def server(ingress, host, port, actions=None, lists=None, delivery_bridge=None):
     """An HTTP server for one ingress and, optionally, backoffice commands and list index requests."""
     instance = ThreadingHTTPServer((host, port), Handler)
     instance.ingress = ingress
     instance.actions = actions
     instance.lists = lists
+    instance.delivery_bridge = delivery_bridge
     return instance

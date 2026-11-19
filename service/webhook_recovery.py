@@ -1,6 +1,8 @@
 """Recover failed App deliveries without polling idle issues and pull requests."""
 
+import hmac
 import logging
+import re
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -12,6 +14,40 @@ log = logging.getLogger("concurro.service")
 HISTORY_SECONDS = 3 * 24 * 60 * 60
 PAGE_SIZE = 100
 PENDING = {"pending", "scheduled", "queued", "delivering", "in progress"}
+
+
+class DeliveryBridge:
+    """Serve the App delivery listing and redelivery calls to private ingress."""
+
+    def __init__(self, identity, bearer):
+        """Bind App authentication and the ingress-only bearer."""
+        self.identity, self.bearer = identity, bearer
+
+    def handle(self, method, path, authorization):
+        """Return an authenticated delivery API response."""
+        if not hmac.compare_digest(authorization, "Bearer " + self.bearer):
+            return 401, {"error": "unauthorized"}
+        parsed = urlsplit(path)
+        if method == "GET" and parsed.path == "/v1/deliveries":
+            cursors = parse_qs(parsed.query).get("cursor", [])
+            if len(cursors) > 1:
+                return 400, {"error": "invalid cursor"}
+            query = {"per_page": PAGE_SIZE}
+            if cursors:
+                query["cursor"] = cursors[0]
+            values, headers = self.identity.api(
+                "GET", "app/hook/deliveries?" + urlencode(query), self.identity.app_jwt(), with_headers=True
+            )
+            if not isinstance(values, list):
+                raise IdentityError("invalid webhook delivery listing")
+            following = next_page(headers)
+            next_cursor = parse_qs(urlsplit(following).query)["cursor"][0] if following else None
+            return 200, {"deliveries": values, "next_cursor": next_cursor}
+        match = re.fullmatch(r"/v1/deliveries/([0-9]+)/redeliver", parsed.path)
+        if method == "POST" and match and not parsed.query:
+            self.identity.api("POST", f"app/hook/deliveries/{match[1]}/attempts", self.identity.app_jwt())
+            return 202, {}
+        return 404, {"error": "not found"}
 
 
 def next_page(headers):

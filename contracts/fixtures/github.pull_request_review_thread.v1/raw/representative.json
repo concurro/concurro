@@ -1,0 +1,29 @@
+{
+  "action": "resolved",
+  "installation": {
+    "id": 7
+  },
+  "pull_request": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  },
+  "thread": {
+    "node_id": "T_1",
+    "comments": [
+      {
+        "id": 13
+      }
+    ]
+  }
+}

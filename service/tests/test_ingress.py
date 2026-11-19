@@ -7,6 +7,9 @@ import json
 import threading
 import unittest
 from copy import deepcopy
+from pathlib import Path
+
+from consumer import decode_bus_event
 
 from fixtures import KEY, ServiceFixture
 
@@ -18,6 +21,7 @@ from support import (
 import delegation
 from controller import Outcome
 from service import ingress
+from service.bus import route_event, webhook_payload
 from service.ingress import Ingress
 
 SECRET = b"webhook-secret"
@@ -85,6 +89,24 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         event = comment()
         self.assertEqual(self.deliver("issue_comment", event, "once"), 202)
         self.assertEqual(self.deliver("issue_comment", event, "once"), 200)
+        [item] = self.registry.due(self.clock())
+        self.assertEqual(item.causes, ("webhook:issue_comment",))
+
+    def test_http_and_bus_overlap_wakes_once(self):
+        """The same delivery ID through both paths produces one task cause."""
+        source = (
+            Path(__file__).resolve().parents[2] / "contracts/fixtures/github.issue_comment.v1/valid/representative.json"
+        )
+        wire = json.loads(source.read_text())
+        wire["data"]["delivery_id"] = "overlap"
+        wire["data"]["installation_id"] = INSTALLATION
+        wire["data"]["repository"]["full_name"] = KEY[0]
+        wire["data"]["issue"]["number"] = KEY[1]
+        wire["data"]["issue"]["labels"] = [{"name": "concurro"}]
+        event = decode_bus_event(json.dumps(wire).encode())
+        family, payload = webhook_payload(event)
+        self.assertEqual(self.deliver(family, payload, "overlap"), 202)
+        self.assertEqual(route_event(self.ingress, event), "duplicate")
         [item] = self.registry.due(self.clock())
         self.assertEqual(item.causes, ("webhook:issue_comment",))
 

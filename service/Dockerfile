@@ -7,12 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && git config --system safe.directory /opt/concurro \
     && useradd --system --uid 65533 --user-group --no-create-home --home-dir /nonexistent concurro
 COPY service/requirements.txt /tmp/concurro-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/concurro-requirements.txt
+COPY contracts/python/requirements.txt /tmp/concurro-contracts-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/concurro-requirements.txt -r /tmp/concurro-contracts-requirements.txt
 COPY . /opt/concurro
 # Only the commit itself: anything untracked in the build context is dropped, and the service
 # refuses to start if a tracked file differs.
 RUN git -C /opt/concurro clean -ffdxq && git -C /opt/concurro log -1 --format='Concurro %H'
-ENV PYTHONDONTWRITEBYTECODE=1 GIT_OPTIONAL_LOCKS=0
+ENV PYTHONDONTWRITEBYTECODE=1 GIT_OPTIONAL_LOCKS=0 PYTHONPATH=/opt/concurro/contracts/python
 WORKDIR /opt/concurro
 USER 65533:65533
 ENTRYPOINT ["python3", "-m", "service", "--settings", "/etc/concurro/service/settings.json"]

@@ -1,0 +1,1 @@
+SELECT nonexistent_function_for_migration_test();

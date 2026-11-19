@@ -1,0 +1,42 @@
+{
+  "data": {
+    "action": "completed",
+    "check_suite_id": 16,
+    "conclusion": "success",
+    "created_at": "2026-11-19T10:00:00Z",
+    "delivery_id": "delivery",
+    "event": "push",
+    "head_branch": "main",
+    "head_sha": "abc",
+    "id": 17,
+    "installation_id": 7,
+    "mapping_revision": 1,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "pull_requests": [
+      4
+    ],
+    "received_at": "2026-11-19T10:01:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 8,
+      "owner_id": 9
+    },
+    "run_attempt": 1,
+    "run_started_at": "2026-11-19T10:00:00Z",
+    "sender": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    },
+    "status": "completed",
+    "updated_at": "2026-11-19T10:00:00Z",
+    "workflow_id": 18
+  },
+  "id": "c045e324-ee3d-51f1-a8bb-a23bf3d88506",
+  "kind": "fact",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "producer": "ingress",
+  "type": "github.unknown",
+  "version": 1
+}

@@ -167,6 +167,20 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         baseline = again.db.execute("SELECT baseline FROM coverage WHERE kind = 'issues'").fetchone()[0]
         self.assertEqual(baseline, self.clock.now, "history can no longer cover the gap")
 
+    def test_bus_incompleteness_immediately_invalidates_current_state(self):
+        """An observed loss or parked effect makes a verified list stale at once."""
+        self.index.check({}, self.clock.now)
+        state = lambda: self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"]
+        self.assertEqual(state(), "current")
+        before = len(self.changes())
+        self.index.consumer_completeness(False)
+        self.assertEqual(state(), "catching-up")
+        self.assertGreater(len(self.changes()), before)
+        self.index.check({}, self.clock.now)
+        self.assertEqual(state(), "catching-up")
+        self.index.consumer_completeness(True)
+        self.assertEqual(state(), "current")
+
     def test_a_gap_older_than_history_is_rebaselined_by_the_check_itself(self):
         """The registry's coverage may be intact while this index's checks failed for days."""
         self.index.check({}, self.clock.now)
@@ -408,6 +422,32 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
         self.clock.now += 1
         self.index.offer(guid, event, KEY[0], {"action": action, "issue": document})
         self.index.pending.join()
+
+    def test_bus_apply_commits_or_schedules_rebuild(self):
+        """A bus ack follows a committed row or a durable rebuild request."""
+        self.built()
+        self.index.apply_delivery("sync-good", "issues", KEY[0], {"action": "edited", "issue": issue(7, "concurro")})
+        self.assertIn(7, self.listed())
+        self.assertEqual(
+            self.index.db.execute("SELECT outcome FROM receipts WHERE guid = 'sync-good'").fetchone(),
+            ("applied",),
+        )
+        self.index.apply_delivery("sync-bad", "issues", KEY[0], {"action": "edited", "issue": {"number": 8}})
+        self.assertEqual(
+            self.index.db.execute("SELECT outcome FROM receipts WHERE guid = 'sync-bad'").fetchone(),
+            ("rebuild",),
+        )
+        self.assertIsNotNone(
+            self.index.db.execute(
+                "SELECT wanted FROM coverage WHERE repository = ? AND kind = 'issues'", (KEY[0],)
+            ).fetchone()[0]
+        )
+        self.index.drain()
+        self.assertIsNone(
+            self.index.db.execute(
+                "SELECT wanted FROM coverage WHERE repository = ? AND kind = 'issues'", (KEY[0],)
+            ).fetchone()[0]
+        )
 
     def owed(self):
         return [row[0] for row in self.index.db.execute("SELECT item FROM pending WHERE kind = 'issues' ORDER BY item")]

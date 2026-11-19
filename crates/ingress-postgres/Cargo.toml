@@ -1,0 +1,24 @@
+[package]
+name = "concurro-ingress-postgres"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+concurro-contracts = { path = "../contracts" }
+concurro-db = { path = "../db" }
+concurro-events-postgres = { path = "../events-postgres" }
+concurro-ingress-core = { path = "../ingress-core" }
+sqlx.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+concurro-testkit = { path = "../testkit" }
+serde_json.workspace = true
+tokio.workspace = true
+zstd.workspace = true
+

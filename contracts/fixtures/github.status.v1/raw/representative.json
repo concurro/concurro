@@ -1,0 +1,21 @@
+{
+  "context": "ci",
+  "id": 14,
+  "installation": {
+    "id": 7
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  },
+  "sha": "abc",
+  "state": "success"
+}

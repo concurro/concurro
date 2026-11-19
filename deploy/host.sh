@@ -18,12 +18,16 @@ releases="$HOME/concurro-release.env"
 touch "$releases"
 svc() {
   local files=(-f "$HOME/concurro/service/compose.yaml")
+  if [[ -f /etc/concurro/ingress/settings.toml ]]; then
+    files+=(-f "$HOME/concurro/service/compose.ingress.yaml")
+  fi
   if [[ -f /etc/concurro/compose.service.host.yaml ]]; then
     files+=(-f /etc/concurro/compose.service.host.yaml)
   fi
   sudo -n docker compose --env-file "$releases" "${files[@]}" "$@"
 }
 gw() { sudo -n docker compose --env-file "$releases" -p concurro-gateway -f "$HOME/concurro/gateway/compose.yaml" -f /etc/concurro/gateway/compose.host.yaml "$@"; }
+plat() { sudo -n docker compose -f "$HOME/concurro/deploy/compose.platform.yaml" "$@"; }
 record() {
   { grep -v "^$1=" "$releases" || true; echo "$1=$2"; } > "$releases.tmp"
   mv "$releases.tmp" "$releases"
@@ -59,17 +63,50 @@ if [[ -n "$current" ]] && ! git merge-base --is-ancestor "$current" "$release"; 
   echo "Release $release does not include the deployed $current; refusing to move backward or sideways." >&2
   exit 1
 fi
-# Refuse mismatched explicit pins without changing settings or secrets. The release's own
-# image reads them, so this also works before any release is recorded.
+settings_file=/etc/concurro/service/settings.json
+staged_file=/etc/concurro/service/settings.next.json
+candidate=$settings_file
+# Validate the candidate with the release image before switching the checkout or stopping services.
+sudo -n docker pull "ghcr.io/concurro/service:$release"
+if sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
+  --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+  'import os, sys; sys.exit(not os.path.isfile("/etc/concurro/service/settings.next.json"))'; then
+  candidate=$staged_file
+fi
 sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
   --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
-  'import json, sys; s=json.load(open("/etc/concurro/service/settings.json")); assert s.get("engine") in (None, sys.argv[1]), "Service settings have a different engine pin; update it explicitly before deploying."' "$release"
+  'import json, sys; s=json.load(open(sys.argv[2])); assert s.get("engine") in (None, sys.argv[1]), "Service settings have a different engine pin; update it explicitly before deploying."' "$release" "$candidate"
+sudo -n docker run --rm --network none \
+  --volume /etc/concurro/service:/etc/concurro/service:ro \
+  --volume /var/lib/concurro/service:/var/lib/concurro/service:ro \
+  --volume /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics:ro \
+  --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+  'from service.settings import load; from service.__main__ import host_checks; import sys; s=host_checks(load(sys.argv[2])); assert s.engine == sys.argv[1]' "$release" "$candidate"
 git switch --detach "$release"
-if [[ "$phase" == all ]]; then
+if [[ -z "$current" && "$phase" == all ]]; then
   record CONCURRO_WEB_RELEASE "$web_release"
 fi
-record CONCURRO_RELEASE "$release"
-svc stop service
+if [[ -z "$current" ]]; then
+  record CONCURRO_RELEASE "$release"
+fi
+if [[ -f /etc/concurro/ingress/settings.toml ]]; then
+  svc stop service ingress
+  plat config --quiet
+  plat up -d --wait --wait-timeout 120
+else
+  svc stop service
+fi
+if [[ "$candidate" == "$staged_file" ]]; then
+  sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service \
+    --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+    'import os, shutil; source, target = "/etc/concurro/service/settings.next.json", "/etc/concurro/service/settings.json"; shutil.copy2(target, target + ".previous"); os.replace(source, target)'
+fi
+if [[ -n "$current" ]]; then
+  if [[ "$phase" == all ]]; then
+    record CONCURRO_WEB_RELEASE "$web_release"
+  fi
+  record CONCURRO_RELEASE "$release"
+fi
 gw config --quiet
 svc config --quiet
 gw pull

@@ -20,6 +20,7 @@ from policy import Blocked
 
 from . import control, credential_order, ingress, retro, settings as settings_module, user_grant
 from .actions import Actions
+from .bus import BusWorker
 from .cutover import Cutover
 from .diagnostics import Store
 from .errors import GatewayStop, RegistryError
@@ -33,7 +34,7 @@ from .settings import CHECKOUT, SettingsError
 from .shadow import Metadata, Shadow
 from .targets import review_targets, verify
 from .transport import Transport
-from .webhook_recovery import Recovery
+from .webhook_recovery import DeliveryBridge, Recovery
 from .worker import Worker, operator
 
 POLL_SECONDS = 300
@@ -179,27 +180,35 @@ class Daemon:
             settings.targets,
             projection=worker.sponsorship.view,
         )
+        self.ingress = ingress.Ingress(
+            secret,
+            self.registry,
+            installations,
+            identities,
+            issue_repositories=issue_repositories,
+            command_comment=delegation.marked,
+            list_index=self.list_index,
+            reviewer=reviewer,
+            review_targets=reviews,
+        )
         self.http = ingress.server(
-            ingress.Ingress(
-                secret,
-                self.registry,
-                installations,
-                identities,
-                issue_repositories=issue_repositories,
-                command_comment=delegation.marked,
-                list_index=self.list_index,
-                reviewer=reviewer,
-                review_targets=reviews,
-            ),
+            self.ingress,
             *self.listen,
             actions=actions,
             lists=Lists(self.list_index, lists_token),
+            delivery_bridge=DeliveryBridge(self.identity, read_token(settings.delivery_recovery_bearer_path))
+            if settings.delivery_recovery_bearer_path
+            else None,
         )
         self.control = control.server(
             control.Control(self.registry, self.reconciler, cutover, worker.evaluate, gateway), settings.state_dir
         )
         for name, target in (("ingress", self.http.serve_forever), ("control", self.control.serve_forever)):
             threading.Thread(target=target, name=name, daemon=True).start()
+        self.bus_worker = None
+        if settings.bus_url is not None:
+            self.bus_worker = BusWorker(settings, self.ingress, self.list_index, self.reconciler, self.stopping)
+            self.bus_worker.start()
         log.info("serving %d repositories as %s on %s:%d", len(repositories), bot_login, *self.listen)
 
     def run(self):
@@ -231,6 +240,8 @@ class Daemon:
         self.http.shutdown()
         self.control.shutdown()
         self.scheduler.shutdown()
+        if self.bus_worker is not None:
+            self.bus_worker.thread.join(timeout=5)
         self.list_index.close()
         self.identity.close()
         self.registry.close()
@@ -297,6 +308,17 @@ def parser():
         "authorize-reviewer", help="authorize the configured reviewer account for the App and store its grant"
     )
     commands.add_parser("status", help="show every task the registry knows")
+    parked = commands.add_parser("parked", help="inspect or resolve parked GitHub bus events")
+    parked_commands = parked.add_subparsers(dest="parked_action", required=True)
+    parked_commands.add_parser("list")
+    parked_commands.add_parser("show").add_argument("parking_id", type=int)
+    replay = parked_commands.add_parser("replay")
+    replay.add_argument("parking_id", type=int)
+    replay.add_argument("operator")
+    discard = parked_commands.add_parser("discard")
+    discard.add_argument("parking_id", type=int)
+    discard.add_argument("operator")
+    discard.add_argument("reason")
     commands.add_parser("reconcile-once", help="poll every target now")
     commands.add_parser(
         "credential-order-manifest",
@@ -351,6 +373,21 @@ def main():
             Registry.open(settings.state_dir, settings.registry_id, initialize=True).close()
             print("initialized the registry in", settings.state_dir)
             return 0
+        if arguments.command == "parked":
+            from consumer import Consumer
+
+            consumer = Consumer(settings.state_dir / "github-bus.sqlite", "service", 5)
+            try:
+                result = consumer.parked_command(
+                    arguments.parked_action,
+                    getattr(arguments, "parking_id", None),
+                    getattr(arguments, "operator", None),
+                    getattr(arguments, "reason", None),
+                )
+            finally:
+                consumer.close()
+            print(json.dumps(result, indent=2))
+            return 0
         if arguments.command == "credential-order-manifest":
             registry = Registry.inspect(settings.state_dir)
             try:
@@ -375,7 +412,16 @@ def main():
             print(retro.describe(run))
             return 0
         reply = control.request(settings.state_dir, command(arguments))
-    except (SettingsError, StartupError, RegistryError, IdentityError, Blocked, ConnectionError, GatewayStop) as error:
+    except (
+        SettingsError,
+        StartupError,
+        RegistryError,
+        IdentityError,
+        Blocked,
+        ConnectionError,
+        GatewayStop,
+        ValueError,
+    ) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps(reply.get("result") if reply["ok"] else {"error": reply["error"]}, indent=2))

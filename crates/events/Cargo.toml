@@ -1,0 +1,10 @@
+[package]
+name = "concurro-events"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+concurro-contracts = { path = "../contracts" }
+concurro-db = { path = "../db" }
+serde.workspace = true

@@ -1,0 +1,11 @@
+{
+  "id": "019acb8d-c0c0-7000-8000-000000000001",
+  "type": "ingress.coverage.gap",
+  "version": 1,
+  "kind": "fact",
+  "producer": "ingress",
+  "occurred_at": "2026-11-19T00:05:00Z",
+  "data": {
+    "covered_until": "2026-11-19T00:00:00Z"
+  }
+}

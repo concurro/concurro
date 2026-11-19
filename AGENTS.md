@@ -12,6 +12,19 @@ Third-party Python packages are allowed; pin exact versions in the component's
 `requirements.txt`. Committed material names the deployment host only as `<host>`, never
 its address.
 
+## Rust and Python development
+
+- Write idiomatic modern Rust. Apply DRY, SOLID and KISS pragmatically; search for existing
+  behavior before adding functions, types or macros. Reassess a module near 1,000 lines
+  for clearer ownership, without treating that size as a hard limit.
+- Keep crates focused on reusable responsibilities and encapsulate their APIs. Put SQL and
+  SQLx in storage crates; use `concurro-db`'s unit of work and the shared event crates for
+  common transactions and transport. Document new public APIs and non-obvious internals.
+- Prefer `cargo nextest` for tests, module-level `use` imports, and `std::assert_matches!`
+  for match assertions. Design module APIs and re-exports instead of `pub(foo)` visibility.
+- Add no new Python features except explicit Rust-rewrite migration bridges or maintenance
+  of Python components retained by the current phase.
+
 ## Documentation
 
 For changes affecting documented behavior, configuration, interfaces, architecture or

@@ -19,6 +19,20 @@ from service.registry import DATABASE, PullRequest, Registry
 class StartupTests(ServiceFixture, unittest.TestCase):
     """Opening the state directory."""
 
+    def test_schema4_upgrade_preserves_queue_and_receipts(self):
+        """Forward migration restores coverage tables without replacing queued work."""
+        self.registry.receive("old", [KEY], "issue_comment")
+        self.registry.close()
+        with sqlite3.connect(Path(self.directory.name, DATABASE)) as db:
+            db.execute("DROP TABLE webhook_recovery")
+            db.execute("DROP TABLE observations")
+            db.execute("UPDATE meta SET value = '4' WHERE name = 'schema'")
+        self.registry = self.open()
+        self.assertFalse(self.registry.receive("old", [KEY], "issue_comment"))
+        self.assertEqual([item.key for item in self.registry.due(self.clock())], [KEY])
+        with sqlite3.connect(Path(self.directory.name, DATABASE)) as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE name = 'schema'").fetchone(), ("9",))
+
     def test_second_process_is_refused(self):
         """The state directory lock admits one writer; it is free again once released."""
         with self.assertRaisesRegex(RegistryError, "in use"):

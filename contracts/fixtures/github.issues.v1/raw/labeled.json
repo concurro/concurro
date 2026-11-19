@@ -1,0 +1,41 @@
+{
+  "action": "labeled",
+  "installation": {
+    "id": 7
+  },
+  "issue": {
+    "assignees": [],
+    "body": null,
+    "created_at": "2026-11-18T10:00:00Z",
+    "labels": [
+      {
+        "name": "concurro"
+      }
+    ],
+    "number": 4294967301,
+    "state": "open",
+    "state_reason": null,
+    "title": "Build a thing",
+    "updated_at": "2026-11-18T10:05:00Z",
+    "user": {
+      "id": 4294967300,
+      "login": "writer",
+      "type": "Enterprise"
+    }
+  },
+  "label": {
+    "name": "concurro"
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 4294967303,
+    "owner": {
+      "id": 4294967304
+    }
+  },
+  "sender": {
+    "id": 4294967300,
+    "login": "writer",
+    "type": "User"
+  }
+}

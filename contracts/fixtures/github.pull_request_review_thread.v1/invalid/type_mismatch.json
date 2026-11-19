@@ -1,0 +1,32 @@
+{
+  "data": {
+    "action": "resolved",
+    "delivery_id": "delivery",
+    "installation_id": 7,
+    "mapping_revision": 1,
+    "pull_request": {
+      "number": 4
+    },
+    "received_at": "2026-11-19T10:01:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 8,
+      "owner_id": 9
+    },
+    "sender": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    },
+    "thread": {
+      "first_comment_id": 13,
+      "node_id": "T_1"
+    }
+  },
+  "id": "c045e324-ee3d-51f1-a8bb-a23bf3d88506",
+  "kind": "fact",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "producer": "ingress",
+  "type": "github.unknown",
+  "version": 1
+}

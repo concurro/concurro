@@ -34,6 +34,14 @@ FIELDS = {
     "vault_metadata_url",
     "vault_service_token_path",
     "lists_token_path",
+    "delivery_recovery_bearer_path",
+    "bus_url",
+    "bus_credentials_path",
+    "bus_replay_url",
+    "bus_replay_bearer_path",
+    "bus_max_attempts",
+    "bus_backoff_seconds",
+    "bus_coverage_authoritative",
     "reviewer",
 }
 OPTIONAL = {
@@ -43,6 +51,14 @@ OPTIONAL = {
     "vault_metadata_url",
     "vault_service_token_path",
     "lists_token_path",
+    "delivery_recovery_bearer_path",
+    "bus_url",
+    "bus_credentials_path",
+    "bus_replay_url",
+    "bus_replay_bearer_path",
+    "bus_max_attempts",
+    "bus_backoff_seconds",
+    "bus_coverage_authoritative",
     "reviewer",
 }
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
@@ -114,6 +130,16 @@ class Settings:
     vault_service_token_path: Path | None = None  # Separate service bearer, never a user token.
     # The backoffice's bearer for the list index endpoints; without it they are refused.
     lists_token_path: Path | None = None
+    # Bearer used only by Rust ingress to list and redeliver App webhook attempts.
+    delivery_recovery_bearer_path: Path | None = None
+    # Optional during the dual HTTP and bus release.
+    bus_url: str | None = None
+    bus_credentials_path: Path | None = None
+    bus_replay_url: str | None = None
+    bus_replay_bearer_path: Path | None = None
+    bus_max_attempts: int = 5
+    bus_backoff_seconds: int = 1
+    bus_coverage_authoritative: bool = False
     # Enables standalone PR reviews; without it review requests are ignored.
     reviewer: Reviewer | None = None
 
@@ -214,6 +240,40 @@ def load(path):
         lists_token, lists_identity = secret(data["lists_token_path"], "lists_token_path")
         require(lists_identity not in identities, "lists_token_path")
         identities.add(lists_identity)
+    delivery_recovery_bearer = None
+    if "delivery_recovery_bearer_path" in data:
+        delivery_recovery_bearer, bridge_identity = secret(
+            data["delivery_recovery_bearer_path"], "delivery_recovery_bearer_path"
+        )
+        require(bridge_identity not in identities, "delivery_recovery_bearer_path")
+        identities.add(bridge_identity)
+    bus_credentials = bus_replay_bearer = None
+    bus_url, bus_replay_url = data.get("bus_url"), data.get("bus_replay_url")
+    require(
+        all(
+            value is None
+            for value in (bus_url, bus_replay_url, data.get("bus_credentials_path"), data.get("bus_replay_bearer_path"))
+        )
+        or all(
+            value is not None
+            for value in (bus_url, bus_replay_url, data.get("bus_credentials_path"), data.get("bus_replay_bearer_path"))
+        ),
+        "bus",
+    )
+    if bus_url is not None:
+        require(isinstance(bus_url, str) and re.fullmatch(r"nats://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_url), "bus_url")
+        require(
+            isinstance(bus_replay_url, str) and re.fullmatch(r"https?://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_replay_url),
+            "bus_replay_url",
+        )
+        bus_credentials, credentials_identity = secret(data["bus_credentials_path"], "bus_credentials_path")
+        require(credentials_identity not in identities, "bus_credentials_path")
+        identities.add(credentials_identity)
+        bus_replay_bearer, replay_identity = secret(data["bus_replay_bearer_path"], "bus_replay_bearer_path")
+        require(replay_identity not in identities, "bus_replay_bearer_path")
+        identities.add(replay_identity)
+    require(isinstance(data.get("bus_coverage_authoritative", False), bool), "bus_coverage_authoritative")
+    require(not data.get("bus_coverage_authoritative", False) or bus_url is not None, "bus_coverage_authoritative")
     reviewer = None
     if "reviewer" in data:
         entry = data["reviewer"]
@@ -248,6 +308,14 @@ def load(path):
         vault_metadata_url=metadata_url,
         vault_service_token_path=metadata_token,
         lists_token_path=lists_token,
+        delivery_recovery_bearer_path=delivery_recovery_bearer,
+        bus_url=bus_url,
+        bus_credentials_path=bus_credentials,
+        bus_replay_url=bus_replay_url,
+        bus_replay_bearer_path=bus_replay_bearer,
+        bus_max_attempts=integer(data.get("bus_max_attempts", 5), "bus_max_attempts"),
+        bus_backoff_seconds=integer(data.get("bus_backoff_seconds", 1), "bus_backoff_seconds"),
+        bus_coverage_authoritative=data.get("bus_coverage_authoritative", False),
         reviewer=reviewer,
     )
 

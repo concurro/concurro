@@ -8,7 +8,7 @@ from fixtures import KEY, ServiceFixture
 
 from service.identity import Identity, IdentityError
 from service.transport import Response
-from service.webhook_recovery import HISTORY_SECONDS, Recovery, next_page
+from service.webhook_recovery import HISTORY_SECONDS, DeliveryBridge, Recovery, next_page
 
 
 class DeliveryAPI:
@@ -76,6 +76,25 @@ class RecoveryTests(ServiceFixture, unittest.TestCase):
         self.api = DeliveryAPI()
         self.reconciler = Mock(repositories=(KEY[0],), cleanup=None)
         self.recovery = Recovery(self.api, self.registry, self.reconciler, {KEY[0]: 42}, clock=self.clock)
+
+    def test_private_delivery_bridge_pages_and_redelivers(self):
+        """Ingress receives every page and can request an App redelivery with its bearer."""
+        bridge = DeliveryBridge(self.api, "bridge-secret")
+        self.api.items = [delivery(1), delivery(2), delivery(3)]
+        self.assertEqual(bridge.handle("GET", "/v1/deliveries", "Bearer wrong")[0], 401)
+        status, first = bridge.handle("GET", "/v1/deliveries", "Bearer bridge-secret")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in first["deliveries"]], [1, 2])
+        self.assertEqual(first["next_cursor"], "2")
+        status, second = bridge.handle("GET", "/v1/deliveries?cursor=2", "Bearer bridge-secret")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in second["deliveries"]], [3])
+        self.assertIsNone(second["next_cursor"])
+        self.assertEqual(
+            bridge.handle("POST", "/v1/deliveries/3/redeliver", "Bearer bridge-secret"),
+            (202, {}),
+        )
+        self.assertIn(("POST", "app/hook/deliveries/3/attempts"), self.api.requests)
 
     def test_bootstrap_then_twelve_checks_per_idle_hour(self):
         """An empty delivery list costs one request per check, independent of task count."""

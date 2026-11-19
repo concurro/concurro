@@ -1,0 +1,11 @@
+[package]
+name = "concurro-testkit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+concurro-db = { path = "../db" }
+sqlx.workspace = true
+testcontainers.workspace = true
+tokio.workspace = true

@@ -1,0 +1,42 @@
+port: 4222
+http_port: 8222
+max_payload: 32MB
+
+jetstream {
+  store_dir: /data
+}
+
+accounts {
+  CONCURRO: {
+    jetstream: enabled
+    users: [
+      {
+        user: ingress
+        password: "REPLACE_WITH_INGRESS_BCRYPT_HASH"
+        permissions: {
+          publish: { allow: [
+            "github.>", "ingress.>",
+            "$JS.API.STREAM.INFO.GITHUB",
+            "$JS.API.STREAM.CREATE.GITHUB",
+            "$JS.API.STREAM.UPDATE.GITHUB"
+          ] }
+          subscribe: { allow: ["_INBOX.>"] }
+        }
+      },
+      {
+        user: service
+        password: "REPLACE_WITH_SERVICE_BCRYPT_HASH"
+        permissions: {
+          publish: { allow: [
+            "$JS.API.STREAM.INFO.GITHUB",
+            "$JS.API.CONSUMER.INFO.GITHUB.service",
+            "$JS.API.CONSUMER.CREATE.GITHUB.service",
+            "$JS.API.CONSUMER.MSG.NEXT.GITHUB.service",
+            "$JS.ACK.>"
+          ] }
+          subscribe: { allow: ["_INBOX.>"] }
+        }
+      }
+    ]
+  }
+}

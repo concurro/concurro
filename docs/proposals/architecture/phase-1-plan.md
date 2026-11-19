@@ -1,6 +1,7 @@
 # Plan: phase 1, contracts and platform
 
-**Status: plan, not started.**
+**Status: implementation complete and locally verified; no production deployment.**
+See the [phase 1 progress record](../../rust-rewrite-progress.md) for exit-test evidence.
 
 Phase 1 of the [architecture review](../architecture.md#migration) builds what every Rust
 service stands on: the contract types and their generated schemas and Python models, the
@@ -73,9 +74,9 @@ These are taken here; each is cheap to revisit before code depends on it.
   ([contracts](../contracts.md#identifiers)).
 - **Telemetry is `tracing`** with `tracing-subscriber` JSON logs to stdout; exporting
   traces is left until a service needs it.
-- **Configuration** is one TOML file per service, named by an environment variable, plus
-  secrets read from files named in it. It's parsed into typed settings and validated at
-  start.
+- **Configuration** uses the `config` crate to load one TOML file per service, named by
+  an environment variable, plus secrets read from files named in it. Typed settings
+  are validated at start.
 - **The job queue is `graphile_worker`** (0.14.2, November 2026), subject to the
   [spike](#job-queue). It's built on sqlx 0.9 and tokio 1.54, and enqueues inside an
   existing transaction (`WorkerUtils::with_executor`). `apalis-postgres` (1.1.0) doesn't

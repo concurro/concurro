@@ -180,6 +180,7 @@ class ListIndex:
         self.deferred = set()
         # Whether a history check has completed in this process; before one, nothing is current.
         self.checked = False
+        self.consumer_complete = True
         self.db = sqlite3.connect(Path(root) / DATABASE, isolation_level=None, check_same_thread=False)
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -289,6 +290,21 @@ class ListIndex:
         kind = EVENT_KINDS.get(event)
         if kind:
             self.put(("delivery", guid, repository, kind, projected(event, payload)))
+
+    def apply_delivery(self, guid, event, repository, payload):
+        """Commit a bus delivery before ack, rebuilding a list if projection fails."""
+        kind = EVENT_KINDS.get(event)
+        if kind is None:
+            return
+        try:
+            data = projected(event, payload)
+        except (KeyError, TypeError, ValueError):
+            with self.transaction() as db:
+                if self.receive(db, guid, "rebuild"):
+                    self.rebase(db, repository, kind, self.clock())
+            return
+        with self.transaction() as db:
+            self.deliver(db, guid, repository, kind, data, "applied")
 
     def signal(self, repository, kind, item=None):
         """Queue a change the service itself made to a list; `item` names what changed when one thing did."""
@@ -597,6 +613,45 @@ class ListIndex:
                 for kind in kinds:
                     self.rebase(db, name, kind, now)
 
+    def coverage_gap(self):
+        """Make GitHub-derived lists stale and request a fresh baseline after a gap."""
+        before = self.states()
+        with self.transaction() as db:
+            for repository in self.names.values():
+                for kind in set(EVENT_KINDS.values()):
+                    self.rebase(db, repository, kind, self.clock())
+            db.execute("UPDATE coverage SET verified = NULL WHERE kind IN ('runs', 'issues', 'pulls')")
+        self.state_changed(before)
+
+    def consumer_completeness(self, complete):
+        """Reflect whether the bus has applied all work needed for producer coverage."""
+        with self.lock:
+            if self.consumer_complete == complete:
+                return
+            before = self.states()
+            self.consumer_complete = complete
+            self.state_changed(before)
+
+    def covered(self, covered_until):
+        """Mark all list kinds verified by an applied producer coverage fact."""
+        at = epoch(covered_until)
+        if at is None:
+            raise ValueError("invalid coverage time")
+        before = self.states()
+        now = self.clock()
+        with self.transaction() as db:
+            for repository, kind, baseline, verified in db.execute(
+                "SELECT repository, kind, baseline, verified FROM coverage"
+            ).fetchall():
+                if at - (baseline if verified is None else verified) >= HISTORY_SECONDS:
+                    self.rebase(db, repository, kind, now)
+            db.execute("UPDATE coverage SET verified = MAX(COALESCE(verified, 0), ?)", (at,))
+            db.execute("DELETE FROM receipts WHERE recorded < ?", (now - RETAINED_SECONDS,))
+            db.execute("DELETE FROM changes WHERE changed < ?", (now - CHANGES_SECONDS,))
+        self.deferred.clear()
+        self.checked = True
+        self.state_changed(before)
+
     def check(self, groups, started, detail=None):
         """Repair deliveries GitHub's history lists and this index has no receipt for.
 
@@ -881,7 +936,13 @@ class ListIndex:
             overdue = now - oldest.get((repository, kind), now) > FRESH_SECONDS
             if mode == "rows" and (built is None or wanted is not None):
                 state = "failed" if failed else "rebuilding"
-            elif self.checked and verified is not None and now - verified <= FRESH_SECONDS and not overdue:
+            elif (
+                self.checked
+                and self.consumer_complete
+                and verified is not None
+                and now - verified <= FRESH_SECONDS
+                and not overdue
+            ):
                 state = "current"
             else:
                 state = "catching-up"

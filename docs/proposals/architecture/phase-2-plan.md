@@ -110,6 +110,7 @@ package.
 | ---- | ---- | ---- |
 | Bad or missing signature | `401` | Nothing |
 | Body over 25 MB (GitHub's cap) | `413` | Nothing |
+| All eight webhook slots stay occupied for 500 ms | `503` | Nothing; [recovery](#recovery) can redeliver while GitHub retains the failed attempt |
 | `ping` | `200` | Nothing |
 | Signed, no `X-GitHub-Delivery` | `400` | Nothing |
 | Delivery ID already received | `200 duplicate` | Nothing new |
@@ -119,6 +120,8 @@ package.
 | Signed, mapping fails (a field ingress needs is missing or mistyped) | `202` | Receipt and payload, outcome `unmappable` with the error |
 | Signed and mapped | `202` | Receipt, payload and the event in the outbox, outcome `published` |
 
+- The slot wait is bounded to 500 ms, then body reading to five seconds. Neither
+  deadline cancels an admitted handler or its database commit.
 - **The receipt, raw payload and event commit in one transaction** (`record_delivery`,
   with the lock order in [coverage](#coverage)), and ingress answers only after the
   commit. A delivery GitHub saw succeed is therefore
@@ -279,9 +282,11 @@ check and asks ingress to replay:
   coverage facts alike, is an outbox row with the position JetStream gave it. Selection is
   by position, never by a clock, so neither clock skew between hosts nor a row received
   long ago and published late can hide a message.
-- **`POST /v1/replays {stream_created, floor}`** on ingress's internal listener, with a
-  bearer per consumer, takes the consumer's acknowledgement floor (the stream's creation
-  time and a sequence) and re-queues, in batches and exactly as first published (same
+- **`POST /v1/replays {floor: {stream_created, sequence}, target_created}`** on ingress's
+  internal listener, with a bearer per consumer, takes the consumer's acknowledgement
+  floor and the target stream's exact creation string. A new target starts a fresh replay
+  horizon; a retry for the same target resumes its durable cursor. It re-queues, in batches
+  and exactly as first published (same
   message, same event ID), every row whose position is after it: a later sequence in the
   floor's generation, or any position in a later generation. A floor whose generation
   ingress doesn't know replays every retained row.

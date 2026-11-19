@@ -1,0 +1,33 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "app": {
+      "slug": "checks"
+    },
+    "conclusion": "success",
+    "head_sha": "abc",
+    "id": 16,
+    "latest_check_runs_count": 1,
+    "pull_requests": [
+      {
+        "number": 4
+      }
+    ],
+    "status": "completed"
+  },
+  "installation": {
+    "id": 7
+  },
+  "repository": {
+    "full_name": "example/project",
+    "id": 8,
+    "owner": {
+      "id": 9
+    }
+  },
+  "sender": {
+    "id": 10,
+    "login": "writer",
+    "type": "User"
+  }
+}

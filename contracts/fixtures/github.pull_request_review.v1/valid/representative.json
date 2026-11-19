@@ -1,0 +1,41 @@
+{
+  "data": {
+    "action": "submitted",
+    "delivery_id": "delivery",
+    "installation_id": 7,
+    "mapping_revision": 1,
+    "pull_request": {
+      "head_sha": "abc",
+      "number": 4
+    },
+    "received_at": "2026-11-19T10:01:00Z",
+    "repository": {
+      "full_name": "example/project",
+      "id": 8,
+      "owner_id": 9
+    },
+    "review": {
+      "body": "LGTM",
+      "commit_id": "abc",
+      "id": 12,
+      "state": "approved",
+      "submitted_at": "2026-11-19T10:00:00Z",
+      "user": {
+        "id": 10,
+        "login": "writer",
+        "type": "User"
+      }
+    },
+    "sender": {
+      "id": 10,
+      "login": "writer",
+      "type": "User"
+    }
+  },
+  "id": "c045e324-ee3d-51f1-a8bb-a23bf3d88506",
+  "kind": "fact",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "producer": "ingress",
+  "type": "github.pull_request_review.submitted",
+  "version": 1
+}

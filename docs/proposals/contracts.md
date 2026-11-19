@@ -89,6 +89,11 @@ These apply to target contracts. Bridges keep their own.
 | Event ID | UUIDv7, or UUIDv5 | Producer | UUIDv5 where the ID must be reproducible: a GitHub event's, of its delivery ID and mapping revision, so a re-mapping is a new event and a redelivery isn't; and where two producers can publish the same event (turn events across the phase 5 handover), of `(entity, type)` for a fact and `(entity, type, revision)` for a snapshot |
 | Delivery ID | GitHub GUID | GitHub | Ingress's deduplication key |
 
+GitHub event IDs use UUIDv5 with the RFC 4122 OID namespace
+(`6ba7b812-9dad-11d1-80b4-00c04fd430c8`) and the UTF-8 name
+`<delivery_id>:<mapping_revision>`. For example, `delivery-1:1` produces
+`669a0c7f-922d-5b0c-a579-4e19e2807e31`.
+
 ### Event envelope
 
 Every event on the bus is a JSON object:
@@ -138,6 +143,13 @@ The NATS subject is the architecture's (`task.<task>.<event>` and so on). The me
   publishes (`github.issues` covers `github.issues.labeled` and the other actions). Its
   events are published in both versions under the same event ID until every consumer has
   moved. A consumer reads one version.
+- **Owned work survives a version switch.** Keep the old decoder or ship an audited
+  conversion until retries, holds and parkings from that version are resolved. A consumer
+  skips a fresh unsupported copy, but parks an unsupported event it already owns with
+  its original bytes and version reason. An operator can discard that parking or replay
+  it after a corrective binary restores the decoder. A readable newer-version copy
+  with the same event ID cannot bypass that parking: the consumer skips it while the
+  parking is open, during operator replay, and if the old bytes park again.
 - **CI enforces it:** generated schemas are committed, and a change that isn't additive
   within a version fails the build.
 

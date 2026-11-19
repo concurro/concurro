@@ -1,0 +1,5 @@
+.git
+.worktrees
+target
+**/__pycache__
+**/.venv

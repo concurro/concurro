@@ -1,0 +1,240 @@
+{
+  "$defs": {
+    "Actor": {
+      "description": "The actor responsible for a delivery.",
+      "properties": {
+        "id": {
+          "description": "GitHub actor ID.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        },
+        "login": {
+          "description": "GitHub login.",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ActorKind",
+          "description": "Actor category, open to future GitHub values."
+        }
+      },
+      "required": [
+        "id",
+        "login",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ActorKind": {
+      "type": "string",
+      "x-concurro-open": true
+    },
+    "EventId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "EventKind": {
+      "description": "The application rule for an event on the bus.",
+      "oneOf": [
+        {
+          "const": "fact",
+          "description": "An independently applicable occurrence.",
+          "type": "string"
+        },
+        {
+          "const": "snapshot",
+          "description": "The complete state at one entity revision.",
+          "type": "string"
+        }
+      ]
+    },
+    "GithubEvent": {
+      "description": "Fields shared by every mapped GitHub delivery.",
+      "properties": {
+        "action": {
+          "description": "Open GitHub action name, absent for push and status.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "app_slug": {
+          "description": "Owning App slug, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conclusion": {
+          "description": "Final conclusion, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delivery_id": {
+          "description": "GitHub delivery GUID.",
+          "type": "string"
+        },
+        "head_sha": {
+          "description": "Head commit.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Check suite ID.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "installation_id": {
+          "description": "App installation ID.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "latest_check_runs_count": {
+          "description": "Number of latest check runs.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mapping_revision": {
+          "description": "Mapping code revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pull_requests": {
+          "description": "Related PR numbers.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "received_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Database receipt time."
+        },
+        "repository": {
+          "$ref": "#/$defs/Repository",
+          "description": "Repository identity."
+        },
+        "sender": {
+          "$ref": "#/$defs/Actor",
+          "description": "Actor responsible for the delivery."
+        },
+        "status": {
+          "description": "Current status.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "mapping_revision",
+        "received_at",
+        "installation_id",
+        "repository",
+        "sender",
+        "action",
+        "id",
+        "status",
+        "conclusion",
+        "head_sha",
+        "app_slug",
+        "latest_check_runs_count",
+        "pull_requests"
+      ],
+      "type": "object"
+    },
+    "Repository": {
+      "description": "GitHub repository identity used for routing.",
+      "properties": {
+        "full_name": {
+          "description": "GitHub's owner and repository name.",
+          "type": "string"
+        },
+        "id": {
+          "description": "GitHub repository ID.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        },
+        "owner_id": {
+          "description": "GitHub owner ID.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "owner_id",
+        "full_name"
+      ],
+      "type": "object"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A versioned event and its typed payload.",
+  "properties": {
+    "causation": {
+      "description": "Source request or event, when known.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data": {
+      "$ref": "#/$defs/GithubEvent",
+      "description": "Contract payload."
+    },
+    "entity": {
+      "type": "null"
+    },
+    "id": {
+      "$ref": "#/$defs/EventId",
+      "description": "Stable event identifier across redeliveries and schema versions."
+    },
+    "kind": {
+      "const": "fact"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Producer transaction time."
+    },
+    "producer": {
+      "description": "Service that committed this event.",
+      "type": "string"
+    },
+    "revision": {
+      "type": "null"
+    },
+    "type": {
+      "pattern": "^github\\.check_suite(?:\\.[^.\\s*>\\u0000-\\u001f\\u007f-\\u009f]+)?$",
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "version",
+    "kind",
+    "producer",
+    "occurred_at",
+    "data"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}
