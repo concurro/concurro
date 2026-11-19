@@ -706,8 +706,8 @@ three-day delivery history use state reconciliation. The existing App JWT signs 
 requests; no installation-token permission expansion is required.
 
 The phase 2 first release adds a bus consumer and an App-delivery API while this webhook
-path remains active. [Platform setup](../docs/platform.md#production-ingress) describes
-PostgreSQL, JetStream, ingress, backups and the later edge switch. After the switch,
+path remains active. The [Compose example](../docs/platform.md#compose-ingress-example)
+describes PostgreSQL, JetStream, ingress, backups and the later edge switch. After the switch,
 ingress owns delivery receipt; release 2 retires the Python webhook and scan only after
 the initial gap reconciliation and duplicate-redelivery check are recorded.
 
