@@ -57,7 +57,6 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
         self.metadata_calls = []
         self.deliveries = 0
         self.ingress = Ingress(
-            b"webhook-secret",
             self.registry,
             {KEY[0]: 42},
             {self.config["bot_login"]},

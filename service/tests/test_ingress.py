@@ -1,15 +1,9 @@
-"""Ingress verifies, filters and de-duplicates deliveries, and only ever enqueues."""
+"""Checked bus deliveries route to the same task decisions once."""
 
-import hashlib
-import hmac
 import http.client
-import json
 import threading
 import unittest
 from copy import deepcopy
-from pathlib import Path
-
-from consumer import decode_bus_event
 
 from fixtures import KEY, ServiceFixture
 
@@ -21,10 +15,8 @@ from support import (
 import delegation
 from controller import Outcome
 from service import ingress
-from service.bus import route_event, webhook_payload
-from service.ingress import Ingress
+from service.ingress import Ingress, NotServed
 
-SECRET = b"webhook-secret"
 INSTALLATION = 42
 BOT = "concurro[bot]"
 
@@ -53,33 +45,30 @@ def comment(body="A reply.", login="author", association="NONE", kind="User", **
 class IngressTests(ServiceFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.ingress = Ingress(SECRET, self.registry, {KEY[0]: INSTALLATION}, {BOT}, clock=self.clock)
+        self.ingress = Ingress(self.registry, {KEY[0]: INSTALLATION}, {BOT}, clock=self.clock)
         self.deliveries = 0
 
-    def deliver(self, event, data, delivery=None, secret=SECRET):
-        """Sign and deliver one event; return the status."""
+    def deliver(self, event, data, delivery=None):
+        """Route one checked fact and return its former HTTP-equivalent status."""
         self.deliveries += 1
-        body = json.dumps(data).encode()
-        headers = {
-            "X-Hub-Signature-256": "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest(),
-            "X-GitHub-Event": event,
-            "X-GitHub-Delivery": delivery or f"delivery-{self.deliveries}",
-        }
-        return self.ingress.handle(headers, body)[0]
+        try:
+            outcome = self.ingress.route(delivery or f"delivery-{self.deliveries}", event, data)
+        except NotServed:
+            return 403
+        return 200 if outcome == "duplicate" else 202
 
     def queued(self):
         return [item.key for item in self.registry.due(self.clock())]
 
     def test_rejected_deliveries_change_nothing(self):
-        """Bad signatures, other repositories and other installations leave no trace, not even the delivery ID."""
+        """Other repositories and installations leave no delivery ID or task effect."""
         event = payload(action="edited", issue=issue())
         cases = [
-            (event, "wrong-secret".encode(), 401),
-            ({**event, "repository": {"full_name": "owner/elsewhere"}}, SECRET, 403),
-            ({**event, "installation": {"id": 7}}, SECRET, 403),
+            {**event, "repository": {"full_name": "owner/elsewhere"}},
+            {**event, "installation": {"id": 7}},
         ]
-        for data, secret, status in cases:
-            self.assertEqual(self.deliver("issues", data, "same", secret), status)
+        for data in cases:
+            self.assertEqual(self.deliver("issues", data, "same"), 403)
         self.assertEqual(self.queued(), [])
         self.assertEqual(self.deliver("issues", event, "same"), 202, "the rejected delivery ID was never recorded")
         self.assertEqual(self.queued(), [KEY])
@@ -89,24 +78,6 @@ class IngressTests(ServiceFixture, unittest.TestCase):
         event = comment()
         self.assertEqual(self.deliver("issue_comment", event, "once"), 202)
         self.assertEqual(self.deliver("issue_comment", event, "once"), 200)
-        [item] = self.registry.due(self.clock())
-        self.assertEqual(item.causes, ("webhook:issue_comment",))
-
-    def test_http_and_bus_overlap_wakes_once(self):
-        """The same delivery ID through both paths produces one task cause."""
-        source = (
-            Path(__file__).resolve().parents[2] / "contracts/fixtures/github.issue_comment.v1/valid/representative.json"
-        )
-        wire = json.loads(source.read_text())
-        wire["data"]["delivery_id"] = "overlap"
-        wire["data"]["installation_id"] = INSTALLATION
-        wire["data"]["repository"]["full_name"] = KEY[0]
-        wire["data"]["issue"]["number"] = KEY[1]
-        wire["data"]["issue"]["labels"] = [{"name": "concurro"}]
-        event = decode_bus_event(json.dumps(wire).encode())
-        family, payload = webhook_payload(event)
-        self.assertEqual(self.deliver(family, payload, "overlap"), 202)
-        self.assertEqual(route_event(self.ingress, event), "duplicate")
         [item] = self.registry.due(self.clock())
         self.assertEqual(item.causes, ("webhook:issue_comment",))
 
@@ -196,7 +167,6 @@ class IngressTests(ServiceFixture, unittest.TestCase):
     def test_publication_repository_does_not_implicitly_enroll_issues(self):
         """PR access to upstream does not enable upstream issue enrollment when only fork issues are selected."""
         self.ingress = Ingress(
-            SECRET,
             self.registry,
             {KEY[0]: INSTALLATION, "upstream/project": 43},
             {BOT},
@@ -213,9 +183,7 @@ class IngressTests(ServiceFixture, unittest.TestCase):
 
     def test_upstream_pr_event_wakes_its_fork_issue_only(self):
         """An upstream PR belongs to the recorded fork issue, not the same-numbered upstream issue."""
-        self.ingress = Ingress(
-            SECRET, self.registry, {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock
-        )
+        self.ingress = Ingress(self.registry, {KEY[0]: INSTALLATION, "upstream/project": 43}, {BOT}, clock=self.clock)
         self.registry.link(KEY, 9, "upstream/project")
         self.registry.link(("upstream/project", KEY[1]), 10, "upstream/project")
         data = payload(action="synchronize", pull_request={"number": 9})
@@ -243,36 +211,20 @@ class IngressTests(ServiceFixture, unittest.TestCase):
             generation = self.gateway.acquire(KEY, "test")
             self.gateway.release(KEY, generation, None)
 
-    def test_other_events_are_ignored(self):
-        self.assertEqual(self.deliver("release", payload()), 202)
-        self.assertEqual(self.deliver("ping", {}), 200)
-        self.assertEqual(self.queued(), [])
-
-    def test_http_endpoint(self):
-        """One POST endpoint and a health check."""
-        server = ingress.server(self.ingress, "127.0.0.1", 0)
+    def test_http_endpoint_retires_webhook(self):
+        """The private HTTP server keeps health and refuses the retired webhook."""
+        server = ingress.server("127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        body = json.dumps(comment()).encode()
         connection = http.client.HTTPConnection(*server.server_address, timeout=10)
-        connection.request(
-            "POST",
-            "/",
-            body,
-            {
-                "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
-                "X-GitHub-Event": "issue_comment",
-                "X-GitHub-Delivery": "http",
-                "Content-Type": "application/json",
-            },
-        )
-        self.assertEqual(connection.getresponse().status, 202)
+        connection.request("POST", "/webhook", b"{}")
+        self.assertEqual(connection.getresponse().status, 404)
         connection.request("GET", "/health")
         self.assertEqual(connection.getresponse().read(), b"ok\n")
         connection.close()
-        self.assertEqual(self.queued(), [KEY])
+        self.assertEqual(self.queued(), [])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,5 @@
-"""The list index applies deliveries off the delivery path, repairs losses from GitHub's history and never affects tasks."""
+"""The list index applies bus deliveries, maintains projections and never affects tasks."""
 
-import hashlib
-import hmac
 import http.client
 import json
 import sqlite3
@@ -23,31 +21,11 @@ from github import NotFound, Transient
 from service import ingress, list_index
 from service.admission import EXECUTOR_WORKFLOW
 from service.diagnostics import Store
-from service.identity import IdentityError
-from service.ingress import Ingress
-from service.list_index import FRESH_SECONDS, REPLAY_LIMIT, ListIndex, Lists
-from service.webhook_recovery import HISTORY_SECONDS, Recovery
-from test_webhook_recovery import DeliveryAPI
+from service.list_index import FRESH_SECONDS, HISTORY_SECONDS, ListIndex, Lists
 
-SECRET = b"webhook-secret"
 TOKEN = "ab" * 32
 FORK = "owner/fork"
 REPOSITORIES = {KEY[0]: 10, FORK: 11}
-
-
-def summary(number, event="issues", repository=10, at=None, guid=None):
-    """One delivery-history entry as GitHub lists it."""
-    return {
-        "id": number,
-        "guid": guid or f"guid-{number}",
-        "status": "OK",
-        "status_code": 202,
-        "installation_id": 42,
-        "repository_id": repository,
-        "event": event,
-        "action": "edited",
-        "delivered_at": datetime.fromtimestamp(at, UTC).isoformat(),
-    }
 
 
 class ListIndexTests(ServiceFixture, unittest.TestCase):
@@ -71,27 +49,31 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
 
     def test_a_delivery_raises_its_kind_once_and_survives_a_restart(self):
         before = {kind: self.revision(kind) for kind in list_index.KINDS}
-        self.index.offer("one", "issues", KEY[0], {"issue": issue(7)})
-        self.index.offer("one", "issues", KEY[0], {"issue": issue(7)})
-        self.index.offer("two", "push", KEY[0])
+        self.index.apply_delivery("one", "issues", KEY[0], {"issue": issue(7)})
+        self.index.apply_delivery("one", "issues", KEY[0], {"issue": issue(7)})
+        self.index.apply_delivery("two", "push", KEY[0], {})
         after = {kind: self.revision(kind) for kind in list_index.KINDS}
         self.assertEqual({k for k in after if after[k] != before[k]}, {"issues"})
         self.assertEqual(self.revision("issues", FORK), before["issues"], "other repositories are unaffected")
         self.assertEqual(self.changes()[-1], (KEY[0], "issues"))
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.index.close()
         incarnation, self.index = self.index.incarnation, self.opened()
         self.assertEqual(self.index.incarnation, incarnation)
         self.assertEqual(self.revision("issues"), after["issues"], "a verified event kind keeps its revision")
         self.assertNotEqual(self.revision("sponsorships"), after["sponsorships"], "local signals may have been lost")
         self.assertEqual(self.changes()[-1], (FORK, None), "a restart tells the feed to resynchronize")
+        self.assertIsNotNone(self.index.db.execute("SELECT 1 FROM receipts WHERE guid = 'one'").fetchone())
+        self.clock.now += list_index.RETAINED_SECONDS + 1
+        self.index.maintain()
+        self.assertIsNone(self.index.db.execute("SELECT 1 FROM receipts WHERE guid = 'one'").fetchone())
 
     def test_event_kinds(self):
         expected = {"issues": "issues", "issue_comment": "issues", "pull_request": "pulls", "check_run": "pulls"}
         for number, (event, kind) in enumerate({**expected, "check_suite": "pulls", "workflow_run": "runs"}.items()):
             before = self.revision(kind)
             data = {"workflow_run": run(number), "issue": issue(number), "pull_request": delivered(pull(number))}
-            self.index.offer(f"g{number}", event, KEY[0], {**data, event: {"head_sha": "a" * 40}, **data})
+            self.index.apply_delivery(f"g{number}", event, KEY[0], {**data, event: {"head_sha": "a" * 40}, **data})
             self.assertNotEqual(self.revision(kind), before, event)
 
     def test_a_recreated_file_never_matches_old_revisions(self):
@@ -107,7 +89,6 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
             index = self.opened(start=False)
         index.signal(KEY[0], "sponsorships")
         index.signal(KEY[0], "sponsorships")
-        index.offer("dropped", "issues", KEY[0], {"issue": issue(7)})
         self.assertTrue(index.overflowed.is_set())
         index.start(REPOSITORIES)
         index.pending.join()
@@ -120,43 +101,13 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
         self.assertGreaterEqual(
             len(resynchronized), 3 * len(REPOSITORIES) - 1, "at open, at start and for the overflow"
         )
-        self.assertFalse(index.db.execute("SELECT 1 FROM receipts WHERE guid = 'dropped'").fetchone())
-
-    def test_the_history_check_repairs_an_acknowledged_delivery_that_was_never_applied(self):
-        self.index.offer("guid-1", "issues", KEY[0], {"issue": issue(7)})
-        before = {kind: self.revision(kind) for kind in ("issues", "runs")}
-        self.clock.now += 60
-        groups = {
-            "guid-1": [summary(1, at=self.clock.now - 30)],
-            "guid-2": [summary(2, "workflow_run", 11, at=self.clock.now - 20)],
-            "guid-3": [summary(3, at=self.clock.now - 3600)],
-            "guid-4": [summary(4, "push", at=self.clock.now - 10)],
-            "guid-5": [summary(5, repository=99, at=self.clock.now - 10)],
-        }
-        started = self.clock.now - 5
-        self.assertEqual(self.index.check(groups, started), {(FORK, "runs"): 1})
-        self.assertEqual(self.revision("issues"), before["issues"], "applied, before the baseline, other repository")
-        self.assertNotEqual(self.revision("runs", FORK), before["runs"])
-        self.assertEqual(self.index.check(groups, started), {}, "a repaired delivery has its receipt")
-        self.index.offer("guid-2", "workflow_run", FORK, {"workflow_run": run(2)})
-        self.index.pending.join()
-        self.assertEqual(self.index.check(groups, started), {})
-
-    def test_too_many_missing_deliveries_move_the_baseline(self):
-        self.clock.now += 100
-        groups = {f"guid-{n}": [summary(n, at=self.clock.now - 50)] for n in range(REPLAY_LIMIT + 1)}
-        before = self.revision("issues")
-        self.index.check(groups, self.clock.now)
-        self.assertNotEqual(self.revision("issues"), before)
-        self.assertEqual(self.index.db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0], 0)
-        self.assertEqual(self.index.check(groups, self.clock.now), {}, "the new baseline covers them")
 
     def test_state_follows_verification_against_history(self):
         state = lambda: self.index.revisions({KEY[0]})[KEY[0]]["issues"]
         self.assertEqual((state()["state"], state()["verified"]), ("catching-up", None))
         started = self.clock.now
         self.clock.now += 3
-        self.index.check({}, started)
+        self.index.covered(datetime.fromtimestamp(started, UTC).isoformat())
         self.assertEqual(state()["state"], "current")
         self.assertEqual(state()["verified"], datetime.fromtimestamp(started, UTC).isoformat(), "the scan's start")
         self.clock.now = started + FRESH_SECONDS + 1
@@ -169,57 +120,56 @@ class ListIndexTests(ServiceFixture, unittest.TestCase):
 
     def test_bus_incompleteness_immediately_invalidates_current_state(self):
         """An observed loss or parked effect makes a verified list stale at once."""
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         state = lambda: self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"]
         self.assertEqual(state(), "current")
         before = len(self.changes())
         self.index.consumer_completeness(False)
         self.assertEqual(state(), "catching-up")
         self.assertGreater(len(self.changes()), before)
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(state(), "catching-up")
         self.index.consumer_completeness(True)
         self.assertEqual(state(), "current")
 
-    def test_a_gap_older_than_history_is_rebaselined_by_the_check_itself(self):
-        """The registry's coverage may be intact while this index's checks failed for days."""
-        self.index.check({}, self.clock.now)
+    def test_aged_coverage_rebaselines_on_the_next_applied_fact(self):
+        """A coverage gap past the retention horizon raises the revision."""
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         before = self.revision("issues")
         self.clock.now += HISTORY_SECONDS
-        late = {"guid-1": [summary(1, at=self.clock.now - 60)]}
-        self.assertEqual(self.index.check(late, self.clock.now), {}, "the new baseline covers what history still lists")
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertNotEqual(self.revision("issues"), before)
         self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "current")
 
-    def test_a_gap_before_the_first_successful_check_is_rebaselined_too(self):
-        """Checks that failed from the start leave no verified time, only the baseline."""
+    def test_aged_baseline_rebases_before_first_applied_coverage(self):
+        """A scope never covered for three days starts with a new list baseline."""
         before = self.revision("issues")
         self.clock.now += HISTORY_SECONDS
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         entry = self.index.revisions({KEY[0]})[KEY[0]]["issues"]
         self.assertEqual(entry["state"], "current")
-        self.assertNotEqual(entry["revision"], before, "what expired from history is covered by a re-read")
+        self.assertNotEqual(entry["revision"], before)
         settled = entry["revision"]
         self.clock.now += 300
-        self.index.check({}, self.clock.now)
-        self.assertEqual(self.revision("issues"), settled, "an ordinary check afterwards changes nothing")
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
+        self.assertEqual(self.revision("issues"), settled)
 
     def test_nothing_is_current_before_a_check_in_this_process(self):
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.index.close()
         self.index = self.opened()
         entry = self.index.revisions({KEY[0]})[KEY[0]]["issues"]
         self.assertEqual((entry["state"], entry["verified"] is not None), ("catching-up", True))
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "current")
 
     def test_a_repository_that_left_the_configuration_is_no_longer_reported(self):
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.index.close()
         index = ListIndex(self.directory.name, clock=self.clock)
         self.addCleanup(index.close)
         index.start({KEY[0]: 10})
-        index.check({"guid-9": [summary(9, "workflow_run", 11, at=self.clock.now)]}, self.clock.now)
+        index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(list(index.revisions({KEY[0], FORK})), [KEY[0]])
         self.assertFalse(index.db.execute("SELECT 1 FROM coverage WHERE repository = ?", (FORK,)).fetchone())
 
@@ -292,7 +242,7 @@ class FeedTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((self.start["resynchronize"], self.start["changes"]), (True, []), "no cursor to continue from")
         self.assertEqual(self.feed()["changes"], [], "nothing since")
         self.signalled(7, 8)
-        self.index.offer("guid", "issues", FORK, {"issue": issue(3)})
+        self.index.apply_delivery("guid", "issues", FORK, {"issue": issue(3)})
         self.index.pending.join()
         found = self.feed()
         self.assertEqual(
@@ -331,19 +281,19 @@ class FeedTests(ServiceFixture, unittest.TestCase):
         self.assertTrue(self.feed(latest + 5)["resynchronize"], "one this file never issued")
         self.clock.now += list_index.CHANGES_SECONDS + 1
         self.signalled(8)
-        self.index.check({}, self.clock.now)
+        self.index.maintain()
         self.assertTrue(self.feed()["resynchronize"], "older than the changes kept")
         kept = [c["item"] for c in self.feed(latest)["changes"] if c["kind"] == "tasks"]
         self.assertEqual(kept, ["8"], "the newest pruned one still continues")
         self.clock.now += list_index.CHANGES_SECONDS + 1
-        self.index.check({}, self.clock.now)
+        self.index.maintain()
         self.assertTrue(self.feed(latest)["resynchronize"], "everything since was pruned")
         current = self.index.changes(None, None, wait=0)["sequence"]
         self.assertNotIn("resynchronize", self.feed(current), "nothing missed since the newest change")
 
     def test_a_state_that_moves_without_a_list_changing_reaches_an_open_consumer(self):
         """After a restart a page reloads while recovery runs; a scan that finds nothing must still tell it."""
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.index.close()
         self.index = ListIndex(self.directory.name, clock=self.clock)
         self.addCleanup(self.index.close)
@@ -354,7 +304,7 @@ class FeedTests(ServiceFixture, unittest.TestCase):
         answers = []
         waiter = threading.Thread(target=lambda: answers.append(self.feed(cursor, wait=30)))
         waiter.start()
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         waiter.join(5)
         found = self.feed(cursor)
         self.assertEqual(answers[0]["changes"], found["changes"][: len(answers[0]["changes"])])
@@ -369,7 +319,7 @@ class FeedTests(ServiceFixture, unittest.TestCase):
             {kind: entry["revision"] for kind, entry in revisions[KEY[0]].items()},
             "no list is read again for it",
         )
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(self.feed(found["sequence"])["changes"], [], "an unchanged state announces nothing")
 
     def test_lost_local_signals_resynchronize_tasks_too(self):
@@ -404,7 +354,7 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
     def built(self):
         self.clock.now += 1
         self.index.drain()
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.clock.now += 1
 
     def entry(self, kind="issues"):
@@ -420,7 +370,7 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
 
     def deliver(self, guid, document, event="issues", action="edited"):
         self.clock.now += 1
-        self.index.offer(guid, event, KEY[0], {"action": action, "issue": document})
+        self.index.apply_delivery(guid, event, KEY[0], {"action": action, "issue": document})
         self.index.pending.join()
 
     def test_bus_apply_commits_or_schedules_rebuild(self):
@@ -565,7 +515,7 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
         self.hub.items[9] = issue(9)
         self.built()
         self.assertEqual(sorted(self.listed()), [1, 2, 9])
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         revision = self.entry()["revision"]
         self.index.close()
         self.sponsored = []
@@ -621,7 +571,7 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
         self.hub.items[3], self.hub.failing = held, True
         self.index.drain()
         self.clock.now += FRESH_SECONDS + 5
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(
             (self.owed(), self.entry()["state"]), (["3"], "catching-up"), "verified, but a read is overdue"
         )
@@ -638,7 +588,7 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
 
         def during():
             self.clock.now += 5
-            self.index.offer(
+            self.index.apply_delivery(
                 "during",
                 "issues",
                 KEY[0],
@@ -654,24 +604,6 @@ class IssueRowsTests(ServiceFixture, unittest.TestCase):
         self.index.rebaseline(KEY[0], kinds=("issues",))
         self.index.drain()
         self.assertEqual(self.listed()[2], ["concurro", "bug", "concurro:stage:plan"])
-
-    def test_the_history_check_replays_issue_payloads(self):
-        self.built()
-        details = {
-            1: {"action": "labeled", "issue": issue(3, "concurro", updated="2026-11-14T10:05:00Z")},
-            2: {"action": "created"},
-        }
-        groups = {"guid-1": [summary(1, "issues", at=self.clock.now)]}
-        self.clock.now += 1
-        self.index.check(groups, self.clock.now, lambda item: details[item["id"]])
-        self.assertEqual((sorted(self.listed()), self.entry()["state"]), ([1, 2, 3], "current"))
-        self.clock.now += 1
-        self.index.check(
-            {"guid-2": [summary(2, "issue_comment", at=self.clock.now - 1)]},
-            self.clock.now,
-            lambda item: details[item["id"]],
-        )
-        self.assertEqual(self.entry()["state"], "rebuilding", "a comment delivery without its issue cannot be applied")
 
 
 def run(number, attempt=1, updated="2026-11-14T10:00:00Z", status="completed", created=None, **fields):
@@ -743,12 +675,12 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         """A first rebuild and a history check: the ordinary running state."""
         self.clock.now += 1
         self.index.drain()
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.clock.now += 1
 
     def deliver(self, guid, document, event="workflow_run"):
         self.clock.now += 1
-        self.index.offer(guid, event, FORK, {"workflow_run": document})
+        self.index.apply_delivery(guid, event, FORK, {"workflow_run": document})
         self.index.pending.join()
 
     def owed(self):
@@ -826,7 +758,7 @@ class RowsTests(ServiceFixture, unittest.TestCase):
 
         def newer():
             self.clock.now += 5
-            self.index.offer("tie-2", "workflow_run", FORK, {"workflow_run": run(3, status="waiting")})
+            self.index.apply_delivery("tie-2", "workflow_run", FORK, {"workflow_run": run(3, status="waiting")})
             self.index.pending.join()
 
         self.fork.during = newer
@@ -848,7 +780,9 @@ class RowsTests(ServiceFixture, unittest.TestCase):
 
         def created():
             self.clock.now += 5
-            self.index.offer("during", "workflow_run", FORK, {"workflow_run": run(8, updated="2026-11-14T10:40:00Z")})
+            self.index.apply_delivery(
+                "during", "workflow_run", FORK, {"workflow_run": run(8, updated="2026-11-14T10:40:00Z")}
+            )
             self.index.pending.join()
 
         self.fork.during = created
@@ -861,17 +795,19 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         )
         self.assertEqual(self.entry()["state"], "current")
 
-    def test_a_failed_rebuild_shows_and_waits_for_the_next_check(self):
+    def test_a_failed_rebuild_retries_on_maintenance_without_coverage(self):
         self.fork.failing = True
         self.index.drain()
         self.assertEqual(self.entry()["state"], "failed")
         calls = len(self.fork.paths)
         self.index.drain()
-        self.assertEqual(len(self.fork.paths), calls, "not retried until the next history check")
+        self.assertEqual(len(self.fork.paths), calls, "not retried until maintenance")
         self.fork.failing = False
-        self.index.check({}, self.clock.now)
+        self.index.maintain()
         self.index.drain()
-        self.assertEqual((self.entry()["state"], [item[0] for item in self.listed()]), ("current", [3, 2, 1]))
+        self.assertEqual((self.entry()["state"], [item[0] for item in self.listed()]), ("catching-up", [3, 2, 1]))
+        self.assertIsNone(self.entry()["verified"])
+        self.assertFalse(self.index.checked)
 
     def test_an_overdue_read_takes_the_kind_out_of_current(self):
         self.built()
@@ -880,36 +816,8 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         self.index.drain()
         self.assertEqual(self.entry()["state"], "current", "a read owed for a moment is ordinary")
         self.clock.now += FRESH_SECONDS + 5
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.assertEqual(self.entry()["state"], "catching-up")
-
-    def test_the_history_check_replays_payloads_or_rebuilds(self):
-        self.built()
-        details = {
-            1: {"workflow_run": run(4, updated="2026-11-14T10:05:00Z")},
-            2: {"workflow_run": {**run(9), "event": "push"}},
-        }
-        groups = {
-            "guid-1": [summary(1, "workflow_run", 11, at=self.clock.now)],
-            "guid-2": [summary(2, "workflow_run", 11, at=self.clock.now)],
-        }
-        self.clock.now += 1
-        self.index.check(groups, self.clock.now, lambda item: details[item["id"]])
-        self.assertEqual(([item[0] for item in self.listed()], self.entry()["state"]), ([4, 3, 2, 1], "current"))
-        self.assertEqual(self.index.check(groups, self.clock.now, Mock(side_effect=AssertionError("has receipts"))), {})
-        lost = {"guid-3": [summary(3, "workflow_run", 11, at=self.clock.now)]}
-        self.clock.now += 1
-        self.index.check(lost, self.clock.now, Mock(side_effect=RuntimeError("payload unreadable")))
-        self.assertEqual(self.entry()["state"], "rebuilding", "what cannot be replayed is covered by a rebuild")
-        self.fork.listed = [run(5), run(4)]
-        self.index.drain()
-        self.assertEqual([item[0] for item in self.listed()], [5, 4])
-        many = {
-            f"guid-m{n}": [summary(100 + n, "workflow_run", 11, at=self.clock.now + 1)] for n in range(REPLAY_LIMIT + 1)
-        }
-        self.clock.now += 2
-        self.index.check(many, self.clock.now, Mock(side_effect=AssertionError("too many to replay")))
-        self.assertEqual(self.entry()["state"], "rebuilding")
 
     def test_a_request_made_during_a_rebuild_is_still_owed_after_it(self):
         self.built()
@@ -928,26 +836,6 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         self.clock.now += 1
         self.index.drain()
         self.assertEqual((self.entry()["state"], len(self.fork.paths)), ("current", listings + 1))
-
-    def test_a_replayed_delivery_a_newer_rebuild_covers_is_not_applied(self):
-        self.built()
-        self.deliver("old", run(6, updated="2026-11-14T10:10:00Z"))
-        delivered = self.clock.now + 1
-        self.clock.now += 2
-
-        def detail(item):
-            """While the payload is fetched, a rebuild publishes a listing without the run."""
-            self.fork.listed = []
-            self.index.rebaseline(FORK)
-            self.clock.now += 5
-            self.index.rebuild_runs(FORK)
-            return {"workflow_run": run(6, status="in_progress", updated="2026-11-14T10:15:00Z")}
-
-        self.index.check({"guid-7": [summary(7, "workflow_run", 11, at=delivered)]}, self.clock.now, detail)
-        self.assertEqual(self.listed(), [], "the removed run did not come back")
-        self.assertEqual(
-            self.index.db.execute("SELECT outcome FROM receipts WHERE guid = 'guid-7'").fetchone()[0], "covered"
-        )
 
     def test_an_attempt_github_no_longer_has_leaves_the_list(self):
         self.built()
@@ -983,16 +871,14 @@ class RowsTests(ServiceFixture, unittest.TestCase):
         self.index.drain()
         self.assertEqual([item[0] for item in self.listed()], [3, 2, 1], "an authoritative read can restore it")
 
-    def test_a_payload_without_its_run_is_not_an_unrelated_event(self):
+    def test_a_payload_without_its_run_rebuilds_the_list(self):
+        """A malformed bus payload requests a rebuild instead of changing rows."""
         self.built()
-        for payload in ({}, {"workflow_run": {}}, {"workflow_run": {"id": 9, "run_attempt": 1}}):
-            with self.assertRaises(ValueError):
-                self.index.offer("empty", "workflow_run", FORK, payload)
-        groups = {"guid-5": [summary(5, "workflow_run", 11, at=self.clock.now)]}
-        self.clock.now += 1
-        self.index.check(groups, self.clock.now, lambda item: {"workflow_run": {}})
+        self.index.apply_delivery("empty", "workflow_run", FORK, {})
         self.assertEqual(self.entry()["state"], "rebuilding")
-        self.assertFalse(self.index.db.execute("SELECT 1 FROM receipts WHERE guid = 'guid-5'").fetchone())
+        self.assertEqual(
+            self.index.db.execute("SELECT outcome FROM receipts WHERE guid = 'empty'").fetchone()[0], "rebuild"
+        )
 
     def test_a_version_one_file_migrates_with_its_data(self):
         self.index.close()
@@ -1111,7 +997,7 @@ class PullRowsTests(ServiceFixture, unittest.TestCase):
     def built(self):
         self.clock.now += 1
         self.index.drain()
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.clock.now += 1
 
     def entry(self):
@@ -1125,9 +1011,11 @@ class PullRowsTests(ServiceFixture, unittest.TestCase):
     def deliver(self, guid, node=None, commit=None, event="check_run"):
         self.clock.now += 1
         if node:
-            self.index.offer(guid, "pull_request", KEY[0], {"action": "edited", "pull_request": delivered(node)})
+            self.index.apply_delivery(
+                guid, "pull_request", KEY[0], {"action": "edited", "pull_request": delivered(node)}
+            )
         else:
-            self.index.offer(guid, event, KEY[0], {"action": "completed", event: {"head_sha": commit}})
+            self.index.apply_delivery(guid, event, KEY[0], {"action": "completed", event: {"head_sha": commit}})
         self.index.pending.join()
 
     def owed(self):
@@ -1256,7 +1144,7 @@ class PullRowsTests(ServiceFixture, unittest.TestCase):
         self.read()
         self.hub.failing = False
         self.assertEqual((self.listed()[41]["sha"], self.listed()[41]["runs"]), ("b" * 40, []))
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         self.read()
         self.assertEqual(self.listed()[41]["runs"], [{"status": "completed", "conclusion": "success"}])
 
@@ -1310,7 +1198,7 @@ class PullRowsTests(ServiceFixture, unittest.TestCase):
             "data": {"repository": {"pullRequest": None}},
             "errors": [{"type": "NOT_FOUND"}, *errors["errors"]],
         }
-        self.index.check({}, self.clock.now)
+        self.index.covered(datetime.fromtimestamp(self.clock.now, UTC).isoformat())
         with self.assertRaises(ValueError):
             self.index.read_pull(KEY[0], "41")
         self.assertIn(41, self.listed(), "absence only when not found is all GitHub reported")
@@ -1326,68 +1214,7 @@ class PullRowsTests(ServiceFixture, unittest.TestCase):
 
 
 class WiringTests(ServiceFixture, unittest.TestCase):
-    """Ingress, recovery, the registry and the listener, each with a list index that may fail."""
-
-    def deliver(self, target, event, data, delivery):
-        body = json.dumps(data).encode()
-        headers = {
-            "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
-            "X-GitHub-Event": event,
-            "X-GitHub-Delivery": delivery,
-        }
-        return target.handle(headers, body)
-
-    def test_ingress_offers_before_the_task_filter_and_ignores_failures(self):
-        event = {
-            "repository": {"full_name": KEY[0]},
-            "installation": {"id": 42},
-            "action": "labeled",
-            "label": {"name": "concurro:stage:plan"},
-            "issue": {"number": 7, "labels": [{"name": "concurro"}], "user": {"login": "author"}},
-        }
-        cases = {
-            "bot": {**event, "sender": {"login": "concurro[bot]"}},
-            "writer": {**event, "action": "edited", "label": None, "sender": {"login": "writer"}},
-        }
-        plain = Ingress(SECRET, self.registry, {KEY[0]: 42}, {"concurro[bot]"}, clock=self.clock)
-        expected = {name: self.deliver(plain, "issues", data, "plain-" + name) for name, data in cases.items()}
-        self.assertEqual(expected["bot"][0], 202)
-        queued = [item.key for item in self.registry.due(self.clock())]
-        for index in (Mock(), Mock(offer=Mock(side_effect=RuntimeError("index down")))):
-            indexed = Ingress(
-                SECRET, self.registry, {KEY[0]: 42}, {"concurro[bot]"}, clock=self.clock, list_index=index
-            )
-            for name, data in cases.items():
-                guid = f"{id(index)}-{name}"
-                self.assertEqual(self.deliver(indexed, "issues", data, guid), expected[name])
-                index.offer.assert_called_with(guid, "issues", KEY[0], data)
-            self.assertEqual([item.key for item in self.registry.due(self.clock())], queued)
-        rejected = Mock()
-        refused = Ingress(SECRET, self.registry, {KEY[0]: 42}, set(), clock=self.clock, list_index=rejected)
-        self.assertEqual(self.deliver(refused, "issues", {**event, "installation": {"id": 7}}, "other")[0], 403)
-        rejected.offer.assert_not_called()
-
-    def test_recovery_checks_the_index_with_the_same_scan(self):
-        api, index = DeliveryAPI(), Mock()
-        api.items = [summary(1, at=self.clock.now)]
-        reconciler = Mock(repositories=(KEY[0],), cleanup=None)
-        recovery = Recovery(api, self.registry, reconciler, {KEY[0]: 42}, clock=self.clock, list_index=index)
-        recovery.poll()
-        index.rebaseline.assert_called_once_with()
-        groups, started, detail = index.check.call_args.args
-        self.assertEqual((list(groups), started), (["guid-1"], self.clock.now))
-        api.details[1] = {"request": {"payload": {"action": "completed"}}}
-        self.assertEqual(detail({"id": 1}), {"action": "completed"}, "the payload of one delivery")
-        api.details[1] = {"request": {"payload": {}}}
-        with self.assertRaises(IdentityError):
-            detail({"id": 1})
-        index.check.side_effect = RuntimeError("index down")
-        self.clock.now += 300
-        recovery.poll()
-        self.assertEqual(
-            self.registry.webhook_check(recovery.scope), self.clock.now, "delivery recovery still completed"
-        )
-        index.rebaseline.assert_called_once()
+    """Registry and listener changes reach the list index."""
 
     def test_the_registry_reports_committed_sponsorship_changes_only(self):
         seen, issues = [], []
@@ -1466,8 +1293,7 @@ class WiringTests(ServiceFixture, unittest.TestCase):
         index = ListIndex(self.directory.name, clock=self.clock)
         self.addCleanup(index.close)
         index.start(REPOSITORIES)
-        plain = Ingress(SECRET, self.registry, {KEY[0]: 42}, set(), clock=self.clock)
-        server = ingress.server(plain, "127.0.0.1", 0, lists=Lists(index, TOKEN))
+        server = ingress.server("127.0.0.1", 0, lists=Lists(index, TOKEN))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -1498,7 +1324,7 @@ class WiringTests(ServiceFixture, unittest.TestCase):
             self.assertEqual(post("/lists/changes", body)[0], 400)
         for token in ("", "cd" * 32):
             self.assertEqual(post("/lists/revisions", {"repositories": []}, token)[0], 401)
-        self.assertEqual(post("/elsewhere", {})[0], 401, "any other path is still a webhook delivery")
+        self.assertEqual(post("/elsewhere", {})[0], 404, "unknown private paths are absent")
         server.lists = Lists(index, None)
         self.assertEqual(post("/lists/revisions", {"repositories": []})[0], 503)
         server.lists = None

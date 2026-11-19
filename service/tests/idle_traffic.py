@@ -1,4 +1,4 @@
-"""Offline request measurements: unchanged handoff tasks and App-wide delivery recovery."""
+"""Offline request measurements for unchanged handoff tasks."""
 
 import json
 import unittest
@@ -10,8 +10,6 @@ from fixtures import KEY, ServiceFixture
 from support import setUpModule, tearDownModule
 
 from controller import Controller, Outcome
-from service.webhook_recovery import Recovery
-from test_webhook_recovery import DeliveryAPI
 
 
 class Fixture(ServiceFixture, unittest.TestCase):
@@ -65,9 +63,6 @@ def measure(legacy=False, tasks=13, periods=12):
     try:
         with patch.object(Controller, "outcome", outcome):
             fixture.ready()
-            api = DeliveryAPI()
-            recovery = Recovery(api, fixture.registry, fixture.reconciler, {KEY[0]: 42}, clock=fixture.clock)
-            fixture.registry.webhook_check(recovery.scope, fixture.clock())
             counts = Counter()
             request = fixture.backend.request
 
@@ -82,8 +77,6 @@ def measure(legacy=False, tasks=13, periods=12):
                 fixture.clock.now += 300
                 if legacy:
                     fixture.reconciler.poll()
-                else:
-                    recovery.poll()
                 fixture.drain()
             listing = sum(n for (method, path), n in counts.items() if "/issues?" in path)
             rest = sum(n for (method, _), n in counts.items() if method == "GET")
@@ -97,7 +90,6 @@ def measure(legacy=False, tasks=13, periods=12):
                 "fleet_rest": (rest - listing) * tasks + listing,
                 "fleet_graphql": graphql * tasks,
                 "fleet_artifact_reads": artifacts * tasks,
-                "app_delivery_requests": len(api.requests),
                 "model_calls": len(fixture.agents.calls) - calls,
                 "writes": len(fixture.backend.writes) - writes,
             }

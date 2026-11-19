@@ -24,11 +24,9 @@ from github import NotFound, Transient
 from policy import digest
 from service.errors import RegistryFailure
 from service.shadow import Metadata
-from service.webhook_recovery import Recovery as WebhookRecovery
 from test_registry_setup import ConnectionTrace
 from test_shadow import comment
 from test_vault_resolver import GATEWAY, SERVICE, listeners
-from test_webhook_recovery import DeliveryAPI
 
 
 class Feed:
@@ -728,8 +726,8 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         credential = self.state()["operation"]["admission"]["credential"]
         self.assertEqual((credential["route"], credential["version"]), ("anthropic-api-key", 2))
 
-    def test_healthy_webhook_timer_reads_real_replacement_feed_and_schedules_once(self):
-        """Normal delivery scans consume actual retired+stored pages before a real task can charge."""
+    def test_policy_observer_reads_real_replacement_feed_and_schedules_once(self):
+        """Periodic policy observation consumes real vault pages before a task can charge."""
         store = vault.Store(Path(self.directory.name) / "recovery-vault.db", vault.Envelope(os.urandom(32)), self.clock)
         self.addCleanup(store.close)
         for row in self.metadata:
@@ -744,13 +742,10 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         token.chmod(0o600)
         with listeners(public, vault.create_resolver(store, GATEWAY)) as (url, _):
             self.shadow.metadata = Metadata(url, token)
-            self.reconciler.policy_observer = self.worker.observe_policies
-            recovery = WebhookRecovery(DeliveryAPI(), self.registry, self.reconciler, {KEY[0]: 42}, self.clock)
-            self.registry.webhook_check(recovery.scope, self.clock())
             with patch.object(
                 self, "read_metadata", side_effect=lambda actor, at=None: store.metadata(int(actor), at)["credentials"]
             ):
-                recovery.poll()
+                self.worker.observe_policies()
                 self.pause()
                 prior = self.registry.credential_cursor()
                 row = next(r for r in self.metadata if r["user_id"] == "202" and r["route"] == "openai-api-key")
@@ -763,7 +758,7 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 )
                 self.assertEqual(self.registry.due(self.clock()), [])
                 self.clock.now += 300
-                recovery.poll()
+                self.worker.observe_policies()
                 self.assertEqual(self.registry.credential_cursor(), page["next"])
                 waiting = self.registry.sponsorship(KEY)["task"]["recovery"]
                 self.assertEqual((waiting["observed"], waiting["owners"]), (page["next"], ["202"]))
@@ -771,7 +766,7 @@ class RecoveryTests(admission_fixture.AdmissionTests):
                 self.assertEqual(self.dispatch(), [KEY])
                 self.assertEqual(self.state()["calls"], 2)
                 self.assertEqual(self.state()["operation"]["admission"]["credential"]["version"], 2)
-                recovery.poll()
+                self.worker.observe_policies()
                 self.assertFalse(
                     any(reason == "credential-recovery" for i in self.registry.due(self.clock()) for reason in i.causes)
                 )
@@ -810,18 +805,13 @@ class RecoveryTests(admission_fixture.AdmissionTests):
         self.assertEqual(self.state()["calls"], 2)
         self.assertEqual(self.state()["stage"], "plan")
 
-    def test_missing_target_cannot_disable_healthy_delivery_or_credential_poll(self):
-        """Expected target lookup failure is isolated, while arbitrary policy failures remain visible."""
+    def test_missing_target_does_not_disable_credential_observation(self):
+        """A removed target is isolated while unexpected policy failures propagate."""
         self.pause()
         self.validate()
-        self.reconciler.policy_observer = self.worker.observe_policies
-        api = DeliveryAPI()
-        recovery = WebhookRecovery(api, self.registry, self.reconciler, {KEY[0]: 42}, self.clock)
-        self.registry.webhook_check(recovery.scope, self.clock())
         self.clock.now += 300
         with patch.object(self.worker, "load", side_effect=NotFound("synthetic removed fork")):
-            recovery.poll()
-        self.assertEqual(api.requests, [("GET", "app/hook/deliveries?per_page=100")])
+            self.worker.observe_policies()
         self.assertEqual(self.registry.credential_cursor(), len(self.feed.rows))
         self.assertEqual([i.key for i in self.registry.due(self.clock())], [KEY])
         self.assertEqual(self.dispatch(), [KEY])

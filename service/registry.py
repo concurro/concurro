@@ -37,6 +37,8 @@ RUNNER_SESSIONS = """CREATE TABLE runner_sessions (
     id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue INTEGER NOT NULL, generation INTEGER NOT NULL,
     config_sha TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)"""
 WEBHOOK_RECOVERY = "CREATE TABLE webhook_recovery (scope TEXT PRIMARY KEY, checked REAL NOT NULL)"
+# A prefixed row in the existing table records the active C2 bootstrap scope.
+BOOTSTRAP_SCOPE_PREFIX = "bootstrap:"
 OBSERVATIONS = """CREATE TABLE observations (
     repository TEXT NOT NULL, issue INTEGER NOT NULL, version INTEGER NOT NULL,
     due_at REAL NOT NULL, attempts INTEGER NOT NULL, expectations TEXT NOT NULL, PRIMARY KEY (repository, issue))"""
@@ -502,13 +504,18 @@ class Registry:
                         (self.noted(key, raw, document), *key),
                     )
 
-    def webhook_check(self, scope, checked=None):
-        """Read or advance delivery-history coverage for this App and target configuration."""
+    def bootstrap_scope(self, completed=None):
+        """Read or record the last fully reconciled App and target scope."""
         with self.transaction() as db:
-            if checked is not None:
-                db.execute("INSERT OR REPLACE INTO webhook_recovery VALUES (?, ?)", (scope, checked))
-            row = db.execute("SELECT checked FROM webhook_recovery WHERE scope = ?", (scope,)).fetchone()
-            return row[0] if row else None
+            if completed is not None:
+                db.execute("DELETE FROM webhook_recovery WHERE scope LIKE ?", (BOOTSTRAP_SCOPE_PREFIX + "%",))
+                db.execute(
+                    "INSERT INTO webhook_recovery VALUES (?, ?)", (BOOTSTRAP_SCOPE_PREFIX + completed, self.clock())
+                )
+            row = db.execute(
+                "SELECT scope FROM webhook_recovery WHERE scope LIKE ?", (BOOTSTRAP_SCOPE_PREFIX + "%",)
+            ).fetchone()
+            return row[0].removeprefix(BOOTSTRAP_SCOPE_PREFIX) if row else None
 
     # Delivery de-duplication
 

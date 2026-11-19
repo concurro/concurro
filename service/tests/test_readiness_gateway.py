@@ -83,7 +83,7 @@ class GatewayReadinessTests(ServiceFixture, unittest.TestCase):
     def test_status_events_map_head_and_merge_commit_to_source_issue(self):
         self.registry.link(KEY, 9, UPSTREAM)
         self.registry.acknowledge(KEY, {"pull": {"head": SHA, "merge_head": "b" * 40}})
-        ingress = Ingress(b"secret", self.registry, {UPSTREAM: 1}, set())
+        ingress = Ingress(self.registry, {UPSTREAM: 1}, set())
         for sha in (SHA, "b" * 40):
             self.assertEqual(ingress.keys(UPSTREAM, "status", {"sender": {"login": "ci"}, "sha": sha}), [KEY])
         self.assertEqual(ingress.keys(UPSTREAM, "status", {"sender": {"login": "ci"}, "sha": "c" * 40}), [])

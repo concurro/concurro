@@ -244,12 +244,11 @@ class BusWorker:
             decode_bus_event,
             backoff_seconds=self.settings.bus_backoff_seconds,
         )
-        coverage_authoritative = getattr(self.settings, "bus_coverage_authoritative", True)
         consumer.db.execute(
             "CREATE TABLE IF NOT EXISTS coverage_fact (consumer TEXT PRIMARY KEY, covered_until TEXT NOT NULL, "
             "stream_created TEXT NOT NULL, stream_sequence INTEGER NOT NULL)"
         )
-        self.list_index.consumer_completeness(not coverage_authoritative)
+        self.list_index.consumer_completeness(False)
         try:
             jetstream = client.jetstream()
             subscription = await jetstream.pull_subscribe(
@@ -276,7 +275,7 @@ class BusWorker:
                 created, first_sequence, floor = await inspect_consumer(client, jetstream, "GITHUB", "service")
                 lost = consumer.observe_stream(created, first_sequence, floor)
                 if lost and (lost != replayed_floor or created != replay_generation):
-                    self.list_index.consumer_completeness(not coverage_authoritative)
+                    self.list_index.consumer_completeness(False)
                     applied_coverage = None
                     recovery_coverage = None
                     session_coverage_confirmed = False
@@ -312,10 +311,9 @@ class BusWorker:
                     and consumer.coverage_applied(applied_coverage[1], applied_coverage[2])
                 )
                 complete = bool(session_coverage_confirmed and coverage and (prior_ok or coverage_ready))
-                self.list_index.consumer_completeness(complete or not coverage_authoritative)
+                self.list_index.consumer_completeness(complete)
                 if complete and coverage_ready and coverage != applied_coverage:
-                    if coverage_authoritative:
-                        self.list_index.covered(coverage[0])
+                    self.list_index.covered(coverage[0])
                     applied_coverage = coverage
                 boundary = applied_coverage if prior_ok else coverage
                 try:
@@ -343,12 +341,12 @@ class BusWorker:
                     else:
                         await message.nak(delay=consumer.retry_delay)
                     if complete and boundary and not consumer.coverage_applied(boundary[1], boundary[2]):
-                        self.list_index.consumer_completeness(not coverage_authoritative)
+                        self.list_index.consumer_completeness(False)
                 while consumer.process_released(lambda db, event: self.handle(db, event, created, 0)) is not None:
                     pass
                 if complete and boundary and not consumer.coverage_applied(boundary[1], boundary[2]):
-                    self.list_index.consumer_completeness(not coverage_authoritative)
+                    self.list_index.consumer_completeness(False)
         finally:
-            self.list_index.consumer_completeness(not coverage_authoritative)
+            self.list_index.consumer_completeness(False)
             consumer.close()
             await client.close()

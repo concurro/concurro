@@ -63,7 +63,7 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         self.start_time = datetime(2026, 11, 19, 10, tzinfo=UTC)
         self.now = [self.start_time.timestamp()]
         self.index = self.open_index()
-        self.ingress = Ingress(b"secret", self.registry, {KEY[0]: 7}, ())
+        self.ingress = Ingress(self.registry, {KEY[0]: 7}, ())
         self.worker = None
         self.addCleanup(self.stop_worker)
 
@@ -288,22 +288,6 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         operator.parked_command("replay", parking["id"], "operator")
         self.wait_for(lambda: self.registry.db.execute("SELECT count(*) FROM deliveries").fetchone()[0] == 1)
         self.wait_for(lambda: self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"] == "current")
-
-    def test_legacy_overlap_keeps_history_check_as_freshness_authority(self):
-        """Bus coverage alone cannot verify best-effort HTTP projections before cutover."""
-        self.bus_settings.bus_coverage_authoritative = False
-        asyncio.run(self.publish([self.coverage_event(0, 201)]))
-        self.start_worker()
-        path = Path(self.directory.name) / "github-bus.sqlite"
-        operator = Consumer(path, "service", 3, decode_bus_event)
-        self.addCleanup(operator.close)
-        self.wait_for(lambda: operator.db.execute("SELECT count(*) FROM consumed").fetchone()[0] == 1)
-        self.wait_for(lambda: self.index.consumer_complete)
-        self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "catching-up")
-        self.index.check({}, self.now[0])
-        self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "current")
-        self.stop_worker()
-        self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "current")
 
     def test_recreated_stream_replays_backlog_before_fresh_coverage(self):
         """A lost old-generation delivery is replayed once into a fresh stream."""
@@ -564,7 +548,6 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         self.addCleanup(lambda: process.poll() is None and (process.terminate(), process.wait(timeout=5)))
         self.bus_settings.bus_replay_url = f"http://127.0.0.1:{internal_port}"
         self.bus_settings.bus_replay_bearer_path = root / "replay-bearer"
-        self.bus_settings.bus_coverage_authoritative = True
         raw = json.loads(
             (
                 Path(__file__).resolve().parents[2]

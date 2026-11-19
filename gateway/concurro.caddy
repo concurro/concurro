@@ -1,13 +1,13 @@
 # Concurro's routes on the shared edge (installed as /etc/edge/sites/concurro.caddy).
 # Everything under /concurro/ arrives with the prefix removed: /concurro/v1/* is inference and
 # /concurro/exchange/* the key exchange (the gateway), /concurro/webhook GitHub App deliveries
-# (the service, which verifies their signatures), /concurro/api/* and /concurro/auth/* the
+# (Rust ingress, which verifies their signatures), /concurro/api/* and /concurro/auth/* the
 # backoffice API; everything else is the backoffice web app.
 handle /concurro/* {
 	uri strip_prefix /concurro
 
 	handle /webhook {
-		reverse_proxy concurro-service:8787
+		reverse_proxy concurro-ingress:8789
 	}
 
 	handle /exchange/* {

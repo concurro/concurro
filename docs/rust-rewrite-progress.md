@@ -10,9 +10,9 @@ all accepted corrective changes. It retains the Python webhook and delivery reco
 for the two-release cutover. C2 removes those legacy paths after the rollout prerequisites
 in [the platform guide](platform.md) are satisfied.
 
-The sections below retain historical implementation-test evidence, including checks of
-the C2 candidate. They do not imply that C2 retirement is present in this C1 release.
-Both release trees are verified separately before signing. No push, deployment or live
+This C2 release retires the legacy paths. The sections below retain historical
+implementation-test evidence and the corrected release verification. Both release
+trees are verified separately before signing. No push, deployment or live
 GitHub write is part of this packaging operation.
 
 ## Checkpoints
@@ -172,8 +172,7 @@ Outbox rows preserve the exact admitted wire bytes for the forwarder.
 The phase 1 forwarder, NATS transport, consumer state machine, Python reference
 consumer, operator command, and local platform development assets are implemented.
 The phase 2 Rust ingress and Python service bridge are implemented and locally tested.
-The C2 candidate is locally accepted; this C1 tree retains the legacy paths.
-Production rollout remains pending.
+C2 legacy retirement is locally accepted. Production rollout remains pending.
 
 ## Corrected C1 release verification
 
@@ -184,3 +183,14 @@ Production rollout remains pending.
 - Python contracts: 27/27. Ruff, compilation, ShellCheck, bundle verification and
   schema compatibility against the original C1 passed.
 - No push, deployment, real-delivery parity check or live GitHub write was performed.
+
+## Corrected C2 release verification
+
+- Workspace build passed. Rust crates, contracts and Cargo manifests are identical
+  to corrected C1, so its 74 workspace and 13 fault-injection passes apply here.
+- Fresh Python run: engine 1,271, service 748, gateway 187, backoffice 172, deploy 26;
+  2,404 tests total. The one macOS skip passed separately in a Linux container.
+- Python contracts: 27/27. Formatting, Ruff, Pyright, compilation, ShellCheck, bundle
+  verification and schema compatibility against the original C2 passed.
+- Executable source matches the accepted corrective tree; only release documentation
+  changed during C2 packaging. Production rollout checks remain pending.

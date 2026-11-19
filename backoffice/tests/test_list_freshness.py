@@ -218,7 +218,7 @@ class ServiceClientTests(unittest.TestCase):
             {"up/project": 10, "owner/project": 11}, rows={"runs": {"owner/project"}}, reader=lambda r: fork, work=False
         )
         index.drain()
-        server = ingress.server(Mock(), "127.0.0.1", 0, lists=Lists(index, TOKEN))
+        server = ingress.server("127.0.0.1", 0, lists=Lists(index, TOKEN))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)

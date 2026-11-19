@@ -20,7 +20,7 @@ class ReviewRegressions(ServiceFixture, unittest.TestCase):
         self.registry.link(KEY, 9)
         snapshot = {"issue": {"state": "open"}, "pull": {"head": "a" * 40, "checks": []}, "_stage": "gates"}
         self.registry.acknowledge(KEY, snapshot)
-        ingress = Ingress(b"s", self.registry, {KEY[0]: 1}, set())
+        ingress = Ingress(self.registry, {KEY[0]: 1}, set())
         for event in ("check_run", "check_suite"):
             payload = {"sender": {"login": "github-actions[bot]"}, event: {"head_sha": "a" * 40, "pull_requests": []}}
             self.assertEqual(ingress.keys(KEY[0], event, payload), [KEY])

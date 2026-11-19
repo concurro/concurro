@@ -25,7 +25,7 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Required vault metadata bearer (0400, uid 65532) | `/etc/concurro/gateway/vault-service-token`; required by base Compose, including org-only deployments |
 | Optional nonsecret service override (0644; parent traversable by deploy user) | `/etc/concurro/compose.service.host.yaml`; outside private service settings |
 | Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
-| Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `webhook-secret`, `gateway-operator-token` |
+| Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `gateway-operator-token`, NATS credentials and private delivery/replay bearers |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
 | Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in OAuth App's `client-secret`, the Backoffice App's `reader-app.pem` (see `backoffice/README.md`) |
 | Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
@@ -98,6 +98,9 @@ and event subscriptions in [Target and App prerequisites](#target-and-app-prereq
 - Webhook URL `https://<host>/concurro/webhook`, with a generated webhook secret.
 - Install it on each upstream and fork.
 
+Store the webhook secret with Rust ingress. Follow the [release 1 cutover](../docs/platform.md#production-ingress)
+before deploying release 2; this checkout's edge route targets Rust ingress.
+
 Backoffice sign-in uses a separate OAuth App; repository reads use a separate read-only
 GitHub App. Configure both as described in [Backoffice settings](../backoffice/README.md#settings).
 The service App needs no backoffice callback URL.
@@ -105,8 +108,9 @@ The service App needs no backoffice callback URL.
 **5. Service settings**
 
 In `/etc/concurro/service`, each a regular file owned by uid 65533 with mode 0600:
-`github-app.pem` (the App's private key), `webhook-secret`, `gateway-operator-token` (the
-token from `exchange.env`), `delegation-key` and `settings.json`. The delegation key signs
+`github-app.pem` (the App's private key), `gateway-operator-token` (the token from
+`exchange.env`), `delivery-recovery-bearer`, `nats-credentials.json`, `replay-bearer`,
+`delegation-key` and `settings.json`. The delegation key signs
 the commands the backoffice delivers; without it they are refused with 503:
 
 ```bash
@@ -119,7 +123,11 @@ sudo chown 65533:65533 /etc/concurro/service/delegation-key
   "controller_id": "service:main",
   "app_id": 123456,
   "private_key_path": "/etc/concurro/service/github-app.pem",
-  "webhook_secret_path": "/etc/concurro/service/webhook-secret",
+  "delivery_recovery_bearer_path": "/etc/concurro/service/delivery-recovery-bearer",
+  "bus_url": "nats://concurro-nats:4222",
+  "bus_credentials_path": "/etc/concurro/service/nats-credentials.json",
+  "bus_replay_url": "http://concurro-ingress-platform:8790",
+  "bus_replay_bearer_path": "/etc/concurro/service/replay-bearer",
   "state_dir": "/var/lib/concurro/service",
   "registry_id": "main",
   "targets": [{"upstream": "OWNER/UPSTREAM", "fork": "OWNER/FORK", "issues": "fork"}],
@@ -700,19 +708,17 @@ Subscribe to issues, issue comments, pull requests, pull request reviews, pull r
 review comments, pull request review threads, check runs, check suites, workflow runs,
 commit statuses and pushes. Verify the added Workflow runs and Push subscriptions before
 shipping webhook-driven idle handling; this change does not alter live App settings.
-The webhook URL is `https://<host>/concurro/webhook`. App-wide delivery recovery runs every
-five minutes; unchanged idle PRs are not polled. Bootstrap and gaps beyond GitHub's
-three-day delivery history use state reconciliation. The existing App JWT signs recovery
-requests; no installation-token permission expansion is required.
+The webhook URL is `https://<host>/concurro/webhook`; after the release 1 cutover,
+Rust ingress receives it and owns delivery receipts. Python service consumes durable
+bus events and uses applied producer coverage to verify list freshness. Its private
+App delivery API remains available for Rust ingress to list and redeliver deliveries.
+Unchanged idle PRs are not polled. [Platform setup](../docs/platform.md#production-ingress)
+gives the required release 1 first deployment, parity, edge switch, reconciliation,
+and duplicate GUID checks before release 2. Release 2 removes Python's webhook intake
+and delivery scan.
 
-The phase 2 first release adds a bus consumer and an App-delivery API while this webhook
-path remains active. [Platform setup](../docs/platform.md#production-ingress) describes
-PostgreSQL, JetStream, ingress, backups and the later edge switch. After the switch,
-ingress owns delivery receipt; release 2 retires the Python webhook and scan only after
-the initial gap reconciliation and duplicate-redelivery check are recorded.
-
-The current service upgrades the registry to schema 9, retaining the coverage/observation
-jobs introduced in schema 5. Back up the stopped registry and preserve its identity; use
+The current service upgrades the registry to schema 9, retaining durable observation
+jobs. Back up the stopped registry and preserve its identity; use
 corrective releases and forward migrations.
 When combining with delegated backoffice commands, wire the command predicate and durable
 post-observation callback and run their combined regressions before release. See
@@ -786,7 +792,7 @@ svc logs --tail 30 service
 ```
 
 A non-fast-forward release move needs explicit operator reconciliation, not a blind
-force push. The current registry migrates schemas 2–8 to schema 9 transactionally. Exchange columns are
+force push. The current registry migrates schemas 2–7 to schema 8 transactionally. Exchange columns are
 added without clearing history; old unbound pending turns are lost rather than staffed
 under new authority. In-flight checkpoints retain their old bundle identity and block
 for reconciliation. A fresh issue is the straightforward pilot path; never replace a

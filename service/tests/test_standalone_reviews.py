@@ -1,7 +1,5 @@
 """Standalone PR reviews through ingress, registry, gateway and worker."""
 
-import hashlib
-import hmac
 import json
 import unittest
 from copy import deepcopy
@@ -32,7 +30,6 @@ from service.worker import Worker
 from standalone_fixtures import APP, HEAD, PR, REVIEWER, FakePull
 from vocab import CONTRIBUTION, STANDALONE_REVIEW
 
-SECRET = b"webhook-secret"
 INSTALLATION = 42
 TASK = (KEY[0], PR)
 WRITER = {"login": "writer", "id": 77}
@@ -108,7 +105,6 @@ class Fixture(ServiceFixture):
             self.registry, self.gateway, self.worker, self.settings.limits, clock=self.clock, executor=Inline()
         )
         self.ingress = Ingress(
-            SECRET,
             self.registry,
             {KEY[0]: INSTALLATION},
             [APP, REVIEWER],
@@ -119,15 +115,10 @@ class Fixture(ServiceFixture):
         self.deliveries = 0
 
     def deliver(self, event, data, delivery=None):
-        """Sign and deliver one event; return `(status, text)`."""
+        """Route one checked bus event; return its delivery status."""
         self.deliveries += 1
-        body = json.dumps(data).encode()
-        headers = {
-            "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
-            "X-GitHub-Event": event,
-            "X-GitHub-Delivery": delivery or f"delivery-{self.deliveries}",
-        }
-        return self.ingress.handle(headers, body)
+        outcome = self.ingress.route(delivery or f"delivery-{self.deliveries}", event, data)
+        return (200 if outcome == "duplicate" else 202), outcome
 
     def request(self, **options):
         return self.deliver("pull_request", pull_event("review_requested"), **options)

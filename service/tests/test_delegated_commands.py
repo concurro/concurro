@@ -1,8 +1,6 @@
 """Backoffice commands end to end: the service posts a signed App comment, webhooks and durable
 observations wake the task, and the engine applies it as the writer's own command."""
 
-import hashlib
-import hmac
 import json
 import unittest
 from unittest.mock import patch
@@ -19,7 +17,6 @@ from service.gateway import MutationGateway
 from service.ingress import Ingress
 
 DELEGATION_KEY = b"d" * 32
-SECRET = b"webhook-secret"
 INSTALLATION = 42
 TOKEN = "Bearer writer-token"
 
@@ -63,7 +60,6 @@ class DelegatedCommandTests(ServiceFixture, unittest.TestCase):
         self.worker.delegation_key = DELEGATION_KEY
         self.reconciler.command_comment = delegation.marked
         self.ingress = Ingress(
-            SECRET,
             self.registry,
             {KEY[0]: INSTALLATION},
             {self.bot},
@@ -99,7 +95,7 @@ class DelegatedCommandTests(ServiceFixture, unittest.TestCase):
         return self.actions.handle(TOKEN, json.dumps(body).encode())
 
     def webhook(self, comment, action="created", previous=None):
-        """Deliver the App's own comment event, signed as GitHub would."""
+        """Route the App's own comment event from the checked bus."""
         self.deliveries += 1
         data = {
             "action": action,
@@ -111,13 +107,9 @@ class DelegatedCommandTests(ServiceFixture, unittest.TestCase):
         }
         if previous is not None:
             data["changes"] = {"body": {"from": previous}}
-        body = json.dumps(data).encode()
-        headers = {
-            "X-Hub-Signature-256": "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest(),
-            "X-GitHub-Event": "issue_comment",
-            "X-GitHub-Delivery": f"delivery-{self.deliveries}",
-        }
-        return self.ingress.handle(headers, body)[0], headers, body
+        delivery = f"delivery-{self.deliveries}"
+        outcome = self.ingress.route(delivery, "issue_comment", data)
+        return (200 if outcome == "duplicate" else 202), delivery, data
 
     def settle(self):
         """Run due observations, then every due tick."""
@@ -146,9 +138,9 @@ class DelegatedCommandTests(ServiceFixture, unittest.TestCase):
         self.assertEqual((state["approval"]["kind"], state["approval"]["actor"]), ("human", "writer"))
         self.assertNotEqual(state["stage"], "planned")
         self.quiesce()
-        status, headers, body = self.webhook(self.posted())
+        status, delivery, data = self.webhook(self.posted())
         self.assertEqual(status, 202)
-        self.assertEqual(self.ingress.handle(headers, body)[0], 200, "a duplicate delivery is acknowledged once")
+        self.assertEqual(self.ingress.route(delivery, "issue_comment", data), "duplicate")
         self.assertEqual(self.settle(), 0, "a late webhook for an applied command runs no tick")
 
     def test_a_lost_response_still_applies_the_command(self):

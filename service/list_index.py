@@ -1,12 +1,12 @@
 """The list index: a persistent, eventually consistent read model of each repository's lists.
 
-GitHub and the registry stay authoritative. Webhook deliveries and registry signals raise a
+GitHub and the registry stay authoritative. Checked bus deliveries and registry signals raise a
 revision per repository and list kind. A kind in mode `signals` holds nothing else: the
 backoffice re-reads its list from GitHub when the revision moved. A kind in mode `rows` holds
 the list itself, built from GitHub once and kept current from delivery payloads.
 
-Applying is asynchronous and may lose a delivery, so `check` compares GitHub's delivery history
-with the receipts kept here and repairs what is missing. Reads from GitHub (rebuilds, and
+Bus deliveries commit before acknowledgement, and applied producer coverage verifies freshness.
+Reads from GitHub (rebuilds, and
 single items a delivery could not settle) run on a worker thread and are published under the
 same ordering rule as deliveries, so a read never replaces what arrived during it.
 """
@@ -38,13 +38,12 @@ from .github_reads import (
     task_pulls,
 )
 from .settings import CHECKOUT
-from .webhook_recovery import HISTORY_SECONDS
 
 log = logging.getLogger("concurro.service")
 
 DATABASE = "list-index.sqlite3"
 VERSION = 4
-# Webhook events that change a list, and the list each changes.
+# GitHub events that change a list, and the list each changes.
 EVENT_KINDS = {
     "issues": "issues",
     "issue_comment": "issues",
@@ -53,16 +52,15 @@ EVENT_KINDS = {
     "check_suite": "pulls",
     "workflow_run": "runs",
 }
-# Kinds signalled by the service itself; GitHub's delivery history cannot repair them. `tasks` is
+# Kinds signalled by the service itself; bus replay cannot repair them. `tasks` is
 # Concurro's own progress on a task and has no list: its changes only feed live updates.
 LOCAL_KINDS = ("sponsorships", "tasks")
 KINDS = (*dict.fromkeys(EVENT_KINDS.values()), *LOCAL_KINDS)
 QUEUE_SIZE = 1024
-# More missing deliveries than this for one kind are covered by a new baseline instead.
-REPLAY_LIMIT = 20
-# A kind is current while its deliveries were verified against GitHub's history this recently.
+# A kind is current while producer coverage is this recent.
 FRESH_SECONDS = 600
-# Receipts and changes outlive GitHub's delivery history.
+HISTORY_SECONDS = 3 * 24 * 60 * 60
+# Receipts and changes outlive the configured producer coverage horizon.
 RETAINED_SECONDS = 2 * HISTORY_SECONDS
 # Changes are kept for the feed this long; a consumer further behind resynchronizes.
 CHANGES_SECONDS = 3600
@@ -176,9 +174,9 @@ class ListIndex:
         self.news, self.commits = threading.Condition(), 0
         self.names, self.writer, self.worker, self.reader = {}, None, None, None
         self.sponsored = self.linked = lambda repository: ()
-        # Reads that failed since the last history check; each is retried once per check.
+        # Reads that failed since the last maintenance or coverage fact; retry on either.
         self.deferred = set()
-        # Whether a history check has completed in this process; before one, nothing is current.
+        # Whether producer coverage has been applied in this process; before that, nothing is current.
         self.checked = False
         self.consumer_complete = True
         self.db = sqlite3.connect(Path(root) / DATABASE, isolation_level=None, check_same_thread=False)
@@ -226,8 +224,8 @@ class ListIndex:
         returns the read transport its rebuilds and item reads use; `sponsored(repository)` lists
         the issue numbers the registry holds sponsorships for, which belong to the issue list
         whatever their labels; `linked(repository)` lists the pull request numbers the registry
-        records for tasks, which a rebuild reads wherever they are. A kind not verified within
-        GitHub's delivery history is covered afresh: history can no longer show what it missed.
+        records for tasks, which a rebuild reads wherever they are. A kind without applied
+        producer coverage for the configured horizon is rebuilt from GitHub.
         Local signals lost while stopped are covered by `resync`.
         """
         now = self.clock()
@@ -271,7 +269,7 @@ class ListIndex:
             self.news.notify_all()
 
     def close(self):
-        """Stop applying and close the file; queued entries are left to the receipt check."""
+        """Stop applying and close the file; lost local signals resynchronize at restart."""
         self.release()
         for thread in (self.writer, self.worker):
             if thread:
@@ -280,16 +278,6 @@ class ListIndex:
             self.db.close()
 
     # Signals
-
-    def offer(self, guid, event, repository, payload=None):
-        """Queue one verified delivery without waiting; a full queue is repaired later, never raised.
-
-        Only the fields a list shows are copied from the payload. One that cannot be projected
-        raises before anything is queued, which leaves the delivery to the history check.
-        """
-        kind = EVENT_KINDS.get(event)
-        if kind:
-            self.put(("delivery", guid, repository, kind, projected(event, payload)))
 
     def apply_delivery(self, guid, event, repository, payload):
         """Commit a bus delivery before ack, rebuilding a list if projection fails."""
@@ -308,7 +296,7 @@ class ListIndex:
 
     def signal(self, repository, kind, item=None):
         """Queue a change the service itself made to a list; `item` names what changed when one thing did."""
-        self.put(("signal", None, repository, kind, item))
+        self.put((repository, kind, item))
 
     def put(self, entry):
         try:
@@ -324,7 +312,7 @@ class ListIndex:
                     self.overflowed.clear()
                     with self.transaction() as db:
                         self.resync(db, self.names.values(), self.clock())
-                source, guid, repository, kind, data = self.pending.get(timeout=0.2)
+                repository, kind, item = self.pending.get(timeout=0.2)
             except queue.Empty:
                 continue
             except sqlite3.Error as error:
@@ -334,17 +322,13 @@ class ListIndex:
                 continue
             try:
                 with self.transaction() as db:
-                    if source == "signal":
-                        self.raise_revision(db, repository, kind, self.clock(), data and str(data))
-                        if kind == "sponsorships":
-                            self.sponsorship_changed(db, repository, data)
-                    else:
-                        self.deliver(db, guid, repository, kind, data, "applied")
+                    self.raise_revision(db, repository, kind, self.clock(), item and str(item))
+                    if kind == "sponsorships":
+                        self.sponsorship_changed(db, repository, item)
             except sqlite3.Error as error:
-                # Without a receipt the next history check repairs a delivery; a local signal needs this.
+                # Local signals have no replay, so a failed write needs resynchronization.
                 log.warning("list index write failed: %s", type(error).__name__)
-                if source == "signal":
-                    self.overflowed.set()
+                self.overflowed.set()
             finally:
                 self.pending.task_done()
 
@@ -646,78 +630,17 @@ class ListIndex:
                 if at - (baseline if verified is None else verified) >= HISTORY_SECONDS:
                     self.rebase(db, repository, kind, now)
             db.execute("UPDATE coverage SET verified = MAX(COALESCE(verified, 0), ?)", (at,))
-            db.execute("DELETE FROM receipts WHERE recorded < ?", (now - RETAINED_SECONDS,))
-            db.execute("DELETE FROM changes WHERE changed < ?", (now - CHANGES_SECONDS,))
-        self.deferred.clear()
+        self.maintain()
         self.checked = True
         self.state_changed(before)
 
-    def check(self, groups, started, detail=None):
-        """Repair deliveries GitHub's history lists and this index has no receipt for.
-
-        `groups` maps each delivery GUID to its attempts, as `Recovery.deliveries` returns them.
-        In mode `signals` a summary names the event and repository, which is all a revision
-        needs. In mode `rows` the payload is fetched with `detail(attempt)` and applied; one that
-        cannot be fetched or applied, like too many at once, is covered by a rebuild instead.
-        A kind last verified, or begun and never verified, longer ago than GitHub keeps history
-        is covered afresh first, whatever the registry's own coverage says. A completed check
-        advances every kind's verified time to `started`, when the scan began.
-        """
+    def maintain(self):
+        """Prune old records and allow failed reads to retry without changing coverage."""
         now = self.clock()
-        replay = []
-        before = self.states()
         with self.transaction() as db:
-            rows = db.execute("SELECT repository, kind, baseline, verified FROM coverage").fetchall()
-            for repository, kind, baseline, verified in rows:
-                # Never verified: nothing since its baseline has been checked against history.
-                if started - (baseline if verified is None else verified) >= HISTORY_SECONDS:
-                    self.rebase(db, repository, kind, now)
-            covered = {
-                (r, k): (b, m) for r, k, b, m in db.execute("SELECT repository, kind, baseline, mode FROM coverage")
-            }
-            missing = {}
-            for guid, attempts in groups.items():
-                item = max(attempts, key=lambda attempt: attempt["id"])
-                key = (self.names.get(item.get("repository_id")), EVENT_KINDS.get(item.get("event")))
-                delivered = epoch(item.get("delivered_at"))
-                if key not in covered or delivered is None or delivered <= covered[key][0]:
-                    continue
-                if not db.execute("SELECT 1 FROM receipts WHERE guid = ?", (guid,)).fetchone():
-                    missing.setdefault(key, []).append((guid, item))
-            for (repository, kind), entries in missing.items():
-                if len(entries) > REPLAY_LIMIT:
-                    self.rebase(db, repository, kind, now)
-                elif covered[repository, kind][1] == "rows":
-                    replay.append((repository, kind, entries))
-                else:
-                    for guid, _ in entries:
-                        self.receive(db, guid, "repaired")
-                    self.raise_revision(db, repository, kind, now)
-        for repository, kind, entries in replay:
-            try:
-                for guid, item in entries:
-                    data = projected(item.get("event"), detail(item))
-                    with self.transaction() as db:
-                        baseline = db.execute(
-                            "SELECT baseline FROM coverage WHERE repository = ? AND kind = ?", (repository, kind)
-                        ).fetchone()[0]
-                        if epoch(item.get("delivered_at")) <= baseline:
-                            # A rebuild published while the payload was fetched already accounts for it.
-                            self.receive(db, guid, "covered")
-                        else:
-                            self.deliver(db, guid, repository, kind, data, "repaired")
-            except Exception as error:
-                log.warning("list index replay for %s %s failed: %s", repository, kind, type(error).__name__)
-                with self.transaction() as db:
-                    self.rebase(db, repository, kind, now)
-        with self.transaction() as db:
-            db.execute("UPDATE coverage SET verified = ?", (started,))
             db.execute("DELETE FROM receipts WHERE recorded < ?", (now - RETAINED_SECONDS,))
             db.execute("DELETE FROM changes WHERE changed < ?", (now - CHANGES_SECONDS,))
         self.deferred.clear()
-        self.checked = True
-        self.state_changed(before)
-        return {key: len(entries) for key, entries in missing.items()}
 
     # Reads from GitHub
 
@@ -730,7 +653,7 @@ class ListIndex:
                 log.warning("list index reads failed: %s", type(error).__name__)
 
     def drain(self):
-        """Do every owed read once; one that fails waits for the next history check."""
+        """Do every owed read once; one that fails waits for maintenance or coverage."""
         while not self.stopping.is_set():
             with self.lock:
                 wanted = self.db.execute(
@@ -915,7 +838,7 @@ class ListIndex:
     def revisions(self, repositories):
         """`{repository: {kind: {revision, mode, state, verified, built}}}` for the configured ones asked for.
 
-        A kind is `current` once a history check completed in this process, while its verified
+        A kind is `current` once producer coverage was applied in this process, while its verified
         time is recent and no read it owes is overdue. In mode `rows`, an owed or first rebuild
         makes it `rebuilding`, or `failed` when the last attempt failed.
         """
@@ -1003,8 +926,8 @@ class ListIndex:
     def state_changed(self, before):
         """Tell the feed which repositories report a different state than `before`, once they do.
 
-        A state can move without any list changing, as when a history check finds nothing
-        missing; an open page would otherwise keep showing the earlier one. The change raises
+        A state can move without any list changing, as when applied coverage becomes current;
+        an open page would otherwise keep showing the earlier one. The change raises
         no revision: no list has to be read again.
         """
         after = self.states()

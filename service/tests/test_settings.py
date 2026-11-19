@@ -30,14 +30,18 @@ class SettingsTests(unittest.TestCase):
         self.root.chmod(0o700)
         (self.root / "state").mkdir(mode=0o700)
         (self.root / "subdir").mkdir(mode=0o700)
-        for name in ("app.pem", "webhook", "operator", "two.json"):
+        for name in ("app.pem", "delivery-bearer", "nats-credentials", "replay-bearer", "operator", "two.json"):
             self.private(name)
         self.data = {
             "controller_id": "service:primary",
             "engine": "b" * 40,
             "app_id": 123,
             "private_key_path": str(self.root / "app.pem"),
-            "webhook_secret_path": str(self.root / "webhook"),
+            "delivery_recovery_bearer_path": str(self.root / "delivery-bearer"),
+            "bus_url": "nats://localhost:4222",
+            "bus_credentials_path": str(self.root / "nats-credentials"),
+            "bus_replay_url": "http://localhost:8790",
+            "bus_replay_bearer_path": str(self.root / "replay-bearer"),
             "state_dir": str(self.root / "state"),
             "registry_id": "registry-1",
             "targets": [
@@ -66,7 +70,7 @@ class SettingsTests(unittest.TestCase):
             ("user_id", "4242"),
             ("user_id", 0),
             ("client_id", ""),
-            ("client_secret_path", str(self.root / "webhook")),
+            ("client_secret_path", str(self.root / "delivery-bearer")),
         ):
             with self.subTest(field=field, value=value), self.assertRaisesRegex(SettingsError, "reviewer"):
                 self.load({**self.data, "reviewer": {**entry, field: value}})
@@ -107,6 +111,14 @@ class SettingsTests(unittest.TestCase):
         unpinned = deepcopy(self.data)
         del unpinned["engine"]
         self.assertIsNone(self.load(unpinned).engine, "resolved to the checkout's HEAD at startup")
+        release_one = {
+            **self.data,
+            "webhook_secret_path": str(self.root / "two.json"),
+            "bus_coverage_authoritative": True,
+        }
+        release_two = dict(release_one)
+        del release_two["webhook_secret_path"], release_two["bus_coverage_authoritative"]
+        self.assertEqual(self.load(release_two), loaded, "the documented forward settings change starts release 2")
 
     def test_optional_delegation_key(self):
         """The backoffice delegation key is an optional, distinct owner-only secret."""
@@ -114,7 +126,7 @@ class SettingsTests(unittest.TestCase):
         key = self.private("delegation", "k" * 64)
         self.assertEqual(self.load({**self.data, "delegation_key_path": str(key)}).delegation_key_path, key)
         with self.assertRaises(settings.SettingsError):
-            self.load({**self.data, "delegation_key_path": self.data["webhook_secret_path"]})
+            self.load({**self.data, "delegation_key_path": self.data["delivery_recovery_bearer_path"]})
         key.chmod(0o644)
         with self.assertRaises(settings.SettingsError):
             self.load({**self.data, "delegation_key_path": str(key)})
@@ -125,7 +137,7 @@ class SettingsTests(unittest.TestCase):
         token = self.private("lists-token", "ab" * 32)
         self.assertEqual(self.load({**self.data, "lists_token_path": str(token)}).lists_token_path, token)
         with self.assertRaises(settings.SettingsError):
-            self.load({**self.data, "lists_token_path": self.data["webhook_secret_path"]})
+            self.load({**self.data, "lists_token_path": self.data["delivery_recovery_bearer_path"]})
 
     def test_older_settings_move_to_the_gateway(self):
         """Provider credentials and the engine pin go; the result must validate before it replaces the file."""
@@ -170,6 +182,18 @@ class SettingsTests(unittest.TestCase):
         cases = {
             "unknown": changed(extra=1),
             "missing": changed(app_id=KeyError),
+            **{
+                "missing " + field: changed(**{field: KeyError})
+                for field in (
+                    "delivery_recovery_bearer_path",
+                    "bus_url",
+                    "bus_credentials_path",
+                    "bus_replay_url",
+                    "bus_replay_bearer_path",
+                )
+            },
+            "retired webhook secret": changed(webhook_secret_path=str(self.root / "two.json")),
+            "retired overlap mode": changed(bus_coverage_authoritative=True),
             "controller": changed(controller_id="actions"),
             "engine": changed(engine="main"),
             "boolean app": changed(app_id=True),
@@ -239,7 +263,7 @@ class SettingsTests(unittest.TestCase):
         with self.subTest(case="symlinked key"), self.assertRaises(SettingsError):
             self.load({**self.data, "private_key_path": str(self.root / "link.pem")})
         with self.subTest(case="missing secret"), self.assertRaises(SettingsError):
-            self.load({**self.data, "webhook_secret_path": str(self.root / "absent")})
+            self.load({**self.data, "delivery_recovery_bearer_path": str(self.root / "absent")})
         self.root.chmod(0o750)
         self.addCleanup(self.root.chmod, 0o700)
         with self.subTest(case="directory readable"), self.assertRaises(SettingsError):
@@ -257,7 +281,7 @@ class SettingsTests(unittest.TestCase):
             "symlinked directory": {"gateway": {**gateway, "operator_token_path": str(root / "aliased/three.json")}},
             "symlinked state": {"state_dir": str(root / "state-link")},
             "trailing slash": {"state_dir": str(root / "state") + "/"},
-            "key reused": {"webhook_secret_path": str(root / "app.pem")},
+            "key reused": {"delivery_recovery_bearer_path": str(root / "app.pem")},
             "token reuses key": {"gateway": {**gateway, "operator_token_path": str(root / "app.pem")}},
             "missing state": {"state_dir": str(root / "absent")},
             "state is a file": {"state_dir": str(root / "two.json")},
@@ -301,7 +325,20 @@ class HostCheckTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
 
         loaded = settings.Settings(
-            "service:p", engine, 1, Path("/k"), Path("/w"), Path("/s"), "r", (), settings.Limits(1, 1), None
+            controller_id="service:p",
+            engine=engine,
+            app_id=1,
+            private_key_path=Path("/k"),
+            state_dir=Path("/s"),
+            registry_id="r",
+            targets=(),
+            limits=settings.Limits(1, 1),
+            gateway=None,
+            delivery_recovery_bearer_path=Path("/d"),
+            bus_url="nats://localhost:4222",
+            bus_credentials_path=Path("/n"),
+            bus_replay_url="http://localhost:8790",
+            bus_replay_bearer_path=Path("/b"),
         )
         with patch.object(daemon.subprocess, "run", side_effect=run):
             return daemon.host_checks(loaded)

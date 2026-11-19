@@ -171,11 +171,11 @@ class BusParityTests(unittest.TestCase):
                         "reviewer": {"id": 10, "login": "writer"},
                         "review_targets": {REPOSITORY: SimpleNamespace(upstream="upstream", fork="fork")},
                     }
-                    raw_ingress = Ingress(b"secret", first, {REPOSITORY: 7}, (), **options)
-                    bus_ingress = Ingress(b"secret", second, {REPOSITORY: 7}, (), **options)
+                    raw_ingress = Ingress(first, {REPOSITORY: 7}, (), **options)
+                    bus_ingress = Ingress(second, {REPOSITORY: 7}, (), **options)
                     self.assertEqual(
-                        raw_ingress.route("delivery", family, raw, strict_list_index=True),
-                        bus_ingress.route("delivery", family, adapted, strict_list_index=True),
+                        raw_ingress.route("delivery", family, raw),
+                        bus_ingress.route("delivery", family, adapted),
                     )
                     self.assertEqual(first.received, second.received)
 

@@ -1,7 +1,5 @@
-"""Webhook ingress: verify, filter, de-duplicate and enqueue; never read task state or call the engine."""
+"""Route checked GitHub bus facts and serve the service's private HTTP APIs."""
 
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -16,19 +14,6 @@ from vocab import STANDALONE_REVIEW
 from .observations import expected as comment_expectation
 
 ENROLLMENT = "concurro"
-EVENTS = {
-    "push",
-    "issues",
-    "issue_comment",
-    "pull_request",
-    "pull_request_review",
-    "workflow_run",
-    "check_suite",
-    "check_run",
-    "status",
-    "pull_request_review_comment",
-    "pull_request_review_thread",
-}
 # The Actions workflow's triggers and filters, kept for parity.
 ISSUE_ACTIONS = {"opened", "labeled", "unlabeled", "edited", "reopened", "closed"}
 DISPLAY_LABELS = ("concurro:stage:", "concurro:attention")
@@ -38,8 +23,6 @@ REVIEW_REQUESTS = {"review_requested": "requested", "review_request_removed": "r
 # The only PR lifecycle changes a standalone review acts on; pushes, retargets and edits change no assessment.
 REVIEW_LIFECYCLE = {"closed", "reopened"}
 WRITER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
-# GitHub caps webhook payloads at 25 MB.
-BODY_LIMIT = 25_000_000
 # A backoffice command is a few hundred bytes.
 ACTION_LIMIT = 16 * 1024
 
@@ -47,7 +30,7 @@ log = logging.getLogger("concurro.service")
 
 
 class NotServed(Exception):
-    """The signed delivery belongs to a repository or installation outside this service."""
+    """The checked delivery belongs to a repository or installation outside this service."""
 
 
 class Ingress:
@@ -55,14 +38,12 @@ class Ingress:
 
     def __init__(
         self,
-        secret,
         registry,
         installations,
         identities,
         clock=time.time,
         issue_repositories=None,
         command_comment=None,
-        list_index=None,
         reviewer=None,
         review_targets=None,
     ):
@@ -72,9 +53,8 @@ class Ingress:
         `reviewer` account, a request for its review on a PR of a `review_targets` upstream
         enrolls that PR; the mapping gives each upstream's target.
         """
-        self.secret, self.registry, self.clock = secret, registry, clock
+        self.registry, self.clock = registry, clock
         self.command_comment = command_comment
-        self.list_index = list_index
         self.installations = dict(installations)
         self.repositories = {repository.lower(): repository for repository in installations}
         self.reviewer = Actor.parse(reviewer) if reviewer else None
@@ -82,32 +62,8 @@ class Ingress:
         self.identities = tuple(Actor.parse(identity) for identity in identities)
         self.issue_repositories = frozenset(installations if issue_repositories is None else issue_repositories)
 
-    def handle(self, headers, body):
-        """`(HTTP status, short text)` for one delivery; anything rejected has no side effect."""
-        expected = "sha256=" + hmac.new(self.secret, body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(headers.get("X-Hub-Signature-256", ""), expected):
-            return 401, "invalid signature"
-        event, delivery = headers.get("X-GitHub-Event", ""), headers.get("X-GitHub-Delivery", "")
-        if event == "ping":
-            return 200, "pong"
-        if event not in EVENTS:
-            return 202, "ignored"
-        if not delivery:
-            return 400, "missing delivery"
-        try:
-            payload = json.loads(body)
-        except (ValueError, KeyError, TypeError):
-            return 400, "malformed payload"
-        try:
-            outcome = self.route(delivery, event, payload, self.list_index)
-        except (KeyError, TypeError, AttributeError, ValueError):
-            return 400, "malformed payload"
-        except NotServed:
-            return 403, "repository or installation not enabled"
-        return (200 if outcome == "duplicate" else 202), outcome
-
-    def route(self, delivery, event, payload, list_index=None, *, strict_list_index=False):
-        """Route a verified delivery; return accepted, duplicate, or ignored."""
+    def route(self, delivery, event, payload):
+        """Route a checked bus delivery; return accepted, duplicate, or ignored."""
         name = payload["repository"]["full_name"]
         installation = payload["installation"]["id"]
         repository = self.repositories.get(name.lower()) if isinstance(name, str) else None
@@ -115,14 +71,6 @@ class Ingress:
             raise NotServed("repository or installation not enabled")
         # Recorded first, so the list index already finds the PR linked to its task.
         requested = self.review_request(delivery, repository, event, payload)
-        if list_index is not None:
-            # Before the task filter, so Concurro's own label changes count; never part of the delivery's outcome.
-            try:
-                list_index.offer(delivery, event, repository, payload)
-            except Exception as error:
-                if strict_list_index:
-                    raise
-                log.warning("list index offer failed: %s", type(error).__name__)
         if requested is not None:
             return requested[1]
         keys = self.keys(repository, event, payload)
@@ -337,11 +285,13 @@ class Ingress:
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Deliveries, backoffice commands at `/actions` (internal network only) and a health endpoint."""
+    """Private App delivery, backoffice, list and health endpoints."""
 
     def do_POST(self):
         if self.path.startswith("/v1/deliveries/"):
             return self.delivery_bridge("POST")
+        if self.path not in ("/actions", "/sponsorships", "/lists") and not self.path.startswith("/lists/"):
+            return self.reply(404, "not found")
         length = self.headers.get("Content-Length", "")
         if not length.isdecimal():
             return self.reply(411, "length required")
@@ -349,18 +299,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.action(int(length))
         if self.path == "/lists" or self.path.startswith("/lists/"):
             return self.lists(int(length))
-        if int(length) > BODY_LIMIT:
-            return self.reply(413, "payload too large")
-        body = self.rfile.read(int(length))
-        headers = {
-            name: self.headers.get(name, "") for name in ("X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery")
-        }
-        try:
-            status, text = self.server.ingress.handle(headers, body)
-        except Exception as error:
-            log.warning("delivery failed: %s", type(error).__name__)
-            status, text = 503, "unavailable"
-        self.reply(status, text)
 
     def action(self, length):
         """One backoffice command; refused unless the service has a delegation key."""
@@ -427,13 +365,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, format, *args):
-        log.debug("ingress: " + format, *args)
+        log.debug("service HTTP: " + format, *args)
 
 
-def server(ingress, host, port, actions=None, lists=None, delivery_bridge=None):
-    """An HTTP server for one ingress and, optionally, backoffice commands and list index requests."""
+def server(host, port, actions=None, lists=None, delivery_bridge=None):
+    """Serve private App delivery, backoffice and list APIs."""
     instance = ThreadingHTTPServer((host, port), Handler)
-    instance.ingress = ingress
     instance.actions = actions
     instance.lists = lists
     instance.delivery_bridge = delivery_bridge

@@ -1,8 +1,5 @@
 """Delegated-comment integration seam: durable, uncached, retryable observations."""
 
-import hashlib
-import hmac
-import json
 import unittest
 from unittest.mock import patch
 
@@ -27,9 +24,7 @@ class ObservationTests(ServiceFixture, unittest.TestCase):
         self.bot = self.config["bot_login"]
         self.marked = lambda body: MARKER in body
         self.reconciler.command_comment = self.marked
-        self.ingress = Ingress(
-            b"test", self.registry, {KEY[0]: 42}, {self.bot}, clock=self.clock, command_comment=self.marked
-        )
+        self.ingress = Ingress(self.registry, {KEY[0]: 42}, {self.bot}, clock=self.clock, command_comment=self.marked)
         self.fake.issue["updated_at"] = "unchanged"
         self.fake.comments = [{"id": 101, "body": MARKER + "signed command -->", "user": {"login": self.bot}}]
         self.data = {
@@ -42,16 +37,9 @@ class ObservationTests(ServiceFixture, unittest.TestCase):
         }
 
     def deliver(self, identifier="delivery"):
-        """Send a correctly authenticated App-authored comment notification."""
-        body = json.dumps(self.data).encode()
-        return self.ingress.handle(
-            {
-                "X-Hub-Signature-256": "sha256=" + hmac.new(b"test", body, hashlib.sha256).hexdigest(),
-                "X-GitHub-Event": "issue_comment",
-                "X-GitHub-Delivery": identifier,
-            },
-            body,
-        )
+        """Route an App-authored comment from the checked bus."""
+        outcome = self.ingress.route(identifier, "issue_comment", self.data)
+        return (200 if outcome == "duplicate" else 202), outcome
 
     def test_receipt_is_atomic_with_observation_not_engine_queue(self):
         """No accepted receipt can exist without its job; receiving never calls GitHub."""

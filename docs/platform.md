@@ -32,9 +32,10 @@ disposable containers through `concurro-testkit`.
 
 ## Production ingress
 
-Release 1 keeps the Python webhook and recovery jobs while adding the optional bus
-consumer. Install the platform and ingress only after that release is available. The
-host's `deploy/host.sh` includes `service/compose.ingress.yaml` and starts
+Deploy release 1 first, using its final signed commit SHA recorded in the release
+packaging evidence. Release 1 keeps the Python webhook and recovery jobs while adding the bus
+consumer. Install the platform and ingress only after release 1 is running. The host's
+`deploy/host.sh` includes `service/compose.ingress.yaml` and starts
 `deploy/compose.platform.yaml` when `/etc/concurro/ingress/settings.toml` exists.
 Neither database nor NATS publishes a host port. Ingress's public listener is on
 `edge`; its replay listener binds the `concurro-ingress-platform` network alias.
@@ -62,20 +63,33 @@ Neither database nor NATS publishes a host port. Ingress's public listener is on
    and `bus_backoff_seconds`, and
    `delivery_recovery_bearer_path` to its settings. Its recovery bearer and the
    ingress recovery bearer must match; likewise the two copies of the service replay
-   bearer. Leave `bus_coverage_authoritative` false while the old HTTP route remains
-   the edge target; its GitHub history check still verifies list freshness. Restart
-   through the release helper, which pulls the exact commit's images.
+   bearer. In release 1, leave `bus_coverage_authoritative` false while the old HTTP
+   route remains the edge target; its GitHub history check still verifies list
+   freshness. Restart through the release helper with the full release 1 commit SHA.
 4. Before switching the edge, send a signed delivery for a repository the service
    does not serve directly to ingress's `/webhook` from the private network. Check
    `concurro-ingress status`, then resend its GUID and confirm `200` with no second
    outbox event. Confirm the consumer recorded the initial gap by finding
    `ingress coverage gap reconciled` in service logs and checking its list state
    after strict reconciliation.
-5. Change the edge route to `concurro-ingress:8789`, set
-   `bus_coverage_authoritative` true in service settings, and restart the service.
-   Verify a new coverage fact makes lists current after the backlog drains. The
-   Python webhook route stays available through the first release. Remove it only
-   in release 2 after the cutover checks.
+5. Check real delivery corpus parity through Rust ingress, then change the edge route
+   to `concurro-ingress:8789`. In release 1, set `bus_coverage_authoritative` true
+   in service settings and restart the service. Verify that the initial coverage gap
+   was strictly reconciled, a new coverage fact makes lists current after backlog
+   drain, and redelivering a GUID produces no second effect. Record these checks.
+6. Only then prepare `/etc/concurro/service/settings.next.json` for release 2,
+   copying the current settings and removing `webhook_secret_path` and
+   `bus_coverage_authoritative` from the staged copy. Keep the
+   bus URL, credentials, replay URL and bearer, and
+   `delivery_recovery_bearer_path`. Keep the actual App webhook secret in ingress's
+   settings; Rust ingress still verifies GitHub signatures. The release helper validates
+   the staged settings with the new image before stopping the old service, then promotes
+   them. Deploy release 2 through that helper, retaining the Rust ingress edge route.
+   Release 2
+   removes Python's `/webhook` intake, App delivery scan and overlap mode. The private
+   App listing and redelivery deputy remains available to Rust ingress. The service
+   performs one strict reconciliation to establish its active scope on first C2 start;
+   later App, installation or target changes trigger another.
 
 If all eight webhook slots remain busy for 500 ms, ingress returns `503` before
 reading the queued request body and records no receipt. Recovery scans failed App

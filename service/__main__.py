@@ -16,7 +16,7 @@ from urllib.parse import quote
 import delegation
 import private
 from identities import Actor
-from policy import Blocked
+from policy import Blocked, digest
 
 from . import control, credential_order, ingress, retro, settings as settings_module, user_grant
 from .actions import Actions
@@ -34,7 +34,7 @@ from .settings import CHECKOUT, SettingsError
 from .shadow import Metadata, Shadow
 from .targets import review_targets, verify
 from .transport import Transport
-from .webhook_recovery import DeliveryBridge, Recovery
+from .webhook_recovery import DeliveryBridge
 from .worker import Worker, operator
 
 POLL_SECONDS = 300
@@ -84,7 +84,6 @@ class Daemon:
         """Check the host, verify the App, open the registry and start serving."""
         self.settings = settings = host_checks(self.settings)
         log.info("serving engine %s", settings.engine)
-        secret = private.read(settings.webhook_secret_path, (CHECKOUT,)).strip()
         self.identity = Identity(settings)
         bot_login = self.identity.verify()
         repositories = sorted({repository for target in settings.targets for repository in target.repositories})
@@ -123,6 +122,7 @@ class Daemon:
             command_comment=delegation.marked,
             review_repositories=sorted(reviews),
         )
+        self.scope = digest([str(settings.app_id), sorted(installations.items()), sorted(self.reconciler.repositories)])
         diagnostics = Store(settings.diagnostics_dir) if settings.diagnostics_dir else None
         delegation_key = (
             private.read(settings.delegation_key_path, (CHECKOUT,)).strip() if settings.delegation_key_path else None
@@ -167,9 +167,6 @@ class Daemon:
         if diagnostics:
             diagnostics.changed = lambda repository, issue: self.list_index.signal(repository, "tasks", issue)
         lists_token = read_token(settings.lists_token_path) if settings.lists_token_path else None
-        self.recovery = Recovery(
-            self.identity, self.registry, self.reconciler, installations, list_index=self.list_index
-        )
         self.scheduler = Scheduler(self.registry, gateway, worker, settings.limits)
         cutover = Cutover(settings, self.identity, gateway, self.registry, readers.__getitem__, worker.load)
         actions = Actions(
@@ -181,38 +178,54 @@ class Daemon:
             projection=worker.sponsorship.view,
         )
         self.ingress = ingress.Ingress(
-            secret,
             self.registry,
             installations,
             identities,
             issue_repositories=issue_repositories,
             command_comment=delegation.marked,
-            list_index=self.list_index,
             reviewer=reviewer,
             review_targets=reviews,
         )
         self.http = ingress.server(
-            self.ingress,
             *self.listen,
             actions=actions,
             lists=Lists(self.list_index, lists_token),
-            delivery_bridge=DeliveryBridge(self.identity, read_token(settings.delivery_recovery_bearer_path))
-            if settings.delivery_recovery_bearer_path
-            else None,
+            delivery_bridge=DeliveryBridge(self.identity, read_token(settings.delivery_recovery_bearer_path)),
         )
         self.control = control.server(
             control.Control(self.registry, self.reconciler, cutover, worker.evaluate, gateway), settings.state_dir
         )
         for name, target in (("ingress", self.http.serve_forever), ("control", self.control.serve_forever)):
             threading.Thread(target=target, name=name, daemon=True).start()
-        self.bus_worker = None
-        if settings.bus_url is not None:
-            self.bus_worker = BusWorker(settings, self.ingress, self.list_index, self.reconciler, self.stopping)
-            self.bus_worker.start()
+        self.bus_worker = BusWorker(settings, self.ingress, self.list_index, self.reconciler, self.stopping)
+        self.bus_worker.start()
         log.info("serving %d repositories as %s on %s:%d", len(repositories), bot_login, *self.listen)
 
+    def bootstrap(self):
+        """Reconcile once when the App, installations or target set changes."""
+        if self.registry.bootstrap_scope() == self.scope:
+            return
+        self.reconciler.poll(strict=True)
+        self.list_index.rebaseline()
+        self.registry.bootstrap_scope(self.scope)
+
+    def maintenance(self):
+        """Bootstrap changed scope, maintain lists, observe policies and clean runners."""
+        for operation in (
+            self.bootstrap,
+            self.list_index.maintain,
+            self.reconciler.policy_observer,
+            self.reconciler.cleanup,
+        ):
+            if operation is None:
+                continue
+            try:
+                operation()
+            except Exception as error:
+                log.warning("service maintenance failed: %s", type(error).__name__)
+
     def run(self):
-        """Dispatch due work and recover missed webhook deliveries until asked to stop."""
+        """Dispatch due work and run periodic maintenance until asked to stop."""
         poller, observer, next_poll = None, None, 0.0
         try:
             while not self.stopping.wait(DISPATCH_SECONDS):
@@ -223,7 +236,7 @@ class Daemon:
                     )
                     observer.start()
                 if time.monotonic() >= next_poll and not (poller and poller.is_alive()):
-                    poller = threading.Thread(target=self.recovery.poll, name="webhook-recovery", daemon=True)
+                    poller = threading.Thread(target=self.maintenance, name="service-maintenance", daemon=True)
                     poller.start()
                     next_poll = time.monotonic() + self.poll_seconds
         except GatewayStop as error:
@@ -240,8 +253,7 @@ class Daemon:
         self.http.shutdown()
         self.control.shutdown()
         self.scheduler.shutdown()
-        if self.bus_worker is not None:
-            self.bus_worker.thread.join(timeout=5)
+        self.bus_worker.thread.join(timeout=5)
         self.list_index.close()
         self.identity.close()
         self.registry.close()
@@ -301,8 +313,8 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     serve_command = commands.add_parser("serve", help="run the daemon")
     serve_command.add_argument("--initialize", action="store_true", help="create a new, empty registry")
-    serve_command.add_argument("--listen", default=LISTEN, help="webhook address, HOST:PORT")
-    serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS, help="App webhook recovery interval")
+    serve_command.add_argument("--listen", default=LISTEN, help="private service HTTP address, HOST:PORT")
+    serve_command.add_argument("--poll-seconds", type=int, default=POLL_SECONDS, help="maintenance interval")
     commands.add_parser("initialize", help="create a new, empty registry and exit, without starting the daemon")
     commands.add_parser(
         "authorize-reviewer", help="authorize the configured reviewer account for the App and store its grant"

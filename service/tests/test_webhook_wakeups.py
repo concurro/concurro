@@ -11,7 +11,7 @@ import test_ingress
 from controller import Outcome
 from service import registry
 from service.ingress import Ingress
-from test_ingress import BOT, INSTALLATION, SECRET, comment, payload
+from test_ingress import BOT, INSTALLATION, comment, payload
 
 
 class AtomicWakeupTests(ServiceFixture, unittest.TestCase):
@@ -22,7 +22,7 @@ class AtomicWakeupTests(ServiceFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        self.ingress = Ingress(SECRET, self.registry, {KEY[0]: INSTALLATION}, {BOT}, clock=self.clock)
+        self.ingress = Ingress(self.registry, {KEY[0]: INSTALLATION}, {BOT}, clock=self.clock)
         self.deliveries = 0
 
     def test_queue_failure_rolls_back_receipt_and_all_tasks(self):

@@ -1,4 +1,4 @@
-"""App-wide delivery recovery, pagination, retention gaps and durable progress."""
+"""Private App delivery API, pagination and daemon maintenance."""
 
 import unittest
 from copy import deepcopy
@@ -8,11 +8,11 @@ from fixtures import KEY, ServiceFixture
 
 from service.identity import Identity, IdentityError
 from service.transport import Response
-from service.webhook_recovery import HISTORY_SECONDS, DeliveryBridge, Recovery, next_page
+from service.webhook_recovery import DeliveryBridge, next_page
 
 
 class DeliveryAPI:
-    """A deterministic App API; only failed enabled-target deliveries may be retried."""
+    """A deterministic App API with delivery listing and redelivery."""
 
     app_id = 123
 
@@ -27,7 +27,7 @@ class DeliveryAPI:
         return "app-jwt"
 
     def api(self, method, path, token, data=None, *, with_headers=False):
-        """Expose two-item pages so tests exercise cursor traversal and cross-page grouping."""
+        """Expose two-item pages so tests exercise cursor traversal."""
         self.requests.append((method, path))
         if token != "app-jwt":
             raise AssertionError(token)
@@ -68,14 +68,12 @@ def delivery(number, guid=None, status="OK", code=202, installation=42):
     }
 
 
-class RecoveryTests(ServiceFixture, unittest.TestCase):
-    """No issue polling with intact delivery coverage, even after service restarts."""
+class DeliveryBridgeTests(ServiceFixture, unittest.TestCase):
+    """Private App delivery listing and redelivery work with the shared bearer."""
 
     def setUp(self):
         super().setUp()
         self.api = DeliveryAPI()
-        self.reconciler = Mock(repositories=(KEY[0],), cleanup=None)
-        self.recovery = Recovery(self.api, self.registry, self.reconciler, {KEY[0]: 42}, clock=self.clock)
 
     def test_private_delivery_bridge_pages_and_redelivers(self):
         """Ingress receives every page and can request an App redelivery with its bearer."""
@@ -95,140 +93,6 @@ class RecoveryTests(ServiceFixture, unittest.TestCase):
             (202, {}),
         )
         self.assertIn(("POST", "app/hook/deliveries/3/attempts"), self.api.requests)
-
-    def test_bootstrap_then_twelve_checks_per_idle_hour(self):
-        """An empty delivery list costs one request per check, independent of task count."""
-        self.recovery.poll()
-        self.reconciler.poll.assert_called_once_with(strict=True)
-        self.api.requests.clear()
-        for _ in range(12):
-            self.clock.now += 300
-            self.recovery.poll()
-        self.assertEqual(len(self.api.requests), 12)
-        self.reconciler.poll.assert_called_once()
-
-    def test_restart_reuses_coverage_and_long_gap_reconciles(self):
-        """Restarts preserve coverage; a gap beyond GitHub retention requires state reconciliation."""
-        self.recovery.poll()
-        self.registry.close()
-        self.registry = self.open()
-        self.recovery.registry = self.registry
-        self.recovery.poll()
-        self.reconciler.poll.assert_called_once()
-        self.clock.now += HISTORY_SECONDS
-        self.recovery.poll()
-        self.assertEqual(self.reconciler.poll.call_count, 2)
-
-    def test_changed_app_or_targets_bootstraps(self):
-        """New enrollment destinations cannot inherit another target set's coverage."""
-        self.recovery.poll()
-        other = Recovery(self.api, self.registry, self.reconciler, {KEY[0]: 43}, clock=self.clock)
-        other.poll()
-        self.assertEqual(self.reconciler.poll.call_count, 2)
-
-    def test_all_pages_group_successes_before_retrying(self):
-        """A failed original on page one is not retried when a later page confirms redelivery."""
-        self.api.items = [delivery(1, "same", "failed", 500), delivery(2), delivery(3, "same")]
-        self.recovery.poll()
-        self.assertEqual(
-            self.api.requests,
-            [
-                ("GET", "app/hook/deliveries?per_page=100"),
-                ("GET", "app/hook/deliveries?per_page=100&cursor=2"),
-            ],
-        )
-
-    def test_transport_failure_retried_but_pending_and_foreign_left_alone(self):
-        """No HTTP response still warrants retry; unfinished deliveries must not be duplicated."""
-        self.api.items = [
-            delivery(1, status="failed to connect to host", code=0),
-            delivery(2, status="Pending", code=None),
-            delivery(3, status="failed", code=500, installation=99),
-            delivery(4, status="", code=None),
-        ]
-        self.recovery.poll()
-        self.assertEqual([p for m, p in self.api.requests if m == "POST"], ["app/hook/deliveries/1/attempts"])
-
-    def test_pending_redelivery_prevents_another_retry(self):
-        """An accepted redelivery is revisited next poll, not multiplied while it is pending."""
-        self.api.items = [delivery(1, "same", "failed", 500), delivery(2, "same", "Pending", None)]
-        self.recovery.poll()
-        self.assertFalse(any(m == "POST" for m, _ in self.api.requests))
-
-    def test_wrong_repository_and_newly_successful_detail_not_retried(self):
-        """Installation membership alone does not authorize recovery of another target."""
-        self.api.items = [delivery(1, status="failed", code=500), delivery(2, status="failed", code=500)]
-        self.api.details = {
-            1: {"request": {"payload": {"repository": {"full_name": "elsewhere/repo"}}}},
-            2: {"status": "OK", "status_code": 202},
-        }
-        self.recovery.poll()
-        self.assertFalse(any(m == "POST" for m, _ in self.api.requests))
-
-    def test_page_failure_never_advances_coverage_or_redelivers_partial_listing(self):
-        """An incomplete listing might hide a successful retry and cannot become coverage evidence."""
-        self.recovery.poll()
-        before = self.registry.webhook_check(self.recovery.scope)
-        self.clock.now += 300
-        self.api.items = [delivery(1, status="failed", code=500), delivery(2), delivery(3)]
-        self.api.fail = "app/hook/deliveries?per_page=100&cursor=2"
-        self.recovery.poll()
-        self.assertEqual(self.registry.webhook_check(self.recovery.scope), before)
-        self.assertFalse(any(m == "POST" for m, _ in self.api.requests))
-
-    def test_failed_bootstrap_retried(self):
-        """Reconciliation failures are not recorded as successful bootstrap."""
-        self.reconciler.poll.side_effect = RuntimeError("unavailable")
-        self.recovery.poll()
-        self.assertIsNone(self.registry.webhook_check(self.recovery.scope))
-        self.assertEqual(self.api.requests, [])
-
-    def test_lost_redelivery_reply_recovers_from_successful_attempt(self):
-        """A failed POST reply leaves progress unchanged; the next scan recognizes success."""
-        self.recovery.poll()
-        before = self.registry.webhook_check(self.recovery.scope)
-        self.clock.now += 300
-        self.api.items = [delivery(1, "same", "failed", 500)]
-        self.api.lost = True
-        self.recovery.poll()
-        self.assertEqual(self.registry.webhook_check(self.recovery.scope), before)
-        self.api.items.append(delivery(2, "same"))
-        self.recovery.poll()
-        self.assertEqual(sum(m == "POST" for m, _ in self.api.requests), 1)
-
-    def test_retained_older_failure_is_not_skipped_by_a_time_cursor(self):
-        """Delayed failures remain discoverable on later pages, regardless of previous poll time."""
-        self.recovery.poll()
-        self.api.items = [delivery(3), delivery(2), delivery(1, status="timed out", code=None)]
-        self.recovery.poll()
-        self.assertIn(("POST", "app/hook/deliveries/1/attempts"), self.api.requests)
-
-    def test_unresolved_deliveries_cannot_age_out_silently(self):
-        """Persistent delivery failure triggers reconciliation before retained history is lost."""
-        self.recovery.poll()
-        before = self.registry.webhook_check(self.recovery.scope)
-        self.api.items = [delivery(1, status="failed", code=500)]
-        for _ in range(3):
-            self.clock.now += 24 * 60 * 60
-            self.recovery.poll()
-        self.assertEqual(self.reconciler.poll.call_count, 2)
-        self.assertGreater(self.registry.webhook_check(self.recovery.scope), before)
-
-    def test_registry_v4_upgrade_preserves_queue_and_receipts(self):
-        """The new coverage table upgrades without replacing authoritative task state."""
-        import sqlite3
-        from pathlib import Path
-
-        self.registry.receive("old", [KEY], "issue_comment")
-        self.registry.close()
-        with sqlite3.connect(Path(self.directory.name) / "registry.db") as db:
-            db.execute("DROP TABLE webhook_recovery")
-            db.execute("DROP TABLE observations")
-            db.execute("UPDATE meta SET value='4' WHERE name='schema'")
-        self.registry = self.open()
-        self.assertFalse(self.registry.receive("old", [KEY], "issue_comment"))
-        self.assertEqual([item.key for item in self.registry.due(self.clock())], [KEY])
-        self.assertIsNone(self.registry.webhook_check("scope"))
 
 
 class PaginationTests(unittest.TestCase):
@@ -252,17 +116,19 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual(exchange.call_args.args[4]["Authorization"], "Bearer jwt")
 
 
-class DaemonRecoveryTests(unittest.TestCase):
-    """The actual daemon timer targets App recovery rather than repository snapshots."""
+class DaemonMaintenanceTests(ServiceFixture, unittest.TestCase):
+    """The daemon timer maintains lists and bootstraps changed scope."""
 
-    def test_timer_calls_recovery(self):
+    def test_timer_calls_maintenance(self):
         from service.__main__ import Daemon
 
         daemon = Daemon.__new__(Daemon)
         daemon.stopping = Mock()
         daemon.stopping.wait.side_effect = [False, True]
-        daemon.scheduler, daemon.recovery, daemon.reconciler, daemon.stop = Mock(), Mock(), Mock(), Mock()
+        daemon.scheduler, daemon.reconciler, daemon.list_index, daemon.stop = Mock(), Mock(), Mock(), Mock()
         daemon.registry = Mock()
+        daemon.scope = "A"
+        daemon.registry.bootstrap_scope.return_value = "A"
         daemon.registry.observations.return_value = []
         daemon.poll_seconds = 300
 
@@ -272,6 +138,44 @@ class DaemonRecoveryTests(unittest.TestCase):
 
         with patch("service.__main__.threading.Thread", side_effect=thread):
             daemon.run()
-        daemon.recovery.poll.assert_called_once_with()
+        daemon.list_index.maintain.assert_called_once_with()
+        daemon.reconciler.policy_observer.assert_called_once_with()
+        daemon.reconciler.cleanup.assert_called_once_with()
         daemon.reconciler.poll.assert_not_called()
         daemon.stop.assert_called_once_with()
+        daemon.list_index.maintain.side_effect = RuntimeError("unavailable")
+        daemon.maintenance()
+        self.assertEqual(daemon.reconciler.policy_observer.call_count, 2)
+        self.assertEqual(daemon.reconciler.cleanup.call_count, 2)
+
+    def test_scope_changes_bootstrap_only_after_completion(self):
+        """A fresh scope, including A after B, reconciles and records only completed work."""
+        from service.__main__ import Daemon
+
+        daemon = Daemon.__new__(Daemon)
+        daemon.registry = self.registry
+        daemon.list_index = Mock()
+        daemon.reconciler = Mock(policy_observer=None, cleanup=None)
+        daemon.scope = "A"
+        with self.registry.transaction() as db:
+            db.execute("INSERT INTO webhook_recovery VALUES (?, ?)", ("A", self.clock()))
+        daemon.maintenance()
+        self.assertEqual(self.registry.bootstrap_scope(), "A")
+        daemon.reconciler.poll.assert_called_once_with(strict=True)
+        daemon.list_index.rebaseline.assert_called_once_with()
+        self.registry.close()
+        self.registry = self.open()
+        daemon.registry = self.registry
+        daemon.maintenance()
+        self.assertEqual(daemon.reconciler.poll.call_count, 1, "unchanged scope does no idle task scan")
+        daemon.scope = "B"
+        daemon.list_index.rebaseline.side_effect = RuntimeError("unavailable")
+        daemon.maintenance()
+        self.assertEqual(self.registry.bootstrap_scope(), "A", "failed rebaseline cannot complete bootstrap")
+        daemon.list_index.rebaseline.side_effect = None
+        daemon.maintenance()
+        self.assertEqual(self.registry.bootstrap_scope(), "B")
+        daemon.scope = "A"
+        daemon.maintenance()
+        self.assertEqual(self.registry.bootstrap_scope(), "A")
+        self.assertEqual(daemon.reconciler.poll.call_count, 4)

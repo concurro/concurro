@@ -6,7 +6,6 @@ import stat
 import tempfile
 import threading
 import unittest
-from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -14,7 +13,6 @@ from unittest.mock import Mock, patch
 import fixtures  # noqa: F401 -- initializes the service and engine test paths
 
 from service import control, ingress
-from service.errors import OwnershipLost
 
 
 class RequestStream(io.BytesIO):
@@ -75,7 +73,7 @@ class ServerFixture:
 
     def ingress_server(self, dependency):
         """Construct a real ingress server on an ephemeral local port."""
-        server = ingress.server(dependency, "127.0.0.1", 0)
+        server = ingress.server("127.0.0.1", 0)
         self.addCleanup(server.server_close)
         return server
 
@@ -179,23 +177,12 @@ class IngressHttpTests(ServerFixture, unittest.TestCase):
             f"HTTP/1.0 {status} {reason}\r\nServer: test-server\r\nDate: test-date\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {len(body)}\r\n\r\n"
         ).encode() + body
 
-    def test_length_early_returns(self):
-        """Missing, malformed and excessive lengths cause no body read or ingress call."""
-        dependency = Mock()
-        server = self.ingress_server(dependency)
-        self.assertEqual(ingress.BODY_LIMIT, 25_000_000)
-        for length, status, reason, body in (
-            (None, 411, "Length Required", b"length required\n"),
-            ("no", 411, "Length Required", b"length required\n"),
-            ("-1", 411, "Length Required", b"length required\n"),
-            ("25000001", 413, HTTPStatus(413).phrase, b"payload too large\n"),
-        ):
-            headers = b"" if length is None else f"Content-Length: {length}\r\n".encode()
-            with self.subTest(length=length):
-                stream = self.dispatch(server, b"POST / HTTP/1.0\r\n" + headers + b"\r\nbody")
-                self.assertEqual(bytes(stream.outgoing), self.response(status, reason, body))
-                self.assertEqual(stream.incoming.reads, [])
-        dependency.handle.assert_not_called()
+    def test_retired_webhook_path_is_absent(self):
+        """The service has no public webhook intake or body read."""
+        server = self.ingress_server(Mock())
+        stream = self.dispatch(server, b"POST /webhook HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}")
+        self.assertEqual(bytes(stream.outgoing), self.response(404, "Not Found", b"not found\n"))
+        self.assertEqual(stream.incoming.reads, [])
 
     def test_get_routes(self):
         """Only the exact health path is healthy; GET never calls ingress."""
@@ -210,67 +197,3 @@ class IngressHttpTests(ServerFixture, unittest.TestCase):
                 stream = self.dispatch(server, f"GET {path} HTTP/1.0\r\n\r\n".encode())
                 self.assertEqual(bytes(stream.outgoing), self.response(status, reason, body))
         dependency.handle.assert_not_called()
-
-    def test_post_path_headers_body_and_logging(self):
-        """POST accepts any path, passes only the three headers, and reads exactly its length."""
-        dependency = Mock()
-        dependency.handle.return_value = (202, "queued")
-        server = self.ingress_server(dependency)
-        with patch.object(ingress.log, "debug") as log:
-            stream = self.dispatch(
-                server,
-                b"POST /anything?query=1 HTTP/1.0\r\nContent-Length: 2\r\nX-Hub-Signature-256: sig\r\nX-GitHub-Event: issue_comment\r\nX-GitHub-Delivery: delivery\r\nIgnored: value\r\n\r\n{}extra",
-            )
-        dependency.handle.assert_called_once_with(
-            {"X-Hub-Signature-256": "sig", "X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "delivery"}, b"{}"
-        )
-        self.assertEqual(
-            list(dependency.handle.call_args.args[0]), ["X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery"]
-        )
-        self.assertEqual(stream.incoming.reads, [2])
-        self.assertEqual(bytes(stream.outgoing), self.response(202, "Accepted", b"queued\n"))
-        log.assert_called_once_with('ingress: "%s" %s %s', "POST /anything?query=1 HTTP/1.0", "202", "-")
-
-    def test_zero_and_maximum_length_missing_headers(self):
-        """Zero and the maximum length reach the dependency; absent delivery headers are empty."""
-        dependency = Mock()
-        dependency.handle.return_value = (200, "ok")
-        server = self.ingress_server(dependency)
-        for length in (0, 25_000_000):
-            with self.subTest(length=length):
-                stream = self.dispatch(server, f"POST / HTTP/1.0\r\nContent-Length: {length}\r\n\r\n".encode())
-                self.assertEqual(stream.incoming.reads, [length])
-                dependency.handle.assert_called_with(
-                    {"X-Hub-Signature-256": "", "X-GitHub-Event": "", "X-GitHub-Delivery": ""}, b""
-                )
-                self.assertEqual(bytes(stream.outgoing), self.response(200, "OK", b"ok\n"))
-
-    def test_exception_response_and_gateway_stop_propagation(self):
-        """Ordinary exceptions produce 503, while GatewayStop escapes without a response."""
-        dependency = Mock()
-        server = self.ingress_server(dependency)
-        dependency.handle.side_effect = ValueError("private detail")
-        with patch.object(ingress.log, "warning") as log:
-            stream = self.dispatch(server, b"POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
-        self.assertEqual(bytes(stream.outgoing), self.response(503, "Service Unavailable", b"unavailable\n"))
-        log.assert_called_once_with("delivery failed: %s", "ValueError")
-        stopped = OwnershipLost("stop")
-        dependency.handle.side_effect = stopped
-        stream = RequestSocket(b"POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
-        with patch.object(ingress.log, "warning") as log, self.assertRaises(OwnershipLost) as raised:
-            server.RequestHandlerClass(stream, ("127.0.0.1", 1), server)
-        self.assertIs(raised.exception, stopped)
-        self.assertEqual(bytes(stream.outgoing), b"")
-        log.assert_not_called()
-
-    def test_two_ingress_servers_keep_dependencies_separate(self):
-        """Interleaved handlers use their server's dependency, even after another is created."""
-        dependencies = [Mock(), Mock()]
-        servers = []
-        for index, dependency in enumerate(dependencies):
-            dependency.handle.return_value = (202, f"server {index}")
-            servers.append(self.ingress_server(dependency))
-        for index in (0, 1, 0, 1):
-            stream = self.dispatch(servers[index], b"POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
-            self.assertEqual(bytes(stream.outgoing), self.response(202, "Accepted", f"server {index}\n".encode()))
-        self.assertEqual([dependency.handle.call_count for dependency in dependencies], [2, 2])

@@ -23,7 +23,6 @@ FIELDS = {
     "engine",
     "app_id",
     "private_key_path",
-    "webhook_secret_path",
     "state_dir",
     "registry_id",
     "targets",
@@ -41,7 +40,6 @@ FIELDS = {
     "bus_replay_bearer_path",
     "bus_max_attempts",
     "bus_backoff_seconds",
-    "bus_coverage_authoritative",
     "reviewer",
 }
 OPTIONAL = {
@@ -51,14 +49,8 @@ OPTIONAL = {
     "vault_metadata_url",
     "vault_service_token_path",
     "lists_token_path",
-    "delivery_recovery_bearer_path",
-    "bus_url",
-    "bus_credentials_path",
-    "bus_replay_url",
-    "bus_replay_bearer_path",
     "bus_max_attempts",
     "bus_backoff_seconds",
-    "bus_coverage_authoritative",
     "reviewer",
 }
 GATEWAY_FIELDS = {"url", "operator_token_path", "executor", "workflow_ref", "models", "budget", "headers"}
@@ -116,12 +108,17 @@ class Settings:
     engine: str | None
     app_id: int
     private_key_path: Path
-    webhook_secret_path: Path
     state_dir: Path
     registry_id: str
     targets: tuple
     limits: Limits
     gateway: Gateway
+    # Required after the edge switches to Rust ingress.
+    delivery_recovery_bearer_path: Path
+    bus_url: str
+    bus_credentials_path: Path
+    bus_replay_url: str
+    bus_replay_bearer_path: Path
     # Run diagnostics are recorded here when set (see `service.diagnostics`).
     diagnostics_dir: Path | None = None
     # Signs commands the backoffice delivers (`engine/delegation.py`); without it they are refused.
@@ -130,16 +127,8 @@ class Settings:
     vault_service_token_path: Path | None = None  # Separate service bearer, never a user token.
     # The backoffice's bearer for the list index endpoints; without it they are refused.
     lists_token_path: Path | None = None
-    # Bearer used only by Rust ingress to list and redeliver App webhook attempts.
-    delivery_recovery_bearer_path: Path | None = None
-    # Optional during the dual HTTP and bus release.
-    bus_url: str | None = None
-    bus_credentials_path: Path | None = None
-    bus_replay_url: str | None = None
-    bus_replay_bearer_path: Path | None = None
     bus_max_attempts: int = 5
     bus_backoff_seconds: int = 1
-    bus_coverage_authoritative: bool = False
     # Enables standalone PR reviews; without it review requests are ignored.
     reviewer: Reviewer | None = None
 
@@ -205,9 +194,7 @@ def load(path):
     require(isinstance(data["registry_id"], str) and REGISTRY.fullmatch(data["registry_id"]), "registry_id")
     # Every secret file is distinct by filesystem identity, not by spelling.
     key, key_identity = secret(data["private_key_path"], "private_key_path")
-    webhook, webhook_identity = secret(data["webhook_secret_path"], "webhook_secret_path")
-    require(webhook_identity != key_identity, "webhook_secret_path")
-    targets, identities = [], {key_identity, webhook_identity}
+    targets, identities = [], {key_identity}
     require(isinstance(data["targets"], list) and data["targets"], "targets")
     for entry in data["targets"]:
         require(isinstance(entry, dict) and set(entry) == {"upstream", "fork", "issues"}, "targets")
@@ -240,40 +227,23 @@ def load(path):
         lists_token, lists_identity = secret(data["lists_token_path"], "lists_token_path")
         require(lists_identity not in identities, "lists_token_path")
         identities.add(lists_identity)
-    delivery_recovery_bearer = None
-    if "delivery_recovery_bearer_path" in data:
-        delivery_recovery_bearer, bridge_identity = secret(
-            data["delivery_recovery_bearer_path"], "delivery_recovery_bearer_path"
-        )
-        require(bridge_identity not in identities, "delivery_recovery_bearer_path")
-        identities.add(bridge_identity)
-    bus_credentials = bus_replay_bearer = None
-    bus_url, bus_replay_url = data.get("bus_url"), data.get("bus_replay_url")
-    require(
-        all(
-            value is None
-            for value in (bus_url, bus_replay_url, data.get("bus_credentials_path"), data.get("bus_replay_bearer_path"))
-        )
-        or all(
-            value is not None
-            for value in (bus_url, bus_replay_url, data.get("bus_credentials_path"), data.get("bus_replay_bearer_path"))
-        ),
-        "bus",
+    delivery_recovery_bearer, bridge_identity = secret(
+        data["delivery_recovery_bearer_path"], "delivery_recovery_bearer_path"
     )
-    if bus_url is not None:
-        require(isinstance(bus_url, str) and re.fullmatch(r"nats://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_url), "bus_url")
-        require(
-            isinstance(bus_replay_url, str) and re.fullmatch(r"https?://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_replay_url),
-            "bus_replay_url",
-        )
-        bus_credentials, credentials_identity = secret(data["bus_credentials_path"], "bus_credentials_path")
-        require(credentials_identity not in identities, "bus_credentials_path")
-        identities.add(credentials_identity)
-        bus_replay_bearer, replay_identity = secret(data["bus_replay_bearer_path"], "bus_replay_bearer_path")
-        require(replay_identity not in identities, "bus_replay_bearer_path")
-        identities.add(replay_identity)
-    require(isinstance(data.get("bus_coverage_authoritative", False), bool), "bus_coverage_authoritative")
-    require(not data.get("bus_coverage_authoritative", False) or bus_url is not None, "bus_coverage_authoritative")
+    require(bridge_identity not in identities, "delivery_recovery_bearer_path")
+    identities.add(bridge_identity)
+    bus_url, bus_replay_url = data["bus_url"], data["bus_replay_url"]
+    require(isinstance(bus_url, str) and re.fullmatch(r"nats://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_url), "bus_url")
+    require(
+        isinstance(bus_replay_url, str) and re.fullmatch(r"https?://[A-Za-z0-9.-]+:[0-9]{1,5}", bus_replay_url),
+        "bus_replay_url",
+    )
+    bus_credentials, credentials_identity = secret(data["bus_credentials_path"], "bus_credentials_path")
+    require(credentials_identity not in identities, "bus_credentials_path")
+    identities.add(credentials_identity)
+    bus_replay_bearer, replay_identity = secret(data["bus_replay_bearer_path"], "bus_replay_bearer_path")
+    require(replay_identity not in identities, "bus_replay_bearer_path")
+    identities.add(replay_identity)
     reviewer = None
     if "reviewer" in data:
         entry = data["reviewer"]
@@ -297,7 +267,6 @@ def load(path):
         engine=data.get("engine"),
         app_id=integer(data["app_id"], "app_id"),
         private_key_path=key,
-        webhook_secret_path=webhook,
         state_dir=state(data["state_dir"]),
         registry_id=data["registry_id"],
         targets=tuple(targets),
@@ -315,7 +284,6 @@ def load(path):
         bus_replay_bearer_path=bus_replay_bearer,
         bus_max_attempts=integer(data.get("bus_max_attempts", 5), "bus_max_attempts"),
         bus_backoff_seconds=integer(data.get("bus_backoff_seconds", 1), "bus_backoff_seconds"),
-        bus_coverage_authoritative=data.get("bus_coverage_authoritative", False),
         reviewer=reviewer,
     )
 
