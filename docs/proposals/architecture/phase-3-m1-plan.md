@@ -24,7 +24,7 @@ the controller can be restarted at any point without a second turn or publicatio
 | Initialization and the intake stage, its repairs and outcomes | Every later stage (M2) |
 | Call budgets, the uncertain-attempt limit, the attempt record | Retries across credentials |
 | The exchange adapter, payload v1, polling, cancel | |
-| Turn content (spec, prompt, response, workspace, transcript) in the blob store | Reading it from the backoffice API (M3) |
+| Searchable transcript entries and other turn diagnostics in PostgreSQL, original `.tar.gz` bundles in Hetzner | Reading diagnostics from the backoffice API (M3) |
 | Publication: App and read tokens, the dashboard, notices, replies, stage labels, the run ref and dispatch, settlement | Branches, PRs, reviews and checks (M2); delivery recovery and gaps (cutover) |
 | Operator views and recovery commands for what M1 does | |
 | The exchange's tombstones and session-ending cancel | The operator listener move (cutover) |
@@ -123,6 +123,11 @@ M1 ports the stages up to the end of intake:
 
 ### Attempts
 
+- **Retained continuations.** Before funding or creating an attempt, match the
+  required revision's journal to the scope, ordinal and v1 prompt. A complete
+  predecessor can continue, and an exact same-turn replay can use the cached
+  response. On refusal record the reason. Successful admission pins the revision.
+  Fresh intake needs no retained input. [Journal rules](../contracts.md#retained-session-eligibility)
 - **Admission is one transaction:** the call budget (`max_model_calls` from the task's
   configuration) is checked, the payer decided, the call charged and the attempt
   recorded with its ID, inputs, limits and submit effect. Today a call is charged once a
@@ -171,12 +176,16 @@ the edge's `/exchange/*` route, as the Python service reaches it.
   more than 20 consecutive failed polls (`:49`) the attempt is `unknown` too, but the
   turn isn't cancelled, since a polling outage is no evidence the runner stopped
   (`:539-542`); it stays live for `stop`.
-- **Turn content:** the submit spec and the prompt, and the response, workspace and
-  transcript of a finished turn, are written to the [blob store](../contracts.md#blobs)
-  before the turn's event references them; a write is create-only, so a replay repeats
-  it harmlessly. The prompt is reconstructed as today (`prompt(request, feedback)`,
-  `service/diagnostics.py:145-150`), with the instructions, repository snapshot, schema
-  and untrusted context the backoffice shows (`backoffice/turns.py:135`).
+- **Turn content.** Store the spec, prompt, response and workspace in PostgreSQL.
+  Reconstruct the prompt from the request and feedback as Python does
+  (`service/diagnostics.py:145-150`). Index transcript events and text at ingestion.
+  Commit turn and session links with the rows, the pending Hetzner upload of the exact
+  gzip bytes, and the turn's outbox event. Retain fallback lines by source position
+  and render transcript members in Python display order. Session restore uses the
+  pending bytes until Hetzner readback verifies the object. Upload retries operate
+  independently of the turn. A corrupt archive records a diagnostic alongside the
+  completed result. It supplies neither searchable entries nor a restore point.
+  [Ingestion contract](../contracts.md#transcript-search)
 - **Every reply,** whatever its status, is checked for `provider_failure` and `refusal`
   and acted on at once (`engine/agents.py:485-498`); a `budget_denied` failure pauses the
   task as today.
@@ -241,7 +250,11 @@ host user, and none makes a request, consent or approval on a GitHub user's beha
   live, sessions, the report, and every write with its state.
 - **`effects pending`:** every effect `sending` without an outcome or waiting on a
   readback, with its age and what settling it needs. `recorded` means never sent and safe
-  to retry; `sending` means it may have happened.
+  to retry; `sending` means it may have happened. Include queued, retrying and
+  exhausted archive uploads with gzip digest, byte count and last error, if any.
+- **`archives retry <gzip-sha256>`** requeues a pending upload at its original key.
+  Repeated and concurrent requests share one active job. A verified archive needs
+  no job. Record the operator action without creating a new turn or model call.
 - **`writes resolve <write> --written <url> | --failed | --resend`:** settles a pending
   comment create from what the operator saw on GitHub. `--written` adopts the comment.
   `--failed` stops waiting and sends nothing; a late create is still adopted when its
@@ -258,7 +271,8 @@ Settings files, read at start, as phases 1 and 2 do: targets (upstream, fork, is
 launcher, reviewer), the engine release, per-attempt token limit and lease, the
 exchange's operator URL and token, what payload v1 gives runners (the public gateway URL,
 headers and the optional Codex WebSocket URL), the App ID and private key file, the
-database URL, the NATS credentials and the blob store's credentials. In M1 the targets
+database URL, NATS credentials, and the configured Hetzner S3 endpoint, bucket,
+archive prefix and credential file. In M1 the targets
 are bootstrap settings; the architecture puts mutable target settings and funding policy
 in the owning service's database behind an authenticated API
 ([migration](../architecture.md#migration)), which isn't part of M1.
@@ -320,9 +334,50 @@ Each case that runs a task from the start uses its own fresh issue.
     a changed body gets `409`; a turn cancelled before submission can't be submitted.
 11. **Fixtures and events.** Every GitHub read and write the task application makes
     matches a captured fixture; every event it publishes is schema-valid and reaches the
-    test consumer once, across a restart and a duplicate delivery. Every blob a turn
-    event references is in the store with its digest, and a captured turn's prompt blob
-    matches the prompt the Python service's diagnostics record for the same turn.
+    test consumer once, across a restart and a duplicate delivery. The prompt matches
+    Python's diagnostics for the same turn.
+    - Ingest Claude and Codex fixtures with distinct terms in a user message, tool
+      argument and result, including one past the display limit. At commit, SQL finds
+      each term and its source JSON, position, turn and session. A retry leaves the
+      same event and link counts. Check LZ4 selection and the PGLZ fallback using
+      large compressible text.
+    - Put a valid JSON tool result containing `leftword\u0000rightword` between
+      two ordinary messages. At commit SQL finds both words and both neighboring
+      messages. The fallback has the exact source bytes, position, diagnostic and
+      NULL JSON. Turn and session links, pending gzip and outbox event all commit.
+      Replay leaves the same rows and links and publishes no second event.
+    - Return a valid `proceed` intake report with a truncated gzip. Restart and
+      replay the same exchange result. The report advances the task once. Verify one
+      model call, one attempt and one `finished` fact. The fact carries
+      the archive error and no transcript. No partial entries are searchable. In
+      a retained-session fixture, request a continuation with call budget available
+      and that known-corrupt revision already uploaded. Repeat the decision after
+      restart. Each time it reports the unavailable revision. Attempt, grant,
+      reservation and charged-call counts stay at their pre-continuation values.
+      No submit effect or exchange request is created, even with an older readable
+      revision present.
+    - Ingest a readable archive with a pending journal and a unique message. SQL
+      finds it before and after Hetzner verification. Attempt a continuation in
+      both states and after restart. Verify the same refusal and unchanged counts
+      as for the truncated gzip. Repeat with a wrong scope, skipped ordinal,
+      changed instructions or schema, and a same-ordinal request with a changed
+      digest. Positive controls use v1 fixtures: a matching completed predecessor
+      continues, exact same-ordinal replay returns the cached response without
+      invoking the provider, and fresh turn zero starts without a journal.
+    - Give `z.jsonl` an earlier tar modification time than `a.jsonl`, packing
+      `a` first. Read entries in display order twice across replay. Expect `z`
+      before `a`, with original line and part order and unchanged source positions.
+    - Interrupt archiving before the PUT and after the PUT before acknowledgement.
+      Search still finds the transcript. After restart the job settles at one key,
+      the downloaded bytes match the original gzip digest and size, and the v1
+      runner restores the retained session from that object.
+    - Exercise persistent PUT and readback failures separately through the last retry. Restart the
+      application. SQL search and a v1 session restore from the pending gzip still
+      work. `effects pending` shows the exhausted digest, byte count and last error.
+      Restore Hetzner and issue two concurrent `archives retry` calls for that digest.
+      One active upload verifies the object and releases the pending bytes. Retry
+      after verification schedules nothing. Turn, model-call, event and link counts
+      stay unchanged.
 12. **Separation.** Events for the real targets are ignored by the task application, and
     events for the test repository by the Python service.
 13. **Operator.** `attempts cancel` and `writes resolve` are recorded as the operator's
@@ -331,21 +386,20 @@ Each case that runs a task from the start uses its own fresh issue.
 
 ## Work order
 
-1. **Spikes:** pick the object store server, and write and read a create-only blob
-   through `concurro-blobs`' features; sign an RS256 App JWT; record GitHub fixtures for every call M1 makes,
-   from the test repository; record the exchange's submit, poll and cancel bodies and a
-   baseline intake payload from the Python service.
-2. **Crates:** `concurro-github`, `concurro-blobs`, `concurro-exchange-v1`, and the task
-   application's three crates with the effect records and job runner.
+1. **Spikes:** sign an RS256 App JWT and record GitHub fixtures for M1's calls on the
+   test repository. Capture the exchange's submit, poll and cancel bodies, a runner
+   transcript archive and a baseline intake payload from the Python service.
+2. **Crates:** `concurro-github`, `concurro-exchange-v1`, and the task application's
+   three crates, including PostgreSQL transcript tables and search index, the harness
+   format readers, and the durable Hetzner upload job.
 3. **Intake and requests,** then initialization and the intake stage, then attempts, the
    exchange adapter and polling.
 4. **Publication:** tokens, admission, rendering, write records and settlement.
 5. **Operator views and recovery commands.**
 6. **Exchange changes,** deployed while the Python service keeps running.
-7. **Platform:** object storage with a bucket and credentials for the task application;
-   the `tasks` database and role, a NATS user and durable consumer, the
-   service in a compose project on the platform network; the test repository in its
-   targets only.
+7. **Platform:** provision the `tasks` database and role, its backup, and a NATS user
+   and durable consumer. Configure the existing Hetzner store with a private test prefix. Run the service in a compose project on the platform network
+   with only the test repository in its targets.
 8. **The exit test.**
 
 Steps 3 and 4 can be built in parallel once step 2 is done.

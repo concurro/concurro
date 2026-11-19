@@ -89,13 +89,13 @@ What runs at the cutover:
 | Process | Separate because | Holds |
 | ---- | ---- | ---- |
 | Ingress (Rust, phase 2) | Public webhook endpoint; must accept deliveries while the task application restarts | The webhook secret, delivery receipts |
-| Task application (Rust) | Sole controller and sole GitHub writer: the highest-privilege Rust process | Task state; the App's private key, the reviewer account's user grant (stored, refreshed and bound by numeric ID, as `service/user_grant.py` keeps it), the exchange's operator token, the vault's metadata bearer |
-| Backoffice API (Rust) | Faces browsers through the edge; must not hold the task application's authority | Its read model; a bearer that can only load the baseline; a read-scoped credential to the Python backoffice (session identity and tiers only); read-only object storage credentials. It submits no command |
+| Task application (Rust) | Sole controller and sole GitHub writer: the highest-privilege Rust process | Task state; the App's private key, the reviewer account's user grant (stored, refreshed and bound by numeric ID, as `service/user_grant.py` keeps it), the exchange's operator token, the vault's metadata bearer and the Hetzner archive credential |
+| Backoffice API (Rust) | Faces browsers through the edge; must not hold the task application's authority | Its read model; a read-only bearer for the task baseline, turn artifacts and transcript entries; a read-scoped credential to the Python backoffice (session identity and tiers only). It submits no command |
 | Backoffice (Python) | Signs users in with GitHub OAuth and keeps their tokens; takes the browser's commands | Sessions, the command signing key, the requests API bearer; its credentials and relay approval pages call the vault |
 | Exchange (Python) and agentgateway, two containers; the exchange shares the gateway container's network namespace (`gateway/compose.yaml:22-46`) | Runners on the internet call them; they hold org provider keys and runner OIDC trust | Turns, sessions, sponsorship slots and per-issue generations |
 | Vault (Python) | Personal credential material and its keyring | Credential records |
 | Runner (GitHub Actions, in target forks) | Runs untrusted model output | Nothing durable |
-| Postgres, NATS, object storage | Shared platform | Each service's database; the streams; turn content, written by the task application and read by the backoffice API |
+| Postgres, NATS and Hetzner Object Storage | Shared infrastructure | Service databases, event streams and a private bucket for original runner archives |
 
 Who owns each durable change:
 
@@ -144,7 +144,7 @@ share one database and commit together, with no internal API or bus between them
 - **Crates,** as ingress is built: `concurro-tasks-core` (the modules' rules and types; no
   SQLx, NATS or HTTP), `concurro-tasks-postgres` (migrations and the transaction API) and
   `concurro-tasks` (the binary: the event consumer, the requests API, jobs, clients, the
-  operator commands). Shared crates: `concurro-github`, `concurro-blobs`,
+  operator commands). Shared crates: `concurro-github`,
   `concurro-exchange-v1`, `concurro-vault-v1` (below), and phases 1 and 2's contracts,
   events, database, configuration, telemetry and test kit. A crate or module that passes
   about 1,000 lines is a prompt to reconsider its responsibilities, not a limit.
@@ -168,14 +168,19 @@ share one database and commit together, with no internal API or bus between them
   `concurro-exchange-v1` and `concurro-vault-v1`, the only crates that know their
   shapes, with fixtures captured from today's services. Each retires with its bridge in
   phase 5.
-- **Turn content is in blobs.** A turn's submit spec, prompt, response, workspace and
-  transcript go to content-addressed object storage ([blobs](../contracts.md#blobs)) from
-  M1, so the backoffice API can show run diagnostics as today
-  (`backoffice/turns.py:94-141`) once the Python service's diagnostics store retires.
-  `concurro-blobs` wraps `object_store` (0.14.2, with `aws-base`, `ring` and `reqwest`:
-  `aws-base` brings no HTTP connector); `PutMode::Create` makes a write create-only, and
-  a key can only ever hold its own content. The server is chosen in M1's spikes:
-  self-hosted, S3-compatible, persistent, with backups.
+- **Diagnostics and archives.** From M1 the task application indexes new transcript
+  messages, tool calls and results in PostgreSQL as it receives them. The historical
+  importer uses the same path. Full source events and searchable text retain their
+  turn and session links. Large PostgreSQL values use LZ4 where available and PGLZ
+  otherwise. PostgreSQL retains the original gzip for restore until the uploader
+  verifies it in the private Hetzner bucket. An operator can retry an exhausted
+  upload independently of the turn. An unreadable archive leaves a diagnostic on
+  the completed turn and cannot supply a restore point. Readable transcripts stay
+  searchable even when their journal cannot resume the requested turn. Admission
+  checks that journal before reserving or charging a call. Specs, prompts, responses
+  and workspace changes stay in PostgreSQL. From M3 the backoffice reads these diagnostics
+  through the task application.
+  [Storage contract](../contracts.md#blobs)
 - **Reports** are stored in the task database and carried in the task's report events.
   Whether full reports are also published on GitHub stays an
   [open question](../architecture.md#open-questions) until M2, which publishes reports.
@@ -189,9 +194,8 @@ A separate Rust process, the backend for the frontend (`concurro-backoffice`), u
   GitHub token, and never receives the Python session cookie: at sign-in the Python
   backoffice also issues a read-only viewer token, which answers only identity and tier
   lookups, and the edge strips the session cookie from `/api/v2/*` requests. Its bearer
-  to the task application can only load the baseline, and its object storage
-  credentials can only read. None of these can authorize a command, through the Python
-  backoffice or the task application.
+  to the task application allows baseline, transcript and turn artifact reads. It holds
+  no S3 credentials and cannot authorize a command through either service.
 - **Its read model** is fed by the task application's events, each snapshot kept at its
   highest revision, and serves task lists, task pages, run diagnostics, sponsorships and
   live updates. An empty or stale read model first creates its durable consumer, then
@@ -277,6 +281,14 @@ mode with org funding:
 8. **Terminal:** `observed_merged` when a person merges the PR (`:2261`), `closed` when
    it's closed unmerged, or `stopped`, `rejected`, `escalated` or `blocked` on the way.
 
+Exercise two regressions when implementing retained turns in M2:
+
+- Replay a complete journal with the same scope, ordinal and request digest but a
+  null cached response. Verify refusal before any grant, call charge or dispatch.
+- Use an otherwise eligible, highly compressible archive. A continuation and an exact
+  replay one byte over the uncompressed limit must each be refused before funding.
+  With the limit equal to the restored file size or explicitly `null`, both are eligible.
+
 **Recovery the operator gets:** `tasks show` explains why a task is waiting and on what;
 `effects pending` separates a `recorded` effect (never sent, safe to retry) from a
 `sending` one (may have happened, settled by readback or by the operator from what
@@ -318,6 +330,8 @@ next step are readable in `tasks show`.
 - **The backoffice API,** its baseline and read model, the Python backoffice's
   read-scoped session and tier API and its forwarding of commands, and the frontend's v2
   calls.
+- **Historical diagnostics:** build and rehearse the restartable
+  [Python archive import](../contracts.md#python-archive-import) before the cutover.
 - **Delivery recovery** for ingress and **coverage gaps** (a strict re-read of every
   active task).
 
@@ -385,17 +399,35 @@ fault after the cutover is fixed forward.
    (`exchange.py:503-512`, `:764-773`). The PR numbers in Python's list index are
    exported too, and seed the first index build, since task-branch discovery searches
    only the 100 most recently updated PRs (`service/github_reads.py:298`).
-7. **Move credentials and listeners.** Move the exchange's operator listener to the
+7. **Import historical archives.** Run the [archive import](../contracts.md#python-archive-import)
+   against the stopped Python service's diagnostics and retained session directories.
+   The import command runs only the archive uploader with the task database and
+   Hetzner credentials. Keep the controller, ingress consumer and other workers
+   stopped through this step. Resume the import after interruption and requeue any
+   exhausted uploads after repair. Verify each original gzip in Hetzner, search its
+   indexed text where present, and reconcile turn, harness session, runner and
+   unmatched source references with the inventory. Preserve both the requested turn
+   number and the journal's last completed turn, even when a failed turn returns
+   its predecessor's journal. Distinguish inherited staffing from serving assignments.
+   Imported
+   rows reach the backoffice through its baseline and emit no live turn events.
+   An empty inventory completes with zero files and references.
+8. **Move credentials and listeners.** Move the exchange's operator listener to the
    platform network and rotate the operator token so only the task application holds
    it. With Python stopped, transfer the production reviewer grant and its refresh
    configuration (client ID and secret) to the task application, which refreshes it from
    then on.
-8. **Start the task application** as the sole controller. Its durable consumer starts at
+9. **Start the task application** as the sole controller. Its durable consumer starts at
    or before stream sequence `S + 1`; the source rule below decides what applies.
-   Ingress's delivery recovery client points at it. The frontend switches to the
-   backoffice API for task views, and the Python backoffice's command POST to
-   forwarding; its task pages and delegated command comments retire.
-9. **Check.** A test issue on a real target runs intake; `consumer status` shows the
+   Ingress's delivery recovery client points at it. With the import complete, refresh
+   the backoffice API's [baseline](../contracts.md#target-index-and-baseline) even
+   if its read model is populated and its consumer is caught up. Once the snapshot
+   and buffered events have been applied, switch the frontend to the backoffice API
+   for task views and the Python command POST to forwarding. The Python task pages
+   and delegated command comments retire. In the rehearsal, pin the baseline on page
+   one, then commit and deliver a newer turn revision before the final page. At the
+   switch the writer must see both that revision and the imported transcript.
+10. **Check.** A test issue on a real target runs intake; `consumer status` shows the
    position past `S`; a redelivery requested through ingress is answered; a writer's
    backoffice command applies as that writer; the reviewer grant refreshes and a
    standalone review is attributed to the reviewer's numeric ID. If the export holds a

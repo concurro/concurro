@@ -389,13 +389,16 @@ exchange, performs redeliveries for ingress, and calls the verifier's owner endp
   URL, if its load or failure isolation calls for it.
 - **Secrets aren't stored in plaintext.** Exchange session keys and runner tokens are
   stored hashed or encrypted.
-- **Large blobs** (turn specs, prompts, responses, workspaces, transcripts) live in
-  content-addressed object storage referenced from Postgres, not in rows or artifacts,
-  from phase 3.
-- **Minimum requirements** to document: a supported PostgreSQL release, a NATS server
-  with JetStream on persistent storage, an OpenBao server with its unseal key file,
-  object storage for blobs, connection URLs per service, and backup of every
-  database and the object store, OpenBao's database together with its unseal key.
+- **Turn diagnostics** live in the task application's PostgreSQL database. From M1 it
+  extracts and indexes transcript events at ingestion, linked to their turns and
+  sessions. Specs, prompts, responses and workspaces also live in the task database.
+  The task application archives original `.tar.gz` bundles in Hetzner Object Storage
+  for recovery and session restore. The backoffice reads diagnostics through the
+  task application.
+- **Minimum requirements** include a supported PostgreSQL release, persistent NATS
+  JetStream, the private Hetzner archive bucket from phase 3, and OpenBao with its
+  unseal key from phase 5. Back up each database and retain the archive objects its
+  backups reference. Keep OpenBao's unseal key with its database backup.
 
 ### Events and the bus
 

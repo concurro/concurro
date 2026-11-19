@@ -291,6 +291,8 @@ API. The [records](#task-application-records) its modules share are not contract
 | `consent.<repository_id>.<number>.{granted,replaced,withdrawn}` | Fact | → backoffice API read model: each user's own consent history, on issues with or without a task | 3/M3 | Full ([below](#consent-facts)) |
 | `index.<repository_id>.{issue,pull_request,workflow_run}` | Snapshot | → backoffice API read model: the target index | 3/M3 | Full ([below](#target-index-and-baseline)) |
 | `GET /v1/baseline` | API | Backoffice API → task application: every current snapshot and the durable history the views show, read as one consistent snapshot | 3/M3 | Full ([below](#target-index-and-baseline)) |
+| `GET /v1/turns/{turn}/artifacts/{sha256}` | API | Backoffice API → task application: bytes for one PostgreSQL artifact referenced by the turn | 3/M3 | Full ([below](#blobs)) |
+| `GET /v1/turns/{turn}/transcript` | API | Backoffice API → task application: ordered transcript entries from PostgreSQL | 3/M3 | Full ([below](#transcript-search)) |
 | `funding.charge` | Fact | → backoffice API read model | 5 | Sketch: grant, usage, cost basis |
 | [Delivery recovery](#delivery-recovery) | API | Ingress → task application | 3/M3; the Python service until the Cutover | Full |
 | GitHub REST, with captured fixtures | Client | Task application → GitHub | 3/M1 | Full for each milestone's calls |
@@ -366,7 +368,7 @@ Released by `concurro-relay` for phase 5.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Blob store | Object storage | Task application writes (3/M1); backoffice API reads (3/M3); exchange writes runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
+| Turn diagnostics and original archives | PostgreSQL search rows and artifacts, Hetzner S3 archive objects | Task application stores turn content (3/M1); backoffice API fetches it through the task application (3/M3); exchange accepts runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
 | KV path per credential version | OpenBao KV v2 | The credentials owner writes and destroys; gateway reads; migrator writes once | 5 | Sketch: `{secret, account}`, check-and-set 0, custom metadata `{entry, record, route}` |
 
 ### Backoffice
@@ -384,7 +386,7 @@ Released by `concurro-relay` for phase 5.
 | Parked events | API | Operator → every consumer | 1 | Sketch: list, inspect, replay or discard a parked event, by consumer and event ID |
 | Operator views and recovery | CLI | Operator → task application | 3/M1 | Full ([M1 plan](architecture/phase-3-m1-plan.md)) |
 | Reconciliation | CLI | Operator → task application | 3/M3 | Sketch: reconcile a task or a repository over a period, as for a [coverage gap](#coverage-gaps) |
-| Cutovers and migrations | Runbook | Operator | 3, 5 | Sketch: the phase 3 Cutover (the window announced; outstanding tasks finished or stopped while Python still runs normally, unknown writes settled with `resolve` until Python is quiescent; the whole daemon stopped, its exit confirmed, and `A` set then; its final registry read through `Registry.inspect` (`service/registry.py:356-360`) and the exchange checked for no queued or running turns and no live sessions; sources dated strictly before `A` in the window checked against evidence specific to each (Python's reply, the writes it caused, records such as `approval.comment`, the issue's dashboard and labels), reissued only on positive evidence that Python missed them, and an ambiguous one left to its author's fresh decision with no automatic action; `S` and the exchange's generations and epochs recorded; the reviewer grant transferred; the task application started; [cutover sources](#cutover-sources)). The reused-issue slot check (an exported epoch 2 replaced by epoch 3) is mandatory in the rehearsal, against a test exchange holding a historical slot; at the live Cutover it runs when the export holds a slot, and otherwise the operator confirms the export is empty and a first slot initializes normally. Also the phase 5 handover and secret migration, each with its checks |
+| Cutovers and migrations | Runbook | Operator | 3, 5 | Sketch: the phase 3 Cutover (the window announced; outstanding tasks finished or stopped while Python still runs normally, unknown writes settled with `resolve` until Python is quiescent; the whole daemon stopped, its exit confirmed, and `A` set then; its final registry read through `Registry.inspect` (`service/registry.py:356-360`) and the exchange checked for no queued or running turns and no live sessions; sources dated strictly before `A` in the window checked against evidence specific to each (Python's reply, the writes it caused, records such as `approval.comment`, the issue's dashboard and labels), reissued only on positive evidence that Python missed them, and an ambiguous one left to its author's fresh decision with no automatic action; `S` and the exchange's generations and epochs recorded; the [Python archives imported](#python-archive-import); the reviewer grant transferred; the task application started; the backoffice baseline refreshed before switching the frontend; [cutover sources](#cutover-sources)). The reused-issue slot check (an exported epoch 2 replaced by epoch 3) is mandatory in the rehearsal, against a test exchange holding a historical slot; at the live Cutover it runs when the export holds a slot, and otherwise the operator confirms the export is empty and a first slot initializes normally. Also the phase 5 handover and secret migration, each with its checks |
 
 ## Bridge catalog
 
@@ -734,6 +736,12 @@ records its grant on the attempt's row; a `stop` that cancels the attempt first 
 that row, and a selection committing after it records `attempt_cancelled`. The grant is
 revised, never replaced, when it's revoked.
 
+For a continuation, admission checks the [v1 journal rules](#retained-session-eligibility)
+against the required archive revision and the requested scope, ordinal and prompt
+before selecting a payer. A failed check blocks admission before any attempt, grant,
+call reservation, charge or submit effect is created. On success pin the checked
+revision for submission and replay.
+
 The call is charged with the payer decision. An org grant is decided, and its call
 charged, in the admission transaction ([M1](architecture/phase-3-m1-plan.md#attempts)).
 A contributed attempt reserves its call at admission against `max_model_calls` and
@@ -776,14 +784,19 @@ phase 5 a time bound stands in ([Python exchange](#python-exchange)).
 In phase 3 the task application records them from its polls of the Python exchange
 ([bridge](#python-exchange)) and publishes them, both from 3/M1: to M1's contract test
 consumer, and from 3/M3 to the backoffice API's read model. From phase 5 the Rust
-exchange publishes them itself, with the same fields. Blob fields reference the
-[blob store](#blobs).
+exchange publishes them itself, with the same fields. Blob fields carry [turn artifact references](#blobs).
+A transcript's `blob` and `bytes` identify the original gzip by digest and compressed
+size. Its turn link resolves the searchable snapshot as soon as ingestion commits.
+Omit `transcript` if the archive is absent or unreadable. For an unreadable archive,
+include `transcript_error` with the failed decoding step and, when bytes were
+decoded from the payload, their digest and size. The turn outcome describes the
+model result independently of this diagnostic.
 
 | Type | Kind | Data |
 | ---- | ---- | ---- |
 | `turn.<turn>.submitted` | Fact | `turn_id`, `attempt_id`, `task_id`, `grant_id`, `stage`, `role`, `harness`, `model`, `effort`, `profile`, `session {scope, turn}`, `bundle_id`, `limits`, `spec` blob, `prompt` blob, `submitted_at` |
 | `turn.<turn>.status` | Snapshot | `status` (`queued`, `running`, `finished`, `cancelled`), `created_at`, `started_at`, `finished_at`, `runner {session_id, run_id, run_attempt}` |
-| `turn.<turn>.finished` | Fact | `outcome`, `reason`, `provider_requests`, `response`, `workspace` blob, `transcript {blob, bytes}`, `elapsed_seconds`, `provider_failure {category, model, retry_after}?`, `funding_ended` |
+| `turn.<turn>.finished` | Fact | `outcome`, `reason`, `provider_requests`, `response`, `workspace` blob, `transcript {blob, bytes}?`, `transcript_error?`, `elapsed_seconds`, `provider_failure {category, model, retry_after}?`, `funding_ended` |
 
 The `prompt` blob is the prompt as today's diagnostics reconstruct it from the request
 and its feedback (`prompt(request, feedback)`, `service/diagnostics.py:145`): its
@@ -892,6 +905,10 @@ baseline read at its first start and after a [coverage gap](#coverage-gaps):
 `GET /v1/baseline` (3/M3, the backoffice API's bearer) returns, paged, everything the
 views show:
 
+- historical Python turns with repository, issue, harness session, recorded staffing
+  associations and the serving assignment where known. The baseline distinguishes
+  these from any independently evidenced per-turn dispatch and applies the source
+  turn's diagnostics permissions. [Archive import](#python-archive-import)
 - every current task, consent and index snapshot, index tombstones with their
   revisions, and each turn's latest status snapshot (status, runner session, run ID,
   start time) with its revision, so a turn running throughout a rebuild still shows its
@@ -907,10 +924,19 @@ while the backoffice API pages through it is on one side of the baseline, never 
 There's no outbox position to resume from: the producer's local insertion order isn't the
 stream's order. Instead the backoffice API:
 
-1. creates its durable consumer first, delivering new messages from that point;
+1. ensures its durable consumer is in place before taking the snapshot, retaining
+   its position if it already exists and buffering arrivals during the refresh;
 2. reads the baseline;
 3. applies the messages buffered meanwhile and every later one, deduplicated by fact ID
    and by snapshot revision, so one that's also in the baseline changes nothing.
+
+At cutover, refresh even a populated, caught-up read model after the archive import
+commits and the task API is available. Finish loading the snapshot and applying the
+buffered overlap before switching the frontend. Historical imports emit no live turn
+events that could otherwise add those rows. In the rehearsal, read page one to pin
+the snapshot, then commit a newer turn revision and deliver its event before reading
+the final page. At the switch, the view must contain the imported turn from the
+snapshot and the newer revision from the buffer.
 
 Tested: an empty read model against a target with an inactive PR and a completed run
 older than retention; a completed turn's prompt and a replaced pre-enrollment
@@ -996,23 +1022,144 @@ expiry. Tokens are never logged or stored outside the process.
 
 ### Blobs
 
-Large turn content (specs, prompts, responses, workspaces, transcripts) lives in
-S3-compatible object storage, content-addressed. Today's backoffice shows a turn's
-prompt, transcript, response and changes (`backoffice/turns.py:94-141`), so the
-backoffice API needs them across a process boundary from 3/M3. The task application
-writes them from 3/M1, from its submit bodies and poll results, so every task's turns
-are viewable once the backoffice API arrives.
+From 3/M1 the task application owns turn diagnostics. Specs, reconstructed prompts,
+responses and workspace changes stay in its PostgreSQL database as content-addressed
+artifacts (`{sha256, bytes, media_type}`). Specs omit endpoint credentials and tokens.
+The application stores transcript entries as searchable rows and sends original
+`.tar.gz` bundles to the existing private Hetzner S3-compatible object store.
 
-- **Reference:** `{sha256, bytes, media_type}`. The key is `sha256/<hex>`.
-- **Writes are create-only** (`If-None-Match: *`): a key's content never changes, and a
-  repeat of the same write is harmless.
-- **Access:** each service has its own storage credentials. The task application writes
-  and reads; the backoffice API only reads. From phase 5 the exchange writes what runners
-  upload.
-- **Secrets never go into blobs.** A turn spec's blob excludes credentials and tokens, as
-  the diagnostics store's request record does today (`service/diagnostics.py:145`).
-- **Lifecycle:** kept while a task, turn or report references them; a retention job
-  deletes unreferenced blobs.
+#### Transcript search
+
+New runner results and historical imports use the same ingestion path. For each
+transcript or retained-session archive:
+
+1. Take the original gzip bytes (base64-decoded for payload v1), record their SHA-256
+   and length, and decompress the tar stream. Its SHA-256 identifies the transcript
+   snapshot across different gzip encodings. Read the harness's transcript JSONL
+   files, retaining member path, tar modification time, member ordinal and line number.
+2. Keep each representable event as `jsonb` with its harness and event kind, including
+   unfamiliar shapes. For a malformed line or valid JSON PostgreSQL cannot store
+   (for example an escaped `\u0000`, an unpaired surrogate or an out-of-range number),
+   keep the exact source line bytes as `bytea`, its position and a diagnostic, with
+   SQL NULL in the JSON column. Check representability before insertion or isolate the
+   conversion in a savepoint. Other database errors fail the transaction.
+   Extract message text, tool names, arguments and results wherever decodable,
+   including from fallback rows. Escape unrepresentable characters visibly in the
+   search text, separating escapes from adjacent words for indexing. Use the formats in
+   `backoffice/turns.py:170-250` without its clipping or item cap.
+3. Key events by (tar digest, member ordinal, line number). For display, sort by
+   member modification time, then path in Python string order, then archive ordinal
+   for ties. Within each member preserve line order and the order of parts within
+   a line, as in `backoffice/turns.py:170-195`. Index extracted text
+   with PostgreSQL full-text search using the `simple` configuration and a GIN index
+   on `tsvector`. Split large text into ordered parts of the same event as needed
+   for indexing. Link the snapshot and original gzip digest to every source turn
+   and retained session that supplied it, including the repository, issue, scope and
+   session turn when known. A cumulative session snapshot can contain earlier turns'
+   messages. The link identifies the snapshot observed at a turn.
+4. Commit entries, searchable text, source links and the pending upload together.
+   For a live result, the same transaction settles the turn and writes its single
+   `finished` outbox fact. Historical imports commit diagnostics and provenance only.
+   They emit no live turn events, including for sources with no turn ID. The backoffice
+   loads verified historical turns from the baseline. Replay reuses the same records.
+
+If a live result has no archive, record that absence. If base64 decoding, gzip
+integrity validation or tar reading fails, discard any partial index and record
+the archive error with the turn. When original bytes are available, queue them
+for archival inspection by digest. Their verified upload does not make them
+restorable. Commit the independently validated result and its finish fact even
+when the archive is unreadable. Archive failure or replay never triggers a model
+retry. A continuation requiring that revision reports it unavailable at the start
+of admission, before selecting a payer or consuming call budget. It cannot fall
+back to an older revision.
+
+At ingestion, retain the root journal's status, scope, completed ordinal, request
+digest and prior instructions and response schema when present. Admission uses
+these fields to check the requested continuation. Readable transcripts remain
+searchable even when their journal cannot serve that request. An eligible
+revision can be restored from the pending upload bytes or the verified object.
+
+At schema migration, set compression on the artifact payload, transcript JSON,
+fallback source bytes and extracted text columns to LZ4 if `pg_settings.enumvals`
+for `default_toast_compression` includes `lz4`, otherwise PGLZ.
+
+SQL search is part of M1. The browser search UI can follow separately. From M3 the
+backoffice API checks the turn's diagnostics tier and fetches its ordered entries
+through the task application's internal `GET /v1/turns/{turn}/transcript`. Apply the
+same viewer scope to matches before returning snippets or counts. Only a verified
+turn link can expose a snapshot through the backoffice.
+
+#### Original archive bundles
+
+The task database keeps a pending upload record keyed by gzip SHA-256, with the
+original bytes and byte count, independently of the worker job and its retry limit.
+The worker writes to `<prefix>/sha256/<gzip-sha256>.tar.gz` in the configured
+Hetzner bucket. After an uncertain PUT it reads the same key. Only a readback
+matching both size and SHA-256 marks the object available and releases the pending
+bytes in one transaction. A failed PUT or readback leaves search and session restore
+available. Multiple gzip encodings of one tar retain separate keys and share indexed
+events.
+
+After the worker exhausts its attempts, the pending record retains the last error.
+The host operator can inspect it with `effects pending` and use
+`archives retry <gzip-sha256>` to requeue that upload. Concurrent or repeated retries
+schedule at most one active job per digest. A verified digest is already complete.
+Retrying an upload never creates a turn or repeats model work.
+
+The task application holds the S3 credential. Session restore verifies the linked
+gzip against its digest, using the pending bytes until the object is verified.
+Backoffice diagnostics read PostgreSQL through the task application.
+Keep rows and objects while a turn, session, report or import record
+references them, including pending uploads during recovery. Retain database backups
+and their referenced archive objects together. Phase 5's exchange accepts runner
+uploads through its session API.
+
+#### Python archive import
+
+After the Python daemon exits, read its final diagnostics database and both archive
+directories from the same deployment. The import command runs the normal archive
+uploader against the task database and Hetzner, processing only archive jobs. It
+can resume pending uploads and operator-requeued jobs with the controller, ingress
+consumer and other workers stopped.
+
+| Source | Reference preserved |
+| ---- | ---- |
+| `diagnostics_dir/blobs/<prefix>/<sha256>` | The original digest and each matching `diagnostics.sqlite3` turn ID, repository, issue and generation. The turn's `transcript` field holds the digest and `transcript_bytes` holds the size (`service/diagnostics.py:208-231`). |
+| `state_dir/sessions/<repository directory>/<scope>.tar.gz` | The configured repository and session scope. The filename identifies the scope. The root journal can also identify a harness turn within it (`service/worker.py:412`, `engine/agents.py:80-94`, `engine/session_entry.py:83-96`). |
+
+Inventory both directories and SQLite references, including files without a turn
+row. Verify the diagnostics filename, SQLite digest and compressed size where known,
+then pass each archive through the same [ingestion path](#transcript-search) as a
+new result. Import IDs are stable across retries. Preserve each Python turn ID within
+its source deployment, with its repository, issue, generation, requested
+`session_scope` and requested `session_turn` from SQLite. Keep the turn linked to
+the archive it returned. Preserve each retained session by deployment, repository
+and scope.
+
+The archive's root `turn.json` records the last completed harness turn. Store that
+ordinal separately from the requested one when the journal is complete, its scope
+matches and its `turn` is a nonnegative integer (including zero). A pending or
+absent journal leaves the completed ordinal unknown. A failed request for turn 1
+can return the journal for completed turn 0. Preserve both values and accept this
+history on import and replay (`engine/tests/test_sessions.py:167-171`). Report
+inconsistent evidence for the same fact, such as a journal scope that disagrees
+with the retained filename. A journal alone supplies no Python turn ID.
+Retained-only and unmatched sources keep their paths for operator lookup and stay outside viewer
+results unless a verified turn link exists.
+
+Keep every ID in `runner_sessions` as a staffing association. Python seeds the set
+from the staffing group, so a warm turn can inherit IDs without dispatching anyone
+(`engine/agents.py:433-439`, `:479-484`). Record a dispatch against a specific turn
+only if a separate record identifies both that turn and the dispatch. Take the
+serving session and full run ID (including attempt) from the recorded `runner`
+assignment. Preserve staffing even when the assignment or archive is absent
+(`service/diagnostics.py:182-205`). Imported history creates no runnable tasks.
+
+An import is complete when every source file and recorded turn, session and run
+link is accounted for, each source line has an event row or a diagnosed fallback
+row, and the original gzip objects verify against the inventory. Report fallback
+positions separately. Missing or corrupt archives and conflicting links still need
+repair. Keep the source files read-only for reruns.
 
 ### Credentials
 
@@ -1128,9 +1275,9 @@ backoffice's task and list pages are off from the Cutover.
     reason, mode, the PR link, when it was updated, and their own consent. A reader who
     can see the upstream but not the fork gets only the summary.
   - Anyone else sees nothing of the target.
-- **Turn content** is read from the [blob store](#blobs) by the backoffice API, never
-  linked: every turn and blob request applies the `writer` check, and no blob URL is
-  handed to the browser.
+- **Turn content** comes from the task application's [diagnostics read APIs](#blobs).
+  After checking the viewer's `writer` tier, the backoffice reads transcript entries
+  from the turn and fetches other artifacts by digest.
 - **My sponsorships** come from [consent facts](#consent-facts) by the viewer's ID.
 - **Commands** aren't the backoffice API's: through phase 3 the browser posts them to
   the Python backoffice, which checks CSRF and the viewer's permission, signs a
@@ -1325,8 +1472,29 @@ fails (`inference.py:350` ignores errors) can't make it report early.
 Today's runner takes `{request, feedback, spec, retained, timeout}`
 (`engine/agents.py:130`) and returns `{outcome, response, workspace, retained,
 transcript, termination_reason, elapsed_seconds}` (`engine/turns.py:400`). The exchange
-module builds the first from the attempt's inputs and maps the second back, base64
-archives included, until the runner moves to the target protocol.
+module reads the session revision checked and pinned at admission from its pending
+upload or verified Hetzner object and base64-encodes it for the v1 runner (`engine/turns.py:217-225`).
+Persist the prepared submit body for retries. Returned archives go through
+[transcript ingestion](#transcript-search).
+
+#### Retained session eligibility
+
+Check the retained journal against the requested v1 turn as the runner does
+(`engine/session_entry.py:32-52`, `:63-73`).
+
+- A next turn needs a complete journal for the same scope and the immediately
+  preceding ordinal. Its instructions and response schema must still match.
+- Exact replay of the journal's own ordinal requires the same scope, a complete
+  journal, a non-null cached response and the same request digest. A null response
+  cannot take the v1 cached-return path. Compute the digest from the full v1 prompt with
+  its response schema using `engine/policy.py:107`. The runner returns the cached
+  response on this path. Replaying an admitted attempt reuses its existing charge.
+- A fresh turn zero can start without a journal. A continuation cannot use a
+  missing, malformed or pending journal, an unreadable archive, a different scope,
+  a skipped ordinal or a same-ordinal request with a different digest.
+- For both continuation and exact replay, check the total size of restored regular
+  files against the requested turn's `max_retained_bytes` before admission. Record
+  this uncompressed size at ingestion. Equality passes and a null limit is unlimited.
 
 ### Vault
 

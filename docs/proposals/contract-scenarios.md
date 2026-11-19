@@ -44,8 +44,8 @@ Phase 3, M1, org funding. A opened issue I on a target; a writer W comments
    dashboard, the stage label and the welcome notice.
 4. Tx: attempt A admitted: the call budget checked, the payer decided (the org), a call
    charged, and A recorded with its inputs and its submit body, stored before the first
-   call ([finding 5](#findings)). Its spec and prompt go to the blob store, which
-   `turn.A.submitted` references ([finding 41](#findings)).
+   call ([finding 5](#findings)). Its spec and prompt are stored in Postgres in the same transaction
+   as their turn references and the `turn.A.submitted` outbox event ([finding 41](#findings)).
 5. The exchange adapter marks the submit `sending`. Task application → exchange:
    `POST turns {turn: A, ...}`; reply `{dispatch: S}`. Tx: the reply, session S, and the
    run ref and dispatch writes.
@@ -542,6 +542,60 @@ no automatic action on it ([findings 34, 48 and 52](#findings)). The rehearsal c
 steps 2 to 6: no command acts twice, the missed `start` is reissued, and the ambiguous
 stop gets no automatic action.
 
+#### Archive import rehearsal
+
+1. Start with a populated, caught-up backoffice read model containing a test turn.
+   Stop Python and keep the Rust controller and its ingress consumer off. Run the
+   import with only its archive uploader. Two Python turns in one harness scope
+   share serving runner S and run `77/2`. The first dispatched S and completed turn 0.
+   The second requested turn 1 and failed before updating the journal. Its returned
+   archive still contains the complete journal for turn 0.
+   It ran warm with no new dispatch and inherited S and a replacement candidate in
+   `runner_sessions`. Supply just the SQLite observations
+   and archives to the importer. Include a legacy turn with staffing IDs, no serving
+   assignment and no archive. Include a retained session file, two retained-only
+   scopes, an unlinked diagnostics file, one tar encoded two ways and one gzip
+   shared by multiple sources. Capture the live turn outbox before import.
+2. Include the M1 escaped-NUL fixture and two members packed as `a.jsonl` then
+   `z.jsonl`, with `z` older. At commit SQL finds the terms on both sides of the NUL
+   and the neighboring messages at their source positions. The fallback's raw bytes
+   match the input. Both turns and the retained session resolve to their expected
+   snapshots. The failed Python turn keeps its ID, requested ordinal 1 and link to
+   the returned gzip with completed ordinal 0. Import and replay complete with both ordinals
+   intact. For the first retained-only scope, a matching complete `turn.json`
+   with `turn: 0` yields ordinal zero. For the second, a pending journal yields an
+   unknown ordinal. Both retain their source paths and have no Python turn ID.
+   Give each unlinked source a unique search term. The diagnostics file retains its
+   path and indexed entries.
+3. Fail Hetzner through retry exhaustion, interrupt the import, then restart it with
+   the controller still stopped. Search and v1 restore work from the pending bytes.
+   Restore Hetzner and requeue the exhausted digest. The import's uploader verifies
+   every inventoried object's size and SHA-256 before the controller starts. Restore
+   the session from its verified object. Both tar encodings share event rows and have
+   distinct object keys. Identical gzip bytes share a key. Rerunning changes no row,
+   link or object counts and creates no runnable tasks. Compare the live turn outbox
+   after import and again after replay with the initial capture. Neither operation
+   added a submitted, status or finished event, including for linked historical turns.
+4. Follow the cutover runbook with the existing read model and consumer in place.
+   Start with test turn revision 4. Read the first baseline page to pin its snapshot.
+   Only then commit revision 5 and deliver its event to the backoffice consumer
+   while the final page is held back. Confirm receipt, release the final page and
+   finish the refresh. The baseline contains revision 4. At the frontend switch
+   the test turn must show revision 5, applied once, and a writer must be able to
+   open the imported failed turn and its transcript without a manual rebuild.
+   Both served turns appear under `77/2` with their original deployment,
+   repository, issue, generation, turn IDs and harness session links. Both retain
+   their recorded staffing sets. Neither
+   gains a per-turn dispatch from that set. The replacement candidate never appears
+   as the warm turn's serving runner, and the legacy turn has no serving assignment.
+   Opening a linked turn returns `z` before `a` with stable line and part order.
+   A reader cannot see the transcript. For the retained-only and unlinked sources,
+   even a writer sees no entries through the backoffice, and a viewer-scoped search
+   for their unique terms returns no matches. Missing or corrupt archives remain
+   identified for repair. An empty inventory completes.
+
+[Import contract](contracts.md#python-archive-import)
+
 ### 26. Someone else edits a sponsor comment
 
 Phase 3, M3, before the cutover.
@@ -632,6 +686,13 @@ revision gave.
 
 **Checks.** The call budget is checked in the transaction that decides the payer; no
 credential is selected for an attempt the task can't afford.
+
+With budget available, request a continuation requiring a known-corrupt revision.
+Repeat with a readable archive whose journal is pending: its message is searchable,
+and the runner cannot resume it. Exercise both with org funding and an eligible
+sponsor (M3). In each case the refusal identifies the required revision. After
+restart and replay there is no new attempt, grant, reservation, call charge or
+submit effect. No credential lookup or exchange submission occurred.
 
 ### 32. An issue transferred
 
@@ -776,7 +837,8 @@ turn completed then, and a pre-enrollment sponsorship on issue K was replaced.
 4. It loads the baseline, then applies the buffered and later messages, deduplicated by
    fact ID and snapshot revision. The stage change is either in the baseline or arrives
    as a newer revision; either way it's applied once.
-5. The old turn's prompt and transcript open from their blob references; K's replaced
+5. The old turn's prompt opens by its artifact reference and the transcript opens
+   from its indexed PostgreSQL entries. K's replaced
    sponsorship shows in its sponsor's history. A turn that's been running since before
    the rebuild, whose status doesn't change during it, shows its live run, runner session
    and start time from its status snapshot in the baseline.
