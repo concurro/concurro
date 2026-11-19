@@ -2,13 +2,15 @@
 
 **Status: proposal, not implemented.**
 
-Designed against the target in the [architecture review](architecture.md); build it on
-the new orchestrator, not the current Python service.
+Designed against the target in the [architecture review](architecture.md); build it as
+the intake module of phase 3's
+[task application](architecture/phase-3-plan.md#the-task-application), not in the
+current Python service.
 
 Give every way of asking Concurro to act (a `/concurro` comment, the backoffice, a label,
 an assignment, a review request, a [mention](mentions.md), later Slack) one shared path:
-each **channel** authenticates the actor and sends a typed **request** to the
-orchestrator, which owns every task, including who has consented to pay for it. GitHub
+each **channel** authenticates the actor and records a typed **request** for the task
+application, which owns every task, including who has consented to pay for it. GitHub
 comments become one channel among several instead of the transport every command has to
 pass through.
 
@@ -34,9 +36,9 @@ pass through.
 - Channels independent of each other: adding Slack or a mention interpreter doesn't touch
   the comment path or task logic.
 - The backoffice submits requests directly, gets a request ID and can follow its outcome.
-- Applying a request raises events, and those events drive every GitHub update
-  (dashboard, notices, labels, artifacts, replies). No channel posts to GitHub to carry
-  a request.
+- Applying a request records the GitHub writes it causes (dashboard, notices, labels,
+  artifacts, replies), and those records drive every GitHub update. No channel posts to
+  GitHub to carry a request.
 
 ## Non-goals
 
@@ -47,7 +49,7 @@ pass through.
 
 ### Requests
 
-The orchestrator keeps a `requests` table with these fields:
+The task application keeps a `requests` table with these fields:
 
 | Field | Meaning |
 | ---- | ---- |
@@ -58,7 +60,7 @@ The orchestrator keeps a `requests` table with these fields:
 | `channel` | `comment`, `backoffice`, `label`, `assignment`, `review_request`, `mention`, ... |
 | `source`, `index` | The channel's reference (comment ID and revision digest, delivery ID, backoffice request ID) and the request's position among those its source produced |
 | `source_at` | When the actor acted, by the channel's own clock (comment time, event time) |
-| `evidence` | How the actor was verified: webhook delivery, user token check, the editor of an edited comment |
+| `evidence` | How the actor was verified: webhook delivery, a [command proof](contracts.md#command-proofs) for the backoffice, the editor of an edited comment |
 | `detail` | Channel data that must be frozen with the request, such as a mention's interpretation |
 | `reply` | Where the channel wants the outcome delivered |
 | `status`, `reason` | `pending`, `applied`, `refused` or `superseded` |
@@ -69,8 +71,7 @@ never create a second request.
 ### Sources
 
 One comment or mention can produce several requests: "plan and implement this" is an
-`enroll` and a `start`. The orchestrator's channels record each source revision in two
-steps:
+`enroll` and a `start`. The channels record each source revision in two steps:
 
 1. **Pending,** on receipt: its ID and digest, author and editor, and for a mention an
    interpretation attempt ID, saved before any model call.
@@ -78,31 +79,40 @@ steps:
    attempt ID; see [mentions](mentions.md#interpreter)): the frozen interpretation and
    the requests it produces, saved in one transaction with those requests.
 
-The publisher sends one reply per source once every request it produced has an outcome.
+Publication sends one reply per source once every request it produced has an outcome.
 
 ### Channels
 
 A channel does three things and nothing else:
 
 1. **Authenticate** the actor to a GitHub identity: the typed GitHub event ingress
-   published from a verified delivery, including who edited an edited comment, or the
-   forwarded sign-in token for the backoffice.
-2. **Translate** its input into typed requests and send them to the orchestrator's
-   request API, refusing early, with a reason, what isn't a valid request or comes from
-   someone the kind doesn't allow.
+   published from a verified delivery, including who edited an edited comment, or, for
+   the backoffice, a command proof the Python backoffice signed with the session's
+   GitHub token in hand.
+2. **Translate** its input into typed requests and record them, refusing early, with a
+   reason, what isn't a valid request or comes from someone the kind doesn't allow.
 3. **Route the outcome** back: a comment reply, an API response, a Slack thread.
 
-Channels never change task state; they may read the orchestrator's task context (stage,
-mode, latest plan) to interpret a request. GitHub channels run in the orchestrator and
-consume ingress's `github.*` events; the backoffice API calls the request API directly. A
-channel that needs a model (the mention interpreter) calls it before sending the request
-and keeps the result in `detail`. An early refusal or acknowledgement is itself a
-`request.*` event, so the publisher posts it like any other reply.
+Channels never change task state; they may read the task's context (stage, mode, latest
+plan) to interpret a request. GitHub channels run in the task application's intake module
+and consume ingress's `github.*` events, recording each source and its requests in the
+transaction that records the event, so there's no request API between a channel and the
+task logic. The backoffice channel is the Python backoffice through phase 3: it takes the
+browser's command POST with its CSRF check, signs a command proof for the signed-in user
+and that exact request, and calls the task application's `POST /v1/requests` itself; the
+task application takes the actor from the proof and authorizes it at application, like
+any other request. The backoffice API, a separate lower-privilege process, never
+receives the session cookie (the edge strips it) and holds only a read-only viewer token,
+so it has no command path. Host-only operator
+commands are recorded with actor `operator`, never as a GitHub user. A channel that needs
+a model (the mention interpreter) calls it before recording the request and keeps the
+result in `detail`. An early refusal or acknowledgement is recorded as the request's
+outcome, so publication replies to it like any other.
 
 | Channel | Input | Replaces |
 | ---- | ---- | ---- |
 | `comment` | `/concurro` issue and PR comments | Comment parsing inside the tick |
-| `backoffice` | `POST /requests` | Delegated command comments |
+| `backoffice` | The Python backoffice's `POST /requests`, forwarding a browser command it signed | Delegated command comments |
 | `review_request` | `review_requested` / `review_request_removed` | The `review_requests` table |
 | `label` | `labeled` / `unlabeled` for `concurro` | `Controller.enrollment` event reads |
 | `assignment` | `assigned` / `unassigned` for the account | New ([mentions and assignment](mentions.md)) |
@@ -124,13 +134,14 @@ only when its author made the edit, as sponsorship checks editor IDs today
 `edited` deliveries record the editor. GitHub's comment edit history (`userContentEdits`)
 helps recover missed edits but isn't proof: its editor and diff can be missing, and
 revision text can be deleted. When an edit that would decide consent can't be
-established, its source stays unresolved, and so does the task's payer.
+established, its source stays unresolved: a funding boundary still pending stays
+pending, and consent already applied stands.
 
 ### Applying requests
 
 - **One transaction.** Storing a request queues its task's work. Applying it updates the
   task, the request's `status` and the highest applied `sequence` (which replaces
-  `command_id`), and writes the resulting events to the outbox, all in one transaction.
+  `command_id`), and records the writes and effects it causes, all in one transaction.
 - **Time-bound commands.** Sponsorship keeps its source-order rule, and an approval binds
   the plan current at `source_at`, so a slow channel can't approve a plan the actor
   didn't see. Ties are broken by `(source_at, source, index)`, as sponsorship orders
@@ -138,9 +149,9 @@ established, its source stays unresolved, and so does the task's payer.
 - **Consent belongs to the task.** Sponsorship requests become facts in the task's
   append-only consent log, folded in source order as `sponsorship.project` does: a
   withdrawal never restores an earlier sponsor. Each change gives the task a new consent
-  revision. The orchestrator is the authority on who consented to pay; funding trusts
-  its consent decisions and decides whether and how they can be charged
-  ([architecture](architecture.md#services)).
+  revision. The task's consent is the authority on who consented to pay; the funding
+  policy decides, in the same transaction that admits an attempt, whether and how it's
+  charged ([architecture](architecture.md#services)).
 - **The funding boundary depends on the task's mode,** and is frozen the first time it's
   set, as `Shadow._initialize` does:
 
@@ -150,24 +161,22 @@ established, its source stays unresolved, and so does the task's payer.
   | Autonomous | The first enrollment (label, assignment or mention) |
   | Standalone review | The first verified review request |
 
-  Before freezing it, the orchestrator reads the issue's events timeline up to the
+  Before freezing it, the task application reads the issue's events timeline up to the
   candidate's time, always, since a delivery gap can't always be detected, and finalizes
   every source before it, mentions awaiting interpretation included. Only an event that
   sets the boundary in that mode can replace the candidate: an earlier label replaces an
   autonomous task's later enrollment, but never a manual task's `start`. Missing or
   conflicting evidence leaves the boundary pending, and nothing is charged.
-- **Each attempt carries a frozen consent decision.** The orchestrator's grant request
-  names the attempt and the decision: task, provider slot, sponsor, funding mode, consent
-  revision, boundary and a reference to the sources folded. Replaying the attempt reuses
-  it; a charged retry is a new attempt with a new decision
-  ([cross-cutting rules](README.md#cross-cutting-rules)).
-- **Withdrawal stops spending through funding.** Applying a `withdraw` commits the new
-  consent revision with a revocation job that has a stable ID and names the task,
-  provider slot and sponsor; the job retries until funding acknowledges, and a retry
-  gets back the recorded status. The outcome is reported in three steps: "withdrawal
-  recorded" when it applies, "new grants blocked" when funding acknowledges, and
-  "spending stopped" once every affected gateway binding and relay session has closed
-  or expired ([architecture](architecture.md#services)).
+- **Each attempt carries a frozen consent decision.** The attempt's record names the
+  decision: task, provider slot, sponsor, funding mode, consent revision, boundary and a
+  reference to the sources folded. Replaying the attempt reuses it; a charged retry is a
+  new attempt with a new decision ([cross-cutting rules](README.md#cross-cutting-rules)).
+- **Withdrawal stops spending in one transaction.** Applying a `withdraw` commits the new
+  consent revision and the cutoff for the task, provider slot and sponsor, which refuses
+  any later attempt under it, and records the exchange transition that fences new
+  sessions. The outcome is reported in two steps: "withdrawal recorded, new attempts
+  blocked" when it applies, and "spending stopped" once every affected session has
+  closed or expired ([architecture](architecture.md#services)).
 - **Feedback.** `retry` from a comment still uses writer comments as feedback. A channel
   that collects feedback text itself (the backoffice, Slack) stores it in the request's
   `detail`; applying the request adds it to the task's requirements snapshot and raises a
@@ -176,7 +185,7 @@ established, its source stays unresolved, and so does the task's payer.
 
 ### Ordering
 
-The orchestrator takes every pending request for a task and applies them by class:
+The task application takes every pending request for a task and applies them by class:
 
 | Class | Kinds | Rule |
 | ---- | ---- | ---- |
@@ -197,10 +206,9 @@ The orchestrator takes every pending request for a task and applies them by clas
 
 ### Events and projections
 
-Applying a request publishes events: the request's own outcome (`request.*`: `applied`,
-`refused` or `superseded`, with actor, channel and reply route), and whatever it caused,
-such as a stage or consent change (`task.*`). The publisher
-projects them onto GitHub:
+Applying a request records the request's own outcome (`applied`, `refused` or
+`superseded`, with actor, channel and reply route) and whatever it caused, such as a
+stage or consent change, with the GitHub writes they need. Publication writes them:
 
 | Projection | Surface | Today |
 | ---- | ---- | ---- |
@@ -214,42 +222,56 @@ projects them onto GitHub:
 - **A request isn't a reason for a comment.** Its outcome shows on the dashboard. A
   comment appears only when the resulting state is one of the existing notice kinds, or
   as the reply to a request that was itself a comment.
-- **Recoverable.** Events are saved with the state change; a failed projection is
-  retried from the saved events without re-applying the request.
-- **The backoffice reads its own model,** fed by `request.*`, `task.*` and `funding.*`
-  events, instead of waiting for the GitHub writes a request causes to come back as
-  webhooks.
+- **Recoverable.** Writes are saved with the state change; a failed write is retried from
+  its record without re-applying the request.
+- **The backoffice API reads its own model,** fed by the task application's `request.*`
+  and `task.*` events through its outbox and the bus, instead of waiting for the GitHub
+  writes a request causes to come back as webhooks.
 
 ### Backoffice
 
-The backoffice calls `POST /requests` on the orchestrator with an idempotency key and
-gets back the request ID and its status. A retry with the same key returns the same
-request, which removes the "may or may not have been posted" case. Outcomes are read by
-request ID or from the backoffice's read model. Nothing is posted to GitHub for the
-request itself: the dashboard shows the change, and a notice appears only if the change
-calls for one.
+Phase 3, M3, before the cutover, since backoffice commands are an existing team
+workflow. Through phase 3 the browser posts a command to the Python backoffice, as
+today, which checks CSRF and the user for the kind (a writer, or issue visibility for
+`withdraw`) with the session's GitHub token, signs a short-lived
+[command proof](contracts.md#command-proofs) bound to the user, issue, command,
+arguments, `detail.feedback`, `source_at` and the browser action's ID, and calls the
+task application's `POST /v1/requests` with it. The backoffice API, which only reads and
+sees only a viewer token, can neither obtain a proof nor submit a request. The task
+application verifies the proof, takes the actor from it, and returns the request ID and
+its status. A refused request changes nothing but its own record. Each browser action
+carries an ID that survives its retries, the request's idempotency key, and the Python
+backoffice keeps its original `source_at`; a retry, even after the proof expired and is
+signed again, is matched on the actor and the command's contents and returns the same
+request ([requests](contracts.md#requests)), which removes the "may or may not have been
+posted" case.
+Outcomes are read by request ID. Nothing is posted to GitHub for the request itself: the
+dashboard shows the change, and a notice appears only if the change calls for one.
 
 ### Enrollment
 
 Label, assignment and review-request events become `enroll` and `unenroll` requests, with
-their channel as provenance (`label`, `assignment`, `review_request`, `mention`).
+their channel as provenance (`label`, `assignment`, `review_request`, `mention`). Labels
+and review requests arrive in phase 3's M3, before the cutover; assignment and mentions
+are new and follow it ([phasing](#phasing)).
 
 Missed webhooks are recovered by redelivery: ingress finds failed deliveries within
-GitHub's three-day retention and the publisher redelivers them, and `(channel, source,
-index)` keeps them from doubling. When the gap is longer, the orchestrator reconciles
+GitHub's three-day retention and the task application's delivery recovery API
+redelivers them, and `(channel, source, index)` keeps them from doubling. When the gap is
+longer, the task application reconciles
 from each issue's events timeline (`issues/{n}/events`, which records who labeled,
 assigned or requested a review and when, as `Controller.enrollment` reads today) and
 stores the difference as `enroll` or `unenroll` requests, with the reconciliation as
 evidence. If the timeline can't establish who enrolled a task and when, its funding
 boundary stays pending and nothing is charged. Ingress reports such a gap as an event, and
-the orchestrator reconciles comments from the gap as well
+the task application reconciles comments from the gap as well
 ([coverage gaps](contracts.md#coverage-gaps)).
 
 ## Invariants
 
-- **Only the orchestrator changes task state,** consent included. Channels authenticate,
+- **Only the task logic changes task state,** consent included. Channels authenticate,
   translate and reply through their own route.
-- **GitHub is updated only by projections** of saved events, including a mention's
+- **GitHub is updated only by recorded writes** of saved state, including a mention's
   acknowledgement reaction and early refusals.
 - **One request per `(channel, source, index)`.**
 - **Each kind's authorization is checked at application,** whatever the channel checked
@@ -267,22 +289,38 @@ the orchestrator reconciles comments from the gap as well
 
 ## Migration
 
-Intake arrives with the new orchestrator (architecture phase 3), for tasks it owns. Tasks
-the Python service already owns drain there on today's comment path. Roll-forward only:
+Intake arrives with the task application (architecture phase 3) and takes over every
+target at its single [cutover](architecture/phase-3-plan.md#cutover). No task is
+imported. Roll-forward only:
 
-- Delegated command comments stay readable for history; the backoffice stops posting them
-  for new tasks once `POST /requests` is live.
-- If tasks are ever imported, an imported task records its current `command_id` as the
-  comment boundary, and its `review_requests` rows and `issue_sponsor_sources` become
-  requests.
+- A source becomes a request only if it's the task application's by the
+  [cutover rule](contracts.md#cutover-sources): GitHub dates the original source (a
+  comment revision, a timeline event) at or after the activation time `A`, set once the
+  Python daemon's exit is confirmed. This holds for live delivery, re-mapping, replay and
+  reconciliation alike, however late a delivery arrives. A `/concurro` comment or
+  `concurro` label from before `A` is history, shown and read for requirements, never a
+  request and never part of payer selection; one Python missed strictly before `A`
+  (a standalone review request included) is reissued by its author, whom the operator
+  asks. A source at or after `A` is never reissued.
+  An issue whose Python task finished is a new task if a writer starts it again, at the
+  exchange generation after the old one's.
+- Delegated command comments stay readable as history. From the cutover, the Python
+  backoffice forwards browser commands as signed requests to the task application's
+  `POST /v1/requests`, and posts no delegated comments.
 
 ## Phasing
 
-1. **Requests, and the comment, label and backoffice channels.** Commands go through
-   requests; the backoffice uses `POST /requests`; labels enroll, so the architecture
-   review's first milestone exercises enrollment.
-2. **Enrollment channels.** Review requests move over; assignment arrives as a new
-   channel.
-3. **[Mentions](mentions.md).** Exact mentions; the interpreter waits until they show
-   what people ask for.
-4. **Further channels**, such as Slack or conditional starts.
+Every channel Concurro has today works before the cutover; only channels that are new
+follow it.
+
+1. **Requests and the comment channel,** with `start` and `stop` (phase 3, M1). Until M2
+   and M3, every other command gets a `not_supported` reply on the test repository.
+2. **`approve`, `retry` and `resume`** (phase 3, M2).
+3. **Phase 3, M3, before the cutover:** labels and autonomous enrollment; sponsorship
+   commands (`sponsor`, `withdraw`, `funding`) with personal credentials; review
+   requests for standalone reviews; and the backoffice channel.
+4. **After the cutover: assignment and [mentions](mentions.md).** Both are new; the Python
+   service has neither, so deferring them drops no existing workflow. Until they land,
+   assigning the account or mentioning it does nothing, as today. Exact mentions come
+   first; the interpreter waits until they show what people ask for.
+5. **Further channels**, such as Slack or conditional starts.

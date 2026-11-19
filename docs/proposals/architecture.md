@@ -159,6 +159,15 @@ database and a bus provide directly.
   committed; events report them afterwards.
 - **Services talk through events and narrow APIs,** never through each other's
   databases.
+- **Modules that can transact together are one service.** A process boundary is drawn
+  where a trust boundary or an independent lifecycle requires one, not between parts of
+  one decision. Task logic, consent, budgets and GitHub publication commit in one
+  database, with no internal API or bus between them.
+- **One listener per trust boundary.** A service whose callers sit on different sides of
+  a trust boundary, such as runners on the internet and services inside, serves each on
+  its own listener, on only the network those callers use. The edge network carries only
+  what the edge routes, so what can reach an API follows from the network, not from a
+  path rule in a proxy.
 - **A state change and the events it causes commit together** (a transactional outbox),
   so no cross-store recovery is needed inside one service.
 
@@ -166,15 +175,14 @@ database and a bus provide directly.
 
 | Service | Domain | Trust boundary | Owns |
 | ---- | ---- | ---- | ---- |
-| GitHub ingress | Webhook receipt: signature check, deduplication and delivery recovery; maps each delivery to a typed GitHub event | Public endpoint; holds the webhook secret only; asks the publisher for redeliveries | Delivery receipts, raw payloads, recovery coverage, the GitHub event models |
-| Orchestrator | Tasks: requests, enrollment, stages, plans, findings, and who consented to pay (sponsorship, funding choices, the funding boundary); turns webhooks it cares about into requests; asks funding for a grant per attempt | Authority on task consent; reads repositories with read-only tokens the publisher issues; no GitHub write access | Tasks, requests, consent logs, task events |
-| Funding | Whether and how consent is charged: users' credential entries, lists and filters, the route catalog, selection, fallback and recovery, call and token budgets, grants and charges | Payment authority; hands new secret material to the secret store on save but can't read it back | Credential metadata, grants, consent cutoffs, the charge ledger |
-| GitHub publisher | Projects events onto GitHub: dashboard, notices, replies, reviews, threads, labels, check runs, branches and PRs; creates run branches and dispatches runner workflows for the exchange; lists and redelivers webhook deliveries for ingress | In the target, sole holder of the App's private key, which mints its write tokens and the orchestrator's read tokens, and of the reviewer account's token; the Python service keeps its existing App signing credentials until it retires in phase 4 | Write intents and their outcomes |
+| GitHub ingress | Webhook receipt: signature check, deduplication and delivery recovery; maps each delivery to a typed GitHub event | Public endpoint; holds the webhook secret only; asks the task application for redeliveries | Delivery receipts, raw payloads, recovery coverage, the GitHub event models |
+| Task application | Tasks, as modules of one service: intake (channels, requests, enrollment), task state and stages (plans, findings, reviews), consent and funding policy (who pays, the funding boundary, credential selection and grants), attempts (call and token budgets, admission, charges), the exchange integration, GitHub publication (dashboard, notices, replies, reviews, threads, labels, check runs, branches, PRs, run refs and dispatch; webhook redeliveries for ingress), and the task views | Sole controller of tasks and sole writer to GitHub; holds the App's private key and the reviewer account's token | Tasks, requests, consent logs, attempts, grants, write records and their outcomes |
+| Credentials | Users' credential entries, lists and filters, and the route catalog. In phase 3 the Python vault keeps them; whether they become a module of the task application or their own service is decided in phase 4 | Hands new secret material to the secret store on save but can't read it back | Credential metadata |
 | Exchange | Runner sessions, turn queue, turn results, transcripts and turn diagnostics; publishes turn results as events | Runner OIDC; issues session keys bound to a grant | Sessions, turns |
 | Inference gateway | Authenticates session keys, enforces token budgets, routes and forwards to providers or the relay verifier, records usage | Org provider secrets; reads personal secret material | Inference requests and their usage |
 | Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime | Relay registrations and sessions |
 | Secret store (OpenBao) | Personal credential material and routinely rotated operational secrets | Unseal key and service bootstrap identities outside the database; a least-privilege policy per client service | Encrypted material |
-| Backoffice API | Signed-in users, their views and their requests | User sessions and OAuth tokens | Sessions, a read model fed by events |
+| Backoffice API | Signed-in users, their views and their requests | No App key, exchange or vault token; user sessions and OAuth tokens (in the Python backoffice until phase 4) | Sessions, a read model fed by the task application's events |
 
 - **Ingress publishes typed GitHub facts; consumers decide what they mean.** Ingress
   checks the signature, records the delivery ID so a redelivery publishes nothing new,
@@ -195,22 +203,28 @@ database and a bus provide directly.
     decision.
   - **Raw payloads are kept** for a retention period, so a model that gains a field can
     be backfilled by re-mapping and republishing ([below](#events-and-the-bus)).
-- **Channels turn GitHub events into requests.** The orchestrator's GitHub channels
+- **The task application's modules** are named for what they own: intake, tasks
+  (the orchestrator's role), funding policy, attempts, the exchange integration,
+  publication (the publisher's role) and views. Below, *the orchestrator*, *funding* and
+  *the publisher* name those modules, and *funding* also covers credential management
+  wherever phase 4 places it.
+- **Channels turn GitHub events into requests.** The intake module's GitHub channels
   consume the events they care about (`/concurro` comments, labels, assignments, review
-  requests, mentions) and send requests to the orchestrator's request API; the
-  backoffice API calls the same API, as a future Slack adapter would. Channels may read
-  the orchestrator's task context to interpret a request but never change it, and task
-  logic only sees typed requests ([request intake](request-intake.md)).
-- **The orchestrator decides who pays; funding decides whether and how.** Task consent
-  (sponsorship requests, the consent log and the funding boundary) depends on the task's
-  mode, enrollment and comments, so it stays with the task
-  ([request intake](request-intake.md#applying-requests)). The orchestrator is the
-  authority on who consented, and funding trusts its consent decisions: channels run in
-  the orchestrator and authenticate actors there. A funding service that verified
-  consent evidence itself could add protection, but this design doesn't claim it.
-  - **Grants.** For each attempt the orchestrator sends funding a frozen consent
-    decision (task, provider slot, sponsor, funding mode, consent revision, boundary and
-    an evidence reference). Funding selects a credential and sets a budget:
+  requests, mentions) and record requests in the task application's database; the
+  backoffice submits signed requests to the task application, as a future Slack
+  adapter would. Channels may read a task's context to interpret a request but never change it,
+  and task logic only sees typed requests ([request intake](request-intake.md)).
+- **The orchestrator decides who pays; funding decides whether and how,** in the same
+  transaction that admits the attempt and charges its call. Task consent (sponsorship
+  requests, the consent log and the funding boundary) depends on the task's mode,
+  enrollment and comments, so it stays with the task
+  ([request intake](request-intake.md#applying-requests)); channels authenticate actors
+  in the same application. Personal credentials work before phase 3's cutover
+  ([phase 3](architecture/phase-3-plan.md#m3-team-workflows)), since the team uses them
+  today.
+  - **Grants.** For each attempt the orchestrator freezes a consent decision (task,
+    provider slot, sponsor, funding mode, consent revision, boundary and an evidence
+    reference). Funding selects a credential and sets a budget:
     - **Implicit fill** (the initiator filling an empty slot) uses the initiator's
       credentials as they stood at the boundary, so a credential added later never
       makes an earlier `start` chargeable.
@@ -219,18 +233,17 @@ database and a bus provide directly.
       ([ordered credentials](credential-list.md)).
     - **A replayed attempt** returns its original grant, credential version and current
       revoked status; a different request reusing the attempt is refused.
-  - **Withdrawal.** The orchestrator commits a withdrawal with a revocation job, retried
-    until acknowledged. Funding keeps a cutoff per task, provider slot and sponsor, as a
-    counter that only increases and covers every earlier grant for that slot and
-    sponsor; it checks the cutoff in the same transaction that inserts a grant, so a
-    delayed request is refused and another provider's or a later sponsor's grant isn't.
-    Grants already issued are revoked through `funding.*` events, and spending has
-    stopped once the gateway publishes `inference.binding.closed` for each affected
-    binding (and the exchange has released any relay session) or the binding has
-    expired.
-  - The orchestrator acts on `funding.*` events, such as a revoked grant or a credential
-    that's usable again. The exchange binds sessions to grant IDs; the inference gateway
-    reports usage as events, which funding charges. The route catalog is defined once, by
+  - **Withdrawal.** A withdrawal commits with its cutoff: funding keeps a cutoff per
+    task, provider slot and sponsor, as a counter that only increases and covers every
+    earlier grant for that slot and sponsor, and checks it in the same transaction that
+    inserts a grant, so a delayed attempt is refused and another provider's or a later
+    sponsor's grant isn't. Grants already issued are revoked at the exchange by a job
+    retried until acknowledged, and spending has stopped once the gateway publishes
+    `inference.binding.closed` for each affected binding (and the exchange has released
+    any relay session) or the binding has expired.
+  - A revoked grant or a credential that's usable again is a new input to the task's
+    decisions. The exchange binds sessions to grant IDs; the inference gateway reports
+    usage as events, which funding charges. The route catalog is defined once, by
     funding, as a contract the gateway and the backoffice build from. A sponsor approves
     a relay's registration code in the backoffice; funding, as the vault does today,
     calls the verifier's owner endpoints, records a relay-custody credential version that
@@ -301,21 +314,24 @@ database and a bus provide directly.
     verifier's caller without it. Today's arrangement is a separate one: the exchange's
     forwarder consumes its own one-use nonce and checks turn and session authority
     before it calls the verifier, so it deploys on its own schedule.
-- **Splitting the orchestrator and publisher** separates task logic from GitHub write
-  credentials, and isolates the remaining unknown-outcome handling in the one service
-  that writes to GitHub. A lost projection write then delays display; it can't corrupt
-  task state.
+- **Publication is recorded, then settled.** Task decisions record the writes they want
+  in their own transaction; jobs send them. Each write is recorded, marked `sending`
+  just before it leaves, and settled with its outcome, so a crash or a lost reply leaves
+  a write the publisher can name and settle by reading back. A lost projection write
+  delays display; it can't corrupt task state.
   - **One write per surface at a time.** The dashboard, each notice and each finding
     thread is a numbered snapshot of what it should show, so resolving a notice is a
     newer snapshot of it. The publisher settles an uncertain write before sending that
     surface's next one, and writes the newest snapshot, skipping intermediate ones. A
     promised reply or audit notice has its own publication record and is never
     skipped.
-- **The backoffice read model replaces the list index.** It moves to the backoffice's own
-  domain and is fed by task events, not rebuilt from webhooks and GitHub reads. The
-  backoffice's GitHub caches go away with it.
-- **Diagnostics** become turn records in the exchange, which already sees every turn,
-  published as `turn.*` events for the backoffice read model.
+- **The backoffice read model replaces the list index.** The backoffice API builds it from
+  the task application's events, not from webhooks and GitHub reads, and shows each
+  signed-in user what their own access allows. The backoffice's GitHub caches go away
+  with the list index.
+- **Diagnostics** become turn records: today the task application records each turn's
+  submission, observed status and result from its polls and publishes them for the
+  backoffice read model, and in phase 5 the exchange records them itself.
 - **Offline tools** such as retrospective collection read events and APIs; they aren't
   services.
 - **Event plumbing is a shared library, not a service.** Every service links the same
@@ -326,12 +342,17 @@ database and a bus provide directly.
 Tasks and requests:
 
 ```text
- GitHub ──webhooks──▶ Ingress ──github.*──▶ Orchestrator ──task events──▶ Publisher ──▶ GitHub
-                                              ▲    │  ▲
-                                     requests │    ▼  │ grants, funding events
- Backoffice API ──requests────────────────────┘   Funding
-       │                                            ▲
-       └─────────────── credentials ────────────────┘
+ GitHub ──webhooks──▶ Ingress ──github.*──▶ ┌─ Task application ───────────────┐ ──writes──▶ GitHub
+                                            │ intake · tasks · funding policy  │
+                                            │ attempts · exchange · publication│ ──turns───▶ Exchange
+                                            └──▲──────────────┬────────────────┘
+                                 signed requests│              │events, baseline
+                                            ┌──┴──────────┐ ┌─▼─────────────────┐
+ Browser ──commands, sign-in, credentials──▶│ Python      │◀│ Backoffice API    │◀── Browser (views)
+                                            │ backoffice  │ └───────────────────┘
+                                            └──────┬──────┘  viewer token: identity, tiers
+                                                   ▼
+                                     Vault (until phases 4 and 5)
 ```
 
 Inference:
@@ -346,20 +367,19 @@ Inference:
     └──write, destroy──▶ OpenBao ◀───────────────────────┘
 ```
 
-Events (`github.*`, `task.*`, `request.*`, `funding.*`, `turn.*`, usage) travel through
-the bus ([below](#events-and-the-bus)); the backoffice read model follows task, request,
-funding and turn events. Requests go to the orchestrator's request API, grant requests
-and withdrawals from the orchestrator to funding's, and secret material through
-OpenBao's. Not drawn: the orchestrator submits turns to the exchange and learns
-results from `turn.*` events; the publisher dispatches runner workflows for the exchange
-and redeliveries for ingress; funding calls the verifier's owner endpoints.
+Events between services (`github.*`, the task application's task, request and turn
+events for the backoffice API, usage, binding changes) travel through the bus
+([below](#events-and-the-bus)); inside the task application, modules share one
+transaction. Secret material goes through OpenBao's API. Not drawn: the task application
+polls the exchange for turn results until phase 5, dispatches runner workflows for the
+exchange, performs redeliveries for ingress, and calls the verifier's owner endpoints.
 
 ### Data
 
 - **A database per service, on one shared Postgres server.** Each service connects as its
   own role to its own database. Postgres has no cross-database queries or transactions,
   so no service can read or join another's tables; cross-service views come from events
-  (the backoffice read model).
+  or the owner's API (the task views).
 - **Each service publishes through its own outbox.** A state change and its events commit
   in one transaction in the service's database; its forwarder moves outbox rows onto
   the bus.
@@ -369,12 +389,13 @@ and redeliveries for ingress; funding calls the verifier's owner endpoints.
   URL, if its load or failure isolation calls for it.
 - **Secrets aren't stored in plaintext.** Exchange session keys and runner tokens are
   stored hashed or encrypted.
-- **Large blobs** (reports, transcripts) live in content-addressed object storage
-  referenced from Postgres, not in rows or artifacts.
+- **Large blobs** (turn specs, prompts, responses, workspaces, transcripts) live in
+  content-addressed object storage referenced from Postgres, not in rows or artifacts,
+  from phase 3.
 - **Minimum requirements** to document: a supported PostgreSQL release, a NATS server
   with JetStream on persistent storage, an OpenBao server with its unseal key file,
-  object storage for blobs, connection URLs per service, and backup of every database
-  and the object store, OpenBao's database together with its unseal key.
+  object storage for blobs, connection URLs per service, and backup of every
+  database and the object store, OpenBao's database together with its unseal key.
 
 ### Events and the bus
 
@@ -382,16 +403,20 @@ and redeliveries for ingress; funding calls the verifier's owner endpoints.
   and grows to a three-node cluster without changes to services. Rust services use the
   official `async-nats` client.
 - **Subjects say what happened and who said it.** Ingress publishes
-  `github.<event>.<action>`; the orchestrator `task.<task>.<event>`; the orchestrator and
-  funding `request.<owner>.<outcome>`; funding `funding.<event>`; the exchange
-  `turn.<turn>.<event>`; the inference gateway `inference.usage`. `<task>` is the task's
-  subject-safe ID, not `owner/repo#n`, whose `.` separates NATS tokens. Each publishing
-  service owns one stream over its subjects, retained long enough for a consumer to
-  replay.
+  `github.<event>.<action>`. The task application publishes, for the backoffice API,
+  `task.<task>.<event>`, `request.tasks.<outcome>`,
+  `consent.<repository_id>.<number>.<event>`, `index.<repository_id>.<kind>` and, until
+  phase 5, `turn.<turn>.<event>`. The exchange publishes `turn.<turn>.<event>` from
+  phase 5, and the inference gateway `inference.usage`. A service publishes only what
+  another process consumes; nothing inside the task application consumes its own
+  events. A subject that names a task uses its subject-safe ID, not `owner/repo#n`,
+  whose `.` separates NATS tokens. Each publishing service owns one stream over its
+  subjects, retained long enough for a consumer to replay; a consumer that falls behind
+  retention reloads from its producer's baseline, as the backoffice API does.
 - **Broadcast between services, a queue within one.** Each consuming service has its
   own durable consumer, so every interested service sees every event it subscribes to.
   That service's instances share the consumer, so each event is handled once per
-  service. Consumers filter by subject, for example `task.*.stage`.
+  service. Consumers filter by subject, for example `github.issue_comment.*`.
 - **At-least-once delivery, applied once.** The forwarder publishes with the event ID as
   the message ID, so JetStream drops a republish within its duplicate window. A consumer
   records the event ID in the same transaction that applies it and acks after commit; that
@@ -409,25 +434,22 @@ and redeliveries for ingress; funding calls the verifier's owner endpoints.
     on their own, deduplicated by event ID, and never discarded as stale.
 
   A consumer holds an event that refers to something it hasn't seen until that arrives:
-  the publisher holds request outcomes until their source is final, and the gateway
-  checks late bindings against revocations it has recorded. The orchestrator orders
-  requests by `source_at`, not by the bus. Within one stream, a consumer
-  that needs a task's events in order can use JetStream's deterministic subject
-  partitioning on the task ID.
+  the gateway checks late bindings against revocations it has recorded. The task
+  application orders requests by `source_at`, not by the bus.
 - **Rust services reach the bus only through the shared events crate,** which keeps NATS
-  out of service code. During the migration the Python service uses a NATS client with
-  the generated models.
+  out of service code. Until the cutover the Python service consumes `github.*` with a
+  NATS client and the generated models.
 
-How one event moves from the orchestrator to the publisher:
+How one GitHub event moves from ingress to the task application:
 
 ```text
- ┌─ Orchestrator process ──────────────────┐   ┌─ Publisher process ─────────────────────┐
- │ handler ──one tx──▶ orchestrator db     │   │ consumer ──one tx──▶ publisher db       │
- │                     (state + outbox)    │   │      ▲               (state + event ID) │
+ ┌─ Ingress process ───────────────────────┐   ┌─ Task application process ──────────────┐
+ │ handler ──one tx──▶ ingress db          │   │ consumer ──one tx──▶ tasks db           │
+ │                     (receipt + outbox)  │   │      ▲               (state + event ID) │
  │ forwarder ◀── reads outbox              │   │      │ ack after commit                 │
  └───┼─────────────────────────────────────┘   └──────┼──────────────────────────────────┘
-     │ publish, message ID = event ID                 │ durable consumer "publisher"
-     └──────────────▶ JetStream: task.> stream ───────┘
+     │ publish, message ID = event ID                 │ durable consumer "tasks"
+     └──────────────▶ JetStream: GITHUB stream ───────┘
 ```
 
 - **Jobs inside a service** use a Postgres job queue. Maintained Rust options include
@@ -443,7 +465,7 @@ How one event moves from the orchestrator to the publisher:
 
 | Repo | Contains |
 | ---- | ---- |
-| `concurro` | One Cargo workspace for every other Rust service: ingress, orchestrator, publisher, funding, exchange, inference gateway, backoffice API |
+| `concurro` | One Cargo workspace for every other Rust service: ingress, the task application, exchange, inference gateway, backoffice API |
 | `concurro-relay` | Everything that speaks the sponsor relay protocol: the Sponsor CLI (`relay`), `verifier`, `tls13`, `native`, `native-transport`, `protocol`, `provider-protocol`, `dev` and the hosted verifier service with its container build |
 
 - **The relay stays its own product.** Sponsors install and audit it, and it keeps its own
@@ -461,8 +483,8 @@ How one event moves from the orchestrator to the publisher:
 | Goes away | Stays, smaller |
 | ---- | ---- |
 | Audit artifact storage, verification and format migrations | Rendering of dashboards, notices and reviews |
-| Per-tick re-reads of comments, events and checkpoints | Webhook delivery recovery, in ingress and the publisher |
-| Delegated command comments and "may have posted" | Unknown-outcome handling for GitHub writes, in the publisher only |
+| Per-tick re-reads of comments, events and checkpoints | Webhook delivery recovery, in ingress and the task application |
+| Delegated command comments and "may have posted" | Unknown-outcome handling for GitHub writes, in the task application's publication only |
 | Observation jobs, snapshot diffing, deferred inputs | Repository reads for policy and file checks |
 | The list index and backoffice GitHub caches | Runner OIDC and session brokering |
 | Three copies of sponsorship state, duplicated feed cursors, a route catalog defined four times | Funding's credential metadata and selection rules |
@@ -491,94 +513,59 @@ deployment.
 2. **GitHub ingress in Rust.** It receives webhooks, recovers deliveries, and publishes
    typed GitHub events to `github.*`. The first models cover the fields today's service
    reads; the Python service, its list index included, consumes those events instead of
-   webhooks, and performs redeliveries for ingress until the publisher exists. This
+   webhooks, and performs redeliveries for ingress until the task application's cutover. This
    proves the bus and the contract tooling with a small, well-bounded service (about 570
    lines today). [Implementation plan](architecture/phase-2-plan.md).
-3. **Orchestrator, publisher, funding and the backoffice API in Rust, for new tasks,**
-   with Postgres as the authority. This is the core of the change (about 19,000 engine
-   lines plus the service's scheduler and gateway). It's built as milestones, each a
-   working path end to end:
-   1. **One task.** An issue enrolled by label and a writer's `start` go through intake,
-      funding grants an attempt, the Python exchange runs it, the publisher posts the
-      result and the backoffice shows it, with minimal versions of each service. A
-      manual `start` alone can initialize a task; the label channel is included so
-      enrollment is exercised from the start. Alongside it, contract tests feed
-      schema-valid events through the real outbox, bus and publisher into a test
-      repository, including duplicate delivery and an uncertain write. Done when
-      replaying an attempt keeps its payer and grant, a turn submitted before funding
-      records its sponsorship is refused, and when the wrong token reaches the exchange
-      first for a task it's refused and the recorded owner can still proceed.
-   2. **Failure paths.** A withdrawal during a run, a restart after an uncertain GitHub
-      write, a missed webhook. Done when a crash during a withdrawal can't restore
-      spending authority after funding has acknowledged the revocation, and two first
-      inputs for one issue arriving across the pilot switch end with one owner.
-   3. **The rest of a task's behavior** (stages, reviews, retries). Done when the new
-      path matches a fixed baseline, a named release of the Python service, on every
-      command and stage it supports, with their recovery and authorization behavior.
+3. **The task application in Rust, and a single cutover,** with Postgres as the
+   authority. This is the core of the change (about 19,000 engine lines plus the
+   service's scheduler and gateway): one application for intake, task state and stages,
+   consent and funding policy, attempts, the exchange integration and GitHub
+   publication, with the backoffice API, a separate lower-privilege Rust process, serving
+   the frontend's task views and commands from the task application's events and
+   requests API. Every workflow the team has today continues. The rollout is private:
+   it's built and verified on a dedicated test repository with distinct test identities,
+   takes over every target in one maintenance window, and is used by the operator on
+   real tasks before the team is invited. [Implementation plan](architecture/phase-3-plan.md).
+   1. **GitHub-only intake.** On the test repository, with org funding, `/concurro start`
+      runs intake through the real exchange and runner, the result appears on GitHub,
+      `stop` stops it, a refused command changes nothing, and restarting the controller
+      at any point duplicates no turn and no publication.
+   2. **One contribution.** A representative issue goes from `start` through planning,
+      approval, implementation, review and gates to a ready PR, and others to each
+      terminal stage; every task command works; the operator can inspect a stuck task and
+      recover from the named failures.
+   3. **Team workflows.** Personal credentials and sponsorship, label enrollment,
+      standalone reviews, the backoffice API with viewer-scoped views, backoffice commands
+      as the signed-in user, delivery recovery and coverage gaps. Done when the team readiness
+      checks pass on the test repository: distinct identities for writers, a reader, an
+      outsider and a sponsor, with refused commands leaving task state unchanged.
+   4. **The cutover.** Python task admission stops, in-flight work is settled or
+      stopped, and the task application starts as the sole controller from the stream
+      position the Python service stopped at. There's no task import and no rollback.
+   5. **Owner use.** The operator runs real tasks and fixes what they find; the team
+      readiness checks pass again on a real target before the team is invited.
 
-   Until milestone 3 is complete, only pilot tasks take the new path; ordinary new tasks
-   switch after that.
-
-   - **Ownership is claimed once per task.** The orchestrator's ownership table is the
-     only record: an insert-if-absent claim returns the winner, and the orchestrator's
-     channels, the Python service and the backoffice all call it for a task with no
-     owner and act only if they won. The claim applies one rule: during the pilot, the
-     new services own a task only if its issue or repository is on the pilot list;
-     after the switch, every unowned task. The Python service's existing tasks are
-     recorded before the pilot starts. The claim happens on the first routed input for
-     the task, a sponsorship comment before enrollment included, and a recorded owner
-     always wins over later changes to the rule. Claims are keyed by the issue
-     (repository ID and issue number), all a task has before enrollment. Callers,
-     the Python service included, claim synchronously and act on the owner returned.
-   - **Existing tasks drain** on the Python service. An import tool is built only if some
-     tasks can't drain; it would need `cutover`'s guarantees (a fresh generation, no
-     write in flight or unresolved, `service/cutover.py`).
-   - **Funding takes over selection, grants and the exchange's sponsorship
-     transitions** for new tasks. Credential metadata and material stay in the vault
-     until phase 5; funding reads them through the vault's metadata API and event feed,
-     as the service does now.
-   - **The Python exchange stays, with bridge changes:**
-     - **Tokens.** One bearer covers every operator operation today
-       (`gateway/exchange/exchange.py:1531`). The Python service keeps it for its
-       draining tasks until phase 4. The orchestrator gets a token for running turns
-       (submit, poll, cancel and end sessions), and funding one that can only change
-       sponsorship. On the first operation for a task, a sponsorship change before any
-       turn included, the exchange reads the task's owner from the orchestrator's
-       ownership table, records it, and refuses the other token's operations on that
-       task.
-     - **Grants come from funding.** For new tasks, a contributed turn (paid with a
-       user's credential, the initiator's own or a sponsor's) is accepted only once
-       funding has recorded its sponsorship; the exchange never takes the grant from the
-       submitted turn, as `current_grant` does today when it has no row (`:662`).
-       Org-funded turns need no sponsorship record and still pass admission and budget
-       checks.
-     - **Provenance.** It accepts `assignment` and `mention` grant provenance (`:669`).
-     - **Turn results.** The orchestrator polls them and publishes the same `turn.*`
-       events the Rust exchange will, carrying what the service records in diagnostics
-       today (submission, observed status and timing, the result and its transcript
-       archive). The backoffice read model takes diagnostics from them. The polling goes
-       in phase 5.
-
-     The orchestrator sends it today's binding, which already carries funding, sponsor,
-     grant, route, record and version; the publisher takes over runner workflow
-     dispatch.
-   - **The backoffice API serves new tasks** from its event-fed read model; the frontend
-     calls it or the Python backoffice by the task's owner. Lists span both owners: the
-     backoffice API combines the Python list API's entries for Python-owned tasks with
-     its read model's, keeping one entry per issue by the ownership table, then sorts
-     and filters as the lists do today. The Python list API returns whole lists, so no
-     pagination spans the two. Live updates merge the same way: the backoffice API's
-     change feed combines its read model's changes with the Python list API's
-     `/lists/changes`.
-4. **The Python service and backoffice retire** once the last task drains, with the list
-   index, read caches and diagnostics store. Credential writes move to the Rust
-   backoffice API, through funding to the vault until phase 5.
+   - **One controller at a time.** Before the cutover the Python service and the task
+     application serve disjoint targets by configuration; after it, only the task
+     application runs tasks. Nothing decides an owner per issue.
+   - **The Python exchange, gateway, vault and runner stay,** called through their
+     existing APIs. The exchange gains turn tombstones and a cancel that ends the turn's
+     sessions, and its operator API moves to the platform network at the cutover
+     ([bridge](contracts.md#python-exchange)).
+   - **The Python backoffice keeps sign-in and the credentials pages,** and answers the
+     backoffice API's read-scoped session and tier questions on an internal listener; it
+     keeps the browser's command POST, signing each command and forwarding it to the task
+     application. Its task pages retire at the cutover.
+4. **Sign-in and credentials in Rust.** The Python backoffice retires: sign-in moves to
+   the backoffice API, and credential writes go through funding to the vault until
+   phase 5. Where credential management lives (a module of
+   the task application or its own service) is decided here.
 5. **Exchange, inference gateway and secrets in Rust.** The exchange moves to Postgres,
    records diagnostics as turn records and publishes `turn.*` itself. To hand over, the
-   orchestrator stops submitting to the Python exchange, polls its outstanding turns
-   until each is finished and its final events are published, then switches to the Rust
-   exchange and retires the polling. Turn events are identified by turn ID and event
-   kind, so the two producers can never publish one completion as two events. The gateway
+   task application stops submitting to the Python exchange, polls its outstanding turns
+   until each is finished and recorded, then switches to the Rust exchange and retires
+   the polling. Turn records are identified by turn ID, so a completion seen by both the
+   polling and the new exchange is recorded once. The gateway
    replaces agentgateway and the exchange's forwarder, and the relay verifier sits behind
    it, with the separate credentials and admission check of a `concurro-relay` release.
    Funding imports the credential metadata from the vault once. A one-time migrator
@@ -595,11 +582,12 @@ deployment.
    restart. Only then are agentgateway, the vault (with the exchange's own sponsorship
    tables and vault feed) and the Python exchange retired, and the polling stopped.
 
-Until phase 3 lands, the Python service gets fixes and the bridges above only. New
-features such as [request intake](request-intake.md) and [mentions](mentions.md) are
-designed against the target and built on the new orchestrator.
+Until the cutover, the Python service gets fixes only, and none are expected, since it
+runs no tasks. New features such as [request intake](request-intake.md) and
+[mentions](mentions.md) are designed against the target and built in the task
+application.
 
-Mutable target settings, funding policy and pilot membership belong in their owning
+Mutable target settings and funding policy belong in their owning
 services' databases, changed through authenticated APIs with validation and audit.
 File settings remain for bootstrap. A future `concurro` CLI should call the owning
 service APIs for setup and operator actions once those APIs are stable. An
@@ -609,29 +597,39 @@ installation-specific migration script need not be a product command.
 
 | Proposal | Effect |
 | ---- | ---- |
-| [Request intake](request-intake.md) | Becomes the orchestrator's request API, sponsorship included, with GitHub channels consuming `github.*` |
-| [Mentions and assignment](mentions.md) | Orchestrator channels consuming `github.*`; the interpreter waits until exact mentions show what people ask for, then runs under a grant from funding, by an execution path that is still its open question (an exchange turn recovers a lost result) |
-| [Backoffice API surface](backoffice-api.md) | Arrives in phase 3 for new tasks; commands become `POST /requests` to the orchestrator; views read the backoffice's event-fed model; diagnostics come from `turn.*` events |
-| [Webhook-fed list index](list-index.md) | Replaced by the backoffice read model; retired with the Python service in phase 4 |
-| [Per-user credentials](per-user-credentials.md), [ordered credentials](credential-list.md) | Rules unchanged; funding owns them, and secret material moves to OpenBao |
+| [Request intake](request-intake.md) | Becomes the task application's intake module, sponsorship included, with GitHub channels consuming `github.*` |
+| [Mentions and assignment](mentions.md) | Task application channels consuming `github.*`; the interpreter waits until exact mentions show what people ask for, then runs under a grant from funding, by an execution path that is still its open question (an exchange turn recovers a lost result) |
+| [Backoffice API surface](backoffice-api.md) | Arrives in phase 3 (M3), before the cutover: the backoffice API serves views from its read model of the task application's events, and commands become requests as the signed-in user; sign-in moves to it in phase 4 |
+| [Webhook-fed list index](list-index.md) | Replaced by the backoffice API's read model; retired with the Python service at phase 3's cutover |
+| [Per-user credentials](per-user-credentials.md), [ordered credentials](credential-list.md) | Rules unchanged; the task application applies them from phase 3's M3, and secret material moves to OpenBao |
 | [Sponsor relay](sponsor-relay.md) | The sponsor side is unaffected; funding takes over the vault's relay approvals, and the hosted verifier sits behind the inference gateway, with separate caller credentials and its own admission check |
-| [Consolidated PR reviews](consolidated-pr-reviews.md), [risk-driven routing](risk-driven-routing.md) | Logic unchanged; publication goes through the publisher |
+| [Consolidated PR reviews](consolidated-pr-reviews.md), [risk-driven routing](risk-driven-routing.md) | Logic unchanged; publication goes through the task application's write records |
 | [Retrospective tuning](retrospective-tuning.md) | Reads events and turn records instead of checkpoints and diagnostics files |
-| [Issue artifact consolidation](issue-artifact-consolidation.md) | Complete; audit artifacts stay with tasks that drain on the Python service and aren't written for new tasks |
+| [Issue artifact consolidation](issue-artifact-consolidation.md) | Complete; audit artifacts stay on the issues of tasks the Python service ran and aren't written for new tasks |
 
 ## Decided
 
-- **The orchestrator owns task consent;** funding owns credentials, grants, budgets and
-  charges, and trusts the orchestrator's consent decisions.
-- **Existing tasks drain** on the Python service at phase 3; an import tool is built only
-  if some can't.
-- **One orchestrator.** Planning, implementation and review share task, approval and
-  finding state, so review doesn't become its own service.
-- **The publisher mints GitHub tokens.** In the target it alone holds the App's private
-  key (the Python service keeps its signing credentials until phase 4), recovers
-  webhook deliveries for ingress and issues the orchestrator read-only tokens scoped to
-  one repository, with today's repository and permission checks
-  (`service/identity.py:135`).
+- **One task application.** Intake, task state and stages, consent and funding policy,
+  attempts, the exchange integration and GitHub publication are modules of one service
+  with one database, so the payer decision, attempt admission and call charge commit
+  together. Planning, implementation and review share task, approval and finding state,
+  so review doesn't become its own service either.
+- **A single cutover, no coexistence.** The task application is built on a test
+  repository, then becomes the sole controller in one maintenance window. Python tasks
+  aren't imported: any unfinished one is settled or stopped, and can be started again.
+- **The task application mints GitHub tokens.** It alone holds the App's private key
+  after the cutover, recovers webhook deliveries for ingress, and reads repositories
+  with read-only tokens scoped to one repository, with today's repository and permission
+  checks (`service/identity.py:135`).
+- **No team workflow regresses at the cutover.** Personal credentials, label enrollment,
+  standalone reviews and the backoffice's task views and commands work on the task
+  application and the backoffice API before it; a deferral is recorded with its reason
+  and impact ([phase 3](architecture/phase-3-plan.md#deferrals)).
+- **A separate, lower-privilege backoffice API.** It holds no App key and no user token,
+  and reads the task application's events. It submits no command: through phase 3 the
+  Python backoffice, the session authority, takes the browser's commands with its CSRF
+  check, signs each for the signed-in user and forwards it, so the backoffice API can't
+  act as a user.
 - **Contracts are JSON, written as Rust types.** Dedicated wire types generate JSON Schema,
   which generates strict Python models, with fixture tests in both languages
   ([contracts](contracts.md#format)). JSON keeps outboxes, parked events and the bus
@@ -641,3 +639,14 @@ installation-specific migration script need not be a product command.
 
 1. **Reports on GitHub.** Keep publishing full reports as issue artifacts (a public audit
    trail), or publish summaries and keep full reports in Concurro's own storage?
+
+## Later hardening
+
+Not planned in any phase; each would be its own proposal.
+
+- **Runners on a private network.** Runner jobs join a tailnet with the Tailscale GitHub
+  action, authenticated by GitHub OIDC (workload identity federation, ephemeral tagged
+  nodes), and the exchange's runner API and the inference gateway stop listening on the
+  internet. Their pre-authentication code is then out of reach of anyone else. It doesn't
+  make an authenticated runner less dangerous, and the runner tag's ACL must reach those
+  two listeners and nothing else. Best done with phase 5, when both are rebuilt.
