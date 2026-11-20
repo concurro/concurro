@@ -1,0 +1,29 @@
+{
+  "id": "2ea31359-94c1-5a95-b686-ac0c53af0ba7",
+  "type": "task.019aa320-1d3c-7b10-80a1-334b3fac3a81.notice",
+  "version": 1,
+  "kind": "snapshot",
+  "producer": "tasks",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "entity": "task:019aa320-1d3c-7b10-80a1-334b3fac3a81",
+  "revision": 1,
+  "data": {
+    "task_id": "019aa320-1d3c-7b10-80a1-334b3fac3a81",
+    "issue": {"repository_id": 8, "number": 3},
+    "kind": "contribution",
+    "author": {"id": 10, "login": "writer"},
+    "initialized": false,
+    "mode": "manual",
+    "stage": null,
+    "stage_reason": null,
+    "enrollment": null,
+    "plan": null,
+    "budgets": {
+      "model_calls": {"used": 0, "max": 0},
+      "fix_rounds": {"used": 0, "max": 0},
+      "plan_revisions": {"used": 0, "max": 0}
+    },
+    "attention": false,
+    "pull_request": null
+  }
+}

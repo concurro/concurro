@@ -97,6 +97,13 @@ transaction, so failed key deletion cannot revive work. These transactions do no
 older partial admissions or retirements; older retirement gaps still recover through polling.
 Other exchange writes use autocommit, so their statement order remains significant.
 
+The operator's `DELETE turns/{id}` preserves a completed result, retires every recorded
+session for the turn and returns their IDs. A repeat returns the same IDs, including
+after turn pruning; a failed key deletion leaves the retirement retryable. Pruning
+atomically records a permanent turn tombstone with its submitted body digest. Replaying
+that body returns `410 turn_expired`, while a changed body returns `409`. Cancelling an
+unknown turn fences its ID before any submit and returns `410 turn_cancelled` on replay.
+
 The lifecycle lock is non-reentrant and spans threads and processes. Long polls release
 it between observations; schema setup and CLI listing reads run outside it. Gateway I/O
 remains under the lifecycle lock but outside SQLite transactions. The service registry

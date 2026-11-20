@@ -1,0 +1,25 @@
+{
+  "id": "2ea31359-94c1-5a95-b686-ac0c53af0ba7",
+  "version": 1,
+  "producer": "tasks",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "type": "turn.019aa321-1d3c-7b10-80a1-334b3fac3a81.finished",
+  "kind": "fact",
+  "data": {
+    "turn_id": "019aa321-1d3c-7b10-80a1-334b3fac3a81",
+    "outcome": "succeeded",
+    "reason": null,
+    "provider_requests": "some",
+    "response": {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 2,
+      "media_type": "application/json"
+    },
+    "workspace": null,
+    "transcript": null,
+    "transcript_error": null,
+    "elapsed_seconds": 12.5,
+    "provider_failure": null,
+    "funding_ended": true
+  }
+}

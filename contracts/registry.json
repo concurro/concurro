@@ -89,5 +89,54 @@
     "python_module": "ingress_coverage_gap_v1",
     "stem": "ingress.coverage.gap.v1",
     "version": 1
+  },
+  {
+    "family": "request.tasks",
+    "python_decoder": "decode_request_outcome",
+    "python_module": "request_tasks_v1",
+    "stem": "request.tasks.v1",
+    "version": 1
+  },
+  {
+    "family": "task",
+    "python_decoder": "decode_task_snapshot",
+    "python_module": "task_v1",
+    "stem": "task.v1",
+    "version": 1
+  },
+  {
+    "family": "task.notice",
+    "python_decoder": "decode_task_notice",
+    "python_module": "task_notice_v1",
+    "stem": "task.notice.v1",
+    "version": 1
+  },
+  {
+    "family": "task.report",
+    "python_decoder": "decode_task_report",
+    "python_module": "task_report_v1",
+    "stem": "task.report.v1",
+    "version": 1
+  },
+  {
+    "family": "turn.submitted",
+    "python_decoder": "decode_turn_submitted",
+    "python_module": "turn_submitted_v1",
+    "stem": "turn.submitted.v1",
+    "version": 1
+  },
+  {
+    "family": "turn.status",
+    "python_decoder": "decode_turn_status",
+    "python_module": "turn_status_v1",
+    "stem": "turn.status.v1",
+    "version": 1
+  },
+  {
+    "family": "turn.finished",
+    "python_decoder": "decode_turn_finished",
+    "python_module": "turn_finished_v1",
+    "stem": "turn.finished.v1",
+    "version": 1
   }
 ]

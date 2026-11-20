@@ -1,6 +1,6 @@
 # Plan: phase 3, the task application
 
-**Status: plan, not started.** It builds on [phase 2](phase-2-plan.md), which must be in
+**Status: implementation in progress.** It builds on [phase 2](phase-2-plan.md), which must be in
 production first: the task application consumes `github.*` from ingress.
 
 Phase 3 of the [architecture review](../architecture.md#migration) replaces the Python
@@ -89,13 +89,13 @@ What runs at the cutover:
 | Process | Separate because | Holds |
 | ---- | ---- | ---- |
 | Ingress (Rust, phase 2) | Public webhook endpoint; must accept deliveries while the task application restarts | The webhook secret, delivery receipts |
-| Task application (Rust) | Sole controller and sole GitHub writer: the highest-privilege Rust process | Task state; the App's private key, the reviewer account's user grant (stored, refreshed and bound by numeric ID, as `service/user_grant.py` keeps it), the exchange's operator token, the vault's metadata bearer and the Hetzner archive credential |
+| Task application (Rust) | Sole controller and sole GitHub writer: the highest-privilege Rust process | Task state; the App's private key, the reviewer account's user grant (stored, refreshed and bound by numeric ID, as `service/user_grant.py` keeps it), the exchange's operator token, the vault's metadata bearer and the archive bucket credential |
 | Backoffice API (Rust) | Faces browsers through the edge; must not hold the task application's authority | Its read model; a read-only bearer for the task baseline, turn artifacts and transcript entries; a read-scoped credential to the Python backoffice (session identity and tiers only). It submits no command |
 | Backoffice (Python) | Signs users in with GitHub OAuth and keeps their tokens; takes the browser's commands | Sessions, the command signing key, the requests API bearer; its credentials and relay approval pages call the vault |
 | Exchange (Python) and agentgateway, two containers; the exchange shares the gateway container's network namespace (`gateway/compose.yaml:22-46`) | Runners on the internet call them; they hold org provider keys and runner OIDC trust | Turns, sessions, sponsorship slots and per-issue generations |
 | Vault (Python) | Personal credential material and its keyring | Credential records |
 | Runner (GitHub Actions, in target forks) | Runs untrusted model output | Nothing durable |
-| Postgres, NATS and Hetzner Object Storage | Shared infrastructure | Service databases, event streams and a private bucket for original runner archives |
+| Postgres, NATS and S3-compatible object storage | Shared infrastructure | Service databases, event streams and a private bucket for original runner archives |
 
 Who owns each durable change:
 
@@ -135,8 +135,9 @@ share one database and commit together, with no internal API or bus between them
 - **Every effect is recorded before it's sent.** An effect is `recorded`, then marked
   `sending` just before its request leaves, then settled with its outcome. A `recorded`
   effect was never sent and is safe to send. A `sending` effect with no outcome is
-  uncertain: it's settled by reading back, and resent only where the readback is
-  conclusive and resending can't duplicate.
+  uncertain. Publication reads back before deciding what to do. For managed labels and
+  run refs it reconciles the latest desired state, including after a delayed HTTP
+  completion. Dispatches are never resent.
 - **Events for other processes** go through phase 1's transactional outbox and the bus:
   task, request and turn snapshots and facts for the backoffice API
   ([contracts](../contracts.md#target-catalog)). They're published in the transaction that
@@ -173,7 +174,7 @@ share one database and commit together, with no internal API or bus between them
   importer uses the same path. Full source events and searchable text retain their
   turn and session links. Large PostgreSQL values use LZ4 where available and PGLZ
   otherwise. PostgreSQL retains the original gzip for restore until the uploader
-  verifies it in the private Hetzner bucket. An operator can retry an exhausted
+  verifies it in the private archive bucket. An operator can retry an exhausted
   upload independently of the turn. An unreadable archive leaves a diagnostic on
   the completed turn and cannot supply a restore point. Readable transcripts stay
   searchable even when their journal cannot resume the requested turn. Admission
@@ -243,7 +244,7 @@ Each change is listed with its caller and why the release needs it.
 | Component | Change | Caller, and why | Milestone |
 | ---- | ---- | ---- | ---- |
 | Exchange | Turn tombstones: a pruned or cancelled turn ID can never be admitted again ([bridge](../contracts.md#python-exchange)) | Task application: it replays an attempt's stored submit after a crash; without a tombstone, a replay after the exchange prunes a finished turn runs it twice, and a cancel before the submit doesn't fence it | M1 |
-| Exchange | A cancel ends every session allocated to the turn and returns their IDs | Task application: `stop` after a submit whose reply was lost must not leave a session it never heard of | M1 |
+| Exchange | Turn retirement returns all retired session IDs on every acknowledged call and preserves terminal results | Task application: clean up a lost submit and prevent an old session from claiming the next same-group turn | M1 |
 | Exchange | Per-turn observations | Task application: credential fallback decides from a turn's own unresolved requests | M3 |
 | Exchange | The `review_request` provenance and `custody` as an admission field | Task application: standalone reviews paid by personal credentials, and the engine's payload | M3 |
 | Exchange | The operator API on its own listener on the platform network: the gateway container joins the platform network, and the exchange binds its platform alias address | Task application, its only caller after the cutover; the edge stops reaching it. Done at the cutover because the Python service calls it through the edge until then | Cutover |
@@ -256,6 +257,11 @@ check: the task application is the only controller after the cutover, and the te
 repository's tasks never share an issue with the Python service's before it.
 
 ## M2, one contribution
+
+Before implementing M2, map each stage to its Python behavior and specify recovery
+cases for uncertain publication and review submission.
+The [M2 behavior and acceptance map](phase-3-m2-map.md) records those cases and
+the retained continuation admission boundary.
 
 **Outcome:** the stages after intake, every task command, and the operator's recovery
 tools, enough for one contribution end to end. The trace it must make work, in manual
@@ -303,6 +309,9 @@ branch, PR or review write is settled without a second write; a stuck task's cau
 next step are readable in `tasks show`.
 
 ## M3, team workflows
+
+Before implementing M3, map funding and permission changes to their Python behavior
+and specify recovery cases for withdrawal, lost access and retried signed commands.
 
 **Outcome:** the rest of the [team workflows](#team-workflows):
 
@@ -402,9 +411,9 @@ fault after the cutover is fixed forward.
 7. **Import historical archives.** Run the [archive import](../contracts.md#python-archive-import)
    against the stopped Python service's diagnostics and retained session directories.
    The import command runs only the archive uploader with the task database and
-   Hetzner credentials. Keep the controller, ingress consumer and other workers
+   archive store credentials. Keep the controller, ingress consumer and other workers
    stopped through this step. Resume the import after interruption and requeue any
-   exhausted uploads after repair. Verify each original gzip in Hetzner, search its
+   exhausted uploads after repair. Verify each original gzip in the archive bucket, search its
    indexed text where present, and reconcile turn, harness session, runner and
    unmatched source references with the inventory. Preserve both the requested turn
    number and the journal's last completed turn, even when a failed turn returns

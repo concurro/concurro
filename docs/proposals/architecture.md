@@ -324,7 +324,8 @@ database and a bus provide directly.
     newer snapshot of it. The publisher settles an uncertain write before sending that
     surface's next one, and writes the newest snapshot, skipping intermediate ones. A
     promised reply or audit notice has its own publication record and is never
-    skipped.
+    skipped. For managed labels and run refs, keep reconciling the latest desired
+    state while an earlier HTTP attempt could still land, including after session end.
 - **The backoffice read model replaces the list index.** The backoffice API builds it from
   the task application's events, not from webhooks and GitHub reads, and shows each
   signed-in user what their own access allows. The backoffice's GitHub caches go away
@@ -392,11 +393,11 @@ exchange, performs redeliveries for ingress, and calls the verifier's owner endp
 - **Turn diagnostics** live in the task application's PostgreSQL database. From M1 it
   extracts and indexes transcript events at ingestion, linked to their turns and
   sessions. Specs, prompts, responses and workspaces also live in the task database.
-  The task application archives original `.tar.gz` bundles in Hetzner Object Storage
+  The task application archives original `.tar.gz` bundles in private S3-compatible object storage
   for recovery and session restore. The backoffice reads diagnostics through the
   task application.
 - **Minimum requirements** include a supported PostgreSQL release, persistent NATS
-  JetStream, the private Hetzner archive bucket from phase 3, and OpenBao with its
+  JetStream, a private S3-compatible archive bucket from phase 3, and OpenBao with its
   unseal key from phase 5. Back up each database and retain the archive objects its
   backups reference. Keep OpenBao's unseal key with its database backup.
 

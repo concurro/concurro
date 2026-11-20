@@ -5,8 +5,8 @@ use concurro_contracts::{CoverageGap, Envelope, EventId, GithubIssues};
 use concurro_db::Database;
 use concurro_events::{ContinuityDecision, JournalPosition, ReplayRequest};
 use concurro_events_postgres::{
-    ForwarderLease, Outbox, capture_barrier, consumer_coverage_applied, migrate, observe_consumer,
-    replay_retained, resolve_consumer_loss, take_ready_barrier,
+    ForwarderLease, Outbox, capture_barrier, consumer_coverage_applied, consumer_status, migrate,
+    observe_consumer, replay_retained, resolve_consumer_loss, take_ready_barrier,
 };
 use concurro_testkit::PostgresContainer;
 use std::time::Duration;
@@ -506,6 +506,12 @@ async fn consumer_loss_keeps_old_floor_and_blocks_coverage() {
             sequence: 2,
         })
     );
+    let status = consumer_status(&database, &["service".to_owned()])
+        .await
+        .expect("operator status");
+    assert_eq!(status[0]["stream_created"], "old");
+    assert_eq!(status[0]["floor_sequence"], 2);
+    assert_eq!(status[0]["coverage_gap"], true);
     let current = JournalPosition {
         stream_created: "new".to_owned(),
         sequence: 1,
@@ -518,6 +524,12 @@ async fn consumer_loss_keeps_old_floor_and_blocks_coverage() {
     resolve_consumer_loss(&database, "service", &current)
         .await
         .expect("resolved loss");
+    assert_eq!(
+        consumer_status(&database, &["service".to_owned()])
+            .await
+            .expect("resolved status")[0]["coverage_gap"],
+        false
+    );
     assert!(
         consumer_coverage_applied(&database, "service", &current, &current)
             .await

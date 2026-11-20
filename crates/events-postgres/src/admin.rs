@@ -4,10 +4,32 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use concurro_db::{Database, UnitOfWork};
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::consumer::lock;
+
+/// Show each consumer's applied stream floor and any unresolved coverage loss.
+pub async fn consumer_status(
+    database: &Database,
+    consumers: &[String],
+) -> Result<Vec<Value>, sqlx::Error> {
+    let rows: Vec<Json<Value>> = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+             'consumer',names.consumer,'stream_created',p.stream_created, \
+             'floor_sequence',p.floor_sequence, \
+             'coverage_gap',l.id IS NOT NULL,'loss_detected_at',l.detected_at) \
+         FROM unnest($1::text[]) AS names(consumer) \
+         LEFT JOIN events.consumer_positions p ON p.consumer=names.consumer \
+         LEFT JOIN events.consumer_losses l ON l.consumer=names.consumer \
+             AND l.resolved_at IS NULL ORDER BY names.consumer",
+    )
+    .bind(consumers)
+    .fetch_all(database.pool())
+    .await?;
+    Ok(rows.into_iter().map(|row| row.0).collect())
+}
 
 /// Execute a parked or held command for a service's event consumer.
 pub async fn run_admin(database: &Database, consumer: &str, args: &[String]) -> Result<String> {

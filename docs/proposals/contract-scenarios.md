@@ -53,9 +53,16 @@ Phase 3, M1, org funding. A opened issue I on a target; a writer W comments
    settling each write.
 7. Runner: OIDC, key, `next`, runs, posts the result.
 8. The adapter polls `GET turns/A?wait=45`, recording each status change. Tx: the result,
-   the intake report applied, the next stage, and the dashboard, label and notice writes.
-9. Task application → exchange: end session S. Tx: S ended; publication deletes the run
-   ref.
+   the intake report applied, the next stage, its publication writes and turn retirement.
+9. Task application → exchange: retire A's sessions. Tx: record the acknowledged session
+   IDs and release A's staffing group. Publication deletes the run refs.
+
+**Same-group repair.** Make A's report invalid and hold retirement. The result is
+visible and a repair is ready. Restart, then let the exchange retire S but drop its
+reply. Across another restart no submit for the repair reaches the exchange. Replay
+retirement, record the full acknowledgement and submit the repair once. Its fresh
+session completes it. A different staffing group can run throughout. Repeat with a
+stop while waiting: releasing the group never sends the cancelled repair.
 
 **Checks.** Every state change and the effects it wants commit together. Retrying any
 step reuses its key: request by source, attempt by ID, turn by turn ID and stored body,
@@ -370,6 +377,15 @@ be reported too early.
 **Checks.** One write per surface at a time, the newest snapshot wins, and nothing acts
 on an unsettled write.
 
+**Delayed label and ref writes (M1).** Hold the initial create of a live session's run
+ref at the HTTP boundary. Read absence; let a retry create the ref and dispatch once.
+Retire the session and observe the ref deleted. Restart, then let the original create
+land. Without a webhook the publisher discovers the recreated ref and deletes it again.
+Assert the ref is absent and there is still only one dispatch. Repeat with a managed
+label: delay the first add until after its retry and a newer removal, then reverse the
+add/remove order. The latest desired membership wins and unrelated labels are unchanged.
+A send whose outcome is unknown is never recorded as skipped.
+
 ### 18. A comment create whose readback runs first
 
 1. Publication records the welcome notice, marks it `sending` and posts it; the response
@@ -567,9 +583,9 @@ stop gets no automatic action.
    unknown ordinal. Both retain their source paths and have no Python turn ID.
    Give each unlinked source a unique search term. The diagnostics file retains its
    path and indexed entries.
-3. Fail Hetzner through retry exhaustion, interrupt the import, then restart it with
+3. Make the object store unavailable through retry exhaustion, interrupt the import, then restart it with
    the controller still stopped. Search and v1 restore work from the pending bytes.
-   Restore Hetzner and requeue the exhausted digest. The import's uploader verifies
+   Restore object-store access and requeue the exhausted digest. The import's uploader verifies
    every inventoried object's size and SHA-256 before the controller starts. Restore
    the session from its verified object. Both tar encodings share event rows and have
    distinct object keys. Identical gzip bytes share a key. Rerunning changes no row,
@@ -637,7 +653,11 @@ drain-then-switch order ([finding 22](#findings)).
 3. W then comments `/concurro start` again: it's after the `stop`, so it applies.
 4. Each comment gets its own reply.
 
-**Checks.** Control cancels what it undoes, and requests after it still apply.
+**Delayed delivery.** On a running task, withhold a writer's start at T1. Apply a stop at
+T2 and restart the application with no pending control. Deliver the T1 source. Its
+outcome names the writer and is `superseded`. The task stays stopped, its budget is
+unchanged and no submit is queued. A fresh start at T3 applies. Repeat with a delayed
+`retry` and `resume` when M2 supports them. A refused stop creates no cutoff.
 
 ### 29. Edited commands
 

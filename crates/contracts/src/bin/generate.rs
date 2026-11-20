@@ -5,7 +5,25 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use concurro_contracts::REGISTRY;
 use schemars::generate::SchemaSettings;
-use serde_json::json;
+use serde_json::{Value, json};
+
+/// Keep committed schema ordering stable when another crate preserves JSON source order.
+fn sort_json_keys(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for nested in fields.values_mut() {
+                sort_json_keys(nested);
+            }
+            fields.sort_keys();
+        }
+        Value::Array(values) => {
+            for nested in values {
+                sort_json_keys(nested);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Generate both wire directions and the Python generator's registry manifest.
 fn main() -> Result<()> {
@@ -28,6 +46,7 @@ fn main() -> Result<()> {
         ] {
             let mut schema = (registration.schema)(settings)?;
             (registration.prepare_schema)(&mut schema);
+            sort_json_keys(&mut schema);
             let output = schemas.join(format!("{stem}.{suffix}.json"));
             fs::write(
                 &output,
@@ -36,6 +55,8 @@ fn main() -> Result<()> {
             .with_context(|| format!("write {}", output.display()))?;
         }
     }
+    let mut manifest = Value::Array(manifest);
+    sort_json_keys(&mut manifest);
     fs::write(
         contracts.join("registry.json"),
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),

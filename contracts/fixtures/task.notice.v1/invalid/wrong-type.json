@@ -1,0 +1,19 @@
+{
+  "id": "2ea31359-94c1-5a95-b686-ac0c53af0ba7",
+  "version": 1,
+  "producer": "tasks",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "type": "wrong.019aa320-1d3c-7b10-80a1-334b3fac3a81.notice",
+  "kind": "snapshot",
+  "entity": "task:019aa320-1d3c-7b10-80a1-334b3fac3a81:notice:019aa322-1d3c-7b10-80a1-334b3fac3a81",
+  "revision": 1,
+  "data": {
+    "task_id": "019aa320-1d3c-7b10-80a1-334b3fac3a81",
+    "notice_id": "019aa322-1d3c-7b10-80a1-334b3fac3a81",
+    "kind": "intake",
+    "state": "open",
+    "data": {
+      "markdown": "Ready"
+    }
+  }
+}

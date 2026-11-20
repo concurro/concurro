@@ -41,6 +41,11 @@ impl TaskId {
     }
 }
 
+/// A request identity stable across source redelivery.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RequestId(pub Uuid);
+
 /// Represent a UUID as a format-checked JSON string.
 fn uuid_schema() -> Schema {
     json_schema!({"type": "string", "format": "uuid"})
@@ -59,6 +64,16 @@ impl JsonSchema for EventId {
 impl JsonSchema for TaskId {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "TaskId".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        uuid_schema()
+    }
+}
+
+impl JsonSchema for RequestId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RequestId".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {

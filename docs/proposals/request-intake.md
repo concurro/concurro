@@ -58,7 +58,7 @@ The task application keeps a `requests` table with these fields:
 | `kind`, `argument` | A command kind (`commands.CommandKind`, sponsorship's `sponsor`, `withdraw` and `funding` included), `enroll` / `unenroll`, or conversation |
 | `actor` | GitHub user ID and login, as the channel verified them |
 | `channel` | `comment`, `backoffice`, `label`, `assignment`, `review_request`, `mention`, ... |
-| `source`, `index` | The channel's reference (comment ID and revision digest, delivery ID, backoffice request ID) and the request's position among those its source produced |
+| `source`, `index` | The channel's reference (a comment webhook uses comment ID, delivery ID and body digest; other channels use their event or action ID) and the request's position among those its source produced |
 | `source_at` | When the actor acted, by the channel's own clock (comment time, event time) |
 | `evidence` | How the actor was verified: webhook delivery, a [command proof](contracts.md#command-proofs) for the backoffice, the editor of an edited comment |
 | `detail` | Channel data that must be frozen with the request, such as a mention's interpretation |
@@ -144,8 +144,11 @@ pending, and consent already applied stands.
   `command_id`), and records the writes and effects it causes, all in one transaction.
 - **Time-bound commands.** Sponsorship keeps its source-order rule, and an approval binds
   the plan current at `source_at`, so a slow channel can't approve a plan the actor
-  didn't see. Ties are broken by `(source_at, source, index)`, as sponsorship orders
-  facts today (`engine/sponsorship.py`).
+  didn't see. The M1 comment decision queue processes `stop` first, then orders by
+  `(source_at, numeric comment ID, C-collated source, index)`. Repeated deliveries of
+  one comment content revision share a source; deletion is terminal, and competing
+  edits at one timestamp make pending commands ambiguous. Sponsorship retains its
+  source-order fold (`engine/sponsorship.py`).
 - **Consent belongs to the task.** Sponsorship requests become facts in the task's
   append-only consent log, folded in source order as `sponsorship.project` does: a
   withdrawal never restores an earlier sponsor. Each change gives the task a new consent
@@ -193,10 +196,17 @@ The task application takes every pending request for a task and applies them by 
 | Commands | Everything else that acts | Applied in `source_at` order, after control requests |
 | Conversation | Questions and other replies-only requests (the [responder](mentions.md#responder)) | Answered together, after commands |
 
-- **Control cancels what it undoes.** A control request supersedes pending requests from
-  before it that it would undo: a `stop` supersedes an earlier pending `start`, `retry`
-  or `resume`. Superseded requests are marked `superseded` and reported. Requests made
-  after the control request still apply, so "stop" then "start again" ends started.
+- **Applied controls survive the queue.** When a control applies, commit its outcome,
+  state change and greatest applied order key `(source_at, numeric source ID, source, index)` for that
+  issue and control kind together. Keep the key across task restarts and new starts.
+  Before applying a conflicting request, compare its key in the same serialized
+  decision. A `stop` supersedes every earlier `start`, `retry` or `resume`, including
+  one delivered after the stop committed. Record and report the superseded outcome
+  without changing the task. A newer request still applies if eligible. A refused
+  control never advances the key.
+- **Applied lifecycle commands also survive the queue.** A delayed `stop` older than an
+  already applied `start` is superseded. Pending controls still run before pending
+  commands; the comparison applies only against a command already committed.
 - **Sponsorship requests are commands.** They're applied in source order through the
   consent fold, and no control request supersedes them.
 - **One reply per source.** Outcomes of the requests from one comment or mention are

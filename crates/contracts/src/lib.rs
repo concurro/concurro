@@ -5,6 +5,8 @@ mod github_events;
 mod identifiers;
 mod ingress;
 mod schema;
+mod tasks;
+mod turns;
 
 pub use github::{
     Actor, ActorKind, GithubIssues, Issue, IssueAction, IssueChanges, IssueState, KnownIssueAction,
@@ -17,8 +19,15 @@ pub use github_events::{
     PullRequestReviewPayload, PullRequestReviewThreadPayload, PushPayload, RequestedTeam,
     ReviewPullRequest, StatusPayload, WorkflowRunPayload,
 };
-pub use identifiers::{EventId, TaskId, Timestamp};
+pub use identifiers::{EventId, RequestId, TaskId, Timestamp};
 pub use ingress::{CoverageAdvanced, CoverageGap};
+pub use tasks::{
+    RequestActor, RequestCommand, RequestOutcome, RequestOutcomeStatus, TaskBudget, TaskBudgets,
+    TaskIssue, TaskNotice, TaskReport, TaskSnapshot,
+};
+pub use turns::{
+    TurnArtifact, TurnFinished, TurnRunner, TurnStatus, TurnSubmitted, TurnTranscript,
+};
 
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -160,6 +169,15 @@ pub trait Contract {
     fn event_type(&self) -> String;
     /// NATS subject for this event.
     fn subject(&self) -> String;
+
+    /// Check payload-specific envelope metadata after the shared kind rules.
+    fn validate_metadata(
+        &self,
+        _entity: Option<&str>,
+        _revision: Option<u64>,
+    ) -> Result<(), ContractError> {
+        Ok(())
+    }
 }
 
 impl<T: Contract> Envelope<T> {
@@ -174,6 +192,29 @@ impl<T: Contract> Envelope<T> {
             occurred_at,
             entity: None,
             revision: None,
+            causation: None,
+            data,
+        }
+    }
+
+    /// Wrap a complete state snapshot at one entity revision.
+    pub fn snapshot(
+        id: EventId,
+        producer: impl Into<String>,
+        occurred_at: Timestamp,
+        entity: String,
+        revision: u64,
+        data: T,
+    ) -> Self {
+        Self {
+            id,
+            event_type: data.event_type(),
+            version: T::VERSION,
+            kind: T::KIND,
+            producer: producer.into(),
+            occurred_at,
+            entity: Some(entity),
+            revision: Some(revision),
             causation: None,
             data,
         }
@@ -211,6 +252,8 @@ impl<T: Contract> Envelope<T> {
             }
             _ => {}
         }
+        self.data
+            .validate_metadata(self.entity.as_deref(), self.revision)?;
         let subject = self.subject();
         if !subject.split('.').all(valid_subject_token) {
             return Err(ContractError::InvalidSubject(subject));
@@ -313,5 +356,61 @@ pub const REGISTRY: &[ContractRegistration] = &[
         prepare_schema: schema::prepare_coverage_gap,
         round_trip: round_trip::<CoverageGap>,
         python_decoder: "decode_coverage_gap",
+    },
+    ContractRegistration {
+        family: RequestOutcome::FAMILY,
+        version: RequestOutcome::VERSION,
+        schema: generate_schema::<RequestOutcome>,
+        prepare_schema: schema::prepare_request_outcome,
+        round_trip: round_trip::<RequestOutcome>,
+        python_decoder: "decode_request_outcome",
+    },
+    ContractRegistration {
+        family: TaskSnapshot::FAMILY,
+        version: TaskSnapshot::VERSION,
+        schema: generate_schema::<TaskSnapshot>,
+        prepare_schema: schema::prepare_task_snapshot,
+        round_trip: round_trip::<TaskSnapshot>,
+        python_decoder: "decode_task_snapshot",
+    },
+    ContractRegistration {
+        family: TaskNotice::FAMILY,
+        version: TaskNotice::VERSION,
+        schema: generate_schema::<TaskNotice>,
+        prepare_schema: schema::prepare_task_notice,
+        round_trip: round_trip::<TaskNotice>,
+        python_decoder: "decode_task_notice",
+    },
+    ContractRegistration {
+        family: TaskReport::FAMILY,
+        version: TaskReport::VERSION,
+        schema: generate_schema::<TaskReport>,
+        prepare_schema: schema::prepare_task_report,
+        round_trip: round_trip::<TaskReport>,
+        python_decoder: "decode_task_report",
+    },
+    ContractRegistration {
+        family: TurnSubmitted::FAMILY,
+        version: TurnSubmitted::VERSION,
+        schema: generate_schema::<TurnSubmitted>,
+        prepare_schema: schema::prepare_turn_submitted,
+        round_trip: round_trip::<TurnSubmitted>,
+        python_decoder: "decode_turn_submitted",
+    },
+    ContractRegistration {
+        family: TurnStatus::FAMILY,
+        version: TurnStatus::VERSION,
+        schema: generate_schema::<TurnStatus>,
+        prepare_schema: schema::prepare_turn_status,
+        round_trip: round_trip::<TurnStatus>,
+        python_decoder: "decode_turn_status",
+    },
+    ContractRegistration {
+        family: TurnFinished::FAMILY,
+        version: TurnFinished::VERSION,
+        schema: generate_schema::<TurnFinished>,
+        prepare_schema: schema::prepare_turn_finished,
+        round_trip: round_trip::<TurnFinished>,
+        python_decoder: "decode_turn_finished",
     },
 ];

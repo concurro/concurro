@@ -3,6 +3,7 @@
 use concurro_contracts::{Contract, ContractError, Envelope};
 use concurro_db::UnitOfWork;
 use concurro_events::publish_size;
+use concurro_jsonb::jsonb_representable;
 use serde::Serialize;
 
 /// An outbox admission or database failure.
@@ -77,8 +78,9 @@ impl Outbox {
             });
         }
         let version = i32::try_from(event.version).map_err(|_| OutboxError::VersionOutOfRange)?;
-        // PostgreSQL jsonb cannot represent a NUL escape; wire bytes remain authoritative.
-        let parsed = (!message.contains("\\u0000")).then_some(message.as_str());
+        // Wire bytes remain authoritative when PostgreSQL cannot represent the JSON value.
+        let projection: serde_json::Value = serde_json::from_str(&message)?;
+        let parsed = jsonb_representable(&projection).then_some(message.as_str());
         let sequence = sqlx::query_scalar::<_, i64>(
             "INSERT INTO events.outbox (id, subject, type, version, message, wire_bytes) VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (id, version) DO NOTHING RETURNING sequence",
         )

@@ -93,7 +93,7 @@ These apply to target contracts. Bridges keep their own.
 | Issue key | `{repository_id, number}` | GitHub | Task lookup; PRs share the issue number space. A transferred issue gets a new key |
 | Task ID | UUIDv7 | Task application, on the first request it applies for the issue | One task per issue key for its lifetime; the `<task>` in subjects |
 | Request ID | UUIDv7 | Task application | |
-| Source | `{channel, id, index}` | Channel | Comment: `{comment_id}:{revision digest}`; label, assignment, review request: the issue timeline event's ID ([enrollment channels](#enrollment-channels)); backoffice: its idempotency key |
+| Source | `{channel, id, index}` | Channel | Comment webhook: `{comment_id}:{source_at}:{body_digest}`; label, assignment, review request: the issue timeline event's ID ([enrollment channels](#enrollment-channels)); backoffice: its idempotency key |
 | Attempt ID | UUIDv7 | Task application, at admission | One admitted model call; also its turn's ID |
 | Consent revision | Integer per task | Task application | Increases with every consent change |
 | Slot epoch | Integer per task and provider | Task application | Increases when the slot's payer changes |
@@ -368,7 +368,7 @@ Released by `concurro-relay` for phase 5.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Turn diagnostics and original archives | PostgreSQL search rows and artifacts, Hetzner S3 archive objects | Task application stores turn content (3/M1); backoffice API fetches it through the task application (3/M3); exchange accepts runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
+| Turn diagnostics and original archives | PostgreSQL search rows and artifacts, S3-compatible archive objects | Task application stores turn content (3/M1); backoffice API fetches it through the task application (3/M3); exchange accepts runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
 | KV path per credential version | OpenBao KV v2 | The credentials owner writes and destroys; gateway reads; migrator writes once | 5 | Sketch: `{secret, account}`, check-and-set 0, custom metadata `{entry, record, route}` |
 
 ### Backoffice
@@ -586,6 +586,9 @@ expired returns the original outcome.
 **Edited comments** follow [the decision on edits](#decisions): each revision is its own
 source, and a later revision supersedes an earlier one only while that one is pending.
 
+An applied control's order key also governs later deliveries for the issue. Apply the
+[request ordering rules](request-intake.md#ordering) in the task decision transaction.
+
 #### Cutover sources
 
 One rule decides which sources the task application turns into requests, whether they
@@ -784,7 +787,8 @@ phase 5 a time bound stands in ([Python exchange](#python-exchange)).
 In phase 3 the task application records them from its polls of the Python exchange
 ([bridge](#python-exchange)) and publishes them, both from 3/M1: to M1's contract test
 consumer, and from 3/M3 to the backoffice API's read model. From phase 5 the Rust
-exchange publishes them itself, with the same fields. Blob fields carry [turn artifact references](#blobs).
+exchange publishes them itself, with the same fields. Blob fields, including
+`response`, carry [turn artifact references](#blobs).
 A transcript's `blob` and `bytes` identify the original gzip by digest and compressed
 size. Its turn link resolves the searchable snapshot as soon as ingestion commits.
 Omit `transcript` if the archive is absent or unreadable. For an unreadable archive,
@@ -954,11 +958,23 @@ application:
 | Dispatch | `session_id`, `task_id`, `turn_id`, `target_id`, `repository_id` (the fork), `ref {name, sha}`, `workflow`, `launcher_version`, `inputs` (defined by the launcher version) |
 | Session ended | `session_id`, `turn_id`, `repository_id`, `ref`, `reason` (`ended`, `cancelled`, `replaced` by a new session for the turn, or `turn_finished`) |
 
-Publication creates the run ref and dispatches the workflow, and deletes the ref when the
-session ends. A session's ending is recorded before anything else happens for that
-session, so a dispatch or ref creation for an ended session, even a delayed one, is
-settled as `skipped` without a write. A dispatch is never resent
-([publication outcomes](#publication-outcomes)).
+Before first submit, reserve the exchange staffing group for the turn in PostgreSQL.
+Use the exchange's equality rule: expected claims excluding `ref`, binding, models,
+budget and lease (`gateway/exchange/exchange.py:326`). Concurrent submits to that group
+wait. A retry of the owning turn reuses its stored body. A terminal result commits with
+its decision and a retirement job; a repair or next stage can become ready immediately.
+Release the group only when the exchange positively acknowledges
+[turn retirement](#python-exchange) and the application commits the returned session
+IDs. An unsent submit or a definitive refusal that proves the turn never ran can
+release its reservation directly. A lost reply or restart keeps it. Record the owner
+and mark its submit `sending` atomically so another worker cannot release the group
+between those steps. Recheck the waiting attempt is still current before submitting
+it. Independent groups can progress throughout.
+
+Publication creates the run ref and dispatches the launcher only for a live session.
+Retirement or replacement suppresses new dispatches and sets the ref's desired state
+to absent. Unsent jobs can be skipped. A sent job with an unknown outcome follows
+[publication outcomes](#publication-outcomes), even after the session ends.
 
 ### Write admission
 
@@ -989,18 +1005,32 @@ marked `sending` just before its request goes out, then settled with an outcome:
 | ---- | ---- |
 | `surface` | `{task_id?, kind, key}`, `kind` being one of the write admission surfaces |
 | `revision` | The snapshot revision written, for snapshot surfaces |
-| `status` | `written`, `failed` or `skipped` (a newer snapshot replaced it, or a dispatch whose session the exchange replaced or whose turn ended) |
+| `status` | `written`, `failed`, `skipped` (obsolete before sending), or `obsolete_uncertain` (sent, outcome unknown, no longer desired) |
 | `written_at` | When GitHub accepted it; an approval by time binds the latest plan written before its `source_at` |
 | `failure` | `{class, http_status, message}`; `class` is `rejected`, `forbidden`, `not_found` or `not_admitted` |
 | `result` | `{comment_id?, url?, commit_sha?, pr_number?, check_run_id?, run_id?}` |
 
-- **A write never marked `sending` was never sent,** so after a crash it's sent.
+- **A write never marked `sending` was never sent,** so after a crash it's sent only if still desired.
 - **A write marked `sending` with no response recorded is uncertain,** as is one answered
-  `5xx`, `408` or `429`, and is settled by reading back. A readback answered `forbidden`
-  or `not_found` settles it as `failed`; one that fails is retried with backoff, across
-  restarts.
-- **Labels and refs** are settled by what the readback shows, and a write found absent is
-  sent again: adding a label is idempotent, and creating a ref that exists is refused.
+  `5xx` or `408`. A definitive `401`, `429` or identified rate-limit `403` refusal
+  can be retried after the indicated delay. Retry transient readback failures with
+  backoff across restarts.
+  A missing label membership or run ref on an accessible target is an observation of
+  absence. A confirmed inaccessible target fails the write and exposes the read error.
+- **Managed labels and run refs converge to durable desired state.** Record the newest
+  desired membership per issue/managed label and presence plus expected SHA per run
+  ref. Reconcile only the current revision under the surface's write queue. Readback
+  can satisfy a logical write or trigger another attempt at the current revision. A
+  matching read cannot rule out an earlier HTTP attempt still in flight. Keep a durable
+  watch for each such surface and periodically compare GitHub with the latest desired
+  state, even after a match, restart, task stop or session end. Keep the watch while any
+  physical attempt's completion is unaccounted for, then verify the current revision
+  once more before clearing the watch. This includes a durable desired
+  absence for a retired ref. Repair only the managed label or expected run ref; report
+  a conflicting SHA. Ref repair never dispatches a workflow.
+- **Obsolete sends.** Skip obsolete work only if it never reached `sending`. Record an
+  obsolete send with no known outcome as `obsolete_uncertain`, preserve its identity
+  and adopt later evidence. Never replay it to achieve an older revision.
 - **Comment creates stay pending until their marker is seen,** each carrying a marker
   unique to that write, since a create can still be in flight when the readback finds
   nothing. The operator's `writes resolve` settles one: `--written <url>` adopts the
@@ -1009,7 +1039,8 @@ marked `sending` just before its request goes out, then settled with an outcome:
   operator's, that can duplicate the comment if the first create still lands.
 - **Dispatches are never resent,** since a run can be accepted before it's listed. If its
   run never appears, the exchange gives the queued turn a new session and the next poll a
-  new dispatch.
+  new dispatch. An obsolete uncertain dispatch is never resent, even if its run appears
+  after retirement.
 
 The task never sees "unknown": a decision that waits on a write waits until it's
 settled. The rules are [M1's](architecture/phase-3-m1-plan.md#publication).
@@ -1026,7 +1057,7 @@ From 3/M1 the task application owns turn diagnostics. Specs, reconstructed promp
 responses and workspace changes stay in its PostgreSQL database as content-addressed
 artifacts (`{sha256, bytes, media_type}`). Specs omit endpoint credentials and tokens.
 The application stores transcript entries as searchable rows and sends original
-`.tar.gz` bundles to the existing private Hetzner S3-compatible object store.
+`.tar.gz` bundles to a private S3-compatible object store.
 
 #### Transcript search
 
@@ -1093,8 +1124,9 @@ turn link can expose a snapshot through the backoffice.
 
 The task database keeps a pending upload record keyed by gzip SHA-256, with the
 original bytes and byte count, independently of the worker job and its retry limit.
-The worker writes to `<prefix>/sha256/<gzip-sha256>.tar.gz` in the configured
-Hetzner bucket. After an uncertain PUT it reads the same key. Only a readback
+Configure the endpoint, private bucket, key prefix and credentials for authenticated
+PUT and GET. The worker writes `<prefix>/sha256/<gzip-sha256>.tar.gz`. After an
+uncertain PUT it reads the same key. Only a readback
 matching both size and SHA-256 marks the object available and releases the pending
 bytes in one transaction. A failed PUT or readback leaves search and session restore
 available. Multiple gzip encodings of one tar retain separate keys and share indexed
@@ -1118,7 +1150,7 @@ uploads through its session API.
 
 After the Python daemon exits, read its final diagnostics database and both archive
 directories from the same deployment. The import command runs the normal archive
-uploader against the task database and Hetzner, processing only archive jobs. It
+uploader against the task database and archive bucket, processing only archive jobs. It
 can resume pending uploads and operator-requeued jobs with the controller, ingress
 consumer and other workers stopped.
 
@@ -1323,11 +1355,13 @@ Needed by 3/M1, for the task application's exchange integration module:
   - `turn_expired` is distinct from the `410` for an unavailable credential: only the
     latter shows a first submit never ran.
   - Tombstones are kept until the Python exchange retires in phase 5.
-- **Cancellation ends sessions.** `stop` after a submit whose reply was lost must not
-  leave a session the task application never heard of. `DELETE turns/{id}` also ends
-  every session allocated to the turn and returns their IDs, which the task application
-  records as ended. Turn IDs are attempt IDs the task application mints, and it's the
-  only caller, so the turn ID alone identifies what to cancel.
+- **Turn retirement.** `DELETE turns/{id}` cancels active work, preserves an already
+  terminal result, and retires every session allocated to or known to have served that
+  turn, including IDs missed in a lost submit or poll response. Keep that set with the
+  turn or its tombstone. A successful response confirms retirement and returns the full
+  set, including on retry after pruning or a lost reply. A partial failure stays
+  retryable. The task application uses the same operation after persisting a result
+  and when stopping a turn.
 
 Both are compatible with the Python service while it still runs: it never resubmits a
 pruned turn, and it ignores the ended sessions in a cancel's reply.
@@ -1473,7 +1507,7 @@ Today's runner takes `{request, feedback, spec, retained, timeout}`
 (`engine/agents.py:130`) and returns `{outcome, response, workspace, retained,
 transcript, termination_reason, elapsed_seconds}` (`engine/turns.py:400`). The exchange
 module reads the session revision checked and pinned at admission from its pending
-upload or verified Hetzner object and base64-encodes it for the v1 runner (`engine/turns.py:217-225`).
+upload or verified archive object and base64-encodes it for the v1 runner (`engine/turns.py:217-225`).
 Persist the prepared submit body for retries. Returned archives go through
 [transcript ingestion](#transcript-search).
 
@@ -1616,7 +1650,8 @@ and the task application verifies it:
 2. **Bridge tests.** A test drives today's exchange with the
    [Python exchange](#python-exchange) mappings. With 3/M1's exchange integration: org
    submits, the stored body, a resubmit after a lost first reply, the session-ending
-   cancel, and turn tombstones (an unchanged resubmit after pruning, a changed-body
+   cancel, retirement of a completed turn (result preserved, same session IDs after a
+   lost acknowledgement and pruning), and turn tombstones (a resubmit after pruning, a changed-body
    resubmit, a turn cancelled before submission then pruned, and tombstones surviving a
    restart). With 3/M3's personal credentials: slot grants shared by attempts, ordered
    changes from the adapter's own record over HTTP (out of order, a lost reply, renewed

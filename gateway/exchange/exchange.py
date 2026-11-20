@@ -467,6 +467,8 @@ class Exchange:
             CREATE TABLE IF NOT EXISTS credential_revocations(record_id TEXT,version INTEGER,actor TEXT,route TEXT,sequence INTEGER,PRIMARY KEY(record_id,version));
             CREATE TABLE IF NOT EXISTS vault_cursor(id INTEGER PRIMARY KEY,sequence INTEGER NOT NULL);
             INSERT OR IGNORE INTO vault_cursor VALUES(1,0);
+            CREATE TABLE IF NOT EXISTS turn_tombstones(id TEXT PRIMARY KEY,digest TEXT);
+            CREATE TABLE IF NOT EXISTS turn_sessions(turn TEXT NOT NULL,session TEXT NOT NULL,PRIMARY KEY(turn,session));
         """)
         # Columns added since a table was first created; older databases gain them in place.
         self.add_columns(
@@ -483,6 +485,8 @@ class Exchange:
         self.add_columns(
             "turns", (("digest", "TEXT"), ("staff", "TEXT"), ("pin", "TEXT"), ("binding", "TEXT"), ("staffing", "TEXT"))
         )
+        self.db.execute("INSERT OR IGNORE INTO turn_sessions SELECT id,staff FROM turns WHERE staff IS NOT NULL")
+        self.db.execute("INSERT OR IGNORE INTO turn_sessions SELECT id,session FROM turns WHERE session IS NOT NULL")
 
         self.inference = Inference(self)
 
@@ -1063,10 +1067,12 @@ class Exchange:
                     ).fetchall()
                 )
                 for turn, _ in turns:
-                    self.db.execute(
-                        "UPDATE turns SET status = 'running', session = ?, started = ? WHERE id = ?",
-                        (session, current, turn),
-                    )
+                    with self._transaction():
+                        self.db.execute(
+                            "UPDATE turns SET status = 'running', session = ?, started = ? WHERE id = ?",
+                            (session, current, turn),
+                        )
+                        self.db.execute("INSERT OR IGNORE INTO turn_sessions VALUES (?,?)", (turn, session))
             if turns or time.monotonic() >= stop:
                 return {"turns": [{"id": turn, "payload": json.loads(payload)} for turn, payload in turns]}
             time.sleep(POLL_SECONDS)
@@ -1167,11 +1173,16 @@ class Exchange:
 
     def admitted(self, turn, digest, now):
         """Return the exact existing-turn result before metadata, capabilities or current grant checks."""
+        tombstone = self.db.execute("SELECT digest FROM turn_tombstones WHERE id=?", (turn,)).fetchone()
+        if tombstone is not None:
+            if tombstone[0] is not None and tombstone[0] != digest:
+                raise Refused(409, "the turn ID is in use")
+            raise Refused(410, "turn_expired" if tombstone[0] is not None else "turn_cancelled")
         found = self.db.execute("SELECT digest,status,staff,result FROM turns WHERE id=?", (turn,)).fetchone()
         if found is None:
             return None
         if found[0] is None:
-            return {**self.observation(turn), "dispatch": None}
+            raise Refused(410, "turn_cancelled")
         if found[0] != digest:
             raise Refused(409, "the turn ID is in use")
         staff = found[2] and self.row(found[2])
@@ -1356,7 +1367,9 @@ class Exchange:
         ).fetchall():
             if self.live(self.row(row[0]), now):
                 return None
-        return self.create(json.loads(expected), json.loads(models), budget, lease, binding=json.loads(bound))
+        session = self.create(json.loads(expected), json.loads(models), budget, lease, binding=json.loads(bound))
+        self.db.execute("INSERT OR IGNORE INTO turn_sessions VALUES (?,?)", (turn, session))
+        return session
 
     def poll(self, turn, wait, now=None):
         """A turn's status, waiting up to `wait` seconds for it to finish.
@@ -1413,28 +1426,47 @@ class Exchange:
                         "AND refusal IS NOT NULL ORDER BY created DESC LIMIT 1",
                         (group, created),
                     ).fetchone()
+                    with self._transaction():
+                        dispatch = self.staffed(turn, current)
+                        if dispatch:
+                            self.db.execute("UPDATE turns SET staff = ? WHERE id = ?", (dispatch, turn))
                     return {
                         **self.observation(turn),
-                        "dispatch": self.staffed(turn, current),
+                        "dispatch": dispatch,
                         "refusal": refusal[0] if refusal else None,
                     }
             time.sleep(POLL_SECONDS)
 
     def cancel(self, turn, now=None):
-        """Withdraw a queued or running turn; a runner's later result for it is refused."""
+        """Retire every session of a turn, preserving terminal results and retryable acknowledgement."""
         now = _now(now)
         with self.locked():
             self.inference.stop(turn=turn)
-            self.db.execute(
-                "UPDATE turns SET status = 'cancelled', finished = ? WHERE id = ? AND status IN ('queued', 'running')",
-                (now, turn),
-            )
-            # An unknown turn may still be in flight: its admission must find it withdrawn.
-            self.db.execute(
-                "INSERT OR IGNORE INTO turns (id, expected, models, budget, lease, payload, status, created, "
-                "finished) VALUES (?, '', '[]', 0, 0, '{}', 'cancelled', ?, ?)",
-                (turn, now, now),
-            )
+            with self._transaction():
+                self.db.execute(
+                    "UPDATE turns SET status = 'cancelled', finished = ? WHERE id = ? AND status IN ('queued', 'running')",
+                    (now, turn),
+                )
+                # An unknown turn may still be in flight: fence its ID before any cleanup.
+                if not self.db.execute("SELECT 1 FROM turn_tombstones WHERE id = ?", (turn,)).fetchone():
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO turns (id, expected, models, budget, lease, payload, status, created, "
+                        "finished) VALUES (?, '', '[]', 0, 0, '{}', 'cancelled', ?, ?)",
+                        (turn, now, now),
+                    )
+                sessions = sorted(
+                    row[0] for row in self.db.execute("SELECT session FROM turn_sessions WHERE turn = ?", (turn,))
+                )
+            failure = None
+            for session in sessions:
+                try:
+                    self.retire(session, self.row(session), now)
+                except Refused as error:
+                    if failure is None:
+                        failure = error
+            if failure is not None:
+                raise failure
+            return {"sessions": sessions}
 
     def reconcile(self, now=None):
         """End dead sessions; delete keys of ended or expired sessions and gateway keys no session owns.
@@ -1458,9 +1490,14 @@ class Exchange:
                     with self._transaction():
                         self.db.execute("UPDATE sessions SET ended = ? WHERE id = ?", (now, session))
                         self._lose_session_turns(session, now)
-            self.db.execute(
-                "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (now - FINISHED_RETENTION_SECONDS,)
-            )
+            with self._transaction():
+                cutoff = now - FINISHED_RETENTION_SECONDS
+                self.db.execute(
+                    "INSERT OR IGNORE INTO turn_tombstones SELECT id,digest FROM turns "
+                    "WHERE finished IS NOT NULL AND finished < ?",
+                    (cutoff,),
+                )
+                self.db.execute("DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?", (cutoff,))
             live, retired = set(), {}
             for session, key, deadline, ended in self.db.execute(
                 "SELECT id, key, deadline, ended FROM sessions WHERE key IS NOT NULL"
@@ -1605,8 +1642,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self.server.exchange.poll(match["id"], wait)
             if method == "DELETE":
-                self.server.exchange.cancel(match["id"])
-                return {}
+                return self.server.exchange.cancel(match["id"])
         raise Refused(404, "not found")
 
     def body(self, size):

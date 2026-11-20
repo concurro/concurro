@@ -357,7 +357,9 @@ class RelayTests(ExchangeFixture, unittest.TestCase):
         )
         late = str(uuid.uuid4())
         self.exchange.cancel(late, now=NOW)
-        self.assertEqual(self.submit(turn=late)["status"], "cancelled")
+        with self.assertRaises(Refused) as refused:
+            self.submit(turn=late)
+        self.assertEqual((refused.exception.status, str(refused.exception)), (410, "turn_cancelled"))
 
     def test_operator_timing_is_stable_across_statuses_and_replays(self):
         """Timing comes from persisted exchange observations, not response or replay time."""

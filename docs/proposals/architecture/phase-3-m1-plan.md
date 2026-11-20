@@ -1,10 +1,12 @@
 # Plan: phase 3, M1, the first slice
 
-**Status: plan, not started.** Part of [phase 3](phase-3-plan.md), whose design and
-crates it uses.
+**Status: local implementation accepted.** See the
+[acceptance evidence](../../rust-phase-3-m1-evidence.md). Part of
+[phase 3](phase-3-plan.md), whose design and crates it uses.
 
 M1 runs one task's intake end to end on the task application, through GitHub alone, with
-org funding, on a dedicated test repository. It's an engineering milestone: the
+org funding, using controlled local services for acceptance. It's an engineering
+milestone: the
 backoffice, personal credentials and the other team workflows follow in M2 and M3,
 before the [cutover](phase-3-plan.md#cutover). A writer comments
 `/concurro start`; the task application records the request, initializes the task,
@@ -12,7 +14,9 @@ admits and charges the intake attempt, submits it to the Python exchange, polls 
 publishes the result on GitHub and shows it in the operator views. `stop` stops it, and
 the controller can be restarted at any point without a second turn or publication.
 
-**Done when** the [exit test](#exit-test) passes on the test repository.
+**Done when** the [exit test](#exit-test) passes against local integration fixtures.
+The dedicated live test repository and identities are waived for this implementation;
+production verification remains part of the later authorized cutover.
 
 ## Scope
 
@@ -24,7 +28,7 @@ the controller can be restarted at any point without a second turn or publicatio
 | Initialization and the intake stage, its repairs and outcomes | Every later stage (M2) |
 | Call budgets, the uncertain-attempt limit, the attempt record | Retries across credentials |
 | The exchange adapter, payload v1, polling, cancel | |
-| Searchable transcript entries and other turn diagnostics in PostgreSQL, original `.tar.gz` bundles in Hetzner | Reading diagnostics from the backoffice API (M3) |
+| Searchable transcript entries and other turn diagnostics in PostgreSQL, original `.tar.gz` bundles in private S3-compatible storage | Reading diagnostics from the backoffice API (M3) |
 | Publication: App and read tokens, the dashboard, notices, replies, stage labels, the run ref and dispatch, settlement | Branches, PRs, reviews and checks (M2); delivery recovery and gaps (cutover) |
 | Operator views and recovery commands for what M1 does | |
 | The exchange's tombstones and session-ending cancel | The operator listener move (cutover) |
@@ -48,11 +52,12 @@ the controller can be restarted at any point without a second turn or publicatio
 5. **Submit.** The exchange adapter builds today's submit body, stores it, marks the
    effect `sending`, submits it, and records the reply. Its `dispatch` becomes a run ref
    and dispatch write.
-6. **Poll.** The adapter polls the turn, recording each status change, until it
-   finishes, then ends the session; the run ref is deleted.
-7. **Result.** The intake report is validated and stored, or repaired. Its decision sets
-   the next stage. The dashboard, stage label and notices are written; the operator
-   views show the task, its attempts, turn and report.
+6. **Result.** Poll until terminal, recording status changes. Commit the result, intake
+   decision, publication writes and turn retirement job together. An invalid report can
+   make a repair ready immediately.
+7. **Retire.** Retire the turn's sessions at the exchange and record the acknowledgement.
+   Only then can another turn submit to that staffing group. Publication removes the run
+   refs. The operator views show the task, its attempts, turn and report.
 
 ## Task application
 
@@ -61,15 +66,20 @@ the controller can be restarted at any point without a second turn or publicatio
 - **Comment channel:** consumes `github.issue_comment.{created,edited,deleted}` for
   target repositories, ignoring pull requests (`engine/controller.py:2407`) and
   Concurro's own accounts. It parses `/concurro` commands with today's grammar
-  (`engine/commands.py`) and records the source revision (`{comment_id}:{digest}`) and
-  its requests. A comment with no command is ignored.
+  (`engine/commands.py`) and records the source revision
+  (`{comment_id}:{source_at}:{body_digest}`) and
+  its requests. A comment with no command still records its revision so an edit or
+  deletion supersedes any pending command from that comment.
 - **Requests** are stored and applied as
   [request intake](../request-intake.md#applying-requests) describes: unique by `(channel, source, index)`, `stop` before other commands, then by
-  `(source_at, source, index)`. Writer permission is checked again at application with a
+  `(source_at, numeric comment ID, C-collated source, index)`. Deletion is terminal
+  for that comment ID; competing edits at one timestamp leave pending commands
+  superseded as ambiguous. Writer permission is checked again at application with a
   read token and `GET collaborators/{login}/permission` (admin, maintain or write, as
   `engine/github.py:197`). Each request records its actor (numeric ID and login) and
   each outcome (`applied`, `refused`, `superseded`) names it; a refused request changes
-  no task state. Each source gets one reply. Where today's service is silent (a non-writer's
+  no task state. An applied stop's order key survives restart and supersedes an older
+  start even if it arrives later. Each source gets one reply. Where today's service is silent (a non-writer's
   command, `engine/controller.py:1707`), M1 refuses with a reason and replies.
 - **Edits** follow the [decision on edits](../contracts.md#decisions): an edited `start`
   that was already applied is refused as `already_applied`.
@@ -166,8 +176,10 @@ the edge's `/exchange/*` route, as the Python service reaches it.
   answers `410 turn_expired`, and the attempt is `unknown`.
 - **`dispatch`** can come in a submit reply or a poll (a queued turn that lost its session,
   `exchange.py:1416`); either becomes one run ref and dispatch write per session.
-- **Polls** wait at most 50 seconds (`exchange.py:368`). Ending a session is `POST
-  sessions/{id}/end`.
+- **Polls** wait at most 50 seconds (`exchange.py:368`). A new turn reserves its
+  [staffing group](../contracts.md#runner-dispatch) before first submit and holds it
+  until acknowledged turn retirement. If the reply is lost, retry retirement after
+  restart. A waiting attempt cancelled meanwhile is never submitted.
 - **Deadlines:** each attempt records its sessions and its deadline, the turn's timeout
   plus 30 minutes' queueing (`engine/agents.py:42`, `:436`). With
   `turn_timeout_seconds: null` (`engine/controller.py:225-227`) the deadline covers only
@@ -175,14 +187,16 @@ the edge's `/exchange/*` route, as the Python service reaches it.
   deadline the adapter cancels the turn and the attempt is `unknown` (`:516-519`). After
   more than 20 consecutive failed polls (`:49`) the attempt is `unknown` too, but the
   turn isn't cancelled, since a polling outage is no evidence the runner stopped
-  (`:539-542`); it stays live for `stop`.
+  (`:539-542`); it stays live for `stop`. Only an exchange `unknown turn` 404 or
+  `turn_expired` 410 is definitive; authentication and other HTTP failures use
+  the bounded polling-outage path.
 - **Turn content.** Store the spec, prompt, response and workspace in PostgreSQL.
   Reconstruct the prompt from the request and feedback as Python does
   (`service/diagnostics.py:145-150`). Index transcript events and text at ingestion.
-  Commit turn and session links with the rows, the pending Hetzner upload of the exact
+  Commit turn and session links with the rows, the pending archive upload of the exact
   gzip bytes, and the turn's outbox event. Retain fallback lines by source position
   and render transcript members in Python display order. Session restore uses the
-  pending bytes until Hetzner readback verifies the object. Upload retries operate
+  pending bytes until object readback verifies the object. Upload retries operate
   independently of the turn. A corrupt archive records a diagnostic alongside the
   completed result. It supplies neither searchable entries nor a restore point.
   [Ingestion contract](../contracts.md#transcript-search)
@@ -207,12 +221,12 @@ the edge's `/exchange/*` route, as the Python service reaches it.
   waits until the previous one is settled, and a newer snapshot replaces an unsent older
   one; a reply is never skipped.
 - **Write records:** each write is recorded, then marked `sending` just before its request
-  goes out, then settled. A write never marked `sending` is sent after a crash. One
-  marked `sending` with no response recorded is uncertain and settled by reading back.
-  A readback that fails is retried with backoff, across restarts; one answered
-  `forbidden` or `not_found` settles the write as `failed`.
-- **Labels and refs** are settled by what the readback shows, and a write found absent is
-  sent again: adding a label is idempotent, and creating a ref that exists is refused.
+  goes out, then settled. After a crash, send an unsent write only if still desired.
+  An unanswered send is uncertain. Retry transient readback failures with backoff.
+- **Labels and refs** follow the [publication contract](../contracts.md#publication-outcomes).
+  Persist desired state and keep checking surfaces with an unaccounted-for send, even
+  after a match or retirement. A late add, remove or ref create is corrected to the
+  latest revision. A missing ref on an accessible fork is a successful read of absence.
 - **Comment creates** stay pending until their marker is seen, since a create can still be
   in flight when the readback finds nothing. Each carries a marker unique to that write.
   A pending create is read again with backoff and never resent on its own; only the
@@ -224,10 +238,11 @@ the edge's `/exchange/*` route, as the Python service reaches it.
   dispatch whose run isn't listed yet is read again with backoff. If its run never
   appears, the exchange gives the queued turn a new session and the next poll a new
   `dispatch` (`exchange.py:1416`).
-- **Sessions end in one place.** A session that ends, is replaced by the exchange or
-  whose turn finished is recorded as ended before anything else happens for it. A
-  dispatch or ref creation for an ended session is settled as `skipped` without a write,
-  including a delayed job that resumes after the ref was deleted.
+- **Session retirement.** On a terminal result or replacement, suppress new writes that
+  launch the retiring session and record its run ref as desired absent. Skip an obsolete
+  unsent job. An obsolete send with no known outcome stays recorded as
+  `obsolete_uncertain`; a dispatch is never repeated. Only exchange acknowledgement
+  releases the turn's staffing group.
 - **The run ref** is created at the task's `config_sha` and refused if it exists at
   another SHA, and deleted when its session ends, as `service/gateway.py:284-312` and
   `service/worker.py:268-300` do.
@@ -238,6 +253,10 @@ Through phase 1's outbox and the bus, in the transaction that makes each change,
 backoffice API M3 builds ([contracts](../contracts.md#target-catalog)): the task's state,
 notice and report snapshots, request outcomes and turn records. M1 proves them with a
 contract test consumer; nothing in the task application consumes them.
+Original exchange replies and intake reports remain as bytes in PostgreSQL. Event
+wire bytes preserve embedded NULs and JSON numbers outside PostgreSQL's range.
+Queryable and rendered projections spell NULs as `\\u0000` and those numbers as
+strings; the outbox omits its JSONB copy when the original event cannot fit JSONB.
 
 ### Operator views and recovery
 
@@ -271,7 +290,7 @@ Settings files, read at start, as phases 1 and 2 do: targets (upstream, fork, is
 launcher, reviewer), the engine release, per-attempt token limit and lease, the
 exchange's operator URL and token, what payload v1 gives runners (the public gateway URL,
 headers and the optional Codex WebSocket URL), the App ID and private key file, the
-database URL, NATS credentials, and the configured Hetzner S3 endpoint, bucket,
+database URL, NATS credentials, and the configured S3-compatible endpoint, bucket,
 archive prefix and credential file. In M1 the targets
 are bootstrap settings; the architecture puts mutable target settings and funding policy
 in the owning service's database behind an authenticated API
@@ -279,8 +298,8 @@ in the owning service's database behind an authenticated API
 
 ## Exchange changes
 
-The [bridge](../contracts.md#python-exchange)'s tombstones and session-ending cancel,
-with their tests. Both are compatible with the Python service, which keeps running
+The [bridge](../contracts.md#python-exchange)'s tombstones and idempotent turn retirement,
+including cancel and retirement after a terminal result, with their tests. Both are compatible with the Python service, which keeps running
 meanwhile: it never resubmits a pruned turn, and its cancel gains the ended sessions in
 the reply, which it ignores.
 
@@ -294,14 +313,16 @@ Each case that runs a task from the start uses its own fresh issue.
    notices on GitHub, and the task, attempt, turn and report in `tasks show`.
 2. **Intake outcomes.** Captured reports for `proceed`, `clarify`, `reject` and
    `escalate` set their stages and notices; an invalid report is repaired twice, each
-   repair charged, then fails as today.
+   repair charged, then fails as today. Exercise scenario 1's same-group repair with
+   a delayed retirement and a lost acknowledgement.
 3. **Requests.** A redelivered comment creates no second request; an edited `start` is
    refused as `already_applied`; `stop` supersedes a pending `start`; a non-writer's
    `start` is refused with a reply; a writer who loses access before application is
    refused; a `start` on a closed issue is refused and initializes nothing; `approve`
    and `sponsor` get `not_supported` replies. Every refusal leaves the task's state and
    revision unchanged, and its outcome names the actor; a `stop` by a second writer
-   names that writer, not the initiator.
+   names that writer. Run scenario 28's delayed start across a restart and check that
+   only the newer start can reopen the task.
 4. **Restart.** The controller is killed after admission, after a submit is `sending`
    and before its reply is recorded, during a poll, after the result before its writes,
    and between a write's `sending` and its response. After each restart: one exchange
@@ -311,9 +332,10 @@ Each case that runs a task from the start uses its own fresh issue.
    ref. A `stop` before the submit, after a submit whose reply was lost, and after a
    polling outage leaves no turn or session running and no run ref; a late intake result
    changes nothing.
-6. **Uncertain writes.** For each surface, a write whose response is lost is settled by
-   reading back and never written twice. A readback that reaches GitHub before a comment
-   create completes leaves it pending until the comment appears, once. A dispatch whose
+6. **Uncertain writes.** Delay the first HTTP attempt past its retry and the opposite
+   write for a run ref and a managed label, as in scenario 17. Verify convergence after
+   restart without a webhook or another dispatch. A readback that precedes a comment
+   create leaves it pending until the comment appears, once. A dispatch whose
    run is listed late isn't resent; a delayed dispatch job for an ended session creates
    no ref and no run. A write answered `5xx` is settled like a lost one.
 7. **Polling.** A turn whose launcher never starts ends at its deadline as `unknown` and is
@@ -357,7 +379,7 @@ Each case that runs a task from the start uses its own fresh issue.
       No submit effect or exchange request is created, even with an older readable
       revision present.
     - Ingest a readable archive with a pending journal and a unique message. SQL
-      finds it before and after Hetzner verification. Attempt a continuation in
+      finds it before and after archive verification. Attempt a continuation in
       both states and after restart. Verify the same refusal and unchanged counts
       as for the truncated gzip. Repeat with a wrong scope, skipped ordinal,
       changed instructions or schema, and a same-ordinal request with a changed
@@ -374,7 +396,7 @@ Each case that runs a task from the start uses its own fresh issue.
     - Exercise persistent PUT and readback failures separately through the last retry. Restart the
       application. SQL search and a v1 session restore from the pending gzip still
       work. `effects pending` shows the exhausted digest, byte count and last error.
-      Restore Hetzner and issue two concurrent `archives retry` calls for that digest.
+      Restore object-store access and issue two concurrent `archives retry` calls for that digest.
       One active upload verifies the object and releases the pending bytes. Retry
       after verification schedules nothing. Turn, model-call, event and link counts
       stay unchanged.
@@ -391,14 +413,15 @@ Each case that runs a task from the start uses its own fresh issue.
    transcript archive and a baseline intake payload from the Python service.
 2. **Crates:** `concurro-github`, `concurro-exchange-v1`, and the task application's
    three crates, including PostgreSQL transcript tables and search index, the harness
-   format readers, and the durable Hetzner upload job.
+   format readers, and the durable archive upload job.
 3. **Intake and requests,** then initialization and the intake stage, then attempts, the
    exchange adapter and polling.
 4. **Publication:** tokens, admission, rendering, write records and settlement.
 5. **Operator views and recovery commands.**
 6. **Exchange changes,** deployed while the Python service keeps running.
 7. **Platform:** provision the `tasks` database and role, its backup, and a NATS user
-   and durable consumer. Configure the existing Hetzner store with a private test prefix. Run the service in a compose project on the platform network
+   and durable consumer. Configure a private test prefix in the S3-compatible bucket.
+   Run the service in a compose project on the platform network
    with only the test repository in its targets.
 8. **The exit test.**
 

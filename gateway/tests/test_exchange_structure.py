@@ -334,7 +334,8 @@ class HttpLifecycleTests(StateFixture, HttpFixture, unittest.TestCase):
             status, raw = self.request(host, f"/exchange/operator/turns/{waiting['turn']}?wait=0.005", method="GET")
             self.assertEqual((status, json.loads(raw)["status"]), (200, "queued"))
         self.assertEqual(
-            self.request(host, f"/exchange/operator/turns/{waiting['turn']}", method="DELETE"), (200, b"{}")
+            self.request(host, f"/exchange/operator/turns/{waiting['turn']}", method="DELETE"),
+            (200, b'{"sessions": []}'),
         )
         self.assertEqual(self.request(host, root + "/end", runner), (200, b"{}"))
         for operator in (False, True):
@@ -398,12 +399,25 @@ class ConcurrencyTests(StateFixture, unittest.TestCase):
         observed = other.poll(turn, 0, now=NOW)
         self.assertIn(observed["status"], ("done", "cancelled"))
         if observed["status"] == "done":
-            self.assertEqual(replies, [None, None])
+            self.assertEqual(replies, [None, {"sessions": [session]}])
             self.assertEqual(observed["result"], {"ok": True})
         else:
             self.assertIsInstance(replies[0], Refused)
-            self.assertEqual(replies[0].status, 409)
+            self.assertIn(replies[0].status, (409, 410))
+            self.assertEqual(replies[1], {"sessions": [session]})
             self.assertNotIn("result", observed)
+
+        completed_turn, completed_session, completed_token = self.running()
+        self.exchange.complete(completed_session, completed_token, completed_turn, {"ok": True}, now=NOW)
+        self.assertEqual(self.open().cancel(completed_turn, now=NOW), {"sessions": [completed_session]})
+        self.assertEqual(self.exchange.poll(completed_turn, 0, now=NOW)["result"], {"ok": True})
+
+        cancelled_turn, cancelled_session, cancelled_token = self.running()
+        self.assertEqual(self.open().cancel(cancelled_turn, now=NOW), {"sessions": [cancelled_session]})
+        with self.assertRaises(Refused) as late:
+            self.exchange.complete(cancelled_session, cancelled_token, cancelled_turn, {"ok": True}, now=NOW)
+        self.assertIn(late.exception.status, (409, 410))
+        self.assertEqual(self.exchange.poll(cancelled_turn, 0, now=NOW)["status"], "cancelled")
 
     def test_end_and_reconcile_race_claim_and_completion(self):
         for operation in ("end", "reconcile"):
@@ -527,6 +541,11 @@ FORGET = "UPDATE sessions SET key = NULL, key_id = NULL WHERE id = ?"
 TURN_INSERT = "INSERT INTO turns (id, expected, models, budget, lease, payload, status, created, digest, pin, binding, staffing) VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?)"
 SESSION_INSERT = "INSERT INTO sessions (id, expected, models, budget, deadline, created, kind, binding, staffing) VALUES (?,?,?,?,?,?,?,?,?)"
 STAFF = "UPDATE turns SET staff = ? WHERE id = ?"
+TURN_SESSION = "INSERT OR IGNORE INTO turn_sessions VALUES (?,?)"
+TOMBSTONE = (
+    "INSERT OR IGNORE INTO turn_tombstones SELECT id,digest FROM turns WHERE finished IS NOT NULL AND finished < ?"
+)
+PRUNE = "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?"
 KEY_TRACE = [
     "DELETE FROM seen WHERE exp < ?",
     "INSERT INTO seen (jti, exp) VALUES (?, ?)",
@@ -541,6 +560,184 @@ KEY_TRACE = [
 
 class RecoveryTests(StateFixture, unittest.TestCase):
     """Failure injection after successful statements, followed by fresh-connection recovery."""
+
+    def test_eligible_prune_and_tombstones_commit_together(self):
+        """A crash never deletes finished turns without preserving their replay fences."""
+        for boundary in range(1, 5):
+            with self.subTest(boundary=boundary):
+                turns = [self.submit()["turn"] for _ in range(2)]
+                self.exchange.db.execute(
+                    "UPDATE turns SET status='done', result='{}', finished=?, staff=NULL", (NOW,)
+                )
+                self.exchange.db.execute("DELETE FROM sessions")
+                with self.trace(boundary) as events, self.assertRaises(Crash):
+                    self.exchange.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
+                self.assertEqual(
+                    events,
+                    ["BEGIN IMMEDIATE", TOMBSTONE, PRUNE, "COMMIT"][:boundary]
+                    + (["ROLLBACK"] if boundary < 4 else []),
+                )
+                restarted = self.open()
+                for turn in turns:
+                    self.assertEqual(
+                        restarted.db.execute("SELECT 1 FROM turns WHERE id=?", (turn,)).fetchone() is None,
+                        boundary == 4,
+                    )
+                    self.assertEqual(
+                        restarted.db.execute("SELECT 1 FROM turn_tombstones WHERE id=?", (turn,)).fetchone() is not None,
+                        boundary == 4,
+                    )
+                restarted.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
+                for turn in turns:
+                    with self.assertRaises(Refused) as replay:
+                        self.submit(restarted, turn=turn)
+                    self.assertEqual((replay.exception.status, str(replay.exception)), (410, "turn_expired"))
+                self.exchange.db.execute("DELETE FROM turns")
+                self.exchange.db.execute("DELETE FROM turn_tombstones")
+                self.exchange.db.execute("DELETE FROM turn_sessions")
+
+    def test_pruned_turn_tombstones_fence_replay_and_restart(self):
+        """Pruning cannot let the same or a changed turn run again."""
+        turn = self.submit()["turn"]
+        self.exchange.db.execute("UPDATE turns SET status='done', result='{}', finished=? WHERE id=?", (NOW, turn))
+        self.exchange.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
+        restarted = self.open()
+        self.assertIsNone(restarted.db.execute("SELECT 1 FROM turns WHERE id=?", (turn,)).fetchone())
+        with self.assertRaises(Refused) as same:
+            self.submit(restarted, turn=turn)
+        self.assertEqual((same.exception.status, str(same.exception)), (410, "turn_expired"))
+        with self.assertRaises(Refused) as changed:
+            restarted.submit(
+                turn,
+                EXPECTED_RUNNER,
+                ["claude-*"],
+                1000,
+                3600,
+                {**TURN, "different": True},
+                binding=BINDING,
+                now=NOW,
+            )
+        self.assertEqual(changed.exception.status, 409)
+        self.assertEqual(
+            restarted.cancel(turn, now=NOW),
+            {
+                "sessions": [
+                    row[0] for row in restarted.db.execute("SELECT session FROM turn_sessions WHERE turn=?", (turn,))
+                ]
+            },
+        )
+        self.assertIsNone(restarted.db.execute("SELECT 1 FROM turns WHERE id=?", (turn,)).fetchone())
+        replay = self.open()
+        with self.assertRaises(Refused) as same_after_retire:
+            self.submit(replay, turn=turn)
+        self.assertEqual((same_after_retire.exception.status, str(same_after_retire.exception)), (410, "turn_expired"))
+        with self.assertRaises(Refused) as changed_after_retire:
+            replay.submit(
+                turn,
+                EXPECTED_RUNNER,
+                ["claude-*"],
+                1000,
+                3600,
+                {**TURN, "different": True},
+                binding=BINDING,
+                now=NOW,
+            )
+        self.assertEqual(changed_after_retire.exception.status, 409)
+
+        unknown = str(uuid.uuid4())
+        self.assertEqual(restarted.cancel(unknown, now=NOW), {"sessions": []})
+        restarted.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
+        with self.assertRaises(Refused) as cancelled:
+            self.submit(self.open(), turn=unknown)
+        self.assertEqual((cancelled.exception.status, str(cancelled.exception)), (410, "turn_cancelled"))
+
+    def test_retirement_returns_all_sessions_after_lost_dispatch_and_prune(self):
+        """A lost dispatch and retry return the same full session set and keep the result."""
+        queued = self.submit()
+        turn, first = queued["turn"], queued["dispatch"]
+        self.exchange.end(first, now=NOW)
+        second = self.exchange.poll(turn, 0, now=NOW)["dispatch"]
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first, second)
+        token = self.claim(second)
+        self.exchange.next(second, token, 1, 0, now=NOW)
+        self.exchange.complete(second, token, turn, {"outcome": "ok"}, now=NOW)
+        sessions = sorted([first, second])
+        self.assertEqual(self.exchange.cancel(turn, now=NOW), {"sessions": sessions})
+        self.assertEqual(self.exchange.poll(turn, 0, now=NOW)["result"], {"outcome": "ok"})
+        restarted = self.open()
+        self.assertEqual(restarted.cancel(turn, now=NOW), {"sessions": sessions})
+        restarted.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
+        self.assertEqual(self.open().cancel(turn, now=NOW), {"sessions": sessions})
+        with self.assertRaises(Refused) as polled:
+            self.open().poll(turn, 0, now=NOW)
+        self.assertEqual(polled.exception.status, 404)
+
+    def test_unclaimed_pin_retirement_preserves_its_workbench_session(self):
+        """A pin identifies who may claim a turn; it does not admit that session to the turn."""
+        running, session, token = self.running()
+        pinned = self.submit(pin=session)["turn"]
+        self.assertEqual(self.exchange.cancel(pinned, now=NOW), {"sessions": []})
+        self.assertIsNone(self.exchange.row(session)["ended"])
+        self.assertEqual(self.exchange.poll(running, 0, now=NOW)["status"], "running")
+        self.exchange.complete(session, token, running, {"outcome": "ok"}, now=NOW)
+
+    def test_shared_staffing_claim_records_the_actual_session(self):
+        """A later turn can reuse a runner and retirement follows that actual claim."""
+        running, session, token = self.running()
+        shared = self.submit()["turn"]
+        self.exchange.complete(session, token, running, {"outcome": "ok"}, now=NOW)
+        self.assertEqual(self.exchange.next(session, token, 1, 0, now=NOW)["turns"][0]["id"], shared)
+        self.assertEqual(self.exchange.cancel(shared, now=NOW), {"sessions": [session]})
+        self.assertEqual(self.exchange.row(session)["ended"], NOW)
+
+    def test_legacy_staff_and_claim_backfill_on_restart(self):
+        """An existing Exchange database retains earlier dispatch and claim ownership."""
+        running, session, _ = self.running()
+        self.exchange.db.execute("DELETE FROM turn_sessions")
+        restarted = self.open()
+        self.assertEqual(restarted.cancel(running, now=NOW), {"sessions": [session]})
+        self.assertEqual(restarted.row(session)["ended"], NOW)
+
+    def test_partial_session_retirement_failure_retries(self):
+        """A failed gateway deletion leaves a retryable acknowledgement."""
+        turn, session, _ = self.running()
+        with patch.object(self.gateway, "delete", return_value=False):
+            with self.assertRaises(Refused) as failed:
+                self.exchange.cancel(turn, now=NOW)
+        self.assertEqual(failed.exception.status, 502)
+        self.assertEqual(self.exchange.row(session)["ended"], NOW)
+        restarted = self.open()
+        self.assertEqual(restarted.cancel(turn, now=NOW), {"sessions": [session]})
+        self.assertIsNone(restarted.row(session)["key"])
+        self.assertEqual(restarted.poll(turn, 0, now=NOW)["status"], "cancelled")
+
+    def test_failed_first_key_delete_still_retires_every_associated_session(self):
+        """A failed key cleanup cannot leave a later dispatch or its streams active."""
+        queued = self.submit()
+        turn, first = queued["turn"], queued["dispatch"]
+        self.claim(first)
+        with patch.object(self.gateway, "delete", return_value=False):
+            with self.assertRaises(Refused):
+                self.exchange.end(first, now=NOW)
+        second = self.exchange.poll(turn, 0, now=NOW)["dispatch"]
+        self.claim(second)
+        sessions = sorted((first, second))
+        failing_key = self.exchange.row(sessions[0])["key_id"]
+        real_delete = self.gateway.delete
+
+        def delete(key_id):
+            return False if key_id == failing_key else real_delete(key_id)
+
+        with patch.object(self.gateway, "delete", side_effect=delete):
+            with self.assertRaises(Refused) as failed:
+                self.exchange.cancel(turn, now=NOW)
+        self.assertEqual(failed.exception.status, 502)
+        self.assertEqual([self.exchange.row(session)["ended"] for session in sessions], [NOW, NOW])
+        self.assertIsNotNone(self.exchange.row(sessions[0])["key"])
+        self.assertIsNone(self.exchange.row(sessions[1])["key"])
+        self.assertEqual(self.open().cancel(turn, now=NOW), {"sessions": sessions})
+        self.assertTrue(all(self.exchange.row(session)["key"] is None for session in sessions))
 
     @contextmanager
     def trace(self, fail=None):
@@ -666,7 +863,10 @@ class RecoveryTests(StateFixture, unittest.TestCase):
             "UPDATE sessions SET ended = ? WHERE id = ?",
             LOST,
             "COMMIT",
-            "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?",
+            "BEGIN IMMEDIATE",
+            TOMBSTONE,
+            PRUNE,
+            "COMMIT",
             ENDED,
             "gateway.list",
             "gateway.delete",
@@ -679,7 +879,8 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                 with self.trace(boundary) as events, self.assertRaises(Crash):
                     self.exchange.reconcile(now=NOW + 181)
                 committed = boundary >= 4
-                self.assertEqual(events, expected[:boundary] + ([] if committed else ["ROLLBACK"]))
+                uncommitted = boundary <= 3 or 5 <= boundary <= 7
+                self.assertEqual(events, expected[:boundary] + (["ROLLBACK"] if uncommitted else []))
                 self.assertFalse(self.exchange.db.in_transaction)
                 restarted = self.open()
                 self.assertEqual(restarted.row(session)["ended"], NOW + 181 if committed else None)
@@ -729,7 +930,10 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                 self.assertEqual(
                     cleanup,
                     [
-                        "DELETE FROM turns WHERE finished IS NOT NULL AND finished < ?",
+                        "BEGIN IMMEDIATE",
+                        TOMBSTONE,
+                        PRUNE,
+                        "COMMIT",
                         ENDED,
                         "gateway.list",
                         "gateway.delete",
@@ -769,7 +973,7 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         self.assertTrue(all(restarted.row(session)["ended"] == NOW + 1200 for session in sessions))
 
     def test_submit_order_and_atomic_admission_recovery(self):
-        expected = ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, STAFF, "COMMIT"]
+        expected = ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, TURN_SESSION, STAFF, "COMMIT"]
         for boundary in range(1, len(expected) + 1):
             with self.subTest(boundary=boundary):
                 turn = str(uuid.uuid4())
@@ -821,7 +1025,9 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                     reply = self.submit(pin=session if kind == "pinned" else None)
                 self.assertEqual(
                     events,
-                    ["BEGIN IMMEDIATE", TURN_INSERT] + ([SESSION_INSERT] if kind == "new" else []) + [STAFF, "COMMIT"],
+                    ["BEGIN IMMEDIATE", TURN_INSERT]
+                    + ([SESSION_INSERT, TURN_SESSION] if kind == "new" else [])
+                    + [STAFF, "COMMIT"],
                 )
                 self.assertEqual(reply["dispatch"] is None, kind != "new")
                 self.assertEqual(
@@ -911,7 +1117,7 @@ class RecoveryTests(StateFixture, unittest.TestCase):
             with self.trace() as events, self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
                 self.submit(turn=turn)
             # COMMIT failed before the harness could record it; rollback succeeded.
-            self.assertEqual(events, ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, STAFF, "ROLLBACK"])
+            self.assertEqual(events, ["BEGIN IMMEDIATE", TURN_INSERT, SESSION_INSERT, TURN_SESSION, STAFF, "ROLLBACK"])
             self.assertFalse(db.in_transaction)
             self.assertEqual(reader.execute("SELECT id FROM turns").fetchall(), [])
             self.assertEqual(reader.execute("SELECT id FROM sessions").fetchall(), [])

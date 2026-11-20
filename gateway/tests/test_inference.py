@@ -186,28 +186,36 @@ class InferenceTests(StateFixture, unittest.TestCase):
         ).fetchall()
         self.assertTrue(any("inference_request_task" in row[-1] for row in plan))
 
-    def test_turn_cancel_and_dead_session_reconcile_interrupt_only_matching_sockets(self):
-        """Existing turn cancellation and heartbeat retirement stop private streams independently."""
+    def test_turn_cancel_interrupts_only_matching_socket(self):
+        """Turn retirement closes only its matching private stream."""
         from unittest.mock import Mock
 
-        for ending in ("cancel", "reconcile"):
-            with self.subTest(ending=ending):
-                identifier = self.start()
-                snapshot = self.adapter.snapshot(identifier)
-                stream = Mock()
-                self.adapter.attach(snapshot, stream)
-                other = Mock()
-                self.adapter.connections["other"] = ("other-session", "other-turn", other)
-                if ending == "cancel":
-                    self.exchange.cancel(self.turn)
-                    self.exchange.db.execute("UPDATE turns SET status='running' WHERE id=?", (self.turn,))
-                else:
-                    self.exchange.db.execute("UPDATE sessions SET seen=?,run_id=77 WHERE id=?", (1, self.session))
-                    self.exchange.reconcile()
-                stream.shutdown.assert_called_once()
-                stream.close.assert_called_once()
-                other.close.assert_not_called()
-                self.adapter.connections.pop("other")
+        identifier = self.start()
+        snapshot = self.adapter.snapshot(identifier)
+        stream = Mock()
+        self.adapter.attach(snapshot, stream)
+        other = Mock()
+        self.adapter.connections["other"] = ("other-session", "other-turn", other)
+        self.exchange.cancel(self.turn)
+        stream.shutdown.assert_called_once()
+        stream.close.assert_called_once()
+        other.close.assert_not_called()
+        self.adapter.connections.pop("other")
+
+    def test_dead_session_reconcile_interrupts_only_matching_socket(self):
+        """Heartbeat retirement closes only its matching private stream."""
+        identifier = self.start()
+        snapshot = self.adapter.snapshot(identifier)
+        stream = Mock()
+        self.adapter.attach(snapshot, stream)
+        other = Mock()
+        self.adapter.connections["other"] = ("other-session", "other-turn", other)
+        self.exchange.db.execute("UPDATE sessions SET seen=?,run_id=77 WHERE id=?", (1, self.session))
+        self.exchange.reconcile()
+        stream.shutdown.assert_called_once()
+        stream.close.assert_called_once()
+        other.close.assert_not_called()
+        self.adapter.connections.pop("other")
 
     def test_active_turn_snapshot_is_immutable_across_completion_and_restart(self):
         """Delayed evidence belongs to the captured turn after its session advances or restarts."""

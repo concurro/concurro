@@ -78,25 +78,31 @@ impl PostgresContainer {
             }
         })
         .await?;
-        let url = format!("postgres://postgres:test@127.0.0.1:{port}/concurro_test");
-        let mut last_error = None;
-        for _ in 0..50 {
-            match Database::connect(&url, 1).await {
-                Ok(database) => {
-                    let ready: i32 = sqlx::query_scalar("SELECT 1")
-                        .fetch_one(database.pool())
-                        .await?;
-                    assert_eq!(ready, 1);
-                    return Ok(Self {
-                        _container: container,
-                        url,
-                    });
-                }
-                Err(error) => last_error = Some(error),
+        let url =
+            format!("postgres://postgres:test@127.0.0.1:{port}/concurro_test?sslmode=disable");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let error = match Database::connect(&url, 1).await {
+                Ok(database) => match sqlx::query_scalar::<_, i32>("SELECT 1")
+                    .fetch_one(database.pool())
+                    .await
+                {
+                    Ok(1) => {
+                        return Ok(Self {
+                            _container: container,
+                            url,
+                        });
+                    }
+                    Ok(_) => unreachable!("SELECT 1 must return one"),
+                    Err(error) => error,
+                },
+                Err(error) => error,
+            };
+            if tokio::time::Instant::now() >= deadline {
+                return Err(error.into());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err(last_error.expect("readiness attempt recorded").into())
     }
 
     /// URL for a client in this test process.

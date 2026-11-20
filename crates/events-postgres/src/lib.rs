@@ -8,8 +8,8 @@ mod outbox;
 mod snapshots;
 
 pub use admin::{
-    HeldDetail, HeldSummary, ParkedDetail, ParkedSummary, discard_parked, list_held, list_parked,
-    replay_parked, run_admin, show_held, show_parked,
+    HeldDetail, HeldSummary, ParkedDetail, ParkedSummary, consumer_status, discard_parked,
+    list_held, list_parked, replay_parked, run_admin, show_held, show_parked,
 };
 pub use consumer::{process_delivery, process_released, release_held};
 pub use forwarder::{ForwarderLease, OutboxRecord, UnpublishedStatus};

@@ -192,6 +192,24 @@ class FundingTests(StateFixture, HttpFixture, unittest.TestCase):
             self.send(changed)
         self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0], 1)
 
+    def test_cancel_during_metadata_read_fences_second_admission_check(self):
+        """An in-flight metadata lookup cannot resurrect a turn retired by another instance."""
+        case = funded_turn()
+        other = self.open()
+        other.gateway, other.vault = self.gateway, self.vault
+        original_read = self.vault.read
+
+        def cancel_then_read(actor):
+            self.assertEqual(other.cancel(case[0], now=NOW), {"sessions": []})
+            return original_read(actor)
+
+        with patch.object(self.vault, "read", side_effect=cancel_then_read):
+            with self.assertRaises(Refused) as cancelled:
+                self.send(case)
+        self.assertEqual((cancelled.exception.status, str(cancelled.exception)), (410, "turn_cancelled"))
+        self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM turns WHERE status='queued'").fetchone()[0], 0)
+        self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM sessions").fetchone()[0], 0)
+
     def test_metadata_version_model_owner_expiry_and_adapter_checks(self):
         """A new turn cannot select latest credentials or the organization adapter."""
         for field, value in (

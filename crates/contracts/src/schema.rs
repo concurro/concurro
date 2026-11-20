@@ -4,6 +4,67 @@ use serde_json::{Map, Value, json};
 
 use crate::GithubPayload;
 
+/// Restrict request outcome facts to the implemented dispositions.
+pub(crate) fn prepare_request_outcome(schema: &mut Value) {
+    schema["properties"]["version"] = json!({"const": 1});
+    schema["properties"]["kind"] = json!({"const": "fact"});
+    schema["properties"]["type"] =
+        json!({"type": "string", "pattern": "^request\\.tasks\\.(?:applied|refused|superseded)$"});
+    schema["properties"]["entity"] = json!({"type": "null"});
+    schema["properties"]["revision"] = json!({"type": "null"});
+}
+
+/// Restrict task state snapshots to their task-scoped subject and metadata.
+pub(crate) fn prepare_task_snapshot(schema: &mut Value) {
+    schema["properties"]["version"] = json!({"const": 1});
+    schema["properties"]["kind"] = json!({"const": "snapshot"});
+    schema["properties"]["type"] =
+        json!({"type": "string", "pattern": "^task\\.[0-9a-f-]{36}\\.state$"});
+    schema["properties"]["entity"] = json!({"type": "string", "minLength": 1});
+    schema["properties"]["revision"] = json!({"type": "integer", "minimum": 1});
+}
+
+/// Restrict notice snapshots to task-scoped subjects.
+pub(crate) fn prepare_task_notice(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^task\\.[0-9a-f-]{36}\\.notice$"});
+}
+
+/// Restrict report snapshots to task-scoped subjects.
+pub(crate) fn prepare_task_report(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^task\\.[0-9a-f-]{36}\\.report$"});
+}
+
+/// Restrict submitted facts to one turn identity.
+pub(crate) fn prepare_turn_submitted(schema: &mut Value) {
+    prepare_turn_fact(schema, "submitted");
+}
+
+/// Restrict finished facts to one turn identity.
+pub(crate) fn prepare_turn_finished(schema: &mut Value) {
+    prepare_turn_fact(schema, "finished");
+}
+
+/// Restrict a turn fact's subject and absent snapshot metadata.
+fn prepare_turn_fact(schema: &mut Value, suffix: &str) {
+    schema["properties"]["version"] = json!({"const":1});
+    schema["properties"]["kind"] = json!({"const":"fact"});
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":format!("^turn\\.[0-9a-f-]{{36}}\\.{suffix}$")});
+    schema["properties"]["entity"] = json!({"type":"null"});
+    schema["properties"]["revision"] = json!({"type":"null"});
+}
+
+/// Restrict status snapshots to turn-scoped subjects and revisions.
+pub(crate) fn prepare_turn_status(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^turn\\.[0-9a-f-]{36}\\.status$"});
+}
+
 /// Fix the envelope metadata for an action-bearing or bare GitHub fact.
 pub(crate) fn prepare_github_event<P: GithubPayload>(schema: &mut Value) {
     schema["properties"]["version"] = json!({"const": 1});
