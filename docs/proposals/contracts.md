@@ -37,7 +37,8 @@ its records and the rules its modules keep. Wherever data crosses a process or t
 boundary, it's a contract: phase 1's Rust wire types and generated schemas, through a
 transactional outbox and the bus for events. That includes the task application's events
 and request API for the [backoffice API](#backoffice-api), a separate, lower-privilege
-process. Its contracts are listed under [task application](#task-application).
+process, and for the [accounts service](#accounts-service), which signs browser commands
+from phase 4. Their contracts are listed under [task application](#task-application).
 
 ## What the code inventory changed
 
@@ -245,7 +246,7 @@ until it's built, the [bridge catalog](#bridge-catalog) says so.
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
 | `config.targets` | Snapshot | Task application → backoffice API; exchange in phase 5 | 3/M3 | Full ([below](#configuration-1)) |
-| `funding.routes` | Snapshot | The credentials owner → gateway, backoffice API | 5 | Sketch: the route catalog, each route's provider, kind, custody and endpoint |
+| `funding.routes` | Snapshot | Accounts service → gateway, backoffice API | 5 | Sketch: the route catalog, each route's provider, kind, custody and endpoint |
 
 ### GitHub ingress
 
@@ -278,7 +279,8 @@ API. The [records](#task-application-records) its modules share are not contract
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| `POST /v1/requests`, `GET /v1/requests/{id}` | API | Python backoffice → task application, forwarding a browser command it signed; the actor comes from the [proof](#command-proofs) | 3/M3 | Full ([below](#requests)) |
+| `POST /v1/requests`, `GET /v1/requests/{id}` | API | Accounts service (the Python backoffice in phase 3) → task application, forwarding a browser command it signed; the actor comes from the [proof](#command-proofs) | 3/M3 | Full ([below](#requests)) |
+| `GET /v1/targets` | API | Accounts service → task application: the current `config.targets` | 4 | Full ([below](#target-identities)) |
 | `request.tasks.{applied,refused,superseded}` | Fact | → backoffice API read model | 3/M1 | Full ([below](#request-events)) |
 | `request.tasks.{blocked,stopped}` | Fact | → backoffice API read model: a withdrawal's later [steps](#withdrawal-steps) | 3/M3 | Full |
 | `request.source.{received,final}` | Fact | → backoffice API read model | 3/M1 | Full |
@@ -315,8 +317,8 @@ The task application holds these credentials, and no other Rust process does:
   must be attributed to the configured numeric reviewer ID; publication reads the review
   back and checks its author, and the transfer is verified by a refresh.
 - **The exchange's operator token** and, from 3/M3, **the vault's metadata bearer**.
-- **The command-proof verification key** of the
-  [Python backoffice](#python-backoffice-sessions).
+- **The command-proof verification key** of the session authority: the
+  [accounts service](#command-proofs) from phase 4, the Python backoffice before it.
 
 ### Task application records
 
@@ -360,7 +362,7 @@ Released by `concurro-relay` for phase 5.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Owner API | API | The credentials owner (the vault today) → verifier | 5 | Sketch ([below](#verifier-owner-api)) |
+| Owner API | API | Accounts service (the vault until phase 5) → verifier, with the owner credential only | 5 | Sketch ([below](#verifier-owner-api)) |
 | Dispatch with a session claim | API | Gateway → verifier | 5 | Sketch: the claim replaces the session, turn and deadline the verifier trusts today |
 | Release | API | Exchange → verifier | 5 | Sketch: revoke a claim or cancel one turn; persisted until the claim expires; acknowledged |
 
@@ -369,15 +371,17 @@ Released by `concurro-relay` for phase 5.
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
 | Turn diagnostics and original archives | PostgreSQL search rows and artifacts, S3-compatible archive objects | Task application stores turn content (3/M1); backoffice API fetches it through the task application (3/M3); exchange accepts runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
-| KV path per credential version | OpenBao KV v2 | The credentials owner writes and destroys; gateway reads; migrator writes once | 5 | Sketch: `{secret, account}`, check-and-set 0, custom metadata `{entry, record, route}` |
+| KV path per credential version | OpenBao KV v2 | Accounts service writes and destroys (no read of material); gateway reads; migrator writes once | 5 | Sketch: `{secret, account}`, check-and-set 0, custom metadata `{entry, record, route}` |
 
 ### Backoffice
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
 | Backoffice API under `/api/v2` | API | Frontend → backoffice API | 3/M3 | Full for 3/M3 ([below](#backoffice-api)) |
-| [Sessions and tiers](#python-backoffice-sessions) | API | Backoffice API → Python backoffice, on the platform network; read-scoped | 3/M3 | Full |
-| Browser commands | API | Frontend → Python backoffice, with its CSRF check; forwarded as signed requests | 3/M3 | Full ([command proofs](#command-proofs)) |
+| [Viewer authority](#viewer-authority) | API | Backoffice API → accounts service (the Python backoffice in phase 3), on the platform network; read-scoped | 3/M3; the accounts service from 4 | Full |
+| [Accounts browser API](#accounts-service): sign-in, current user, commands, credentials, relays | API | Frontend → accounts service (the Python backoffice in phase 3), with its CSRF check; commands forwarded as signed requests | 4 | Full |
+| `GET /v1/credentials/{user_id}?at=` | API | Accounts service → the task application's funding module | 5 | Sketch ([credentials](#credentials)) |
+| `credential.<user_id>.changed` | Fact | Accounts service → the task application's funding module, gateway | 5 | Sketch ([credentials](#credentials)) |
 
 ### Operations
 
@@ -399,25 +403,40 @@ Released by `concurro-relay` for phase 5.
 | Turn polling | Task application → Python exchange | `turn.*` published by the exchange | The exchange integration module publishes `turn.*` | 5 |
 | Runner API v1 (`engine`, `key`, `next`, `turns/{turn}`, `end`) | Launcher workflow → exchange | Runner API | Python exchange serves it; the Rust exchange serves it until no target's launcher is on v1 | When the last launcher moves |
 | [Turn payload v1](#turn-payload-v1) | Task application → today's runner | Runner protocol | The exchange integration module | Phase 5, with the runner ([decisions](#decisions)) |
-| [Vault metadata and events](#vault) | Task application → vault | The credentials owner's own store | The funding policy's vault adapter | 5 |
-| Vault owner API (`gateway/vault/vault.py:1534`) | Python backoffice → vault | The [credentials API](#credentials) | None until phase 4 | 5 |
+| [Vault metadata and events](#vault) | Task application → vault | The accounts service's `GET /v1/credentials/{user_id}` and `credential.<user_id>.changed` | The funding module's vault adapter (`concurro-vault-v1`) | 5 |
+| Vault owner API (`gateway/vault/vault.py:1534`) | Accounts service (the Python backoffice in phase 3) → vault, with the user's token | The accounts service's own credential store | The accounts service's credentials module ([credentials](#credentials)) | 5 |
 | Verifier owner and dispatch API, single bearer, `x-concurro-binding` | Vault, exchange forwarder → verifier | Verifier owner API, dispatch with a session claim, release | None | 5 |
-| [Python backoffice sessions](#python-backoffice-sessions) | Backoffice API → Python backoffice | The backoffice API's own sign-in | None | 4 |
-| Python backoffice `/api/*`, `/auth/*` | Frontend → Python backoffice | Backoffice API | None; the frontend calls `/api/v2` for tasks from 3/M3, and the Python task and list pages are off from the Cutover | 4 |
+| [Python backoffice sessions](#python-backoffice-sessions) | Backoffice API → Python backoffice | The accounts service's [viewer authority](#viewer-authority) | None | 4 |
+| Python backoffice `/api/*`, `/auth/*` | Frontend → Python backoffice | The [accounts service](#accounts-service) | None; the frontend calls `/api/v2` for tasks from 3/M3, and the Python task and list pages are off from the Cutover | 4 |
 
 ## Target contracts
 
 ### Configuration
 
 Service settings stay files each service reads at start. The task application's settings
-name its targets, and it publishes what other processes need from them as
-`config.targets`, a snapshot with one revision per change, from 3/M3 for the backoffice
-API (its lists and tier checks) and from phase 5 for the exchange:
+name its targets. It publishes what other processes need from them as `config.targets`:
+
+- **A snapshot** for entity `config:targets`. Its revision starts at 1 and increases by
+  one per change; the task application stores it with the body
+  (`tasks.config_targets`).
+- **Consumers:** the backoffice API from 3/M3 (its lists and tier checks), the accounts
+  service from phase 4 through [`GET /v1/targets`](#target-identities), and the exchange
+  from phase 5.
+
+The Rust types `ConfigTargets` and `ConfigTarget` (`crates/contracts/src/tasks.rs`) are
+authoritative:
 
 | Field | Meaning |
 | ---- | ---- |
-| `targets` | Per target: `target_id`, `upstream` and `fork` (`{repository_id, full_name}`), `issues` (`upstream`, `fork` or `both`), `launcher {workflow, ref, version}` |
-| `reviewer` | The reviewer account `{id, login}`, or absent |
+| `targets` | The targets in settings order, each as below |
+| `targets[].repository_id` | Numeric ID of the issue repository |
+| `targets[].upstream_repository_id` | Numeric ID of the upstream when it differs from the issue repository, else absent |
+| `targets[].upstream`, `targets[].fork`, `targets[].issue_repository` | `owner/name` of the upstream, the runner fork and the issue source |
+| `targets[].reviewer_user_id` | The reviewer account for standalone PR reviews, when configured |
+| `targets[].launcher` | `{workflow, ref}`: the executor workflow file and the ref task settings select |
+
+Phase 5's sketches name a target by `target_id`, which is its `repository_id`. The
+launcher version they need is added to `launcher` then, as an additive change.
 
 - Publication admits writes and mints read tokens only for these repositories.
 - Until phase 5 the task application sends a run's expected OIDC claims, built from the
@@ -548,8 +567,9 @@ assignment channel is new and comes later:
 
 ### Requests
 
-`POST /v1/requests`, called from 3/M3 by the Python backoffice, which forwards each browser
-command it has checked and signed, with the browser action's ID as `Idempotency-Key`.
+`POST /v1/requests`, called by the session authority (the Python backoffice from 3/M3, the
+[accounts service](#accounts-service) from phase 4), which forwards each browser command it
+has checked and signed, with the browser action's ID as `Idempotency-Key`.
 The backoffice API never calls it. The task application's own channels write the same record
 in-process, in the transaction that records the event it came from, from 3/M1.
 
@@ -558,7 +578,7 @@ in-process, in the transaction that records the event it came from, from 3/M1.
 | `issue` | `{repository_id, number}` | The task's issue, or the issue to enroll |
 | `kind` | enum | `enroll`, `unenroll`, `start`, `approve`, `stop`, `retry`, `resume`, `extend`, `invalidate`, `sponsor`, `withdraw`, `funding`, `conversation` |
 | `argument` | object | Per kind: `approve {plan_id}`, `extend {plan_revisions}`, `resume {description_only}`, `sponsor {provider?}`, `withdraw {provider}`, `funding {provider, mode}`; otherwise empty |
-| `proof` | string | A [command proof](#command-proofs) the Python backoffice signed for this exact request; the actor comes from it |
+| `proof` | string | A [command proof](#command-proofs) the session authority signed for this exact request; the actor comes from it |
 | `source_at` | time | When the actor submitted it; bound by the proof, since it orders the request |
 | `detail` | object | Channel data frozen with the request, such as `feedback` for `retry`; bound by the proof, since it changes the task's requirements |
 
@@ -574,7 +594,7 @@ creation or edit time. The operator's host commands aren't requests and have no 
 
 **Retries keep one action ID.** The frontend gives each command the user makes an action
 ID that survives its retries (a `concurro-backoffice` change: today's `actions.command`
-sends none, `src/lib/api/live.ts:153`), and the Python backoffice keeps the original
+sends none, `src/lib/api/live.ts:153`), and the session authority keeps the original
 `source_at` for each action ID. The action ID is the request's idempotency key, and a
 repeat is matched on the actor and the command's contents (issue, kind, arguments,
 `detail.feedback`, `source_at`), not on its proof: a retry after the proof has expired is
@@ -1198,29 +1218,83 @@ repair. Keep the source files read-only for reruns.
 
 ### Credentials
 
-The API for users' credentials, called by the backoffice on behalf of a signed-in user.
-Which process serves it, the task application or a credentials service of its own, is
-decided in phase 4. Sketch, phase 4.
+Users' credential entries, provider lists, filters and relay approvals. From phase 4 the
+[accounts service](#accounts-service) owns them as the credentials owner
+([phase 4 plan](architecture/phase-4-plan.md#processes-and-authority)). Until phase 5 it
+keeps no store of its own. It forwards each call to the [vault's owner routes](#vault)
+with the signed-in user's GitHub token, which the vault resolves itself, and maps the
+response to the frontend's types. Full for phase 4.
 
-| Call | Purpose |
-| ---- | ---- |
-| `GET /v1/users/{user_id}/credentials` | Provider lists, each with its revision and ordered entries; supported types and roles |
-| `POST /v1/users/{user_id}/credentials` | Add an entry: type, name, enabled, role and profile filters, and a secret |
-| `PATCH /v1/users/{user_id}/credentials/{entry_id}` | Name, enabled, filters |
-| `POST /v1/users/{user_id}/credentials/{entry_id}/versions` | Replace the secret with a new version |
-| `DELETE /v1/users/{user_id}/credentials/{entry_id}` | Remove the entry and revoke its versions |
-| `PUT /v1/users/{user_id}/lists/{provider}` | Set the exact order |
-| `GET /v1/relay/registrations/{code}` | A pending relay registration: name, routes, expiry |
-| `POST /v1/users/{user_id}/relays` | Approve a registration code for new entries, or move existing entries to it |
-| `GET /v1/users/{user_id}/relays` | Relay status: relays, idle and active slots, last seen |
+The browser routes, on the accounts service's browser listener, need the session cookie.
+Writes also need `x-concurro-request: 1`.
 
-- **It verifies the user itself.** The backoffice forwards the user's GitHub token, and
-  the API resolves it and checks it matches `user_id`, as the vault does today. A
-  compromised backoffice can't change a user's credentials without their token.
-- Every mutation takes `Idempotency-Key`, removal included, and `If-Match` with the entry
-  or list revision.
-- Entries, lists and relays have separate paths, so no route depends on declaration order.
-- Relay status is shaped once, by the API's owner, with RFC 3339 times.
+| Route | Vault route | Body | Response |
+| ---- | ---- | ---- | ---- |
+| `GET /api/me/credentials` | `GET /credentials` | — | `{providers: [{provider, label, revision, entries}], types: [{id, provider, kind, label, accountId}], roles: [{key, label}]}` |
+| `POST /api/me/credentials` | `POST /credentials` | `{type, name, roles, profiles: [{target, profile}], secret, account_id?, mutation_id}` | The new entry |
+| `PATCH /api/me/credentials/{entry_id}` | `PATCH /credentials/{entry_id}` | `{revision, mutation_id, name?, enabled?, roles?, profiles?}` | The entry |
+| `PUT /api/me/credentials/{entry_id}/secret` | `PUT /credentials/{entry_id}/secret` | `{revision, secret, account_id?, mutation_id}` | The entry |
+| `PUT /api/me/credentials/order/{provider}` | `PUT /credentials/order/{provider}` | `{revision, entries: [entry_id], mutation_id}` | The provider list |
+| `DELETE /api/me/credentials/{entry_id}?revision=` | `DELETE /credentials/{entry_id}?revision=` | — | The removed entry |
+| `GET /api/me/relays` | `GET /credentials/relay/status` | — | `{setup: {server, download, command, login}, service, started, checked, relays: [{relay, idle, active: [{slot, entry, route, version, since, task}], lastSeen}]}` |
+| `POST /api/me/credentials/relay/pending` | `POST /credentials/relay/pending` | `{code}` | `{name, routes, expires_at}` |
+| `POST /api/me/credentials/relay` | `POST /credentials/relay` | `{code, routes, name, roles, profiles, mutation_id}`, with one or two routes | `{entries: {route: entry}}` |
+| `PUT /api/me/credentials/relay/device` | `PUT /credentials/relay/device` | `{code, entries: [{id, revision}], mutation_id}` | `{entries: {route: entry}}` |
+
+- **An entry** is `{id, provider, type, kind, name, roles, profiles, enabled, revision,
+  removed, created, status, statusReason, fingerprint, version, lastUpdated, lastUsed,
+  expiresAt, expiryKnown, accountLabel, accountVerified, custody, relay}`
+  (`backoffice/credentials.py:195-224`).
+- **Shapes are today's.** These shapes, the UI type for each vault route, and the role
+  labels are those of `backoffice/credentials.py`. Fixtures recorded from its tests are
+  the conformance check, and they're kept after the Python code is removed.
+- **Concurrency and idempotency are the vault's:**
+  - A stale entry or list revision is `409`, and a removed entry is `410`.
+  - A repeated `mutation_id` (16–64 characters of `[A-Za-z0-9_-]`) returns the first
+    result.
+  - A removal with the revision last read is idempotent.
+
+  The accounts service passes the vault's status and message through as `{detail}`.
+- **Secret material is write-only.** No response contains it. A malformed body is
+  `422 {"detail": "malformed request"}`, echoing no field. If the vault can't be reached,
+  the answer is `503 "the credentials vault is unavailable"`.
+- **Relay calls go through the vault to the verifier.** The vault reaches it on the
+  credential-private network (`gateway/compose.relay.yaml`).
+  - The accounts service waits up to 60 seconds for approval and device replacement.
+  - It passes the vault's answer through: an unknown or expired code is `404`, and a
+    vault with no verifier configured reports `service: unconfigured`.
+  - The verifier's approval link opens the frontend's `/credentials/relay` page.
+- **Relay setup details** come from the accounts service's settings, not from the vault:
+  the server address, the download URL, and the `concurro-relay` and
+  `concurro-relay login` commands that name the server.
+
+**Phase 5, sketch.** The accounts service imports the vault's metadata and becomes the
+store. The browser routes above don't change. Everything the vault serves today is a
+temporary bridge ([vault](#vault)); these are the target contracts that replace it:
+
+- **Metadata reads.** `GET /v1/credentials/{user_id}?at=` on the accounts service's
+  internal listener, for the task application's funding module, with a bearer of its own.
+  - The response has the fields of the vault's `/metadata/{user_id}?at=`: entries with
+    their route, kind, enabled state, filters, revision, record ID, version, status,
+    expiry and custody; lists with their revision and order; and `history_complete`.
+  - Implicit fill reads it with `at` set to the boundary, and a new attempt reads it
+    without `at`.
+- **`credential.<user_id>.changed`.** A fact, one per committed metadata change,
+  identified by the accounts service's change sequence:
+  `{user_id, sequence, entry_id, provider, change, list_revision, revoked, at}`.
+  - `change` is `added`, `replaced`, `edited`, `reordered`, `removed` or `unusable`.
+  - `revoked` lists each `{record_id, version, route, custody}` the change retired.
+  - Consumers:
+    - The task application's funding module revises grants on a revoked version to
+      `revoked` and excludes the version.
+    - The gateway drops bindings on that version.
+- **Version material.** One OpenBao path per version ([storage](#storage)). The accounts
+  service creates it and reads its metadata; it can't read the material back.
+- **Relay.** The verifier's [owner API](#verifier-owner-api), with a credential only the
+  accounts service holds, separate from the gateway's inference credential and the
+  exchange's release credential.
+
+Every mutation keeps its revision and idempotency rules.
 
 ### Exchange operator API
 
@@ -1280,15 +1354,242 @@ Sketch, part of `concurro-relay`'s phase 5 release, behind the owner credential.
 Bearer in `Authorization`; one request type per call; RFC 3339 times; every error an HTTP
 response with one error shape.
 
+### Target identities
+
+`GET /v1/targets` on the task application's private listener, from phase 4, for the
+[accounts service](#accounts-service).
+
+- **Response:** `200 {revision, targets: ConfigTarget[]}`: the
+  [`config.targets`](#configuration-1) snapshot's revision and its `targets` array, both
+  read from the same `tasks.config_targets` row. It answers `503` if the task database is
+  unavailable.
+- **No bearer.** It returns only the public repository identities the task application
+  already publishes to every bus subscriber, and its listener is on the platform network
+  only.
+- **Not the bus.** `config.targets` is published only when it changes, so a process with no
+  store of its own couldn't rely on finding the last snapshot within the stream's
+  retention.
+
+### Accounts service
+
+A Rust process from phase 4 (`crates/accounts`). It is the session authority:
+
+- GitHub sign-in and sessions.
+- The [viewer authority](#viewer-authority) for the backoffice API.
+- Browser commands.
+- The [credentials](#credentials) routes.
+
+**It holds:**
+
+- The Sign-in OAuth App's client secret.
+- Signed-in users' GitHub tokens, in memory.
+- The read-only Backoffice App's private key, for writer checks.
+- The command-proof private key.
+
+**Sessions are in memory,** so a restart ends every session. Its own database holds
+only logout revocation jobs in phase 4, and credential metadata from phase 5.
+
+#### Listeners
+
+- **Browser listener** on the edge network. The edge sends it `/concurro/auth/*`, and
+  `/concurro/api/*` except `/concurro/api/v2/*`, with the prefix removed.
+- **Internal listener** on the platform network, bound to the address its platform alias
+  resolves to. It serves only the [viewer authority](#viewer-authority).
+
+**Outbound calls:**
+
+- **GitHub:** OAuth and user reads with the user's token, and permission reads with the
+  Backoffice App's installation tokens.
+- **The task application,** on the platform network: `POST /v1/requests` and
+  [`GET /v1/targets`](#target-identities).
+- **The vault,** on the edge network: its owner routes. Relay calls reach the verifier
+  through the vault, so the accounts service holds no verifier credential in phase 4.
+
+#### Browser API
+
+Errors are `{detail}` with a status, as the frontend reads them
+(`concurro-backoffice/src/lib/api/live.ts:24`).
+
+- A request without a valid session gets `401`, which sends the browser to sign in.
+- A write without `x-concurro-request: 1` gets `403` and has no effect.
+
+| Route | Behavior |
+| ---- | ---- |
+| `GET /auth/login?next=` | Starts sign-in: sets `concurro_login` and redirects to GitHub's authorize URL with `client_id`, `redirect_uri` `<public_url>/auth/callback`, a one-use `state` and an S256 `code_challenge`, requesting no scopes. `next` must be a path starting with exactly one `/`; anything else becomes `/` |
+| `GET /auth/callback?code=&state=` | Consumes the pending sign-in only with the same browser's login cookie and a matching `state`. It exchanges the code with the PKCE verifier, reads `GET /user` with the new token, creates the session, sets `concurro_session` and `concurro_viewer`, clears `concurro_login` and redirects to `<base path><next>`. Any failure redirects to `<base path>/signin?error=<message>` and creates nothing |
+| `POST /auth/logout` | Ends the session and clears both cookies. It records the sealed token as a revocation job under a new receipt, tries once, and sets `concurro_logout` to the receipt: `200 {signedOut: true, remote: revoked \| pending}`. Without a session, `remote` is the current receipt's status. If its database is unavailable, it tries once with no receipt and answers `revoked` or `unavailable` |
+| `GET /auth/logout-status` | The `concurro_logout` receipt's status: `{remote: none \| pending \| revoked \| unknown}`, or `unavailable` if the database can't be read. `unknown` means the job could not be decrypted. Nothing about the token or user is returned |
+| `GET /api/health` | `{status: "ok"}` |
+| `GET /api/me` | `{id, login, name, avatarUrl}` |
+| `POST /api/repos/{owner}/{repo}/issues/{number}/commands`, `POST /api/tasks/{owner}/{repo}/{number}/commands` | A [browser command](#browser-commands) |
+| `/api/me/credentials…`, `/api/me/relays` | The [credentials](#credentials) routes |
+
+**Cookies:**
+
+- `concurro_login`: `HttpOnly`, `SameSite=Lax`, 10 minutes.
+- `concurro_session` and `concurro_viewer`: `HttpOnly`, `SameSite=Strict`, with a max-age
+  of the session's lifetime.
+- `concurro_logout`: an opaque receipt ID, `HttpOnly`, `SameSite=Strict`, for the browser
+  session.
+
+All are `Secure` when the public URL is HTTPS, with `Path` set to the base path.
+
+**Session lifetime and end:**
+
+- A session lives for GitHub's `expires_in` when it supplies one, otherwise eight hours.
+  There is no refresh.
+- A GitHub `401` to any call made with the session's token ends the session.
+
+**Logout revocation:**
+
+- **Sealing.** Each job holds the token sealed with AES-256-GCM under the logout key. The
+  job ID is the additional data.
+- **Retries.** A `graphile_worker` job calls
+  `DELETE /applications/{client_id}/token` with the OAuth App's credentials, and confirms
+  a `404` or `422` with `POST` on the same path. It retries with backoff until GitHub
+  confirms.
+- **Completion.** A completed job clears its ciphertext.
+
+#### Browser commands
+
+The body is `{command, argument?, feedback?}`, with the header `Idempotency-Key: <uuid>`;
+a missing or malformed key is `400`.
+
+1. **Command and argument.** `command` is `funding`, `sponsor`, `withdraw`, `start`,
+   `approve`, `retry`, `resume`, `stop` or `invalidate`. The argument per kind:
+   - `funding`: `"<openai|anthropic> <org|personal>"`.
+   - `sponsor`: an optional provider.
+   - `withdraw`: a provider.
+   - `approve`: the plan ID, required.
+   - `retry`: an optional number of plan revisions.
+
+   Any other command or argument is `422`.
+2. **Permission.** The repository must belong to a configured
+   [target](#target-identities), and the user must have the kind's permission:
+   - Every kind except `withdraw` needs the `writer` tier
+     ([viewer authority](#viewer-authority)).
+   - `withdraw` needs the target's repositories visible to the user.
+
+   Otherwise the answer is `404 "<repository> is not a Concurro target visible to your
+   account"`, as today (`backoffice/tasks.py:242-252`).
+3. **Source time.** The first `source_at` for an action ID is kept for the session's life,
+   and used again for every retry of that action.
+4. **Forwarding.** The command maps to the [request](#requests)'s kind and argument as
+   today (`retry` with a number becomes `extend`, `backoffice/commands.py:36-49`). The
+   service signs a [proof](#command-proofs) and posts `POST /v1/requests` with the same
+   `Idempotency-Key`.
+5. **Responses.** The task application's `202` body
+   `{request_id, status, reason?, task_id?, applied_at?}` is returned as `200`. Errors:
+   - The task application unreachable before the request was sent:
+     `503 "Concurro is unavailable; nothing was recorded"`.
+   - No usable response: `502 "the command result is unknown; retry the same action ID"`.
+   - A refusal from the task application keeps its status, with its `error` code as
+     `detail`.
+
+#### Settings
+
+TOML loaded with `concurro-config` from `CONCURRO_ACCOUNTS_CONFIG`. Secrets are in files,
+read with `read_secret`.
+
+| Field | Meaning |
+| ---- | ---- |
+| `listen`, `internal_listen` | Browser and internal listener addresses |
+| `database_url_file` | The accounts service's own PostgreSQL URL |
+| `logout_key_file` | 64 hex characters: the AES-256 key sealing logout revocation jobs |
+| `public_url` | The external base, such as `https://<host>/concurro`; the base path and callback URL come from it |
+| `oauth_client_id`, `oauth_client_secret_file` | The Sign-in OAuth App |
+| `github_api_base` | The GitHub API endpoint |
+| `reader_app_id`, `reader_private_key_file` | The read-only Backoffice App |
+| `command_proof_private_key_file` | RSA private key in PEM; the task application's `command_proof_public_key_file` holds its public key |
+| `viewer_authority_bearer_file` | The bearer the backoffice API presents to the internal listener |
+| `task_api_url` | The task application's private API |
+| `vault_url` | The vault's owner routes |
+| `relay_server`, `relay_download_url` | Optional Sponsor setup details shown on the credentials page |
+
+#### Viewer authority
+
+`GET /internal/v1/viewer?upstream=&issue_repository=&issue_number=` on the internal
+listener. The caller sends `Authorization: Bearer <viewer authority bearer>` and
+`X-Concurro-Viewer: <viewer token>`. The contract is phase 3's; only its server changes.
+
+**Answers:**
+
+- `200 {user: {id, login}, tier, checked_at}`.
+- `401` for a wrong bearer, or for an unknown or expired viewer token.
+- `404` when `upstream` isn't a configured target, or `issue_repository` isn't one of its
+  repositories.
+- `503` when GitHub can't decide.
+
+**Tiers** are decided with the session's own token and the Backoffice App, as phase 3's
+bridge decided them (`backoffice/internal.py:20-59`):
+
+- **`writer`:** the upstream and the fork are visible to the user, and the Backoffice App
+  reports `write`, `maintain` or `admin` permission for the user on the upstream.
+- **`reader`:** the issue is visible to the user.
+- **`none`:** anything else.
+
+Decisions are cached for 60 seconds. The backoffice API passes issue `0` when it needs
+only the identity.
+
+**The backoffice API holds nothing that can command:**
+
+- The viewer token answers only this lookup.
+- The edge strips the session cookie from `/api/v2/*`, and the command and credentials
+  routes need that cookie.
+- The requests API needs a proof only the accounts service signs.
+
+Tested: the credentials delivered to the backoffice API (the viewer token, the internal
+bearer and its task-read bearer) are refused by the accounts service's command routes and
+by `POST /v1/requests`.
+
+#### Command proofs
+
+Only the session authority can establish that a viewer issued a command. It signs a
+short-lived proof for each command the browser posted, and the task application verifies
+it. The session authority was the Python backoffice in phase 3 and is the accounts service
+from phase 4; the contract doesn't change.
+
+- **Issued** for a command the browser posted, after the CSRF check and the per-kind
+  permission check described [above](#browser-commands). Nothing else can ask for one.
+- **Bound** to:
+  - the user's numeric ID and login;
+  - the repository ID and issue;
+  - the request kind and its arguments, and `detail.feedback`;
+  - `source_at`;
+  - the browser action's ID (the request's `Idempotency-Key`);
+  - an expiry of 180 seconds.
+
+  The proof is an RS256 JWT with the claims `{actor: {id, login}, action_id, content,
+  exp}`, where `content` is the request's `{issue, kind, argument, detail, source_at}`.
+  From phase 4 these types are defined once in `concurro-contracts`, for the signer and
+  the verifier. The private key is held only by the session authority; the task
+  application has the public key.
+- **Verified** by the task application: the signature, the expiry, and every binding
+  against the request.
+  - The actor comes from the proof, and the same proof with any other request is
+    `403 proof_mismatch`.
+  - A repeat of a recorded action is matched on the actor and the command's contents, not
+    the proof. A retry after the proof expired, signed again with the same contents,
+    returns the recorded response ([requests](#requests)).
+  - Writer permission is checked again when the request is applied.
+- **Tested:** each of these is refused and changes nothing:
+  - a request whose actor differs from the proof's;
+  - a proof reused for a different command (a `withdraw` proof for a `stop`, a `stop`
+    proof for a `withdraw`);
+  - a changed `detail.feedback` or `source_at`.
+
+  The backoffice API can get no proof and submit no command.
+
 ### Backoffice API
 
 A separate Rust process (a backend for the frontend), from 3/M3, serving the frontend under
 `/api/v2`. It's lower-privilege than the task application: no App key, no exchange or
 vault token, no GitHub credential at all. It owns a read model fed only by the task
 application's events, `config.targets` and `github.*`, and has no command path. Browser
-sign-in (GitHub OAuth), browser commands and the credentials pages stay with the Python
-backoffice until phase 4; the backoffice API asks it, with the viewer token the edge
-passes on, who a viewer is and what they may see ([sessions](#python-backoffice-sessions)).
+sign-in (GitHub OAuth), browser commands and the credentials pages belong to the session
+authority: the Python backoffice in phase 3, the [accounts service](#accounts-service)
+from phase 4. The backoffice API asks it, with the viewer token the edge passes on, who a
+viewer is and what they may see ([viewer authority](#viewer-authority)).
 It never receives the session cookie. The Python
 backoffice's task and list pages are off from the Cutover.
 
@@ -1314,8 +1615,8 @@ backoffice's task and list pages are off from the Cutover.
   After checking the viewer's `writer` tier, the backoffice reads transcript entries
   from the turn and fetches other artifacts by digest.
 - **My sponsorships** come from [consent facts](#consent-facts) by the viewer's ID.
-- **Commands** aren't the backoffice API's: through phase 3 the browser posts them to
-  the Python backoffice, which checks CSRF and the viewer's permission, signs a
+- **Commands** aren't the backoffice API's: the browser posts them to the session
+  authority, which checks CSRF and the viewer's permission, signs a
   [command proof](#command-proofs) and forwards the request to the task application.
   The read model shows each request's outcome from the [request events](#request-events),
   naming its actor. A refused request changes no task state. Nothing is "may have
@@ -1323,9 +1624,9 @@ backoffice's task and list pages are off from the Cutover.
 - **Live updates:** `GET /api/v2/events` streams `{type, entity, revision}` from the read
   model, and the client refetches what changed. The read model's revision replaces
   today's content hash as the cache key.
-- **Credentials** stay on the Python backoffice's pages until phase 4, then
-  `/api/v2/me/credentials` and `/api/v2/me/relays`, mapped onto the
-  [credentials API](#credentials).
+- **Credentials** aren't the backoffice API's either: from phase 4 they're the accounts
+  service's [credentials](#credentials) routes, outside `/api/v2`, where the session
+  cookie reaches them.
 - **Errors** use the shared error shape.
 
 ## Bridges
@@ -1545,6 +1846,11 @@ service API until phase 5.
   resolves to, as the resolver listener does, for the task application. Its other
   callers keep the edge address until they move.
 
+- **Owner routes** (`/credentials*`) are called from phase 4 only by the accounts
+  service, with the signed-in user's GitHub token, which the vault resolves itself
+  (`gateway/vault/vault.py:1547-1557`), as it did for the Python backoffice. The vault
+  doesn't change in phase 4.
+
 - `GET /metadata/{user_id}?at=` gives a user's credentials and lists as of a time, with
   `history_complete`. Fills use `at` = the boundary; `history_complete` false makes the
   fill `unknown`.
@@ -1566,61 +1872,12 @@ service API until phase 5.
 
 ### Python backoffice sessions
 
-From 3/M3 until phase 4, browser sign-in stays with the Python backoffice. It answers the
-backoffice API's questions about sessions, and it alone takes browser commands.
-
-- **Its own listener on the platform network.** Today's server listens on every
-  interface (`backoffice/__main__.py:19`), so the internal API is never a route on it.
-- **Two credentials per sign-in.** The session cookie, which the command handler
-  requires with its CSRF header (`backoffice/app.py:226-237`, `:502`), and a distinct
-  viewer token, read-only, which answers identity and tier lookups and authorizes no
-  command anywhere. The edge strips the session cookie from requests to `/api/v2/*`, so
-  the backoffice API sees only the viewer token.
-- **For a viewer token it answers the backoffice API** the user's ID and login, or
-  `401`; and the viewer's tier for given targets and issues, and when it checked:
-  `writer` needs upstream write access and both the upstream and the fork visible,
-  `reader` the issue visible, else none. Each is evaluated with the session's GitHub
-  token, as today's checks are (`backoffice/tasks.py:187-193`), and the token never
-  reaches the backoffice API.
-- **The backoffice API holds nothing that can command.** Its service credential to the
-  Python backoffice is read-scoped, and the viewer token it's given authorizes no
-  command: the Python backoffice's command handler requires the session cookie, which
-  never reaches the backoffice API, and the requests API requires a proof only the
-  command handler signs. It uses the answers to scope every read. Tested: the
-  credentials actually delivered to the backoffice API authorize no command through the
-  Python backoffice's command handler or the task application's requests API.
-- **Browser commands** go to the Python backoffice, as today
-  (`backoffice/app.py:502-510`), with its existing CSRF check and per-kind permission
-  check. It signs each one and forwards it to the task application's
-  [requests API](#requests) itself.
-- Retires in phase 4, with the rest of the Python backoffice: sign-in, browser
-  commands, and the credential writes and relay approvals that also use the viewer's
-  token (`backoffice/credentials.py:96`), all move then. Moving sign-in alone wouldn't
-  retire it.
-
-#### Command proofs
-
-Only the session authority can establish that a viewer issued a command: the Python
-backoffice, which receives the browser's command POST, signs a short-lived proof for it,
-and the task application verifies it:
-
-- **Issued** for a command the browser posted, after the CSRF check and today's per-kind
-  check with the session's GitHub token: write access for most kinds, issue visibility
-  for `withdraw` (`service/actions.py:149-156`). Nothing else can ask for one.
-- **Bound** to the user's numeric ID and login, the repository, issue, command kind and
-  arguments, `detail.feedback`, `source_at`, the browser action's ID (the request's
-  `Idempotency-Key`), and an expiry of a few minutes. Signed with a key only the Python
-  backoffice holds; the task application has the public key.
-- **Verified** by the task application: the signature, the expiry, and every binding
-  against the request. The actor comes from the proof, and the same proof with any other
-  request is `403 proof_mismatch`. A repeat of a recorded action is matched on the actor
-  and the command's contents, not the proof, so a retry after the proof expired, signed
-  again with the same contents, returns the recorded response ([requests](#requests)).
-  Writer permission is still checked again when the request is applied.
-- **Tested:** a request whose actor differs from the proof's, a proof reused for a
-  different command (a `withdraw` proof for a `stop`, a `stop` proof for a `withdraw`),
-  and a changed `detail.feedback` or `source_at` are refused and change nothing; the
-  backoffice API, holding only a viewer token, can get no proof and submit no command.
+The phase 3 bridge: the Python backoffice answered the backoffice API's viewer lookups on
+a platform listener, took browser commands with its CSRF check and signed them. It
+retires in phase 4. The [accounts service](#accounts-service) serves the same
+[viewer authority](#viewer-authority) contract and signs the same
+[command proofs](#command-proofs), so the backoffice API and the task application change
+only their settings.
 
 ## Decisions
 

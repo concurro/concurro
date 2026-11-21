@@ -177,12 +177,12 @@ database and a bus provide directly.
 | ---- | ---- | ---- | ---- |
 | GitHub ingress | Webhook receipt: signature check, deduplication and delivery recovery; maps each delivery to a typed GitHub event | Public endpoint; holds the webhook secret only; asks the task application for redeliveries | Delivery receipts, raw payloads, recovery coverage, the GitHub event models |
 | Task application | Tasks, as modules of one service: intake (channels, requests, enrollment), task state and stages (plans, findings, reviews), consent and funding policy (who pays, the funding boundary, credential selection and grants), attempts (call and token budgets, admission, charges), the exchange integration, GitHub publication (dashboard, notices, replies, reviews, threads, labels, check runs, branches, PRs, run refs and dispatch; webhook redeliveries for ingress), and the task views | Sole controller of tasks and sole writer to GitHub; holds the App's private key and the reviewer account's token | Tasks, requests, consent logs, attempts, grants, write records and their outcomes |
-| Credentials | Users' credential entries, lists and filters, and the route catalog. In phase 3 the Python vault keeps them; whether they become a module of the task application or their own service is decided in phase 4 | Hands new secret material to the secret store on save but can't read it back | Credential metadata |
+| Accounts service | Signed-in users and what they do as themselves: GitHub sign-in and sessions, viewer authority for the backoffice API, browser commands signed for the task application, and credential management (entries, lists, filters, relay approvals, the route catalog). From phase 4 ([plan](architecture/phase-4-plan.md)); the Python backoffice until then, with credentials kept by the Python vault until phase 5 | Holds users' GitHub tokens and the command-signing key; no App key with write permissions. Hands new secret material to the secret store on save but can't read it back | Sessions (in memory), credential metadata from phase 5 |
 | Exchange | Runner sessions, turn queue, turn results, transcripts and turn diagnostics; publishes turn results as events | Runner OIDC; issues session keys bound to a grant | Sessions, turns |
 | Inference gateway | Authenticates session keys, enforces token budgets, routes and forwards to providers or the relay verifier, records usage | Org provider secrets; reads personal secret material | Inference requests and their usage |
 | Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime | Relay registrations and sessions |
 | Secret store (OpenBao) | Personal credential material and routinely rotated operational secrets | Unseal key and service bootstrap identities outside the database; a least-privilege policy per client service | Encrypted material |
-| Backoffice API | Signed-in users, their views and their requests | No App key, exchange or vault token; user sessions and OAuth tokens (in the Python backoffice until phase 4) | Sessions, a read model fed by the task application's events |
+| Backoffice API | Signed-in users' views | No App key, exchange or vault token, no user token and no command path; asks the accounts service who a viewer is | A read model fed by the task application's events |
 
 - **Ingress publishes typed GitHub facts; consumers decide what they mean.** Ingress
   checks the signature, records the delivery ID so a redelivery publishes nothing new,
@@ -206,14 +206,15 @@ database and a bus provide directly.
 - **The task application's modules** are named for what they own: intake, tasks
   (the orchestrator's role), funding policy, attempts, the exchange integration,
   publication (the publisher's role) and views. Below, *the orchestrator*, *funding* and
-  *the publisher* name those modules, and *funding* also covers credential management
-  wherever phase 4 places it.
+  *the publisher* name those modules; *funding* always means the task application's
+  funding module. Credential management, which funding's selection reads, belongs to the
+  accounts service from phase 4.
 - **Channels turn GitHub events into requests.** The intake module's GitHub channels
   consume the events they care about (`/concurro` comments, labels, assignments, review
   requests, mentions) and record requests in the task application's database; the
-  backoffice submits signed requests to the task application, as a future Slack
-  adapter would. Channels may read a task's context to interpret a request but never change it,
-  and task logic only sees typed requests ([request intake](request-intake.md)).
+  accounts service submits signed browser requests to the task application, as a future
+  Slack adapter would. Channels may read a task's context to interpret a request but never
+  change it, and task logic only sees typed requests ([request intake](request-intake.md)).
 - **The orchestrator decides who pays; funding decides whether and how,** in the same
   transaction that admits the attempt and charges its call. Task consent (sponsorship
   requests, the consent log and the funding boundary) depends on the task's mode,
@@ -243,15 +244,16 @@ database and a bus provide directly.
     any relay session) or the binding has expired.
   - A revoked grant or a credential that's usable again is a new input to the task's
     decisions. The exchange binds sessions to grant IDs; the inference gateway reports
-    usage as events, which funding charges. The route catalog is defined once, by
-    funding, as a contract the gateway and the backoffice build from. A sponsor approves
-    a relay's registration code in the backoffice; funding, as the vault does today,
-    calls the verifier's owner endpoints, records a relay-custody credential version that
-    selection treats like any other, and serves relay status to the backoffice
+    usage as events, which funding charges. The route catalog is defined once, by the
+    accounts service, as a contract the gateway and the backoffice build from. A sponsor
+    approves a relay's registration code in the backoffice; the accounts service, as the
+    vault does today, calls the verifier's owner endpoints, records a relay-custody
+    credential version that selection treats like any other, and serves relay status
     ([sponsor relay](sponsor-relay.md)).
 - **Secret material lives in OpenBao.** Each credential version is its own KV path, named
-  by a version ID funding assigns. Operational secrets live under separate, per-service
-  paths. Funding writes and destroys credential versions; the inference gateway reads
+  by a version ID the accounts service assigns. Operational secrets live under separate,
+  per-service paths. The accounts service writes and destroys credential versions; the
+  inference gateway reads
   one exact credential version per request. Their policies grant no access to other
   services' operational paths; each service reads only its own operational path under
   a separate policy. Each client signs in with its own role and policy, and every read
@@ -259,12 +261,12 @@ database and a bus provide directly.
   database, and OpenBao stores its data in its own database on the shared Postgres
   server. Clients use it through a small interface (with the `vaultrs` client), so
   another store can replace it.
-  - **New material goes backoffice API → funding → OpenBao;** the backoffice already
-    proxies it to the vault today.
-  - **Writes are idempotent across the two stores.** Funding records the version as
-    pending, writes it with check-and-set so its path can be created only once, then
-    marks it active. A retry writes the same path; funding settles a pending version by
-    reading OpenBao's metadata, which its policy allows, never the material.
+  - **New material goes browser → accounts service → OpenBao;** in phase 4 the accounts
+    service proxies it to the vault, as the Python backoffice did.
+  - **Writes are idempotent across the two stores.** The accounts service records the
+    version as pending, writes it with check-and-set so its path can be created only
+    once, then marks it active. A retry writes the same path; it settles a pending
+    version by reading OpenBao's metadata, which its policy allows, never the material.
   - **The gateway can read any credential version,** as the exchange's resolver bearer
     can today; it reads only the version a session's grant names. Its policy cannot
     read operational-secret paths. Scoping credential reads per grant (a
@@ -275,8 +277,8 @@ database and a bus provide directly.
   keys, blocks once a token budget is spent, routes on Concurro's headers and injects org
   secrets; personal and relay traffic pass through the exchange's own forwarder behind
   it, which for relay custody consumes a one-use request nonce, rechecks the exact relay
-  record and turn authority, and forwards to the verifier (integrated and tested, not yet
-  deployed). The gateway does all
+  record and turn authority, and forwards to the verifier (deployed with the hosted relay
+  overlay). The gateway does all
   of it in one hop, parses usage with the Rust `provider-protocol` crate from
   `concurro-relay`, and can stop a stream when the budget runs out. Every route is native
   passthrough today, so no translation is lost.
@@ -297,7 +299,8 @@ database and a bus provide directly.
   still reach sponsors' subscriptions through their relays, runner load could starve MPC
   bootstraps, and every gateway deploy would drop all relay connections.
   - **The verifier's private API gets separate credentials:** one for owner endpoints
-    (registration approval and status), held only by funding (the vault holds it today);
+    (registration approval and status), held only by the accounts service (the vault
+    holds it today);
     one for inference, held only by the gateway; and one for `/release`, held only by the
     exchange. Today one bearer covers all of them (`crates/hosted/src/main.rs` in
     `concurro-relay`).
@@ -349,11 +352,11 @@ Tasks and requests:
                                             └──▲──────────────┬────────────────┘
                                  signed requests│              │events, baseline
                                             ┌──┴──────────┐ ┌─▼─────────────────┐
- Browser ──commands, sign-in, credentials──▶│ Python      │◀│ Backoffice API    │◀── Browser (views)
-                                            │ backoffice  │ └───────────────────┘
+ Browser ──commands, sign-in, credentials──▶│ Accounts    │◀│ Backoffice API    │◀── Browser (views)
+                                            │ service     │ └───────────────────┘
                                             └──────┬──────┘  viewer token: identity, tiers
                                                    ▼
-                                     Vault (until phases 4 and 5)
+                                     Vault (until phase 5)
 ```
 
 Inference:
@@ -373,7 +376,8 @@ events for the backoffice API, usage, binding changes) travel through the bus
 ([below](#events-and-the-bus)); inside the task application, modules share one
 transaction. Secret material goes through OpenBao's API. Not drawn: the task application
 polls the exchange for turn results until phase 5, dispatches runner workflows for the
-exchange, performs redeliveries for ingress, and calls the verifier's owner endpoints.
+exchange and performs redeliveries for ingress; the accounts service calls the
+verifier's owner endpoints from phase 5.
 
 ### Data
 
@@ -560,10 +564,20 @@ deployment.
      backoffice API's read-scoped session and tier questions on an internal listener; it
      keeps the browser's command POST, signing each command and forwarding it to the task
      application. Its task pages retire at the cutover.
-4. **Sign-in and credentials in Rust.** The Python backoffice retires: sign-in moves to
-   the backoffice API, and credential writes go through funding to the vault until
-   phase 5. Where credential management lives (a module of
-   the task application or its own service) is decided here.
+4. **Sign-in, commands and credentials in Rust.** The Python backoffice retires. A new
+   Rust accounts service takes GitHub sign-in and sessions, the viewer authority the
+   backoffice API asks, browser command signing, and credential management, which it
+   forwards to the vault with the user's token until phase 5. The backoffice API keeps
+   its privileges, and the frontend keeps its routes.
+   [Implementation plan](architecture/phase-4-plan.md).
+   - **Credential management is the accounts service's.** Credential writes act as the
+     signed-in user, and only the process holding users' tokens can make them without
+     widening the vault or the task application; no decision needs credential edits and
+     grants in one transaction. The task application's funding module keeps consent,
+     selection, grants, budgets and accounting.
+   - **Sessions stay in memory,** as today: a restart signs users out, and the cutover
+     signs everyone out once. Logout revocations keep their durable retries, since the
+     sign-in token is also the user's owner identity to the vault.
 5. **Exchange, inference gateway and secrets in Rust.** The exchange moves to Postgres,
    records diagnostics as turn records and publishes `turn.*` itself. To hand over, the
    task application stops submitting to the Python exchange, polls its outstanding turns
@@ -572,7 +586,12 @@ deployment.
    polling and the new exchange is recorded once. The gateway
    replaces agentgateway and the exchange's forwarder, and the relay verifier sits behind
    it, with the separate credentials and admission check of a `concurro-relay` release.
-   Funding imports the credential metadata from the vault once. A one-time migrator
+   The accounts service imports the credential metadata from the vault once and owns it
+   from then on: the task application's funding module reads it at each boundary and
+   attempt through the same contract it reads from the vault, and consumes
+   `credential.<user_id>.changed` facts to revoke grants on retired versions
+   ([phase 4 plan](architecture/phase-4-plan.md#phase-5-credential-metadata-in-the-accounts-service)).
+   A one-time migrator
    holding the vault's keyring decrypts each usable version and writes it to OpenBao
    under a migration-only policy, keeping record and version IDs (relay-custody versions
    hold no material and move as metadata only); credential writes pause
@@ -603,10 +622,10 @@ installation-specific migration script need not be a product command.
 | ---- | ---- |
 | [Request intake](request-intake.md) | Becomes the task application's intake module, sponsorship included, with GitHub channels consuming `github.*` |
 | [Mentions and assignment](mentions.md) | Task application channels consuming `github.*`; the interpreter waits until exact mentions show what people ask for, then runs under a grant from funding, by an execution path that is still its open question (an exchange turn recovers a lost result) |
-| [Backoffice API surface](backoffice-api.md) | Arrives in phase 3 (M3), before the cutover: the backoffice API serves views from its read model of the task application's events, and commands become requests as the signed-in user; sign-in moves to it in phase 4 |
+| [Backoffice API surface](backoffice-api.md) | Arrives in phase 3 (M3), before the cutover: the backoffice API serves views from its read model of the task application's events, and commands become requests as the signed-in user; sign-in, commands and credentials move to the accounts service in phase 4 |
 | [Webhook-fed list index](list-index.md) | Replaced by the backoffice API's read model; retired with the Python service at phase 3's cutover |
 | [Per-user credentials](per-user-credentials.md), [ordered credentials](credential-list.md) | Rules unchanged; the task application applies them from phase 3's M3, and secret material moves to OpenBao |
-| [Sponsor relay](sponsor-relay.md) | The sponsor side is unaffected; funding takes over the vault's relay approvals, and the hosted verifier sits behind the inference gateway, with separate caller credentials and its own admission check |
+| [Sponsor relay](sponsor-relay.md) | The sponsor side is unaffected; the accounts service takes over the backoffice's relay approval pages in phase 4 and the vault's verifier calls in phase 5, and the hosted verifier sits behind the inference gateway, with separate caller credentials and its own admission check |
 | [Consolidated PR reviews](consolidated-pr-reviews.md), [risk-driven routing](risk-driven-routing.md) | Logic unchanged; publication goes through the task application's write records |
 | [Retrospective tuning](retrospective-tuning.md) | Reads events and turn records instead of checkpoints and diagnostics files |
 | [Issue artifact consolidation](issue-artifact-consolidation.md) | Complete; audit artifacts stay on the issues of tasks the Python service ran and aren't written for new tasks |
@@ -630,10 +649,16 @@ installation-specific migration script need not be a product command.
   application and the backoffice API before it; a deferral is recorded with its reason
   and impact ([phase 3](architecture/phase-3-plan.md#deferrals)).
 - **A separate, lower-privilege backoffice API.** It holds no App key and no user token,
-  and reads the task application's events. It submits no command: through phase 3 the
-  Python backoffice, the session authority, takes the browser's commands with its CSRF
-  check, signs each for the signed-in user and forwards it, so the backoffice API can't
-  act as a user.
+  and reads the task application's events. It submits no command: the session authority
+  (the Python backoffice in phase 3, the accounts service from phase 4) takes the
+  browser's commands with its CSRF check, signs each for the signed-in user and forwards
+  it, so the backoffice API can't act as a user.
+- **A separate accounts service for what users do as themselves.** Sign-in, sessions,
+  command signing and credential management share one trust boundary, acting with the
+  user's own token, and so one process; it's apart from the backoffice API, which
+  serves the largest surface with no user authority, and from the task application,
+  which holds the App key and parses the most untrusted input
+  ([phase 4](architecture/phase-4-plan.md#processes-and-authority)).
 - **Contracts are JSON, written as Rust types.** Dedicated wire types generate JSON Schema,
   which generates strict Python models, with fixture tests in both languages
   ([contracts](contracts.md#format)). JSON keeps outboxes, parked events and the bus

@@ -87,8 +87,9 @@ A channel does three things and nothing else:
 
 1. **Authenticate** the actor to a GitHub identity: the typed GitHub event ingress
    published from a verified delivery, including who edited an edited comment, or, for
-   the backoffice, a command proof the Python backoffice signed with the session's
-   GitHub token in hand.
+   the backoffice, a command proof the session authority (the Python backoffice in
+   phase 3, the accounts service from phase 4) signed with the session's GitHub token in
+   hand.
 2. **Translate** its input into typed requests and record them, refusing early, with a
    reason, what isn't a valid request or comes from someone the kind doesn't allow.
 3. **Route the outcome** back: a comment reply, an API response, a Slack thread.
@@ -112,7 +113,7 @@ outcome, so publication replies to it like any other.
 | Channel | Input | Replaces |
 | ---- | ---- | ---- |
 | `comment` | `/concurro` issue and PR comments | Comment parsing inside the tick |
-| `backoffice` | The Python backoffice's `POST /requests`, forwarding a browser command it signed | Delegated command comments |
+| `backoffice` | The session authority's `POST /requests` (the Python backoffice in phase 3, the accounts service from phase 4), forwarding a browser command it signed | Delegated command comments |
 | `review_request` | `review_requested` / `review_request_removed` | The `review_requests` table |
 | `label` | `labeled` / `unlabeled` for `concurro` | `Controller.enrollment` event reads |
 | `assignment` | `assigned` / `unassigned` for the account | New ([mentions and assignment](mentions.md)) |

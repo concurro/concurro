@@ -65,7 +65,7 @@ Each is explicit, with why and what it changes for users:
 | Mentions and assignment channels | New features, not in the Python service today ([mentions](../mentions.md)) | None at the cutover; they're built on the task application afterwards |
 | Relay-custody credentials in production | Not deployed today; the verifier's qualification is open ([sponsor relay](../sponsor-relay.md)) | None at the cutover; the task application selects relay-custody versions like any other once the verifier is deployed |
 | Command comments posted on a user's behalf by the backoffice | A backoffice command becomes a request with the signed-in user as its actor ([request intake](../request-intake.md#backoffice)), so the delegated comment and its "may have posted" recovery go away | The issue shows the request's reply naming the user, instead of a bot comment carrying the command text |
-| Sign-in, credential writes and relay approvals in Rust | Phase 4. They all act with the viewer's own token, so moving sign-in alone wouldn't retire the Python backoffice | None for users; the Python backoffice keeps doing them |
+| Sign-in, credential writes and relay approvals in Rust | Phase 4 ([plan](phase-4-plan.md)). They all act with the viewer's own token, so moving sign-in alone wouldn't retire the Python backoffice | None for users; the Python backoffice keeps doing them |
 
 ## Roles
 

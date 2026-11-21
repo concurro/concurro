@@ -15,9 +15,11 @@ exchange adapter, publication) share one database, so a step between them is no 
 "Tx" means one transaction in its database, outbox included, which also records the
 effects the change wants; an effect is `recorded`, then `sending`, then settled. The
 backoffice API is a separate, lower-privilege process: it reads a read model fed by the
-task application's events and has no command path. Through phase 3 browser commands go
-to the Python backoffice, which signs each one and forwards it to the task application's
-requests API. Paths omit their
+task application's events and has no command path. Browser commands go to the session
+authority, which signs each one and forwards it to the task application's requests API.
+The traces name it the Python backoffice, as in phase 3; from phase 4 the
+[accounts service](contracts.md#accounts-service) plays the same part with the same
+contracts. Paths omit their
 `/v1` prefix. Before phase 5, steps that reach the Python exchange go through the
 [bridges](contracts.md#bridges).
 
