@@ -10,7 +10,7 @@ use concurro_events::{Handler, Outcome};
 use concurro_github_v1::AppClient;
 use concurro_tasks_postgres::{
     IndexRow, held_issue_numbers, historical_pulls, index_scan_started, owned_pr_numbers,
-    replace_target_index, upsert_index_event,
+    record_index_scan, replace_target_index, upsert_index_event,
 };
 use serde_json::{Value, json};
 
@@ -63,7 +63,7 @@ impl Handler<GithubEvent<WorkflowRunPayload>> for IndexRunHandler {
             body: json!({"repository":event.data.repository.full_name,
                 "id":run.id,"attempt":run.run_attempt,"status":run.status,
                 "conclusion":run.conclusion,"head_branch":run.head_branch,
-                "head_sha":run.head_sha,"created_at":run.created_at,
+                "head_sha":run.head_sha,"name":run.name,"run_started_at":run.run_started_at,"created_at":run.created_at,
                 "updated_at":run.updated_at}),
         };
         match upsert_index_event(work, &row).await {
@@ -79,6 +79,22 @@ pub async fn scan_target_index(
     github: &AppClient,
     target: &IndexTarget,
 ) -> Result<()> {
+    let result = scan_lists(database, github, target).await;
+    record_index_scan(
+        database,
+        &[
+            (&target.issue_repository, "issue"),
+            (&target.upstream, "pull"),
+            (&target.fork, "run"),
+        ],
+        result.is_ok(),
+    )
+    .await?;
+    result
+}
+
+/// Collect source rows; a failed read leaves already retained lists available.
+async fn scan_lists(database: &Database, github: &AppClient, target: &IndexTarget) -> Result<()> {
     let issue_id =
         repository_id(github, &target.issue_repository, &target.issue_permissions).await?;
     ensure!(
@@ -115,9 +131,13 @@ pub async fn scan_target_index(
             let number = issue["number"]
                 .as_i64()
                 .context("index issue number missing")?;
-            let enrolled = issue["labels"]
-                .as_array()
-                .is_some_and(|labels| labels.iter().any(|label| label["name"] == "concurro"));
+            let enrolled = issue["labels"].as_array().is_some_and(|labels| {
+                labels.iter().any(|label| {
+                    label["name"].as_str().is_some_and(|name| {
+                        name == "concurro" || name.starts_with("concurro:stage:")
+                    })
+                })
+            });
             if !enrolled && !held.contains(&number) {
                 continue;
             }
@@ -129,7 +149,8 @@ pub async fn scan_target_index(
                 source_at: updated,
                 body: json!({"repository":target.issue_repository,"number":number,
                     "title":issue["title"],"state":issue["state"],
-                    "labels":issue["labels"],"updated_at":issue["updated_at"],
+                    "labels":issue["labels"],"body":issue["body"],"created_at":issue["created_at"],
+                    "closed_at":issue["closed_at"],"updated_at":issue["updated_at"],
                     "html_url":issue["html_url"],"user":issue["user"]}),
             });
         }
@@ -172,15 +193,79 @@ pub async fn scan_target_index(
             if !task_branch(branch) && !owned.contains(&number) {
                 continue;
             }
+            let number_text = number.to_string();
+            let detail = github
+                .read::<Value>(
+                    &target.upstream,
+                    &target.upstream_permissions,
+                    &[
+                        "repos",
+                        upstream_owner,
+                        upstream_name,
+                        "pulls",
+                        &number_text,
+                    ],
+                    &[],
+                )
+                .await;
+            let detail = match detail {
+                Ok(detail) => detail,
+                Err(error) => {
+                    tracing::warn!(%error, number, "PR detail unavailable in target index");
+                    pull
+                }
+            };
+            let checks = async {
+                let sha = detail["head"]["sha"]
+                    .as_str()
+                    .context("index PR head missing")?;
+                let mut checks = Vec::new();
+                let mut page = 1;
+                loop {
+                    let page_text = page.to_string();
+                    let result: Value = github
+                        .read(
+                            &target.upstream,
+                            &target.upstream_permissions,
+                            &[
+                                "repos",
+                                upstream_owner,
+                                upstream_name,
+                                "commits",
+                                sha,
+                                "check-runs",
+                            ],
+                            &[("per_page", "100"), ("page", &page_text)],
+                        )
+                        .await?;
+                    let batch = result["check_runs"]
+                        .as_array()
+                        .context("index checks missing")?;
+                    checks.extend(batch.iter().cloned());
+                    if batch.len() < 100 {
+                        return Ok::<_, anyhow::Error>(checks);
+                    }
+                    page += 1;
+                }
+            }
+            .await;
+            let checks = match checks {
+                Ok(checks) => Some(checks),
+                Err(error) => {
+                    tracing::warn!(%error, number, "PR checks unavailable in target index");
+                    None
+                }
+            };
             rows.push(IndexRow {
                 repository_id: upstream_id,
                 kind: "pull",
                 item_id: number.to_string(),
-                source_at: source_time(&pull)?,
+                source_at: source_time(&detail)?,
                 body: json!({"repository":target.upstream,"number":number,
-                    "title":pull["title"],"state":pull["state"],"merged_at":pull["merged_at"],
-                    "draft":pull["draft"],"head":pull["head"],"base":pull["base"],
-                    "updated_at":pull["updated_at"],"html_url":pull["html_url"]}),
+                    "title":detail["title"],"state":detail["state"],"merged_at":detail["merged_at"],
+                    "draft":detail["draft"],"head":detail["head"],"base":detail["base"],
+                    "additions":detail["additions"],"deletions":detail["deletions"],"check_runs":checks,
+                    "updated_at":detail["updated_at"],"html_url":detail["html_url"]}),
             });
         }
         if !full {
@@ -250,7 +335,8 @@ pub async fn scan_target_index(
                 body: json!({"repository":target.fork,"id":id,"attempt":attempt,
                     "status":run["status"],"conclusion":run["conclusion"],
                     "head_branch":run["head_branch"],"head_sha":run["head_sha"],
-                    "created_at":run["created_at"],"updated_at":run["updated_at"],
+                    "name":run["name"],"display_title":run["display_title"],
+                    "run_started_at":run["run_started_at"],"created_at":run["created_at"],"updated_at":run["updated_at"],
                     "html_url":run["html_url"]}),
             });
         }
@@ -300,5 +386,7 @@ pub(crate) fn task_branch(branch: &str) -> bool {
         && !number.starts_with('0')
         && number.bytes().all(|byte| byte.is_ascii_digit())
         && !suffix.is_empty()
-        && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }

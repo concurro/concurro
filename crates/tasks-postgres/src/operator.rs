@@ -424,7 +424,7 @@ pub async fn task_detail(
     issue: IssueKey,
 ) -> Result<Option<Value>, sqlx::Error> {
     let state: Option<(Json<Value>,)> = sqlx::query_as(
-        "SELECT state FROM tasks.task_state WHERE repository_id=$1 AND issue_number=$2",
+        "SELECT t.state || jsonb_build_object('requirements',i.snapshot->'requirements') FROM tasks.task_state t LEFT JOIN tasks.initialization_inputs i ON i.task_id=t.task_id WHERE t.repository_id=$1 AND t.issue_number=$2",
     )
     .bind(issue.repository_id)
     .bind(issue.number)

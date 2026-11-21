@@ -26,5 +26,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+concurro-tasks-postgres = { path = "../tasks-postgres" }
 concurro-testkit = { path = "../testkit" }
 sqlx.workspace = true

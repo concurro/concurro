@@ -538,6 +538,7 @@ dependencies = [
  "concurro-events",
  "concurro-events-nats",
  "concurro-events-postgres",
+ "concurro-tasks-postgres",
  "concurro-testkit",
  "futures-util",
  "reqwest",

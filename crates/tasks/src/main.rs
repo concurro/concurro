@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     path::Path,
     sync::Arc,
     time::Duration,
@@ -51,8 +52,8 @@ use concurro_tasks_core::IssueKey;
 use concurro_tasks_postgres::{
     CommentResolution, cancel_attempt, due_attempt_deadlines, due_comment_readbacks,
     enqueue_dashboard, enqueue_runner_session, enqueue_stage_label, expire_attempt,
-    fail_coverage_gap, import_cutover_manifest, import_python_manifest, list_tasks,
-    pending_coverage_gaps, pending_effects, pending_issues, pending_label_wakes,
+    fail_coverage_gap, import_cutover_manifest, import_historical_display, import_python_manifest,
+    list_tasks, pending_coverage_gaps, pending_effects, pending_issues, pending_label_wakes,
     pending_pr_review_readbacks, pending_python_import_archives, pending_report_artifact_readbacks,
     pending_standalone_dispositions, pending_standalone_review_commands,
     pending_standalone_review_issues, pending_standalone_review_readbacks,
@@ -818,11 +819,15 @@ async fn run_operator(
 ) -> Result<()> {
     let value = match arguments {
         [area, action, manifest] if area == "imports" && action == "cutover" => {
-            let source: serde_json::Value = serde_json::from_slice(&std::fs::read(manifest)?)?;
+            let source: serde_json::Value = serde_json::from_slice(&fs::read(manifest)?)?;
             import_cutover_manifest(database, &source).await?
         }
+        [area, action, manifest] if area == "imports" && action == "display" => {
+            let source = serde_json::from_slice(&fs::read(manifest)?)?;
+            import_historical_display(database, &source).await?
+        }
         [area, action, manifest] if area == "imports" && action == "python" => {
-            let source: serde_json::Value = serde_json::from_slice(&std::fs::read(manifest)?)?;
+            let source: serde_json::Value = serde_json::from_slice(&fs::read(manifest)?)?;
             let result = import_python_manifest(database, &source).await?;
             let deployment = source["deployment"]
                 .as_str()
@@ -960,7 +965,7 @@ async fn run_operator(
             serde_json::json!({"resolved": resolved, "write": id})
         }
         _ => anyhow::bail!(
-            "expected imports cutover <manifest>, imports python <manifest>, tasks list, tasks show <repository>#<issue>, consumer status, effects pending, archives retry <gzip-sha256>, attempts cancel <attempt>, or writes resolve <uuid|git:uuid|review:uuid|standalone_review:uuid|action:uuid:sequence|ready:uuid> --written <comment-url>|--failed|--resend"
+            "expected imports cutover <manifest>, imports display <manifest>, imports python <manifest>, tasks list, tasks show <repository>#<issue>, consumer status, effects pending, archives retry <gzip-sha256>, attempts cancel <attempt>, or writes resolve <uuid|git:uuid|review:uuid|standalone_review:uuid|action:uuid:sequence|ready:uuid> --written <comment-url>|--failed|--resend"
         ),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);

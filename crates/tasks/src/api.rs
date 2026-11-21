@@ -17,9 +17,10 @@ use concurro_github_v1::AppDeliveryPage;
 use concurro_tasks_core::{IssueKey, LaterCommand, Request, RequestKind, SourceOrder};
 use concurro_tasks_postgres::{
     BaselineRow, TranscriptLine, baseline_page, browser_action, browser_standalone_action,
-    create_baseline, finish_baseline, imported_transcript_page, index_item, index_page,
-    record_browser_action, record_browser_standalone_action, request_record,
-    standalone_action_record, task_detail, transcript_page, turn_artifact,
+    create_baseline, finish_baseline, historical_display, imported_transcript_page, index_item,
+    index_page, index_run_links, index_scan_status, own_charged_calls, record_browser_action,
+    record_browser_standalone_action, request_record, standalone_action_record, task_detail,
+    transcript_page, turn_artifact, unavailable_historical_usage,
 };
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
@@ -172,6 +173,8 @@ pub struct HistoryQuery {
 /// One page of durable target index rows.
 #[derive(Serialize)]
 pub struct IndexPage {
+    /// Last completed GitHub scan and any refresh failure.
+    pub cache: Value,
     /// Rows in stable item order.
     pub rows: Vec<Value>,
     /// Next item key, absent at the end.
@@ -195,6 +198,8 @@ pub fn router(api: TaskApi) -> Router {
         .route("/v1/requests/{id}", get(get_request))
         .route("/v1/baseline", get(get_baseline))
         .route("/v1/index", get(get_index))
+        .route("/v1/historical", get(get_historical))
+        .route("/v1/billing/{payer}", get(get_billing))
         .route(
             "/v1/targets/{owner}/{repo}/configuration",
             get(get_target_configuration),
@@ -262,8 +267,42 @@ async fn get_index(
     .await
     .map_err(unavailable)?;
     let next_cursor = (rows.len() > 100).then(|| rows[99].item_id.clone());
-    let rows = rows.into_iter().take(100).map(|row| json!(row)).collect();
-    Ok(Json(IndexPage { rows, next_cursor }))
+    let links = if query.kind == "run" {
+        index_run_links(&api.database, &query.repository)
+            .await
+            .map_err(unavailable)?
+    } else {
+        Vec::new()
+    };
+    let rows = rows
+        .into_iter()
+        .take(100)
+        .map(|row| {
+            let mut row = json!(row);
+            if query.kind == "run" {
+                let attempt = row["document"]["attempt"]
+                    .as_i64()
+                    .or_else(|| row["document"]["run_attempt"].as_i64())
+                    .unwrap_or(1);
+                row["document"]["attribution"] = links
+                    .iter()
+                    .find(|link| {
+                        link["run_id"] == row["document"]["id"] && link["attempt"] == attempt
+                    })
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            row
+        })
+        .collect();
+    let cache = index_scan_status(&api.database, &query.repository, &query.kind)
+        .await
+        .map_err(unavailable)?;
+    Ok(Json(IndexPage {
+        rows,
+        next_cursor,
+        cache,
+    }))
 }
 
 /// Read one current source document under the read-only service credential.
@@ -289,6 +328,46 @@ async fn get_index_item(
     .map_err(unavailable)?
     .ok_or(ApiError(StatusCode::NOT_FOUND, "index_item_not_found"))?;
     Ok(Json(json!(row)))
+}
+
+/// Read actual retained sponsor debits under the internal read credential.
+async fn get_billing(
+    State(api): State<TaskApi>,
+    Path(payer): Path<i64>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    read_authorized(&headers, &api)?;
+    let rows = own_charged_calls(&api.database, payer)
+        .await
+        .map_err(unavailable)?;
+    let unavailable = unavailable_historical_usage(&api.database)
+        .await
+        .map_err(unavailable)?;
+    Ok(Json(json!({"rows":rows,"unavailable":unavailable})))
+}
+
+/// Read historical display snapshots under the internal read credential.
+async fn get_historical(
+    State(api): State<TaskApi>,
+    Query(query): Query<IndexQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    read_authorized(&headers, &api)?;
+    if !matches!(query.kind.as_str(), "contribution" | "review") {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "historical_kind_invalid"));
+    }
+    let after = query
+        .cursor
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<i64>()
+        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "cursor_invalid"))?;
+    let mut rows = historical_display(&api.database, &query.repository, &query.kind, after)
+        .await
+        .map_err(unavailable)?;
+    let next_cursor = (rows.len() > 100).then(|| rows[99]["record"]["number"].to_string());
+    rows.truncate(100);
+    Ok(Json(json!({"rows":rows,"next_cursor":next_cursor})))
 }
 
 /// Read retained task or standalone history under the internal read credential.

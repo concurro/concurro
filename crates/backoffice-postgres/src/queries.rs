@@ -280,3 +280,19 @@ pub async fn operational_tasks(database: &Database) -> Result<Vec<OperationalTas
         )
         .collect())
 }
+
+/// Recent contribution turn facts with their source task; prompts and responses are omitted.
+pub async fn activity_turns(database: &Database) -> Result<Vec<Value>, Error> {
+    let rows: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('source',task.body,'turn',turn.entity_id, \
+         'actor',COALESCE(turn.body #>> '{submitted,profile}',turn.body #>> '{submitted,role}',turn.body->>'operation'), \
+         'stage',COALESCE(turn.body #>> '{submitted,stage}',turn.body->>'operation'), \
+         'status',COALESCE(turn.body #>> '{status_snapshot,status}',turn.body->>'status'), \
+         'outcome',COALESCE(turn.body #>> '{finished,outcome}',turn.body #>> '{result,outcome}'), \
+         'at',COALESCE(turn.body #>> '{status_snapshot,finished_at}',turn.body #>> '{status_snapshot,started_at}',turn.body #>> '{submitted,submitted_at}',turn.body->>'admitted_at')) \
+         FROM backoffice.model_items turn JOIN backoffice.model_items task \
+         ON task.entity='contribution_task' AND task.entity_id=turn.body->>'task_id' \
+         WHERE turn.entity='turn' ORDER BY COALESCE(turn.body #>> '{status_snapshot,finished_at}',turn.body #>> '{submitted,submitted_at}',turn.body->>'admitted_at') DESC NULLS LAST LIMIT 500")
+        .fetch_all(database.pool()).await?;
+    Ok(rows.into_iter().map(|(Json(value),)| value).collect())
+}

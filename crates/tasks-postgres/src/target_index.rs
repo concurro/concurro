@@ -224,3 +224,91 @@ pub async fn historical_pulls(
         .map(|(number, Json(body))| (number, body))
         .collect())
 }
+
+/// Match fork runs to exact live and imported serving identities without borrowing evidence across attempts.
+pub async fn index_run_links(database: &Database, fork: &str) -> Result<Vec<Value>, sqlx::Error> {
+    let rows: Vec<(Json<Value>,)> = sqlx::query_as(
+        "WITH numbered AS (SELECT a.id,a.task_id,a.standalone_task_id,a.operation,row_number() OVER (PARTITION BY COALESCE(a.task_id,a.standalone_task_id) ORDER BY a.admitted_at,a.id) ordinal FROM tasks.attempts a) \
+         SELECT jsonb_build_object('run_id',r.run_id,'attempt',1,'turn',n.ordinal,'turn_id',n.id,'operation',n.operation, \
+         'repository',CASE WHEN s.id IS NOT NULL THEN s.upstream ELSE c.target->>'issue_repository' END,'issue',COALESCE(t.issue_number,s.pr_number),'kind',CASE WHEN s.id IS NULL THEN 'contribution' ELSE 'review' END,'association','dispatched') \
+         FROM tasks.runner_sessions r JOIN numbered n ON n.id=r.turn_id LEFT JOIN tasks.task_state t ON t.task_id=n.task_id LEFT JOIN tasks.standalone_review_tasks s ON s.id=n.standalone_task_id \
+         CROSS JOIN tasks.config_targets config CROSS JOIN LATERAL jsonb_array_elements(config.body) c(target) \
+         WHERE r.fork=$1 AND r.run_id IS NOT NULL AND (c.target->>'repository_id')::bigint=COALESCE(t.repository_id,s.runner_repository_id) ORDER BY n.ordinal")
+        .bind(fork).fetch_all(database.pool()).await?;
+    let mut links = rows
+        .into_iter()
+        .map(|(Json(value),)| value)
+        .collect::<Vec<_>>();
+    let imported: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('deployment',i.deployment,'source_id',i.source_id,'repository',i.repository,'issue',i.issue_number,'serving_run',i.serving_run,'source_record',i.source_record,'kind',h.kind, \
+         'turn',row_number() OVER (PARTITION BY i.repository,i.issue_number ORDER BY i.deployment,i.source_id)) \
+         FROM tasks.python_import_turns i CROSS JOIN tasks.config_targets config CROSS JOIN LATERAL jsonb_array_elements(config.body) c(target) \
+         LEFT JOIN LATERAL (SELECT kind FROM tasks.historical_display h WHERE h.repository=lower(i.repository) AND h.number=i.issue_number ORDER BY observed_at DESC,deployment DESC LIMIT 1) h ON true \
+         WHERE c.target->>'fork'=$1 AND i.repository IN (c.target->>'issue_repository',c.target->>'upstream') AND i.serving_run IS NOT NULL")
+        .bind(fork).fetch_all(database.pool()).await?;
+    for (Json(mut row),) in imported {
+        let parts = row["serving_run"]
+            .as_str()
+            .unwrap_or("")
+            .split('/')
+            .collect::<Vec<_>>();
+        let Some(run) = parts
+            .first()
+            .and_then(|run| run.parse::<i64>().ok())
+            .filter(|run| *run > 0)
+        else {
+            continue;
+        };
+        let attempt = parts
+            .get(1)
+            .and_then(|attempt| attempt.parse::<i64>().ok())
+            .unwrap_or(1);
+        let request: Value = row["source_record"]["request"]
+            .as_str()
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or(Value::Null);
+        let kind = row["kind"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            if request["task_kind"] == "standalone_pr_review" {
+                "review"
+            } else {
+                "contribution"
+            }
+            .to_owned()
+        });
+        row["kind"] = serde_json::json!(kind);
+        row["run_id"] = serde_json::json!(run);
+        row["attempt"] = serde_json::json!(attempt);
+        row["association"] = serde_json::json!("assigned");
+        row["historical"] = serde_json::json!(true);
+        row.as_object_mut()
+            .expect("import link object")
+            .remove("source_record");
+        links.push(row);
+    }
+    Ok(links)
+}
+
+/// Record a target scan outcome without replacing its last successful verification time on failure.
+pub async fn record_index_scan(
+    database: &Database,
+    lists: &[(&str, &str)],
+    succeeded: bool,
+) -> Result<(), sqlx::Error> {
+    let mut work = database.begin().await?;
+    for (repository, kind) in lists {
+        sqlx::query("INSERT INTO tasks.target_index_status(repository,kind,verified_at,failed) VALUES ($1,$2,CASE WHEN $3 THEN now() END,NOT $3) ON CONFLICT (repository,kind) DO UPDATE SET attempted_at=now(),failed=NOT $3,verified_at=CASE WHEN $3 THEN now() ELSE tasks.target_index_status.verified_at END")
+            .bind(repository).bind(kind).bind(succeeded).execute(work.connection()).await?;
+    }
+    work.commit().await
+}
+
+/// Return safe freshness metadata for the saved list, including its first-build state.
+pub async fn index_scan_status(
+    database: &Database,
+    repository: &str,
+    kind: &str,
+) -> Result<Value, sqlx::Error> {
+    let value: Option<Json<Value>> = sqlx::query_scalar("SELECT jsonb_build_object('observedAt',verified_at,'verified',verified_at,'stale',failed,'refreshing',false,'state',CASE WHEN failed THEN 'failed' ELSE 'current' END,'error',CASE WHEN failed THEN 'GitHub list refresh failed. Saved rows may be out of date.' END) FROM tasks.target_index_status WHERE repository=$1 AND kind=$2")
+        .bind(repository).bind(kind).fetch_optional(database.pool()).await?;
+    Ok(value.map(|Json(value)| value).unwrap_or_else(|| serde_json::json!({"observedAt":"","verified":null,"stale":true,"refreshing":false,"state":"rebuilding","error":null})))
+}

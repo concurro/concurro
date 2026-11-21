@@ -378,3 +378,10 @@ uid 65533. Merge `service/compose.portal.yaml` into
 `/etc/concurro/compose.service.host.yaml`; the release helper retains this optional mount
 on both service and web updates. Without those settings/mounts, sessions remain in memory
 and logout reports best-effort remote cleanup. See [current readiness](../docs/proposals/per-user-credentials/deployment-readiness.md).
+
+
+## Rust read-view parity and historical displays
+
+The Rust API owns current task/index reads. See the [parity audit and one-time historical
+migration](../docs/reports/backoffice-parity.md) for source mappings, writer scope,
+checks-read configuration, historical phase/report recovery and remaining data limits.

@@ -6,7 +6,11 @@ mod browser_actions;
 mod config;
 mod coverage_gap;
 mod cutover;
+mod funding_reads;
+mod historical;
 use archive::{RetainedCheck, check_retained_attempt};
+pub use funding_reads::{own_charged_calls, unavailable_historical_usage};
+pub use historical::{historical_display, import_historical_display};
 mod artifacts;
 mod dashboard;
 mod design;
@@ -173,7 +177,8 @@ pub use standalone_publication::{
 };
 pub use target_index::{
     IndexEntry, IndexRow, held_issue_numbers, historical_pulls, index_item, index_page,
-    index_scan_started, owned_pr_numbers, pr_is_owned, replace_target_index, upsert_index_event,
+    index_run_links, index_scan_started, index_scan_status, owned_pr_numbers, pr_is_owned,
+    record_index_scan, replace_target_index, upsert_index_event,
 };
 
 use chrono::Utc;

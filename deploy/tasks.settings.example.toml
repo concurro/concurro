@@ -58,6 +58,7 @@ contents = "read"
 actions = "read"
 
 [targets.upstream_permissions]
+checks = "read"
 contents = "read"
 issues = "read"
 pull_requests = "read"

@@ -101,12 +101,17 @@ pub struct TranscriptQuery {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v2/tasks", get(list_tasks))
+        .route("/api/v2/activity", get(views::activity))
         .route("/api/v2/targets", get(list_targets))
         .route(
             "/api/v2/targets/{owner}/{repo}/configuration",
             get(views::target_configuration),
         )
         .route("/api/v2/operator", get(views::operator))
+        .route(
+            "/api/v2/targets/{owner}/{repo}/historical",
+            get(views::historical),
+        )
         .route("/api/v2/targets/{owner}/{repo}/index", get(get_index))
         .route("/api/v2/me/sponsorships", get(my_sponsorships))
         .route("/api/v2/events", get(events))
@@ -219,7 +224,7 @@ async fn get_index(
         }
     }
     Ok(Json(json!({"repository":repository,"kind":query.kind,
-        "rows":rows,"next_cursor":page["next_cursor"]})))
+        "rows":rows,"next_cursor":page["next_cursor"],"cache":page["cache"]})))
 }
 
 /// Return current model revision only after a baseline has settled.
@@ -486,6 +491,16 @@ async fn list_tasks(
             break;
         }
         let mut item = item;
+        if viewer.tier == "writer" && entity == "contribution_task" {
+            item["consent"] = json!(
+                storage::issue_consent(&state.database, target.repository_id, number)
+                    .await
+                    .map_err(unavailable)?
+                    .into_iter()
+                    .map(|(entity, body)| json!({"entity":entity,"body":body}))
+                    .collect::<Vec<_>>()
+            );
+        }
         item["cursor"] = json!(cursor);
         tasks.push(item);
     }
@@ -574,7 +589,54 @@ async fn my_sponsorships(
                 "number":number,"body":body}));
         }
     }
-    Ok(Json(json!({"facts":facts,"revision":revision})))
+    let billing: Value = state
+        .client
+        .get(format!(
+            "{}/v1/billing/{}",
+            state.task_api_url.trim_end_matches('/'),
+            viewer.user.id
+        ))
+        .bearer_auth(&state.task_read_bearer)
+        .send()
+        .await
+        .map_err(unavailable)?
+        .error_for_status()
+        .map_err(unavailable)?
+        .json()
+        .await
+        .map_err(unavailable)?;
+    let mut charged_calls = Vec::new();
+    let mut unavailable_sources = Vec::new();
+    for (field, output) in [
+        ("rows", &mut charged_calls),
+        ("unavailable", &mut unavailable_sources),
+    ] {
+        for charge in billing[field].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            let Some(repository) = charge["repository"].as_str() else {
+                continue;
+            };
+            let Some(target) = configured.iter().find(|target| {
+                [target.upstream.as_str(), target.issue_repository.as_str()]
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(repository))
+            }) else {
+                continue;
+            };
+            let Some(number) = charge["number"].as_i64() else {
+                continue;
+            };
+            if tier(&state, &headers, target, repository, number)
+                .await?
+                .tier
+                != "none"
+            {
+                output.push(charge.clone());
+            }
+        }
+    }
+    Ok(Json(
+        json!({"facts":facts,"charged_calls":charged_calls,"unavailable":unavailable_sources,"revision":revision}),
+    ))
 }
 
 /// Resolve a task by stable identity and enforce its current viewer tier.
@@ -947,3 +1009,7 @@ mod tests;
 #[cfg(test)]
 #[path = "api_views_tests.rs"]
 mod views_tests;
+
+#[cfg(test)]
+#[path = "api_historical_tests.rs"]
+mod historical_tests;

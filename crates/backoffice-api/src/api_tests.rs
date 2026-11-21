@@ -114,6 +114,7 @@ async fn issue_tiers_scope_task_records_and_diagnostics() {
         )
     });
     let authority = authority
+        .route("/v1/billing/42", get(|| async { Json(json!({"rows":[{"repository":"acme/demo","number":7,"kind":"contribution","provider":"openai","sponsor":"42","calls":3}]})) }))
         .route("/v1/turns/{turn}/transcript", transcript.clone())
         .route(
             "/v1/imports/{deployment}/turns/{source}/transcript",
@@ -199,6 +200,7 @@ async fn issue_tiers_scope_task_records_and_diagnostics() {
         .await
         .expect("own history body");
     assert_eq!(mine["facts"].as_array().unwrap().len(), 3);
+    assert_eq!(mine["charged_calls"][0]["calls"], 3);
     assert!(!mine.to_string().contains("provider_funding"));
     assert_eq!(
         client
