@@ -1,7 +1,7 @@
 //! Revisioned target identities from the task service's settings file.
 
 use chrono::Utc;
-use concurro_contracts::{ConfigTargets, Envelope, EventId, Timestamp};
+use concurro_contracts::{ConfigTarget, ConfigTargets, Envelope, EventId, Timestamp};
 use concurro_db::Database;
 use concurro_events_postgres::Outbox;
 use serde_json::Value;
@@ -43,4 +43,15 @@ pub async fn sync_config_targets(
     };
     work.commit().await?;
     Ok(revision)
+}
+
+/// Read the current revision and target array from the same durable row.
+pub async fn current_config_targets(
+    database: &Database,
+) -> anyhow::Result<Option<(i64, Vec<ConfigTarget>)>> {
+    let row: Option<(i64, Json<Vec<ConfigTarget>>)> =
+        sqlx::query_as("SELECT revision,body FROM tasks.config_targets WHERE singleton")
+            .fetch_optional(database.pool())
+            .await?;
+    Ok(row.map(|(revision, Json(targets))| (revision, targets)))
 }

@@ -189,7 +189,10 @@ async fn funding_policy_uses_local_activation_time_and_exact_config_digest() {
         .await
         .expect("database");
     migrate(&database).await.expect("task schema");
-    let before = Utc::now();
+    let before: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(database.pool())
+        .await
+        .expect("database time before activation");
     let original_digest = "a".repeat(64);
     let replacement_digest = "b".repeat(64);
     let mut work = database.begin().await.expect("activate org policy");

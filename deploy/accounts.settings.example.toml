@@ -1,0 +1,13 @@
+# Phase 4 Slice 1 local configuration. Do not route browser traffic here until later slices land.
+listen = "0.0.0.0:8793"
+internal_listen = "127.0.0.1:8794" # Local use; bind the platform-only interface at cutover.
+database_url_file = "/etc/concurro/accounts/database-url"
+logout_key_file = "/etc/concurro/accounts/logout-key"
+public_url = "https://<host>/concurro"
+oauth_client_id = "SIGN_IN_OAUTH_APP_CLIENT_ID"
+oauth_client_secret_file = "/etc/concurro/accounts/oauth-client-secret"
+github_api_base = "https://api.github.com"
+reader_app_id = 12345
+reader_private_key_file = "/etc/concurro/accounts/reader-app.pem"
+viewer_authority_bearer_file = "/etc/concurro/accounts/viewer-authority-bearer"
+task_api_url = "http://concurro-tasks:8792"

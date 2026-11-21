@@ -1,4 +1,4 @@
-//! Read-only viewer decisions from the retained Python session authority.
+//! Read-only viewer decisions from the separate accounts session authority.
 
 use anyhow::{Context, Result};
 use axum::http::{HeaderMap, header};

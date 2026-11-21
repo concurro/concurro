@@ -523,6 +523,16 @@ impl AppClient {
         unreachable!("second reviewer read returns its result")
     }
 
+    /// Read with a session-held OAuth bearer that has no refresh grant.
+    pub async fn user_read_bearer<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<T> {
+        self.api(Method::GET, segments, token, None, query).await
+    }
+
     /// Send one fenced reviewer-account mutation with its prepared token.
     pub async fn user_write_prepared<T: DeserializeOwned>(
         &self,

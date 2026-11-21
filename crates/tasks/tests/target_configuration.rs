@@ -18,15 +18,134 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
+use concurro_contracts::{ConfigLauncher, ConfigTarget, ConfigTargets};
 use concurro_db::Database;
-use concurro_events_postgres::Outbox;
+use concurro_events_postgres::{Outbox, migrate as migrate_events};
 use concurro_github_v1::AppClient;
 use concurro_tasks::{
     DecisionContext, DecisionTarget, InitializationTarget,
     api::{TaskApi, router},
 };
+use concurro_tasks_postgres::{migrate as migrate_tasks, sync_config_targets};
+use concurro_testkit::PostgresContainer;
 use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
+
+/// The public target snapshot takes revision and identities from one durable row.
+#[tokio::test]
+async fn target_snapshot_tracks_the_task_services_durable_revision_without_a_bearer() {
+    let postgres = PostgresContainer::start().await.unwrap();
+    let database = Database::connect(postgres.url(), 4).await.unwrap();
+    migrate_events(&database).await.unwrap();
+    migrate_tasks(&database).await.unwrap();
+    let key = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+        ])
+        .output()
+        .unwrap();
+    assert!(key.status.success());
+    let github = AppClient::new(
+        reqwest::Client::new(),
+        "http://127.0.0.1:1",
+        42,
+        &key.stdout,
+    )
+    .unwrap();
+    let api = TaskApi {
+        database: database.clone(),
+        decisions: DecisionContext {
+            github,
+            targets: HashMap::new(),
+            outbox: Outbox::new(1024, vec![]),
+        },
+        standalone_targets: HashMap::new(),
+        proof_public_key: Arc::new(vec![]),
+        read_bearer: Arc::new("private-read".into()),
+        delivery_bearer: Some(Arc::new("delivery".into())),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/targets", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router(api)).await });
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let mut config = ConfigTargets {
+        targets: vec![ConfigTarget {
+            repository_id: 8,
+            upstream_repository_id: None,
+            upstream: "acme/upstream".into(),
+            fork: "acme/fork".into(),
+            issue_repository: "acme/issues".into(),
+            reviewer_user_id: None,
+            launcher: ConfigLauncher {
+                workflow: "executor.yml".into(),
+                r#ref: "refs/heads/main".into(),
+            },
+        }],
+    };
+    let outbox = Outbox::new(1024, vec!["config.>".to_owned()]);
+    assert_eq!(
+        sync_config_targets(&database, &outbox, &config)
+            .await
+            .unwrap(),
+        1
+    );
+    let first: Value = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["revision"], 1);
+    assert_eq!(
+        first["targets"],
+        serde_json::to_value(&config.targets).unwrap()
+    );
+    config.targets[0].upstream = "acme/changed".into();
+    assert_eq!(
+        sync_config_targets(&database, &outbox, &config)
+            .await
+            .unwrap(),
+        2
+    );
+    let second: Value = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["revision"], 2);
+    assert_eq!(
+        second["targets"],
+        serde_json::to_value(&config.targets).unwrap()
+    );
+    assert_eq!(
+        client
+            .get(&url)
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    server.abort();
+}
 
 /// Every config candidate is read at the current default commit under the read bearer.
 #[tokio::test]

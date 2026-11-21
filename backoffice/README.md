@@ -32,7 +32,7 @@ original source time. This bridge is local work and is not deployed.
 The separate Rust read process (`concurro-backoffice-api`) serves `/api/v2` from
 durable typed task and view events, with a consistent paged baseline at startup
 and after detected stream loss. It receives target identities
-from the task service's `config.targets` snapshot. It asks the Python internal
+from the task service's `config.targets` snapshot. The deployed process asks the Python internal
 viewer endpoint for a fresh tier on each request: writers see diagnostics,
 readers see task summaries for issues they can view, and users without access see
 neither. Transcript and artifact reads repeat the tier check. The frontend's
@@ -44,6 +44,12 @@ or GitHub user token. Set `CONCURRO_BACKOFFICE_CONFIG` to the TOML path.
 Projection SQL and migrations live in `concurro-backoffice-postgres`. Writer
 task details also read retained plan, review, finding and runner history through
 the task service's read-only history endpoint.
+
+Phase 4 Slice 1 adds the Rust [accounts service](../crates/accounts/README.md)
+as a replacement session and viewer authority. Its browser and internal routers,
+GitHub OAuth flow and durable logout worker are implemented locally. The read API
+will point `viewer_authority_url` to accounts at cutover; the Python process remains
+the live authority until the remaining Phase 4 browser routes are implemented.
 
 The optional `viewer_api_bearer_path` and `--internal-listen HOST:PORT` start a
 second, platform-only listener for the M3 read API. Sign-in sets a separate

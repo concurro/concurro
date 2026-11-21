@@ -119,6 +119,10 @@ both require the same internal read bearer.
 configuration comes from the task service's revisioned `config.targets` event
 and is included in the baseline. Ingress delivery history and redelivery use
 the separate recovery bearer.
+Phase 4 Slice 1 adds private `GET /v1/targets` for the accounts service. It
+reads `revision` and `targets` from the same durable `tasks.config_targets` row,
+requires no bearer, and returns `503` until that row is present or if storage is
+unavailable. The listener remains on the platform network.
 `GET /v1/history` reads retained task and standalone review history with the
 same internal read bearer; the backoffice exposes it only after a writer check.
 

@@ -17,10 +17,11 @@ use concurro_github_v1::AppDeliveryPage;
 use concurro_tasks_core::{IssueKey, LaterCommand, Request, RequestKind, SourceOrder};
 use concurro_tasks_postgres::{
     BaselineRow, TranscriptLine, baseline_page, browser_action, browser_standalone_action,
-    create_baseline, finish_baseline, historical_display, imported_transcript_page, index_item,
-    index_page, index_run_links, index_scan_status, own_charged_calls, record_browser_action,
-    record_browser_standalone_action, request_record, standalone_action_record, task_detail,
-    transcript_page, turn_artifact, unavailable_historical_usage,
+    create_baseline, current_config_targets, finish_baseline, historical_display,
+    imported_transcript_page, index_item, index_page, index_run_links, index_scan_status,
+    own_charged_calls, record_browser_action, record_browser_standalone_action, request_record,
+    standalone_action_record, task_detail, transcript_page, turn_artifact,
+    unavailable_historical_usage,
 };
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
@@ -197,6 +198,7 @@ pub fn router(api: TaskApi) -> Router {
         .route("/v1/requests", post(post_request))
         .route("/v1/requests/{id}", get(get_request))
         .route("/v1/baseline", get(get_baseline))
+        .route("/v1/targets", get(get_targets))
         .route("/v1/index", get(get_index))
         .route("/v1/historical", get(get_historical))
         .route("/v1/billing/{payer}", get(get_billing))
@@ -218,6 +220,20 @@ pub fn router(api: TaskApi) -> Router {
             get(get_turn_artifact),
         )
         .with_state(api)
+}
+
+/// Serve one revisioned target snapshot without a bearer on the private listener.
+async fn get_targets(State(api): State<TaskApi>) -> Result<Json<Value>, ApiError> {
+    let Some((revision, targets)) = current_config_targets(&api.database)
+        .await
+        .map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "targets_unavailable"))?
+    else {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "targets_unavailable",
+        ));
+    };
+    Ok(Json(json!({"revision":revision,"targets":targets})))
 }
 
 /// Read allowlisted current target settings at the fork's exact default commit.

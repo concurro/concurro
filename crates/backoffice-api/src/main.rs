@@ -1,9 +1,5 @@
 //! Lower-privilege backoffice API with a durable task read model.
 
-mod api;
-mod auth;
-mod model;
-
 use std::{
     sync::{Arc, RwLock},
     time::Duration,
@@ -11,7 +7,7 @@ use std::{
 
 use anyhow::Result;
 use async_nats::jetstream::{self, consumer::PullConsumer};
-use concurro_backoffice_postgres::Target;
+use concurro_backoffice_api::{api, model};
 use concurro_config::{Validate, load, read_secret};
 use concurro_contracts::{
     ConfigTargets, Contract, Envelope, ReadModelRecord, RequestOutcome, TaskNotice, TaskReport,
@@ -37,7 +33,7 @@ struct Settings {
     task_api_url: String,
     /// Path to the task service's read-scoped bearer.
     task_api_bearer_file: String,
-    /// Python session authority's separate platform listener.
+    /// Accounts service's separate platform listener.
     viewer_authority_url: String,
     /// Path to its read-scoped service bearer.
     viewer_authority_bearer_file: String,

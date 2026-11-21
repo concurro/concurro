@@ -36,7 +36,7 @@ pub struct ApiState {
     pub database: Database,
     /// Private HTTP client for read authorities.
     pub client: Client,
-    /// Python session authority's platform address.
+    /// Accounts session authority's platform address.
     pub authority_url: String,
     /// Read-scoped service credential for viewer lookups.
     pub authority_bearer: String,
@@ -269,7 +269,7 @@ fn task_source(state: &ApiState, body: &Value) -> Option<(Target, i64, String)> 
     Some((target, number, repository))
 }
 
-/// Ask the Python authority for this request's issue-specific tier.
+/// Ask the accounts authority for this request's issue-specific tier.
 async fn tier(
     state: &ApiState,
     headers: &HeaderMap,

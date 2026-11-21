@@ -35,7 +35,7 @@ pub use browser_actions::{
     BrowserAction, RequestRecord, browser_action, browser_retry_feedback, record_browser_action,
     request_record,
 };
-pub use config::sync_config_targets;
+pub use config::{current_config_targets, sync_config_targets};
 pub use coverage_gap::{
     PendingCoverageGap, comment_revision_recorded, complete_coverage_gap, fail_coverage_gap,
     known_live_comments, pending_coverage_gaps, record_coverage_gap,
