@@ -1,0 +1,16 @@
+{
+  "public": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArquxOYWZZOWKNLip6dSk\ngZ6RbGVTuBfymlSGTPa1/CKSvF9STvXIvpXKj8PXHN0oifJjYKENva2VGVYV32BM\nFgwZf4LbMy5T2+JbHts0aSvpr7Ik/7oKDeH3jX5htk3JZf3daPBAL4y/N8xsdElI\nwDF4HN3reqz0bH91BM/q13YEe+r6j28RHZyZ46THBUYgX7euD5ubLytLMgURrqDJ\nSIAJ7sK0GP7MnnQPDK79FtRW1tAcAH5C/tsAKuaE80dUoKhXm/RQn6R2wdFzAGIn\ntAvjf6cAgqEjz1sJE51dO+YdsCRt2zrw8NQKsOa+PHw08s1T3KmKxWMYvCR1ZxWg\n8QIDAQAB\n-----END PUBLIC KEY-----\n",
+  "proof": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY3RvciI6eyJpZCI6OSwibG9naW4iOiJ3cml0ZXIifSwiYWN0aW9uX2lkIjoiMDBjZWQzNzgtNDlhNC00Yzk5LWEyZDItN2JkN2VhYzA1ODAxIiwiY29udGVudCI6eyJpc3N1ZSI6eyJyZXBvc2l0b3J5X2lkIjo0MiwibnVtYmVyIjo3fSwia2luZCI6InJldHJ5IiwiYXJndW1lbnQiOnt9LCJkZXRhaWwiOnsiZmVlZGJhY2siOiJzYW1lIHdvcmsifSwic291cmNlX2F0IjoiMjAyNi0xMS0yMFQxMDoxMToxMloifSwiZXhwIjo0MTAyNDQ0OTgwfQ.jJPLt-wmAPeI6GoA48DPJrjGpTgIumdlkHO6RAHDR99y9L51aMJjHwuCRWCXrLqSn6k9_6uNsDOrKI9m7I_kHgxGo4IYI6_PdBgMy15neQolXNzgxJMWtkUUZSoLDoeViSmK2xFnUtH3znGD0iengulcjqaFJcuM803CHxmNHIUz8M_A9OKOogKx7LI_n_2kzs1ZveLSpH_7pnXQV1JDaKvKtwY0GQmM9t0tB9kD92YVvU-n5d8HW4sQypwW6ppRspjh-qvZl4GUenxCfdMVhxThXP7MFX1fSsQwVeF5KVCG6MYJ3bf_SmABJDrCJNgIJpDyfN-8TaihK5860dBuFw",
+  "content": {
+    "issue": {
+      "repository_id": 42,
+      "number": 7
+    },
+    "kind": "retry",
+    "argument": {},
+    "detail": {
+      "feedback": "same work"
+    },
+    "source_at": "2026-11-20T10:11:12Z"
+  }
+}

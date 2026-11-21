@@ -1,0 +1,30 @@
+{
+  "id": "1920134d-4ed4-54af-90ce-e10e37df3152",
+  "type": "request.tasks.refused",
+  "version": 2,
+  "kind": "fact",
+  "producer": "tasks",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "data": {
+    "request_id": "019aa320-1d3c-7b10-80a1-334b3fac3a83",
+    "task_id": null,
+    "issue": {
+      "repository_id": 8,
+      "number": 3
+    },
+    "kind": "approve",
+    "argument": {
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "actor": {
+      "id": 10,
+      "login": "writer"
+    },
+    "channel": "comment",
+    "source": "11:2026-11-19T10:00:00+00:00:approve",
+    "source_at": "2026-11-19T10:00:00Z",
+    "status": "refused",
+    "reason": "not_supported",
+    "reply": "issue_comment:11"
+  }
+}

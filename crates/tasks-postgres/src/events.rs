@@ -3,8 +3,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use concurro_contracts::{
-    Envelope, EventId, TaskNotice, TaskReport, Timestamp, TurnFinished, TurnRunner, TurnStatus,
-    TurnSubmitted, TurnTranscript,
+    Envelope, EventId, TaskId, TaskNotice, TaskReport, Timestamp, TurnFinished, TurnRunner,
+    TurnStatus, TurnSubmitted, TurnTranscript,
 };
 use concurro_db::UnitOfWork;
 use concurro_events_postgres::Outbox;
@@ -29,7 +29,7 @@ fn exchange_time(seconds: Option<f64>) -> Option<Timestamp> {
 pub(crate) async fn append_turn_submitted(
     uow: &mut UnitOfWork<'_>,
     outbox: &Outbox,
-    task: &TaskState,
+    task: TaskId,
     spec: &AttemptSpec,
     operation: &str,
 ) -> Result<()> {
@@ -57,7 +57,7 @@ pub(crate) async fn append_turn_submitted(
     let data = TurnSubmitted {
         turn_id: spec.id,
         attempt_id: spec.id,
-        task_id: task.id,
+        task_id: task,
         grant_id: submission
             .as_ref()
             .and_then(|submission| submission.binding["grant_id"].as_str())

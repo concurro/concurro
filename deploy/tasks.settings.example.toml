@@ -1,0 +1,70 @@
+# Replace identities, paths and permission maps with the approved target values.
+database_url_file = "/etc/concurro/tasks/database-url"
+nats_url = "nats://concurro-nats:4222"
+nats_credentials_file = "/etc/concurro/tasks/nats-credentials.json"
+github_api_base = "https://api.github.com/"
+github_app_id = 123456
+github_private_key_file = "/etc/concurro/tasks/app.pem"
+exchange_url = "http://concurro-gateway:8081"
+exchange_token_file = "/etc/concurro/tasks/exchange-token"
+vault_metadata_url = "http://concurro-vault:8090"
+vault_metadata_token_file = "/etc/concurro/tasks/vault-metadata-token"
+archive_endpoint = "http://object-store:9000"
+archive_bucket = "concurro-archives"
+archive_prefix = "turns"
+archive_region = "us-east-1"
+archive_credentials_file = "/etc/concurro/tasks/archive-credentials.json"
+max_message_bytes = 30000000
+published_retention_seconds = 2592000
+forwarder_poll_ms = 1000
+consumer_name = "tasks"
+consumer_max_attempts = 25
+consumer_poll_ms = 1000
+api_listen = "0.0.0.0:8792"
+command_proof_public_key_file = "/etc/concurro/tasks/command-proof-public.pem"
+api_read_bearer_file = "/etc/concurro/tasks/api-read-bearer"
+delivery_recovery_bearer_file = "/etc/concurro/tasks/delivery-recovery-bearer"
+
+[intake]
+workflow_ref = "refs/heads/main"
+models = ["approved-model"]
+budget = 1000000
+lease = 3600
+
+[intake.gateway]
+url = "http://concurro-gateway:4000"
+
+[[targets]]
+repository_id = 1234567
+issue_repository = "owner/repository"
+fork = "owner/fork"
+upstream = "owner/repository"
+bot_login = "concurro[bot]"
+publisher_logins = ["concurro[bot]"]
+engine_sha = "0000000000000000000000000000000000000000"
+
+[targets.issue_permissions]
+issues = "read"
+
+[targets.fork_permissions]
+contents = "read"
+actions = "read"
+
+[targets.upstream_permissions]
+contents = "read"
+issues = "read"
+pull_requests = "read"
+
+[targets.issue_write_permissions]
+issues = "write"
+
+[targets.fork_write_permissions]
+contents = "write"
+workflows = "write"
+actions = "write"
+
+[targets.upstream_write_permissions]
+contents = "read"
+pull_requests = "write"
+issues = "write"
+checks = "write"

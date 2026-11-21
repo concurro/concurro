@@ -4,15 +4,18 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use chrono::{DateTime, Utc};
 use concurro_github_v1::{AppClient, response_status};
 use concurro_tasks_core::{
     Actor, InitializationSnapshot, PinnedInputs, Request, RequirementComment, Requirements,
 };
+use concurro_tasks_core::{LaterCommand, RequestKind, SourceOrder, parse_command};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
-use crate::{bundle::TARGET_INSTRUCTIONS, bundle_identity, decode_target_config};
+use crate::{TargetConfig, bundle::TARGET_INSTRUCTIONS, bundle_identity, decode_target_config};
 
 /// Repositories and exact read permissions used for one task source snapshot.
 #[derive(Clone, Deserialize)]
@@ -51,7 +54,14 @@ struct ListedComment {
     id: i64,
     body: String,
     user: Actor,
+    created_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
 }
+
+/// A pinned target configuration read successfully but failed deterministic validation.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid pinned target configuration: {0}")]
+pub(crate) struct TargetConfigurationError(#[source] pub anyhow::Error);
 
 /// Complete recursive Git tree at one pinned commit.
 #[derive(Deserialize)]
@@ -221,13 +231,12 @@ pub(crate) async fn read_source_files(
     Ok(Ok(files))
 }
 
-/// Read all M1 source inputs at their respective fork and upstream commits.
-pub async fn read_initialization(
+/// Read the target configuration at one verified fork commit.
+pub async fn read_target_config(
     github: &AppClient,
     target: &InitializationTarget,
-    request: &Request,
     config_sha: &str,
-) -> Result<InitializationSnapshot> {
+) -> Result<TargetConfig> {
     ensure!(
         config_sha.len() == 40 && config_sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "pinned configuration commit is invalid"
@@ -248,16 +257,66 @@ pub async fn read_initialization(
             config_sha,
         )
         .await?;
-    let config = decode_target_config(
+    decode_target_config(
         config_json.as_deref(),
         config_yaml.as_deref(),
         &target.fork,
         &target.bot_login,
         &target.engine_sha,
-    )?;
+    )
+    .map_err(|error| TargetConfigurationError(error).into())
+}
+
+/// Read all M1 source inputs at their respective fork and upstream commits.
+pub async fn read_initialization(
+    github: &AppClient,
+    target: &InitializationTarget,
+    request: &Request,
+    config_sha: &str,
+) -> Result<InitializationSnapshot> {
+    let config = read_target_config(github, target, config_sha).await?;
     let base_sha = github
         .branch_head(&target.upstream, &target.upstream_permissions, &config.base)
         .await?;
+    let (requirements, _) = read_requirements(github, target, request).await?;
+    read_source_snapshot(github, target, config, config_sha, base_sha, requirements).await
+}
+
+/// Read target policy and bundle inputs for a standalone PR's frozen merge base.
+pub(crate) async fn read_standalone_review_snapshot(
+    github: &AppClient,
+    target: &InitializationTarget,
+    config_sha: &str,
+    merge_base: &str,
+    title: &str,
+    body: Option<&str>,
+) -> Result<InitializationSnapshot> {
+    let config = read_target_config(github, target, config_sha).await?;
+    let requirements = Requirements {
+        title: title.to_owned(),
+        body: body.map(str::to_owned),
+        discussion: Vec::new(),
+    };
+    read_source_snapshot(
+        github,
+        target,
+        config,
+        config_sha,
+        merge_base.to_owned(),
+        requirements,
+    )
+    .await
+}
+
+/// Freeze source policy and bundle bytes at their exact upstream and fork commits.
+async fn read_source_snapshot(
+    github: &AppClient,
+    target: &InitializationTarget,
+    config: TargetConfig,
+    config_sha: &str,
+    base_sha: String,
+    requirements: Requirements,
+) -> Result<InitializationSnapshot> {
     let charter = github
         .file_text(
             &target.fork,
@@ -311,7 +370,6 @@ pub async fn read_initialization(
         policy_documents.insert(path, text);
     }
 
-    let (requirements, _) = read_requirements(github, target, request).await?;
     Ok(InitializationSnapshot {
         pins: PinnedInputs {
             config_sha: config_sha.to_owned(),
@@ -328,6 +386,86 @@ pub async fn read_initialization(
         base_files,
         bundle_id,
     })
+}
+
+/// List current issue comments through the boundary comment without dropping pages.
+async fn list_issue_comments(
+    github: &AppClient,
+    target: &InitializationTarget,
+    issue: i64,
+    through: Option<i64>,
+) -> Result<Vec<ListedComment>> {
+    let (owner, name) = target
+        .issue_repository
+        .split_once('/')
+        .context("issue repository must be owner/name")?;
+    let issue_number = issue.to_string();
+    let mut listed = Vec::new();
+    let mut page = 1;
+    loop {
+        let page_text = page.to_string();
+        let comments: Vec<ListedComment> = github
+            .read(
+                &target.issue_repository,
+                &target.issue_permissions,
+                &["repos", owner, name, "issues", &issue_number, "comments"],
+                &[("per_page", "100"), ("page", &page_text)],
+            )
+            .await?;
+        let reached = through.is_some_and(|id| comments.iter().any(|comment| comment.id >= id));
+        let full = comments.len() == 100;
+        listed.extend(
+            comments
+                .into_iter()
+                .filter(|comment| through.is_none_or(|id| comment.id <= id)),
+        );
+        if reached || !full {
+            break;
+        }
+        page += 1;
+    }
+    Ok(listed)
+}
+
+/// Read current sponsorship command revisions visible through a start source.
+pub(crate) async fn read_current_sponsorship_sources(
+    github: &AppClient,
+    target: &InitializationTarget,
+    request: &Request,
+) -> Result<Vec<(SourceOrder, Actor)>> {
+    let comments =
+        list_issue_comments(github, target, request.issue.number, request.comment_id).await?;
+    let mut sources = Vec::new();
+    for comment in comments {
+        if !matches!(
+            parse_command(&comment.body),
+            Some(RequestKind::Later(
+                LaterCommand::Sponsor { .. }
+                    | LaterCommand::Funding { .. }
+                    | LaterCommand::Withdraw { .. }
+            ))
+        ) {
+            continue;
+        }
+        let created = comment
+            .created_at
+            .context("comment creation time is missing")?;
+        let at = comment
+            .updated_at
+            .context("comment update time is missing")?;
+        ensure!(at >= created, "comment update precedes creation");
+        let digest = hex::encode(Sha256::digest(comment.body.as_bytes()));
+        let order = SourceOrder {
+            at,
+            source_id: comment.id,
+            source: format!("{}:{}:{digest}", comment.id, at.to_rfc3339()),
+            index: 0,
+        };
+        if order <= request.order {
+            sources.push((order, comment.user));
+        }
+    }
+    Ok(sources)
 }
 
 /// Read the issue and eligible discussion with comment IDs through one command source.
@@ -353,66 +491,43 @@ pub async fn read_requirements(
         issue.user == request.issue_author,
         "issue author changed during initialization"
     );
-    let start_comment = request
-        .comment_id
-        .context("requirements read requires a comment source")?;
     let mut discussion = Vec::new();
     let mut comment_ids = Vec::new();
-    let mut page = 1;
-    loop {
-        let page_text = page.to_string();
-        let comments: Vec<ListedComment> = github
-            .read(
-                &target.issue_repository,
-                &target.issue_permissions,
-                &[
-                    "repos",
-                    issue_owner,
-                    issue_name,
-                    "issues",
-                    &issue_number,
-                    "comments",
-                ],
-                &[("per_page", "100"), ("page", &page_text)],
-            )
-            .await?;
-        let reached_start = comments.iter().any(|comment| comment.id >= start_comment);
-        let full_page = comments.len() == 100;
-        for comment in comments
-            .into_iter()
-            .filter(|comment| comment.id <= start_comment)
+    let comments =
+        list_issue_comments(github, target, request.issue.number, request.comment_id).await?;
+    for comment in comments {
+        if request.comment_id.is_none()
+            && (!comment.created_at.is_some_and(|at| at <= request.order.at)
+                || !comment.updated_at.is_some_and(|at| at <= request.order.at))
         {
-            if comment.body.starts_with("<!-- concurro:v1 -->")
-                || comment.body.trim().starts_with("/concurro ")
-                || comment.user.login == target.bot_login
-                || target.publisher_logins.contains(&comment.user.login)
-            {
-                continue;
-            }
-            let eligible = comment.user == issue.user
-                || github
-                    .writer_permission(
-                        &target.issue_repository,
-                        &comment.user.login,
-                        &target.issue_permissions,
-                    )
-                    .await?;
-            if eligible {
-                comment_ids.push(comment.id);
-                discussion.push(RequirementComment {
-                    author: comment.user,
-                    body: comment.body,
-                });
-                if discussion.len() > 20 {
-                    discussion.remove(0);
-                    comment_ids.remove(0);
-                }
+            continue;
+        }
+        if comment.body.starts_with("<!-- concurro:v1 -->")
+            || comment.body.trim().starts_with("/concurro ")
+            || comment.user.login == target.bot_login
+            || target.publisher_logins.contains(&comment.user.login)
+        {
+            continue;
+        }
+        let eligible = comment.user == issue.user
+            || github
+                .writer_permission(
+                    &target.issue_repository,
+                    &comment.user.login,
+                    &target.issue_permissions,
+                )
+                .await?;
+        if eligible {
+            comment_ids.push(comment.id);
+            discussion.push(RequirementComment {
+                author: comment.user,
+                body: comment.body,
+            });
+            if discussion.len() > 20 {
+                discussion.remove(0);
+                comment_ids.remove(0);
             }
         }
-        if reached_start || !full_page {
-            break;
-        }
-        page += 1;
     }
     Ok((
         Requirements {
@@ -435,11 +550,117 @@ mod tests {
         routing::{get, post},
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use chrono::{Duration, Utc};
+    use chrono::{DateTime, Duration, Utc};
     use concurro_github_v1::AppClient;
+    use concurro_tasks_core::{Actor, IssueKey, Request, RequestKind, SourceOrder};
     use serde_json::{Value, json};
+    use uuid::Uuid;
 
-    use super::read_source_files;
+    use super::{
+        InitializationTarget, read_current_sponsorship_sources, read_requirements,
+        read_source_files,
+    };
+
+    #[tokio::test]
+    async fn label_boundary_reads_only_prior_discussion_and_consent_sources() {
+        let app = Router::new()
+            .route("/repos/acme/demo/installation", get(|| async {
+                Json(json!({"id":7,"repository_selection":"selected","account":{"login":"acme"}}))
+            }))
+            .route("/app/installations/7/access_tokens", post(|Json(body): Json<Value>| async move {
+                Json(json!({"token":"scoped-token","permissions":body["permissions"],
+                    "expires_at":(Utc::now()+Duration::minutes(55)).to_rfc3339()}))
+            }))
+            .route("/installation/repositories", get(|| async {
+                Json(json!({"total_count":1,"repositories":[{"full_name":"acme/demo"}]}))
+            }))
+            .route("/repos/acme/demo/issues/3", get(|| async {
+                Json(json!({"title":"Review this", "body":"Issue body",
+                    "user":{"id":5,"login":"author"}}))
+            }))
+            .route("/repos/acme/demo/issues/3/comments", get(|| async {
+                Json(json!([
+                    {"id":11,"body":"Earlier detail","user":{"id":5,"login":"author"},
+                        "created_at":"2026-11-20T10:00:00Z","updated_at":"2026-11-20T10:00:00Z"},
+                    {"id":12,"body":"/concurro sponsor openai","user":{"id":7,"login":"writer"},
+                        "created_at":"2026-11-20T10:00:01Z","updated_at":"2026-11-20T10:00:01Z"},
+                    {"id":13,"body":"Later detail","user":{"id":5,"login":"author"},
+                        "created_at":"2026-11-20T10:00:03Z","updated_at":"2026-11-20T10:00:03Z"}
+                ]))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let key = Command::new("openssl")
+            .args([
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+            ])
+            .output()
+            .expect("test App key");
+        assert!(key.status.success());
+        let github = AppClient::new(
+            reqwest::Client::new(),
+            &format!("http://{address}"),
+            42,
+            &key.stdout,
+        )
+        .expect("App client");
+        let target = InitializationTarget {
+            issue_repository: "acme/demo".to_owned(),
+            fork: "acme/demo".to_owned(),
+            upstream: "acme/demo".to_owned(),
+            issue_permissions: BTreeMap::from([("issues".to_owned(), "read".to_owned())]),
+            fork_permissions: BTreeMap::new(),
+            upstream_permissions: BTreeMap::new(),
+            bot_login: "concurro[bot]".to_owned(),
+            publisher_logins: vec![],
+            engine_sha: "a".repeat(40),
+        };
+        let request = Request {
+            id: Uuid::now_v7(),
+            channel: "label".to_owned(),
+            reply: "issue_label:99".to_owned(),
+            comment_id: None,
+            issue: IssueKey {
+                repository_id: 8,
+                number: 3,
+            },
+            issue_author: Actor {
+                id: 5,
+                login: "author".to_owned(),
+            },
+            actor: Actor {
+                id: 7,
+                login: "writer".to_owned(),
+            },
+            kind: RequestKind::Start,
+            order: SourceOrder {
+                at: DateTime::parse_from_rfc3339("2026-11-20T10:00:02Z")
+                    .expect("time")
+                    .with_timezone(&Utc),
+                source_id: 99,
+                source: "issue_label:99".to_owned(),
+                index: 0,
+            },
+        };
+        let (requirements, ids) = read_requirements(&github, &target, &request)
+            .await
+            .expect("requirements");
+        assert_eq!(ids, vec![11]);
+        assert_eq!(requirements.discussion[0].body, "Earlier detail");
+        let sources = read_current_sponsorship_sources(&github, &target, &request)
+            .await
+            .expect("consent sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].0.source_id, 12);
+        server.abort();
+    }
 
     /// A pinned blob over the Contents API limit is readable; bad ancestors and bytes are feedback.
     #[tokio::test]

@@ -1,6 +1,6 @@
 //! Transactional transcript rows and original gzip upload intents.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use concurro_db::{Database, UnitOfWork};
 use concurro_tasks_diagnostics::ArchiveSnapshot;
@@ -11,6 +11,8 @@ use uuid::Uuid;
 use concurro_exchange_v1::TurnSubmission;
 use concurro_tasks_core::{AttemptSpec, python_digest};
 use sha2::{Digest, Sha256};
+
+use crate::execution_owner::lock_execution_owner;
 
 /// Whether one exact retained session turn can start without losing journal history.
 #[derive(Debug, PartialEq)]
@@ -270,6 +272,92 @@ pub async fn retained_eligibility(
     })
 }
 
+/// Store one original gzip and its searchable transcript through the shared upload path.
+pub async fn store_archive_snapshot(
+    uow: &mut UnitOfWork<'_>,
+    snapshot: &ArchiveSnapshot,
+) -> Result<()> {
+    let inserted = sqlx::query(
+        "INSERT INTO tasks.archive_uploads (gzip_sha256,gzip_bytes,byte_count,status) \
+         VALUES ($1,$2,$3,'pending') ON CONFLICT (gzip_sha256) DO NOTHING",
+    )
+    .bind(&snapshot.gzip_sha256)
+    .bind(&snapshot.gzip_bytes)
+    .bind(i64::try_from(snapshot.gzip_bytes.len())?)
+    .execute(uow.connection())
+    .await?;
+    if let Some(tar_sha) = &snapshot.tar_sha256 {
+        for event in &snapshot.events {
+            sqlx::query(
+                "INSERT INTO tasks.transcript_events \
+                 (tar_sha256,member_ordinal,line_number,member_path,member_mtime,harness, \
+                  event_kind,event_json,fallback_bytes,diagnostic) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING",
+            )
+            .bind(tar_sha)
+            .bind(i32::try_from(event.member_ordinal)?)
+            .bind(i32::try_from(event.line_number)?)
+            .bind(&event.member_path)
+            .bind(i64::try_from(event.member_mtime)?)
+            .bind(event.harness)
+            .bind(event.kind.as_deref())
+            .bind(event.json.as_ref().map(Json))
+            .bind(event.fallback_bytes.as_deref())
+            .bind(event.diagnostic)
+            .execute(uow.connection())
+            .await?;
+            let mut start = 0;
+            let mut part = 0;
+            while start < event.search_text.len() {
+                let mut end = (start + 100_000).min(event.search_text.len());
+                while !event.search_text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end < event.search_text.len() {
+                    if let Some(boundary) = event.search_text[start..end]
+                        .rfind(char::is_whitespace)
+                        .filter(|boundary| *boundary > 0)
+                    {
+                        end = start + boundary;
+                    } else if let Some(boundary) =
+                        event.search_text[end..].find(char::is_whitespace)
+                    {
+                        end += boundary;
+                    } else {
+                        end = event.search_text.len();
+                    }
+                }
+                sqlx::query(
+                    "INSERT INTO tasks.transcript_text_parts \
+                     (tar_sha256,member_ordinal,line_number,part_index,search_text) \
+                     VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+                )
+                .bind(tar_sha)
+                .bind(i32::try_from(event.member_ordinal)?)
+                .bind(i32::try_from(event.line_number)?)
+                .bind(part)
+                .bind(&event.search_text[start..end])
+                .execute(uow.connection())
+                .await?;
+                start = end;
+                part += 1;
+            }
+        }
+    }
+    if inserted.rows_affected() == 1 {
+        let _: i64 = sqlx::query_scalar(
+            "SELECT (graphile_worker.add_job( \
+             identifier => 'upload_archive', payload => json_build_object('sha',$1::text), \
+             queue_name => 'archive-upload', max_attempts => 25, \
+             job_key => 'archive:' || $1::text || ':0')).id",
+        )
+        .bind(&snapshot.gzip_sha256)
+        .fetch_one(uow.connection())
+        .await?;
+    }
+    Ok(())
+}
+
 /// Record one terminal turn's source archive, search rows and upload in its result transaction.
 pub(crate) async fn record_archive(
     uow: &mut UnitOfWork<'_>,
@@ -289,84 +377,7 @@ pub(crate) async fn record_archive(
         None => (None, None),
     };
     if let Some(snapshot) = &snapshot {
-        let inserted = sqlx::query(
-            "INSERT INTO tasks.archive_uploads (gzip_sha256,gzip_bytes,byte_count,status) \
-             VALUES ($1,$2,$3,'pending') ON CONFLICT (gzip_sha256) DO NOTHING",
-        )
-        .bind(&snapshot.gzip_sha256)
-        .bind(&snapshot.gzip_bytes)
-        .bind(i64::try_from(snapshot.gzip_bytes.len())?)
-        .execute(uow.connection())
-        .await?;
-        if let Some(tar_sha) = &snapshot.tar_sha256 {
-            for event in &snapshot.events {
-                sqlx::query(
-                    "INSERT INTO tasks.transcript_events \
-                     (tar_sha256,member_ordinal,line_number,member_path,member_mtime,harness, \
-                      event_kind,event_json,fallback_bytes,diagnostic) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING",
-                )
-                .bind(tar_sha)
-                .bind(i32::try_from(event.member_ordinal)?)
-                .bind(i32::try_from(event.line_number)?)
-                .bind(&event.member_path)
-                .bind(i64::try_from(event.member_mtime)?)
-                .bind(event.harness)
-                .bind(event.kind.as_deref())
-                .bind(event.json.as_ref().map(Json))
-                .bind(event.fallback_bytes.as_deref())
-                .bind(event.diagnostic)
-                .execute(uow.connection())
-                .await?;
-                let mut start = 0;
-                let mut part = 0;
-                while start < event.search_text.len() {
-                    let mut end = (start + 100_000).min(event.search_text.len());
-                    while !event.search_text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    if end < event.search_text.len() {
-                        if let Some(boundary) = event.search_text[start..end]
-                            .rfind(char::is_whitespace)
-                            .filter(|boundary| *boundary > 0)
-                        {
-                            end = start + boundary;
-                        } else if let Some(boundary) =
-                            event.search_text[end..].find(char::is_whitespace)
-                        {
-                            end += boundary;
-                        } else {
-                            end = event.search_text.len();
-                        }
-                    }
-                    sqlx::query(
-                        "INSERT INTO tasks.transcript_text_parts \
-                         (tar_sha256,member_ordinal,line_number,part_index,search_text) \
-                         VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
-                    )
-                    .bind(tar_sha)
-                    .bind(i32::try_from(event.member_ordinal)?)
-                    .bind(i32::try_from(event.line_number)?)
-                    .bind(part)
-                    .bind(&event.search_text[start..end])
-                    .execute(uow.connection())
-                    .await?;
-                    start = end;
-                    part += 1;
-                }
-            }
-        }
-        if inserted.rows_affected() == 1 {
-            let _: i64 = sqlx::query_scalar(
-                "SELECT (graphile_worker.add_job( \
-                 identifier => 'upload_archive', payload => json_build_object('sha',$1::text), \
-                 queue_name => 'archive-upload', max_attempts => 25, \
-                 job_key => 'archive:' || $1::text || ':0')).id",
-            )
-            .bind(&snapshot.gzip_sha256)
-            .fetch_one(uow.connection())
-            .await?;
-        }
+        store_archive_snapshot(uow, snapshot).await?;
     }
     let gzip_sha = snapshot.as_ref().map(|value| value.gzip_sha256.as_str());
     let tar_sha = snapshot
@@ -385,12 +396,15 @@ pub(crate) async fn record_archive(
         .and_then(|value| value.get("turn"))
         .and_then(Value::as_i64)
         .filter(|turn| *turn >= 0);
+    let (repository_id, issue_number) = lock_execution_owner(uow, turn)
+        .await?
+        .context("archive turn has no execution owner")?
+        .conversation();
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO tasks.turn_archives \
          (turn_id,repository_id,issue_number,gzip_sha256,tar_sha256,retained_file_bytes, \
           session_scope,session_turn,archive_error,journal) \
-         SELECT $1,s.repository_id,s.issue_number,$2,$3,$4,$5,$6,$7,$8 \
-         FROM tasks.attempts a JOIN tasks.task_state s ON s.task_id=a.task_id WHERE a.id=$1 \
+         VALUES ($1,$9,$10,$2,$3,$4,$5,$6,$7,$8) \
          ON CONFLICT (turn_id) DO UPDATE SET turn_id=EXCLUDED.turn_id \
          WHERE tasks.turn_archives.repository_id=EXCLUDED.repository_id \
          AND tasks.turn_archives.issue_number=EXCLUDED.issue_number \
@@ -414,6 +428,8 @@ pub(crate) async fn record_archive(
         crate::effects::operational_json(&mut projected);
         Json(projected)
     }))
+    .bind(repository_id)
+    .bind(issue_number)
     .fetch_optional(uow.connection())
     .await?;
     ensure!(inserted == Some(turn), "turn archive changed on replay");

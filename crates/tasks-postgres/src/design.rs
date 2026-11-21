@@ -21,6 +21,10 @@ use crate::{
     effects::{definite_session_failure, operational_json},
     enqueue_design_batch, enqueue_design_correction, enqueue_design_result, enqueue_effect,
     enqueue_plan, events, lock_issue_for_turn,
+    sponsorship::{
+        billable_model_calls, has_credential_exclusion, record_funding_grant,
+        validate_funding_admission,
+    },
 };
 
 /// Frozen plan and roster to prepare before one atomic batch admission.
@@ -194,7 +198,8 @@ pub(crate) async fn retry_design_review(
                 let next = if has_report { "correcting" } else { "retrying" };
                 sqlx::query(
                     "UPDATE tasks.plan_review_seats SET status=$3,correction_count=0, \
-                     failure_count=0,repair_signature=NULL WHERE batch_id=$1 AND reviewer_id=$2",
+                     failure_count=0,session_failure_count=0,repair_signature=NULL \
+                     WHERE batch_id=$1 AND reviewer_id=$2",
                 )
                 .bind(batch)
                 .bind(&reviewer)
@@ -557,7 +562,7 @@ pub async fn admit_design_batch(
         .pins
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("task pins missing"))?;
-    if current.used_model_calls + specs.len() as u64 > pins.max_model_calls {
+    if billable_model_calls(uow, &current).await? + specs.len() as u64 > pins.max_model_calls {
         current.retry_stage = Some(current.stage);
         current.stage = Stage::Blocked;
         current.stage_reason = Some("model-call budget cannot admit the review roster".to_owned());
@@ -574,6 +579,11 @@ pub async fn admit_design_batch(
             .await?;
         append_task_snapshot(uow, outbox, &current).await?;
         return Ok(Admission::BudgetExhausted);
+    }
+    let mut funded = current.clone();
+    for (_, spec) in specs {
+        validate_funding_admission(uow, &funded, spec).await?;
+        funded.used_model_calls += 1;
     }
     for (_, spec) in specs {
         sqlx::query(
@@ -642,7 +652,8 @@ pub async fn admit_design_batch(
         .bind(spec.id)
         .execute(uow.connection())
         .await?;
-        events::append_turn_submitted(uow, outbox, &current, spec, "plan_qc").await?;
+        record_funding_grant(uow, spec).await?;
+        events::append_turn_submitted(uow, outbox, current.id, spec, "plan_qc").await?;
         let effect_id: i64 = sqlx::query_scalar(
             "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'submit','recorded') RETURNING id",
         )
@@ -747,7 +758,7 @@ pub async fn admit_design_correction(
         .pins
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("task pins missing"))?;
-    if current.used_model_calls >= pins.max_model_calls {
+    if billable_model_calls(uow, &current).await? >= pins.max_model_calls {
         current.retry_stage = Some(current.stage);
         current.stage = Stage::Blocked;
         current.stage_reason =
@@ -766,6 +777,7 @@ pub async fn admit_design_correction(
         append_task_snapshot(uow, outbox, &current).await?;
         return Ok(Admission::BudgetExhausted);
     }
+    validate_funding_admission(uow, &current, spec).await?;
     sqlx::query(
         "INSERT INTO tasks.staffing_groups (staffing_group,turn_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
     )
@@ -822,7 +834,8 @@ pub async fn admit_design_correction(
     .bind(spec.id)
     .execute(uow.connection())
     .await?;
-    events::append_turn_submitted(uow, outbox, &current, spec, "plan_qc").await?;
+    record_funding_grant(uow, spec).await?;
+    events::append_turn_submitted(uow, outbox, current.id, spec, "plan_qc").await?;
     let effect_id: i64 = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'submit','recorded') RETURNING id",
     )
@@ -849,8 +862,8 @@ pub(crate) async fn settle_design_attempt(
     state: &TaskState,
     turn: Uuid,
 ) -> anyhow::Result<()> {
-    let seat: Option<(Uuid, String, String, i32, i32)> = sqlx::query_as(
-        "SELECT s.batch_id,s.reviewer_id,s.status,s.failure_count,s.session_epoch FROM tasks.plan_review_seats s \
+    let seat: Option<(Uuid, String, String, i32, i32, i32)> = sqlx::query_as(
+        "SELECT s.batch_id,s.reviewer_id,s.status,s.failure_count,s.session_failure_count,s.session_epoch FROM tasks.plan_review_seats s \
          JOIN tasks.plan_review_batches b ON b.id=s.batch_id \
          WHERE s.attempt_id=$1 AND b.task_id=$2 AND b.status='admitted' FOR UPDATE OF s",
     )
@@ -858,7 +871,8 @@ pub(crate) async fn settle_design_attempt(
     .bind(state.id.0)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((batch, reviewer, seat_status, failure_count, seat_epoch)) = seat else {
+    let Some((batch, reviewer, seat_status, failure_count, session_failures, seat_epoch)) = seat
+    else {
         return Ok(());
     };
     if seat_status != "admitted" {
@@ -890,7 +904,7 @@ pub(crate) async fn settle_design_attempt(
         operational_json(&mut projected);
         sqlx::query(
             "UPDATE tasks.plan_review_seats SET status='completed',report=$4,report_raw=$5, \
-             failure_count=0 \
+             failure_count=0,session_failure_count=0 \
              WHERE batch_id=$1 AND reviewer_id=$2 AND attempt_id=$3 AND status='admitted'",
         )
         .bind(batch)
@@ -902,6 +916,8 @@ pub(crate) async fn settle_design_attempt(
         .await?;
         enqueue_design_result(uow, turn).await?;
     } else {
+        let credential_failure =
+            status == "finished" && has_credential_exclusion(uow, turn).await?;
         let session_failure = definite_session_failure(
             &status,
             reason.as_deref(),
@@ -917,9 +933,11 @@ pub(crate) async fn settle_design_attempt(
                     |outcome| format!("Reviewer turn ended with outcome: {outcome}"),
                 )
         });
-        let retry = state.stage == Stage::PlanQc && session_failure && failure_count < 1;
+        let retry = state.stage == Stage::PlanQc
+            && (credential_failure || (session_failure && session_failures < 1));
         let next_failures = failure_count + 1;
-        let session_epoch: i32 = if session_failure {
+        let next_session_failures = session_failures + i32::from(session_failure);
+        let session_epoch: i32 = if session_failure || credential_failure {
             sqlx::query_scalar(
                 "INSERT INTO tasks.plan_review_sessions (task_id,reviewer_id,session_epoch) \
              VALUES ($1,$2,1) ON CONFLICT (task_id,reviewer_id) DO UPDATE \
@@ -935,7 +953,7 @@ pub(crate) async fn settle_design_attempt(
         };
         sqlx::query(
             "UPDATE tasks.plan_review_seats SET status=$4,validation_error=$5, \
-             failure_count=$6,session_epoch=$7 \
+             failure_count=$6,session_epoch=$7,session_failure_count=$8 \
              WHERE batch_id=$1 AND reviewer_id=$2 AND attempt_id=$3 AND status='admitted'",
         )
         .bind(batch)
@@ -945,6 +963,7 @@ pub(crate) async fn settle_design_attempt(
         .bind(&reason)
         .bind(next_failures)
         .bind(session_epoch)
+        .bind(next_session_failures)
         .execute(uow.connection())
         .await?;
         if retry {

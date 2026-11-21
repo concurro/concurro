@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     ArchiveContext, GitPublicationContext, IntakeContext,
+    funding::fund_or_block_attempt,
     git_publication::pr_paths,
     initialization::read_source_files,
     plan_payload::prepare_retained_attempt,
@@ -275,7 +276,7 @@ pub async fn run_task_pr_review_batch(
             session_epoch,
         )
         .await?;
-        let spec = prepare_pr_review_attempt(
+        let mut spec = prepare_pr_review_attempt(
             issue,
             &current,
             target,
@@ -292,6 +293,19 @@ pub async fn run_task_pr_review_batch(
             Uuid::now_v7(),
             now,
         )?;
+        if !fund_or_block_attempt(
+            database,
+            &intake.initialization,
+            &current,
+            &batch.snapshot,
+            target,
+            current.used_model_calls + specs.len() as u64 + 1,
+            &mut spec,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         specs.push((reviewer.id.clone(), spec));
     }
     let mut work = database.begin().await?;
@@ -448,7 +462,7 @@ pub async fn run_task_pr_review_correction(
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     let feedback = (!correction.retry).then_some((&correction.report, correction.reason.as_str()));
-    let spec = prepare_pr_review_attempt(
+    let mut spec = prepare_pr_review_attempt(
         batch.issue,
         &current,
         target,
@@ -465,6 +479,19 @@ pub async fn run_task_pr_review_correction(
         Uuid::now_v7(),
         chrono::Utc::now(),
     )?;
+    if !fund_or_block_attempt(
+        database,
+        &intake.initialization,
+        &current,
+        &batch.snapshot,
+        target,
+        current.used_model_calls + 1,
+        &mut spec,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let mut work = database.begin().await?;
     let admission = admit_pr_review_correction(
         &mut work,

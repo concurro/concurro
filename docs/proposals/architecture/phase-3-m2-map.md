@@ -1,6 +1,8 @@
 # Phase 3 M2 behavior and acceptance map
 
 M2 carries one contribution from the accepted M1 intake through a ready pull request.
+Its [local acceptance evidence](../../rust-phase-3-m2-evidence.md) records the
+frozen source and corrective delta.
 The Rust task state and decision tests preserve the behavior below; Python's storage
 shape is not the Rust data model. All effects use M1's recorded intent, transaction
 and job recovery. The dedicated live test repository has been waived, so local

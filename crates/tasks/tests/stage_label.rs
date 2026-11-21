@@ -257,6 +257,7 @@ async fn stage_label_create_add_remove_and_readback_are_durable() {
                 bot_login: "concurro[bot]".to_owned(),
             },
         )]),
+        standalone_targets: HashMap::new(),
     };
     for _ in 0..4 {
         publish_stage_label(&database, &publication, state.id.0)

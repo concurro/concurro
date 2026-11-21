@@ -130,6 +130,12 @@ jobs:
           - image: ingress
             context: .
             dockerfile: crates/ingress/Dockerfile
+          - image: tasks
+            context: .
+            dockerfile: crates/tasks/Dockerfile
+          - image: backoffice-read
+            context: .
+            dockerfile: crates/backoffice-api/Dockerfile
           - image: backoffice-api
             context: .
             dockerfile: backoffice/Dockerfile

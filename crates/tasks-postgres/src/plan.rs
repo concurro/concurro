@@ -15,6 +15,7 @@ use crate::{
     append_task_snapshot,
     effects::{definite_session_failure, operational_json},
     enqueue_intake, enqueue_plan, events, queue_task_comment,
+    sponsorship::has_credential_exclusion,
 };
 
 /// Rejected planner output supplied to the next bounded correction turn.
@@ -310,6 +311,26 @@ pub(crate) async fn settle_plan(
             .as_ref()
             .is_none_or(|result| result.0["outcome"] != "ok")
     {
+        if status == "finished" && has_credential_exclusion(uow, turn).await? {
+            sqlx::query(
+                "UPDATE tasks.initialization_inputs SET planner_session_epoch=planner_session_epoch+1 \
+                 WHERE task_id=$1",
+            )
+            .bind(state.id.0)
+            .execute(uow.connection())
+            .await?;
+            let next = TaskState {
+                revision: state.revision + 1,
+                stage_reason: Some(
+                    "Provider credential failed; selecting the next eligible entry".to_owned(),
+                ),
+                current_attempt: None,
+                ..state.clone()
+            };
+            save_plan_state(uow, outbox, state, &next).await?;
+            enqueue_plan(uow, &next).await?;
+            return Ok(());
+        }
         let session_failure = definite_session_failure(
             &status,
             reason.as_deref(),

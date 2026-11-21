@@ -85,6 +85,10 @@ class TaskIssue(StrictModel):
     """
 
 
+class Timestamp(StrictTimestamp):
+    root: str
+
+
 class TaskSnapshot(StrictModel):
     attention: StrictBool
     """
@@ -138,10 +142,14 @@ class TaskSnapshot(StrictModel):
     """
     Stable task identity.
     """
-
-
-class Timestamp(StrictTimestamp):
-    root: str
+    title: StrictStr | None = None
+    """
+    Issue title from the pinned or latest source.
+    """
+    updated_at: Timestamp | None = None
+    """
+    Latest observed source update time.
+    """
 
 
 class Envelope(StrictModel):

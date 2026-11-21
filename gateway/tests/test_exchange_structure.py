@@ -566,16 +566,13 @@ class RecoveryTests(StateFixture, unittest.TestCase):
         for boundary in range(1, 5):
             with self.subTest(boundary=boundary):
                 turns = [self.submit()["turn"] for _ in range(2)]
-                self.exchange.db.execute(
-                    "UPDATE turns SET status='done', result='{}', finished=?, staff=NULL", (NOW,)
-                )
+                self.exchange.db.execute("UPDATE turns SET status='done', result='{}', finished=?, staff=NULL", (NOW,))
                 self.exchange.db.execute("DELETE FROM sessions")
                 with self.trace(boundary) as events, self.assertRaises(Crash):
                     self.exchange.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)
                 self.assertEqual(
                     events,
-                    ["BEGIN IMMEDIATE", TOMBSTONE, PRUNE, "COMMIT"][:boundary]
-                    + (["ROLLBACK"] if boundary < 4 else []),
+                    ["BEGIN IMMEDIATE", TOMBSTONE, PRUNE, "COMMIT"][:boundary] + (["ROLLBACK"] if boundary < 4 else []),
                 )
                 restarted = self.open()
                 for turn in turns:
@@ -584,7 +581,8 @@ class RecoveryTests(StateFixture, unittest.TestCase):
                         boundary == 4,
                     )
                     self.assertEqual(
-                        restarted.db.execute("SELECT 1 FROM turn_tombstones WHERE id=?", (turn,)).fetchone() is not None,
+                        restarted.db.execute("SELECT 1 FROM turn_tombstones WHERE id=?", (turn,)).fetchone()
+                        is not None,
                         boundary == 4,
                     )
                 restarted.reconcile(now=NOW + exchange.FINISHED_RETENTION_SECONDS + 1)

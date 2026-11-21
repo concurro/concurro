@@ -31,6 +31,9 @@ FIELDS = {
     "lists_token_path",
     "relay_server",
     "relay_download_url",
+    "task_api_url",
+    "command_proof_key_path",
+    "viewer_api_bearer_path",
 }
 REQUIRED = {"public_url", "client_id", "client_secret_path", "reader", "targets"}
 DNS_NAME = re.compile(
@@ -76,6 +79,11 @@ class Settings:
     relay_server: str | None = None
     # Where owners download Sponsor; the portal says none is configured when absent.
     relay_download_url: str | None = None
+    # Paired M3 command bridge: the Python session authority signs for the Rust task API.
+    task_api_url: str | None = None
+    command_proof_key_path: Path | None = None
+    # Read-scoped credential for the separate viewer-authority listener.
+    viewer_api_bearer: str | None = None
 
     @property
     def base_path(self) -> str:
@@ -183,6 +191,28 @@ def load(path: str | Path) -> Settings:
         and not any(c.isspace() for c in download),
         "relay_download_url",
     )
+    task_api_url = data.get("task_api_url") or None
+    proof_key_path = data.get("command_proof_key_path") or None
+    require(bool(task_api_url) == bool(proof_key_path), "task_api_command_bridge")
+    require(
+        task_api_url is None
+        or isinstance(task_api_url, str)
+        and urlsplit(task_api_url).scheme in ("http", "https")
+        and bool(urlsplit(task_api_url).netloc),
+        "task_api_url",
+    )
+    if proof_key_path:
+        try:
+            private.read(proof_key_path, (CHECKOUT,))
+        except Exception:
+            raise SettingsError("invalid settings field: command_proof_key_path") from None
+    viewer_api_bearer = None
+    if data.get("viewer_api_bearer_path"):
+        try:
+            viewer_api_bearer = private.read(data["viewer_api_bearer_path"], (CHECKOUT,)).decode().strip()
+            require(viewer_api_bearer, "viewer_api_bearer_path")
+        except Exception:
+            raise SettingsError("invalid settings field: viewer_api_bearer_path") from None
     return Settings(
         public_url=url.rstrip("/"),
         client_id=data["client_id"],
@@ -195,5 +225,8 @@ def load(path: str | Path) -> Settings:
         lists_token=lists_token,
         relay_server=relay_server,
         relay_download_url=download,
+        task_api_url=task_api_url,
+        command_proof_key_path=Path(proof_key_path) if proof_key_path else None,
+        viewer_api_bearer=viewer_api_bearer,
         **optional_path,
     )

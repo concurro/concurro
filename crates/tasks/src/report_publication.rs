@@ -138,8 +138,12 @@ pub async fn publish_task_report(
     if matches!(write.status.as_str(), "confirmed" | "failed") {
         return Ok(());
     }
-    let target = context
-        .targets
+    let targets = if write.standalone_task_id.is_some() {
+        &context.standalone_targets
+    } else {
+        &context.targets
+    };
+    let target = targets
         .get(&write.issue.repository_id)
         .context("report publication target unavailable")?;
     if let Some(number) = readback_report(context, target, &write).await? {
@@ -150,6 +154,31 @@ pub async fn publish_task_report(
     }
     if write.status == "sent" {
         anyhow::bail!("uncertain report artifact create awaits exact App readback");
+    }
+    if write.standalone_task_id.is_some() {
+        let (owner, repository) = target
+            .repository
+            .split_once('/')
+            .context("PR repository must be owner/name")?;
+        let pr: Value = context
+            .github
+            .read(
+                &target.repository,
+                &target.read_permissions,
+                &[
+                    "repos",
+                    owner,
+                    repository,
+                    "pulls",
+                    &write.issue.number.to_string(),
+                ],
+                &[],
+            )
+            .await?;
+        ensure!(
+            pr["state"] == "open" && pr["merged"] != true,
+            "standalone PR is closed; report artifact awaits reopening"
+        );
     }
     let token = context
         .github

@@ -22,6 +22,37 @@ the web app's own container (see `gateway/concurro.caddy`). Responses follow the
 - **Commands** go to the service (`POST <service_url>/actions` with the user's sign-in token),
   which verifies the writer and posts the command as Concurro's own signed comment. The
   backoffice never writes to GitHub.
+
+Optional paired M3 settings `task_api_url` and `command_proof_key_path` switch
+browser commands to signed `POST /v1/requests` in the Rust task service. The
+Python session and CSRF check remain authoritative. The browser supplies a UUID
+`Idempotency-Key` per action and reuses it on retries; the session keeps its
+original source time. This bridge is local work and is not deployed.
+
+The separate Rust read process (`concurro-backoffice-api`) serves `/api/v2` from
+durable typed task and view events, with a consistent paged baseline at startup
+and after detected stream loss. It receives target identities
+from the task service's `config.targets` snapshot. It asks the Python internal
+viewer endpoint for a fresh tier on each request: writers see diagnostics,
+readers see task summaries for issues they can view, and users without access see
+neither. Transcript and artifact reads repeat the tier check. The frontend's
+task, review, issue and target lists use these routes and their live revision
+stream. Caddy forwards only the viewer cookie value to this process, without
+the Python session cookie. Its settings
+example is `deploy/backoffice-read.settings.example.toml`; it has no command key
+or GitHub user token. Set `CONCURRO_BACKOFFICE_CONFIG` to the TOML path.
+Projection SQL and migrations live in `concurro-backoffice-postgres`. Writer
+task details also read retained plan, review, finding and runner history through
+the task service's read-only history endpoint.
+
+The optional `viewer_api_bearer_path` and `--internal-listen HOST:PORT` start a
+second, platform-only listener for the M3 read API. Sign-in sets a separate
+HTTP-only `concurro_viewer` cookie. The internal `GET /internal/v1/viewer`
+requires the read-scoped service bearer in `Authorization` and that viewer token
+in `X-Concurro-Viewer`; it returns the numeric user identity, issue-specific
+`writer`/`reader`/`none` tier and check time. The internal listener has no
+command route, and logout invalidates the viewer token with the session.
+
 - **Credentials** are forwarded to the vault with the user's token; the vault resolves the user itself.
 - Writes need the `X-Concurro-Request: 1` header.
 

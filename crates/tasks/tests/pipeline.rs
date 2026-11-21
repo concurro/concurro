@@ -15,10 +15,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Duration, Utc};
 use concurro_contracts::{
-    GithubEvent, GithubIssues, IssueCommentPayload, TaskNotice, TaskReport, TurnFinished,
-    TurnStatus, TurnSubmitted, decode,
+    GithubEvent, GithubIssues, IssueCommentPayload, ReadModelRecord, TaskNotice, TaskReport,
+    TurnFinished, TurnStatus, TurnSubmitted, decode,
 };
 use concurro_db::Database;
 use concurro_events::ProcessResult;
@@ -27,15 +28,16 @@ use concurro_exchange_v1::Operator;
 use concurro_github_v1::AppClient;
 use concurro_tasks::{
     CommentHandler, DecisionContext, DecisionTarget, ExchangeContext, ExchangeEffectJob,
-    ExchangePollJob, TaskDecisionJob, run_exchange_effect, run_exchange_poll,
+    ExchangePollJob, InitializationTarget, LabelScanJob, TaskDecisionJob, run_exchange_effect,
+    run_exchange_poll, run_task_decision, scan_label_wake,
 };
 use concurro_tasks_core::{
-    Actor, Admission, AttemptSpec, Authority, InitializationSnapshot, IssueKey, PinnedInputs,
-    Request, RequestKind, Requirements, SourceOrder, Stage,
+    Actor, Admission, AttemptSpec, Authority, InitializationSnapshot, IssueKey, LaterCommand,
+    PinnedInputs, Request, RequestKind, Requirements, SourceOrder, Stage,
 };
 use concurro_tasks_postgres::{
-    admit_intake, apply_request, claim_effect, initialize_task, migrate, next_pending,
-    record_request, task,
+    admit_intake, apply_request, claim_effect, enqueue_label_scan, initialize_task, migrate,
+    next_pending, pending_effects, pending_label_wakes, record_request, task,
 };
 use concurro_testkit::PostgresContainer;
 use graphile_worker::WorkerOptions;
@@ -58,6 +60,296 @@ fn snapshot(pins: PinnedInputs) -> InitializationSnapshot {
         base_files: vec!["src/lib.rs".to_owned()],
         bundle_id: "bundle-identity".to_owned(),
     }
+}
+
+#[tokio::test]
+async fn label_scan_records_timeline_sources_once_across_repeated_wakes() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("tasks schema");
+    migrate_events(&database).await.expect("events schema");
+    let final_event_visible = Arc::new(AtomicBool::new(false));
+    let app = Router::new()
+        .route("/repos/acme/demo/installation", get(|| async {
+            Json(json!({"id": 7, "repository_selection": "selected", "account": {"login": "acme"}}))
+        }))
+        .route("/app/installations/7/access_tokens", post(|Json(body): Json<Value>| async move {
+            Json(json!({"token": "scoped-token", "permissions": body["permissions"],
+                "expires_at": (Utc::now() + Duration::minutes(55)).to_rfc3339()}))
+        }))
+        .route("/installation/repositories", get(|| async {
+            Json(json!({"total_count": 1, "repositories": [{"full_name": "acme/demo"}]}))
+        }))
+        .route("/users/writer", get(|| async {
+            Json(json!({"id": 7, "login": "writer"}))
+        }))
+        .route("/users/other", get(|| async {
+            Json(json!({"id": 8, "login": "other"}))
+        }))
+        .route("/repos/acme/demo/collaborators/{login}/permission", get(|| async {
+            Json(json!({"permission": "write"}))
+        }))
+        .route("/repos/acme/demo", get(|| async {
+            Json(json!({"default_branch": "main"}))
+        }))
+        .route("/repos/acme/demo/git/ref/heads/main", get(|| async {
+            Json(json!({"object": {"sha": "a".repeat(40)}}))
+        }))
+        .route("/repos/acme/demo/contents/.concurro/config.yaml", get(|| async {
+            let config = "repository: acme/demo\nbase: main\nbot_login: concurro[bot]\nautonomous: false\nmax_model_calls: 3\nmax_fix_rounds: 2\nmax_plan_revisions: 1\nmax_context_bytes: 350000\npolicy_documents: [README.md]\nqc: codex\nplanner: codex\nimplementer: codex\nreviewers: [codex]\nmodels: {codex: gpt-test}\npaths: {protected: [], protected_extensions: [], protected_names: [], protected_name_prefixes: [], protected_files: [], generated: []}\n";
+            Json(json!({"type": "file", "encoding": "base64", "path": ".concurro/config.yaml",
+                "size": config.len(), "content": STANDARD.encode(config)}))
+        }))
+        .route("/repos/acme/demo/issues/3", get(|| async {
+            Json(json!({"number": 3, "state": "open", "user": {"id": 5, "login": "author"},
+                "labels": [{"name": "concurro"}]}))
+        }))
+        .route("/repos/acme/demo/issues/3/events", get({
+            let final_event_visible = final_event_visible.clone();
+            move |axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>| {
+                let final_event_visible = final_event_visible.clone();
+                async move {
+            if query.get("page").is_some_and(|page| page != "1") {
+                return Json(json!([]));
+            }
+            let mut events = json!([
+                {"id": 101, "event": "labeled", "created_at": "2026-11-20T10:00:00Z",
+                    "actor": {"id": 7, "login": "writer"}, "label": {"name": "concurro"}},
+                {"id": 102, "event": "unlabeled", "created_at": "2026-11-20T10:00:01Z",
+                    "actor": {"id": 8, "login": "other"}, "label": {"name": "concurro"}}
+            ]);
+            if final_event_visible.load(Ordering::SeqCst) {
+                events.as_array_mut().expect("events").push(json!({
+                    "id": 103, "event": "labeled", "created_at": "2026-11-20T10:00:02Z",
+                    "actor": {"id": 7, "login": "writer"}, "label": {"name": "concurro"}
+                }));
+            }
+            Json(events)
+                }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let key = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+        ])
+        .output()
+        .expect("test App key");
+    assert!(key.status.success());
+    let context = DecisionContext {
+        github: AppClient::new(
+            reqwest::Client::new(),
+            &format!("http://{address}"),
+            42,
+            &key.stdout,
+        )
+        .expect("App identity"),
+        targets: HashMap::from([(
+            8,
+            DecisionTarget {
+                repository: "acme/demo".to_owned(),
+                read_permissions: BTreeMap::from([("issues".to_owned(), "read".to_owned())]),
+                fork: "acme/demo".to_owned(),
+                fork_permissions: BTreeMap::new(),
+                initialization: Some(InitializationTarget {
+                    issue_repository: "acme/demo".to_owned(),
+                    fork: "acme/demo".to_owned(),
+                    upstream: "acme/demo".to_owned(),
+                    issue_permissions: BTreeMap::new(),
+                    fork_permissions: BTreeMap::new(),
+                    upstream_permissions: BTreeMap::new(),
+                    bot_login: "concurro[bot]".to_owned(),
+                    publisher_logins: vec![],
+                    engine_sha: "b".repeat(40),
+                }),
+                publication: None,
+            },
+        )]),
+        outbox: Outbox::new(1024 * 1024, vec!["request.>".to_owned()]),
+    };
+    let wake = LabelScanJob {
+        delivery_id: "label-delivery".to_owned(),
+        repository_id: 8,
+        issue_number: 3,
+        action: "labeled".to_owned(),
+        actor_id: 7,
+        updated_at: DateTime::parse_from_rfc3339("2026-11-20T10:00:02Z")
+            .expect("time")
+            .with_timezone(&Utc),
+    };
+    let mut recorded = database.begin().await.expect("record label delivery");
+    enqueue_label_scan(
+        &mut recorded,
+        IssueKey {
+            repository_id: 8,
+            number: 3,
+        },
+        &wake.delivery_id,
+        &wake.action,
+        wake.actor_id,
+        wake.updated_at,
+    )
+    .await
+    .expect("enqueue scan");
+    recorded.commit().await.expect("commit label wake");
+    assert!(scan_label_wake(&database, &context, &wake).await.is_err());
+    let (attempts, observed): (i32, bool) = sqlx::query_as(
+        "SELECT scan_attempts,observed_at IS NOT NULL FROM tasks.label_wakes WHERE delivery_id=$1",
+    )
+    .bind(&wake.delivery_id)
+    .fetch_one(database.pool())
+    .await
+    .expect("deferred wake");
+    assert_eq!((attempts, observed), (1, false));
+    assert!(
+        pending_label_wakes(&database)
+            .await
+            .expect("backoff")
+            .is_empty()
+    );
+    final_event_visible.store(true, Ordering::SeqCst);
+    scan_label_wake(&database, &context, &wake)
+        .await
+        .expect("event appeared");
+    scan_label_wake(&database, &context, &wake)
+        .await
+        .expect("repeated scan");
+    assert!(
+        pending_label_wakes(&database)
+            .await
+            .expect("settled wakes")
+            .is_empty()
+    );
+    let sources: Vec<(String,)> = sqlx::query_as(
+        "SELECT source FROM tasks.requests WHERE channel='label' ORDER BY source_id",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("label requests");
+    assert_eq!(sources.len(), 3);
+    assert_eq!(
+        sources
+            .iter()
+            .map(|(source,)| source.as_str())
+            .collect::<Vec<_>>(),
+        ["issue_label:101", "issue_label:102", "issue_label:103"]
+    );
+    let first = next_pending(
+        &database,
+        IssueKey {
+            repository_id: 8,
+            number: 3,
+        },
+    )
+    .await
+    .expect("pending")
+    .expect("first request");
+    assert_eq!(first.order.source_id, 101);
+    run_task_decision(
+        &database,
+        &context,
+        IssueKey {
+            repository_id: 8,
+            number: 3,
+        },
+    )
+    .await
+    .expect("label decisions");
+    let dispositions: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT source_id,status,reason FROM tasks.requests WHERE channel='label' ORDER BY source_id",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("label dispositions");
+    assert_eq!(
+        dispositions,
+        vec![
+            (
+                101,
+                "refused".to_owned(),
+                Some("label_not_current".to_owned())
+            ),
+            (102, "applied".to_owned(), None),
+            (
+                103,
+                "refused".to_owned(),
+                Some("autonomous_disabled".to_owned())
+            ),
+        ]
+    );
+    assert!(
+        task(
+            &database,
+            IssueKey {
+                repository_id: 8,
+                number: 3,
+            }
+        )
+        .await
+        .expect("no autonomous task")
+        .is_none()
+    );
+
+    let invalid = LabelScanJob {
+        delivery_id: "unavailable-target".to_owned(),
+        repository_id: 999,
+        ..wake
+    };
+    let mut recorded = database.begin().await.expect("record failed scan");
+    enqueue_label_scan(
+        &mut recorded,
+        IssueKey {
+            repository_id: invalid.repository_id,
+            number: invalid.issue_number,
+        },
+        &invalid.delivery_id,
+        &invalid.action,
+        invalid.actor_id,
+        invalid.updated_at,
+    )
+    .await
+    .expect("enqueue failed scan");
+    recorded.commit().await.expect("commit failed scan");
+    assert!(
+        scan_label_wake(&database, &context, &invalid)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE tasks.label_wakes SET scan_attempts=47 WHERE delivery_id=$1")
+        .bind(&invalid.delivery_id)
+        .execute(database.pool())
+        .await
+        .expect("prepare exhausted scan");
+    assert!(
+        scan_label_wake(&database, &context, &invalid)
+            .await
+            .is_err()
+    );
+    let exhausted = pending_effects(&database)
+        .await
+        .expect("operator diagnostics")
+        .into_iter()
+        .find(|effect| effect["delivery_id"] == invalid.delivery_id)
+        .expect("exhausted wake visible");
+    assert_eq!(exhausted["scan_attempts"], 48);
+    assert_eq!(exhausted["resolution"], "reconciliation_required");
+    assert!(
+        pending_label_wakes(&database)
+            .await
+            .expect("exhausted wake not retried")
+            .is_empty()
+    );
+    server.abort();
 }
 
 #[tokio::test]
@@ -375,6 +667,25 @@ async fn control_arrival_during_authority_read_drains_both_requests() {
         },
         ..start.clone()
     };
+    let unverified = Request {
+        id: Uuid::now_v7(),
+        reply: "issue_comment:10".to_owned(),
+        comment_id: Some(10),
+        actor: Actor {
+            id: 999,
+            login: "vanished".to_owned(),
+        },
+        kind: RequestKind::Later(LaterCommand::Sponsor {
+            provider: Some("openai".to_owned()),
+        }),
+        order: SourceOrder {
+            at: DateTime::<Utc>::from_timestamp(5, 0).unwrap(),
+            source_id: 10,
+            source: "comment:10".to_owned(),
+            index: 0,
+        },
+        ..start.clone()
+    };
     let injected = Arc::new(AtomicBool::new(false));
     let app = Router::new()
         .route(
@@ -468,6 +779,9 @@ async fn control_arrival_during_authority_read_drains_both_requests() {
         outbox: outbox.clone(),
     };
     let mut receipt = database.begin().await.expect("start receipt");
+    record_request(&mut receipt, &unverified)
+        .await
+        .expect("record unverified sponsor");
     record_request(&mut receipt, &start)
         .await
         .expect("record start");
@@ -495,7 +809,11 @@ async fn control_arrival_during_authority_read_drains_both_requests() {
     ).fetch_all(database.pool()).await.expect("request dispositions");
     assert_eq!(
         dispositions,
-        [(11, "superseded".to_owned()), (12, "applied".to_owned())]
+        [
+            (10, "refused".to_owned()),
+            (11, "superseded".to_owned()),
+            (12, "applied".to_owned())
+        ]
     );
     let replies: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM tasks.publication_comments WHERE repository_id=8 AND issue_number=3",
@@ -503,7 +821,7 @@ async fn control_arrival_during_authority_read_drains_both_requests() {
     .fetch_one(database.pool())
     .await
     .expect("reply intents");
-    assert_eq!(replies, 2);
+    assert_eq!(replies, 3);
     running.abort();
     server.abort();
 }
@@ -834,11 +1152,12 @@ async fn comment_to_attempt_and_stop_to_retirement_survive_durable_boundaries() 
         .await
         .expect("group reservations");
     assert_eq!(group_count, 0);
-    let event_types: Vec<String> =
-        sqlx::query_scalar("SELECT type FROM events.outbox ORDER BY sequence")
-            .fetch_all(database.pool())
-            .await
-            .expect("outbox");
+    let event_types: Vec<String> = sqlx::query_scalar(
+        "SELECT type FROM events.outbox WHERE type<>'view.record' ORDER BY sequence",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("outbox");
     let snapshot_type = format!("task.{}.state", state.id.0);
     let notice_type = format!("task.{}.notice", state.id.0);
     let report_type = format!("task.{}.report", state.id.0);
@@ -870,7 +1189,10 @@ async fn comment_to_attempt_and_stop_to_retirement_survive_durable_boundaries() 
             .await
             .expect("contract wire bytes");
     for (event_type, bytes) in wire {
-        if event_type == notice_type {
+        if event_type == "view.record" {
+            let record = decode::<ReadModelRecord>(&bytes).expect("read model contract");
+            assert_eq!(record.data.entity, "report");
+        } else if event_type == notice_type {
             decode::<TaskNotice>(&bytes).expect("notice contract");
         } else if event_type == report_type {
             let report = decode::<TaskReport>(&bytes).expect("report contract");

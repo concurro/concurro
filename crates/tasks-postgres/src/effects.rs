@@ -10,9 +10,11 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::{
-    EffectJob, EffectKind, archive, enqueue_design_batch, enqueue_design_correction,
-    enqueue_effect, enqueue_implementation, enqueue_intake, enqueue_plan, enqueue_poll, events,
-    intake, lock_attempt, lock_issue_for_turn, record_runner_session, retire_runner_sessions,
+    EffectJob, EffectKind, ExecutionOwner, archive, enqueue_design_batch,
+    enqueue_design_correction, enqueue_effect, enqueue_implementation, enqueue_intake,
+    enqueue_plan, enqueue_poll, events, intake, lock_attempt, lock_execution_owner,
+    lock_issue_for_turn, record_runner_session, retire_runner_sessions,
+    sponsorship::{record_credential_failure, record_credential_success},
 };
 
 /// Recognize only a definite failed provider result from an admitted retained session.
@@ -56,6 +58,26 @@ pub(crate) async fn settle_attempt(
         Some(operation) => anyhow::bail!("unsupported terminal attempt operation: {operation}"),
         None => Ok(()),
     }
+}
+
+/// Settle a terminal attempt through the lifecycle that owns it.
+async fn settle_owned_attempt(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    owner: &ExecutionOwner,
+    turn: Uuid,
+) -> anyhow::Result<()> {
+    match owner {
+        ExecutionOwner::Contribution { .. } => {
+            if let Some(state) = lock_issue_for_turn(uow, turn).await? {
+                settle_attempt(uow, outbox, &state, turn).await?;
+            }
+        }
+        ExecutionOwner::Standalone { task_id, .. } => {
+            crate::standalone::settle_standalone_review_attempt(uow, *task_id, turn).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Finish a source-validation job whose task or review binding became obsolete.
@@ -168,7 +190,7 @@ pub async fn settle_submit(
     if job.kind != EffectKind::Submit {
         return Ok(false);
     }
-    lock_issue_for_turn(uow, job.turn).await?;
+    lock_execution_owner(uow, job.turn).await?;
     lock_attempt(uow, job.turn).await?;
     let raw_response =
         raw_body.map_or_else(|| serde_json::to_vec(&response), |body| Ok(body.to_vec()))?;
@@ -209,7 +231,7 @@ pub async fn settle_submit_refusal(
     if job.kind != EffectKind::Submit {
         return Ok(false);
     }
-    let state = lock_issue_for_turn(uow, job.turn).await?;
+    let owner = lock_execution_owner(uow, job.turn).await?;
     lock_attempt(uow, job.turn).await?;
     let updated = sqlx::query(
         "UPDATE tasks.effects SET status='settled',response=$3,updated_at=now() \
@@ -235,8 +257,8 @@ pub async fn settle_submit_refusal(
         events::append_turn_disposition(uow, outbox, job.turn, "admission_unknown").await?;
     }
     retire_runner_sessions(uow, job.turn).await?;
-    if let Some(state) = state {
-        settle_attempt(uow, outbox, &state, job.turn).await?;
+    if let Some(owner) = owner.as_ref() {
+        settle_owned_attempt(uow, outbox, owner, job.turn).await?;
     }
     let effect_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
@@ -260,7 +282,7 @@ pub async fn record_submit_failure(
     if job.kind != EffectKind::Submit {
         return Ok(false);
     }
-    let state = lock_issue_for_turn(uow, job.turn).await?;
+    let owner = lock_execution_owner(uow, job.turn).await?;
     lock_attempt(uow, job.turn).await?;
     let attempts: Option<i32> = sqlx::query_scalar(
         "UPDATE tasks.effects SET status='recorded',claim_token=NULL,updated_at=now() \
@@ -295,8 +317,8 @@ pub async fn record_submit_failure(
         events::append_turn_disposition(uow, outbox, job.turn, "admission_unknown").await?;
     }
     retire_runner_sessions(uow, job.turn).await?;
-    if let Some(state) = state {
-        settle_attempt(uow, outbox, &state, job.turn).await?;
+    if let Some(owner) = owner.as_ref() {
+        settle_owned_attempt(uow, outbox, owner, job.turn).await?;
     }
     let retirement: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
@@ -360,7 +382,7 @@ pub async fn expire_attempt(
     turn: Uuid,
     generation: i64,
 ) -> anyhow::Result<bool> {
-    let Some(state) = lock_issue_for_turn(uow, turn).await? else {
+    let Some(owner) = lock_execution_owner(uow, turn).await? else {
         return Ok(false);
     };
     let due: Option<(bool, String)> = sqlx::query_as(
@@ -386,7 +408,7 @@ pub async fn expire_attempt(
         .await?;
     events::append_turn_disposition(uow, outbox, turn, reason).await?;
     retire_runner_sessions(uow, turn).await?;
-    settle_attempt(uow, outbox, &state, turn).await?;
+    settle_owned_attempt(uow, outbox, &owner, turn).await?;
     let effect_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
          ON CONFLICT (turn_id,kind) DO NOTHING RETURNING id",
@@ -408,7 +430,7 @@ pub async fn record_poll_failure(
     generation: i64,
     definitive_status: Option<u16>,
 ) -> anyhow::Result<Option<bool>> {
-    let Some(state) = lock_issue_for_turn(uow, turn).await? else {
+    let Some(owner) = lock_execution_owner(uow, turn).await? else {
         return Ok(None);
     };
     let failure: Option<(i32, i64)> = sqlx::query_as(
@@ -446,7 +468,7 @@ pub async fn record_poll_failure(
                 enqueue_effect(uow, id, 0, 0).await?;
             }
         }
-        settle_attempt(uow, outbox, &state, turn).await?;
+        settle_owned_attempt(uow, outbox, &owner, turn).await?;
     } else if let Some((_, next_generation)) = failure {
         enqueue_poll(uow, turn, next_generation, 15).await?;
     }
@@ -479,7 +501,7 @@ pub async fn record_observation(
     observation: &TurnObservation,
     expected_generation: Option<i64>,
 ) -> anyhow::Result<bool> {
-    let Some(state) = lock_issue_for_turn(uow, observation.turn).await? else {
+    let Some(owner) = lock_execution_owner(uow, observation.turn).await? else {
         return Ok(false);
     };
     let row: Option<(String, i64, bool, Option<Json<Value>>, Option<String>)> =
@@ -492,6 +514,9 @@ pub async fn record_observation(
     };
     if expected_generation.is_some_and(|expected| expected != generation) {
         return Ok(false);
+    }
+    if !matches!(observation.status.as_str(), "lost" | "cancelled") {
+        record_credential_failure(uow, observation).await?;
     }
     if let Some(session) = observation.dispatch {
         sqlx::query(
@@ -532,11 +557,11 @@ pub async fn record_observation(
         status.as_str()
     } else {
         match observation.status.as_str() {
+            "lost" => "unknown",
             _ if failure_reason.is_some() => "finished",
             "queued" => "queued",
             "running" => "running",
             "done" => "finished",
-            "lost" => "unknown",
             "cancelled" => "cancelled",
             _ => unreachable!("exchange status checked above"),
         }
@@ -610,6 +635,17 @@ pub async fn record_observation(
     .bind(raw_result)
     .execute(uow.connection())
     .await?;
+    if next == "finished"
+        && observation.status == "done"
+        && observation.provider_failure.is_none()
+        && observation.refusal.is_none()
+        && observation
+            .result
+            .as_ref()
+            .is_some_and(|result| result["outcome"] == "ok")
+    {
+        record_credential_success(uow, observation.turn).await?;
+    }
     let identity_changed = previous_observation.as_ref().is_none_or(|previous| {
         ["runner", "dispatch", "started", "finished"]
             .iter()
@@ -628,7 +664,7 @@ pub async fn record_observation(
         retire_runner_sessions(uow, observation.turn).await?;
     }
     if terminal {
-        settle_attempt(uow, outbox, &state, observation.turn).await?;
+        settle_owned_attempt(uow, outbox, &owner, observation.turn).await?;
         let operation: String =
             sqlx::query_scalar("SELECT operation FROM tasks.attempts WHERE id=$1")
                 .bind(observation.turn)

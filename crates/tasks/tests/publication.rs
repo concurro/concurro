@@ -244,6 +244,7 @@ async fn uncertain_reply_create_is_adopted_without_a_second_post() {
                 bot_login: "concurro[bot]".to_owned(),
             },
         )]),
+        standalone_targets: HashMap::new(),
     };
     mint_fail.store(1, Ordering::SeqCst);
     assert!(

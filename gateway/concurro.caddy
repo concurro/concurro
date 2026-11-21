@@ -1,8 +1,9 @@
 # Concurro's routes on the shared edge (installed as /etc/edge/sites/concurro.caddy).
 # Everything under /concurro/ arrives with the prefix removed: /concurro/v1/* is inference and
 # /concurro/exchange/* the key exchange (the gateway), /concurro/webhook GitHub App deliveries
-# (Rust ingress, which verifies their signatures), /concurro/api/* and /concurro/auth/* the
-# backoffice API; everything else is the backoffice web app.
+# (Rust ingress, which verifies their signatures), /concurro/api/v2/* the read-only Rust
+# API, /concurro/api/* and /concurro/auth/* the Python session authority; everything
+# else is the backoffice web app.
 handle /concurro/* {
 	uri strip_prefix /concurro
 
@@ -33,6 +34,21 @@ handle /concurro/* {
 		reverse_proxy concurro-backoffice:8788 {
 			# Stream live updates as they arrive.
 			flush_interval -1
+		}
+	}
+
+	handle /api/v2/events {
+		reverse_proxy concurro-backoffice-read:8790 {
+			header_up X-Concurro-Viewer {http.request.cookie.concurro_viewer}
+			header_up -Cookie
+			flush_interval -1
+		}
+	}
+
+	handle /api/v2/* {
+		reverse_proxy concurro-backoffice-read:8790 {
+			header_up X-Concurro-Viewer {http.request.cookie.concurro_viewer}
+			header_up -Cookie
 		}
 	}
 

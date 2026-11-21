@@ -640,6 +640,9 @@ API's read model; publication reads the same outcomes in-process for replies.
 | `request.source.received` | `source`, `issue`, `channel`, `reply`, `acknowledge` (`reaction` for mentions) |
 | `request.source.final` | `source`, `request_ids`, `failure?` (`interpreter_deadline`, `interpreter_unavailable`, `unresolved_edit`) |
 
+The implemented `request.tasks` wire contract is v2 for new outcomes, including
+the `unenroll` command. The original v1 schema remains valid for retained facts.
+
 Publication replies to a source once it's final and each of its requests has an outcome;
 a final source with no requests gets its failure reply.
 

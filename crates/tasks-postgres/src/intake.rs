@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     append_task_snapshot, effects::operational_json, enqueue_intake, enqueue_plan, events,
-    queue_task_comment,
+    queue_task_comment, sponsorship::has_credential_exclusion,
 };
 
 /// Rejected output retained for the next paid intake correction.
@@ -95,24 +95,26 @@ pub(crate) async fn settle_intake(
         let retry_unknown = (status == "unknown" || uncertain_result)
             && reason.as_deref() != Some("poll_failures_exhausted")
             && unknown_count < 2;
+        let retry_credential = status == "finished" && has_credential_exclusion(uow, turn).await?;
+        let retry = retry_unknown || retry_credential;
         let next = TaskState {
-            stage: if retry_unknown {
-                Stage::Intake
-            } else {
-                Stage::Blocked
-            },
-            retry_stage: (!retry_unknown).then_some(Stage::Intake),
+            stage: if retry { Stage::Intake } else { Stage::Blocked },
+            retry_stage: (!retry).then_some(Stage::Intake),
             revision: state.revision + 1,
-            stage_reason: Some(reason.unwrap_or_else(|| {
-                if status == "finished" {
-                    result_outcome.map_or_else(
-                        || "Intake turn finished without an accepted model result".to_owned(),
-                        |outcome| format!("Intake turn ended with outcome: {outcome}"),
-                    )
-                } else {
-                    format!("Intake turn ended with uncertain status: {status}")
-                }
-            })),
+            stage_reason: Some(if retry_credential {
+                "Provider credential failed; selecting the next eligible entry".to_owned()
+            } else {
+                reason.unwrap_or_else(|| {
+                    if status == "finished" {
+                        result_outcome.map_or_else(
+                            || "Intake turn finished without an accepted model result".to_owned(),
+                            |outcome| format!("Intake turn ended with outcome: {outcome}"),
+                        )
+                    } else {
+                        format!("Intake turn ended with uncertain status: {status}")
+                    }
+                })
+            }),
             current_attempt: None,
             ..state.clone()
         };
@@ -126,6 +128,9 @@ pub(crate) async fn settle_intake(
         .execute(uow.connection())
         .await?;
         append_task_snapshot(uow, outbox, &next).await?;
+        if retry_credential {
+            enqueue_intake(uow, &next, None).await?;
+        }
         if let Some(body) = intake_notice_body(&next, None) {
             let notice_id =
                 queue_task_comment(uow, &next, "notice", &format!("intake:{turn}"), &body).await?;

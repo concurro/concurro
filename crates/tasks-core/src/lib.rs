@@ -9,6 +9,7 @@ mod policy;
 mod pr_review;
 mod publication;
 mod readiness;
+mod sponsorship;
 pub use canonical::{escape_non_ascii, python_digest, python_json};
 pub use design::{
     DesignReviewer, design_binding, design_criteria, design_roster, legacy_requirements,
@@ -24,12 +25,18 @@ pub use policy::{
 };
 pub use pr_review::{
     DesignIssue, DesignIssueKind, PrDisposition, PrFinding, PrReviewReport, pr_review_binding,
-    pr_review_body, validate_design_issue, validate_pr_review,
+    pr_review_body, standalone_pr_review_binding, validate_design_issue, validate_pr_review,
+    validate_standalone_pr_review,
 };
 pub use publication::{
     intake_notice_body, markdown_text, plan_notice_body, task_branch, welcome_body,
 };
 pub use readiness::{CiObservation, ci_reasons};
+pub use sponsorship::{
+    ConsentAction, ConsentFact, ConsentProjection, FundingMode, InitialConsent, Provider,
+    ProviderConsent, SponsorSlot, consent_facts, initial_sponsorship_transitions,
+    initialize_consent, project_consent,
+};
 
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -70,6 +77,8 @@ pub enum RequestKind {
 /// Parsed command fields retained until their phase can apply them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LaterCommand {
+    /// Supersede earlier label enrollment without changing an active task.
+    Unenroll,
     /// Choose a funding provider and mode.
     Funding {
         /// Selected provider.
@@ -112,6 +121,7 @@ impl RequestKind {
         match self {
             Self::Start => RequestCommand::Start,
             Self::Stop => RequestCommand::Stop,
+            Self::Later(LaterCommand::Unenroll) => RequestCommand::Unenroll,
             Self::Later(LaterCommand::Funding { provider, mode }) => RequestCommand::Funding {
                 provider: provider.clone(),
                 mode: mode.clone(),
@@ -451,7 +461,7 @@ pub struct TaskState {
     pub retry_stage: Option<Stage>,
     /// Inputs fixed before the first intake admission.
     pub pins: Option<PinnedInputs>,
-    /// Number of admitted, charged model calls.
+    /// Monotonic admitted call ordinal; unused contributed reservations may be released.
     pub used_model_calls: u64,
     /// Current attempt for the active operation, if any.
     pub current_attempt: Option<Uuid>,
@@ -601,6 +611,7 @@ pub fn request_reply_body(
     let command = match &request.kind {
         RequestKind::Start => "start",
         RequestKind::Stop => "stop",
+        RequestKind::Later(LaterCommand::Unenroll) => "unenroll",
         RequestKind::Later(LaterCommand::Funding { .. }) => "funding",
         RequestKind::Later(LaterCommand::Sponsor { .. }) => "sponsor",
         RequestKind::Later(LaterCommand::Withdraw { .. }) => "withdraw",
@@ -701,6 +712,21 @@ pub fn parse_command(body: &str) -> Option<RequestKind> {
 pub fn comment_revision(
     event: &Envelope<GithubEvent<IssueCommentPayload>>,
 ) -> Option<CommentRevision> {
+    parse_comment_revision(event, false)
+}
+
+/// Parse a PR conversation revision for the independent review command channel.
+pub fn pr_comment_revision(
+    event: &Envelope<GithubEvent<IssueCommentPayload>>,
+) -> Option<CommentRevision> {
+    parse_comment_revision(event, true)
+}
+
+/// Share source identity and author rules across issue and PR conversations.
+fn parse_comment_revision(
+    event: &Envelope<GithubEvent<IssueCommentPayload>>,
+    allow_pr: bool,
+) -> Option<CommentRevision> {
     let comment = &event.data.payload.comment;
     let actor = match event.data.action.as_deref()? {
         "created" => &comment.user,
@@ -709,7 +735,7 @@ pub fn comment_revision(
         _ => return None,
     };
     let deleted = event.data.action.as_deref() == Some("deleted");
-    if event.data.payload.issue.is_pull_request {
+    if event.data.payload.issue.is_pull_request != allow_pr {
         return None;
     }
     let body = comment.body.as_deref().unwrap_or_default();
@@ -733,6 +759,17 @@ pub fn comment_revision(
     let request = (!deleted)
         .then(|| parse_command(body))
         .flatten()
+        .filter(|kind| {
+            !matches!(
+                kind,
+                RequestKind::Later(
+                    LaterCommand::Sponsor { .. }
+                        | LaterCommand::Funding { .. }
+                        | LaterCommand::Withdraw { .. }
+                )
+            ) || event.data.action.as_deref() != Some("edited")
+                || event.data.sender.id == comment.user.id
+        })
         .map(|kind| Request {
             id: Uuid::now_v7(),
             channel: "comment".to_owned(),
@@ -784,6 +821,18 @@ pub fn decide(
             RequestStatus::Superseded,
             Some("superseded_by_newer_command"),
         );
+    }
+    if matches!(
+        request.kind,
+        RequestKind::Later(LaterCommand::Sponsor { provider: None })
+    ) {
+        return outcome(
+            RequestStatus::Refused,
+            Some("usage: /concurro sponsor <openai|anthropic>"),
+        );
+    }
+    if request.kind == RequestKind::Later(LaterCommand::Unenroll) {
+        return outcome(RequestStatus::Applied, None);
     }
     if matches!(request.kind, RequestKind::Later(_)) {
         return outcome(RequestStatus::Refused, Some("not_supported"));
@@ -851,8 +900,8 @@ mod tests {
 
     use super::{
         Actor, Authority, IntakeReport, IssueKey, LaterCommand, Request, RequestKind,
-        RequestStatus, SourceOrder, Stage, comment_revision, dashboard_body, decide, finish_intake,
-        intake_notice_body, parse_command, welcome_body,
+        RequestStatus, SourceOrder, Stage, comment_revision, consent_facts, dashboard_body, decide,
+        finish_intake, intake_notice_body, parse_command, welcome_body,
     };
 
     /// Make one request with its source time independent of arrival order.
@@ -1025,6 +1074,21 @@ mod tests {
             (20, "editor")
         );
         assert_ne!(first.id, edited.id);
+        event.data.payload.comment.body = Some("/concurro sponsor openai".to_owned());
+        assert!(
+            comment_revision(&event)
+                .expect("changed source")
+                .request
+                .is_none(),
+            "another actor's edit cannot claim their consent"
+        );
+        event.data.sender = event.data.payload.comment.user.clone();
+        assert!(
+            comment_revision(&event)
+                .expect("owner revision")
+                .request
+                .is_some()
+        );
         event.data.payload.issue.is_pull_request = true;
         assert!(comment_revision(&event).is_none());
         event.data.payload.issue.is_pull_request = false;
@@ -1103,6 +1167,25 @@ mod tests {
             },
         );
         assert_eq!(unsupported.reason, Some("not_supported"));
+        let bare = request(
+            12,
+            RequestKind::Later(LaterCommand::Sponsor { provider: None }),
+        );
+        assert!(consent_facts(&bare).is_empty());
+        let usage = decide(
+            &bare,
+            None,
+            None,
+            None,
+            Authority {
+                writer: true,
+                issue_open: true,
+            },
+        );
+        assert_eq!(
+            usage.reason,
+            Some("usage: /concurro sponsor <openai|anthropic>")
+        );
         assert!(unsupported.stop_order.is_none());
         let stop = request(12, RequestKind::Stop);
         let refused_stop = decide(&stop, None, None, None, no_writer);

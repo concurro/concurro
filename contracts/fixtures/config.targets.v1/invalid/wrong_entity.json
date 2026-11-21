@@ -1,0 +1,11 @@
+{
+  "id": "2ea31359-94c1-5a95-b686-ac0c53af0ba7",
+  "type": "config.targets",
+  "version": 1,
+  "kind": "snapshot",
+  "producer": "tasks",
+  "occurred_at": "2026-11-20T10:01:00Z",
+  "entity": "config:other",
+  "revision": 1,
+  "data": {"targets": []}
+}

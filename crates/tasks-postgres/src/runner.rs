@@ -1,8 +1,10 @@
 //! Durable runner ref desires and one-send workflow dispatches.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use concurro_db::{Database, UnitOfWork};
 use uuid::Uuid;
+
+use crate::execution_owner::lock_execution_owner;
 
 /// A session's immutable fork and current publication state.
 #[derive(Clone, Debug)]
@@ -11,7 +13,7 @@ pub struct RunnerSession {
     pub session_id: Uuid,
     /// Turn whose runner this session serves.
     pub turn_id: Uuid,
-    /// Configured issue repository identity for target lookup.
+    /// Configured fork target identity for runner lookup.
     pub repository_id: i64,
     /// Fork pinned when the turn was admitted.
     pub fork: String,
@@ -56,34 +58,39 @@ pub async fn record_runner_session(
     turn_id: Uuid,
     session_id: Uuid,
 ) -> Result<()> {
+    let repository_id = lock_execution_owner(uow, turn_id)
+        .await?
+        .context("runner attempt has no execution owner")?
+        .runner_repository_id();
     let inserted: Option<bool> = sqlx::query_scalar(
         "INSERT INTO tasks.runner_sessions \
          (session_id,turn_id,repository_id,fork,config_sha,desired_present,ref_watch,dispatch_status) \
-         SELECT $2,$1,s.repository_id,a.fork,a.config_sha, \
+         SELECT $2,$1,$3,a.fork,a.config_sha, \
          a.status IN ('ready','sending','queued','running') OR \
              (a.status='unknown' AND a.outcome_reason='poll_failures_exhausted'), \
          true,CASE WHEN a.status IN ('ready','sending','queued','running') OR \
              (a.status='unknown' AND a.outcome_reason='poll_failures_exhausted') \
              THEN 'recorded' ELSE 'skipped' END \
-         FROM tasks.attempts a \
-         JOIN tasks.task_state s ON s.task_id=a.task_id WHERE a.id=$1 \
+         FROM tasks.attempts a WHERE a.id=$1 \
          ON CONFLICT (session_id) DO NOTHING RETURNING desired_present",
     )
     .bind(turn_id)
     .bind(session_id)
+    .bind(repository_id)
     .fetch_optional(uow.connection())
     .await?;
     if inserted.is_some() {
         enqueue_runner_session(uow, session_id, "initial").await?;
     } else {
         let same: Option<bool> = sqlx::query_scalar(
-            "SELECT r.turn_id=$1 AND r.repository_id=s.repository_id \
+            "SELECT r.turn_id=$1 AND r.repository_id=$3 \
              AND r.fork=a.fork AND r.config_sha=a.config_sha \
              FROM tasks.runner_sessions r JOIN tasks.attempts a ON a.id=$1 \
-             JOIN tasks.task_state s ON s.task_id=a.task_id WHERE r.session_id=$2",
+             WHERE r.session_id=$2",
         )
         .bind(turn_id)
         .bind(session_id)
+        .bind(repository_id)
         .fetch_optional(uow.connection())
         .await?;
         ensure!(same == Some(true), "runner session binding changed");

@@ -902,6 +902,13 @@ async fn approved_candidate_publishes_one_branch_commit_and_draft_pr() {
         .expect("detail")
         .expect("task detail");
     assert_eq!(detail["git_publication"]["intent"]["pr_number"], 19);
+    let owner: (String, Uuid) = sqlx::query_as(
+        "SELECT owner_kind,owner_id FROM tasks.pr_ownership WHERE upstream='acme/demo' AND pr_number=19",
+    )
+    .fetch_one(restarted.pool())
+    .await
+    .expect("contribution PR ownership");
+    assert_eq!(owner, ("contribution".to_owned(), task_id));
     assert_eq!(detail["pr_reviews"][0]["status"], "recorded");
     let review: (String, String, i64, Vec<String>) = sqlx::query_as(
         "SELECT b.head,b.plan_id,b.pr_number,ARRAY(SELECT jsonb_array_elements_text(b.changed_paths)) \

@@ -22,8 +22,9 @@ pub use github_events::{
 pub use identifiers::{EventId, RequestId, TaskId, Timestamp};
 pub use ingress::{CoverageAdvanced, CoverageGap};
 pub use tasks::{
-    RequestActor, RequestCommand, RequestOutcome, RequestOutcomeStatus, TaskBudget, TaskBudgets,
-    TaskIssue, TaskNotice, TaskReport, TaskSnapshot,
+    ConfigLauncher, ConfigTarget, ConfigTargets, ReadModelRecord, RequestActor, RequestCommand,
+    RequestOutcome, RequestOutcomeStatus, TaskBudget, TaskBudgets, TaskIssue, TaskNotice,
+    TaskReport, TaskSnapshot,
 };
 pub use turns::{
     TurnArtifact, TurnFinished, TurnRunner, TurnStatus, TurnSubmitted, TurnTranscript,
@@ -320,6 +321,14 @@ where
 /// Contract families emitted by the schema generator.
 pub const REGISTRY: &[ContractRegistration] = &[
     ContractRegistration {
+        family: ConfigTargets::FAMILY,
+        version: ConfigTargets::VERSION,
+        schema: generate_schema::<ConfigTargets>,
+        prepare_schema: schema::prepare_config_targets,
+        round_trip: round_trip::<ConfigTargets>,
+        python_decoder: "decode_config_targets",
+    },
+    ContractRegistration {
         family: GithubIssues::FAMILY,
         version: GithubIssues::VERSION,
         schema: generate_schema::<GithubIssues>,
@@ -372,6 +381,14 @@ pub const REGISTRY: &[ContractRegistration] = &[
         prepare_schema: schema::prepare_task_snapshot,
         round_trip: round_trip::<TaskSnapshot>,
         python_decoder: "decode_task_snapshot",
+    },
+    ContractRegistration {
+        family: ReadModelRecord::FAMILY,
+        version: ReadModelRecord::VERSION,
+        schema: generate_schema::<ReadModelRecord>,
+        prepare_schema: schema::prepare_read_model_record,
+        round_trip: round_trip::<ReadModelRecord>,
+        python_decoder: "decode_read_model_record",
     },
     ContractRegistration {
         family: TaskNotice::FAMILY,

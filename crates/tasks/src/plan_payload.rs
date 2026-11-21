@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Duration, Utc};
+use concurro_contracts::TaskId;
 use concurro_db::Database;
 use concurro_events_postgres::Outbox;
 use concurro_exchange_v1::TurnSubmission;
@@ -19,7 +20,7 @@ use uuid::Uuid;
 use crate::{
     ArchiveContext, InitializationTarget,
     archive::{RetainedPreflightRefusal, preflight_retained},
-    bundle::{plan_prompt_parts, python_digest, python_pretty_json},
+    bundle::{plan_prompt_parts, python_digest, python_pretty_json, task_prompt_parts},
     intake_payload::{IntakeTransport, assigned_agent, mcp_servers},
 };
 
@@ -211,6 +212,44 @@ pub(crate) fn prepare_task_attempt(
     turn: Uuid,
     now: DateTime<Utc>,
 ) -> Result<AttemptSpec> {
+    prepare_execution_attempt(
+        issue,
+        task.id,
+        task.revision,
+        snapshot,
+        target,
+        transport,
+        expected,
+        stage,
+        phase,
+        context,
+        agent_config,
+        retained,
+        false,
+        turn,
+        now,
+    )
+}
+
+/// Freeze a runner envelope for either lifecycle without fabricating task state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_execution_attempt(
+    issue: IssueKey,
+    task_id: TaskId,
+    expected_revision: u64,
+    snapshot: &InitializationSnapshot,
+    target: &InitializationTarget,
+    transport: &IntakeTransport,
+    expected: Value,
+    stage: &str,
+    phase: String,
+    context: Value,
+    agent_config: (String, String, String, Option<Value>),
+    retained: Option<&RetainedAttempt>,
+    standalone_review: bool,
+    turn: Uuid,
+    now: DateTime<Utc>,
+) -> Result<AttemptSpec> {
     let config = &snapshot.configuration;
     let (harness, model, effort, agent) = agent_config;
     ensure!(
@@ -250,6 +289,7 @@ pub(crate) fn prepare_task_attempt(
         "plan" => plan_prompt_parts(&context, snapshot)?,
         "plan_qc" => crate::bundle::plan_qc_prompt_parts(&context, snapshot)?,
         "develop" => crate::bundle::develop_prompt_parts(&context, snapshot)?,
+        "review" if standalone_review => task_prompt_parts(&context, snapshot, "review", true)?,
         "review" => crate::bundle::review_prompt_parts(&context, snapshot)?,
         _ => anyhow::bail!("unsupported task attempt stage"),
     };
@@ -312,9 +352,9 @@ pub(crate) fn prepare_task_attempt(
         "timeout": timeout,
     });
     let binding = json!({
-        "repository": target.issue_repository,
+        "repository": if standalone_review { &target.upstream } else { &target.issue_repository },
         "issue": issue.number,
-        "generation": 1,
+        "generation": if standalone_review { expected_revision } else { 1 },
         "upstream": target.upstream,
         "fork": target.fork,
         "config_sha": snapshot.pins.config_sha,
@@ -349,8 +389,8 @@ pub(crate) fn prepare_task_attempt(
     };
     Ok(AttemptSpec {
         id: turn,
-        task: task.id,
-        expected_revision: task.revision,
+        task: task_id,
+        expected_revision,
         staffing_group,
         fork: target.fork.clone(),
         config_sha: snapshot.pins.config_sha.clone(),

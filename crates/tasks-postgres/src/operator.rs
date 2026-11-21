@@ -139,6 +139,34 @@ pub async fn resolve_pending_write(
             }
             true
         }
+        "standalone_review" if sequence.is_none() => {
+            let status: Option<String> = sqlx::query_scalar(
+                "SELECT status FROM tasks.standalone_review_publications \
+                 WHERE turn_id=$1 FOR UPDATE",
+            )
+            .bind(id)
+            .fetch_optional(uow.connection())
+            .await?;
+            if status.as_deref() != Some("sent") {
+                return Ok(false);
+            }
+            if resend {
+                if !crate::standalone_publication::retry_standalone_review_publication(uow, id)
+                    .await?
+                {
+                    return Ok(false);
+                }
+                crate::standalone::enqueue_standalone_review_publish(uow, id).await?;
+                true
+            } else {
+                crate::standalone_publication::fail_standalone_review_publication(
+                    uow,
+                    id,
+                    "operator_failed",
+                )
+                .await?
+            }
+        }
         "ready" if sequence.is_none() => {
             let row: Option<(i64, i64, String, String)> = sqlx::query_as(
                 "SELECT t.repository_id,t.issue_number,r.head,r.status \
@@ -201,14 +229,193 @@ pub async fn resolve_pending_write(
 pub async fn list_tasks(database: &Database) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<(Json<Value>,)> = sqlx::query_as(
         "SELECT jsonb_build_object( \
-         'repository_id',repository_id,'issue_number',issue_number,'task_id',task_id, \
+         'kind','contribution','repository_id',repository_id,'issue_number',issue_number,'task_id',task_id, \
          'revision',revision,'stage',state->>'stage','stage_reason',state->>'stage_reason', \
          'used_model_calls',state->'used_model_calls') \
          FROM tasks.task_state ORDER BY repository_id,issue_number",
     )
     .fetch_all(database.pool())
     .await?;
-    Ok(rows.into_iter().map(|row| row.0.0).collect())
+    let standalone: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'kind','standalone_pr_review','repository_id',repository_id, \
+         'issue_number',pr_number,'task_id',id,'round',round,'stage',stage, \
+         'used_model_calls',used_model_calls,'upstream',upstream) \
+         FROM tasks.standalone_review_tasks ORDER BY repository_id,pr_number",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    let mut listed = rows
+        .into_iter()
+        .chain(standalone)
+        .map(|row| row.0.0)
+        .collect::<Vec<_>>();
+    listed.sort_by_key(|item| {
+        (
+            item["repository_id"].as_i64().unwrap_or_default(),
+            item["issue_number"].as_i64().unwrap_or_default(),
+        )
+    });
+    Ok(listed)
+}
+
+/// Show the independent PR review owner, source rounds, findings and write receipts.
+pub async fn standalone_review_detail(
+    database: &Database,
+    source: IssueKey,
+) -> Result<Option<Value>, sqlx::Error> {
+    let task: Option<(Uuid, Json<Value>)> = sqlx::query_as(
+        "SELECT id,jsonb_build_object( \
+         'kind','standalone_pr_review','task_id',id,'repository_id',repository_id, \
+         'upstream',upstream,'pr_number',pr_number,'reviewer_id',reviewer_id, \
+         'stage',stage,'round',round,'used_model_calls',used_model_calls, \
+         'closed_from_stage',closed_from_stage,'enrolled_at',enrolled_at) \
+         FROM tasks.standalone_review_tasks \
+         WHERE repository_id=$1 AND pr_number=$2",
+    )
+    .bind(source.repository_id)
+    .bind(source.number)
+    .fetch_optional(database.pool())
+    .await?;
+    let Some((task_id, Json(mut detail))) = task else {
+        return Ok(None);
+    };
+    let rounds: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'number',number,'request_id',request_id,'status',status,'snapshot',snapshot, \
+         'cancellation_request_id',cancellation_request_id,'cancelled_by',cancelled_by, \
+         'opened_at',opened_at,'completed_at',completed_at) \
+         FROM tasks.standalone_review_rounds WHERE task_id=$1 ORDER BY number",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let requests: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'id',id,'source_id',source_id,'source_at',source_at,'actor',actor, \
+         'action',action,'status',status,'reason',reason,'round',round) \
+         FROM tasks.standalone_review_requests \
+         WHERE repository_id=$1 AND pr_number=$2 \
+         ORDER BY source_at,source_id",
+    )
+    .bind(source.repository_id)
+    .bind(source.number)
+    .fetch_all(database.pool())
+    .await?;
+    let commands: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'id',id,'comment_id',comment_id,'source',source,'source_at',source_at, \
+         'actor',actor,'kind',kind,'status',status,'reason',reason,'decided_at',decided_at) \
+         FROM tasks.standalone_review_commands \
+         WHERE repository_id=$1 AND pr_number=$2 ORDER BY source_at,comment_id",
+    )
+    .bind(source.repository_id)
+    .bind(source.number)
+    .fetch_all(database.pool())
+    .await?;
+    let adoptions: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'command_id',command_id,'round',round, \
+         'previous_config_sha',previous_snapshot->>'config_sha', \
+         'adopted_config_sha',adopted_snapshot->>'config_sha', \
+         'adopted_at',adopted_at) \
+         FROM tasks.standalone_review_adoptions \
+         WHERE task_id=$1 ORDER BY adopted_at,command_id",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let attempts: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'id',a.id,'round',s.round,'reviewer_id',s.reviewer_id, \
+         'attempt_number',s.attempt_number,'status',s.status, \
+         'turn_status',a.status,'report',s.report,'validated_report',s.validated_report, \
+         'failure_reason',s.failure_reason,'funding',f.purpose, \
+         'payer_id',f.payer_id,'credential_record_id',f.credential_record_id, \
+         'credential_version',f.credential_version, \
+         'effects',COALESCE((SELECT jsonb_agg(jsonb_build_object( \
+             'id',e.id,'kind',e.kind,'status',e.status,'updated_at',e.updated_at) \
+             ORDER BY e.id) FROM tasks.effects e WHERE e.turn_id=a.id),'[]'::jsonb)) \
+         FROM tasks.standalone_review_attempts s \
+         JOIN tasks.attempts a ON a.id=s.attempt_id \
+         LEFT JOIN tasks.standalone_review_funding_grants f ON f.attempt_id=a.id \
+         WHERE s.task_id=$1 ORDER BY s.round,s.reviewer_id,s.attempt_number",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let findings: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'id',id,'reviewer_id',reviewer_id,'status',status,'head',head, \
+         'finding',finding,'disposition',disposition,'thread_node_id',thread_node_id, \
+         'root_comment_id',root_comment_id) \
+         FROM tasks.standalone_review_findings WHERE task_id=$1 ORDER BY sequence",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let dispositions: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'turn_id',turn_id,'finding_id',finding_id,'reply_status',reply_status, \
+         'reply_id',reply_id,'resolve_status',resolve_status,'error',error) \
+         FROM tasks.standalone_review_dispositions WHERE task_id=$1 \
+         ORDER BY turn_id,finding_id",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let reports: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'turn_id',report_id,'name',name,'status',status, \
+         'artifact_number',artifact_number,'error',error) \
+         FROM tasks.report_artifact_writes WHERE standalone_task_id=$1 \
+         ORDER BY recorded_at,report_id",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let checks: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'round',round,'attempt',attempt,'head',head,'external_id',external_id, \
+         'run_id',run_id,'create_state',create_state,'create_misses',create_misses, \
+         'recheck_until',recheck_until,'completed',completed,'error',error) \
+         FROM tasks.standalone_review_checks WHERE task_id=$1 ORDER BY round,attempt",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let publications: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'turn_id',turn_id,'round',round,'reviewer_id',reviewer_id, \
+         'status',status,'review_id',review_id,'error',error,'recorded_at',recorded_at, \
+         'comments',comments,'unplaced_comments',unplaced_comments) \
+         FROM tasks.standalone_review_publications WHERE task_id=$1 \
+         ORDER BY recorded_at,turn_id",
+    )
+    .bind(task_id)
+    .fetch_all(database.pool())
+    .await?;
+    let object = detail
+        .as_object_mut()
+        .expect("standalone detail is an object");
+    for (name, entries) in [
+        ("rounds", rounds),
+        ("requests", requests),
+        ("commands", commands),
+        ("adoptions", adoptions),
+        ("attempts", attempts),
+        ("findings", findings),
+        ("dispositions", dispositions),
+        ("report_artifacts", reports),
+        ("checks", checks),
+        ("review_publications", publications),
+    ] {
+        object.insert(
+            name.to_owned(),
+            Value::Array(entries.into_iter().map(|row| row.0.0).collect()),
+        );
+    }
+    Ok(Some(detail))
 }
 
 /// Read one task with its ordered requests, turns, reports and publication writes.
@@ -239,7 +446,7 @@ pub async fn task_detail(
     .fetch_optional(database.pool())
     .await?;
     let Some((Json(state),)) = state else {
-        return Ok(None);
+        return standalone_review_detail(database, issue).await;
     };
     let requests: Vec<(Json<Value>,)> = sqlx::query_as(
         "SELECT jsonb_build_object('id',id,'channel',channel,'source',source, \
@@ -583,9 +790,12 @@ pub async fn pending_effects(database: &Database) -> Result<Vec<Value>, sqlx::Er
          'status',e.status,'updated_at',e.updated_at, \
          'age_seconds',EXTRACT(EPOCH FROM now()-e.updated_at), \
          'attempt_status',a.status,'outcome_reason',a.outcome_reason, \
-         'repository_id',t.repository_id,'issue_number',t.issue_number) \
+         'repository_id',COALESCE(t.repository_id,s.repository_id), \
+         'issue_number',COALESCE(t.issue_number,s.pr_number), \
+         'owner_kind',CASE WHEN s.id IS NULL THEN 'contribution' ELSE 'standalone_pr_review' END) \
          FROM tasks.effects e JOIN tasks.attempts a ON a.id=e.turn_id \
-         JOIN tasks.task_state t ON t.task_id=a.task_id \
+         LEFT JOIN tasks.task_state t ON t.task_id=a.task_id \
+         LEFT JOIN tasks.standalone_review_tasks s ON s.id=a.standalone_task_id \
          WHERE e.status<>'settled' ORDER BY e.updated_at,e.id",
     )
     .fetch_all(database.pool())
@@ -603,6 +813,22 @@ pub async fn pending_effects(database: &Database) -> Result<Vec<Value>, sqlx::Er
     .fetch_all(database.pool())
     .await?;
     effects.extend(comments.into_iter().map(|row| row.0.0));
+    let sponsorship: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','sponsorship_transition', \
+         'transition',s.transition,'task_id',s.task_id,'provider',s.provider, \
+         'expected_epoch',s.expected_epoch,'epoch',s.epoch,'status',s.status, \
+         'failure',s.failure,'repository_id',t.repository_id, \
+         'issue_number',t.issue_number,'age_seconds', \
+         EXTRACT(EPOCH FROM now()-s.recorded_at), \
+         'resolution',CASE WHEN s.status='failed' THEN 'operator_review' \
+             ELSE 'retry_exact' END) \
+         FROM tasks.sponsorship_transitions s \
+         JOIN tasks.task_state t ON t.task_id=s.task_id \
+         WHERE s.status<>'acknowledged' ORDER BY s.recorded_at,s.transition",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(sponsorship.into_iter().map(|row| row.0.0));
     let publications: Vec<(Json<Value>,)> = sqlx::query_as(
         "SELECT jsonb_build_object('kind','git_publication','task_id',p.task_id, \
          'attempt_id',p.attempt_id,'repository_id',t.repository_id, \
@@ -641,6 +867,23 @@ pub async fn pending_effects(database: &Database) -> Result<Vec<Value>, sqlx::Er
     .fetch_all(database.pool())
     .await?;
     effects.extend(review_publications.into_iter().map(|row| row.0.0));
+    let standalone_publications: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','standalone_review_publication', \
+         'turn_id',p.turn_id,'task_id',p.task_id,'round',p.round, \
+         'pr_number',p.pr_number,'head',p.head,'marker',p.marker, \
+         'status',p.status,'error',p.error,'reviewer_user_id',p.reviewer_user_id, \
+         'repository_id',t.repository_id,'upstream',t.upstream, \
+         'resolution',CASE WHEN p.status='recorded' THEN 'send' \
+             WHEN p.status='sent' THEN 'readback_or_operator' \
+             ELSE 'operator_review' END) \
+         FROM tasks.standalone_review_publications p \
+         JOIN tasks.standalone_review_tasks t ON t.id=p.task_id \
+         WHERE p.status IN ('recorded','sent','failed') \
+         ORDER BY p.recorded_at,p.turn_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(standalone_publications.into_iter().map(|row| row.0.0));
     let ready_intents: Vec<(Json<Value>,)> = sqlx::query_as(
         "SELECT jsonb_build_object('kind','pr_ready_intent','task_id',r.task_id, \
          'pr_number',r.pr_number,'head',r.head,'base_sha',r.base_sha, \
@@ -717,6 +960,33 @@ pub async fn pending_effects(database: &Database) -> Result<Vec<Value>, sqlx::Er
     .fetch_all(database.pool())
     .await?;
     effects.extend(runners.into_iter().map(|row| row.0.0));
+    let label_wakes: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','label_wake','delivery_id',delivery_id, \
+         'repository_id',repository_id,'issue_number',issue_number,'action',action, \
+         'actor_id',actor_id,'updated_at',updated_at,'scan_attempts',scan_attempts, \
+         'retry_at',retry_at,'last_error',last_error,'exhausted_at',exhausted_at, \
+         'resolution',CASE WHEN exhausted_at IS NULL THEN 'retry' \
+             ELSE 'reconciliation_required' END) \
+         FROM tasks.label_wakes WHERE observed_at IS NULL ORDER BY retry_at,delivery_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(label_wakes.into_iter().map(|row| row.0.0));
+    let review_wakes: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','standalone_review_wake', \
+         'delivery_id',delivery_id,'repository_id',repository_id,'upstream',upstream, \
+         'pr_number',pr_number,'action',action,'actor_id',actor_id, \
+         'reviewer_id',reviewer_id,'updated_at',updated_at, \
+         'scan_attempts',scan_attempts,'retry_at',retry_at,'last_error',last_error, \
+         'exhausted_at',exhausted_at, \
+         'resolution',CASE WHEN exhausted_at IS NULL THEN 'retry' \
+             ELSE 'reconciliation_required' END) \
+         FROM tasks.standalone_review_wakes WHERE observed_at IS NULL \
+         ORDER BY retry_at,delivery_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(review_wakes.into_iter().map(|row| row.0.0));
     Ok(effects)
 }
 

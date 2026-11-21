@@ -12,6 +12,8 @@
     "issue": {"repository_id": 8, "number": 3},
     "kind": "contribution",
     "author": {"id": 10, "login": "writer"},
+    "title": null,
+    "updated_at": null,
     "initialized": false,
     "mode": "manual",
     "stage": null,

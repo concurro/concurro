@@ -672,7 +672,8 @@ class Exchange:
             or slot.get("grant_id") != binding["grant_id"]
             or slot.get("provenance") != "explicit_comment"
             and not (
-                slot.get("provenance") in ("task_start", "label") and slot.get("source_funding_mode") == "contributed"
+                slot.get("provenance") in ("task_start", "label", "review_request")
+                and slot.get("source_funding_mode") == "contributed"
             )
         ):
             raise Refused(409, "provider grant differs from current sponsorship fence")

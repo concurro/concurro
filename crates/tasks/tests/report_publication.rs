@@ -147,6 +147,7 @@ async fn lost_report_artifact_response_creates_only_one_visible_report() {
                 bot_login: "concurro[bot]".to_owned(),
             },
         )]),
+        standalone_targets: std::collections::HashMap::new(),
     };
     let postgres = PostgresContainer::start().await.expect("Postgres");
     let database = Database::connect(postgres.url(), 2)

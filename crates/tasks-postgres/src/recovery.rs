@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     GitPublicationIntent, cancel_attempts, design, enqueue_gates, enqueue_git_publication,
     enqueue_implementation, enqueue_intake, enqueue_plan, pr_review,
+    sponsorship::billable_model_calls,
 };
 
 /// Fresh source and PR observations used by recovery commands.
@@ -166,7 +167,7 @@ async fn description_repair(
     {
         return Ok(Err("description_repair_evidence_changed"));
     }
-    if current.used_model_calls >= saved.pins.max_model_calls {
+    if billable_model_calls(uow, current).await? >= saved.pins.max_model_calls {
         return Ok(Err("model_call_budget_exhausted"));
     }
     let next = TaskState {
@@ -335,7 +336,9 @@ pub(crate) async fn decide_recovery(
                         refused("governance_changed")
                     } else if !evidence.pr_unchanged {
                         refused("pr_changed")
-                    } else if current.used_model_calls >= saved.pins.max_model_calls {
+                    } else if billable_model_calls(uow, current).await?
+                        >= saved.pins.max_model_calls
+                    {
                         refused("model_call_budget_exhausted")
                     } else {
                         let approval: Option<(String, String)> = sqlx::query_as(
@@ -439,7 +442,7 @@ pub(crate) async fn decide_recovery(
                             | Stage::Publish
                             | Stage::Review => {
                                 if stage != Stage::Publish
-                                    && current.used_model_calls
+                                    && billable_model_calls(uow, current).await?
                                         >= current
                                             .pins
                                             .as_ref()
@@ -499,7 +502,7 @@ pub(crate) async fn decide_recovery(
                         | Stage::Review),
                     ) = current.retry_stage
                 {
-                    if current.used_model_calls
+                    if billable_model_calls(uow, current).await?
                         >= current.pins.as_ref().expect("paused pins").max_model_calls
                     {
                         refused("model_call_budget_exhausted")
@@ -666,7 +669,8 @@ pub(crate) async fn decide_recovery(
                                         || (rebind
                                             && matches!(stage, Stage::PlanQc | Stage::Review));
                                 if needs_model_call
-                                    && current.used_model_calls >= adopted.pins.max_model_calls
+                                    && billable_model_calls(uow, current).await?
+                                        >= adopted.pins.max_model_calls
                                 {
                                     *decision = refused("model_call_budget_exhausted");
                                     return Ok(());

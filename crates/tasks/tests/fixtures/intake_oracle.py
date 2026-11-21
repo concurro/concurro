@@ -2,6 +2,9 @@
 
 import json
 import sys
+import tempfile
+import uuid
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +21,10 @@ sys.path.insert(0, str(root / "service"))
 from diagnostics import prompt as diagnostic_prompt  # noqa: E402
 sys.path.insert(0, str(root / "gateway" / "exchange"))
 from exchange import staffing  # noqa: E402
+sys.path.insert(0, str(root / "gateway" / "tests"))
+from test_exchange_funding import FundedGateway, MetadataVault  # noqa: E402
+from exchange import Exchange, Refused  # noqa: E402
+from exchange_fixtures import AUDIENCE  # noqa: E402
 
 case = json.load(sys.stdin)
 snapshot = case["snapshot"]
@@ -87,8 +94,49 @@ print(json.dumps({
         submission["budget"], submission["lease"]
     ),
 }))
-expected = submission["payload"]
+expected = deepcopy(submission["payload"])
+expected["request"].pop("admission", None)
+expected["request"].pop("attempt", None)
 if actual != expected:
     print("Python intake payload:", json.dumps(actual, indent=2, sort_keys=True), file=sys.stderr)
     print("Rust intake payload:", json.dumps(expected, indent=2, sort_keys=True), file=sys.stderr)
     sys.exit(1)
+
+if "transitions" in case:
+    # Prove the persisted Rust body against the retained Exchange's real admission path.
+    vault = MetadataVault()
+    vault.records = [{
+        "user_id": "2", "route": "openai-api-key", "record_id": "e" * 64,
+        "version": 1, "kind": "api_key", "status": "valid",
+        "models": ["gpt-test"], "expiry_known": False, "expires_at": None,
+    }]
+    with tempfile.TemporaryDirectory() as directory:
+        exchange = Exchange(directory + "/exchange.db", FundedGateway(), None, AUDIENCE, vault=vault)
+        try:
+            assert len(case["transitions"]) == 3
+            for transition in case["transitions"][:2]:
+                exchange.sponsorship(transition)
+            body = case["submission"]
+            values = [body[k] for k in ("turn", "expected", "models", "budget", "lease", "payload")]
+            first = exchange.submit(*values, pin=body["pin"], binding=body["binding"])
+            assert first["status"] == "queued"
+            assert exchange.submit(*values, pin=body["pin"], binding=body["binding"]) == first
+            assert exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0] == 1
+            withdraw = case["transitions"][2]
+            assert withdraw["reason"] == "withdraw" and withdraw["cutoff"] == body["binding"]["epoch"]
+            exchange.sponsorship(withdraw)
+            later = deepcopy(body)
+            later["turn"] = str(uuid.uuid4())
+            later["payload"]["request"]["attempt"] = later["turn"]
+            later["payload"]["request"]["admission"]["call"] = 2
+            later_values = [later[k] for k in ("turn", "expected", "models", "budget", "lease", "payload")]
+            try:
+                exchange.submit(*later_values, pin=later["pin"], binding=later["binding"])
+            except Refused as error:
+                assert error.status == 409, str(error)
+                assert str(error) == "provider grant differs from current sponsorship fence"
+            else:
+                raise AssertionError("withdrawal allowed another paid turn")
+            assert exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0] == 1
+        finally:
+            exchange.db.close()

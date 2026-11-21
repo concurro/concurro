@@ -13,6 +13,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -94,6 +97,8 @@ class SignInTests(unittest.TestCase):
         state, code_challenge = self.start()
         response = self.client.get("/auth/callback", params={"code": "good", "state": state}, follow_redirects=False)
         self.assertEqual(response.headers["location"], "/tasks")
+        self.assertIn("concurro_viewer", self.client.cookies)
+        self.assertNotEqual(self.client.cookies["concurro_viewer"], self.client.cookies["concurro_session"])
         verifier = self.oauth.exchanged[0][2]
         self.assertEqual(challenge(verifier), code_challenge)
         self.assertEqual(self.client.get("/api/me").json()["login"], "octo")
@@ -287,10 +292,65 @@ class SessionTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_browser_command_signs_and_replays_one_rust_action(self):
+        """Exercise session, route, proof and internal forwarding with one action identity."""
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        observed = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed.append(request)
+            return httpx.Response(202, json={"request_id": "recorded", "status": "pending"})
+
+        service = ServiceCommands(
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            task_api_url="http://task-internal:9000",
+        )
+        sessions = Sessions()
+        sid = sessions.create("user-token", USER, 60)
+        action = "00ced378-49a4-4c99-a2d2-7bd7eac05801"
+        with tempfile.TemporaryDirectory() as directory:
+            key_path = Path(directory) / "command.pem"
+            key_path.write_bytes(
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+            key_path.chmod(0o600)
+            with (
+                patch.object(tasks_module.Tasks, "find_target"),
+                patch.object(github_module.Access, "repository", return_value={"id": 42}),
+            ):
+                client = TestClient(
+                    app_module.create_app(
+                        settings(command_proof_key_path=key_path, task_api_url="http://task-internal:9000"),
+                        oauth=FakeOAuth(),
+                        vault=Vault(None),
+                        sessions=sessions,
+                        commands=service,
+                    ),
+                    cookies={app_module.SESSION_COOKIE: sid},
+                )
+                headers = {app_module.CSRF_HEADER: "1", "Idempotency-Key": action}
+                first = client.post(
+                    "/api/repos/up/project/issues/7/commands", json={"command": "stop"}, headers=headers
+                )
+                second = client.post(
+                    "/api/repos/up/project/issues/7/commands", json={"command": "stop"}, headers=headers
+                )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(len(observed), 2)
+        self.assertTrue(all(request.url.path == "/v1/requests" for request in observed))
+        self.assertTrue(all(request.headers["idempotency-key"] == action for request in observed))
+        self.assertTrue(all("authorization" not in request.headers for request in observed))
+        self.assertEqual(json.loads(observed[0].content), json.loads(observed[1].content))
+
     def test_arguments_resolve_to_commands_the_engine_accepts(self):
         from delegation import command_text
 
-        approve = tasks_module.command_argument("approve", None, lambda: {"plan_id": "a" * 64})
+        approve = tasks_module.command_argument("approve", "a" * 64, lambda: {})
         self.assertEqual(approve, "a" * 64)
         self.assertEqual(command_text("approve", approve), "/concurro approve " + "a" * 64)
         self.assertIsNone(tasks_module.command_argument("stop", None, lambda: None))

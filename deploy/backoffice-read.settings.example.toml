@@ -1,0 +1,8 @@
+listen = "0.0.0.0:8790"
+database_url_file = "/etc/concurro/backoffice-read/database-url"
+task_api_url = "http://concurro-tasks:8792"
+task_api_bearer_file = "/etc/concurro/backoffice-read/task-read-bearer"
+viewer_authority_url = "http://concurro-backoffice:8791"
+viewer_authority_bearer_file = "/etc/concurro/backoffice-read/viewer-authority-bearer"
+nats_url = "nats://concurro-nats:4222"
+consumer_name = "backoffice-read"

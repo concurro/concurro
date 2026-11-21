@@ -524,6 +524,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "concurro-backoffice-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "axum",
+ "chrono",
+ "concurro-backoffice-postgres",
+ "concurro-config",
+ "concurro-contracts",
+ "concurro-db",
+ "concurro-events",
+ "concurro-events-nats",
+ "concurro-events-postgres",
+ "concurro-testkit",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "concurro-backoffice-postgres"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "concurro-db",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "concurro-config"
 version = "0.1.0"
 dependencies = [
@@ -632,6 +671,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -723,10 +763,12 @@ dependencies = [
  "concurro-tasks-postgres",
  "concurro-telemetry",
  "concurro-testkit",
+ "concurro-vault-v1",
  "flate2",
  "glob",
  "graphile_worker",
  "hex",
+ "jsonwebtoken",
  "object_store",
  "reqwest",
  "serde",
@@ -735,6 +777,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "tar",
+ "thiserror",
  "tokio",
  "tracing",
  "uuid",
@@ -810,6 +853,19 @@ dependencies = [
  "concurro-db",
  "sqlx",
  "testcontainers",
+ "tokio",
+]
+
+[[package]]
+name = "concurro-vault-v1"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
 ]
 

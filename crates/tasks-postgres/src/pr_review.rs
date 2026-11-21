@@ -20,6 +20,10 @@ use crate::{
     effects::{definite_session_failure, operational_json},
     enqueue_effect, enqueue_pr_review_correction, events,
     git_publication::GitPublicationIntent,
+    sponsorship::{
+        billable_model_calls, has_credential_exclusion, record_funding_grant,
+        validate_funding_admission,
+    },
 };
 
 /// One immutable pull request head and pinned independent reviewer roster.
@@ -613,7 +617,8 @@ pub(crate) async fn retry_pr_review_batch(
                 let next = if has_report { "correcting" } else { "retrying" };
                 sqlx::query(
                     "UPDATE tasks.pr_review_seats SET status=$3,correction_count=0, \
-                     failure_count=0,repair_signature=NULL WHERE batch_id=$1 AND reviewer_id=$2",
+                     failure_count=0,session_failure_count=0,repair_signature=NULL \
+                     WHERE batch_id=$1 AND reviewer_id=$2",
                 )
                 .bind(batch)
                 .bind(&reviewer)
@@ -991,7 +996,7 @@ pub async fn admit_pr_review_batch(
         .pins
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("task pins missing"))?;
-    if current.used_model_calls + specs.len() as u64 > pins.max_model_calls {
+    if billable_model_calls(uow, &current).await? + specs.len() as u64 > pins.max_model_calls {
         current.retry_stage = Some(current.stage);
         current.stage = Stage::Blocked;
         current.stage_reason =
@@ -1009,6 +1014,11 @@ pub async fn admit_pr_review_batch(
             .await?;
         append_task_snapshot(uow, outbox, &current).await?;
         return Ok(Admission::BudgetExhausted);
+    }
+    let mut funded = current.clone();
+    for (_, spec) in specs {
+        validate_funding_admission(uow, &funded, spec).await?;
+        funded.used_model_calls += 1;
     }
     for (_, spec) in specs {
         sqlx::query("INSERT INTO tasks.staffing_groups (staffing_group,turn_id) VALUES ($1,$2) ON CONFLICT DO NOTHING")
@@ -1060,7 +1070,8 @@ pub async fn admit_pr_review_batch(
         .bind(spec.id)
         .execute(uow.connection())
         .await?;
-        events::append_turn_submitted(uow, outbox, &current, spec, "review").await?;
+        record_funding_grant(uow, spec).await?;
+        events::append_turn_submitted(uow, outbox, current.id, spec, "review").await?;
         let effect_id: i64 = sqlx::query_scalar(
             "INSERT INTO tasks.effects (turn_id,kind,status) \
              VALUES ($1,'submit','recorded') RETURNING id",
@@ -1164,7 +1175,9 @@ pub async fn admit_pr_review_correction(
     if matches!(retained, RetainedCheck::Replay) {
         return Ok(Admission::Existing);
     }
-    if state.used_model_calls >= state.pins.as_ref().expect("review pins").max_model_calls {
+    if billable_model_calls(uow, &state).await?
+        >= state.pins.as_ref().expect("review pins").max_model_calls
+    {
         state.retry_stage = Some(state.stage);
         state.stage = Stage::Blocked;
         state.stage_reason =
@@ -1183,6 +1196,7 @@ pub async fn admit_pr_review_correction(
         append_task_snapshot(uow, outbox, &state).await?;
         return Ok(Admission::BudgetExhausted);
     }
+    validate_funding_admission(uow, &state, spec).await?;
     sqlx::query("INSERT INTO tasks.staffing_groups (staffing_group,turn_id) VALUES ($1,$2) ON CONFLICT DO NOTHING")
         .bind(&spec.staffing_group).bind(spec.id).execute(uow.connection()).await?;
     let owner: Uuid =
@@ -1222,7 +1236,8 @@ pub async fn admit_pr_review_correction(
     .bind(spec.id)
     .execute(uow.connection())
     .await?;
-    events::append_turn_submitted(uow, outbox, &state, spec, "review").await?;
+    record_funding_grant(uow, spec).await?;
+    events::append_turn_submitted(uow, outbox, state.id, spec, "review").await?;
     let effect_id: i64 = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'submit','recorded') RETURNING id",
     )
@@ -1247,8 +1262,8 @@ pub(crate) async fn settle_pr_review_attempt(
     state: &TaskState,
     turn: Uuid,
 ) -> Result<()> {
-    let seat: Option<(Uuid, String, i32, i32)> = sqlx::query_as(
-        "SELECT s.batch_id,s.reviewer_id,s.failure_count,s.session_epoch FROM tasks.pr_review_seats s \
+    let seat: Option<(Uuid, String, i32, i32, i32)> = sqlx::query_as(
+        "SELECT s.batch_id,s.reviewer_id,s.failure_count,s.session_failure_count,s.session_epoch FROM tasks.pr_review_seats s \
          JOIN tasks.pr_review_batches b ON b.id=s.batch_id \
          WHERE s.attempt_id=$1 AND b.task_id=$2 AND b.status='admitted' \
          AND s.status='admitted' FOR UPDATE OF s",
@@ -1257,7 +1272,7 @@ pub(crate) async fn settle_pr_review_attempt(
     .bind(state.id.0)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((batch, reviewer, failure_count, seat_epoch)) = seat else {
+    let Some((batch, reviewer, failure_count, session_failures, seat_epoch)) = seat else {
         return Ok(());
     };
     let (status, result, raw_result, reason, submit_body): (
@@ -1291,7 +1306,7 @@ pub(crate) async fn settle_pr_review_attempt(
         operational_json(&mut projected);
         sqlx::query(
             "UPDATE tasks.pr_review_seats SET status='completed',report=$4,report_raw=$5, \
-             failure_count=0 \
+             failure_count=0,session_failure_count=0 \
              WHERE batch_id=$1 AND reviewer_id=$2 AND attempt_id=$3 AND status='admitted'",
         )
         .bind(batch)
@@ -1303,6 +1318,8 @@ pub(crate) async fn settle_pr_review_attempt(
         .await?;
         enqueue_pr_review_result(uow, state.id.0, turn).await?;
     } else {
+        let credential_failure =
+            status == "finished" && has_credential_exclusion(uow, turn).await?;
         let session_failure = definite_session_failure(
             &status,
             reason.as_deref(),
@@ -1318,9 +1335,11 @@ pub(crate) async fn settle_pr_review_attempt(
                     |outcome| format!("Reviewer turn ended with outcome: {outcome}"),
                 )
         });
-        let retry = state.stage == Stage::Review && session_failure && failure_count < 1;
+        let retry = state.stage == Stage::Review
+            && (credential_failure || (session_failure && session_failures < 1));
         let next_failures = failure_count + 1;
-        let session_epoch: i32 = if session_failure {
+        let next_session_failures = session_failures + i32::from(session_failure);
+        let session_epoch: i32 = if session_failure || credential_failure {
             sqlx::query_scalar(
                 "INSERT INTO tasks.pr_review_sessions (task_id,reviewer_id,session_epoch) \
                  VALUES ($1,$2,1) ON CONFLICT (task_id,reviewer_id) DO UPDATE \
@@ -1335,7 +1354,7 @@ pub(crate) async fn settle_pr_review_attempt(
         };
         sqlx::query(
             "UPDATE tasks.pr_review_seats SET status=$4,validation_error=$5, \
-             failure_count=$6,session_epoch=$7 \
+             failure_count=$6,session_epoch=$7,session_failure_count=$8 \
              WHERE batch_id=$1 AND reviewer_id=$2 AND attempt_id=$3 AND status='admitted'",
         )
         .bind(batch)
@@ -1345,6 +1364,7 @@ pub(crate) async fn settle_pr_review_attempt(
         .bind(&reason)
         .bind(next_failures)
         .bind(session_epoch)
+        .bind(next_session_failures)
         .execute(uow.connection())
         .await?;
         if retry {

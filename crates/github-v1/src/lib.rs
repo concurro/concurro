@@ -1,5 +1,9 @@
 //! Repository-scoped GitHub App identity and read operations for task decisions.
 
+pub mod user_grant;
+
+use user_grant::UserGrant;
+
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -47,6 +51,15 @@ struct Claims {
     iat: i64,
     exp: i64,
     iss: String,
+}
+
+/// One page of App webhook deliveries for ingress recovery.
+#[derive(Serialize)]
+pub struct AppDeliveryPage {
+    /// GitHub's original delivery records.
+    pub deliveries: Vec<Value>,
+    /// Opaque cursor of the next page, when present.
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +209,126 @@ pub fn classify_write_failure(error: &anyhow::Error) -> WriteFailure {
 }
 
 impl AppClient {
+    /// Identify the selected App installation serving one configured repository.
+    pub async fn repository_installation_id(&self, repository: &str) -> Result<i64> {
+        Ok(self.repository_installation(repository).await?.id)
+    }
+
+    /// Read and verify the repository's App installation without minting a token.
+    async fn repository_installation(&self, repository: &str) -> Result<Installation> {
+        let (owner, name) = repository
+            .split_once('/')
+            .context("GitHub repository must be owner/name")?;
+        let installation: Installation = self
+            .api(
+                Method::GET,
+                &["repos", owner, name, "installation"],
+                &self.app_jwt()?,
+                None,
+                &[],
+            )
+            .await?;
+        ensure!(
+            installation.repository_selection == "selected",
+            "GitHub App installation must select repositories"
+        );
+        ensure!(
+            installation.account.login.eq_ignore_ascii_case(owner),
+            "GitHub App installation owner differs from repository owner"
+        );
+        Ok(installation)
+    }
+
+    /// List retained App webhook deliveries with an App JWT, preserving GitHub cursors.
+    pub async fn app_deliveries(&self, cursor: Option<&str>) -> Result<AppDeliveryPage> {
+        let mut url = self.url(&["app", "hook", "deliveries"])?;
+        url.query_pairs_mut().append_pair("per_page", "100");
+        if let Some(cursor) = cursor {
+            url.query_pairs_mut().append_pair("cursor", cursor);
+        }
+        let response = self
+            .request(Method::GET, url, &self.app_jwt()?)
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("GitHub delivery listing failed"))?;
+        ensure!(
+            response.status().is_success(),
+            "GitHub delivery listing failed"
+        );
+        let next_cursor = response
+            .headers()
+            .get(reqwest::header::LINK)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| self.delivery_next_cursor(value))
+            .transpose()?
+            .flatten();
+        let deliveries = response
+            .json::<Vec<Value>>()
+            .await
+            .map_err(|_| anyhow::anyhow!("invalid GitHub delivery listing"))?;
+        Ok(AppDeliveryPage {
+            deliveries,
+            next_cursor,
+        })
+    }
+
+    /// Ask GitHub to redeliver one retained App delivery to ingress.
+    pub async fn redeliver_app_delivery(&self, id: u64) -> Result<()> {
+        let id = id.to_string();
+        let response = self
+            .request(
+                Method::POST,
+                self.url(&["app", "hook", "deliveries", &id, "attempts"])?,
+                &self.app_jwt()?,
+            )
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("GitHub delivery redelivery failed"))?;
+        ensure!(
+            response.status().is_success(),
+            "GitHub delivery redelivery failed"
+        );
+        Ok(())
+    }
+
+    /// Accept only an opaque cursor on this client's own delivery endpoint.
+    fn delivery_next_cursor(&self, link: &str) -> Result<Option<String>> {
+        for part in link.split(',') {
+            let mut fields = part.trim().split(';');
+            let Some(target) = fields.next() else {
+                continue;
+            };
+            if !fields.any(|field| field.trim() == "rel=\"next\"") {
+                continue;
+            }
+            let url = Url::parse(target.trim().trim_start_matches('<').trim_end_matches('>'))?;
+            let expected = self.url(&["app", "hook", "deliveries"])?;
+            ensure!(
+                url.origin() == expected.origin() && url.path() == expected.path(),
+                "invalid GitHub delivery pagination"
+            );
+            return Ok(url
+                .query_pairs()
+                .find_map(|(key, value)| (key == "cursor").then(|| value.into_owned())));
+        }
+        Ok(None)
+    }
+
+    /// Sign one short-lived App JWT without exposing its key to callers.
+    fn app_jwt(&self) -> Result<String> {
+        let now = Utc::now().timestamp();
+        jsonwebtoken::encode(
+            &Header::new(Algorithm::RS256),
+            &Claims {
+                iat: now - 60,
+                exp: now + 540,
+                iss: self.inner.app_id.to_string(),
+            },
+            &self.inner.key,
+        )
+        .map_err(|_| anyhow::anyhow!("GitHub App authentication failed"))
+    }
+
     /// Bind an App key and API endpoint; no credential is displayed in errors.
     pub fn new(
         client: Client,
@@ -369,6 +502,47 @@ impl AppClient {
         result
     }
 
+    /// Read reviewer-visible GitHub state with the bound user grant.
+    pub async fn user_read<T: DeserializeOwned>(
+        &self,
+        grant: &UserGrant,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<T> {
+        for attempt in 0..2 {
+            let token = grant.token().await?;
+            let result = self.api(Method::GET, segments, &token, None, query).await;
+            if attempt == 0
+                && result.as_ref().err().and_then(response_status) == Some(StatusCode::UNAUTHORIZED)
+            {
+                grant.drop_token(&token).await;
+                continue;
+            }
+            return result;
+        }
+        unreachable!("second reviewer read returns its result")
+    }
+
+    /// Send one fenced reviewer-account mutation with its prepared token.
+    pub async fn user_write_prepared<T: DeserializeOwned>(
+        &self,
+        grant: &UserGrant,
+        token: &str,
+        method: Method,
+        segments: &[&str],
+        body: Value,
+    ) -> Result<T> {
+        ensure!(
+            method != Method::GET,
+            "reviewer mutation requires a write method"
+        );
+        let result = self.api(method, segments, token, Some(body), &[]).await;
+        if result.as_ref().err().and_then(response_status) == Some(StatusCode::UNAUTHORIZED) {
+            grant.drop_token(token).await;
+        }
+        result
+    }
+
     /// Resolve a repository's current default branch to its exact commit.
     pub async fn default_head(
         &self,
@@ -427,14 +601,45 @@ impl AppClient {
         permissions: &BTreeMap<String, String>,
         bot_login: &str,
     ) -> Result<i64> {
+        self.public_user_id(repository, permissions, bot_login)
+            .await
+            .context("cannot establish target bot identity")
+    }
+
+    /// Resolve a public account's stable numeric ID from its current login.
+    pub async fn public_user_id(
+        &self,
+        repository: &str,
+        permissions: &BTreeMap<String, String>,
+        login: &str,
+    ) -> Result<i64> {
         let bot: RunnerBot = self
-            .read(repository, permissions, &["users", bot_login], &[])
+            .read(repository, permissions, &["users", login], &[])
             .await?;
         ensure!(
-            bot.id > 0 && bot.login == bot_login,
-            "cannot establish target bot identity"
+            bot.id > 0 && bot.login.eq_ignore_ascii_case(login),
+            "cannot establish source actor identity"
         );
         Ok(bot.id)
+    }
+
+    /// Resolve the current login of one durable account ID, including after a rename.
+    pub async fn public_user_login_by_id(
+        &self,
+        repository: &str,
+        permissions: &BTreeMap<String, String>,
+        id: i64,
+    ) -> Result<Option<String>> {
+        ensure!(id > 0, "source actor ID is invalid");
+        let account = self
+            .read::<RunnerBot>(repository, permissions, &["user", &id.to_string()], &[])
+            .await;
+        match account {
+            Ok(account) if account.id == id && !account.login.is_empty() => Ok(Some(account.login)),
+            Ok(_) => Ok(None),
+            Err(error) if response_status(&error) == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolve one named branch to its exact current commit.
@@ -542,34 +747,8 @@ impl AppClient {
             !owner.is_empty() && !name.is_empty() && !name.contains('/'),
             "GitHub repository must be owner/name"
         );
-        let now = Utc::now().timestamp();
-        let jwt = jsonwebtoken::encode(
-            &Header::new(Algorithm::RS256),
-            &Claims {
-                iat: now - 60,
-                exp: now + 540,
-                iss: self.inner.app_id.to_string(),
-            },
-            &self.inner.key,
-        )
-        .map_err(|_| anyhow::anyhow!("GitHub App authentication failed"))?;
-        let installation: Installation = self
-            .api(
-                Method::GET,
-                &["repos", owner, name, "installation"],
-                &jwt,
-                None,
-                &[],
-            )
-            .await?;
-        ensure!(
-            installation.repository_selection == "selected",
-            "GitHub App installation must select repositories"
-        );
-        ensure!(
-            installation.account.login.eq_ignore_ascii_case(owner),
-            "GitHub App installation owner differs from repository owner"
-        );
+        let installation = self.repository_installation(repository).await?;
+        let jwt = self.app_jwt()?;
         let installation_id = installation.id.to_string();
         let minted: MintedToken = self
             .api(
@@ -775,7 +954,9 @@ mod tests {
     use reqwest::StatusCode;
     use serde_json::{Value, json};
 
-    use super::{ApiError, AppClient, IssueAuthority, WriteFailure, classify_write_failure};
+    use super::{
+        ApiError, AppClient, IssueAuthority, WriteFailure, classify_write_failure, response_status,
+    };
 
     #[test]
     fn write_rejections_share_one_outcome_classification() {
@@ -859,6 +1040,21 @@ mod tests {
                 }),
             )
             .route(
+                "/app/hook/deliveries",
+                get(|headers: HeaderMap, uri: Uri| async move {
+                    assert!(headers["authorization"].to_str().unwrap().starts_with("Bearer ey"));
+                    assert_eq!(uri.query(), Some("per_page=100"));
+                    Json(json!([{"id": 41, "guid": "one", "status": "OK"}]))
+                }),
+            )
+            .route(
+                "/app/hook/deliveries/41/attempts",
+                post(|headers: HeaderMap| async move {
+                    assert!(headers["authorization"].to_str().unwrap().starts_with("Bearer ey"));
+                    axum::http::StatusCode::ACCEPTED
+                }),
+            )
+            .route(
                 "/repos/acme/demo/issues/3",
                 get({
                     let unauthorized = Arc::clone(&unauthorized);
@@ -888,6 +1084,10 @@ mod tests {
             .route(
                 "/users/concurro[bot]",
                 get(|| async { Json(json!({"id": 19, "login": "concurro[bot]"})) }),
+            )
+            .route(
+                "/user/2",
+                get(|| async { Json(json!({"id": 2, "login": "renamed-writer"})) }),
             )
             .route(
                 "/repos/acme/demo/git/ref/heads/release/main",
@@ -925,6 +1125,28 @@ mod tests {
             &key.stdout,
         )
         .expect("App client");
+        let deliveries = identity.app_deliveries(None).await.expect("deliveries");
+        assert_eq!(deliveries.deliveries[0]["id"], 41);
+        assert_eq!(deliveries.next_cursor, None);
+        identity
+            .redeliver_app_delivery(41)
+            .await
+            .expect("redelivery");
+        assert_eq!(
+            identity
+                .delivery_next_cursor(&format!(
+                    "<http://{address}/app/hook/deliveries?cursor=next>; rel=\"next\""
+                ))
+                .expect("next cursor"),
+            Some("next".to_owned())
+        );
+        assert!(
+            identity
+                .delivery_next_cursor(
+                    "<https://elsewhere.invalid/app/hook/deliveries?cursor=bad>; rel=\"next\""
+                )
+                .is_err()
+        );
         let permissions = BTreeMap::from([
             ("administration".to_owned(), "read".to_owned()),
             ("checks".to_owned(), "read".to_owned()),
@@ -970,6 +1192,36 @@ mod tests {
                 "ref": "",
                 "actor_id": "19",
             })
+        );
+        assert_eq!(
+            identity
+                .public_user_id("acme/demo", &permissions, "concurro[bot]")
+                .await
+                .expect("public account"),
+            19
+        );
+        assert_eq!(
+            response_status(
+                &identity
+                    .public_user_id("acme/demo", &permissions, "former-writer")
+                    .await
+                    .expect_err("old login no longer resolves")
+            ),
+            Some(StatusCode::NOT_FOUND)
+        );
+        assert_eq!(
+            identity
+                .public_user_login_by_id("acme/demo", &permissions, 2)
+                .await
+                .expect("stable numeric account"),
+            Some("renamed-writer".to_owned())
+        );
+        assert_eq!(
+            identity
+                .public_user_login_by_id("acme/demo", &permissions, 999)
+                .await
+                .expect("removed account"),
+            None
         );
         assert_eq!(
             identity

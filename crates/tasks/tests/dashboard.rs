@@ -205,6 +205,7 @@ async fn dashboard_create_readback_and_latest_revision_edit_survive_restart() {
                 bot_login: "concurro[bot]".to_owned(),
             },
         )]),
+        standalone_targets: HashMap::new(),
     };
     assert!(
         publish_dashboard(&database, &publication, state.id.0)

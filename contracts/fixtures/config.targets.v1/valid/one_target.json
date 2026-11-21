@@ -1,0 +1,21 @@
+{
+  "id": "2ea31359-94c1-5a95-b686-ac0c53af0ba7",
+  "type": "config.targets",
+  "version": 1,
+  "kind": "snapshot",
+  "producer": "tasks",
+  "occurred_at": "2026-11-20T10:01:00Z",
+  "entity": "config:targets",
+  "revision": 1,
+  "data": {
+    "targets": [{
+      "repository_id": 8,
+      "upstream_repository_id": null,
+      "upstream": "acme/source",
+      "fork": "acme/fork",
+      "issue_repository": "acme/source",
+      "reviewer_user_id": null,
+      "launcher": {"workflow": "concurro-executor.yml", "ref": "refs/heads/main"}
+    }]
+  }
+}

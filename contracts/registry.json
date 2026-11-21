@@ -1,5 +1,12 @@
 [
   {
+    "family": "config.targets",
+    "python_decoder": "decode_config_targets",
+    "python_module": "config_targets_v1",
+    "stem": "config.targets.v1",
+    "version": 1
+  },
+  {
     "family": "github.issues",
     "python_decoder": "decode_github_issues",
     "python_module": "github_issues_v1",
@@ -93,15 +100,22 @@
   {
     "family": "request.tasks",
     "python_decoder": "decode_request_outcome",
-    "python_module": "request_tasks_v1",
-    "stem": "request.tasks.v1",
-    "version": 1
+    "python_module": "request_tasks_v2",
+    "stem": "request.tasks.v2",
+    "version": 2
   },
   {
     "family": "task",
     "python_decoder": "decode_task_snapshot",
     "python_module": "task_v1",
     "stem": "task.v1",
+    "version": 1
+  },
+  {
+    "family": "view.record",
+    "python_decoder": "decode_read_model_record",
+    "python_module": "view_record_v1",
+    "stem": "view.record.v1",
     "version": 1
   },
   {

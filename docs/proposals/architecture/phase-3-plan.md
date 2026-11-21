@@ -34,6 +34,8 @@ waits until no team workflow regresses (M3), and the team is invited after M4.
 M1's local implementation is accepted. The [M1 evidence](../../rust-phase-3-m1-evidence.md)
 records the full 123 test checkpoint and the separately tested five regression
 closure delta. No live target was exercised.
+M2 is also accepted locally; its [evidence](../../rust-phase-3-m2-evidence.md)
+records the frozen source, correction and test limits. M3 remains in progress.
 
 ## Team workflows
 
@@ -414,6 +416,11 @@ fault after the cutover is fixed forward.
    (`exchange.py:503-512`, `:764-773`). The PR numbers in Python's list index are
    exported too, and seed the first index build, since task-branch discovery searches
    only the 100 most recently updated PRs (`service/github_reads.py:298`).
+   Run `python3 deploy/export_python_cutover.py EXCHANGE_DB LIST_INDEX_DB REGISTRY_DB
+   MANIFEST --activation-at A --source-incarnation INCARNATION --source-sequence S`
+   against the stopped databases, then `concurro-tasks imports cutover MANIFEST`
+   before starting the service. The import is restartable and rejects changed
+   floors or historical identities on replay. Empty floor and PR sets are valid.
 7. **Import historical archives.** Run the [archive import](../contracts.md#python-archive-import)
    against the stopped Python service's diagnostics and retained session directories.
    The import command runs only the archive uploader with the task database and
@@ -427,6 +434,8 @@ fault after the cutover is fixed forward.
    Imported
    rows reach the backoffice through its baseline and emit no live turn events.
    An empty inventory completes with zero files and references.
+   Create the manifest with `deploy/export_python_archive.py` and queue it with
+   `concurro-tasks imports python MANIFEST`.
 8. **Move credentials and listeners.** Move the exchange's operator listener to the
    platform network and rotate the operator token so only the task application holds
    it. With Python stopped, transfer the production reviewer grant and its refresh

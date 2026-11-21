@@ -25,11 +25,14 @@ pub struct CommentWrite {
 pub async fn comment_scope(
     database: &Database,
     id: Uuid,
-) -> Result<Option<(i64, String)>, sqlx::Error> {
-    sqlx::query_as("SELECT repository_id,status FROM tasks.publication_comments WHERE id=$1")
-        .bind(id)
-        .fetch_optional(database.pool())
-        .await
+) -> Result<Option<(i64, String, bool)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT repository_id,status,standalone_command_id IS NOT NULL \
+        FROM tasks.publication_comments WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_optional(database.pool())
+    .await
 }
 
 /// Host operator's explicit disposition for an uncertain comment create.

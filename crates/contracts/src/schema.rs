@@ -4,9 +4,22 @@ use serde_json::{Map, Value, json};
 
 use crate::GithubPayload;
 
+/// Restrict the target snapshot to its one configuration entity.
+pub(crate) fn prepare_config_targets(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] = json!({"const":"config.targets"});
+    schema["properties"]["entity"] = json!({"const":"config:targets"});
+}
+
+/// Restrict complete read-model records to their snapshot subject.
+pub(crate) fn prepare_read_model_record(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] = json!({"const":"view.record"});
+}
+
 /// Restrict request outcome facts to the implemented dispositions.
 pub(crate) fn prepare_request_outcome(schema: &mut Value) {
-    schema["properties"]["version"] = json!({"const": 1});
+    schema["properties"]["version"] = json!({"const": 2});
     schema["properties"]["kind"] = json!({"const": "fact"});
     schema["properties"]["type"] =
         json!({"type": "string", "pattern": "^request\\.tasks\\.(?:applied|refused|superseded)$"});

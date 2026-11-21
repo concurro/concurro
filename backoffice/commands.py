@@ -7,6 +7,7 @@ service resolves and authorizes the writer itself (`service/actions.py`).
 import httpx
 
 from .auth import BearerAuth, TokenCredential
+from .proofs import CommandSigner
 
 DEFAULT_URL = "http://concurro-service:8787"
 # Failures before the request reached the service; anything later may follow a posted command.
@@ -32,12 +33,79 @@ class IndexUnavailable(Exception):
     """The service's list index gave no usable answer; never a failure of the user's own sign-in."""
 
 
+def typed_command(command: str, argument: str | None) -> tuple[str, dict]:
+    """Map the existing browser command transport to the task request contract."""
+    if command == "funding":
+        provider, mode = (argument or "").split()
+        return command, {"provider": provider, "mode": mode}
+    if command in ("sponsor", "withdraw"):
+        return command, {"provider": argument} if argument else {}
+    if command == "approve":
+        return command, {"plan_id": argument}
+    if command == "retry" and argument:
+        return "extend", {"plan_revisions": int(argument)}
+    if command == "resume":
+        return command, {"description_only": argument == "--description-only"}
+    return command, {}
+
+
 class ServiceCommands:
-    def __init__(self, url: str | None = None, client: httpx.Client | None = None, lists_token: str | None = None):
+    def __init__(
+        self,
+        url: str | None = None,
+        client: httpx.Client | None = None,
+        lists_token: str | None = None,
+        task_api_url: str | None = None,
+    ):
         """`lists_token` is the shared bearer for the list index; without it the index is not used."""
         self.url = (url or DEFAULT_URL).rstrip("/")
         self.client = client or httpx.Client(timeout=60)
         self.lists_token = lists_token
+        self.task_api_url = task_api_url.rstrip("/") if task_api_url else None
+
+    def send_signed(
+        self,
+        repository_id: int,
+        issue: int,
+        command: str,
+        argument: str | None,
+        actor: dict,
+        action_id: str,
+        source_at: str,
+        signer: CommandSigner,
+        feedback: str | None = None,
+    ) -> dict:
+        """Forward a signed browser action without a GitHub user token."""
+        kind, typed_argument = typed_command(command, argument)
+        content = {
+            "issue": {"repository_id": repository_id, "number": issue},
+            "kind": kind,
+            "argument": typed_argument,
+            "detail": {"feedback": feedback} if feedback is not None else {},
+            "source_at": source_at,
+        }
+        body = {**content, "proof": signer.sign(actor, action_id, content)}
+        try:
+            response = self.client.post(
+                self.task_api_url + "/v1/requests",
+                headers={"Idempotency-Key": action_id},
+                json=body,
+            )
+        except NOT_DELIVERED:
+            raise CommandError(503, "Concurro is unavailable; nothing was recorded") from None
+        except httpx.HTTPError:
+            raise CommandError(502, "the command result is unknown; retry the same action ID") from None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if response.status_code != 202 or not isinstance(payload, dict):
+            reason = payload.get("error") if isinstance(payload, dict) else None
+            raise CommandError(
+                response.status_code,
+                reason if isinstance(reason, str) else "the command failed",
+            )
+        return payload
 
     def lists(self, path: str, body: dict, timeout: float = LIST_SECONDS) -> dict:
         """One list index request with the backoffice's own token; any failure is `IndexUnavailable`."""

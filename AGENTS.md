@@ -88,3 +88,17 @@ required; do not add synchronization machinery solely to guarantee it. This pref
 supersedes stricter boundary guarantees in older plans; update affected documentation
 and tests honestly. Keep simple working mechanisms rather than refactoring merely to
 weaken them.
+
+## Agent coordination and quota
+
+Treat the user's time and model quota as constraints. Give one implementation owner
+clear end-to-end goals and let it own routine testing and troubleshooting. The
+coordinator steers and reviews complete workflows, not individual helpers, storage
+layers or other unfinished foundations. Do not duplicate implementation, monitoring
+or routine tests.
+
+Keep development tests focused. Reserve broad independent verification for completed
+workflows and full suites for final acceptance. Consolidate review findings into one
+correction pass and verify fixes narrowly; do not restart broad review loops. Let the
+implementer continue the next workflow during review. Escalate material design or
+behavior decisions, not ordinary implementation choices. Minor polish is nonblocking.

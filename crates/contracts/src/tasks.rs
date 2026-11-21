@@ -4,6 +4,104 @@ use crate::{Contract, ContractError, EventKind, RequestId, TaskId, Timestamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Task-owned target and launcher identity distributed to read-only consumers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigTarget {
+    /// Numeric issue repository identity.
+    pub repository_id: i64,
+    /// Numeric upstream identity when distinct from the issue repository.
+    pub upstream_repository_id: Option<i64>,
+    /// Upstream owner and repository name.
+    pub upstream: String,
+    /// Runner fork owner and repository name.
+    pub fork: String,
+    /// Issue source owner and repository name.
+    pub issue_repository: String,
+    /// Reviewer account for standalone PR requests, when configured.
+    pub reviewer_user_id: Option<i64>,
+    /// Configured executor launcher.
+    pub launcher: ConfigLauncher,
+}
+
+/// Workflow file and exact ref used to launch runner sessions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigLauncher {
+    /// Executor workflow filename.
+    pub workflow: String,
+    /// Ref selected by task settings.
+    pub r#ref: String,
+}
+
+/// Complete target configuration at one task-service revision.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigTargets {
+    /// Configured target identities in settings order.
+    pub targets: Vec<ConfigTarget>,
+}
+
+impl Contract for ConfigTargets {
+    const FAMILY: &'static str = "config.targets";
+    const VERSION: u32 = 1;
+    const KIND: EventKind = EventKind::Snapshot;
+
+    fn event_type(&self) -> String {
+        Self::FAMILY.to_owned()
+    }
+
+    fn subject(&self) -> String {
+        Self::FAMILY.to_owned()
+    }
+
+    fn validate_metadata(
+        &self,
+        entity: Option<&str>,
+        revision: Option<u64>,
+    ) -> Result<(), ContractError> {
+        if entity != Some("config:targets") || !revision.is_some_and(|revision| revision >= 1) {
+            return Err(ContractError::InvalidMetadata("target configuration"));
+        }
+        Ok(())
+    }
+}
+
+/// Complete source record for the backoffice's event-fed read model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReadModelRecord {
+    /// Baseline entity family.
+    pub entity: String,
+    /// Stable key within the family.
+    pub entity_id: String,
+    /// Complete source body at this revision.
+    pub body: serde_json::Value,
+}
+
+impl Contract for ReadModelRecord {
+    const FAMILY: &'static str = "view.record";
+    const VERSION: u32 = 1;
+    const KIND: EventKind = EventKind::Snapshot;
+
+    fn event_type(&self) -> String {
+        Self::FAMILY.to_owned()
+    }
+
+    fn subject(&self) -> String {
+        Self::FAMILY.to_owned()
+    }
+
+    fn validate_metadata(
+        &self,
+        entity: Option<&str>,
+        revision: Option<u64>,
+    ) -> Result<(), ContractError> {
+        if entity != Some(format!("view:{}:{}", self.entity, self.entity_id).as_str())
+            || !revision.is_some_and(|revision| revision >= 1)
+        {
+            return Err(ContractError::InvalidMetadata("read model record"));
+        }
+        Ok(())
+    }
+}
+
 /// Stable issue identity used by task and request records.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskIssue {
@@ -42,6 +140,8 @@ pub enum RequestCommand {
     Start,
     /// Stop a task.
     Stop,
+    /// Remove label enrollment without stopping an existing task.
+    Unenroll,
     /// Approve one plan identity.
     Approve {
         /// Exact approved plan identity.
@@ -111,7 +211,7 @@ pub struct RequestOutcome {
 
 impl Contract for RequestOutcome {
     const FAMILY: &'static str = "request.tasks";
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
     const KIND: EventKind = EventKind::Fact;
 
     fn event_type(&self) -> String {
@@ -159,6 +259,10 @@ pub struct TaskSnapshot {
     pub kind: String,
     /// Author of the issue, distinct from any request actor.
     pub author: RequestActor,
+    /// Issue title from the pinned or latest source.
+    pub title: Option<String>,
+    /// Latest observed source update time.
+    pub updated_at: Option<Timestamp>,
     /// Whether pinned inputs have completed initialization.
     pub initialized: bool,
     /// Manual M1 task mode.

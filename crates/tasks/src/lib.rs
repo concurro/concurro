@@ -1,15 +1,20 @@
 //! Task event capture and exchange effect execution.
 
+pub mod api;
+
 mod archive;
 mod bundle;
+mod coverage;
 mod dashboard;
 mod design_payload;
+mod funding;
 mod gates;
 mod git_publication;
 mod implementation_payload;
 mod implementation_result;
 mod initialization;
 mod intake_payload;
+mod label;
 mod plan_payload;
 mod pr_review;
 mod pr_review_payload;
@@ -19,10 +24,16 @@ mod publication;
 mod report_publication;
 mod runner;
 mod stage_label;
+mod standalone;
+mod standalone_checks;
+mod standalone_payload;
+mod standalone_publication;
 mod target_config;
+mod target_index;
 
 pub use archive::{ArchiveContext, UploadArchiveJob, upload_archive};
 pub use bundle::bundle_identity;
+pub use coverage::reconcile_coverage_gap;
 pub use dashboard::{DashboardJob, publish_dashboard};
 pub use gates::{TaskGatesJob, run_task_gates};
 pub use git_publication::{
@@ -31,6 +42,7 @@ pub use git_publication::{
 pub use implementation_result::{TaskImplementationResultJob, run_task_implementation_result};
 pub use initialization::{InitializationTarget, read_initialization, read_requirements};
 pub use intake_payload::IntakeTransport;
+pub use label::{LabelScanJob, scan_label_wake};
 pub use pr_review::{
     TaskPrReviewBatchJob, TaskPrReviewCorrectionJob, TaskPrReviewResultJob,
     run_task_pr_review_batch, run_task_pr_review_correction, run_task_pr_review_result,
@@ -42,7 +54,19 @@ pub use publication::{
 pub use report_publication::{PublishTaskReportJob, publish_task_report};
 pub use runner::{RunnerContext, RunnerSessionJob, RunnerTarget, publish_runner_session};
 pub use stage_label::{StageLabelJob, publish_stage_label};
+pub use standalone::{
+    StandaloneReviewContext, StandaloneReviewDecisionJob, StandaloneReviewHandler,
+    StandaloneReviewResultJob, StandaloneReviewRoundJob, StandaloneReviewScanJob,
+    StandaloneReviewTarget, observe_standalone_funding_policy, run_standalone_review_decision,
+    run_standalone_review_pr_state, run_standalone_review_result, run_standalone_review_round,
+    scan_standalone_review_wake,
+};
+pub use standalone_checks::sync_standalone_review_check;
+pub use standalone_publication::{
+    StandaloneReviewPublishJob, publish_standalone_dispositions, publish_standalone_review,
+};
 pub use target_config::{TargetConfig, decode_target_config};
+pub use target_index::{IndexRunHandler, IndexTarget, scan_target_index};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -52,39 +76,73 @@ use std::{
 
 use anyhow::Result;
 use concurro_contracts::{
-    Envelope, GithubEvent, GithubIssues, IssueAction, IssueCommentPayload, KnownIssueAction, TaskId,
+    CoverageGap, Envelope, GithubEvent, GithubIssues, IssueAction, IssueCommentPayload,
+    KnownIssueAction, TaskId,
 };
 use concurro_db::{Database, UnitOfWork};
 use concurro_events::{Handler, Outcome};
 use concurro_events_postgres::Outbox;
 use concurro_exchange_v1::{ExchangeError, Operator};
-use concurro_github_v1::AppClient;
+use concurro_github_v1::{AppClient, response_status};
 use concurro_tasks_core::{
-    Actor, Admission, Authority, IssueKey, LaterCommand, Request, RequestKind, RequestStatus,
-    SourceOrder, Stage, comment_revision, validate_design_review,
+    Actor, Admission, Authority, ConsentAction, FundingMode, IssueKey, LaterCommand, Provider,
+    Request, RequestKind, RequestStatus, RequirementComment, SourceOrder, Stage, comment_revision,
+    consent_facts, initial_sponsorship_transitions, initialize_consent, pr_comment_revision,
+    python_digest, validate_design_review,
 };
 use concurro_tasks_postgres::{
-    CommandEvidence, EffectKind, acknowledge_retirement, admit_design_batch,
+    CommandEvidence, EffectKind, IndexRow, acknowledge_retirement,
+    acknowledge_sponsorship_transition, activate_funding_policy, admit_design_batch,
     admit_design_correction, admit_implementation, admit_intake, admit_plan, applied_request,
-    apply_design_result, apply_request_with_evidence, claim_effect, continue_planner_answer,
-    design_batch, design_correction, design_result, expire_attempt, finish_unapplied_result,
-    implementation_inputs, implementation_session_epoch, initialization_snapshot, initialize_task,
-    latest_implementation_correction, latest_intake_correction, latest_plan_correction,
-    latest_plan_revision, next_pending, open_plan_objections, pin_start_config,
-    planner_session_epoch, pollable_generation, record_comment_revision, record_observation,
-    record_poll_failure, record_request, record_submit_failure, refuse_stage_preflight,
-    reviewer_objections, reviewer_session_epoch, settle_submit, settle_submit_refusal,
-    start_config_pin, task, terminal_pr_inputs,
+    apply_design_result, apply_request_with_evidence, browser_retry_feedback, claim_effect,
+    claim_sponsorship_transition, confirm_current_sponsorship_sources, consent_sources,
+    continue_planner_answer, cutover_floor, design_batch, design_correction, design_result,
+    enqueue_label_scan, expire_attempt, fail_sponsorship_transition, finish_unapplied_result,
+    funding_policy_at, implementation_inputs, implementation_session_epoch,
+    initialization_snapshot, initialize_task, latest_implementation_correction,
+    latest_intake_correction, latest_plan_correction, latest_plan_revision, next_pending,
+    open_plan_objections, pin_start_config, planner_session_epoch, pollable_generation,
+    record_comment_revision, record_coverage_gap, record_initial_sponsorship, record_observation,
+    record_poll_failure, record_request, record_sponsorship_transition,
+    record_standalone_review_command, record_submit_failure, record_withdraw_transition,
+    refuse_request, refuse_stage_preflight, reviewer_objections, reviewer_session_epoch,
+    settle_submit, settle_submit_refusal, source_after_activation, start_config_pin, task,
+    terminal_pr_inputs, upsert_index_event,
 };
+use concurro_vault_v1::MetadataClient;
 use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Persist a recovery interval before acknowledging its ingress event.
+#[derive(Clone)]
+pub struct CoverageGapHandler;
+
+impl Handler<CoverageGap> for CoverageGapHandler {
+    /// Queue the interval for restartable GitHub source reconciliation.
+    async fn handle(&self, work: &mut UnitOfWork<'_>, event: Envelope<CoverageGap>) -> Outcome {
+        match record_coverage_gap(
+            work,
+            event.id.0,
+            event.data.from.0,
+            event.data.to.0,
+            event.data.installation_id,
+        )
+        .await
+        {
+            Ok(()) => Outcome::Done,
+            Err(error) => Outcome::Retry(error.to_string()),
+        }
+    }
+}
 
 /// Capture configured target comments and issue closures.
 #[derive(Clone)]
 pub struct CommentHandler {
     targets: HashSet<i64>,
+    standalone_targets: HashSet<i64>,
     owned_accounts: HashMap<i64, HashSet<String>>,
     outbox: Outbox,
 }
@@ -94,6 +152,7 @@ impl CommentHandler {
     pub fn new(targets: impl IntoIterator<Item = i64>, outbox: Outbox) -> Self {
         Self {
             targets: targets.into_iter().collect(),
+            standalone_targets: HashSet::new(),
             owned_accounts: HashMap::new(),
             outbox,
         }
@@ -115,6 +174,12 @@ impl CommentHandler {
             .collect();
         self
     }
+
+    /// Route configured upstream PR comments through the standalone command ledger.
+    pub fn with_standalone_targets(mut self, targets: impl IntoIterator<Item = i64>) -> Self {
+        self.standalone_targets = targets.into_iter().collect();
+        self
+    }
 }
 
 impl Handler<GithubEvent<IssueCommentPayload>> for CommentHandler {
@@ -124,12 +189,42 @@ impl Handler<GithubEvent<IssueCommentPayload>> for CommentHandler {
         uow: &mut UnitOfWork<'_>,
         event: Envelope<GithubEvent<IssueCommentPayload>>,
     ) -> Outcome {
-        if !self.targets.contains(&event.data.repository.id) {
+        let is_pr = event.data.payload.issue.is_pull_request;
+        if !(if is_pr {
+            self.standalone_targets.contains(&event.data.repository.id)
+        } else {
+            self.targets.contains(&event.data.repository.id)
+        }) {
             return Outcome::Done;
         }
-        let Some(mut revision) = comment_revision(&event) else {
+        let Some(mut revision) = (if is_pr {
+            pr_comment_revision(&event)
+        } else {
+            comment_revision(&event)
+        }) else {
             return Outcome::Done;
         };
+        match source_after_activation(uow, event.data.repository.id, revision.order.at).await {
+            Ok(true) => {}
+            Ok(false) => return Outcome::Done,
+            Err(error) => return Outcome::Retry(error.to_string()),
+        }
+        if !is_pr {
+            let issue = &event.data.payload.issue;
+            let row = IndexRow {
+                repository_id: event.data.repository.id,
+                kind: "issue",
+                item_id: issue.number.to_string(),
+                source_at: issue.updated_at.0,
+                body: json!({"repository":event.data.repository.full_name,
+                    "number":issue.number,"title":issue.title,"state":issue.state,
+                    "labels":issue.labels,"updated_at":issue.updated_at,
+                    "user":issue.user}),
+            };
+            if let Err(error) = upsert_index_event(uow, &row).await {
+                return Outcome::Retry(error.to_string());
+            }
+        }
         if event.data.action.as_deref() != Some("deleted")
             && self
                 .owned_accounts
@@ -139,9 +234,33 @@ impl Handler<GithubEvent<IssueCommentPayload>> for CommentHandler {
                         || names.contains(&event.data.sender.login.to_ascii_lowercase())
                 })
         {
+            if is_pr {
+                return Outcome::Done;
+            }
             revision.request = None;
         }
-        match record_comment_revision(uow, &self.outbox, &revision).await {
+        let recorded = if is_pr {
+            let actor = if event.data.action.as_deref() == Some("created") {
+                &event.data.payload.comment.user
+            } else {
+                &event.data.sender
+            };
+            record_standalone_review_command(
+                uow,
+                &revision,
+                &event.data.repository.full_name,
+                &Actor {
+                    id: actor.id,
+                    login: actor.login.clone(),
+                },
+                event.data.payload.comment.user.id,
+                event.data.payload.comment.body.as_deref().unwrap_or(""),
+            )
+            .await
+        } else {
+            record_comment_revision(uow, &self.outbox, &revision).await
+        };
+        match recorded {
             Ok(()) => Outcome::Done,
             Err(error) => Outcome::Retry(error.to_string()),
         }
@@ -152,13 +271,60 @@ impl Handler<GithubIssues> for CommentHandler {
     /// Record a closed issue as a pending stop under its verified source identity.
     async fn handle(&self, uow: &mut UnitOfWork<'_>, event: Envelope<GithubIssues>) -> Outcome {
         let issue = &event.data.issue;
-        if !self.targets.contains(&event.data.repository.id)
-            || issue.is_pull_request
-            || !matches!(
-                event.data.action,
-                IssueAction::Known(KnownIssueAction::Closed)
+        if !self.targets.contains(&event.data.repository.id) || issue.is_pull_request {
+            return Outcome::Done;
+        }
+        match source_after_activation(uow, event.data.repository.id, issue.updated_at.0).await {
+            Ok(true) => {}
+            Ok(false) => return Outcome::Done,
+            Err(error) => return Outcome::Retry(error.to_string()),
+        }
+        let row = IndexRow {
+            repository_id: event.data.repository.id,
+            kind: "issue",
+            item_id: issue.number.to_string(),
+            source_at: issue.updated_at.0,
+            body: json!({"repository":event.data.repository.full_name,
+                "number":issue.number,"title":issue.title,"state":issue.state,
+                "labels":issue.labels,"updated_at":issue.updated_at,
+                "user":issue.user}),
+        };
+        if let Err(error) = upsert_index_event(uow, &row).await {
+            return Outcome::Retry(error.to_string());
+        }
+        let label_action = match &event.data.action {
+            IssueAction::Known(KnownIssueAction::Labeled { label }) if label.name == "concurro" => {
+                Some("labeled")
+            }
+            IssueAction::Known(KnownIssueAction::Unlabeled { label })
+                if label.name == "concurro" =>
+            {
+                Some("unlabeled")
+            }
+            _ => None,
+        };
+        if let Some(action) = label_action {
+            let result = enqueue_label_scan(
+                uow,
+                IssueKey {
+                    repository_id: event.data.repository.id,
+                    number: issue.number,
+                },
+                &event.data.delivery_id,
+                action,
+                event.data.sender.id,
+                issue.updated_at.0,
             )
-        {
+            .await;
+            return match result {
+                Ok(()) => Outcome::Done,
+                Err(error) => Outcome::Retry(error.to_string()),
+            };
+        }
+        if !matches!(
+            event.data.action,
+            IssueAction::Known(KnownIssueAction::Closed)
+        ) {
             return Outcome::Done;
         }
         let request = Request {
@@ -230,6 +396,8 @@ pub struct InitializationContext {
     pub targets: HashMap<i64, InitializationTarget>,
     /// Durable task event writer.
     pub outbox: Outbox,
+    /// Metadata-only Vault reader for first-boundary credential availability.
+    pub vault: Option<MetadataClient>,
 }
 
 /// GitHub source reads and gateway settings for one pinned intake decision.
@@ -322,19 +490,104 @@ pub async fn run_task_decision(
         let Some(request) = next_pending(database, issue).await? else {
             return Ok(());
         };
+        let actor_login = if consent_facts(&request).is_empty() && request.channel != "label" {
+            Some(request.actor.login.clone())
+        } else {
+            match context
+                .github
+                .public_user_id(
+                    &target.repository,
+                    &target.read_permissions,
+                    &request.actor.login,
+                )
+                .await
+            {
+                Ok(id) if id == request.actor.id => Some(request.actor.login.clone()),
+                Ok(_) => {
+                    context
+                        .github
+                        .public_user_login_by_id(
+                            &target.repository,
+                            &target.read_permissions,
+                            request.actor.id,
+                        )
+                        .await?
+                }
+                Err(error) if response_status(&error) == Some(StatusCode::NOT_FOUND) => {
+                    context
+                        .github
+                        .public_user_login_by_id(
+                            &target.repository,
+                            &target.read_permissions,
+                            request.actor.id,
+                        )
+                        .await?
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let Some(actor_login) = actor_login else {
+            let mut refused = database.begin().await?;
+            refuse_request(
+                &mut refused,
+                &context.outbox,
+                request.id,
+                issue,
+                "source_actor_unverified",
+            )
+            .await?;
+            refused.commit().await?;
+            continue;
+        };
+        if request.channel == "label"
+            && request.kind == RequestKind::Start
+            && !label::current_label_source(
+                &context.github,
+                &target.repository,
+                &target.read_permissions,
+                &request,
+            )
+            .await?
+        {
+            let mut refused = database.begin().await?;
+            refuse_request(
+                &mut refused,
+                &context.outbox,
+                request.id,
+                issue,
+                "label_not_current",
+            )
+            .await?;
+            refused.commit().await?;
+            continue;
+        }
         let observed = if request.channel == "issue_close" {
             let open = context
                 .github
                 .issue_open(&target.repository, issue.number, &target.read_permissions)
                 .await?;
             concurro_github_v1::IssueAuthority { open, writer: true }
+        } else if request.channel == "label" {
+            let source = target
+                .initialization
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("label source target unavailable"))?;
+            let open = context
+                .github
+                .issue_open(&target.repository, issue.number, &target.read_permissions)
+                .await?;
+            let writer = context
+                .github
+                .writer_permission(&source.upstream, &actor_login, &source.upstream_permissions)
+                .await?;
+            concurro_github_v1::IssueAuthority { open, writer }
         } else {
             context
                 .github
                 .issue_authority(
                     &target.repository,
                     issue.number,
-                    &request.actor.login,
+                    &actor_login,
                     &target.read_permissions,
                 )
                 .await?
@@ -357,6 +610,43 @@ pub async fn run_task_decision(
         } else {
             None
         };
+        if let Some(sha) = config_sha
+            .as_deref()
+            .filter(|_| target.initialization.is_some())
+        {
+            observe_target_funding_policy(database, context, issue.repository_id, sha).await?;
+        }
+        if request.channel == "label"
+            && request.kind == RequestKind::Start
+            && observed.writer
+            && observed.open
+        {
+            let source = target
+                .initialization
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("label source target unavailable"))?;
+            let config = initialization::read_target_config(
+                &context.github,
+                source,
+                config_sha
+                    .as_deref()
+                    .expect("authorized label has fork head"),
+            )
+            .await?;
+            if config.raw["autonomous"] != true {
+                let mut refused = database.begin().await?;
+                refuse_request(
+                    &mut refused,
+                    &context.outbox,
+                    request.id,
+                    issue,
+                    "autonomous_disabled",
+                )
+                .await?;
+                refused.commit().await?;
+                continue;
+            }
+        }
         let evidence = if observed.writer
             && observed.open
             && matches!(
@@ -371,7 +661,7 @@ pub async fn run_task_decision(
                 .initialization
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("command source target unavailable"))?;
-            let snapshot = initialization::read_initialization(
+            let mut snapshot = initialization::read_initialization(
                 &context.github,
                 source,
                 &request,
@@ -380,6 +670,18 @@ pub async fn run_task_decision(
                     .expect("recovery source has fork head"),
             )
             .await?;
+            if request.channel == "browser"
+                && matches!(request.kind, RequestKind::Later(LaterCommand::Retry { .. }))
+                && let Some(feedback) = browser_retry_feedback(database, request.id).await?
+            {
+                snapshot.requirements.discussion.push(RequirementComment {
+                    author: request.actor.clone(),
+                    body: feedback,
+                });
+                if snapshot.requirements.discussion.len() > 20 {
+                    snapshot.requirements.discussion.remove(0);
+                }
+            }
             let pr_unchanged = if let Some(saved) = terminal_pr_inputs(database, issue).await? {
                 let published = target
                     .publication
@@ -471,6 +773,43 @@ pub async fn run_task_decision(
     }
 }
 
+/// Observe one target's current-head funding policy without backdating source time.
+pub async fn observe_target_funding_policy(
+    database: &Database,
+    context: &DecisionContext,
+    repository_id: i64,
+    config_sha: &str,
+) -> Result<()> {
+    let target = context
+        .targets
+        .get(&repository_id)
+        .and_then(|target| target.initialization.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("funding policy source target unavailable"))?;
+    observe_source_funding_policy(database, &context.github, target, repository_id, config_sha)
+        .await
+}
+
+/// Record the current funding policy of one configured source target.
+pub(crate) async fn observe_source_funding_policy(
+    database: &Database,
+    github: &AppClient,
+    target: &InitializationTarget,
+    repository_id: i64,
+    config_sha: &str,
+) -> Result<()> {
+    let config = initialization::read_target_config(github, target, config_sha).await?;
+    let mode = match config.raw.get("funding_mode").and_then(Value::as_str) {
+        None | Some("org") => FundingMode::Org,
+        Some("contributed") => FundingMode::Contributed,
+        Some(_) => anyhow::bail!("target funding_mode is invalid"),
+    };
+    let digest = python_digest(&config.raw)?;
+    let mut activation = database.begin().await?;
+    activate_funding_policy(&mut activation, repository_id, config_sha, &digest, mode).await?;
+    activation.commit().await?;
+    Ok(())
+}
+
 /// A Graphile Worker job that freezes one applied start's source inputs.
 #[derive(Deserialize, Serialize)]
 pub struct TaskInitializeJob {
@@ -533,9 +872,123 @@ pub async fn run_task_initialize(
     let config_sha = start_config_pin(database, issue, request_id, revision)
         .await?
         .ok_or_else(|| anyhow::anyhow!("applied start configuration pin unavailable"))?;
+    let mut read = database.begin().await?;
+    let observed = consent_sources(&mut read, issue).await?;
+    read.commit().await?;
     let snapshot = read_initialization(&context.github, target, &request, &config_sha).await?;
+    let default_funding = match snapshot
+        .configuration
+        .get("funding_mode")
+        .and_then(Value::as_str)
+    {
+        None | Some("org") => FundingMode::Org,
+        Some("contributed") => FundingMode::Contributed,
+        Some(_) => anyhow::bail!("target funding_mode is invalid"),
+    };
+    let config_digest = python_digest(&snapshot.configuration)?;
+    let source_funding = funding_policy_at(
+        database,
+        issue.repository_id,
+        &config_digest,
+        request.order.at,
+    )
+    .await?;
+    let visible =
+        initialization::read_current_sponsorship_sources(&context.github, target, &request).await?;
+    let available = if let Some(vault) = &context.vault {
+        let at = request.order.at.to_rfc3339();
+        let metadata = vault.read(request.actor.id, Some(&at)).await?;
+        funding::boundary_eligibility(
+            &snapshot.configuration,
+            &metadata,
+            &target.upstream,
+            request.order.at,
+        )?
+    } else {
+        anyhow::ensure!(
+            default_funding == FundingMode::Org,
+            "contributed funding requires the Vault metadata reader"
+        );
+        BTreeMap::from([
+            (Provider::Openai, Some(false)),
+            (Provider::Anthropic, Some(false)),
+        ])
+    };
     let mut apply = database.begin().await?;
-    initialize_task(&mut apply, &context.outbox, issue, revision, &snapshot).await?;
+    let sources = consent_sources(&mut apply, issue).await?;
+    anyhow::ensure!(
+        sources.revision == observed.revision,
+        "sponsorship source changed during boundary read"
+    );
+    anyhow::ensure!(
+        confirm_current_sponsorship_sources(&mut apply, issue, &request.order, &visible).await?,
+        "sponsorship source history changed or remains undecided"
+    );
+    let initial = initialize_consent(&sources.facts, &request.order, &request.actor, &available)
+        .ok_or_else(|| anyhow::anyhow!("Vault history does not cover the funding boundary"))?;
+    let mut later = sources
+        .facts
+        .iter()
+        .filter(|fact| fact.order > request.order)
+        .collect::<Vec<_>>();
+    later.sort_by(|left, right| left.order.cmp(&right.order));
+    let mut unresolved = later
+        .iter()
+        .filter(|fact| !matches!(fact.action, ConsentAction::Withdraw { .. }))
+        .map(|fact| fact.provider)
+        .collect::<Vec<_>>();
+    unresolved.sort();
+    unresolved.dedup();
+    if let Some(initialized) =
+        initialize_task(&mut apply, &context.outbox, issue, revision, &snapshot).await?
+    {
+        let first = record_initial_sponsorship(
+            &mut apply,
+            &initialized,
+            request_id,
+            &request.order,
+            &initial,
+            &available,
+            sources.revision,
+            &unresolved,
+            &config_digest,
+            default_funding,
+            source_funding,
+        )
+        .await?;
+        let floor = cutover_floor(&mut apply, issue.repository_id, issue.number).await?;
+        if first
+            && (default_funding == FundingMode::Contributed
+                || !sources.facts.is_empty()
+                || floor.is_some())
+        {
+            let epochs = floor.map(|floor| {
+                BTreeMap::from([
+                    (Provider::Openai, floor.openai_epoch),
+                    (Provider::Anthropic, floor.anthropic_epoch),
+                ])
+            });
+            let transitions = initial_sponsorship_transitions(
+                &initial,
+                &target.issue_repository,
+                issue,
+                &request.actor,
+                floor.map_or(1, |floor| floor.generation + 1),
+                epochs.as_ref(),
+                default_funding,
+                source_funding,
+                &request.channel,
+            )?;
+            for transition in transitions {
+                record_sponsorship_transition(&mut apply, initialized.id.0, &transition).await?;
+            }
+            for fact in later {
+                if matches!(fact.action, ConsentAction::Withdraw { .. }) {
+                    record_withdraw_transition(&mut apply, initialized.id.0, fact).await?;
+                }
+            }
+        }
+    }
     apply.commit().await?;
     Ok(())
 }
@@ -689,7 +1142,7 @@ pub async fn run_task_intake(
             &target.bot_login,
         )
         .await?;
-    let attempt = intake_payload::prepare_intake_attempt(
+    let mut attempt = intake_payload::prepare_intake_attempt(
         issue,
         &current,
         &snapshot,
@@ -700,6 +1153,19 @@ pub async fn run_task_intake(
         Uuid::now_v7(),
         chrono::Utc::now(),
     )?;
+    if !funding::fund_or_block_attempt(
+        database,
+        &context.initialization,
+        &current,
+        &snapshot,
+        target,
+        current.used_model_calls + 1,
+        &mut attempt,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let mut commit = database.begin().await?;
     let admission =
         admit_intake(&mut commit, &context.initialization.outbox, issue, &attempt).await?;
@@ -802,7 +1268,7 @@ pub async fn run_task_plan(
         session_epoch,
     )
     .await?;
-    let attempt = plan_payload::prepare_plan_attempt(
+    let mut attempt = plan_payload::prepare_plan_attempt(
         issue,
         &current,
         &snapshot,
@@ -816,6 +1282,19 @@ pub async fn run_task_plan(
         Uuid::now_v7(),
         chrono::Utc::now(),
     )?;
+    if !funding::fund_or_block_attempt(
+        database,
+        &context.initialization,
+        &current,
+        &snapshot,
+        target,
+        current.used_model_calls + 1,
+        &mut attempt,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let mut commit = database.begin().await?;
     let admission =
         admit_plan(&mut commit, &context.initialization.outbox, issue, &attempt).await?;
@@ -932,7 +1411,7 @@ pub async fn run_task_implement(
         session_epoch,
     )
     .await?;
-    let attempt = implementation_payload::prepare_implementation_attempt(
+    let mut attempt = implementation_payload::prepare_implementation_attempt(
         issue,
         &current,
         &snapshot,
@@ -945,6 +1424,19 @@ pub async fn run_task_implement(
         Uuid::now_v7(),
         chrono::Utc::now(),
     )?;
+    if !funding::fund_or_block_attempt(
+        database,
+        &context.initialization,
+        &current,
+        &snapshot,
+        target,
+        current.used_model_calls + 1,
+        &mut attempt,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let mut commit = database.begin().await?;
     let admission =
         admit_implementation(&mut commit, &context.initialization.outbox, issue, &attempt).await?;
@@ -1086,7 +1578,7 @@ pub async fn run_task_design_batch(
                 .await?,
             )
         };
-        let spec = design_payload::prepare_design_attempt(
+        let mut spec = design_payload::prepare_design_attempt(
             issue,
             &current,
             &snapshot,
@@ -1102,6 +1594,19 @@ pub async fn run_task_design_batch(
             Uuid::now_v7(),
             now,
         )?;
+        if !funding::fund_or_block_attempt(
+            database,
+            &context.initialization,
+            &current,
+            &snapshot,
+            target,
+            current.used_model_calls + specs.len() as u64 + 1,
+            &mut spec,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         specs.push((reviewer.id.clone(), spec));
     }
     let mut commit = database.begin().await?;
@@ -1241,7 +1746,7 @@ pub async fn run_task_design_correction(
             .await?,
         )
     };
-    let attempt = design_payload::prepare_design_attempt(
+    let mut attempt = design_payload::prepare_design_attempt(
         correction.issue,
         &current,
         &snapshot,
@@ -1257,6 +1762,19 @@ pub async fn run_task_design_correction(
         Uuid::now_v7(),
         chrono::Utc::now(),
     )?;
+    if !funding::fund_or_block_attempt(
+        database,
+        &context.initialization,
+        &current,
+        &snapshot,
+        target,
+        current.used_model_calls + 1,
+        &mut attempt,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let mut commit = database.begin().await?;
     let admission = admit_design_correction(
         &mut commit,
@@ -1397,6 +1915,70 @@ pub async fn run_task_design_result(
 pub struct ExchangeEffectJob {
     /// Effect row ID, also the stable queue key suffix.
     pub id: i64,
+}
+
+/// A durable provider-slot write to the Python Exchange.
+#[derive(Deserialize, Serialize)]
+pub struct SponsorshipTransitionJob {
+    /// Stable transition identity whose exact body is in PostgreSQL.
+    pub transition: String,
+}
+
+impl TaskHandler for SponsorshipTransitionJob {
+    const IDENTIFIER: &'static str = "sponsorship_transition";
+
+    /// Replay one claimed transition and persist its verified acknowledgement.
+    async fn run(self, context: WorkerContext) -> impl IntoTaskHandlerResult {
+        let exchange = context
+            .get_ext::<ExchangeContext>()
+            .ok_or("exchange unavailable")?;
+        let database = Database::from_pool(context.pg_pool().clone());
+        run_sponsorship_transition(&database, &exchange.operator, &self.transition)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Send one persisted provider transition with fenced acknowledgement and retry.
+pub async fn run_sponsorship_transition(
+    database: &Database,
+    exchange: &Operator,
+    transition: &str,
+) -> Result<()> {
+    let mut claim = database.begin().await?;
+    let write = claim_sponsorship_transition(&mut claim, transition).await?;
+    claim.commit().await?;
+    let Some(write) = write else {
+        return Ok(());
+    };
+    match exchange.sponsorship(&write.body).await {
+        Ok(ack) => {
+            let mut settle = database.begin().await?;
+            acknowledge_sponsorship_transition(&mut settle, &write, &ack).await?;
+            settle.commit().await?;
+            Ok(())
+        }
+        Err(
+            error @ ExchangeError::Refused {
+                status: 408 | 429 | 500..=599,
+                ..
+            },
+        ) => Err(error.into()),
+        Err(ExchangeError::Refused { status, .. }) => {
+            let mut settle = database.begin().await?;
+            fail_sponsorship_transition(&mut settle, &write, &format!("exchange_refused_{status}"))
+                .await?;
+            settle.commit().await?;
+            Ok(())
+        }
+        Err(ExchangeError::StaleSponsorshipGeneration { .. }) => {
+            let mut settle = database.begin().await?;
+            fail_sponsorship_transition(&mut settle, &write, "stale_generation").await?;
+            settle.commit().await?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 impl TaskHandler for ExchangeEffectJob {

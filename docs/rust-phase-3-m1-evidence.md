@@ -1,6 +1,7 @@
 # Phase 3 M1 acceptance evidence
 
-M1 is accepted for local implementation. M2 and M3 remain in progress. This is
+M1 is accepted for local implementation. [M2](rust-phase-3-m2-evidence.md) is
+also accepted locally; M3 remains in progress. This is
 not production qualification; no live GitHub, provider or runner acceptance is
 claimed. The Python task controller remains the behavior oracle. Python runtime
 changes are limited to the planned retained exchange bridge.

@@ -138,7 +138,7 @@ def iso_epoch(stamp) -> str | None:
 
 
 def command_argument(command: str, argument: str | None, state) -> str | None:
-    """The command's argument: the plan to approve (the current one unless given) or a revision grant."""
+    """Validate an explicit approval identity or a provider and revision argument."""
     if command == "funding":
         if argument not in ("openai org", "openai personal", "anthropic org", "anthropic personal"):
             raise ValueError("unknown provider funding selection")
@@ -148,7 +148,7 @@ def command_argument(command: str, argument: str | None, state) -> str | None:
             raise ValueError("unknown sponsorship provider")
         return argument
     if command == "approve":
-        plan_id = argument or (state() or {}).get("plan_id")
+        plan_id = argument
         if not plan_id:
             raise TaskNotFound("this task has no plan to approve")
         return plan_id

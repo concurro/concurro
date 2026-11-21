@@ -91,6 +91,26 @@ pub fn pr_review_binding(
     head: &str,
     reviewer: &DesignReviewer,
 ) -> Result<String, String> {
+    review_binding(snapshot, plan, Some(plan_id), head, reviewer)
+}
+
+/// Bind a standalone report to its frozen source without a contribution plan.
+pub fn standalone_pr_review_binding(
+    snapshot: &InitializationSnapshot,
+    head: &str,
+    reviewer: &DesignReviewer,
+) -> Result<String, String> {
+    review_binding(snapshot, &Value::Null, None, head, reviewer)
+}
+
+/// Hash the inputs shared by contribution and standalone PR assessments.
+fn review_binding(
+    snapshot: &InitializationSnapshot,
+    plan: &Value,
+    plan_id: Option<&str>,
+    head: &str,
+    reviewer: &DesignReviewer,
+) -> Result<String, String> {
     let agent = reviewer.agent.clone().unwrap_or_else(|| {
         let (vendor, effort) = match reviewer.provider.as_str() {
             "claude" => (json!("anthropic"), json!("medium")),
@@ -248,6 +268,18 @@ pub fn validate_pr_review(
     Ok(report)
 }
 
+/// Validate a standalone PR assessment without a contribution design to reopen.
+pub fn validate_standalone_pr_review(
+    raw: Value,
+    owned_ids: &[String],
+) -> Result<PrReviewReport, String> {
+    let report = validate_pr_review(raw, &[], owned_ids)?;
+    if report.verdict == "reopen" {
+        return Err("standalone review cannot reopen contribution design".to_owned());
+    }
+    Ok(report)
+}
+
 /// Render one bounded, exact-body native PR review from a stored report.
 pub fn pr_review_body(
     marker: &str,
@@ -324,7 +356,40 @@ mod tests {
 
     use crate::{InitializationSnapshot, PinnedInputs, Requirements, pr_review_roster};
 
-    use super::{pr_review_binding, validate_pr_review};
+    use super::{pr_review_binding, validate_pr_review, validate_standalone_pr_review};
+
+    #[test]
+    fn standalone_review_accepts_findings_but_refuses_design_reopen() {
+        let reviewed = validate_standalone_pr_review(
+            json!({"verdict":"changes_requested","summary":"Needs a fix",
+                "findings":[{"path":"src/lib.rs","start_line":null,"line":3,
+                    "detail":"This branch misses the case"}],
+                "dispositions":[],"design_issue":null}),
+            &[],
+        )
+        .expect("standalone findings");
+        assert_eq!(reviewed.findings.len(), 1);
+        let settled = validate_standalone_pr_review(
+            json!({"verdict":"approve","summary":"Earlier finding no longer applies",
+                "findings":[],"dispositions":[{"id":"F1","status":"obsolete",
+                    "evidence":"The changed code no longer contains that path"}],
+                "design_issue":null}),
+            &["F1".to_owned()],
+        )
+        .expect("second-round disposition");
+        assert_eq!(settled.dispositions[0].status, "obsolete");
+        let reopened = validate_standalone_pr_review(
+            json!({"verdict":"reopen","summary":"Change the plan",
+                "findings":[],"dispositions":[],
+                "design_issue":{"kind":"plan","explanation":"Plan is wrong",
+                    "evidence":["The observed path differs"]}}),
+            &[],
+        );
+        assert_eq!(
+            reopened.expect_err("no contribution design"),
+            "standalone review cannot reopen contribution design"
+        );
+    }
 
     /// A review cannot carry over to a changed head, model profile, or governed plan.
     #[test]

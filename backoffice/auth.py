@@ -76,6 +76,7 @@ class Session:
     access_expires: float | None = None  # Access expiry is separate from the browser/refresh lifetime.
     refresh_token: str | None = field(default=None, repr=False)
     refresh_expires: float | None = None
+    viewer_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
     closed: bool = False  # A logout fence checked again after refresh I/O.
     refreshing: bool = False  # Lets logout retain an honest pending/unknown remote status.
     credential: TokenCredential | None = field(default=None, repr=False)
@@ -83,6 +84,8 @@ class Session:
         default=None, repr=False
     )  # Cleanup callback for a refresh finishing after logout.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Original source time for each in-session browser action, including retries.
+    action_times: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -202,6 +205,17 @@ class Sessions:
             if failure:
                 raise failure
             return None if session.closed else session
+
+    def viewer(self, token: str | None) -> Session | None:
+        """Resolve a distinct read-only token without accepting a browser session ID."""
+        if not token:
+            return None
+        with self.lock:
+            sid = next(
+                (sid for sid, session in self.sessions.items() if secrets.compare_digest(session.viewer_token, token)),
+                None,
+            )
+        return self.get(sid) if sid else None
 
     def end(self, sid: str | None, orphan=None, persist=None) -> Session | None:
         """End local authorization before any remote I/O and fence an in-flight refresh."""

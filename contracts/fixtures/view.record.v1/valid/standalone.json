@@ -1,0 +1,15 @@
+{
+  "id": "69bbed8e-d871-5726-9022-79b2df8db9c9",
+  "type": "view.record",
+  "version": 1,
+  "kind": "snapshot",
+  "producer": "tasks",
+  "occurred_at": "2026-11-21T10:01:00Z",
+  "entity": "view:standalone_review:00000000-0000-0000-0000-000000000042",
+  "revision": 2,
+  "data": {
+    "entity": "standalone_review",
+    "entity_id": "00000000-0000-0000-0000-000000000042",
+    "body": {"task_id": "00000000-0000-0000-0000-000000000042", "stage": "review"}
+  }
+}

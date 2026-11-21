@@ -603,6 +603,7 @@ pub async fn run_task_git_publication(
         &mut work,
         &context.outbox,
         input.turn,
+        &target.upstream,
         number,
         &changed_paths,
     )
@@ -945,42 +946,69 @@ pub(crate) async fn pr_paths(
     target: &GitPublicationTarget,
     number: i64,
 ) -> Result<BTreeSet<String>> {
-    let (owner, repository) = target
-        .upstream
+    read_pr_paths(
+        &context.github,
+        &target.upstream,
+        &target.upstream_write_permissions,
+        number,
+    )
+    .await
+}
+
+/// Read every changed path using the configured repository's exact read token.
+pub(crate) async fn read_pr_paths(
+    github: &AppClient,
+    upstream: &str,
+    permissions: &BTreeMap<String, String>,
+    number: i64,
+) -> Result<BTreeSet<String>> {
+    let files = read_pr_files(github, upstream, permissions, number).await?;
+    let mut paths = BTreeSet::new();
+    for file in files {
+        paths.insert(
+            file["filename"]
+                .as_str()
+                .context("PR file path missing")?
+                .to_owned(),
+        );
+        if file["status"] == "renamed" {
+            paths.insert(
+                file["previous_filename"]
+                    .as_str()
+                    .context("renamed PR file lacks its previous path")?
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(paths)
+}
+
+/// Read the complete PR file inventory for a pinned review snapshot.
+pub(crate) async fn read_pr_files(
+    github: &AppClient,
+    upstream: &str,
+    permissions: &BTreeMap<String, String>,
+    number: i64,
+) -> Result<Vec<Value>> {
+    let (owner, repository) = upstream
         .split_once('/')
         .context("upstream must be owner/name")?;
     let number = number.to_string();
-    let mut paths = BTreeSet::new();
+    let mut all_files = Vec::new();
     let mut page = 1;
     loop {
-        let files: Vec<Value> = context
-            .github
+        let files: Vec<Value> = github
             .read(
-                &target.upstream,
-                &target.upstream_write_permissions,
+                upstream,
+                permissions,
                 &["repos", owner, repository, "pulls", &number, "files"],
                 &[("per_page", "100"), ("page", &page.to_string())],
             )
             .await?;
         let more = files.len() == 100;
-        for file in files {
-            paths.insert(
-                file["filename"]
-                    .as_str()
-                    .context("PR file path missing")?
-                    .to_owned(),
-            );
-            if file["status"] == "renamed" {
-                paths.insert(
-                    file["previous_filename"]
-                        .as_str()
-                        .context("renamed PR file lacks its previous path")?
-                        .to_owned(),
-                );
-            }
-        }
+        all_files.extend(files);
         if !more {
-            return Ok(paths);
+            return Ok(all_files);
         }
         page += 1;
     }

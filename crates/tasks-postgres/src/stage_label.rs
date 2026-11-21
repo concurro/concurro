@@ -46,7 +46,9 @@ pub async fn record_stage_label_desire(
     state: &TaskState,
     stage: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let desired = stage.map(|stage| format!("concurro:stage:{}", stage.replace('_', "-")));
+    let desired = stage
+        .filter(|stage| *stage != "initializing")
+        .map(|stage| format!("concurro:stage:{}", stage.replace('_', "-")));
     let revision = i64::try_from(state.revision).expect("task revision fits bigint");
     let changed: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO tasks.stage_label_surfaces \

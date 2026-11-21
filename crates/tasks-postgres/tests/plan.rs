@@ -2425,3 +2425,184 @@ async fn implementer_session_failure_retries_once_and_rotates_after_second_failu
     );
     assert_eq!(blocked.current_attempt, None);
 }
+
+/// A credential fallback rotates the review session without spending its session-failure allowance.
+#[tokio::test]
+async fn design_credential_fallback_preserves_first_session_retry() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(1024 * 1024, vec!["task.>".to_owned(), "turn.>".to_owned()]);
+    let task_id = TaskId(Uuid::now_v7());
+    let batch = Uuid::now_v7();
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    let state = TaskState {
+        id: task_id,
+        issue: IssueKey {
+            repository_id: 8,
+            number: 9,
+        },
+        author: Actor {
+            id: 7,
+            login: "writer".to_owned(),
+        },
+        stage: Stage::PlanQc,
+        revision: 1,
+        stage_reason: None,
+        retry_stage: None,
+        pins: Some(PinnedInputs {
+            config_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            max_model_calls: 8,
+            max_fix_rounds: 2,
+            max_plan_revisions: 1,
+        }),
+        used_model_calls: 1,
+        current_attempt: None,
+    };
+    sqlx::query("INSERT INTO tasks.issue_controls (repository_id,issue_number) VALUES (8,9)")
+        .execute(database.pool())
+        .await
+        .expect("issue");
+    sqlx::query("INSERT INTO tasks.task_state (repository_id,issue_number,task_id,revision,state) VALUES (8,9,$1,1,$2)")
+        .bind(task_id.0)
+        .bind(Json(&state))
+        .execute(database.pool())
+        .await
+        .expect("task");
+    sqlx::query("INSERT INTO tasks.plan_review_batches (id,task_id,plan_id,generation,phase,binding,roster,status) VALUES ($1,$2,'plan',1,'cooperative','binding','[]','admitted')")
+        .bind(batch)
+        .bind(task_id.0)
+        .execute(database.pool())
+        .await
+        .expect("batch");
+    let binding = json!({"sponsor":"7","credential":"record","credential_version":1,
+        "grant_id":"grant"});
+    for (turn, number) in [(first, 1), (second, 2)] {
+        let submission = TurnSubmission {
+            turn,
+            expected: json!({}),
+            models: vec!["gpt-test".to_owned()],
+            budget: 1,
+            lease: 1,
+            payload: json!({"request":{"model":"gpt-test","session":{"scope":format!("review-{number}")}}}),
+            pin: None,
+            binding: binding.clone(),
+        };
+        sqlx::query("INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES ($1,$2,'plan_qc',1,'reviewer','acme/demo',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'running')")
+            .bind(turn)
+            .bind(task_id.0)
+            .bind("a".repeat(40))
+            .bind(serde_json::to_vec(&submission).expect("submission"))
+            .execute(database.pool())
+            .await
+            .expect("attempt");
+        if number == 1 {
+            sqlx::query("INSERT INTO tasks.funding_grants (attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id,credential_record_id,credential_version,route) VALUES ($1,$2,'task_contributed',7,'openai',1,'grant','record',1,'openai-api-key')")
+                .bind(turn)
+                .bind(task_id.0)
+                .execute(database.pool())
+                .await
+                .expect("grant");
+            sqlx::query("INSERT INTO tasks.plan_review_seats (batch_id,reviewer_id,identity,attempt_id,status) VALUES ($1,'reviewer','{}',$2,'admitted')")
+                .bind(batch)
+                .bind(turn)
+                .execute(database.pool())
+                .await
+                .expect("seat");
+        } else {
+            sqlx::query("UPDATE tasks.plan_review_seats SET attempt_id=$2,status='admitted' WHERE batch_id=$1")
+                .bind(batch)
+                .bind(turn)
+                .execute(database.pool())
+                .await
+                .expect("replacement seat");
+        }
+        let observation: TurnObservation = if number == 1 {
+            serde_json::from_value(json!({"turn":turn,"status":"running","created":1.0,
+                "provider_failure":{"turn":turn,"model":"gpt-test","binding":binding,
+                    "category":"auth","request":"provider-request-1","retry_after":null}}))
+            .expect("credential failure")
+        } else {
+            serde_json::from_value(json!({"turn":turn,"status":"done","created":1.0,
+                "finished":2.0,"result":{"outcome":"failed","response":null}}))
+            .expect("session failure")
+        };
+        let mut work = database.begin().await.expect("settle");
+        record_observation(&mut work, &outbox, &observation, None)
+            .await
+            .expect("record failure");
+        work.commit().await.expect("failure commit");
+        let (status, retries, session_failures, epoch): (String, i32, i32, i32) = sqlx::query_as(
+            "SELECT status,failure_count,session_failure_count,session_epoch FROM tasks.plan_review_seats WHERE batch_id=$1",
+        )
+        .bind(batch)
+        .fetch_one(database.pool())
+        .await
+        .expect("review retry state");
+        assert_eq!(status, "retrying");
+        assert_eq!(
+            (retries, session_failures, epoch),
+            (number, number - 1, number)
+        );
+    }
+
+    sqlx::query("INSERT INTO tasks.funding_exclusions (attempt_id,task_id,payer_id,provider,credential_record_id,credential_version,category,retry_at) VALUES ($1,$2,7,'openai','replacement',1,'rate_limited',now()+interval '1 hour')")
+        .bind(second)
+        .bind(task_id.0)
+        .execute(database.pool())
+        .await
+        .expect("temporary exclusion");
+    let third = Uuid::now_v7();
+    let successful = TurnSubmission {
+        turn: third,
+        expected: json!({}),
+        models: vec!["gpt-test".to_owned()],
+        budget: 1,
+        lease: 1,
+        payload: json!({"request":{"model":"gpt-test","session":{"scope":"review-3"}}}),
+        pin: None,
+        binding: json!({}),
+    };
+    sqlx::query("INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES ($1,$2,'plan_qc',1,'reviewer','acme/demo',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'running')")
+        .bind(third)
+        .bind(task_id.0)
+        .bind("a".repeat(40))
+        .bind(serde_json::to_vec(&successful).expect("submission"))
+        .execute(database.pool())
+        .await
+        .expect("successful attempt");
+    sqlx::query("INSERT INTO tasks.funding_grants (attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id,credential_record_id,credential_version,route) VALUES ($1,$2,'task_contributed',7,'openai',1,'grant','replacement',1,'openai-api-key')")
+        .bind(third)
+        .bind(task_id.0)
+        .execute(database.pool())
+        .await
+        .expect("replacement grant");
+    sqlx::query(
+        "UPDATE tasks.plan_review_seats SET attempt_id=$2,status='admitted' WHERE batch_id=$1",
+    )
+    .bind(batch)
+    .bind(third)
+    .execute(database.pool())
+    .await
+    .expect("successful seat");
+    let success: TurnObservation = serde_json::from_value(json!({"turn":third,"status":"done",
+        "created":1.0,"finished":2.0,"result":{"outcome":"ok","response":{}}}))
+    .expect("successful turn");
+    let mut work = database.begin().await.expect("settle successful call");
+    record_observation(&mut work, &outbox, &success, None)
+        .await
+        .expect("record successful call");
+    work.commit().await.expect("success commit");
+    let cleared: Option<chrono::DateTime<Utc>> =
+        sqlx::query_scalar("SELECT cleared_at FROM tasks.funding_exclusions WHERE attempt_id=$1")
+            .bind(second)
+            .fetch_one(database.pool())
+            .await
+            .expect("temporary history");
+    assert!(cleared.is_some());
+}

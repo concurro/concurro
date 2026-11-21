@@ -1,0 +1,43 @@
+# Phase 3 processes. Keep the Python service stopped at the controller activation boundary.
+services:
+  backoffice:
+    command: ["--listen", "0.0.0.0:8788", "--internal-listen", "0.0.0.0:8791"]
+    networks:
+      platform: {}
+
+  tasks:
+    image: ghcr.io/concurro/tasks:${CONCURRO_RELEASE:?}
+    build:
+      context: ..
+      dockerfile: crates/tasks/Dockerfile
+    environment:
+      CONCURRO_TASKS_CONFIG: /etc/concurro/tasks/settings.toml
+    volumes:
+      - /etc/concurro/tasks:/etc/concurro/tasks:ro
+    networks:
+      edge: {}
+      platform:
+        aliases:
+          - concurro-tasks
+    restart: unless-stopped
+
+  backoffice-read:
+    image: ghcr.io/concurro/backoffice-read:${CONCURRO_RELEASE:?}
+    build:
+      context: ..
+      dockerfile: crates/backoffice-api/Dockerfile
+    environment:
+      CONCURRO_BACKOFFICE_CONFIG: /etc/concurro/backoffice-read/settings.toml
+    volumes:
+      - /etc/concurro/backoffice-read:/etc/concurro/backoffice-read:ro
+    networks:
+      edge:
+        aliases:
+          - concurro-backoffice-read
+      platform: {}
+    restart: unless-stopped
+
+networks:
+  platform:
+    external: true
+    name: platform

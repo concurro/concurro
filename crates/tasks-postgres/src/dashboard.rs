@@ -57,7 +57,9 @@ pub async fn record_dashboard_desire(
     .bind(state.id.0)
     .fetch_optional(uow.connection())
     .await?;
-    let body = dashboard_body(state);
+    let mut display = state.clone();
+    display.used_model_calls = crate::sponsorship::billable_model_calls(uow, state).await?;
+    let body = dashboard_body(&display);
     let create_id = match create_id {
         Some(id) => id,
         None => queue_task_comment(uow, state, "dashboard", "dashboard", &body).await?,

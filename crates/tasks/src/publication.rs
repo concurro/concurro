@@ -38,6 +38,8 @@ pub struct PublicationContext {
     pub github: AppClient,
     /// Targets indexed by numeric repository identity.
     pub targets: HashMap<i64, PublicationTarget>,
+    /// Upstream PR artifact targets, which can differ from the issue repository.
+    pub standalone_targets: HashMap<i64, PublicationTarget>,
 }
 
 impl fmt::Debug for PublicationContext {
@@ -127,11 +129,15 @@ pub async fn publish_request_reply(
     context: &PublicationContext,
     id: Uuid,
 ) -> Result<()> {
-    let Some((repository_id, status)) = comment_scope(database, id).await? else {
+    let Some((repository_id, status, standalone)) = comment_scope(database, id).await? else {
         return Ok(());
     };
-    let target = context
-        .targets
+    let targets = if standalone {
+        &context.standalone_targets
+    } else {
+        &context.targets
+    };
+    let target = targets
         .get(&repository_id)
         .context("publication target unavailable")?;
     let prepared_token = if status == "recorded" {

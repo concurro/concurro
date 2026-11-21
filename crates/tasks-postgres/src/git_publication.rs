@@ -277,6 +277,7 @@ pub async fn complete_git_publication(
     uow: &mut UnitOfWork<'_>,
     outbox: &Outbox,
     turn: Uuid,
+    upstream: &str,
     pr_number: i64,
     changed_paths: &[String],
 ) -> Result<bool> {
@@ -299,6 +300,23 @@ pub async fn complete_git_publication(
     ensure!(
         intent.ref_advanced && intent.pr_number == Some(pr_number),
         "draft PR does not match the advanced publication intent"
+    );
+    let owner: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO tasks.pr_ownership (upstream,pr_number,owner_kind,owner_id) \
+         VALUES (lower($1),$2,'contribution',$3) \
+         ON CONFLICT (upstream,pr_number) DO UPDATE \
+         SET owner_id=pr_ownership.owner_id \
+         WHERE pr_ownership.owner_kind='contribution' \
+         AND pr_ownership.owner_id=EXCLUDED.owner_id RETURNING owner_id",
+    )
+    .bind(upstream)
+    .bind(pr_number)
+    .bind(state.id.0)
+    .fetch_optional(uow.connection())
+    .await?;
+    ensure!(
+        owner == Some(state.id.0),
+        "pull request already belongs to another task"
     );
     let next = TaskState {
         stage: Stage::Review,

@@ -9,9 +9,11 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -31,6 +33,7 @@ from .commands import CommandError, IndexUnavailable, ServiceCommands
 from .credentials import STALE, Vault, VaultError
 from .github import REPOSITORY_SECONDS, Access
 from .live import Relay, stream
+from .proofs import CommandSigner
 from .read_cache import LISTING, ReadCache
 from .revocations import RevocationError, Revocations
 from .runs import Runs
@@ -41,6 +44,7 @@ from .turns import Diagnostics
 log = logging.getLogger("concurro.backoffice")
 
 SESSION_COOKIE = "concurro_session"
+VIEWER_COOKIE = "concurro_viewer"
 LOGIN_COOKIE = "concurro_login"
 LOGOUT_COOKIE = "concurro_logout"
 # Writes must carry this header; browsers can't send it cross-site without a CORS grant, which we never give.
@@ -48,8 +52,11 @@ CSRF_HEADER = "x-concurro-request"
 
 
 class CommandBody(BaseModel):
+    """One browser command; feedback is bound to its signed action proof."""
+
     command: str
     argument: str | None = None
+    feedback: str | None = None
 
 
 class SecretBody(BaseModel):
@@ -159,7 +166,14 @@ def create_app(
         read_cache = None
     oauth = oauth or GitHubOAuth(settings.client_id, settings.client_secret)
     vault = vault or Vault(settings.vault_url)
-    commands = commands or ServiceCommands(settings.service_url, lists_token=settings.lists_token)
+    commands = commands or ServiceCommands(
+        settings.service_url, lists_token=settings.lists_token, task_api_url=settings.task_api_url
+    )
+    signer = (
+        CommandSigner(private.read(settings.command_proof_key_path, (CHECKOUT,)))
+        if settings.command_proof_key_path
+        else None
+    )
     sessions = sessions or Sessions()
     # One Reader identity, so its token cache serves every request.
     reader_app = identity or Identity(settings.reader, **({"connection": connection} if connection else {}))
@@ -229,6 +243,7 @@ def create_app(
         if found is None:
             raise HTTPException(401, "sign in with GitHub")
         cookie(response, SESSION_COOKIE, sid, max(1, int(found.expires - sessions.now())), "strict")
+        cookie(response, VIEWER_COOKIE, found.viewer_token, max(1, int(found.expires - sessions.now())), "strict")
         return found
 
     def writer(request: Request, current: Annotated[Session, Depends(session)]) -> Session:
@@ -327,6 +342,9 @@ def create_app(
         lifetime = grant.refresh_expires_in if grant.refresh_token else (grant.expires_in or DEFAULT_TOKEN_SECONDS)
         sid = sessions.create(grant.token, user, grant.expires_in or DEFAULT_TOKEN_SECONDS, grant=grant)
         cookie(response, SESSION_COOKIE, sid, int(lifetime), "strict")
+        current = sessions.get(sid)
+        assert current is not None
+        cookie(response, VIEWER_COOKIE, current.viewer_token, int(lifetime), "strict")
         response.delete_cookie(LOGOUT_COOKIE, path=cookie_path)
         log.info("signed in %s", user.login)
         return response
@@ -374,6 +392,7 @@ def create_app(
             status = remote_status(request.cookies.get(LOGOUT_COOKIE))
         response = JSONResponse({"signedOut": True, **status})
         response.delete_cookie(SESSION_COOKIE, path=cookie_path)
+        response.delete_cookie(VIEWER_COOKIE, path=cookie_path)
         if current and revocations and not failed:
             cookie(response, LOGOUT_COOKIE, group, None, "strict")
         return response
@@ -506,6 +525,7 @@ def create_app(
         repo: str,
         issue: int,
         body: CommandBody,
+        request: Request,
         current: Annotated[Session, Depends(writer)],
     ):
         if body.command not in COMMANDS:
@@ -518,7 +538,31 @@ def create_app(
         except ValueError:
             raise HTTPException(422, "invalid command argument") from None
         try:
-            result = commands.send(current.credential or current.token, repository, issue, body.command, argument)
+            if signer:
+                try:
+                    action_id = str(UUID(request.headers.get("idempotency-key", "")))
+                except ValueError:
+                    raise HTTPException(400, "missing or invalid action ID") from None
+                metadata = reader.access.repository(repository)
+                if not isinstance(metadata, dict) or type(metadata.get("id")) is not int:
+                    raise TaskNotFound("issue repository is unavailable")
+                with current.lock:
+                    source_at = current.action_times.setdefault(
+                        action_id, datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                    )
+                result = commands.send_signed(
+                    metadata["id"],
+                    issue,
+                    body.command,
+                    argument,
+                    {"id": current.user.id, "login": current.user.login},
+                    action_id,
+                    source_at,
+                    signer,
+                    body.feedback,
+                )
+            else:
+                result = commands.send(current.credential or current.token, repository, issue, body.command, argument)
         except CommandError as error:
             if error.may_have_posted and read_cache is not None:
                 read_cache.invalidate(repository, issue)

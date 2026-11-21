@@ -164,6 +164,24 @@
         "task_id": {
           "$ref": "#/$defs/TaskId",
           "description": "Stable task identity."
+        },
+        "title": {
+          "description": "Issue title from the pinned or latest source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest observed source update time."
         }
       },
       "required": [
@@ -171,6 +189,8 @@
         "issue",
         "kind",
         "author",
+        "title",
+        "updated_at",
         "initialized",
         "mode",
         "stage",

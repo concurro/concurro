@@ -10,17 +10,22 @@ use concurro_db::Database;
 use concurro_events_postgres::{Outbox, migrate as migrate_events};
 use concurro_exchange_v1::{TurnObservation, TurnSubmission};
 use concurro_tasks_core::{
-    Actor, Admission, AttemptSpec, Authority, InitializationSnapshot, IssueKey, LaterCommand,
-    PinnedInputs, Request, RequestKind, RequestStatus, Requirements, SourceOrder, Stage,
+    Actor, Admission, AttemptSpec, Authority, CommentRevision, ConsentAction, ConsentFact,
+    InitializationSnapshot, IssueKey, LaterCommand, PinnedInputs, Provider, Request, RequestKind,
+    RequestStatus, Requirements, SourceOrder, SponsorSlot, Stage, python_digest,
 };
 use concurro_tasks_postgres::{
     CommandEvidence, EffectKind, RetainedEligibility, acknowledge_retirement, admit_intake,
-    apply_request, apply_request_with_evidence, cancel_attempt, claim_dispatch, claim_effect,
+    apply_request, apply_request_with_evidence, baseline_page, browser_action,
+    browser_retry_feedback, cancel_attempt, claim_dispatch, claim_effect,
+    confirm_current_sponsorship_sources, consent_projection, create_baseline,
     due_attempt_deadlines, expire_attempt, fail_pr_review_action, initialize_task,
     latest_intake_correction, list_tasks, mark_pr_review_action_sent, migrate, next_pending,
-    pending_effects, record_observation, record_poll_failure, record_request,
-    record_submit_failure, recover_retirements, resolve_pending_write, retained_eligibility,
-    runner_session, settle_submit, settle_submit_refusal, task, task_detail,
+    pending_effects, record_browser_action, record_comment_revision, record_observation,
+    record_poll_failure, record_request, record_sponsorship_transition, record_submit_failure,
+    record_withdraw_transition, recover_retirements, request_record, resolve_pending_write,
+    retained_eligibility, runner_session, settle_submit, settle_submit_refusal, task, task_detail,
+    transcript_page, turn_artifact,
 };
 use concurro_testkit::PostgresContainer;
 use flate2::{Compression, write::GzEncoder};
@@ -931,6 +936,67 @@ async fn blocked_start_reassesses_only_with_revision_capacity() {
     assert_eq!(blocked.retry_stage, Some(Stage::Publish));
 }
 
+/// Baseline pages retain one source snapshot while later decisions keep changing.
+#[tokio::test]
+async fn baseline_pages_keep_one_consistent_request_history() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    let empty = create_baseline(&database).await.expect("empty baseline");
+    assert!(
+        baseline_page(&database, empty, 0, 10)
+            .await
+            .expect("empty page")
+            .expect("empty snapshot")
+            .is_empty()
+    );
+    let first = request(10, RequestKind::Start);
+    let second = request(20, RequestKind::Stop);
+    let mut work = database.begin().await.expect("request transaction");
+    record_request(&mut work, &first)
+        .await
+        .expect("first request");
+    record_request(&mut work, &second)
+        .await
+        .expect("second request");
+    work.commit().await.expect("request commit");
+    let snapshot = create_baseline(&database).await.expect("baseline");
+    let first_page = baseline_page(&database, snapshot, 0, 1)
+        .await
+        .expect("page one")
+        .expect("snapshot");
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page[0].body["status"], "pending");
+    sqlx::query("UPDATE tasks.requests SET status='refused',reason='changed' WHERE id=$1")
+        .bind(second.id)
+        .execute(database.pool())
+        .await
+        .expect("later decision");
+    let third = request(30, RequestKind::Start);
+    let mut work = database.begin().await.expect("later request transaction");
+    record_request(&mut work, &third)
+        .await
+        .expect("later request");
+    work.commit().await.expect("later request commit");
+    let rest = baseline_page(&database, snapshot, first_page[0].ordinal, 10)
+        .await
+        .expect("page two")
+        .expect("snapshot");
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].body["status"], "pending");
+    let refreshed = create_baseline(&database)
+        .await
+        .expect("refreshed baseline");
+    let current = baseline_page(&database, refreshed, 0, 10)
+        .await
+        .expect("current page")
+        .expect("snapshot");
+    assert_eq!(current.len(), 3);
+    assert!(current.iter().any(|row| row.body["status"] == "refused"));
+}
+
 /// Make one source-ordered comment request for the same issue.
 fn request(at: i64, kind: RequestKind) -> Request {
     Request {
@@ -958,6 +1024,403 @@ fn request(at: i64, kind: RequestKind) -> Request {
             index: 0,
         },
     }
+}
+
+#[tokio::test]
+async fn browser_action_replays_exact_contents_across_restarts() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let mut command = request(
+        20,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: None,
+        }),
+    );
+    command.channel = "browser".to_owned();
+    command.comment_id = None;
+    command.reply.clear();
+    command.order.source = format!("browser:{}", command.id);
+    command.order.source_id = 0;
+    let content = json!({
+        "issue": command.issue, "kind": "retry", "argument": {},
+        "detail": {"feedback": "please repair"}, "source_at": command.order.at,
+    });
+    let mut work = database.begin().await.expect("capture");
+    let first = record_browser_action(&mut work, command.id, &content, &command)
+        .await
+        .expect("first action");
+    work.commit().await.expect("commit");
+    assert_eq!(first.status, "pending");
+    let reopened = Database::connect(postgres.url(), 2).await.expect("reopen");
+    let repeat = browser_action(&reopened, command.id, command.actor.id, &content)
+        .await
+        .expect("replay")
+        .expect("action");
+    assert_eq!(repeat.request_id, first.request_id);
+    assert_eq!(
+        browser_retry_feedback(&reopened, command.id)
+            .await
+            .expect("feedback"),
+        Some("please repair".to_owned())
+    );
+    assert!(
+        browser_action(
+            &reopened,
+            command.id,
+            command.actor.id,
+            &json!({"changed": true})
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        browser_action(&reopened, command.id, 99, &content)
+            .await
+            .is_err()
+    );
+    let outbox = Outbox::new(1024 * 1024, vec!["request.>".to_owned()]);
+    let mut decision = reopened.begin().await.expect("decision");
+    apply_request(
+        &mut decision,
+        &outbox,
+        command.id,
+        command.issue,
+        Authority {
+            writer: true,
+            issue_open: true,
+        },
+    )
+    .await
+    .expect("apply")
+    .expect("pending");
+    decision.commit().await.expect("decision commit");
+    let settled = request_record(&reopened, command.id)
+        .await
+        .expect("status")
+        .expect("request");
+    assert_eq!(settled.status, "refused");
+    assert!(settled.applied_at.is_some());
+}
+
+#[tokio::test]
+async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(1024 * 1024, vec!["request.>".to_owned()]);
+    let writer = Authority {
+        writer: true,
+        issue_open: true,
+    };
+    let former_writer = Authority {
+        writer: false,
+        issue_open: true,
+    };
+    let mut latest = request(
+        25,
+        RequestKind::Later(LaterCommand::Sponsor {
+            provider: Some("openai".to_owned()),
+        }),
+    );
+    latest.actor = Actor {
+        id: 25,
+        login: "new-sponsor".to_owned(),
+    };
+    let issue = latest.issue;
+    let mut earlier = request(
+        10,
+        RequestKind::Later(LaterCommand::Sponsor {
+            provider: Some("anthropic".to_owned()),
+        }),
+    );
+    earlier.actor = Actor {
+        id: 10,
+        login: "former-sponsor".to_owned(),
+    };
+    let mut withdrawal = request(
+        30,
+        RequestKind::Later(LaterCommand::Withdraw {
+            provider: "openai".to_owned(),
+        }),
+    );
+    withdrawal.actor = earlier.actor.clone();
+    for (command, authority) in [
+        (&latest, writer),
+        (&earlier, writer),
+        (&withdrawal, former_writer),
+    ] {
+        let mut work = database.begin().await.expect("record command");
+        record_request(&mut work, command).await.expect("record");
+        sqlx::query(
+            "INSERT INTO tasks.comment_revisions \
+             (repository_id,issue_number,comment_id,source,source_at) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(issue.repository_id)
+        .bind(issue.number)
+        .bind(command.comment_id.expect("comment"))
+        .bind(&command.order.source)
+        .bind(command.order.at)
+        .execute(work.connection())
+        .await
+        .expect("revision");
+        work.commit().await.expect("record commit");
+        let mut work = database.begin().await.expect("apply command");
+        let decision = apply_request(&mut work, &outbox, command.id, issue, authority)
+            .await
+            .expect("decision")
+            .expect("pending")
+            .1;
+        work.commit().await.expect("apply commit");
+        assert_eq!(decision.status, RequestStatus::Applied);
+    }
+    let boundary = request(40, RequestKind::Start).order;
+    let visible = [
+        (earlier.order.clone(), earlier.actor.clone()),
+        (latest.order.clone(), latest.actor.clone()),
+        (withdrawal.order.clone(), withdrawal.actor.clone()),
+    ];
+    let mut read = database.begin().await.expect("source read");
+    assert!(
+        confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible)
+            .await
+            .expect("confirmed source")
+    );
+    assert!(
+        !confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible[1..])
+            .await
+            .expect("missing source")
+    );
+    read.commit().await.expect("source read commit");
+    assert!(task(&database, issue).await.expect("task read").is_none());
+    let projected = consent_projection(&database, issue)
+        .await
+        .expect("projection");
+    assert!(matches!(
+        &projected.providers[&Provider::Openai].slot,
+        SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
+    ));
+    assert!(matches!(
+        &projected.providers[&Provider::Anthropic].slot,
+        SponsorSlot::Active { sponsor, .. } if sponsor.id == earlier.actor.id
+    ));
+    assert!(
+        projected.providers[&Provider::Openai]
+            .tombstones
+            .contains_key(&earlier.actor.id)
+    );
+
+    let removed = CommentRevision {
+        issue,
+        comment_id: earlier.comment_id.expect("comment"),
+        order: SourceOrder {
+            at: DateTime::<Utc>::from_timestamp(35, 0).expect("time"),
+            source_id: earlier.comment_id.expect("comment"),
+            source: "comment:10:deleted".to_owned(),
+            index: 0,
+        },
+        deleted: true,
+        request: None,
+    };
+    let mut work = database.begin().await.expect("remove source");
+    record_comment_revision(&mut work, &outbox, &removed)
+        .await
+        .expect("comment removal");
+    work.commit().await.expect("removal commit");
+    let projected = consent_projection(&database, issue)
+        .await
+        .expect("projection");
+    assert!(matches!(
+        &projected.providers[&Provider::Openai].slot,
+        SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
+    ));
+    assert!(matches!(
+        &projected.providers[&Provider::Anthropic].slot,
+        SponsorSlot::Withdrawn { .. }
+    ));
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_one(database.pool())
+    .await
+    .expect("consent revision");
+    assert_eq!(revision, 4);
+
+    let mut pending = request(
+        40,
+        RequestKind::Later(LaterCommand::Sponsor {
+            provider: Some("anthropic".to_owned()),
+        }),
+    );
+    pending.issue.number += 1;
+    let received = CommentRevision {
+        issue: pending.issue,
+        comment_id: pending.comment_id.expect("comment"),
+        order: pending.order.clone(),
+        deleted: false,
+        request: Some(pending.clone()),
+    };
+    let mut work = database.begin().await.expect("receive pending consent");
+    record_comment_revision(&mut work, &outbox, &received)
+        .await
+        .expect("record source");
+    work.commit().await.expect("source commit");
+    let pending_revision: i64 = sqlx::query_scalar(
+        "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
+    )
+    .bind(pending.issue.repository_id)
+    .bind(pending.issue.number)
+    .fetch_one(database.pool())
+    .await
+    .expect("pending revision");
+    assert_eq!(
+        pending_revision, 1,
+        "a receipt invalidates an outstanding fill"
+    );
+    let mut work = database.begin().await.expect("redeliver source");
+    record_comment_revision(&mut work, &outbox, &received)
+        .await
+        .expect("replay source");
+    work.commit().await.expect("replay commit");
+    let replay_revision: i64 = sqlx::query_scalar(
+        "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
+    )
+    .bind(pending.issue.repository_id)
+    .bind(pending.issue.number)
+    .fetch_one(database.pool())
+    .await
+    .expect("replay revision");
+    assert_eq!(replay_revision, pending_revision);
+
+    let mut bare = request(
+        50,
+        RequestKind::Later(LaterCommand::Sponsor { provider: None }),
+    );
+    bare.issue.number += 2;
+    let mut work = database.begin().await.expect("bare sponsor");
+    record_request(&mut work, &bare)
+        .await
+        .expect("record bare sponsor");
+    let decision = apply_request(&mut work, &outbox, bare.id, bare.issue, writer)
+        .await
+        .expect("bare sponsor decision")
+        .expect("pending bare sponsor")
+        .1;
+    work.commit().await.expect("bare sponsor commit");
+    assert_eq!(decision.status, RequestStatus::Refused);
+    assert_eq!(
+        decision.reason,
+        Some("usage: /concurro sponsor <openai|anthropic>")
+    );
+    let facts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tasks.sponsorship_facts WHERE repository_id=$1 AND issue_number=$2",
+    )
+    .bind(bare.issue.repository_id)
+    .bind(bare.issue.number)
+    .fetch_one(database.pool())
+    .await
+    .expect("bare sponsor fact count");
+    assert_eq!(facts, 0);
+}
+
+/// Removing an older source cannot revoke a newer slot held by the same actor.
+#[tokio::test]
+async fn superseded_sponsor_source_removal_keeps_newer_grant() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec!["request.>".to_owned(), "task.>".to_owned()],
+    );
+    let start = request(30, RequestKind::Start);
+    let mut work = database.begin().await.expect("start");
+    record_request(&mut work, &start)
+        .await
+        .expect("record start");
+    let state = apply_request(
+        &mut work,
+        &outbox,
+        start.id,
+        start.issue,
+        Authority {
+            writer: true,
+            issue_open: true,
+        },
+    )
+    .await
+    .expect("start decision")
+    .expect("pending start")
+    .1
+    .task
+    .expect("started task");
+    for (source, epoch) in [(10, 1), (20, 2)] {
+        let mut transition = json!({
+            "repository":"acme/demo", "issue":start.issue.number,
+            "provider":"openai", "generation":1,
+            "expected_epoch":epoch - 1, "reason":"sponsor",
+            "slot":{
+                "status":"active", "sponsor_id":start.actor.id.to_string(),
+                "epoch":epoch, "grant_id":format!("grant-{epoch}"),
+                "funding":"contributed", "source_id":source,
+                "source_order":["2026-11-20T00:00:00Z",source,0]
+            }
+        });
+        transition["transition"] = json!(python_digest(&transition).expect("digest"));
+        record_sponsorship_transition(&mut work, state.id.0, &transition)
+            .await
+            .expect("active slot");
+    }
+    let removal = ConsentFact {
+        provider: Provider::Openai,
+        actor: start.actor.clone(),
+        order: request(40, RequestKind::Stop).order,
+        grant_id: "removed-old-source".to_owned(),
+        action: ConsentAction::Withdraw {
+            removed_source: Some(10),
+        },
+    };
+    record_withdraw_transition(&mut work, state.id.0, &removal)
+        .await
+        .expect("obsolete source removal");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks.sponsorship_transitions WHERE task_id=$1")
+            .bind(state.id.0)
+            .fetch_one(work.connection())
+            .await
+            .expect("transition count");
+    assert_eq!(count, 2);
+    record_withdraw_transition(
+        &mut work,
+        state.id.0,
+        &ConsentFact {
+            action: ConsentAction::Withdraw {
+                removed_source: None,
+            },
+            ..removal
+        },
+    )
+    .await
+    .expect("self withdrawal");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks.sponsorship_transitions WHERE task_id=$1")
+            .bind(state.id.0)
+            .fetch_one(work.connection())
+            .await
+            .expect("transition count");
+    assert_eq!(count, 3);
+    work.commit().await.expect("commit");
 }
 
 /// Supply exact inputs while exercising initialization transaction boundaries.
@@ -1264,6 +1727,120 @@ async fn stop_cutoff_and_deduplication_survive_restart() {
         .expect("restarted implement");
     assert_eq!(restarted_implement.stage, Stage::Initializing);
     assert_eq!(restarted_implement.id, state.id);
+}
+
+#[tokio::test]
+async fn label_removal_supersedes_old_enrollment_without_stopping_manual_task() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("tasks schema");
+    migrate_events(&database).await.expect("events schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec!["request.>".to_owned(), "task.>".to_owned()],
+    );
+    let authority = Authority {
+        writer: true,
+        issue_open: true,
+    };
+    let mut removed = request(20, RequestKind::Later(LaterCommand::Unenroll));
+    removed.channel = "label".to_owned();
+    removed.reply = "issue_label:20".to_owned();
+    removed.order.source = removed.reply.clone();
+    let mut work = database.begin().await.expect("record removal");
+    record_request(&mut work, &removed)
+        .await
+        .expect("record removal");
+    work.commit().await.expect("commit removal");
+    let mut work = database.begin().await.expect("apply removal");
+    let (_, decision) = apply_request(&mut work, &outbox, removed.id, removed.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending removal");
+    assert_eq!(decision.status, RequestStatus::Applied);
+    work.commit().await.expect("commit removal decision");
+
+    let mut old = request(10, RequestKind::Start);
+    old.channel = "label".to_owned();
+    old.reply = "issue_label:10".to_owned();
+    old.order.source = old.reply.clone();
+    let mut work = database.begin().await.expect("record old label");
+    record_request(&mut work, &old)
+        .await
+        .expect("record old label");
+    work.commit().await.expect("commit old label");
+    let mut work = database.begin().await.expect("apply old label");
+    let (_, decision) = apply_request(&mut work, &outbox, old.id, old.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending old label");
+    assert_eq!(decision.status, RequestStatus::Superseded);
+    work.commit().await.expect("commit old label decision");
+    assert!(task(&database, old.issue).await.expect("task").is_none());
+
+    let manual = request(15, RequestKind::Start);
+    let mut work = database.begin().await.expect("record delayed manual start");
+    record_request(&mut work, &manual)
+        .await
+        .expect("record delayed manual start");
+    work.commit().await.expect("commit delayed manual start");
+    let mut work = database.begin().await.expect("apply delayed manual start");
+    let (_, decision) = apply_request(&mut work, &outbox, manual.id, manual.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending manual start");
+    assert_eq!(decision.status, RequestStatus::Applied);
+    work.commit()
+        .await
+        .expect("commit delayed manual start decision");
+
+    let latest = request(30, RequestKind::Start);
+    let mut work = database.begin().await.expect("record latest label");
+    record_request(&mut work, &latest)
+        .await
+        .expect("record latest label");
+    work.commit().await.expect("commit latest label");
+    let mut work = database.begin().await.expect("apply latest label");
+    let (_, decision) = apply_request(&mut work, &outbox, latest.id, latest.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending latest label");
+    assert_eq!(decision.status, RequestStatus::Refused);
+    assert_eq!(decision.reason, Some("already_active"));
+    work.commit().await.expect("commit latest label decision");
+    let active = task(&database, latest.issue)
+        .await
+        .expect("task")
+        .expect("active task");
+
+    let mut removed_again = request(40, RequestKind::Later(LaterCommand::Unenroll));
+    removed_again.channel = "label".to_owned();
+    removed_again.reply = "issue_label:40".to_owned();
+    removed_again.order.source = removed_again.reply.clone();
+    let mut work = database.begin().await.expect("record new removal");
+    record_request(&mut work, &removed_again)
+        .await
+        .expect("record new removal");
+    work.commit().await.expect("commit new removal");
+    let mut work = database.begin().await.expect("apply new removal");
+    let (_, decision) = apply_request(
+        &mut work,
+        &outbox,
+        removed_again.id,
+        latest.issue,
+        authority,
+    )
+    .await
+    .expect("decision")
+    .expect("pending new removal");
+    assert_eq!(decision.status, RequestStatus::Applied);
+    work.commit().await.expect("commit new removal decision");
+    assert_eq!(
+        task(&database, latest.issue).await.expect("task"),
+        Some(active)
+    );
 }
 
 #[tokio::test]
@@ -1943,6 +2520,13 @@ async fn operator_cancellation_records_actor_and_retires_only_the_selected_turn(
         .expect("task")
         .expect("cancelled task");
     assert_eq!(current.stage, Stage::Blocked);
+    let grant_status: String =
+        sqlx::query_scalar("SELECT status FROM tasks.funding_grants WHERE attempt_id=$1")
+            .bind(attempt.id)
+            .fetch_one(database.pool())
+            .await
+            .expect("cancelled grant");
+    assert_eq!(grant_status, "revoked");
     let effects = pending_effects(&database).await.expect("pending effects");
     assert_eq!(effects.len(), 6);
     assert!(effects.iter().any(|effect| effect["kind"] == "retire"));
@@ -1968,6 +2552,153 @@ async fn operator_cancellation_records_actor_and_retires_only_the_selected_turn(
             .await
             .expect("recorded decisions");
     assert_eq!(actions, ["cancelled", "noop"]);
+}
+
+/// A pre-send personal cancellation frees capacity without reusing its call ordinal.
+#[tokio::test]
+async fn cancelled_unsent_personal_attempt_releases_its_call() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("tasks schema");
+    migrate_events(&database).await.expect("events schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec![
+            "task.>".to_owned(),
+            "request.>".to_owned(),
+            "turn.>".to_owned(),
+        ],
+    );
+    let start = request(10, RequestKind::Start);
+    let mut work = database.begin().await.expect("start");
+    record_request(&mut work, &start)
+        .await
+        .expect("record start");
+    apply_request(
+        &mut work,
+        &outbox,
+        start.id,
+        start.issue,
+        Authority {
+            writer: true,
+            issue_open: true,
+        },
+    )
+    .await
+    .expect("apply start");
+    work.commit().await.expect("start commit");
+    let started = task(&database, start.issue)
+        .await
+        .expect("task")
+        .expect("started");
+    let mut work = database.begin().await.expect("initialize");
+    initialize_task(
+        &mut work,
+        &outbox,
+        start.issue,
+        started.revision,
+        &snapshot(PinnedInputs {
+            config_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            max_model_calls: 1,
+            max_fix_rounds: 1,
+            max_plan_revisions: 1,
+        }),
+    )
+    .await
+    .expect("initialize");
+    work.commit().await.expect("initialization commit");
+    let first = AttemptSpec {
+        id: Uuid::now_v7(),
+        task: started.id,
+        expected_revision: 2,
+        staffing_group: "first-personal".to_owned(),
+        fork: "acme/fork".to_owned(),
+        config_sha: "a".repeat(40),
+        submit_body: b"first".to_vec(),
+        prompt_body: None,
+        deadline: DateTime::<Utc>::from_timestamp(1000, 0).expect("deadline"),
+        unbounded_running: false,
+    };
+    let mut work = database.begin().await.expect("admit first");
+    assert_eq!(
+        admit_intake(&mut work, &outbox, start.issue, &first)
+            .await
+            .expect("first admission"),
+        Admission::Admitted
+    );
+    sqlx::query(
+        "UPDATE tasks.funding_grants SET purpose='task_contributed',payer_id=2, \
+         provider='openai',slot_epoch=1,slot_grant_id='slot-1', \
+         credential_record_id='record-1',credential_version=1,route='openai-api-key' \
+         WHERE attempt_id=$1",
+    )
+    .bind(first.id)
+    .execute(work.connection())
+    .await
+    .expect("personal grant fixture");
+    work.commit().await.expect("first admission commit");
+    let mut work = database.begin().await.expect("cancel before send");
+    assert!(
+        cancel_attempt(&mut work, &outbox, first.id, "host-user")
+            .await
+            .expect("cancel")
+    );
+    work.commit().await.expect("cancel commit");
+    let reservation: (String, String) = sqlx::query_as(
+        "SELECT status,reservation_status FROM tasks.funding_grants WHERE attempt_id=$1",
+    )
+    .bind(first.id)
+    .fetch_one(database.pool())
+    .await
+    .expect("released reservation");
+    assert_eq!(reservation, ("revoked".to_owned(), "released".to_owned()));
+    let dashboard: String =
+        sqlx::query_scalar("SELECT desired_body FROM tasks.dashboard_surfaces WHERE task_id=$1")
+            .bind(started.id.0)
+            .fetch_one(database.pool())
+            .await
+            .expect("dashboard");
+    assert!(dashboard.contains("Model calls: 0 / 1"));
+    let mut reset = task(&database, start.issue)
+        .await
+        .expect("task")
+        .expect("cancelled task");
+    assert_eq!(reset.used_model_calls, 1);
+    reset.stage = Stage::Intake;
+    reset.retry_stage = None;
+    reset.stage_reason = None;
+    reset.current_attempt = None;
+    reset.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(reset.id.0)
+        .bind(i64::try_from(reset.revision).expect("revision"))
+        .bind(SqlJson(&reset))
+        .execute(database.pool())
+        .await
+        .expect("resume fixture");
+    let second = AttemptSpec {
+        id: Uuid::now_v7(),
+        expected_revision: reset.revision,
+        staffing_group: "second-attempt".to_owned(),
+        submit_body: b"second".to_vec(),
+        ..first
+    };
+    let mut work = database.begin().await.expect("admit replacement");
+    assert_eq!(
+        admit_intake(&mut work, &outbox, start.issue, &second)
+            .await
+            .expect("replacement admission"),
+        Admission::Admitted
+    );
+    work.commit().await.expect("replacement commit");
+    let resumed = task(&database, start.issue)
+        .await
+        .expect("task")
+        .expect("resumed task");
+    assert_eq!(resumed.used_model_calls, 2);
 }
 
 #[tokio::test]
@@ -2193,6 +2924,47 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
             assert_eq!(
                 fallback,
                 b"{\"type\":\"bad\\u0000kind\",\"message\":\"fallback\"}\n"
+            );
+            let first_page = transcript_page(&database, turn, 0, 1)
+                .await
+                .expect("transcript page")
+                .expect("turn archive");
+            assert_eq!(first_page.len(), 1);
+            let rest = transcript_page(&database, turn, first_page[0].position, 10)
+                .await
+                .expect("transcript continuation")
+                .expect("turn archive");
+            assert!(
+                rest.iter().any(|line| line.fallback_base64.as_deref()
+                    == Some(STANDARD.encode(&fallback).as_str()))
+            );
+            let digest = "c".repeat(64);
+            sqlx::query(
+                "INSERT INTO tasks.turn_artifacts (sha256,body,media_type) \
+                 VALUES ($1,$2,'text/plain')",
+            )
+            .bind(&digest)
+            .bind(b"linked artifact".as_slice())
+            .execute(database.pool())
+            .await
+            .expect("artifact");
+            sqlx::query("INSERT INTO tasks.turn_artifact_links (turn_id,sha256) VALUES ($1,$2)")
+                .bind(turn)
+                .bind(&digest)
+                .execute(database.pool())
+                .await
+                .expect("artifact link");
+            assert_eq!(
+                turn_artifact(&database, turn, &digest)
+                    .await
+                    .expect("linked artifact read"),
+                Some(("text/plain".to_owned(), b"linked artifact".to_vec()))
+            );
+            assert!(
+                turn_artifact(&database, Uuid::now_v7(), &digest)
+                    .await
+                    .expect("unlinked artifact read")
+                    .is_none()
             );
             let (upload, stored_result, retained_file_bytes): (Vec<u8>, Value, i64) = sqlx::query_as(
                 "SELECT u.gzip_bytes,a.result,l.retained_file_bytes FROM tasks.archive_uploads u \

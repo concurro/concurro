@@ -15,6 +15,7 @@ use crate::{
     append_task_snapshot,
     effects::{definite_session_failure, operational_json},
     enqueue_implementation, enqueue_implementation_result, events, lock_issue_for_turn,
+    sponsorship::has_credential_exclusion,
 };
 
 /// Read the durable implementer journal generation after a provider session failure.
@@ -288,29 +289,34 @@ pub(crate) async fn settle_development(
             .as_ref()
             .is_none_or(|result| result.0["outcome"] != "ok")
     {
+        let credential_failure =
+            status == "finished" && has_credential_exclusion(uow, turn).await?;
         let session_failure = definite_session_failure(
             &status,
             reason.as_deref(),
             result.as_ref().map(|result| &result.0),
             &submit_body,
         );
-        if session_failure {
+        if credential_failure || session_failure {
             let failures: i32 = sqlx::query_scalar(
                 "UPDATE tasks.initialization_inputs SET \
                  implementation_session_epoch=implementation_session_epoch+1, \
-                 implementation_failure_count=implementation_failure_count+1 \
+                 implementation_failure_count=implementation_failure_count+$2 \
                  WHERE task_id=$1 RETURNING implementation_failure_count",
             )
             .bind(state.id.0)
+            .bind(i32::from(session_failure))
             .fetch_one(uow.connection())
             .await
             .context("record implementer session failure")?;
-            if failures == 1 {
+            if credential_failure || failures == 1 {
                 let next = TaskState {
                     revision: state.revision + 1,
-                    stage_reason: Some(
-                        "Implementer provider session failed; retrying once".to_owned(),
-                    ),
+                    stage_reason: Some(if credential_failure {
+                        "Provider credential failed; selecting the next eligible entry".to_owned()
+                    } else {
+                        "Implementer provider session failed; retrying once".to_owned()
+                    }),
                     current_attempt: None,
                     ..state.clone()
                 };

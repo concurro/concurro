@@ -31,7 +31,7 @@ pub(crate) fn intake_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
 ) -> Result<(Value, Value)> {
-    task_prompt_parts(context, snapshot, "intake")
+    task_prompt_parts(context, snapshot, "intake", false)
 }
 
 /// Rebuild the planner prompt and response schema from the pinned bundle.
@@ -39,7 +39,7 @@ pub(crate) fn plan_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
 ) -> Result<(Value, Value)> {
-    task_prompt_parts(context, snapshot, "plan")
+    task_prompt_parts(context, snapshot, "plan", false)
 }
 
 /// Rebuild one independent design review prompt from the pinned bundle.
@@ -47,7 +47,7 @@ pub(crate) fn plan_qc_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
 ) -> Result<(Value, Value)> {
-    task_prompt_parts(context, snapshot, "plan_qc")
+    task_prompt_parts(context, snapshot, "plan_qc", false)
 }
 
 /// Rebuild the approved implementation prompt and schema from the pinned bundle.
@@ -55,7 +55,7 @@ pub(crate) fn develop_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
 ) -> Result<(Value, Value)> {
-    task_prompt_parts(context, snapshot, "develop")
+    task_prompt_parts(context, snapshot, "develop", false)
 }
 
 /// Rebuild one contribution PR review prompt and schema from its pinned bundle.
@@ -63,15 +63,20 @@ pub(crate) fn review_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
 ) -> Result<(Value, Value)> {
-    task_prompt_parts(context, snapshot, "review")
+    task_prompt_parts(context, snapshot, "review", false)
 }
 
 /// Keep task stage prompts on one repository snapshot and feedback contract.
-fn task_prompt_parts(
+pub(crate) fn task_prompt_parts(
     context: &Value,
     snapshot: &InitializationSnapshot,
     stage: &str,
+    standalone_review: bool,
 ) -> Result<(Value, Value)> {
+    ensure!(
+        !standalone_review || stage == "review",
+        "only a PR review can use standalone instructions"
+    );
     let mut untrusted = context
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("intake context is invalid"))?
@@ -79,6 +84,15 @@ fn task_prompt_parts(
     untrusted.retain(|key, _| !key.starts_with("controller_"));
     let authorization = untrusted.remove("design_authorization");
     untrusted.remove("charter");
+    if standalone_review
+        && untrusted.get("issue").and_then(|issue| issue.get("body"))
+            == untrusted.get("published_pr_body")
+    {
+        untrusted
+            .get_mut("issue")
+            .and_then(Value::as_object_mut)
+            .map(|issue| issue.remove("body"));
+    }
     if stage == "plan" {
         for key in ["edit_policy", "limits"] {
             if untrusted.get(key) == untrusted["plan_output_contract"].get(key) {
@@ -133,7 +147,12 @@ fn task_prompt_parts(
     });
     if stage == "review" {
         instructions["mode"] = Value::String(
-            include_str!("../../../bundle/skills/concurro-review-pr/contribution.md").to_owned(),
+            if standalone_review {
+                include_str!("../../../bundle/skills/concurro-review-pr/standalone.md")
+            } else {
+                include_str!("../../../bundle/skills/concurro-review-pr/contribution.md")
+            }
+            .to_owned(),
         );
     }
     let mut prompt = serde_json::json!({
@@ -180,6 +199,10 @@ fn task_prompt_parts(
         "review" => include_str!("../../../bundle/schemas/review.json"),
         _ => include_str!("../../../bundle/schemas/intake.json"),
     })?;
+    if standalone_review {
+        schema["properties"]["verdict"]["enum"] =
+            serde_json::json!(["approve", "changes_requested"]);
+    }
     if stage != "review" {
         let mut goals = charter["goals"]
             .as_object()
@@ -443,7 +466,7 @@ mod tests {
 
     /// Match the retained Python prompt and schema for every M2 design role.
     #[test]
-    fn m2_stage_prompts_match_python_bundle() {
+    fn stage_prompts_match_python_bundle() {
         let charter = r#"{"version":1,"id":"test","goals":{"G1":"Correctness"},"non_goals":["n"],"constraints":["c"],"acceptance":["a"]}"#;
         let instruction_texts = BTreeMap::from([
             (
@@ -488,7 +511,14 @@ mod tests {
             bundle_id: "bundle".to_owned(),
         };
         let repository = json!({"refs":{"main":"b".repeat(40)},"head":"main"});
-        for stage in ["plan", "plan_qc", "develop", "review"] {
+        for (stage, kind) in [
+            ("plan", "contribution"),
+            ("plan_qc", "contribution"),
+            ("develop", "contribution"),
+            ("review", "contribution"),
+            ("review", "standalone_pr_review"),
+        ] {
+            let standalone = kind == "standalone_pr_review";
             let mut context = json!({
                 "repository":repository,"repository_commit":"b".repeat(40),
                 "charter":serde_json::from_str::<serde_json::Value>(charter).expect("charter"),
@@ -498,22 +528,26 @@ mod tests {
                 "reviewer_identity":{"id":"reviewer-1"},
                 "controller_secret":"omitted",
             });
+            if standalone {
+                context["published_pr_body"] = json!("Build it");
+            }
             if stage == "develop" {
                 context["design_authorization"] =
                     json!({"verified_by":"controller","binding":"exact"});
             }
             let (rust_prompt, rust_schema) =
-                task_prompt_parts(&context, &snapshot, stage).expect("Rust prompt");
+                task_prompt_parts(&context, &snapshot, stage, standalone).expect("Rust prompt");
             let input = json!({
-                "stage":stage,"context":context,"charter":charter,"instruction_texts":instruction_texts,
+                "stage":stage,"kind":kind,"context":context,"charter":charter,
+                "instruction_texts":instruction_texts,
             });
             let script = r#"import json,sys
 sys.path.insert(0,'engine')
 import bundle,prompts
 data=json.load(sys.stdin)
 frozen=bundle.Bundle(root='.',charter_text=data['charter'],instruction_texts=data['instruction_texts'])
-request={'stage':data['stage'],'context':data['context'],'local_candidate':False}
-print(json.dumps({'prompt':json.loads(prompts.prompt_for(request,frozen)),'schema':frozen.schema(data['stage'])}))
+request={'stage':data['stage'],'task_kind':data['kind'],'context':data['context'],'local_candidate':False}
+print(json.dumps({'prompt':json.loads(prompts.prompt_for(request,frozen)),'schema':frozen.schema(data['stage'],data['kind'])}))
 "#;
             let mut python = Command::new("python3")
                 .args(["-c", script])
