@@ -37,6 +37,29 @@ PYTHONPATH=engine:contracts/python python3 -m deploy.export_historical_display \
   /path/to/private-historical-display.json
 ```
 
+The exporter verifies the user token through the retained backoffice's
+`GitHubOAuth.user()` account lookup. Repository reads still use the existing scoped
+`Access` transport; its repository boundary is unchanged.
+
+The retained Python backoffice image does not contain `deploy/`. To use its compatible
+checkpoint/projector runtime, stream the corrected release's exporter into a one-off
+Python process in that container, keeping the existing private input/output paths:
+
+```sh
+docker exec -i \
+  -e PYTHONPATH=/opt/concurro:/opt/concurro/engine \
+  "$BACKOFFICE_CONTAINER" python3 - \
+  --settings /etc/concurro/backoffice/settings.json \
+  --user-token-file "$TOKEN_IN_CONTAINER" \
+  --deployment "$DISPLAY_DEPLOYMENT" \
+  "$MANIFEST_IN_CONTAINER" \
+  < "$CORRECTED_RELEASE/deploy/export_historical_display.py"
+```
+
+`CORRECTED_RELEASE` must contain the identity-lookup correction. This command starts no
+controller or HTTP server and does not replace files in the retained image. The token
+and manifest paths must already be accessible to the container's configured user.
+
 An optional `--inventory /path/to/inventory.json` selects exact source identities:
 
 ```json

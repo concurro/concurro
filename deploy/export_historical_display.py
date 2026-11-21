@@ -13,7 +13,7 @@ from pathlib import Path
 
 import sponsorship
 from backoffice import review_tasks
-from backoffice.auth import User
+from backoffice.auth import GitHubOAuth
 from backoffice.github import Access
 from backoffice.settings import load
 from backoffice.tasks import TaskNotFound, Tasks
@@ -118,11 +118,10 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     settings = load(args.settings)
-    access = Access(Identity(settings.reader), args.user_token_file.read_text().strip())
-    user = access.transport(settings.targets[0].upstream, as_user=True).request("GET", "user")
-    reader = Tasks(
-        settings, access, User(user["id"], user["login"], user.get("name") or "", user.get("avatar_url") or "")
-    )
+    token = args.user_token_file.read_text().strip()
+    user = GitHubOAuth(settings.client_id, settings.client_secret).user(token)
+    access = Access(Identity(settings.reader), token)
+    reader = Tasks(settings, access, user)
     inventory = json.loads(args.inventory.read_text()) if args.inventory else None
     manifest = export(reader, args.deployment, datetime.now(UTC).isoformat(), inventory)
     args.manifest.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
