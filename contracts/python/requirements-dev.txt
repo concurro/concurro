@@ -8,8 +8,8 @@ black==26.10.1
     # via datamodel-code-generator
 click==8.5.1
     # via black
-datamodel-code-generator==0.78.0
-    # via -r contracts/python/requirements-dev.in
+datamodel-code-generator==0.81.0
+    # via -r requirements-dev.in
 genson==1.4.0
     # via datamodel-code-generator
 inflect==7.6.0
@@ -36,7 +36,7 @@ platformdirs==4.14.7
     # via black
 pydantic==2.14.1
     # via
-    #   -r contracts/python/requirements-dev.in
+    #   -r requirements-dev.in
     #   datamodel-code-generator
 pydantic-core==2.50.1
     # via pydantic
@@ -48,6 +48,7 @@ typeguard==4.6.0
     # via inflect
 typing-extensions==4.16.0
     # via
+    #   datamodel-code-generator
     #   pydantic
     #   pydantic-core
     #   typeguard
