@@ -5,7 +5,11 @@ nats_credentials_file = "/etc/concurro/tasks/nats-credentials.json"
 github_api_base = "https://api.github.com/"
 github_app_id = 123456
 github_private_key_file = "/etc/concurro/tasks/app.pem"
-exchange_url = "http://concurro-gateway:8081"
+# Enable with a reviewer target below.
+# reviewer_oauth_base = "https://github.com/"
+# reviewer_oauth_client_id = "APP_OAUTH_CLIENT_ID"
+# reviewer_oauth_client_secret_file = "/etc/concurro/tasks/app-client-secret"
+exchange_url = "http://concurro-exchange-operator:8082"
 exchange_token_file = "/etc/concurro/tasks/exchange-token"
 vault_metadata_url = "http://concurro-vault:8090"
 vault_metadata_token_file = "/etc/concurro/tasks/vault-metadata-token"
@@ -42,6 +46,9 @@ upstream = "owner/repository"
 bot_login = "concurro[bot]"
 publisher_logins = ["concurro[bot]"]
 engine_sha = "0000000000000000000000000000000000000000"
+# Optional standalone reviewer, with its grant on writable state storage.
+# reviewer_user_id = 12345678
+# reviewer_grant_file = "/var/lib/concurro/tasks/reviewer/reviewer-grant.json"
 
 [targets.issue_permissions]
 issues = "read"

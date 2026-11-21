@@ -14,6 +14,8 @@ services:
       CONCURRO_TASKS_CONFIG: /etc/concurro/tasks/settings.toml
     volumes:
       - /etc/concurro/tasks:/etc/concurro/tasks:ro
+      # Reviewer OAuth refresh atomically replaces its grant in this directory.
+      - /var/lib/concurro/tasks/reviewer:/var/lib/concurro/tasks/reviewer
     networks:
       edge: {}
       platform:

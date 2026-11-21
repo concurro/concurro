@@ -1,0 +1,16 @@
+# Optional Phase 3 cutover overlay. Apply only after the Python controller stops.
+services:
+  gateway:
+    networks:
+      platform:
+        aliases:
+          - concurro-exchange-operator
+  exchange:
+    environment:
+      # Exchange shares gateway's network namespace; bind only its platform address.
+      EXCHANGE_OPERATOR_LISTEN: concurro-exchange-operator:8082
+
+networks:
+  platform:
+    external: true
+    name: platform

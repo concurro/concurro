@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1567,6 +1567,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Authenticate first: only a proven caller's submission or result may be large.
             if path.startswith("/exchange/operator/"):
+                if self.server.surface == "runner":
+                    raise Refused(404, "not found")
                 if (
                     not self.server.operator_digest
                     or not bearer
@@ -1576,6 +1578,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit = MAX_BODY if path == "/exchange/operator/turns" else SMALL_BODY
                 handle = lambda body: self.operator(method, path[len("/exchange/operator/") :], query, body)
             else:
+                if self.server.surface == "operator":
+                    raise Refused(404, "not found")
                 match = SESSION_PATH.fullmatch(path)
                 if not match or method != "POST":
                     raise Refused(404, "not found")
@@ -1692,14 +1696,19 @@ class Bounded(ThreadingHTTPServer):
             self.slots.release()
 
 
-def server(exchange, address, operator=None):
-    """Build an HTTP server with its own exchange, operator credentials and body budget."""
+def server(exchange, address, operator=None, *, surface="combined"):
+    """Bind a combined, runner-only or operator-only API with its own request budget."""
+    if surface not in ("combined", "runner", "operator"):
+        raise ValueError("unknown exchange listener surface")
+    if surface == "operator" and not operator:
+        raise ValueError("the operator listener requires an operator token")
     digest = hashlib.sha256(operator.encode()).digest() if operator else None
     budget = Budget(BODY_BUDGET)
     host, port = address.rsplit(":", 1)
     instance = Bounded((host, int(port)), Handler)
     instance.exchange = exchange
     instance.operator_digest = digest
+    instance.surface = surface
     instance.body_budget = budget
     return instance
 
@@ -1743,20 +1752,40 @@ def main():
         vault=vault,
     )
     if args.command == "serve":
-        if env("EXCHANGE_PRIVATE_LISTEN"):
-            host, port = env("EXCHANGE_PRIVATE_LISTEN").rsplit(":", 1)
-            if host not in ("127.0.0.1", "::1"):
-                raise ValueError("inference hooks require a loopback listener")
-            exchange.inference.native_database = env("EXCHANGE_NATIVE_LOG")
-            if env("EXCHANGE_VERIFIER_URL") and env("EXCHANGE_VERIFIER_TOKEN_FILE"):
-                exchange.inference.verifier_url = env("EXCHANGE_VERIFIER_URL").rstrip("/")
-                exchange.inference.verifier_token = Path(env("EXCHANGE_VERIFIER_TOKEN_FILE")).read_text().strip()
-            private = Bounded((host, int(port)), InferenceHandler)
-            private.inference, private.max_body = exchange.inference, MAX_BODY
-            private.body_budget = Budget(BODY_BUDGET)
-            threading.Thread(target=private.serve_forever, daemon=True).start()
-        threading.Thread(target=reconciling, args=(exchange,), daemon=True).start()
-        server(exchange, env("EXCHANGE_LISTEN", "0.0.0.0:8080"), env("EXCHANGE_OPERATOR_TOKEN") or None).serve_forever()
+        operator_address = env("EXCHANGE_OPERATOR_LISTEN")
+        operator_token = env("EXCHANGE_OPERATOR_TOKEN") or None
+        with ExitStack() as listeners:
+            operator = None
+            if operator_address:
+                operator = listeners.enter_context(
+                    server(exchange, operator_address, operator_token, surface="operator")
+                )
+            public = listeners.enter_context(
+                server(
+                    exchange,
+                    env("EXCHANGE_LISTEN", "0.0.0.0:8080"),
+                    None if operator_address else operator_token,
+                    surface="runner" if operator_address else "combined",
+                )
+            )
+            private = None
+            if env("EXCHANGE_PRIVATE_LISTEN"):
+                host, port = env("EXCHANGE_PRIVATE_LISTEN").rsplit(":", 1)
+                if host not in ("127.0.0.1", "::1"):
+                    raise ValueError("inference hooks require a loopback listener")
+                exchange.inference.native_database = env("EXCHANGE_NATIVE_LOG")
+                if env("EXCHANGE_VERIFIER_URL") and env("EXCHANGE_VERIFIER_TOKEN_FILE"):
+                    exchange.inference.verifier_url = env("EXCHANGE_VERIFIER_URL").rstrip("/")
+                    exchange.inference.verifier_token = Path(env("EXCHANGE_VERIFIER_TOKEN_FILE")).read_text().strip()
+                private = listeners.enter_context(Bounded((host, int(port)), InferenceHandler))
+                private.inference, private.max_body = exchange.inference, MAX_BODY
+                private.body_budget = Budget(BODY_BUDGET)
+            # Bind every configured listener before serving any of them.
+            for listener in (operator, private):
+                if listener is not None:
+                    threading.Thread(target=listener.serve_forever, daemon=True).start()
+            threading.Thread(target=reconciling, args=(exchange,), daemon=True).start()
+            public.serve_forever()
     elif args.command == "list":
         for row in exchange.db.execute(
             "SELECT id, kind, run_id, key IS NOT NULL, deadline, ended, refusal FROM sessions"

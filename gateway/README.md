@@ -399,6 +399,37 @@ validates the current settings before stopping services.
 Host Docker commands use non-interactive `sudo docker` only. Execute the scripts; never
 source them. The Compose `build` sections remain for local builds.
 
+## Phase 3 listener and reviewer storage
+
+At the single controller cutover, layer `gateway/compose.rust.yaml` over the gateway
+Compose configuration, preserving existing private-network and state overrides. It
+attaches the gateway network namespace to `platform` and sets
+`EXCHANGE_OPERATOR_LISTEN=concurro-exchange-operator:8082`. The exchange then serves
+operator calls only on that listener; public port 8080 serves runner calls only.
+Keep `EXCHANGE_PRIVATE_LISTEN=127.0.0.1:8081` for inference hooks. Do not route the
+operator listener through the edge. Rotate its bearer when Python stops, and give
+it only to tasks. `deploy/tasks.settings.example.toml` uses this private endpoint.
+
+Without `EXCHANGE_OPERATOR_LISTEN`, the exchange retains the combined runner/operator
+listener for existing deployments. Setting it requires `EXCHANGE_OPERATOR_TOKEN`;
+all configured listeners bind before request handling starts.
+
+The task configuration mount remains read-only. The `service/compose.rust.yaml`
+example additionally mounts `/var/lib/concurro/tasks/reviewer` writable, because
+reviewer OAuth refresh atomically replaces the grant file. Before starting tasks:
+
+```bash
+sudo install -d -m 0700 -o 65533 -g 65533 /var/lib/concurro/tasks/reviewer
+```
+
+After the Python controller has stopped, copy its final `reviewer-grant.json` into
+that directory with owner `65533:65533` and mode `0600`. Set `reviewer_grant_file`
+to `/var/lib/concurro/tasks/reviewer/reviewer-grant.json`, and configure the App's
+OAuth client ID and secret-file reference as shown in the settings example.
+Mount the directory, not only the file: refresh needs to rename a temporary file.
+Include this state directory in private configuration/state backups. Installations
+without a reviewer need no grant or OAuth configuration.
+
 ## Launcher and engine
 
 Target callers reference the launcher, `concurro/concurro/.github/workflows/agent.yml@main`,

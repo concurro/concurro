@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -10,7 +11,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 from exchange_fixtures import AUDIENCE, BINDING, ENGINE, EXPECTED, TURN, FakeGateway
 
@@ -89,7 +90,7 @@ class StateFixture:
 class HttpFixture:
     """Small real HTTP servers, all shut down and closed after each test."""
 
-    def start(self, api, operator="operator", slots=2, budget=100):
+    def start(self, api, operator="operator", slots=2, budget=100, surface="combined"):
         """Capture the per-server budget without depending on closure or attribute layout."""
         budgets = []
         budget_type = exchange.Budget
@@ -104,7 +105,7 @@ class HttpFixture:
             patch.object(exchange, "BODY_BUDGET", budget),
             patch.object(exchange, "Budget", side_effect=allocate),
         ):
-            host = exchange.server(api, "127.0.0.1:0", operator)
+            host = exchange.server(api, "127.0.0.1:0", operator, surface=surface)
         thread = threading.Thread(target=host.serve_forever, daemon=True)
         thread.start()
 
@@ -173,6 +174,77 @@ class HttpContractTests(HttpFixture, unittest.TestCase):
         self.assertEqual(
             self.request(disabled, "/exchange/operator/turns"), (401, b'{"error": "operator token required"}')
         )
+
+    def test_split_listeners_keep_runner_and_operator_routes_separate(self):
+        """A valid bearer cannot cross the listener boundary, even with an oversized body."""
+        api = Mock()
+        api.capabilities.return_value = {"operator": True}
+        api.next.return_value = {"turns": []}
+        public, _ = self.start(api, operator=None, surface="runner")
+        private, _ = self.start(api, surface="operator")
+        for method, path in (
+            ("GET", "/exchange/operator/capabilities"),
+            ("POST", "/exchange/operator/turns"),
+            ("DELETE", f"/exchange/operator/turns/{TURN_ID}"),
+        ):
+            with self.subTest(method=method):
+                self.assertEqual(self.request(public, path, method=method, body=b"", length=10**9)[0], 404)
+                self.assertEqual(self.request(private, path, token="wrong", method=method)[0], 401)
+        runner_path = f"/exchange/sessions/{SESSION}/next"
+        self.assertEqual(self.request(private, runner_path, "runner", body=b"", length=10**9)[0], 404)
+        self.assertEqual(self.request(public, runner_path, "runner")[0], 200)
+        self.assertEqual(self.request(private, "/exchange/operator/capabilities", method="GET")[0], 200)
+        api.next.assert_called_once_with(SESSION, "runner", 1, 0)
+        api.capabilities.assert_called_once_with()
+        api.submit.assert_not_called()
+        api.cancel.assert_not_called()
+
+    def test_operator_listener_requires_a_token(self):
+        """A misconfigured private listener fails before a socket is bound."""
+        with patch.object(exchange, "Bounded") as bound:
+            with self.assertRaisesRegex(ValueError, "requires an operator token"):
+                exchange.server(Mock(), "127.0.0.1:0", surface="operator")
+            bound.assert_not_called()
+
+    def test_serve_selects_split_or_combined_listeners_without_moving_inference(self):
+        """Exercise environment wiring; the native inference hook stays on its own listener."""
+        for split in (False, True):
+            with self.subTest(split=split):
+                env = {"EXCHANGE_OPERATOR_TOKEN": "operator", "EXCHANGE_PRIVATE_LISTEN": "127.0.0.1:8081"}
+                if split:
+                    env["EXCHANGE_OPERATOR_LISTEN"] = "platform-alias:8082"
+                public, operator, private = MagicMock(), MagicMock(), MagicMock()
+                public.__enter__.return_value = public
+                operator.__enter__.return_value = operator
+                private.__enter__.return_value = private
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(exchange.sys, "argv", ["exchange", "serve"]),
+                    patch.object(exchange, "Exchange") as instance,
+                    patch.object(exchange, "server", side_effect=[operator, public] if split else [public]) as bind,
+                    patch.object(exchange, "Bounded", return_value=private) as inference,
+                    patch.object(exchange.threading, "Thread") as thread,
+                ):
+                    exchange.main()
+                    expected = (
+                        [call(instance.return_value, "platform-alias:8082", "operator", surface="operator")]
+                        if split
+                        else []
+                    )
+                    expected.append(
+                        call(
+                            instance.return_value,
+                            "0.0.0.0:8080",
+                            None if split else "operator",
+                            surface="runner" if split else "combined",
+                        )
+                    )
+                    self.assertEqual(bind.call_args_list, expected)
+                    inference.assert_called_once_with(("127.0.0.1", 8081), exchange.InferenceHandler)
+                    public.serve_forever.assert_called_once_with()
+                    self.assertEqual(thread.call_count, 3 if split else 2)
+                    private.__exit__.assert_called_once()
+                    public.__exit__.assert_called_once()
 
     def test_query_parsing_table_and_dispatch_precedence(self):
         api = Mock()
