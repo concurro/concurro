@@ -71,10 +71,7 @@ pub async fn queue_task_comment(
     source_key: &str,
     body: &str,
 ) -> anyhow::Result<Uuid> {
-    let id = Uuid::new_v5(
-        &Uuid::NAMESPACE_OID,
-        format!("task-comment:{}:{source_key}", state.id.0).as_bytes(),
-    );
+    let id = task_comment_id(state.id.0, source_key);
     let marker = if kind == "dashboard" {
         "<!-- concurro:v1 -->".to_owned()
     } else {
@@ -111,6 +108,14 @@ pub async fn queue_task_comment(
     anyhow::ensure!(saved == Some(id), "task comment changed on replay");
     enqueue_comment_job(uow, id, state.issue).await?;
     Ok(id)
+}
+
+/// Derive the stable identity of one task comment from its source key.
+pub(crate) fn task_comment_id(task: Uuid, source_key: &str) -> Uuid {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("task-comment:{task}:{source_key}").as_bytes(),
+    )
 }
 
 /// Record and queue one reply in the request's final disposition transaction.

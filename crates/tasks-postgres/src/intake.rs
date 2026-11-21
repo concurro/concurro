@@ -8,7 +8,8 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::{
-    append_task_snapshot, effects::operational_json, enqueue_intake, events, queue_task_comment,
+    append_task_snapshot, effects::operational_json, enqueue_intake, enqueue_plan, events,
+    queue_task_comment,
 };
 
 /// Rejected output retained for the next paid intake correction.
@@ -100,6 +101,7 @@ pub(crate) async fn settle_intake(
             } else {
                 Stage::Blocked
             },
+            retry_stage: (!retry_unknown).then_some(Stage::Intake),
             revision: state.revision + 1,
             stage_reason: Some(reason.unwrap_or_else(|| {
                 if status == "finished" {
@@ -177,7 +179,16 @@ pub(crate) async fn settle_intake(
         "intake report changed on replay"
     );
     if parsed.is_ok() {
-        events::append_intake_report(uow, outbox, state, turn, &raw_report_bytes).await?;
+        events::append_task_report(
+            uow,
+            outbox,
+            state,
+            turn,
+            &raw_report_bytes,
+            "intake",
+            "assessment",
+        )
+        .await?;
     }
     let accepted_report = parsed.as_ref().ok().cloned();
     let next = match parsed {
@@ -197,6 +208,7 @@ pub(crate) async fn settle_intake(
                 } else {
                     Stage::Intake
                 },
+                retry_stage: exhausted.then_some(Stage::Intake),
                 revision: state.revision + 1,
                 stage_reason: Some(if exhausted {
                     format!("Intake output still needs correction after two retries: {error}")
@@ -225,6 +237,8 @@ pub(crate) async fn settle_intake(
     }
     if next.stage == Stage::Intake {
         enqueue_intake(uow, &next, None).await?;
+    } else if next.stage == Stage::Plan {
+        enqueue_plan(uow, &next).await?;
     }
     Ok(())
 }

@@ -1,14 +1,201 @@
-//! Read-only task, attempt and pending-effect views for the host operator.
+//! Host operator task views and audited recovery actions.
 
-use anyhow::ensure;
+use anyhow::{Result, ensure};
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
-use concurro_tasks_core::IssueKey;
+use concurro_tasks_core::{IssueKey, Stage, TaskState};
 use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use crate::{cancel_attempts, intake, lock_issue_for_turn};
+use crate::{
+    cancel_attempts, effects::settle_attempt, git_publication::GitPublicationIntent,
+    lock_issue_for_turn, pr_review, pr_review_actions,
+};
+
+/// Reopen or visibly stop a host-reviewed uncertain publication write.
+pub async fn resolve_pending_write(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    kind: &str,
+    id: Uuid,
+    sequence: Option<i32>,
+    actor: &str,
+    resend: bool,
+) -> Result<bool> {
+    ensure!(!actor.trim().is_empty(), "operator actor is empty");
+    let resolved = match kind {
+        "git" if sequence.is_none() => {
+            let Some(state) = lock_issue_for_turn(uow, id).await? else {
+                return Ok(false);
+            };
+            if state.stage != Stage::Publish {
+                return Ok(false);
+            }
+            let row: Option<(i64, Json<GitPublicationIntent>)> = sqlx::query_as(
+                "SELECT revision,intent FROM tasks.git_publications \
+                 WHERE task_id=$1 AND attempt_id=$2 FOR UPDATE",
+            )
+            .bind(state.id.0)
+            .bind(id)
+            .fetch_optional(uow.connection())
+            .await?;
+            let Some((revision, Json(mut intent))) = row else {
+                return Ok(false);
+            };
+            let field = if intent.pr_update_sent {
+                &mut intent.pr_update_sent
+            } else if intent.pr_create_sent && intent.pr_number.is_none() {
+                &mut intent.pr_create_sent
+            } else {
+                return Ok(false);
+            };
+            if resend {
+                *field = false;
+                if !crate::save_git_publication(uow, id, revision, &intent).await? {
+                    return Ok(false);
+                }
+                crate::enqueue_git_publication(uow, &state).await?;
+                true
+            } else {
+                crate::block_git_publication(
+                    uow,
+                    outbox,
+                    id,
+                    "operator marked uncertain GitHub publication failed",
+                )
+                .await?
+            }
+        }
+        "review" | "action" => {
+            let Some(state) = lock_issue_for_turn(uow, id).await? else {
+                return Ok(false);
+            };
+            if state.stage != Stage::Review {
+                return Ok(false);
+            }
+            let row: Option<(Uuid, String)> = sqlx::query_as(
+                "SELECT batch_id,status FROM tasks.pr_review_publications \
+                 WHERE turn_id=$1 AND task_id=$2 FOR UPDATE",
+            )
+            .bind(id)
+            .bind(state.id.0)
+            .fetch_optional(uow.connection())
+            .await?;
+            let Some((batch, status)) = row else {
+                return Ok(false);
+            };
+            if status != "sent" {
+                return Ok(false);
+            }
+            if kind == "action" {
+                let Some(sequence) = sequence else {
+                    return Ok(false);
+                };
+                let changed = if resend {
+                    pr_review_actions::retry_pr_review_action(uow, id, sequence).await?
+                } else {
+                    pr_review_actions::fail_pr_review_action(uow, id, sequence).await?
+                };
+                if !changed {
+                    return Ok(false);
+                }
+            } else {
+                if sequence.is_some() {
+                    return Ok(false);
+                }
+                let unresolved_action: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM tasks.pr_review_actions \
+                     WHERE turn_id=$1 AND status IN ('sent','failed'))",
+                )
+                .bind(id)
+                .fetch_one(uow.connection())
+                .await?;
+                if unresolved_action {
+                    return Ok(false);
+                }
+            }
+            if resend {
+                if kind == "review" {
+                    pr_review::retry_pr_review_publication(uow, id).await?;
+                }
+                pr_review::enqueue_pr_review_publish(uow, state.id.0, id).await?;
+            } else {
+                pr_review::block_pr_review_batch(
+                    uow,
+                    outbox,
+                    state.issue,
+                    batch,
+                    "operator marked uncertain GitHub review failed",
+                )
+                .await?;
+                sqlx::query(
+                    "UPDATE tasks.pr_review_publications SET status='failed',error='operator_failed' \
+                     WHERE turn_id=$1 AND status='sent'",
+                )
+                .bind(id)
+                .execute(uow.connection())
+                .await?;
+            }
+            true
+        }
+        "ready" if sequence.is_none() => {
+            let row: Option<(i64, i64, String, String)> = sqlx::query_as(
+                "SELECT t.repository_id,t.issue_number,r.head,r.status \
+                 FROM tasks.pr_ready_intents r JOIN tasks.task_state t ON t.task_id=r.task_id \
+                 WHERE r.task_id=$1",
+            )
+            .bind(id)
+            .fetch_optional(uow.connection())
+            .await?;
+            let Some((repository_id, number, head, status)) = row else {
+                return Ok(false);
+            };
+            if status != "sent" {
+                return Ok(false);
+            }
+            let issue = IssueKey {
+                repository_id,
+                number,
+            };
+            if resend {
+                if !crate::retry_ready_intent(uow, issue, &head).await? {
+                    return Ok(false);
+                }
+                let state: Option<Json<TaskState>> = sqlx::query_scalar(
+                    "SELECT state FROM tasks.task_state WHERE repository_id=$1 AND issue_number=$2",
+                )
+                .bind(repository_id)
+                .bind(number)
+                .fetch_optional(uow.connection())
+                .await?;
+                if let Some(Json(state)) = state {
+                    crate::enqueue_gates(uow, &state).await?;
+                }
+                true
+            } else {
+                crate::fail_ready_intent(uow, outbox, issue, &head, "operator_failed").await?
+            }
+        }
+        _ => return Ok(false),
+    };
+    if resolved {
+        sqlx::query(
+            "INSERT INTO tasks.operator_actions (actor,action,target,outcome) \
+             VALUES ($1,$2,$3,$4)",
+        )
+        .bind(actor)
+        .bind(format!("writes.resolve.{kind}"))
+        .bind(match sequence {
+            Some(sequence) => format!("{id}:{sequence}"),
+            None => id.to_string(),
+        })
+        .bind(if resend { "recorded" } else { "failed" })
+        .execute(uow.connection())
+        .await?;
+    }
+    Ok(resolved)
+}
 
 /// List current tasks in a stable repository and issue order.
 pub async fn list_tasks(database: &Database) -> Result<Vec<Value>, sqlx::Error> {
@@ -151,6 +338,216 @@ pub async fn task_detail(
     .bind(issue.number)
     .fetch_all(database.pool())
     .await?;
+    let design: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object( \
+         'id',b.id,'plan_id',b.plan_id,'generation',b.generation,'phase',b.phase, \
+         'binding',b.binding,'status',b.status,'roster',b.roster, \
+         'seats',COALESCE((SELECT jsonb_agg(jsonb_build_object( \
+             'reviewer_id',s.reviewer_id,'identity',s.identity,'attempt_id',s.attempt_id, \
+             'status',s.status,'first_pass_eligible',s.first_pass_eligible, \
+             'correction_count',s.correction_count,'failure_count',s.failure_count, \
+             'session_epoch',s.session_epoch,'report',s.report, \
+             'validation_error',s.validation_error) ORDER BY s.reviewer_id) \
+             FROM tasks.plan_review_seats s WHERE s.batch_id=b.id),'[]'::jsonb)) \
+         FROM tasks.plan_review_batches b JOIN tasks.task_state t ON t.task_id=b.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY b.generation,b.phase,b.id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let plans: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('attempt_id',p.attempt_id, \
+         'initialization_revision',p.initialization_revision,'plan_id',p.plan_id, \
+         'accepted',p.accepted,'current',p.current,'report',p.raw_report, \
+         'validation_error',p.validation_error,'recorded_at',p.recorded_at) \
+         FROM tasks.plan_reports p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 \
+         ORDER BY p.recorded_at,p.attempt_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let objections: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('sequence',o.sequence,'id',o.id, \
+         'reviewer_id',o.reviewer_id,'detail',o.detail, \
+         'counterexample',o.counterexample,'closure',o.closure, \
+         'evidence',o.evidence,'resolved',o.resolved, \
+         'plan_id',o.plan_id,'phase',o.phase) \
+         FROM tasks.plan_objections o JOIN tasks.task_state t ON t.task_id=o.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY o.sequence",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let approvals: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('request_id',a.request_id, \
+         'plan_id',a.plan_id,'binding',a.binding,'actor',a.actor, \
+         'recorded_at',a.recorded_at) \
+         FROM tasks.plan_approvals a JOIN tasks.task_state t ON t.task_id=a.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY a.recorded_at,a.request_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let implementation: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('attempt_id',r.attempt_id,'status',r.status, \
+         'validation_error',r.validation_error,'candidate',r.candidate, \
+         'recorded_at',r.recorded_at) \
+         FROM tasks.implementation_reports r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY r.recorded_at,r.attempt_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let git_publication: Option<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('attempt_id',p.attempt_id,'revision',p.revision, \
+         'intent',p.intent,'recorded_at',p.recorded_at) \
+         FROM tasks.git_publications p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 \
+         ORDER BY p.recorded_at DESC,p.attempt_id DESC LIMIT 1",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_optional(database.pool())
+    .await?;
+    let pr_reviews: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('id',b.id,'pr_number',b.pr_number, \
+         'head',b.head,'branch',b.branch,'plan_id',b.plan_id,'round',b.round, \
+         'status',b.status,'changed_paths',b.changed_paths,'roster',b.roster, \
+         'seats',COALESCE((SELECT jsonb_agg(jsonb_build_object( \
+             'reviewer_id',s.reviewer_id,'attempt_id',s.attempt_id,'status',s.status, \
+             'correction_count',s.correction_count,'failure_count',s.failure_count, \
+             'validation_error',s.validation_error,'report',s.report) ORDER BY s.reviewer_id) \
+             FROM tasks.pr_review_seats s WHERE s.batch_id=b.id),'[]'::jsonb)) \
+         FROM tasks.pr_review_batches b JOIN tasks.task_state t ON t.task_id=b.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY b.round,b.id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let review_findings: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('sequence',f.sequence,'id',f.id, \
+         'reviewer_id',f.reviewer_id,'status',f.status,'head',f.head, \
+         'finding',f.finding,'disposition',f.disposition, \
+         'thread_node_id',f.thread_node_id) \
+         FROM tasks.pr_review_findings f JOIN tasks.task_state t ON t.task_id=f.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY f.sequence",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let review_actions: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('turn_id',a.turn_id,'sequence',a.sequence, \
+         'kind',a.kind,'finding_id',a.finding_id,'path',a.path, \
+         'placement',a.placement,'status',a.status, \
+         'result_node_id',a.result_node_id,'error',a.error) \
+         FROM tasks.pr_review_actions a JOIN tasks.pr_review_publications p \
+         ON p.turn_id=a.turn_id JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 \
+         ORDER BY p.recorded_at,a.turn_id,a.sequence",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let review_publications: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('turn_id',p.turn_id,'batch_id',p.batch_id, \
+         'pr_number',p.pr_number,'head',p.head,'marker',p.marker, \
+         'status',p.status,'review_id',p.review_id, \
+         'review_node_id',p.review_node_id,'error',p.error, \
+         'resolution',CASE WHEN p.status='recorded' THEN 'send' \
+             WHEN p.status='sent' THEN 'readback_or_operator' \
+             WHEN p.status='failed' THEN 'operator_review' ELSE 'settled' END) \
+         FROM tasks.pr_review_publications p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY p.recorded_at,p.turn_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let ready_intent: Option<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('pr_number',r.pr_number,'head',r.head, \
+         'base_sha',r.base_sha,'merge_sha',r.merge_sha,'status',r.status, \
+         'ready_seen',r.ready_seen,'error',r.error, \
+         'resolution',CASE WHEN r.status='recorded' THEN 'check_gates' \
+             WHEN r.status='sent' THEN 'readback_or_operator' \
+             WHEN r.status='failed' THEN 'operator_review' ELSE 'settled' END) \
+         FROM tasks.pr_ready_intents r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_optional(database.pool())
+    .await?;
+    let invalidations: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('request_id',i.request_id,'actor',i.actor, \
+         'prior_base_sha',i.prior_base_sha,'prior_bundle_id',i.prior_bundle_id, \
+         'prior_plan_id',i.prior_plan_id,'prior_head',i.prior_head, \
+         'next_base_sha',i.next_base_sha,'next_bundle_id',i.next_bundle_id, \
+         'recorded_at',i.recorded_at) \
+         FROM tasks.task_invalidations i JOIN tasks.task_state t ON t.task_id=i.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY i.recorded_at,i.request_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let resumes: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('request_id',r.request_id,'actor',r.actor, \
+         'description_only',r.description_only,'prior_snapshot',r.prior_snapshot, \
+         'adopted_snapshot',r.adopted_snapshot,'prior_stage',r.prior_stage, \
+         'next_stage',r.next_stage,'approval_binding',r.approval_binding, \
+         'kind',r.kind,'old_skill_sha',r.old_skill_sha,'new_skill_sha',r.new_skill_sha, \
+         'recorded_at',r.recorded_at) \
+         FROM tasks.task_resumes r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY r.recorded_at,r.request_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let implementation_reopens: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('turn_id',r.turn_id,'plan_id',r.plan_id, \
+         'binding',r.binding,'prior_head',r.prior_head,'design_issue',r.design_issue, \
+         'findings_snapshot',r.findings_snapshot,'recovered_request',r.recovered_request, \
+         'recorded_at',r.recorded_at) \
+         FROM tasks.implementation_reopens r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY r.recorded_at,r.turn_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let report_artifacts: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('report_id',r.report_id,'name',r.name, \
+         'status',r.status,'artifact_number',r.artifact_number,'error',r.error, \
+         'recorded_at',r.recorded_at) \
+         FROM tasks.report_artifact_writes r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2 ORDER BY r.recorded_at,r.report_id",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_all(database.pool())
+    .await?;
+    let terminal: Option<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('pr_number',p.pr_number,'published_head',p.published_head, \
+         'observed_head',p.observed_head,'merged',p.merged, \
+         'merge_commit_sha',p.merge_commit_sha,'gates_verified',p.gates_verified, \
+         'recorded_at',p.recorded_at) \
+         FROM tasks.pr_terminal_observations p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE t.repository_id=$1 AND t.issue_number=$2",
+    )
+    .bind(issue.repository_id)
+    .bind(issue.number)
+    .fetch_optional(database.pool())
+    .await?;
     Ok(Some(serde_json::json!({
         "state": state,
         "requests": requests.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
@@ -160,6 +557,22 @@ pub async fn task_detail(
         "stage_label": stage_label.map(|row| row.0.0),
         "dashboard": dashboard.map(|row| row.0.0),
         "runners": runners.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "plans": plans.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "design": design.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "objections": objections.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "approvals": approvals.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "implementation": implementation.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "git_publication": git_publication.map(|row| row.0.0),
+        "pr_reviews": pr_reviews.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "review_findings": review_findings.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "review_publications": review_publications.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "review_actions": review_actions.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "ready_intent": ready_intent.map(|row| row.0.0),
+        "invalidations": invalidations.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "resumes": resumes.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "implementation_reopens": implementation_reopens.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "report_artifacts": report_artifacts.into_iter().map(|row| row.0.0).collect::<Vec<_>>(),
+        "terminal_pr": terminal.map(|row| row.0.0),
     })))
 }
 
@@ -190,6 +603,71 @@ pub async fn pending_effects(database: &Database) -> Result<Vec<Value>, sqlx::Er
     .fetch_all(database.pool())
     .await?;
     effects.extend(comments.into_iter().map(|row| row.0.0));
+    let publications: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','git_publication','task_id',p.task_id, \
+         'attempt_id',p.attempt_id,'repository_id',t.repository_id, \
+         'issue_number',t.issue_number,'branch',p.intent->>'branch', \
+         'commit_sha',p.intent->>'commit_sha','pr_create_sent',p.intent->'pr_create_sent', \
+         'pr_update_sent',p.intent->'pr_update_sent', \
+         'pr_number',p.intent->'pr_number','stage',t.state->>'stage', \
+         'resolution',CASE WHEN p.intent->'pr_update_sent'='true'::jsonb \
+             OR (p.intent->'pr_create_sent'='true'::jsonb \
+             AND p.intent->'pr_number'='null'::jsonb) THEN 'readback_or_operator' \
+             WHEN lower(t.state->>'stage')<>'publish' THEN 'operator_review' \
+             ELSE 'continue' END) \
+         FROM tasks.git_publications p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE lower(t.state->>'stage')='publish' OR p.intent->'pr_number'='null'::jsonb \
+         ORDER BY p.recorded_at",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(publications.into_iter().map(|row| row.0.0));
+    let review_publications: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','pr_review_publication', \
+         'turn_id',p.turn_id,'batch_id',p.batch_id,'pr_number',p.pr_number, \
+         'head',p.head,'marker',p.marker,'status',p.status,'error',p.error, \
+         'next_action',(SELECT jsonb_build_object('sequence',a.sequence, \
+             'kind',a.kind,'finding_id',a.finding_id,'status',a.status, \
+             'placement',a.placement,'error',a.error) \
+             FROM tasks.pr_review_actions a WHERE a.turn_id=p.turn_id \
+             AND a.status<>'confirmed' ORDER BY a.sequence LIMIT 1), \
+         'repository_id',t.repository_id,'issue_number',t.issue_number, \
+         'resolution',CASE WHEN p.status='recorded' THEN 'send' \
+             WHEN p.status='sent' THEN 'readback_or_operator' \
+             ELSE 'operator_review' END) \
+         FROM tasks.pr_review_publications p JOIN tasks.task_state t ON t.task_id=p.task_id \
+         WHERE p.status IN ('recorded','sent','failed') ORDER BY p.recorded_at,p.turn_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(review_publications.into_iter().map(|row| row.0.0));
+    let ready_intents: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','pr_ready_intent','task_id',r.task_id, \
+         'pr_number',r.pr_number,'head',r.head,'base_sha',r.base_sha, \
+         'merge_sha',r.merge_sha,'status',r.status,'ready_seen',r.ready_seen, \
+         'error',r.error,'repository_id',t.repository_id,'issue_number',t.issue_number, \
+         'resolution',CASE WHEN r.status='recorded' THEN 'check_gates' \
+             WHEN r.status='sent' THEN 'readback_or_operator' \
+             ELSE 'operator_review' END) \
+         FROM tasks.pr_ready_intents r JOIN tasks.task_state t ON t.task_id=r.task_id \
+         WHERE r.status IN ('recorded','sent','failed') ORDER BY r.recorded_at,r.task_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(ready_intents.into_iter().map(|row| row.0.0));
+    let report_artifacts: Vec<(Json<Value>,)> = sqlx::query_as(
+        "SELECT jsonb_build_object('kind','report_artifact','report_id',r.report_id, \
+         'name',r.name,'status',r.status,'error',r.error, \
+         'repository_id',r.repository_id,'issue_number',r.issue_number, \
+         'resolution',CASE WHEN r.status='recorded' THEN 'send' \
+             WHEN r.status='sent' THEN 'readback_or_operator' \
+             ELSE 'operator_review' END) \
+         FROM tasks.report_artifact_writes r WHERE r.status<>'confirmed' \
+         ORDER BY r.recorded_at,r.report_id",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    effects.extend(report_artifacts.into_iter().map(|row| row.0.0));
     let archives: Vec<(Json<Value>,)> = sqlx::query_as(
         "SELECT jsonb_build_object('kind','archive','gzip_sha256',gzip_sha256, \
          'status',status,'byte_count',byte_count,'last_error',last_error, \
@@ -253,7 +731,7 @@ pub async fn cancel_attempt(
     let changed = if let Some(state) = lock_issue_for_turn(uow, turn).await? {
         let changed = cancel_attempts(uow, outbox, state.id.0, Some(turn)).await? > 0;
         if changed {
-            intake::settle_intake(uow, outbox, &state, turn).await?;
+            settle_attempt(uow, outbox, &state, turn).await?;
         }
         changed
     } else {

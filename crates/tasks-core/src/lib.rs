@@ -1,7 +1,35 @@
 //! Pure task request ordering and M1 start/stop decisions.
 
+mod canonical;
+mod design;
+mod design_review;
+mod implementation;
+mod plan;
+mod policy;
+mod pr_review;
 mod publication;
-pub use publication::{intake_notice_body, welcome_body};
+mod readiness;
+pub use canonical::{escape_non_ascii, python_digest, python_json};
+pub use design::{
+    DesignReviewer, design_binding, design_criteria, design_roster, legacy_requirements,
+    plan_identity, pr_review_roster,
+};
+pub use design_review::{DesignReviewReport, validate_design_review};
+pub use implementation::{
+    ImplementationEdit, ImplementationReport, validate_edits, validated_edit_paths,
+};
+pub use plan::{plan_output_contract, validate_plan};
+pub use policy::{
+    edit_policy, editable_files, effective_limits, glob_matches, path_rules, plan_scope_contains,
+};
+pub use pr_review::{
+    DesignIssue, DesignIssueKind, PrDisposition, PrFinding, PrReviewReport, pr_review_binding,
+    pr_review_body, validate_design_issue, validate_pr_review,
+};
+pub use publication::{
+    intake_notice_body, markdown_text, plan_notice_body, task_branch, welcome_body,
+};
+pub use readiness::{CiObservation, ci_reasons};
 
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -151,15 +179,33 @@ pub struct CommentRevision {
     pub request: Option<Request>,
 }
 
-/// Current M1 lifecycle stage.
+/// Current task lifecycle stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Stage {
     /// Awaiting pinned issue, configuration and base reads.
     Initializing,
     /// An intake attempt is ready or in progress.
     Intake,
-    /// Intake accepted; later planning waits for the M2 release.
+    /// Planner turn is queued or in progress.
     Plan,
+    /// Independent plan reviewers are assessing the current plan.
+    PlanQc,
+    /// Reviewed plan waits for a writer's exact approval.
+    Planned,
+    /// The approved implementation is in progress.
+    Implement,
+    /// Candidate Git objects and a draft pull request are being published.
+    Publish,
+    /// Reviewers assess an immutable pull request head.
+    Review,
+    /// Pull request readiness gates are being observed.
+    Gates,
+    /// The pull request was marked ready for human review.
+    Ready,
+    /// A matching external merge completed the contribution.
+    ObservedMerged,
+    /// The pull request closed without merging.
+    Closed,
     /// Intake needs a human answer before retrying.
     Clarify,
     /// Intake rejected the issue as out of scope.
@@ -266,6 +312,36 @@ pub struct IntakeScope {
     pub conflicts: Vec<String>,
 }
 
+impl IntakeScope {
+    /// Check one scope judgment against the exact pinned charter goals.
+    pub fn validate(&self, charter: &str) -> Result<(), String> {
+        if self.fit.trim().is_empty()
+            || self
+                .goal_ids
+                .iter()
+                .chain(&self.conflicts)
+                .any(|value| value.trim().is_empty())
+            || self
+                .goal_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.goal_ids.len()
+        {
+            return Err("incomplete charter scope judgment".to_owned());
+        }
+        let charter: Value =
+            serde_json::from_str(charter).map_err(|_| "invalid project charter".to_owned())?;
+        let goals = charter["goals"]
+            .as_object()
+            .ok_or_else(|| "invalid project charter".to_owned())?;
+        if self.goal_ids.iter().any(|id| !goals.contains_key(id)) {
+            return Err("scope cites an unknown charter goal".to_owned());
+        }
+        Ok(())
+    }
+}
+
 /// Validated intake report retained with the task's accepted judgment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -306,32 +382,9 @@ impl IntakeReport {
         {
             return Err("invalid QC questions or concerns".to_owned());
         }
-        let scope = &report.scope;
-        if scope.fit.trim().is_empty()
-            || scope
-                .goal_ids
-                .iter()
-                .chain(&scope.conflicts)
-                .any(|value| value.trim().is_empty())
-            || scope
-                .goal_ids
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != scope.goal_ids.len()
-        {
-            return Err("incomplete charter scope judgment".to_owned());
-        }
-        let charter: Value =
-            serde_json::from_str(charter).map_err(|_| "invalid project charter".to_owned())?;
-        let goals = charter["goals"]
-            .as_object()
-            .ok_or_else(|| "invalid project charter".to_owned())?;
-        if scope.goal_ids.iter().any(|id| !goals.contains_key(id)) {
-            return Err("scope cites an unknown charter goal".to_owned());
-        }
+        report.scope.validate(charter)?;
         if report.decision == IntakeDecision::Proceed
-            && (scope.goal_ids.is_empty() || !scope.conflicts.is_empty())
+            && (report.scope.goal_ids.is_empty() || !report.scope.conflicts.is_empty())
         {
             return Err("acceptance contradicts charter scope".to_owned());
         }
@@ -363,7 +416,7 @@ pub fn finish_intake(task: &TaskState, attempt: Uuid, report: &IntakeReport) -> 
             stage,
             revision: task.revision + 1,
             stage_reason: Some(if stage == Stage::Plan {
-                "awaiting_release".to_owned()
+                "planning queued".to_owned()
             } else if stage == Stage::Escalated {
                 format!(
                     "High-risk or consequential work requires human intervention. {}",
@@ -387,12 +440,15 @@ pub struct TaskState {
     pub issue: IssueKey,
     /// Author of the issue the task belongs to.
     pub author: Actor,
-    /// Current M1 stage.
+    /// Current lifecycle stage.
     pub stage: Stage,
     /// Increases only when task state changes.
     pub revision: u64,
     /// Reason the current stage needs attention, when present.
     pub stage_reason: Option<String>,
+    /// Active stage interrupted by a recoverable pause or writer stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_stage: Option<Stage>,
     /// Inputs fixed before the first intake admission.
     pub pins: Option<PinnedInputs>,
     /// Number of admitted, charged model calls.
@@ -407,10 +463,16 @@ pub fn dashboard_body(state: &TaskState) -> String {
         Stage::Initializing => ("Preparing the pinned task inputs.", "NOTE"),
         Stage::Intake if state.current_attempt.is_some() => ("Intake is in progress.", "NOTE"),
         Stage::Intake => ("Intake is queued.", "NOTE"),
-        Stage::Plan => (
-            "Intake is complete. Planning awaits the next release.",
-            "NOTE",
-        ),
+        Stage::Plan => ("Planning is in progress.", "NOTE"),
+        Stage::PlanQc => ("The plan is under independent review.", "NOTE"),
+        Stage::Planned => ("The reviewed plan awaits writer approval.", "NOTE"),
+        Stage::Implement => ("Implementation is in progress.", "NOTE"),
+        Stage::Publish => ("The draft pull request is being published.", "NOTE"),
+        Stage::Review => ("The pull request is under review.", "NOTE"),
+        Stage::Gates => ("Checking pull request readiness.", "NOTE"),
+        Stage::Ready => ("The pull request is ready for human review.", "NOTE"),
+        Stage::ObservedMerged => ("The contribution was merged.", "NOTE"),
+        Stage::Closed => ("The pull request closed without merging.", "WARNING"),
         Stage::Clarify => ("Waiting for your answers before continuing.", "WARNING"),
         Stage::Rejected => ("This issue was not accepted for implementation.", "WARNING"),
         Stage::Escalated => (
@@ -423,23 +485,36 @@ pub fn dashboard_body(state: &TaskState) -> String {
     let intake = match state.stage {
         Stage::Initializing => "Pending",
         Stage::Intake => "▶️ In progress",
-        Stage::Plan => "✅ Proceed",
+        Stage::Plan
+        | Stage::PlanQc
+        | Stage::Planned
+        | Stage::Implement
+        | Stage::Publish
+        | Stage::Review
+        | Stage::Gates
+        | Stage::Ready
+        | Stage::ObservedMerged
+        | Stage::Closed => "✅ Proceed",
         Stage::Clarify => "❓ Input needed",
         Stage::Rejected => "⛔ Rejected",
         Stage::Escalated => "⚠️ Escalated",
         Stage::Blocked => "⛔ Blocked",
         Stage::Stopped => "⏹️ Stopped",
     };
-    let plan = if state.stage == Stage::Plan {
-        "⏳ Awaiting release"
-    } else {
-        "Pending"
+    let plan = match state.stage {
+        Stage::Plan => "▶️ In progress",
+        Stage::PlanQc => "🔎 Under review",
+        Stage::Planned => "✅ Reviewed",
+        Stage::Implement
+        | Stage::Publish
+        | Stage::Review
+        | Stage::Gates
+        | Stage::Ready
+        | Stage::ObservedMerged
+        | Stage::Closed => "✅ Approved",
+        _ => "Pending",
     };
-    let reason = if state.stage == Stage::Plan {
-        String::new()
-    } else {
-        publication::markdown_text(state.stage_reason.as_deref().unwrap_or(""), 160)
-    };
+    let reason = publication::markdown_text(state.stage_reason.as_deref().unwrap_or(""), 160);
     let limit = state.pins.as_ref().map_or(0, |pins| pins.max_model_calls);
     format!(
         "<!-- concurro:v1 -->\n## Concurro\n\n> [!{alert}]\n> {activity}\n\n\
@@ -489,6 +564,8 @@ pub enum Admission {
     WaitingForGroup,
     /// The task's configured call limit has been reached.
     BudgetExhausted,
+    /// Exact retained predecessor was unavailable or inconsistent.
+    RetainedUnavailable,
     /// Task stage or current attempt changed before admission.
     Stale,
 }
@@ -699,9 +776,6 @@ pub fn decide(
     if !authority.writer {
         return outcome(RequestStatus::Refused, Some("not_writer"));
     }
-    if matches!(request.kind, RequestKind::Later(_)) {
-        return outcome(RequestStatus::Refused, Some("not_supported"));
-    }
     if applied_stop.is_some_and(|stop| request.order <= *stop) {
         return outcome(RequestStatus::Superseded, Some("superseded_by_stop"));
     }
@@ -710,6 +784,9 @@ pub fn decide(
             RequestStatus::Superseded,
             Some("superseded_by_newer_command"),
         );
+    }
+    if matches!(request.kind, RequestKind::Later(_)) {
+        return outcome(RequestStatus::Refused, Some("not_supported"));
     }
     match request.kind {
         RequestKind::Stop => Decision {
@@ -720,6 +797,7 @@ pub fn decide(
                     stage: Stage::Stopped,
                     revision: current.revision + 1,
                     stage_reason: None,
+                    retry_stage: Some(current.stage),
                     current_attempt: None,
                     ..current.clone()
                 })
@@ -743,6 +821,7 @@ pub fn decide(
                     stage: Stage::Initializing,
                     revision: 1,
                     stage_reason: None,
+                    retry_stage: None,
                     pins: None,
                     used_model_calls: 0,
                     current_attempt: None,
@@ -751,6 +830,7 @@ pub fn decide(
                     stage: Stage::Initializing,
                     revision: current.revision + 1,
                     stage_reason: None,
+                    retry_stage: None,
                     pins: None,
                     current_attempt: None,
                     ..current.clone()

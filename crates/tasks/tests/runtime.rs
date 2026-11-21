@@ -1,4 +1,4 @@
-//! The task executable drives a typed comment through its real worker wiring.
+//! The task executable drives typed comments through its real worker wiring.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -43,8 +43,15 @@ use uuid::Uuid;
 #[derive(Default)]
 struct GithubFixture {
     comments: Vec<Value>,
+    artifacts: Vec<Value>,
     next_comment: i64,
     refs: HashMap<String, String>,
+    pulls: Vec<Value>,
+    reviews: Vec<Value>,
+    hold_review: Arc<AtomicBool>,
+    review_entered: Arc<Notify>,
+    release_review: Arc<Notify>,
+    ready_calls: usize,
     dispatches: Vec<Uuid>,
     labels: HashSet<String>,
     hold_intake_notice: Arc<AtomicBool>,
@@ -106,6 +113,16 @@ async fn github_reply(
         return (StatusCode::CREATED, Json(json!({"ref":request["ref"]})));
     }
     if let Some(branch) = path.strip_prefix("/repos/acme/demo/git/refs/heads/")
+        && method == Method::PATCH
+    {
+        let sha = request["sha"].as_str().unwrap_or_default().to_owned();
+        fixture.refs.insert(branch.to_owned(), sha.clone());
+        if let Some(pr) = fixture.pulls.first_mut() {
+            pr["head"]["sha"] = json!(sha);
+        }
+        return ok(json!({"object":{"sha":sha}}));
+    }
+    if let Some(branch) = path.strip_prefix("/repos/acme/demo/git/refs/heads/")
         && method == Method::DELETE
     {
         fixture.refs.remove(branch);
@@ -136,12 +153,13 @@ async fn github_reply(
     if let Some(file) = path.strip_prefix("/repos/acme/demo/contents/") {
         let content = match file {
             ".concurro/config.yaml" => Some(
-                "repository: acme/demo\nbase: main\nbot_login: concurro[bot]\nmax_model_calls: 3\nmax_fix_rounds: 2\nmax_plan_revisions: 1\nmax_context_bytes: 350000\nturn_timeout_seconds: 120\nmax_retained_bytes: null\npolicy_documents: [README.md]\nqc: codex\nmodels: {codex: gpt-test}\npaths: {protected: [], protected_extensions: [], protected_names: [], protected_name_prefixes: [], protected_prefixes: [], protected_files: [], generated: []}\n",
+                "repository: acme/demo\nbase: main\nbot_login: concurro[bot]\nmax_model_calls: 10\nmax_fix_rounds: 2\nmax_plan_revisions: 1\nmax_context_bytes: 350000\nturn_timeout_seconds: 120\nmax_retained_bytes: null\npolicy_documents: [README.md]\nplanner: codex\nimplementer: codex\nqc: codex\nreviewers: [codex]\nmodels: {codex: gpt-test}\npaths: {protected: [], protected_extensions: [], protected_names: [], protected_name_prefixes: [], protected_prefixes: [], protected_files: [], generated: []}\n",
             ),
             ".concurro/charter.json" => Some(
                 "{\"version\":1,\"id\":\"test\",\"goals\":{\"G-1\":\"Goal\"},\"non_goals\":[\"none\"],\"constraints\":[\"stay in scope\"],\"acceptance\":[\"reviewed\"]}",
             ),
             "README.md" => Some("Upstream policy"),
+            "src/lib.rs" => Some("fn example() {}\n"),
             _ => None,
         };
         return content.map_or_else(missing, |text| {
@@ -151,10 +169,130 @@ async fn github_reply(
             }))
         });
     }
-    if path.starts_with("/repos/acme/demo/git/trees/") {
+    if let Some(sha) = path.strip_prefix("/repos/acme/demo/git/blobs/") {
+        let content = if sha == "4".repeat(40) {
+            "fn changed() {}\n"
+        } else {
+            "fn example() {}\n"
+        };
+        return ok(json!({"sha":sha,"encoding":"base64","content":STANDARD.encode(content)}));
+    }
+    if path.starts_with("/repos/acme/demo/git/commits/") {
+        let sha = path.rsplit('/').next().unwrap_or_default();
+        let parents = if sha == "f".repeat(40) {
+            json!([{"sha":"b".repeat(40)},{"sha":"e".repeat(40)}])
+        } else {
+            json!([])
+        };
+        return ok(json!({"sha":sha,"tree":{"sha":"c".repeat(40)},"parents":parents}));
+    }
+    if path == "/repos/acme/demo/git/trees" && method == Method::POST {
+        return ok(json!({"sha":"d".repeat(40)}));
+    }
+    if path == "/repos/acme/demo/git/commits" && method == Method::POST {
+        return ok(json!({"sha":"e".repeat(40)}));
+    }
+    if let Some(sha) = path.strip_prefix("/repos/acme/demo/git/trees/") {
+        let source = if sha == "e".repeat(40) {
+            "4".repeat(40)
+        } else {
+            "3".repeat(40)
+        };
         return ok(json!({"truncated":false,"tree":[
-            {"path":"README.md","type":"blob"},{"path":"src/lib.rs","type":"blob"}
+            {"path":"README.md","type":"blob","mode":"100644","sha":"2".repeat(40)},
+            {"path":"src/lib.rs","type":"blob","mode":"100644","sha":source}
         ]}));
+    }
+    if path == "/repos/acme/demo/pulls" {
+        if method == Method::GET {
+            return ok(json!(fixture.pulls));
+        }
+        let branch = request["head"]
+            .as_str()
+            .unwrap_or_default()
+            .split_once(':')
+            .map_or("", |(_, branch)| branch);
+        let pr = json!({
+            "number":19,"state":"open","draft":true,"title":request["title"],
+            "body":request["body"],"user":{"id":10,"login":"concurro[bot]"},
+            "head":{"sha":"e".repeat(40),"ref":branch,"repo":{"full_name":"acme/demo"}},
+            "base":{"ref":"main","sha":"b".repeat(40)},
+            "merge_commit_sha":"f".repeat(40),"merged":false,"node_id":"PR_19",
+        });
+        fixture.pulls.push(pr.clone());
+        return (StatusCode::CREATED, Json(pr));
+    }
+    if path == "/repos/acme/demo/pulls/19" {
+        return fixture.pulls.first().cloned().map_or_else(missing, ok);
+    }
+    if path == "/repos/acme/demo/pulls/19/files" {
+        return ok(json!([{"filename":"src/lib.rs","status":"modified"}]));
+    }
+    if path == "/repos/acme/demo/pulls/19/reviews" {
+        if method == Method::GET {
+            return ok(json!(fixture.reviews));
+        }
+        let review = json!({"id":91,"state":"COMMENTED","commit_id":request["commit_id"],
+            "body":request["body"],"user":{"id":10,"login":"concurro[bot]"}});
+        fixture.reviews.push(review.clone());
+        let hold_review = fixture.hold_review.swap(false, Ordering::SeqCst);
+        let entered = fixture.review_entered.clone();
+        let release = fixture.release_review.clone();
+        drop(fixture);
+        if hold_review {
+            entered.notify_one();
+            release.notified().await;
+        }
+        return ok(review);
+    }
+    if path == "/graphql" {
+        let query = request["query"].as_str().unwrap_or_default();
+        if query.contains("reviewThreads") {
+            return ok(
+                json!({"data":{"repository":{"pullRequest":{"reviewThreads":{
+                    "nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}
+                }}}}}),
+            );
+        }
+        if query.contains("markPullRequestReadyForReview") {
+            fixture.ready_calls += 1;
+            fixture.pulls[0]["draft"] = json!(false);
+            return ok(
+                json!({"data":{"markPullRequestReadyForReview":{"pullRequest":{
+                    "id":"PR_19","isDraft":false
+                }}}}),
+            );
+        }
+    }
+    if let Some(sha) = path.strip_prefix("/repos/acme/demo/commits/") {
+        if sha.ends_with("/check-runs") {
+            let head = sha.trim_end_matches("/check-runs");
+            return ok(json!({"check_runs":[{"id":8,"name":"build","head_sha":head,
+                "status":"completed","conclusion":"success","check_suite":{"id":4},"app":{"id":7}}]}));
+        }
+        if sha.ends_with("/check-suites") {
+            let head = sha.trim_end_matches("/check-suites");
+            return ok(json!({"check_suites":[{"id":4,"head_sha":head,
+                "status":"completed","conclusion":"success"}]}));
+        }
+        if sha.ends_with("/statuses") {
+            return ok(json!([]));
+        }
+        if sha.ends_with("/status") {
+            return ok(json!({"state":"success","statuses":[]}));
+        }
+    }
+    if path == "/repos/acme/demo/actions/runs" {
+        let head = uri
+            .query()
+            .unwrap_or_default()
+            .split('&')
+            .find_map(|part| part.strip_prefix("head_sha="))
+            .unwrap_or_default();
+        return ok(json!({"workflow_runs":[{"id":10,"workflow_id":9,
+            "event":"pull_request","head_branch":"topic","check_suite_id":4,
+            "head_sha":head,"name":"CI","status":"completed",
+            "conclusion":"success"}]}));
     }
     if path == "/repos/acme/demo/issues/3" {
         return ok(
@@ -194,15 +332,42 @@ async fn github_reply(
         }
         return (StatusCode::CREATED, Json(comment));
     }
-    if let Some(id) = path.strip_prefix("/repos/acme/demo/issues/comments/")
-        && method == Method::PATCH
-    {
+    if path == "/repos/acme/demo/issues/3/artifacts" {
+        if method == Method::GET {
+            return ok(json!(fixture.artifacts));
+        }
+        let number = i64::try_from(fixture.artifacts.len()).expect("artifact count") + 1;
+        let artifact = json!({
+            "id":number,"number":number,"name":request["name"],
+            "body":request["body"],"type":request["type"],
+            "creator":{"login":"concurro[bot]"},
+            "updated_by_actor":{"login":"concurro[bot]"},
+        });
+        fixture.artifacts.push(artifact.clone());
+        return (StatusCode::CREATED, Json(artifact));
+    }
+    if let Some(number) = path.strip_prefix("/repos/acme/demo/issues/3/artifacts/") {
+        return fixture
+            .artifacts
+            .iter()
+            .find(|artifact| artifact["number"].to_string() == number)
+            .map_or_else(missing, |artifact| {
+                ok(json!({
+                    "artifact":artifact,
+                    "versions":[{"version":1,"name":artifact["name"],
+                        "body":artifact["body"],"actor":{"login":"concurro[bot]"}}]
+                }))
+            });
+    }
+    if let Some(id) = path.strip_prefix("/repos/acme/demo/issues/comments/") {
         if let Some(comment) = fixture
             .comments
             .iter_mut()
             .find(|comment| comment["id"].to_string() == id)
         {
-            comment["body"] = request["body"].clone();
+            if method == Method::PATCH {
+                comment["body"] = request["body"].clone();
+            }
             return ok(comment.clone());
         }
         return missing();
@@ -239,14 +404,15 @@ async fn github_reply(
         fixture.labels.remove(name);
         return ok(json!({}));
     }
+    eprintln!("unhandled GitHub fixture request: {method} {path}");
     missing()
 }
 
-/// Return one queued session, then a valid intake result after runner dispatch.
+/// Return stage-specific results only after the corresponding runner dispatch.
 async fn exchange_reply(
     State((
         github,
-        turn,
+        turns,
         session,
         archive,
         hold_submit,
@@ -257,7 +423,7 @@ async fn exchange_reply(
         release_poll,
     )): State<(
         Arc<Mutex<GithubFixture>>,
-        Arc<Mutex<Option<Uuid>>>,
+        Arc<Mutex<HashMap<Uuid, (String, Uuid)>>>,
         Uuid,
         String,
         Arc<AtomicBool>,
@@ -274,46 +440,98 @@ async fn exchange_reply(
     if uri.path() == "/exchange/operator/turns" && method == Method::POST {
         let submitted: Value = serde_json::from_slice(&body).expect("turn body");
         let id = Uuid::parse_str(submitted["turn"].as_str().expect("turn")).expect("turn id");
-        let mut stored = turn.lock().await;
-        assert!(stored.is_none() || *stored == Some(id), "one admitted turn");
-        *stored = Some(id);
+        let stage = submitted["payload"]["request"]["stage"]
+            .as_str()
+            .expect("request stage")
+            .to_owned();
+        let dispatch = if stage == "intake" {
+            session
+        } else {
+            Uuid::now_v7()
+        };
+        let mut stored = turns.lock().await;
+        let dispatch = stored.entry(id).or_insert((stage.clone(), dispatch)).1;
         drop(stored);
-        if hold_submit.swap(false, Ordering::SeqCst) {
+        if stage == "intake" && hold_submit.swap(false, Ordering::SeqCst) {
             submit_entered.notify_one();
             release_submit.notified().await;
         }
         return (
             StatusCode::OK,
-            Json(json!({"turn":id,"status":"queued","created":1.0,"dispatch":session})),
+            Json(json!({"turn":id,"status":"queued","created":1.0,"dispatch":dispatch})),
         );
     }
-    let id = *turn.lock().await;
-    let Some(id) = id else {
+    let Some(id) = uri
+        .path()
+        .rsplit('/')
+        .next()
+        .and_then(|id| Uuid::parse_str(id).ok())
+    else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error":"unknown turn"})));
+    };
+    let Some((stage, dispatch)) = turns.lock().await.get(&id).cloned() else {
         return (StatusCode::NOT_FOUND, Json(json!({"error":"unknown turn"})));
     };
     if method == Method::DELETE {
-        return (StatusCode::OK, Json(json!({"sessions":[session]})));
+        return (StatusCode::OK, Json(json!({"sessions":[dispatch]})));
     }
-    if github.lock().await.dispatches.is_empty() {
+    if !github.lock().await.dispatches.contains(&dispatch) {
         return (
             StatusCode::OK,
-            Json(json!({"turn":id,"status":"queued","created":1.0,"dispatch":session})),
+            Json(json!({"turn":id,"status":"queued","created":1.0,"dispatch":dispatch})),
         );
     }
-    if hold_poll.swap(false, Ordering::SeqCst) {
+    if stage == "intake" && hold_poll.swap(false, Ordering::SeqCst) {
         poll_entered.notify_one();
         release_poll.notified().await;
     }
+    let response = match stage.as_str() {
+        "intake" => json!({
+            "decision":"proceed","rationale":"Fits","risk":"low",
+            "questions":[],"concerns":["Review scope"],
+            "scope":{"goal_ids":["G-1"],"fit":"Matches goal","conflicts":[]}
+        }),
+        "plan" => json!({
+            "summary":"Implement the change","questions":[],"files":["src/lib.rs"],
+            "steps":["Edit code"],"tests":["Run suite"],"responses":[],
+            "publication":{"changes":["Change behavior"],"review_focus":["Correctness"]},
+            "scope":{"paths":["src/"]}
+        }),
+        "plan_qc" => json!({
+            "decision":"approve","rationale":"The plan covers the request.","risk":"low",
+            "questions":[],"concerns":[],
+            "scope":{"goal_ids":["G-1"],"fit":"Matches goal","conflicts":[]},
+            "sources":[{"id":"S1","path":"src/lib.rs","line":1,"quote":"fn example()"}],
+            "assessments":[
+                {"criterion":"R1","status":"satisfied","sources":["S1"],
+                    "reason":"The planned edit addresses the title.","counterexample":"None applies."},
+                {"criterion":"R2","status":"satisfied","sources":["S1"],
+                    "reason":"The planned edit addresses the body.","counterexample":"None applies."}
+            ],
+            "objection_updates":[]
+        }),
+        "develop" => json!({
+            "summary":"Changed the behavior.","validation":"Run suite passed.",
+            "design_issue":null,
+            "description":{"lead":"Update task behavior.","problem":["Old behavior needs change."],
+                "changes":["Update src/lib.rs."],"compatibility":[],"review_focus":[]},
+            "commit":{"subject":"Update behavior","type":"feat","changes":["Update source."]}
+        }),
+        "review" => json!({"verdict":"approve","summary":"Looks good.",
+            "findings":[],"dispositions":[],"design_issue":null}),
+        other => panic!("unexpected exchange stage: {other}"),
+    };
+    let workspace = if stage == "develop" {
+        json!({"edits":[{"path":"src/lib.rs","content":"fn changed() {}\n"}],"removed":[]})
+    } else {
+        Value::Null
+    };
     (
         StatusCode::OK,
         Json(
             json!({"turn":id,"status":"done","created":1.0,"finished":2.0,
-            "runner":{"session":session,"run_id":"run-1"},
-            "result":{"outcome":"ok","response":{
-                "decision":"proceed","rationale":"Fits","risk":"low",
-                "questions":[],"concerns":["Review scope"],
-                "scope":{"goal_ids":["G-1"],"fit":"Matches goal","conflicts":[]}
-            },"retained":archive}}),
+            "runner":{"session":dispatch,"run_id":"run-1"},
+            "result":{"outcome":"ok","response":response,"workspace":workspace,"retained":archive}}),
         ),
     )
 }
@@ -351,9 +569,9 @@ fn launch(config: &std::path::Path, log: &std::path::Path) -> Child {
         .expect("task process")
 }
 
-/// Recover submit, poll, and publication writes across process restarts.
+/// Reach Ready from Start across intake and PR-review write restarts.
 #[tokio::test]
-async fn typed_start_reaches_intake_through_the_task_executable() {
+async fn typed_start_reaches_ready_through_task_restarts() {
     let postgres = PostgresContainer::start().await.expect("Postgres");
     let nats = NatsContainer::start().await.expect("NATS");
     let database = Database::connect(postgres.url(), 4)
@@ -363,13 +581,18 @@ async fn typed_start_reaches_intake_through_the_task_executable() {
     migrate(&database).await.expect("task schema");
     let intake_notice_entered = Arc::new(Notify::new());
     let release_intake_notice = Arc::new(Notify::new());
+    let review_entered = Arc::new(Notify::new());
+    let release_review = Arc::new(Notify::new());
     let github = Arc::new(Mutex::new(GithubFixture {
+        hold_review: Arc::new(AtomicBool::new(true)),
+        review_entered: review_entered.clone(),
+        release_review: release_review.clone(),
         hold_intake_notice: Arc::new(AtomicBool::new(true)),
         intake_notice_entered: intake_notice_entered.clone(),
         release_intake_notice: release_intake_notice.clone(),
         ..GithubFixture::default()
     }));
-    let turn = Arc::new(Mutex::new(None));
+    let turns = Arc::new(Mutex::new(HashMap::new()));
     let session = Uuid::now_v7();
     let hold_submit = Arc::new(AtomicBool::new(true));
     let submitted = Arc::new(Notify::new());
@@ -396,7 +619,7 @@ async fn typed_start_reaches_intake_through_the_task_executable() {
         .with_state(github.clone());
     let exchange_app = Router::new().fallback(any(exchange_reply)).with_state((
         github.clone(),
-        turn.clone(),
+        turns.clone(),
         session,
         archive,
         hold_submit,
@@ -488,6 +711,7 @@ issue_write_permissions = {{ issues = "write" }}
 fork_permissions = {{ contents = "read", actions = "read" }}
 fork_write_permissions = {{ contents = "write", actions = "write", workflows = "write" }}
 upstream_permissions = {{ contents = "read" }}
+upstream_write_permissions = {{ pull_requests = "write" }}
 "#,
         dir.join("database").display(),
         nats.url(),
@@ -645,35 +869,22 @@ upstream_permissions = {{ contents = "read" }}
             if let Some(exit) = process.try_wait().expect("restarted status") {
                 panic!("restarted task exited {exit}");
             }
-            let unsettled: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM tasks.publication_comments WHERE status<>'written'",
-            )
-            .fetch_one(database.pool())
-            .await
-            .expect("publication state");
             let retire: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM tasks.effects WHERE kind='retire' AND status='settled'",
             )
             .fetch_one(database.pool())
             .await
             .expect("retirement state");
-            let pending_outbox: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE published_at IS NULL")
-                    .fetch_one(database.pool())
-                    .await
-                    .expect("outbox state");
             let archive_verified: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM tasks.archive_uploads WHERE status='verified'",
             )
             .fetch_one(database.pool())
             .await
             .expect("archive state");
-            if unsettled == 0
-                && retire == 1
-                && pending_outbox == 0
-                && archive_verified == 1
-                && github.lock().await.refs.is_empty()
-            {
+            let notices_written: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM tasks.publication_comments WHERE kind='notice' AND status='written'"
+            ).fetch_one(database.pool()).await.expect("notice state");
+            if retire == 1 && archive_verified >= 1 && notices_written >= 2 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -684,16 +895,26 @@ upstream_permissions = {{ contents = "read" }}
     process.kill().await.expect("stop restarted process");
     process.wait().await.expect("restarted exit");
     let (attempts, finished): (i64, i64) = sqlx::query_as(
-        "SELECT count(*),count(*) FILTER (WHERE status='finished') FROM tasks.attempts",
+        "SELECT count(*),count(*) FILTER (WHERE status='finished') FROM tasks.attempts \
+         WHERE id IN (SELECT attempt_id FROM tasks.intake_reports)",
     )
     .fetch_one(database.pool())
     .await
     .expect("attempts");
     assert_eq!((attempts, finished), (1, 1));
-    assert_eq!(github.lock().await.dispatches, [session]);
+    assert_eq!(
+        github
+            .lock()
+            .await
+            .dispatches
+            .iter()
+            .filter(|id| **id == session)
+            .count(),
+        1
+    );
     let comments = github.lock().await.comments.clone();
     let managed: Vec<(String, String)> =
-        sqlx::query_as("SELECT kind,marker FROM tasks.publication_comments ORDER BY kind,marker")
+        sqlx::query_as("SELECT kind,marker FROM tasks.publication_comments WHERE status='written' ORDER BY kind,marker")
             .fetch_all(database.pool())
             .await
             .expect("managed comments");
@@ -704,10 +925,7 @@ upstream_permissions = {{ contents = "read" }}
             .count(),
         1
     );
-    assert_eq!(
-        managed.iter().filter(|(kind, _)| kind == "notice").count(),
-        2
-    );
+    assert!(managed.iter().filter(|(kind, _)| kind == "notice").count() >= 2);
     for (_, marker) in managed {
         assert_eq!(
             comments
@@ -731,13 +949,221 @@ upstream_permissions = {{ contents = "read" }}
             .fetch_one(database.pool())
             .await
             .expect("finished fact");
-    assert_eq!(fact_count, 1);
+    assert!(fact_count >= 1);
     let stored = objects.lock().await;
-    assert_eq!(stored.len(), 1);
-    assert_eq!(
-        stored.values().next().expect("uploaded archive"),
-        &archive_bytes
+    assert!(stored.values().any(|bytes| bytes == &archive_bytes));
+    drop(stored);
+    let mut process = launch(&dir.join("tasks.toml"), &dir.join("tasks-composed.log"));
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let current = task(
+                &database,
+                IssueKey {
+                    repository_id: 8,
+                    number: 3,
+                },
+            )
+            .await
+            .expect("task")
+            .expect("started task");
+            if current.stage == Stage::Planned {
+                break;
+            }
+            if let Some(exit) = process.try_wait().expect("task status") {
+                panic!("composed task exited {exit}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "planning timed out: {}",
+            fs::read_to_string(dir.join("tasks-composed.log")).expect("task log")
+        )
+    });
+    let plan_id: String = sqlx::query_scalar(
+        "SELECT plan_id FROM tasks.plan_reports WHERE accepted AND current LIMIT 1",
+    )
+    .fetch_one(database.pool())
+    .await
+    .expect("reviewed plan ID");
+    let approval_body = format!("/concurro approve {plan_id}");
+    github.lock().await.comments.push(json!({
+        "id":6,"body":approval_body,
+        "user":{"id":10,"login":"writer","type":"User"},"author_association":"OWNER",
+        "created_at":"2026-11-19T10:02:00Z","updated_at":"2026-11-19T10:02:00Z",
+        "html_url":"https://example.test/acme/demo/issues/3#issuecomment-6"
+    }));
+    event["id"] = json!(Uuid::now_v7());
+    event["data"]["delivery_id"] = json!("approval-delivery");
+    event["data"]["comment"]["id"] = json!(6);
+    event["data"]["comment"]["body"] = json!(approval_body);
+    event["data"]["comment"]["created_at"] = json!("2026-11-19T10:02:00Z");
+    event["data"]["comment"]["updated_at"] = json!("2026-11-19T10:02:00Z");
+    event["data"]["received_at"] = json!("2026-11-19T10:03:00Z");
+    event["occurred_at"] = json!("2026-11-19T10:03:00Z");
+    let approval = serde_json::to_vec(&event).expect("approval event");
+    decode::<GithubEvent<IssueCommentPayload>>(&approval).expect("approval contract");
+    stream
+        .publish("github.issue_comment.created", approval.into())
+        .await
+        .expect("publish approval")
+        .await
+        .expect("approval ack");
+    tokio::time::timeout(Duration::from_secs(100), review_entered.notified())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "review write not reached: {}",
+                fs::read_to_string(dir.join("tasks-composed.log")).expect("task log")
+            )
+        });
+    process.kill().await.expect("kill during review write");
+    process.wait().await.expect("review process exit");
+    release_review.notify_one();
+    let mut process = launch(
+        &dir.join("tasks.toml"),
+        &dir.join("tasks-review-restarted.log"),
     );
+    let ready = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let current = task(
+                &database,
+                IssueKey {
+                    repository_id: 8,
+                    number: 3,
+                },
+            )
+            .await
+            .expect("task")
+            .expect("started task");
+            if matches!(
+                current.stage,
+                Stage::Ready | Stage::Blocked | Stage::Escalated
+            ) {
+                break;
+            }
+            if let Some(exit) = process.try_wait().expect("task status") {
+                panic!("composed task exited {exit}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    if ready.is_err() {
+        let jobs: Vec<(String, String)> = sqlx::query_as(
+            "SELECT task_identifier,last_error FROM graphile_worker.jobs WHERE last_error IS NOT NULL"
+        ).fetch_all(database.pool()).await.expect("job diagnostics");
+        let current = task(
+            &database,
+            IssueKey {
+                repository_id: 8,
+                number: 3,
+            },
+        )
+        .await
+        .expect("task diagnostics");
+        panic!(
+            "composed runtime timeout: task={current:?}, jobs={jobs:?}, turns={:?}, log={}",
+            *turns.lock().await,
+            fs::read_to_string(dir.join("tasks-review-restarted.log")).expect("task log")
+        );
+    }
+    let current = task(
+        &database,
+        IssueKey {
+            repository_id: 8,
+            number: 3,
+        },
+    )
+    .await
+    .expect("task diagnostics")
+    .expect("task");
+    if current.stage != Stage::Ready {
+        let reports: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT status,validation_error FROM tasks.implementation_reports ORDER BY recorded_at",
+        )
+        .fetch_all(database.pool())
+        .await
+        .expect("implementation reports");
+        panic!(
+            "composed task stopped: stage={:?}, reason={:?}, reports={reports:?}, turns={:?}, log={}",
+            current.stage,
+            current.stage_reason,
+            *turns.lock().await,
+            fs::read_to_string(dir.join("tasks-review-restarted.log")).expect("task log")
+        );
+    }
+    process.kill().await.expect("stop composed task");
+    process.wait().await.expect("composed process exit");
+    let fixture = github.lock().await;
+    assert_eq!(fixture.pulls.len(), 1);
+    assert_eq!(fixture.reviews.len(), 1);
+    assert_eq!(fixture.ready_calls, 1);
+    let stages: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT message->'data'->>'stage' FROM events.outbox \
+         WHERE type LIKE 'task.%.state' AND message->'data'->>'stage' IS NOT NULL",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("task stage history");
+    for expected in [
+        "intake",
+        "plan",
+        "plan_qc",
+        "planned",
+        "implement",
+        "publish",
+        "review",
+        "gates",
+        "ready",
+    ] {
+        assert!(
+            stages.iter().any(|stage| stage == expected),
+            "missing {expected} stage"
+        );
+    }
+    for (table, sql) in [
+        (
+            "plan_reports",
+            "SELECT count(*) FROM tasks.plan_reports WHERE accepted",
+        ),
+        (
+            "plan_review_batches",
+            "SELECT count(*) FROM tasks.plan_review_batches WHERE status='settled'",
+        ),
+        (
+            "plan_approvals",
+            "SELECT count(*) FROM tasks.plan_approvals",
+        ),
+        (
+            "implementation_reports",
+            "SELECT count(*) FROM tasks.implementation_reports WHERE status='accepted'",
+        ),
+        (
+            "git_publications",
+            "SELECT count(*) FROM tasks.git_publications",
+        ),
+        (
+            "pr_review_batches",
+            "SELECT count(*) FROM tasks.pr_review_batches WHERE status='settled'",
+        ),
+        (
+            "pr_review_publications",
+            "SELECT count(*) FROM tasks.pr_review_publications WHERE status='confirmed'",
+        ),
+        (
+            "pr_ready_intents",
+            "SELECT count(*) FROM tasks.pr_ready_intents WHERE status='confirmed'",
+        ),
+    ] {
+        let count: i64 = sqlx::query_scalar(sql)
+            .fetch_one(database.pool())
+            .await
+            .expect("stage record");
+        assert_eq!(count, 1, "one {table} record");
+    }
     github_server.abort();
     exchange_server.abort();
     archive_server.abort();

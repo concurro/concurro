@@ -361,6 +361,9 @@ pub fn decode_target_config(
         policy_documents.iter().collect::<BTreeSet<_>>().len() == policy_documents.len(),
         "target policy documents are duplicated"
     );
+    if object.contains_key("max_review_repairs") {
+        count("max_review_repairs", 0)?;
+    }
     Ok(TargetConfig {
         repository,
         base,

@@ -2,7 +2,7 @@
 
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
-use concurro_exchange_v1::TurnObservation;
+use concurro_exchange_v1::{TurnObservation, TurnSubmission};
 use concurro_tasks_core::{Stage, TaskState};
 use concurro_tasks_diagnostics::jsonb_representable;
 use serde_json::{Value, json};
@@ -10,9 +10,83 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::{
-    EffectJob, EffectKind, archive, enqueue_effect, enqueue_intake, enqueue_poll, events, intake,
-    lock_attempt, lock_issue_for_turn, record_runner_session, retire_runner_sessions,
+    EffectJob, EffectKind, archive, enqueue_design_batch, enqueue_design_correction,
+    enqueue_effect, enqueue_implementation, enqueue_intake, enqueue_plan, enqueue_poll, events,
+    intake, lock_attempt, lock_issue_for_turn, record_runner_session, retire_runner_sessions,
 };
+
+/// Recognize only a definite failed provider result from an admitted retained session.
+pub(crate) fn definite_session_failure(
+    status: &str,
+    reason: Option<&str>,
+    result: Option<&Value>,
+    submit_body: &[u8],
+) -> bool {
+    status == "finished"
+        && reason.is_none()
+        && result.is_some_and(|result| result["outcome"] == "failed")
+        && serde_json::from_slice::<TurnSubmission>(submit_body)
+            .ok()
+            .is_some_and(|submission| submission.payload["request"]["session"].is_object())
+}
+
+/// Apply one terminal attempt through its recorded operation's policy.
+pub(crate) async fn settle_attempt(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    state: &TaskState,
+    turn: Uuid,
+) -> anyhow::Result<()> {
+    let operation: Option<String> =
+        sqlx::query_scalar("SELECT operation FROM tasks.attempts WHERE id=$1 AND task_id=$2")
+            .bind(turn)
+            .bind(state.id.0)
+            .fetch_optional(uow.connection())
+            .await?;
+    match operation.as_deref() {
+        Some("intake") => intake::settle_intake(uow, outbox, state, turn).await,
+        Some("plan") => crate::plan::settle_plan(uow, outbox, state, turn).await,
+        Some("plan_qc") => crate::design::settle_design_attempt(uow, outbox, state, turn).await,
+        Some("review") => {
+            crate::pr_review::settle_pr_review_attempt(uow, outbox, state, turn).await
+        }
+        Some("develop") => {
+            crate::implementation::settle_development(uow, outbox, state, turn).await
+        }
+        Some(operation) => anyhow::bail!("unsupported terminal attempt operation: {operation}"),
+        None => Ok(()),
+    }
+}
+
+/// Finish a source-validation job whose task or review binding became obsolete.
+pub async fn finish_unapplied_result(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    turn: Uuid,
+) -> anyhow::Result<bool> {
+    let pending: Option<(String, String, bool, Option<Json<Value>>)> = sqlx::query_as(
+        "SELECT operation,status,finished_event_emitted,result \
+         FROM tasks.attempts WHERE id=$1 FOR UPDATE",
+    )
+    .bind(turn)
+    .fetch_optional(uow.connection())
+    .await?;
+    let Some((operation, status, emitted, result)) = pending else {
+        return Ok(false);
+    };
+    if !matches!(operation.as_str(), "plan_qc" | "develop" | "review")
+        || status != "finished"
+        || emitted
+        || result
+            .as_ref()
+            .is_none_or(|result| result.0["outcome"] != "ok")
+    {
+        return Ok(false);
+    }
+    events::append_deferred_turn_finished(uow, outbox, turn, Some("superseded_before_validation"))
+        .await?;
+    Ok(true)
+}
 
 /// Claim one Graphile Worker effect by its stable ID, fencing an older worker.
 pub async fn claim_effect(
@@ -162,7 +236,7 @@ pub async fn settle_submit_refusal(
     }
     retire_runner_sessions(uow, job.turn).await?;
     if let Some(state) = state {
-        intake::settle_intake(uow, outbox, &state, job.turn).await?;
+        settle_attempt(uow, outbox, &state, job.turn).await?;
     }
     let effect_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
@@ -222,7 +296,7 @@ pub async fn record_submit_failure(
     }
     retire_runner_sessions(uow, job.turn).await?;
     if let Some(state) = state {
-        intake::settle_intake(uow, outbox, &state, job.turn).await?;
+        settle_attempt(uow, outbox, &state, job.turn).await?;
     }
     let retirement: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
@@ -312,7 +386,7 @@ pub async fn expire_attempt(
         .await?;
     events::append_turn_disposition(uow, outbox, turn, reason).await?;
     retire_runner_sessions(uow, turn).await?;
-    intake::settle_intake(uow, outbox, &state, turn).await?;
+    settle_attempt(uow, outbox, &state, turn).await?;
     let effect_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'retire','recorded') \
          ON CONFLICT (turn_id,kind) DO NOTHING RETURNING id",
@@ -372,7 +446,7 @@ pub async fn record_poll_failure(
                 enqueue_effect(uow, id, 0, 0).await?;
             }
         }
-        intake::settle_intake(uow, outbox, &state, turn).await?;
+        settle_attempt(uow, outbox, &state, turn).await?;
     } else if let Some((_, next_generation)) = failure {
         enqueue_poll(uow, turn, next_generation, 15).await?;
     }
@@ -554,26 +628,81 @@ pub async fn record_observation(
         retire_runner_sessions(uow, observation.turn).await?;
     }
     if terminal {
-        intake::settle_intake(uow, outbox, &state, observation.turn).await?;
-        events::append_turn_finished(
-            uow,
-            outbox,
-            observation.turn,
-            observation.result.as_ref(),
-            failure_reason
-                .as_deref()
-                .or(observation.refusal.as_deref())
-                .or(match observation.status.as_str() {
-                    "lost" => Some("lost"),
-                    "cancelled" => Some("cancelled"),
-                    _ => None,
-                }),
-            observation.created,
-            observation.started,
-            observation.finished,
-            observation.provider_failure.as_ref(),
-        )
-        .await?;
+        settle_attempt(uow, outbox, &state, observation.turn).await?;
+        let operation: String =
+            sqlx::query_scalar("SELECT operation FROM tasks.attempts WHERE id=$1")
+                .bind(observation.turn)
+                .fetch_one(uow.connection())
+                .await?;
+        let awaiting_validation: bool = match operation.as_str() {
+            "plan_qc" => {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM tasks.plan_review_seats \
+                 WHERE attempt_id=$1 AND status='completed')",
+                )
+                .bind(observation.turn)
+                .fetch_one(uow.connection())
+                .await?
+            }
+            "develop" => {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM tasks.implementation_reports \
+                 WHERE attempt_id=$1 AND status='pending')",
+                )
+                .bind(observation.turn)
+                .fetch_one(uow.connection())
+                .await?
+            }
+            "review" => {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM tasks.pr_review_seats \
+                     WHERE attempt_id=$1 AND status='completed')",
+                )
+                .bind(observation.turn)
+                .fetch_one(uow.connection())
+                .await?
+            }
+            _ => false,
+        };
+        let deferred_validation = matches!(operation.as_str(), "plan_qc" | "develop" | "review")
+            && awaiting_validation
+            && failure_reason.is_none()
+            && observation.status == "done"
+            && observation
+                .result
+                .as_ref()
+                .is_some_and(|result| result["outcome"] == "ok");
+        if !deferred_validation {
+            let obsolete_before_validation =
+                matches!(operation.as_str(), "plan_qc" | "develop" | "review")
+                    && !awaiting_validation
+                    && failure_reason.is_none()
+                    && observation.status == "done"
+                    && observation
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result["outcome"] == "ok");
+            events::append_turn_finished(
+                uow,
+                outbox,
+                observation.turn,
+                observation.result.as_ref(),
+                failure_reason
+                    .as_deref()
+                    .or(obsolete_before_validation.then_some("superseded_before_validation"))
+                    .or(observation.refusal.as_deref())
+                    .or(match observation.status.as_str() {
+                        "lost" => Some("lost"),
+                        "cancelled" => Some("cancelled"),
+                        _ => None,
+                    }),
+                observation.created,
+                observation.started,
+                observation.finished,
+                observation.provider_failure.as_ref(),
+            )
+            .await?;
+        }
     }
     if schedule_next {
         enqueue_poll(uow, observation.turn, next_generation, 15).await?;
@@ -644,6 +773,35 @@ pub async fn acknowledge_retirement(
     if let Some((Json(state),)) = waiting {
         if state.stage == Stage::Intake && state.current_attempt.is_none() {
             enqueue_intake(uow, &state, Some(job.turn)).await?;
+        } else if state.stage == Stage::Plan && state.current_attempt.is_none() {
+            enqueue_plan(uow, &state).await?;
+        } else if state.stage == Stage::Implement && state.current_attempt.is_none() {
+            enqueue_implementation(uow, &state).await?;
+        } else if state.stage == Stage::PlanQc {
+            let correcting: Vec<(Uuid, String, i32)> = sqlx::query_as(
+                "SELECT s.batch_id,s.reviewer_id, \
+                 CASE WHEN s.status='retrying' THEN s.failure_count ELSE s.correction_count END \
+                 FROM tasks.plan_review_seats s \
+                 JOIN tasks.plan_review_batches b ON b.id=s.batch_id \
+                 WHERE b.task_id=$1 AND b.status='admitted' \
+                 AND s.status IN ('correcting','retrying')",
+            )
+            .bind(state.id.0)
+            .fetch_all(uow.connection())
+            .await?;
+            for (batch, reviewer, count) in correcting {
+                enqueue_design_correction(uow, batch, &reviewer, count).await?;
+            }
+            let batch: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM tasks.plan_review_batches WHERE task_id=$1 AND status='recorded' \
+                 ORDER BY generation DESC,id DESC LIMIT 1",
+            )
+            .bind(state.id.0)
+            .fetch_optional(uow.connection())
+            .await?;
+            if let Some(batch) = batch {
+                enqueue_design_batch(uow, &state, batch).await?;
+            }
         }
     }
     Ok(true)

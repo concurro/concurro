@@ -8,24 +8,928 @@ use chrono::{DateTime, Utc};
 use concurro_contracts::{TaskReport, TurnFinished, decode};
 use concurro_db::Database;
 use concurro_events_postgres::{Outbox, migrate as migrate_events};
-use concurro_exchange_v1::TurnObservation;
+use concurro_exchange_v1::{TurnObservation, TurnSubmission};
 use concurro_tasks_core::{
     Actor, Admission, AttemptSpec, Authority, InitializationSnapshot, IssueKey, LaterCommand,
     PinnedInputs, Request, RequestKind, RequestStatus, Requirements, SourceOrder, Stage,
 };
 use concurro_tasks_postgres::{
-    EffectKind, RetainedEligibility, acknowledge_retirement, admit_intake, apply_request,
-    cancel_attempt, claim_dispatch, claim_effect, due_attempt_deadlines, expire_attempt,
-    initialize_task, latest_intake_correction, list_tasks, migrate, next_pending, pending_effects,
-    record_observation, record_poll_failure, record_request, record_submit_failure,
-    recover_retirements, retained_eligibility, runner_session, settle_submit,
-    settle_submit_refusal, task, task_detail,
+    CommandEvidence, EffectKind, RetainedEligibility, acknowledge_retirement, admit_intake,
+    apply_request, apply_request_with_evidence, cancel_attempt, claim_dispatch, claim_effect,
+    due_attempt_deadlines, expire_attempt, fail_pr_review_action, initialize_task,
+    latest_intake_correction, list_tasks, mark_pr_review_action_sent, migrate, next_pending,
+    pending_effects, record_observation, record_poll_failure, record_request,
+    record_submit_failure, recover_retirements, resolve_pending_write, retained_eligibility,
+    runner_session, settle_submit, settle_submit_refusal, task, task_detail,
 };
 use concurro_testkit::PostgresContainer;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
+use sqlx::types::Json as SqlJson;
 use tar::{Builder, Header};
 use uuid::Uuid;
+
+/// A paused writer start spends one revision without erasing prior model-call spend.
+#[tokio::test]
+async fn blocked_start_reassesses_only_with_revision_capacity() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec!["request.>".to_owned(), "task.>".to_owned()],
+    );
+    let authority = Authority {
+        writer: true,
+        issue_open: true,
+    };
+    let first = request(10, RequestKind::Start);
+    let mut work = database.begin().await.expect("record first start");
+    record_request(&mut work, &first).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply first start");
+    let applied = apply_request(&mut work, &outbox, first.id, first.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending")
+        .1;
+    work.commit().await.expect("start commit");
+    let mut state = applied.task.expect("started task");
+    let pins = PinnedInputs {
+        config_sha: "a".repeat(40),
+        base_sha: "b".repeat(40),
+        max_model_calls: 10,
+        max_fix_rounds: 2,
+        max_plan_revisions: 1,
+    };
+    let mut work = database.begin().await.expect("initialize");
+    state = initialize_task(
+        &mut work,
+        &outbox,
+        first.issue,
+        state.revision,
+        &snapshot(pins.clone()),
+    )
+    .await
+    .expect("initialization")
+    .expect("current task");
+    work.commit().await.expect("initialize commit");
+    state.stage = Stage::Blocked;
+    state.used_model_calls = 3;
+    state.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(state.id.0)
+        .bind(i64::try_from(state.revision).expect("revision"))
+        .bind(SqlJson(&state))
+        .execute(database.pool())
+        .await
+        .expect("pause task");
+
+    let reassess = request(20, RequestKind::Start);
+    let mut work = database.begin().await.expect("record reassessment");
+    record_request(&mut work, &reassess).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply reassessment");
+    let applied = apply_request(&mut work, &outbox, reassess.id, reassess.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending")
+        .1;
+    work.commit().await.expect("reassessment commit");
+    assert_eq!(applied.status, RequestStatus::Applied);
+    let resumed = applied.task.expect("reassessing task");
+    assert_eq!(resumed.stage, Stage::Initializing);
+    assert_eq!(resumed.id, state.id);
+    assert_eq!(resumed.used_model_calls, 3);
+    let spent: i64 = sqlx::query_scalar(
+        "SELECT spent_revisions FROM tasks.initialization_inputs WHERE task_id=$1",
+    )
+    .bind(state.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("revision spend");
+    assert_eq!(spent, 1);
+
+    state = resumed;
+    state.stage = Stage::Blocked;
+    state.pins = Some(pins);
+    state.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(state.id.0)
+        .bind(i64::try_from(state.revision).expect("revision"))
+        .bind(SqlJson(&state))
+        .execute(database.pool())
+        .await
+        .expect("pause again");
+    let exhausted = request(30, RequestKind::Start);
+    let mut work = database.begin().await.expect("record exhausted start");
+    record_request(&mut work, &exhausted).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply exhausted start");
+    let refused = apply_request(&mut work, &outbox, exhausted.id, exhausted.issue, authority)
+        .await
+        .expect("decision")
+        .expect("pending")
+        .1;
+    work.commit().await.expect("refusal commit");
+    assert_eq!(refused.status, RequestStatus::Refused);
+    assert_eq!(refused.reason, Some("plan_revision_exhausted"));
+    assert_eq!(
+        task(&database, exhausted.issue)
+            .await
+            .expect("task")
+            .expect("task")
+            .stage,
+        Stage::Blocked
+    );
+    let mut waiting = task(&database, exhausted.issue)
+        .await
+        .expect("task")
+        .expect("waiting task");
+    waiting.stage = Stage::Escalated;
+    waiting.stage_reason =
+        Some("Plan revision budget exhausted: design reviewers require a revision".to_owned());
+    waiting.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(waiting.id.0)
+        .bind(i64::try_from(waiting.revision).expect("revision"))
+        .bind(SqlJson(&waiting))
+        .execute(database.pool())
+        .await
+        .expect("waiting revision");
+    let grant = request(
+        40,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: Some(2),
+        }),
+    );
+    let mut work = database.begin().await.expect("record grant");
+    record_request(&mut work, &grant).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply grant");
+    let granted = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        grant.id,
+        grant.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: snapshot(waiting.pins.clone().expect("pins")),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("grant commit");
+    assert_eq!(granted.status, RequestStatus::Applied);
+    let resumed = granted.task.expect("resumed plan");
+    assert_eq!(resumed.stage, Stage::Plan);
+    assert_eq!(resumed.used_model_calls, 3);
+    let budget: (i64, i64) = sqlx::query_as(
+        "SELECT spent_revisions,extra_plan_revisions FROM tasks.initialization_inputs WHERE task_id=$1",
+    )
+    .bind(resumed.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("granted budget");
+    assert_eq!(budget, (2, 2));
+    let invalidate = request(50, RequestKind::Later(LaterCommand::Invalidate));
+    let mut changed_source = snapshot(resumed.pins.clone().expect("pins"));
+    changed_source.requirements.body = Some("Revised description".to_owned());
+    let mut work = database.begin().await.expect("record invalidation");
+    record_request(&mut work, &invalidate)
+        .await
+        .expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply invalidation");
+    let invalidated = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        invalidate.id,
+        invalidate.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: changed_source.clone(),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("invalidation commit");
+    assert_eq!(invalidated.status, RequestStatus::Applied);
+    let restarted = invalidated.task.expect("reassessment task");
+    assert_eq!(restarted.stage, Stage::Intake);
+    assert_eq!(restarted.used_model_calls, 3);
+    let saved_body: String = sqlx::query_scalar(
+        "SELECT snapshot->'requirements'->>'body' FROM tasks.initialization_inputs WHERE task_id=$1",
+    )
+    .bind(restarted.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("revised requirements");
+    assert_eq!(saved_body, "Revised description");
+    let invalidation_actor: String = sqlx::query_scalar(
+        "SELECT actor->>'login' FROM tasks.task_invalidations WHERE request_id=$1",
+    )
+    .bind(invalidate.id)
+    .fetch_one(database.pool())
+    .await
+    .expect("invalidation audit");
+    assert_eq!(invalidation_actor, "writer");
+    let mut gated = restarted;
+    gated.stage = Stage::Gates;
+    gated.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(gated.id.0)
+        .bind(i64::try_from(gated.revision).expect("revision"))
+        .bind(SqlJson(&gated))
+        .execute(database.pool())
+        .await
+        .expect("gate fixture");
+    let retry = request(
+        60,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: None,
+        }),
+    );
+    let mut work = database.begin().await.expect("record retry");
+    record_request(&mut work, &retry).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply retry");
+    let retried = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        retry.id,
+        retry.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: changed_source.clone(),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("retry commit");
+    assert_eq!(retried.status, RequestStatus::Applied);
+    let mut paused = retried.task.expect("gates task");
+    assert_eq!(paused.stage, Stage::Gates);
+    paused.stage = Stage::Blocked;
+    paused.retry_stage = Some(Stage::Plan);
+    paused.stage_reason = Some("Planner output repair allowance exhausted".to_owned());
+    paused.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(paused.id.0)
+        .bind(i64::try_from(paused.revision).expect("revision"))
+        .bind(SqlJson(&paused))
+        .execute(database.pool())
+        .await
+        .expect("pause planner");
+    let repair = request(
+        70,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: None,
+        }),
+    );
+    let mut work = database.begin().await.expect("record planner retry");
+    record_request(&mut work, &repair).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply planner retry");
+    let repaired = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        repair.id,
+        repair.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: changed_source.clone(),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("planner retry commit");
+    assert_eq!(repaired.status, RequestStatus::Applied);
+    let resumed_plan = repaired.task.expect("planner task");
+    assert_eq!(resumed_plan.stage, Stage::Plan);
+    assert_eq!(resumed_plan.retry_stage, None);
+    assert_eq!(resumed_plan.used_model_calls, 3);
+
+    let planner_turn = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group, \
+         fork,config_sha,submit_body,initial_deadline,unbounded_running,status) \
+         VALUES ($1,$2,'plan',$3,'planner','acme/fork',$4,'{}',now(),false,'finished')",
+    )
+    .bind(planner_turn)
+    .bind(resumed_plan.id.0)
+    .bind(i64::try_from(resumed_plan.revision).expect("revision"))
+    .bind(&resumed_plan.pins.as_ref().expect("pins").config_sha)
+    .execute(database.pool())
+    .await
+    .expect("planner turn");
+    sqlx::query(
+        "INSERT INTO tasks.plan_reports (attempt_id,task_id,initialization_revision, \
+         raw_report,raw_report_bytes,accepted,plan_id) VALUES ($1,$2,1,'{}','{}',true,'plan')",
+    )
+    .bind(planner_turn)
+    .bind(resumed_plan.id.0)
+    .execute(database.pool())
+    .await
+    .expect("reviewed plan");
+    let batch = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tasks.plan_review_batches \
+         (id,task_id,plan_id,generation,phase,binding,roster,status) \
+         VALUES ($1,$2,'plan',0,'cooperative','binding','[]','superseded')",
+    )
+    .bind(batch)
+    .bind(resumed_plan.id.0)
+    .execute(database.pool())
+    .await
+    .expect("review batch");
+    for (reviewer, status) in [("failed", "failed"), ("accepted", "accepted")] {
+        sqlx::query(
+            "INSERT INTO tasks.plan_review_seats \
+             (batch_id,reviewer_id,identity,status,failure_count) \
+             VALUES ($1,$2,'{}',$3,2)",
+        )
+        .bind(batch)
+        .bind(reviewer)
+        .bind(status)
+        .execute(database.pool())
+        .await
+        .expect("review seat");
+    }
+    let mut paused_review = resumed_plan;
+    paused_review.stage = Stage::Blocked;
+    paused_review.retry_stage = Some(Stage::PlanQc);
+    paused_review.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(paused_review.id.0)
+        .bind(i64::try_from(paused_review.revision).expect("revision"))
+        .bind(SqlJson(&paused_review))
+        .execute(database.pool())
+        .await
+        .expect("pause design review");
+    let retry_review = request(
+        80,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: None,
+        }),
+    );
+    let mut work = database.begin().await.expect("record design retry");
+    record_request(&mut work, &retry_review)
+        .await
+        .expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply design retry");
+    let reviewed = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        retry_review.id,
+        retry_review.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: changed_source.clone(),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("design retry commit");
+    assert_eq!(reviewed.status, RequestStatus::Applied);
+    let mut paused_pr = reviewed.task.expect("design task");
+    assert_eq!(paused_pr.stage, Stage::PlanQc);
+    let seats: Vec<(String, String, i32)> = sqlx::query_as(
+        "SELECT reviewer_id,status,failure_count FROM tasks.plan_review_seats \
+         WHERE batch_id=$1 ORDER BY reviewer_id",
+    )
+    .bind(batch)
+    .fetch_all(database.pool())
+    .await
+    .expect("review seats");
+    assert_eq!(
+        seats,
+        vec![
+            ("accepted".to_owned(), "accepted".to_owned(), 2),
+            ("failed".to_owned(), "retrying".to_owned(), 0),
+        ]
+    );
+
+    let pr_batch = Uuid::now_v7();
+    let pr_turn = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group, \
+         fork,config_sha,submit_body,initial_deadline,unbounded_running,status) \
+         VALUES ($1,$2,'review',$3,'reviewer','acme/fork',$4,'{}',now(),false,'finished')",
+    )
+    .bind(pr_turn)
+    .bind(paused_pr.id.0)
+    .bind(i64::try_from(paused_pr.revision).expect("revision"))
+    .bind(&paused_pr.pins.as_ref().expect("pins").config_sha)
+    .execute(database.pool())
+    .await
+    .expect("PR review turn");
+    sqlx::query(
+        "INSERT INTO tasks.pr_review_batches (id,task_id,publication_attempt,pr_number, \
+         head,branch,plan_id,round,changed_paths,roster,status) \
+         VALUES ($1,$2,$3,19,$4,'concurro/task','plan',0,'[]','[]','superseded')",
+    )
+    .bind(pr_batch)
+    .bind(paused_pr.id.0)
+    .bind(planner_turn)
+    .bind("e".repeat(40))
+    .execute(database.pool())
+    .await
+    .expect("PR review batch");
+    for (reviewer, status) in [("failed", "failed"), ("accepted", "accepted")] {
+        sqlx::query(
+            "INSERT INTO tasks.pr_review_seats \
+             (batch_id,reviewer_id,identity,binding,status,failure_count) \
+             VALUES ($1,$2,'{}','binding',$3,2)",
+        )
+        .bind(pr_batch)
+        .bind(reviewer)
+        .bind(status)
+        .execute(database.pool())
+        .await
+        .expect("PR review seat");
+    }
+    sqlx::query(
+        "INSERT INTO tasks.pr_review_publications \
+         (turn_id,task_id,batch_id,pr_number,head,marker,body,status,error) \
+         VALUES ($1,$2,$3,19,$4,'marker','marker body','failed','HTTP 403')",
+    )
+    .bind(pr_turn)
+    .bind(paused_pr.id.0)
+    .bind(pr_batch)
+    .bind("e".repeat(40))
+    .execute(database.pool())
+    .await
+    .expect("refused native review");
+    sqlx::query(
+        "INSERT INTO tasks.pr_review_actions \
+         (turn_id,sequence,kind,marker,body,status) \
+         VALUES ($1,0,'create','marker','marker','sent')",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("sent native action");
+    let mut work = database.begin().await.expect("definite refusal");
+    assert!(
+        fail_pr_review_action(&mut work, pr_turn, 0)
+            .await
+            .expect("mark failed action")
+    );
+    work.commit().await.expect("refusal commit");
+    paused_pr.stage = Stage::Blocked;
+    paused_pr.retry_stage = Some(Stage::Review);
+    paused_pr.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(paused_pr.id.0)
+        .bind(i64::try_from(paused_pr.revision).expect("revision"))
+        .bind(SqlJson(&paused_pr))
+        .execute(database.pool())
+        .await
+        .expect("pause PR review");
+    let retry_pr = request(
+        90,
+        RequestKind::Later(LaterCommand::Retry {
+            plan_revisions: None,
+        }),
+    );
+    let mut work = database.begin().await.expect("record PR retry");
+    record_request(&mut work, &retry_pr).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply PR retry");
+    let pr_retried = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        retry_pr.id,
+        retry_pr.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: changed_source.clone(),
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("PR retry commit");
+    assert_eq!(pr_retried.status, RequestStatus::Applied);
+    let mut paused_implementation = pr_retried.task.expect("PR review task");
+    assert_eq!(paused_implementation.stage, Stage::Review);
+    let pr_seats: Vec<(String, String, i32)> = sqlx::query_as(
+        "SELECT reviewer_id,status,failure_count FROM tasks.pr_review_seats \
+         WHERE batch_id=$1 ORDER BY reviewer_id",
+    )
+    .bind(pr_batch)
+    .fetch_all(database.pool())
+    .await
+    .expect("PR review seats");
+    assert_eq!(
+        pr_seats,
+        vec![
+            ("accepted".to_owned(), "accepted".to_owned(), 2),
+            ("failed".to_owned(), "retrying".to_owned(), 0),
+        ]
+    );
+    let publication_status: String =
+        sqlx::query_scalar("SELECT status FROM tasks.pr_review_publications WHERE turn_id=$1")
+            .bind(pr_turn)
+            .fetch_one(database.pool())
+            .await
+            .expect("native review status");
+    assert_eq!(publication_status, "recorded");
+    let action_status: String = sqlx::query_scalar(
+        "SELECT status FROM tasks.pr_review_actions WHERE turn_id=$1 AND sequence=0",
+    )
+    .bind(pr_turn)
+    .fetch_one(database.pool())
+    .await
+    .expect("reopened action");
+    assert_eq!(action_status, "recorded");
+
+    let sibling_turn = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group, \
+         fork,config_sha,submit_body,initial_deadline,unbounded_running,status) \
+         VALUES ($1,$2,'review',$3,'reviewer','acme/fork',$4,'{}',now(),false,'finished')",
+    )
+    .bind(sibling_turn)
+    .bind(paused_implementation.id.0)
+    .bind(i64::try_from(paused_implementation.revision).expect("revision"))
+    .bind(
+        &paused_implementation
+            .pins
+            .as_ref()
+            .expect("pins")
+            .config_sha,
+    )
+    .execute(database.pool())
+    .await
+    .expect("sibling turn");
+    sqlx::query(
+        "UPDATE tasks.pr_review_publications SET status='sent',bot_user_id=99 WHERE turn_id=$1",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("first pending review");
+    sqlx::query(
+        "UPDATE tasks.pr_review_actions SET status='confirmed' WHERE turn_id=$1 AND sequence=0",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("first create confirmed");
+    sqlx::query(
+        "INSERT INTO tasks.pr_review_actions \
+         (turn_id,sequence,kind,marker,body,status) \
+         VALUES ($1,1,'submit','marker','body','recorded')",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("first submit pending");
+    sqlx::query(
+        "INSERT INTO tasks.pr_review_publications \
+         (turn_id,task_id,batch_id,pr_number,head,marker,body,status,bot_user_id) \
+         VALUES ($1,$2,$3,19,$4,'sibling','sibling body','sent',99)",
+    )
+    .bind(sibling_turn)
+    .bind(paused_implementation.id.0)
+    .bind(pr_batch)
+    .bind("e".repeat(40))
+    .execute(database.pool())
+    .await
+    .expect("sibling pending review");
+    for (sequence, kind) in [(0, "create"), (1, "submit")] {
+        sqlx::query(
+            "INSERT INTO tasks.pr_review_actions (turn_id,sequence,kind,marker,body) \
+             VALUES ($1,$2,$3,'sibling','sibling body')",
+        )
+        .bind(sibling_turn)
+        .bind(sequence)
+        .bind(kind)
+        .execute(database.pool())
+        .await
+        .expect("sibling action");
+    }
+    let mut work = database.begin().await.expect("sibling create fence");
+    assert!(
+        !mark_pr_review_action_sent(&mut work, sibling_turn, 0)
+            .await
+            .expect("first review still pending")
+    );
+    work.commit().await.expect("pending fence commit");
+    sqlx::query(
+        "UPDATE tasks.pr_review_actions SET status='confirmed' \
+         WHERE turn_id=$1 AND kind='submit'",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("first submit confirmed");
+    let mut work = database.begin().await.expect("sibling create after submit");
+    assert!(
+        mark_pr_review_action_sent(&mut work, sibling_turn, 0)
+            .await
+            .expect("sibling create unblocked")
+    );
+    work.commit().await.expect("sibling fence commit");
+    let mut work = database.begin().await.expect("resolve uncertain action");
+    assert!(
+        resolve_pending_write(
+            &mut work,
+            &outbox,
+            "action",
+            sibling_turn,
+            Some(0),
+            "host-user",
+            true,
+        )
+        .await
+        .expect("operator reopen")
+    );
+    work.commit().await.expect("operator resolution commit");
+    let reopened: String = sqlx::query_scalar(
+        "SELECT status FROM tasks.pr_review_actions WHERE turn_id=$1 AND sequence=0",
+    )
+    .bind(sibling_turn)
+    .fetch_one(database.pool())
+    .await
+    .expect("reopened sibling action");
+    assert_eq!(reopened, "recorded");
+    let operator_action: (String, String) = sqlx::query_as(
+        "SELECT actor,outcome FROM tasks.operator_actions WHERE target=$1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(format!("{sibling_turn}:0"))
+    .fetch_one(database.pool())
+    .await
+    .expect("audited operator resolution");
+    assert_eq!(operator_action, ("host-user".into(), "recorded".into()));
+    sqlx::query("DELETE FROM tasks.pr_review_actions WHERE turn_id IN ($1,$2)")
+        .bind(pr_turn)
+        .bind(sibling_turn)
+        .execute(database.pool())
+        .await
+        .expect("remove fence fixture actions");
+    sqlx::query("DELETE FROM tasks.pr_review_publications WHERE turn_id=$1")
+        .bind(sibling_turn)
+        .execute(database.pool())
+        .await
+        .expect("remove sibling publication");
+    sqlx::query("DELETE FROM tasks.attempts WHERE id=$1")
+        .bind(sibling_turn)
+        .execute(database.pool())
+        .await
+        .expect("remove sibling turn");
+
+    sqlx::query(
+        "UPDATE tasks.pr_review_publications SET status='confirmed',review_id=27 \
+         WHERE turn_id=$1",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("settle native review fixture");
+    paused_implementation.stage = Stage::Blocked;
+    paused_implementation.retry_stage = Some(Stage::Implement);
+    paused_implementation.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(paused_implementation.id.0)
+        .bind(i64::try_from(paused_implementation.revision).expect("revision"))
+        .bind(SqlJson(&paused_implementation))
+        .execute(database.pool())
+        .await
+        .expect("pause implementation");
+    let mut fresh = changed_source;
+    fresh.pins.config_sha = "c".repeat(40);
+    fresh.pins.base_sha = "d".repeat(40);
+    fresh.pins.max_model_calls = 15;
+    fresh.bundle_id = "new-bundle".to_owned();
+    fresh.configuration = json!({
+        "planner":"codex","implementer":"codex","qc":"claude",
+        "reviewers":["codex"],"models":{"codex":"gpt","claude":"sonnet"}
+    });
+    fresh.requirements.body = Some("Unapproved new issue text".to_owned());
+    let resume = request(
+        100,
+        RequestKind::Later(LaterCommand::Resume {
+            description_only: false,
+        }),
+    );
+    let mut work = database.begin().await.expect("record resume");
+    record_request(&mut work, &resume).await.expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply resume");
+    let resumed = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        resume.id,
+        resume.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: fresh,
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("resume commit");
+    assert_eq!(resumed.status, RequestStatus::Applied);
+    let continued = resumed.task.expect("implementation task");
+    assert_eq!(continued.stage, Stage::Implement);
+    assert_eq!(continued.used_model_calls, 3);
+    assert_eq!(
+        continued.pins.as_ref().expect("pins").base_sha,
+        "b".repeat(40)
+    );
+    assert_eq!(continued.pins.as_ref().expect("pins").max_model_calls, 15);
+    let adopted: SqlJson<InitializationSnapshot> =
+        sqlx::query_scalar("SELECT snapshot FROM tasks.initialization_inputs WHERE task_id=$1")
+            .bind(continued.id.0)
+            .fetch_one(database.pool())
+            .await
+            .expect("adopted snapshot");
+    assert_eq!(adopted.0.bundle_id, "new-bundle");
+    assert_eq!(adopted.0.pins.base_sha, "b".repeat(40));
+    assert_eq!(
+        adopted.0.requirements.body.as_deref(),
+        Some("Revised description")
+    );
+    let receipt: (String, String) = sqlx::query_as(
+        "SELECT prior_snapshot->>'bundle_id', \
+         adopted_snapshot->>'bundle_id' FROM tasks.task_resumes WHERE request_id=$1",
+    )
+    .bind(resume.id)
+    .fetch_one(database.pool())
+    .await
+    .expect("resume receipt");
+    assert_eq!(
+        receipt,
+        ("bundle-identity".to_owned(), "new-bundle".to_owned())
+    );
+
+    let mut reviewing = continued;
+    reviewing.stage = Stage::PlanQc;
+    reviewing.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(reviewing.id.0)
+        .bind(i64::try_from(reviewing.revision).expect("revision"))
+        .bind(SqlJson(&reviewing))
+        .execute(database.pool())
+        .await
+        .expect("active design review");
+    let mut third = adopted.0;
+    third.bundle_id = "third-bundle".to_owned();
+    let resume_review = request(
+        110,
+        RequestKind::Later(LaterCommand::Resume {
+            description_only: false,
+        }),
+    );
+    let mut work = database.begin().await.expect("record review resume");
+    record_request(&mut work, &resume_review)
+        .await
+        .expect("record");
+    work.commit().await.expect("record commit");
+    let mut work = database.begin().await.expect("apply review resume");
+    let review_resumed = apply_request_with_evidence(
+        &mut work,
+        &outbox,
+        resume_review.id,
+        resume_review.issue,
+        authority,
+        Some(&CommandEvidence {
+            snapshot: third,
+            pr_unchanged: true,
+            implementer_skill_update: None,
+        }),
+    )
+    .await
+    .expect("decision")
+    .expect("pending")
+    .1;
+    work.commit().await.expect("review resume commit");
+    assert_eq!(review_resumed.status, RequestStatus::Applied);
+    assert_eq!(
+        review_resumed.task.expect("reviewing task").stage,
+        Stage::PlanQc
+    );
+    let fresh_batch: (String, String) = sqlx::query_as(
+        "SELECT status,snapshot->>'bundle_id' FROM tasks.plan_review_batches \
+         WHERE task_id=$1 ORDER BY generation DESC,id DESC LIMIT 1",
+    )
+    .bind(reviewing.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("new review batch");
+    assert_eq!(
+        fresh_batch,
+        ("recorded".to_owned(), "third-bundle".to_owned())
+    );
+    let prior_batch_status: String =
+        sqlx::query_scalar("SELECT status FROM tasks.plan_review_batches WHERE id=$1")
+            .bind(batch)
+            .fetch_one(database.pool())
+            .await
+            .expect("prior review batch");
+    assert_eq!(prior_batch_status, "superseded");
+
+    let mut publication_task = task(&database, first.issue)
+        .await
+        .expect("task read")
+        .expect("task");
+    publication_task.stage = Stage::Publish;
+    publication_task.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(publication_task.id.0)
+        .bind(i64::try_from(publication_task.revision).expect("revision"))
+        .bind(SqlJson(&publication_task))
+        .execute(database.pool())
+        .await
+        .expect("publish recovery fixture");
+    let intent = json!({
+        "branch": "concurro/task", "parent": "a".repeat(40),
+        "commit_date": "2026-11-20T10:00:00Z", "branch_created": true,
+        "commit_sha": "b".repeat(40), "ref_advanced": true,
+        "pr_title": "Task", "pr_body": "Revised body",
+        "pr_create_sent": true, "pr_update_sent": true, "pr_number": 19
+    });
+    sqlx::query(
+        "INSERT INTO tasks.git_publications (task_id,attempt_id,intent) \
+         VALUES ($1,$2,$3)",
+    )
+    .bind(publication_task.id.0)
+    .bind(pr_turn)
+    .bind(SqlJson(&intent))
+    .execute(database.pool())
+    .await
+    .expect("uncertain PR description");
+    let mut work = database.begin().await.expect("reopen description");
+    assert!(
+        resolve_pending_write(&mut work, &outbox, "git", pr_turn, None, "host-user", true)
+            .await
+            .expect("operator resend")
+    );
+    work.commit().await.expect("reopen commit");
+    let reopened: SqlJson<Value> =
+        sqlx::query_scalar("SELECT intent FROM tasks.git_publications WHERE attempt_id=$1")
+            .bind(pr_turn)
+            .fetch_one(database.pool())
+            .await
+            .expect("reopened description intent");
+    assert_eq!(reopened.0["pr_update_sent"], false);
+    assert_eq!(reopened.0["pr_create_sent"], true);
+    sqlx::query(
+        "UPDATE tasks.git_publications SET intent=jsonb_set(intent,'{pr_update_sent}','true'::jsonb) \
+         WHERE attempt_id=$1",
+    )
+    .bind(pr_turn)
+    .execute(database.pool())
+    .await
+    .expect("simulate later uncertain update");
+    let mut work = database.begin().await.expect("block uncertain description");
+    assert!(
+        resolve_pending_write(&mut work, &outbox, "git", pr_turn, None, "host-user", false)
+            .await
+            .expect("operator block")
+    );
+    work.commit().await.expect("block commit");
+    let blocked = task(&database, first.issue)
+        .await
+        .expect("task read")
+        .expect("task");
+    assert_eq!(blocked.stage, Stage::Blocked);
+    assert_eq!(blocked.retry_stage, Some(Stage::Publish));
+}
 
 /// Make one source-ordered comment request for the same issue.
 fn request(at: i64, kind: RequestKind) -> Request {
@@ -184,6 +1088,18 @@ async fn stop_cutoff_and_deduplication_survive_restart() {
         .expect("state")
         .expect("task");
     assert_eq!((state.stage, state.revision), (Stage::Initializing, 1));
+    let implementing = concurro_tasks_core::TaskState {
+        stage: Stage::Implement,
+        revision: state.revision + 1,
+        ..state.clone()
+    };
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(state.id.0)
+        .bind(i64::try_from(implementing.revision).expect("revision"))
+        .bind(sqlx::types::Json(&implementing))
+        .execute(restarted.pool())
+        .await
+        .expect("seed implementation stage");
     let outcomes: Vec<String> = sqlx::query_scalar(
         "SELECT type FROM events.outbox WHERE type LIKE 'request.%' ORDER BY sequence",
     )
@@ -228,7 +1144,7 @@ async fn stop_cutoff_and_deduplication_survive_restart() {
             .expect("task")
             .expect("current")
             .stage,
-        Stage::Initializing
+        Stage::Implement
     );
 
     let later_stop = request(40, RequestKind::Stop);
@@ -312,7 +1228,7 @@ async fn stop_cutoff_and_deduplication_survive_restart() {
     .expect("pending unsupported");
     assert_eq!(
         (decision.status, decision.reason),
-        (RequestStatus::Refused, Some("not_supported"))
+        (RequestStatus::Refused, Some("plan_revision_not_waiting"))
     );
     unsupported_work.commit().await.expect("unsupported commit");
     let argument: sqlx::types::Json<serde_json::Value> = sqlx::query_scalar(
@@ -322,6 +1238,32 @@ async fn stop_cutoff_and_deduplication_survive_restart() {
     .await
     .expect("structured argument");
     assert_eq!(argument.0, serde_json::json!({"plan_revisions": 3}));
+    let restart_implement = request(70, RequestKind::Start);
+    let mut restart_work = restarted.begin().await.expect("restart implement");
+    record_request(&mut restart_work, &restart_implement)
+        .await
+        .expect("record implement restart");
+    let (_, decision) = apply_request(
+        &mut restart_work,
+        &outbox,
+        restart_implement.id,
+        restart_implement.issue,
+        authority,
+    )
+    .await
+    .expect("apply implement restart")
+    .expect("pending implement restart");
+    assert_eq!(decision.status, RequestStatus::Applied);
+    restart_work
+        .commit()
+        .await
+        .expect("implement restart commit");
+    let restarted_implement = task(&restarted, restart_implement.issue)
+        .await
+        .expect("task")
+        .expect("restarted implement");
+    assert_eq!(restarted_implement.stage, Stage::Initializing);
+    assert_eq!(restarted_implement.id, state.id);
 }
 
 #[tokio::test]
@@ -1119,6 +2061,40 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
         assert_eq!(current.stage, Stage::Intake);
         let turn = Uuid::now_v7();
         turns.push(turn);
+        let (submit_body, prompt_body) = if index == 1 {
+            let sha: String =
+                sqlx::query_scalar("SELECT gzip_sha256 FROM tasks.turn_archives WHERE turn_id=$1")
+                    .bind(turns[0])
+                    .fetch_one(database.pool())
+                    .await
+                    .expect("predecessor archive digest");
+            let prompt = json!({"instructions":"pinned","response_schema":{}});
+            let submission = TurnSubmission {
+                turn,
+                expected: json!({}),
+                models: vec!["test".to_owned()],
+                budget: 1,
+                lease: 1,
+                payload: json!({
+                    "request":{
+                        "session":{
+                            "scope":"scope-1","turn":1,"role":"intake:test:test",
+                            "predecessor_digest":"digest-0","gzip_sha256":sha,
+                        },
+                        "max_retained_bytes":(line.len() + journal.len()) as u64,
+                    },
+                    "retained":archive,
+                }),
+                pin: None,
+                binding: json!({}),
+            };
+            (
+                serde_json::to_vec(&submission).expect("retained submission"),
+                Some(serde_json::to_vec(&prompt).expect("retained prompt")),
+            )
+        } else {
+            (b"body".to_vec(), None)
+        };
         let mut work = database.begin().await.expect("admit");
         assert_eq!(
             admit_intake(
@@ -1132,8 +2108,8 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                     staffing_group: format!("group-{index}"),
                     fork: "acme/fork".to_owned(),
                     config_sha: "a".repeat(40),
-                    submit_body: b"body".to_vec(),
-                    prompt_body: None,
+                    submit_body,
+                    prompt_body,
                     deadline: DateTime::<Utc>::from_timestamp(1000, 0).expect("deadline"),
                     unbounded_running: false,
                 }

@@ -1,11 +1,48 @@
 //! M1 issue comment text derived from pinned task state and intake evidence.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::{IntakeReport, Stage, TaskState};
+use crate::{IntakeReport, Stage, TaskState, python_digest};
+
+/// Name the stable fork branch shared by retries of one repository issue.
+pub fn task_branch(repository: &str, issue: i64) -> anyhow::Result<String> {
+    let digest = python_digest(&json!([repository, issue]))?;
+    Ok(format!("concurro/issue-{issue}-{}", &digest[..12]))
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::task_branch;
+
+    /// Keep branch identities compatible with the retained Python controller.
+    #[test]
+    fn branch_name_matches_python_digest() {
+        assert_eq!(
+            task_branch("acme/demo", 3).expect("branch"),
+            "concurro/issue-3-9efb8758a4cb"
+        );
+    }
+}
+
+/// Present validated planner questions without allowing model Markdown to impersonate controls.
+pub fn plan_notice_body(plan: &Value) -> Option<String> {
+    let questions = plan.get("questions")?.as_array()?;
+    if questions.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["The planner needs your answers before work can continue:".to_owned()];
+    for (index, question) in questions.iter().enumerate() {
+        lines.push(format!(
+            "{}. {}",
+            index + 1,
+            markdown_text(question.as_str()?, 300)
+        ));
+    }
+    Some(lines.join("\n"))
+}
 
 /// Render untrusted source text as one bounded Markdown-safe line.
-pub(crate) fn markdown_text(value: &str, limit: usize) -> String {
+pub fn markdown_text(value: &str, limit: usize) -> String {
     let line = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut escaped = String::new();
     for character in line.chars() {

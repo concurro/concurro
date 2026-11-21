@@ -3,7 +3,10 @@
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Duration, Utc};
 use concurro_exchange_v1::TurnSubmission;
-use concurro_tasks_core::{AttemptSpec, InitializationSnapshot, IssueKey, TaskState};
+use concurro_tasks_core::{
+    AttemptSpec, InitializationSnapshot, IssueKey, TaskState, edit_policy, editable_files,
+    effective_limits,
+};
 use concurro_tasks_postgres::IntakeCorrection;
 use glob::Pattern;
 use serde::Deserialize;
@@ -15,7 +18,6 @@ use crate::{
     bundle::{
         intake_prompt_bytes, intake_prompt_parts, python_digest, python_json, python_pretty_json,
     },
-    edit_policy::{edit_policy, editable_files},
 };
 
 const QUEUE_SECONDS: i64 = 1800;
@@ -69,30 +71,33 @@ pub struct IntakeTransport {
     pub lease: i64,
 }
 
-/// Resolve the triage role into its harness, model, effort and optional named identity.
-fn triage_agent(config: &Value) -> Result<(String, String, String, Option<Value>)> {
+/// Resolve a pinned role into its harness, model, effort and optional named identity.
+pub(crate) fn assigned_agent(
+    config: &Value,
+    role: &str,
+) -> Result<(String, String, String, Option<Value>)> {
     if let Some(agents) = config.get("agents") {
-        let name = agents["triage"]
+        let name = agents[role]
             .as_str()
-            .context("target agents.triage is invalid")?;
+            .context("target agent assignment is invalid")?;
         let profile = config["models"]
             .get(name)
-            .context("target triage profile is missing")?;
+            .context("target agent profile is missing")?;
         let provider = profile["provider"]
             .as_str()
-            .context("target triage provider is invalid")?;
+            .context("target agent provider is invalid")?;
         let harness = match provider {
             "anthropic" => "claude",
             "openai" => "codex",
-            _ => anyhow::bail!("target triage provider is unsupported"),
+            _ => anyhow::bail!("target agent provider is unsupported"),
         };
         let model = profile["model"]
             .as_str()
-            .context("target triage model is invalid")?;
+            .context("target agent model is invalid")?;
         let effort = profile["effort"]
             .as_str()
-            .context("target triage effort is invalid")?;
-        ensure!(!model.trim().is_empty(), "target triage model is empty");
+            .context("target agent effort is invalid")?;
+        ensure!(!model.trim().is_empty(), "target agent model is empty");
         return Ok((
             harness.to_owned(),
             model.to_owned(),
@@ -106,16 +111,25 @@ fn triage_agent(config: &Value) -> Result<(String, String, String, Option<Value>
             })),
         ));
     }
-    let harness = config["qc"]
+    let legacy_role = match role {
+        "planner" => "planner",
+        "implementer" => "implementer",
+        _ => "qc",
+    };
+    let harness = config[legacy_role]
         .as_str()
         .context("target qc provider is missing")?;
     ensure!(
         matches!(harness, "claude" | "codex"),
         "target qc provider is unsupported"
     );
-    let override_model = config["qc_model"]
-        .as_str()
-        .filter(|value| !value.is_empty());
+    let override_model = (role == "triage")
+        .then(|| {
+            config["qc_model"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+        })
+        .flatten();
     let model = override_model
         .or_else(|| config["models"][harness].as_str())
         .context("target qc model is missing")?;
@@ -129,28 +143,28 @@ fn triage_agent(config: &Value) -> Result<(String, String, String, Option<Value>
     ))
 }
 
-/// Merge target limits with the current native runner defaults.
-fn effective_limits(config: &Value) -> Result<Value> {
-    let mut limits = json!({
-        "primary_files": null,
-        "scope_paths": null,
-        "scope_path_characters": 200,
-        "changed_files": null,
-        "overlay_files": null,
-        "workspace_files": null,
-    })
-    .as_object()
-    .expect("default limits")
-    .clone();
-    if let Some(configured) = config.get("limits") {
-        limits.extend(
-            configured
-                .as_object()
-                .context("target limits are invalid")?
-                .clone(),
-        );
-    }
-    Ok(Value::Object(limits))
+/// Normalize configured MCP process settings for a runner request.
+pub(crate) fn mcp_servers(config: &Value) -> Option<Value> {
+    let servers = config
+        .get("mcp")?
+        .get("servers")?
+        .as_object()
+        .filter(|servers| !servers.is_empty())?;
+    Some(Value::Object(
+        servers
+            .iter()
+            .map(|(name, server)| {
+                (
+                    name.clone(),
+                    json!({
+                        "command": server["command"],
+                        "args": server.get("args").cloned().unwrap_or_else(|| json!([])),
+                        "env": server.get("env").cloned().unwrap_or_else(|| json!({})),
+                    }),
+                )
+            })
+            .collect(),
+    ))
 }
 
 /// Freeze one org-funded triage submission before its transactional call charge.
@@ -166,7 +180,7 @@ pub fn prepare_intake_attempt(
     now: DateTime<Utc>,
 ) -> Result<AttemptSpec> {
     let config = &snapshot.configuration;
-    let (harness, model, effort, agent) = triage_agent(config)?;
+    let (harness, model, effort, agent) = assigned_agent(config, "triage")?;
     ensure!(
         transport
             .models
@@ -274,27 +288,8 @@ pub fn prepare_intake_attempt(
     if let Some(agent) = &agent {
         request["agent"] = agent.clone();
     }
-    if let Some(servers) = config
-        .get("mcp")
-        .and_then(|mcp| mcp.get("servers"))
-        .and_then(Value::as_object)
-    {
-        if !servers.is_empty() {
-            let normalized = servers
-                .iter()
-                .map(|(name, server)| {
-                    (
-                        name.clone(),
-                        json!({
-                            "command": server["command"],
-                            "args": server.get("args").cloned().unwrap_or_else(|| json!([])),
-                            "env": server.get("env").cloned().unwrap_or_else(|| json!({})),
-                        }),
-                    )
-                })
-                .collect::<Map<_, _>>();
-            request["mcp_servers"] = Value::Object(normalized);
-        }
+    if let Some(servers) = mcp_servers(config) {
+        request["mcp_servers"] = servers;
     }
     let timeout = match config.get("turn_timeout_seconds") {
         Some(Value::Null) => None,
@@ -436,6 +431,7 @@ mod tests {
             stage: Stage::Intake,
             revision: 2,
             stage_reason: None,
+            retry_stage: None,
             pins: Some(snapshot.pins.clone()),
             used_model_calls: 1,
             current_attempt: None,

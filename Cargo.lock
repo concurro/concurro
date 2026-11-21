@@ -745,8 +745,10 @@ dependencies = [
 name = "concurro-tasks-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "concurro-contracts",
+ "glob",
  "hex",
  "regex",
  "serde",
@@ -785,6 +787,7 @@ dependencies = [
  "flate2",
  "graphile_worker",
  "hex",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "sqlx",

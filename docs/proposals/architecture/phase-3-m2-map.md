@@ -10,7 +10,7 @@ GitHub, exchange, runner and PostgreSQL fixtures supply the implementation evide
 
 | Stage | Python behavior to preserve | Local acceptance |
 | ---- | ---- | ---- |
-| Plan | `Controller.plan` (`engine/controller.py:1768`) builds a structured plan from pinned inputs, answers every open objection once, validates file scope and accumulated changes, and charges each bounded output repair (`engine/policy.py:400`). Questions pause in `clarify` with the planner session intact (`Controller.continue_planner_clarification`, `:1224`). | Valid plan advances; malformed output gets two recorded repairs; a question waits and an authorized answer continues the same plan; restart does not repeat a charged turn. |
+| Plan | `Controller.plan` (`engine/controller.py:1768`) builds a structured plan from pinned inputs, answers every open objection once, validates file scope and accumulated changes, and charges each bounded output repair (`engine/policy.py:400`). Questions pause in `clarify`; an answer resumes planning against updated requirements (`Controller.continue_planner_clarification`, `:1224`). | Valid plan advances; malformed output gets two recorded repairs; a question waits and an authorized answer continues the same plan; restart does not repeat a charged turn. |
 | Design review | `engine/design_batch.py` and `engine/review_batch.py` keep independent reviewer seats, private results and failure allowances. An unfinished sibling survives a restart. Cooperative first-pass approval or a distinct fresh unanimous round is required (`engine/policy.py:268`; `engine/design_eligibility.py:100`). | Each seat has its own current attempt and bound report. A late or superseded result cannot vote. Objections, high risk and changed inputs reopen or revise within the pinned allowance. |
 | Planned and approve | `engine/policy.py:248-305` binds exact plan content and ID, base, requirements, configuration, bundle, charter, generation, review phase, roster, parent and approved paths. `CommandHandler.approve` (`engine/commands.py:219`) accepts a writer's matching plan digest only after independent unanimity. | A changed plan, roster, base, requirement or review binding refuses approval without advancing. The approver is the command actor, even when someone else started the task. |
 | Implement | `Controller.develop` and `implement` (`engine/controller.py:1858`, `:2045`) recheck design authorization, validate native edits and paths before Git writes, and preserve the bounded fix budget. A supported design issue reopens assessment; a description-only repair keeps the reviewed code and its validation evidence. | An invalid edit creates no Git object or publication intent. A valid candidate freezes its parent, exact content and validation; a restart consumes the existing result. |
@@ -21,27 +21,22 @@ GitHub, exchange, runner and PostgreSQL fixtures supply the implementation evide
 
 Current Python report publication uses issue generic artifacts at
 `issues/{issue}/artifacts`, with readable views and immutable source data
-(`engine/conversation.py:557-676`, `engine/report_store.py:490-540`). M2 keeps
-authoritative reports in PostgreSQL and preserves this visible report surface
-unless the product explicitly decides to change it. The Rust publication job must
-read back exact artifact identity and body before retrying an uncertain create.
+(`engine/conversation.py:557-676`, `engine/report_store.py:490-540`). Rust keeps
+authoritative reports in PostgreSQL and queues a generic issue artifact in the
+same transaction as each report event. The publication job confirms the App
+author, exact body and first artifact version; an uncertain create remains on
+readback and is not sent again.
 
-## Rust seams to extend
+## Rust implementation seams
 
-- `crates/tasks-core/src/lib.rs` currently stops at M1's `plan` stage and stores one
-  `current_attempt`. Add later stages and per-reviewer attempt identity to this task
-  state; keep M1's task ID, revision, pins and spent-call count authoritative.
-- `crates/tasks-postgres/src/lib.rs` already serializes issue decisions and charges
-  intake in one transaction. Use the same transaction boundary for plan, design,
-  implementation and review attempts, with each operation's frozen inputs and
-  current-seat check. Keep SQL and SQLx in the storage crate.
-- `crates/tasks/src/lib.rs` already runs recorded exchange effects and ignores late
-  intake results. Add stage-specific jobs and result decisions to that path instead
-  of a second controller. Expand task snapshots and the dashboard from the new
-  state revisions in the same transaction.
-- M1's `decide` refuses a `start` on any active task. M2 must apply Python's
-  narrower paused-stage and clarification rules (`engine/commands.py:154-218`),
-  while preserving source order, authority rechecks and final replies.
+- `crates/tasks-core` defines later stages, reviewer identities and source-bound
+  decision contracts while retaining M1's task ID, revision, pins and call spend.
+- `crates/tasks-postgres` serializes plan, design, implementation, publication and
+  review decisions under the issue lock. SQL and SQLx stay in the storage crate.
+- `crates/tasks` runs stage jobs through M1's recorded exchange and effect paths.
+  Task snapshots and dashboard revisions follow the same state transactions.
+- A paused `start` follows the clarification and reassessment rules in
+  `engine/commands.py:154-218`, with source order and authority rechecks.
 
 ## Commands and recovery
 
@@ -91,21 +86,18 @@ or dispatches a runner:
    reservation, charge or provider call. Refusal records a reason and creates none
    of those effects.
 
-The M1 storage check covers scope, ordinal, journal status, predecessor digest,
-instructions, schema, pending bytes and corrupt archives. The M2 storage check
-also refuses null cached responses and enforces the uncompressed limit. M2 still
-needs verified-object preflight and wiring into continuation admission. Exercise
-both regressions in the
-[M2 plan](phase-3-plan.md#m2-one-contribution): null cached response and a highly compressible archive one
-byte over the uncompressed limit, plus exact-limit and null-limit controls.
+The storage check covers scope, ordinal, journal status, predecessor digest,
+instructions, schema, pending bytes, corrupt archives and null cached responses.
+Continuation preflight verifies an archived object before admission and applies
+the uncompressed limit. The
+[M2 plan](phase-3-plan.md#m2-one-contribution) names the null-response and
+compressible-archive boundary cases.
 
 ## End-to-end local acceptance
 
-Drive the actual task binary, database jobs and local GitHub/exchange fixtures
+The task binary, database jobs and local GitHub/exchange fixtures drive
 through `start → plan → design review → approve → implement → publish → review →
-gates → ready`. Capture the request, state, attempt and publication records after
-each step. Restart after admission, submit sending, result persistence, branch
-advance, PR create, review build/submit, and ready intent. Each restart must leave
-one logical turn, commit, PR, review and notice. Additional issues cover every
-terminal stage and each command above. Preserve exact test logs and source hashes;
-the waived live repository does not turn a local pass into a live publication claim.
+gates → ready`. The fixture restarts across stage boundaries and checks the
+request, attempt and publication records. Focused fixtures cover the command,
+review recovery and terminal paths. Local success does not claim live publication
+verification; the dedicated live repository was waived.

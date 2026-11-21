@@ -22,17 +22,24 @@ use concurro_exchange_v1::Operator;
 use concurro_github_v1::AppClient;
 use concurro_tasks::{
     ArchiveContext, CommentHandler, DashboardJob, DecisionContext, DecisionTarget, ExchangeContext,
-    ExchangeEffectJob, ExchangePollJob, InitializationContext, InitializationTarget, IntakeContext,
-    IntakeTransport, PublicationContext, PublicationTarget, PublishRequestReplyJob, RunnerContext,
-    RunnerSessionJob, RunnerTarget, StageLabelJob, TaskDecisionJob, TaskInitializeJob,
-    TaskIntakeJob, UploadArchiveJob, publish_request_reply, run_task_decision,
+    ExchangeEffectJob, ExchangePollJob, GitPublicationContext, GitPublicationTarget,
+    InitializationContext, InitializationTarget, IntakeContext, IntakeTransport,
+    PublicationContext, PublicationTarget, PublishRequestReplyJob, PublishTaskReportJob,
+    RunnerContext, RunnerSessionJob, RunnerTarget, StageLabelJob, TaskClarificationJob,
+    TaskDecisionJob, TaskDesignBatchJob, TaskDesignCorrectionJob, TaskDesignResultJob,
+    TaskGatesJob, TaskGitPublicationJob, TaskImplementJob, TaskImplementationResultJob,
+    TaskInitializeJob, TaskIntakeJob, TaskPlanJob, TaskPrReviewBatchJob, TaskPrReviewCorrectionJob,
+    TaskPrReviewPublishJob, TaskPrReviewResultJob, UploadArchiveJob, publish_pr_review,
+    publish_request_reply, publish_task_report, run_task_decision, run_task_gates,
 };
 use concurro_tasks_core::IssueKey;
 use concurro_tasks_postgres::{
     CommentResolution, cancel_attempt, due_attempt_deadlines, due_comment_readbacks,
     enqueue_dashboard, enqueue_runner_session, enqueue_stage_label, expire_attempt, list_tasks,
-    pending_effects, pending_issues, recover_retirements, resolve_comment, task_detail,
-    watched_dashboards, watched_runner_sessions, watched_stage_labels,
+    pending_effects, pending_issues, pending_pr_review_readbacks,
+    pending_report_artifact_readbacks, recover_retirements, resolve_comment, resolve_pending_write,
+    task_detail, watched_dashboards, watched_gate_issues, watched_runner_sessions,
+    watched_stage_labels,
 };
 use graphile_worker::WorkerOptions;
 use object_store::aws::AmazonS3Builder;
@@ -51,6 +58,9 @@ struct TargetSettings {
     issue_write_permissions: std::collections::BTreeMap<String, String>,
     /// Exact installation permissions requested for fork ref and dispatch writes.
     fork_write_permissions: std::collections::BTreeMap<String, String>,
+    /// Exact installation permissions requested for upstream PR writes.
+    #[serde(default)]
+    upstream_write_permissions: std::collections::BTreeMap<String, String>,
 }
 
 /// NATS user credentials read only from a private file.
@@ -226,6 +236,57 @@ async fn run_reply_readbacks(database: Database, publication: PublicationContext
             Err(error) => tracing::warn!(%error, "request reply readback scan failed"),
         }
         tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// Keep uncertain report creates visible and reconcilable after worker retries end.
+async fn run_report_readbacks(database: Database, publication: PublicationContext) {
+    loop {
+        match pending_report_artifact_readbacks(&database).await {
+            Ok(ids) => {
+                for id in ids {
+                    if let Err(error) = publish_task_report(&database, &publication, id).await {
+                        tracing::warn!(%error, %id, "report artifact readback pending");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "report artifact readback scan failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// Continue exact PR review readback even after a worker retry limit is spent.
+async fn run_pr_review_readbacks(database: Database, publication: GitPublicationContext) {
+    loop {
+        match pending_pr_review_readbacks(&database).await {
+            Ok(turns) => {
+                for turn in turns {
+                    if let Err(error) = publish_pr_review(&database, &publication, turn).await {
+                        tracing::warn!(%error, %turn, "PR review readback pending");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "pending PR review scan failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// Reobserve published PRs for closure and gated PRs for CI changes.
+async fn run_gate_recovery(database: Database, publication: GitPublicationContext) {
+    loop {
+        match watched_gate_issues(&database).await {
+            Ok(issues) => {
+                for issue in issues {
+                    if let Err(error) = run_task_gates(&database, &publication, issue).await {
+                        tracing::warn!(%error, ?issue, "PR gate observation pending");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "PR gate recovery scan failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 
@@ -466,15 +527,37 @@ async fn run_operator(
                 && action == "resolve"
                 && (flag == "--failed" || flag == "--resend") =>
         {
-            let id = Uuid::parse_str(id).context("write ID is invalid")?;
             let actor = std::env::var("USER").context("host operator user is unavailable")?;
-            let resolution = if flag == "--failed" {
-                CommentResolution::Failed
-            } else {
-                CommentResolution::Resend
-            };
             let mut change = database.begin().await?;
-            let resolved = resolve_comment(&mut change, id, &actor, resolution).await?;
+            let resolved = if let Ok(comment_id) = Uuid::parse_str(id) {
+                let resolution = if flag == "--failed" {
+                    CommentResolution::Failed
+                } else {
+                    CommentResolution::Resend
+                };
+                resolve_comment(&mut change, comment_id, &actor, resolution).await?
+            } else {
+                let parts = id.split(':').collect::<Vec<_>>();
+                ensure!(
+                    matches!(parts.as_slice(), [_, _] | [_, _, _]),
+                    "write target must be kind:uuid[:sequence]"
+                );
+                let write_id = Uuid::parse_str(parts[1]).context("write ID is invalid")?;
+                let sequence = parts
+                    .get(2)
+                    .map(|value| value.parse::<i32>().context("action sequence is invalid"))
+                    .transpose()?;
+                resolve_pending_write(
+                    &mut change,
+                    outbox,
+                    parts[0],
+                    write_id,
+                    sequence,
+                    &actor,
+                    flag == "--resend",
+                )
+                .await?
+            };
             change.commit().await?;
             serde_json::json!({"resolved": resolved, "write": id})
         }
@@ -501,7 +584,7 @@ async fn run_operator(
             serde_json::json!({"resolved": resolved, "write": id})
         }
         _ => anyhow::bail!(
-            "expected tasks list, tasks show <repository>#<issue>, consumer status, effects pending, archives retry <gzip-sha256>, attempts cancel <attempt>, or writes resolve <write> --written <url>|--failed|--resend"
+            "expected tasks list, tasks show <repository>#<issue>, consumer status, effects pending, archives retry <gzip-sha256>, attempts cancel <attempt>, or writes resolve <uuid|git:uuid|review:uuid|action:uuid:sequence|ready:uuid> --written <comment-url>|--failed|--resend"
         ),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
@@ -574,6 +657,21 @@ async fn main() -> Result<()> {
                         read_permissions: target.issue_permissions.clone(),
                         fork: target.fork.clone(),
                         fork_permissions: target.fork_permissions.clone(),
+                        initialization: Some(target.clone()),
+                        publication: settings
+                            .targets
+                            .iter()
+                            .find(|item| item.repository_id == *id)
+                            .map(|item| GitPublicationTarget {
+                                issue_repository: target.issue_repository.clone(),
+                                fork: target.fork.clone(),
+                                upstream: target.upstream.clone(),
+                                fork_read_permissions: target.fork_permissions.clone(),
+                                fork_write_permissions: item.fork_write_permissions.clone(),
+                                upstream_read_permissions: target.upstream_permissions.clone(),
+                                upstream_write_permissions: item.upstream_write_permissions.clone(),
+                                bot_login: target.bot_login.clone(),
+                            }),
                     },
                 )
             })
@@ -597,6 +695,29 @@ async fn main() -> Result<()> {
                 )
             })
             .collect(),
+    };
+    let git_publication = GitPublicationContext {
+        github: github.clone(),
+        targets: settings
+            .targets
+            .iter()
+            .map(|item| {
+                (
+                    item.repository_id,
+                    GitPublicationTarget {
+                        issue_repository: item.target.issue_repository.clone(),
+                        fork: item.target.fork.clone(),
+                        upstream: item.target.upstream.clone(),
+                        fork_read_permissions: item.target.fork_permissions.clone(),
+                        fork_write_permissions: item.fork_write_permissions.clone(),
+                        upstream_read_permissions: item.target.upstream_permissions.clone(),
+                        upstream_write_permissions: item.upstream_write_permissions.clone(),
+                        bot_login: item.target.bot_login.clone(),
+                    },
+                )
+            })
+            .collect(),
+        outbox: outbox.clone(),
     };
     let runners = RunnerContext {
         github: github.clone(),
@@ -630,6 +751,19 @@ async fn main() -> Result<()> {
         .define_job::<TaskDecisionJob>()
         .define_job::<TaskInitializeJob>()
         .define_job::<TaskIntakeJob>()
+        .define_job::<TaskPlanJob>()
+        .define_job::<TaskClarificationJob>()
+        .define_job::<TaskDesignBatchJob>()
+        .define_job::<TaskDesignCorrectionJob>()
+        .define_job::<TaskDesignResultJob>()
+        .define_job::<TaskImplementJob>()
+        .define_job::<TaskImplementationResultJob>()
+        .define_job::<TaskGitPublicationJob>()
+        .define_job::<TaskPrReviewBatchJob>()
+        .define_job::<TaskPrReviewCorrectionJob>()
+        .define_job::<TaskPrReviewResultJob>()
+        .define_job::<TaskPrReviewPublishJob>()
+        .define_job::<TaskGatesJob>()
         .define_job::<ExchangeEffectJob>()
         .define_job::<ExchangePollJob>()
         .define_job::<UploadArchiveJob>()
@@ -637,6 +771,7 @@ async fn main() -> Result<()> {
         .define_job::<DashboardJob>()
         .define_job::<RunnerSessionJob>()
         .define_job::<PublishRequestReplyJob>()
+        .define_job::<PublishTaskReportJob>()
         .add_extension(decisions.clone())
         .add_extension(initialization.clone())
         .add_extension(IntakeContext {
@@ -649,6 +784,7 @@ async fn main() -> Result<()> {
         })
         .add_extension(archive)
         .add_extension(publication.clone())
+        .add_extension(git_publication.clone())
         .add_extension(runners)
         .init()
         .await?;
@@ -668,7 +804,13 @@ async fn main() -> Result<()> {
     )
     .with_owned_accounts(owned);
     tokio::spawn(run_forwarder(settings.clone(), database.clone()));
-    tokio::spawn(run_reply_readbacks(database.clone(), publication));
+    tokio::spawn(run_reply_readbacks(database.clone(), publication.clone()));
+    tokio::spawn(run_report_readbacks(database.clone(), publication));
+    tokio::spawn(run_pr_review_readbacks(
+        database.clone(),
+        git_publication.clone(),
+    ));
+    tokio::spawn(run_gate_recovery(database.clone(), git_publication));
     tokio::spawn(run_decision_recovery(database.clone(), decisions));
     tokio::spawn(run_deadline_recovery(database.clone(), outbox));
     tokio::spawn(run_retirement_recovery(database.clone()));

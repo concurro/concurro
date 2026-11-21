@@ -31,6 +31,7 @@ pub(crate) async fn append_turn_submitted(
     outbox: &Outbox,
     task: &TaskState,
     spec: &AttemptSpec,
+    operation: &str,
 ) -> Result<()> {
     let submission = serde_json::from_slice::<TurnSubmission>(&spec.submit_body).ok();
     let payload = submission.as_ref().map(|submission| &submission.payload);
@@ -62,7 +63,7 @@ pub(crate) async fn append_turn_submitted(
             .and_then(|submission| submission.binding["grant_id"].as_str())
             .unwrap_or("org")
             .to_owned(),
-        stage: "intake".to_owned(),
+        stage: operation.to_owned(),
         role: submission
             .as_ref()
             .and_then(|submission| submission.binding["role"].as_str())
@@ -136,13 +137,15 @@ pub(crate) async fn append_notice(
     Ok(())
 }
 
-/// Publish the report body that intake validated in this transaction.
-pub(crate) async fn append_intake_report(
+/// Publish a stage report's original body after validation in this transaction.
+pub(crate) async fn append_task_report(
     uow: &mut UnitOfWork<'_>,
     outbox: &Outbox,
     task: &TaskState,
     turn: Uuid,
     raw: &[u8],
+    kind: &str,
+    step: &str,
 ) -> Result<()> {
     let report_id = Uuid::new_v5(
         &Uuid::NAMESPACE_OID,
@@ -153,11 +156,12 @@ pub(crate) async fn append_intake_report(
     let data = TaskReport {
         task_id: task.id,
         report_id,
-        kind: "intake".to_owned(),
-        step: "assessment".to_owned(),
+        kind: kind.to_owned(),
+        step: step.to_owned(),
         body,
         digest: hex::encode(Sha256::digest(raw)),
     };
+    crate::report_publication::record_report_artifact(uow, task, report_id, &data.body).await?;
     outbox
         .append(
             uow,
@@ -325,18 +329,26 @@ pub(crate) async fn append_turn_finished(
         ),
         None => None,
     };
-    let invalid_report: Option<String> =
-        sqlx::query_scalar("SELECT validation_error FROM tasks.intake_reports WHERE attempt_id=$1")
-            .bind(turn)
-            .fetch_optional(uow.connection())
-            .await?
-            .flatten();
+    let invalid_report: Option<String> = sqlx::query_scalar(
+        "SELECT validation_error FROM tasks.intake_reports WHERE attempt_id=$1 \
+         UNION ALL SELECT validation_error FROM tasks.plan_reports WHERE attempt_id=$1 \
+         UNION ALL SELECT validation_error FROM tasks.plan_review_seats \
+             WHERE attempt_id=$1 AND status IN ('correcting','failed') \
+         UNION ALL SELECT validation_error FROM tasks.implementation_reports \
+             WHERE attempt_id=$1 AND status='rejected' LIMIT 1",
+    )
+    .bind(turn)
+    .fetch_optional(uow.connection())
+    .await?
+    .flatten();
     let raw_outcome = result.and_then(|result| result["outcome"].as_str());
     let reason = reason
         .or_else(|| invalid_report.as_ref().map(|_| "invalid_output"))
         .or_else(|| raw_outcome.filter(|outcome| *outcome != "ok"))
         .or_else(|| result.and_then(|result| result["termination_reason"].as_str()));
-    let outcome = if invalid_report.is_some()
+    let outcome = if reason == Some("superseded_before_validation") {
+        "unknown"
+    } else if invalid_report.is_some()
         || provider_failure.is_some()
         || (reason == Some("runner_refusal") && raw_outcome == Some("ok"))
     {
@@ -377,4 +389,33 @@ pub(crate) async fn append_turn_finished(
         )
         .await?;
     Ok(())
+}
+
+/// Emit a deferred terminal fact only after source-aware result validation.
+pub(crate) async fn append_deferred_turn_finished(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    turn: Uuid,
+    reason: Option<&str>,
+) -> Result<()> {
+    let (Json(observation), raw_result): (Json<Value>, Option<Vec<u8>>) =
+        sqlx::query_as("SELECT observation,result_raw FROM tasks.attempts WHERE id=$1")
+            .bind(turn)
+            .fetch_one(uow.connection())
+            .await?;
+    let result = raw_result
+        .map(|raw| serde_json::from_slice::<Value>(&raw))
+        .transpose()?;
+    append_turn_finished(
+        uow,
+        outbox,
+        turn,
+        result.as_ref(),
+        reason,
+        observation["created"].as_f64().unwrap_or_default(),
+        observation["started"].as_f64(),
+        observation["finished"].as_f64(),
+        None,
+    )
+    .await
 }

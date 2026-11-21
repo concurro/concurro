@@ -405,15 +405,9 @@ impl AppClient {
         let target: RunnerRepository = self
             .read(repository, permissions, &["repos", owner, name], &[])
             .await?;
-        let bot: RunnerBot = self
-            .read(repository, permissions, &["users", bot_login], &[])
-            .await?;
+        let bot_id = self.bot_user_id(repository, permissions, bot_login).await?;
         ensure!(
-            target.id > 0
-                && target.owner.id > 0
-                && !target.default_branch.is_empty()
-                && bot.id > 0
-                && bot.login == bot_login,
+            target.id > 0 && target.owner.id > 0 && !target.default_branch.is_empty(),
             "cannot establish target runner identity"
         );
         Ok(json!({
@@ -422,8 +416,25 @@ impl AppClient {
             "job_workflow_ref": workflow_ref,
             "event_name": "workflow_dispatch",
             "ref": "",
-            "actor_id": bot.id.to_string(),
+            "actor_id": bot_id.to_string(),
         }))
+    }
+
+    /// Resolve the exact public bot account ID for commit and runner attribution.
+    pub async fn bot_user_id(
+        &self,
+        repository: &str,
+        permissions: &BTreeMap<String, String>,
+        bot_login: &str,
+    ) -> Result<i64> {
+        let bot: RunnerBot = self
+            .read(repository, permissions, &["users", bot_login], &[])
+            .await?;
+        ensure!(
+            bot.id > 0 && bot.login == bot_login,
+            "cannot establish target bot identity"
+        );
+        Ok(bot.id)
     }
 
     /// Resolve one named branch to its exact current commit.
@@ -519,10 +530,10 @@ impl AppClient {
     ) -> Result<String> {
         let scope = serde_json::to_string(permissions)?;
         let cache_key = (repository.to_ascii_lowercase(), scope);
-        if let Some(cached) = self.inner.tokens.lock().await.get(&cache_key) {
-            if cached.expires_at.timestamp() - Utc::now().timestamp() > TOKEN_MARGIN_SECONDS {
-                return Ok(cached.value.clone());
-            }
+        if let Some(cached) = self.inner.tokens.lock().await.get(&cache_key)
+            && cached.expires_at.timestamp() - Utc::now().timestamp() > TOKEN_MARGIN_SECONDS
+        {
+            return Ok(cached.value.clone());
         }
         let (owner, name) = repository
             .split_once('/')

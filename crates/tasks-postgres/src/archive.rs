@@ -1,11 +1,16 @@
 //! Transactional transcript rows and original gzip upload intents.
 
 use anyhow::{Result, ensure};
+use base64::Engine;
 use concurro_db::{Database, UnitOfWork};
 use concurro_tasks_diagnostics::ArchiveSnapshot;
 use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
+
+use concurro_exchange_v1::TurnSubmission;
+use concurro_tasks_core::{AttemptSpec, python_digest};
+use sha2::{Digest, Sha256};
 
 /// Whether one exact retained session turn can start without losing journal history.
 #[derive(Debug, PartialEq)]
@@ -18,6 +23,135 @@ pub enum RetainedEligibility {
     Replay { response: Value },
     /// The required revision is missing, corrupt or inconsistent.
     Unavailable(&'static str),
+}
+
+/// Exact predecessor and source gzip needed before a paid continuation.
+pub struct RetainedPreparation {
+    /// Next session turn ordinal.
+    pub turn: i64,
+    /// Prior immutable prompt digest, when continuing.
+    pub predecessor_digest: Option<String>,
+    /// Original gzip digest of the required prior turn.
+    pub gzip_sha256: Option<String>,
+    /// Original gzip bytes still pending in PostgreSQL.
+    pub pending_bytes: Option<Vec<u8>>,
+}
+
+/// Transactional outcome of validating one frozen runner session request.
+pub(crate) enum RetainedCheck {
+    /// The operation has no journal, as for intake or fresh review.
+    Unscoped,
+    /// A new or continuing turn may be funded.
+    Eligible {
+        /// Exact role journal scope.
+        scope: String,
+        /// Zero-based session turn.
+        turn: i64,
+        /// Canonical immutable prompt digest.
+        digest: String,
+    },
+    /// The exact cached response already belongs to an earlier attempt.
+    Replay,
+    /// The required predecessor cannot safely seed a new call.
+    Refused(&'static str),
+}
+
+/// Validate journal continuity and the supplied original gzip inside admission.
+pub(crate) async fn check_retained_attempt(
+    uow: &mut UnitOfWork<'_>,
+    spec: &AttemptSpec,
+) -> Result<RetainedCheck> {
+    let Some(prompt_body) = spec.prompt_body.as_deref() else {
+        return Ok(RetainedCheck::Unscoped);
+    };
+    let submission: TurnSubmission = serde_json::from_slice(&spec.submit_body)?;
+    let session = &submission.payload["request"]["session"];
+    if session.is_null() {
+        return Ok(RetainedCheck::Unscoped);
+    }
+    let Some(scope) = session["scope"].as_str() else {
+        return Ok(RetainedCheck::Refused("retained_scope_invalid"));
+    };
+    let Some(turn) = session["turn"].as_i64().filter(|turn| *turn >= 0) else {
+        return Ok(RetainedCheck::Refused("retained_turn_invalid"));
+    };
+    let prompt: Value = serde_json::from_slice(prompt_body)?;
+    let digest = python_digest(&prompt)?;
+    let max_bytes = submission.payload["request"]["max_retained_bytes"].as_u64();
+    let eligibility = retained_eligibility(
+        uow,
+        spec.task.0,
+        scope,
+        turn,
+        &digest,
+        session["predecessor_digest"].as_str(),
+        max_bytes,
+        &prompt,
+    )
+    .await?;
+    match eligibility {
+        RetainedEligibility::Fresh => {
+            if !submission.payload["retained"].is_null() {
+                return Ok(RetainedCheck::Refused("unexpected_retained_bytes"));
+            }
+        }
+        RetainedEligibility::Continue { gzip_sha256 } => {
+            if session["gzip_sha256"] != gzip_sha256 {
+                return Ok(RetainedCheck::Refused("retained_digest_changed"));
+            }
+            let Some(encoded) = submission.payload["retained"].as_str() else {
+                return Ok(RetainedCheck::Refused("retained_bytes_missing"));
+            };
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                return Ok(RetainedCheck::Refused("retained_bytes_invalid"));
+            };
+            if hex::encode(Sha256::digest(bytes)) != gzip_sha256 {
+                return Ok(RetainedCheck::Refused("retained_digest_mismatch"));
+            }
+        }
+        RetainedEligibility::Replay { .. } => return Ok(RetainedCheck::Replay),
+        RetainedEligibility::Unavailable(reason) => return Ok(RetainedCheck::Refused(reason)),
+    }
+    Ok(RetainedCheck::Eligible {
+        scope: scope.to_owned(),
+        turn,
+        digest,
+    })
+}
+
+/// Select the latest attempt in one role scope; never fall back past it.
+pub async fn retained_preparation(
+    database: &Database,
+    task: Uuid,
+    scope: &str,
+) -> Result<RetainedPreparation> {
+    let prior: Option<(i64, String, String, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT a.retained_turn,a.retained_request,a.status,ar.gzip_sha256,u.gzip_bytes \
+         FROM tasks.attempts a \
+         LEFT JOIN tasks.turn_archives ar ON ar.turn_id=a.id \
+         LEFT JOIN tasks.archive_uploads u ON u.gzip_sha256=ar.gzip_sha256 \
+         WHERE a.task_id=$1 AND a.retained_scope=$2 \
+         ORDER BY a.retained_turn DESC,a.id DESC LIMIT 1",
+    )
+    .bind(task)
+    .bind(scope)
+    .fetch_optional(database.pool())
+    .await?;
+    let Some((turn, predecessor_digest, status, gzip_sha256, pending_bytes)) = prior else {
+        return Ok(RetainedPreparation {
+            turn: 0,
+            predecessor_digest: None,
+            gzip_sha256: None,
+            pending_bytes: None,
+        });
+    };
+    ensure!(status == "finished", "prior retained turn did not finish");
+    Ok(RetainedPreparation {
+        turn: turn + 1,
+        predecessor_digest: Some(predecessor_digest),
+        gzip_sha256,
+        pending_bytes,
+    })
 }
 
 /// Check the exact session revision before funding a retained continuation.

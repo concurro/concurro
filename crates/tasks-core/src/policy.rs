@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 const PROTECTED_NAMES: [&str; 4] = ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"];
 
 /// Match a path by segments, with a double star covering zero or more segments.
-pub(crate) fn glob_matches(path: &str, pattern: &str) -> bool {
+pub fn glob_matches(path: &str, pattern: &str) -> bool {
     let parts = path.split('/').collect::<Vec<_>>();
     let patterns = pattern.split('/').collect::<Vec<_>>();
     let mut matches = vec![false; parts.len() + 1];
@@ -33,8 +33,25 @@ pub(crate) fn glob_matches(path: &str, pattern: &str) -> bool {
     matches[parts.len()]
 }
 
+/// Check a path against the approved plan envelope, including directory prefixes.
+pub fn plan_scope_contains(plan: &Value, path: &str) -> Result<bool> {
+    let patterns = plan["scope"]["paths"]
+        .as_array()
+        .or_else(|| plan["files"].as_array())
+        .context("approved plan paths are missing")?;
+    patterns.iter().try_fold(false, |allowed, item| {
+        let pattern = item.as_str().context("approved plan path is invalid")?;
+        let pattern = if pattern.ends_with('/') {
+            format!("{pattern}**")
+        } else {
+            pattern.to_owned()
+        };
+        Ok(allowed || glob_matches(path, &pattern))
+    })
+}
+
 /// Return the effective path rules from the pinned target configuration.
-pub(crate) fn path_rules(config: &Value) -> Result<Value> {
+pub fn path_rules(config: &Value) -> Result<Value> {
     let paths = config
         .get("paths")
         .and_then(Value::as_object)
@@ -59,7 +76,7 @@ pub(crate) fn path_rules(config: &Value) -> Result<Value> {
 }
 
 /// Build the runner-visible edit policy from the same pinned target rules.
-pub(crate) fn edit_policy(config: &Value) -> Result<Value> {
+pub fn edit_policy(config: &Value) -> Result<Value> {
     let paths = path_rules(config)?;
     let names = if paths.get("editable_extensions").is_some() {
         PROTECTED_NAMES.to_vec()
@@ -75,7 +92,7 @@ pub(crate) fn edit_policy(config: &Value) -> Result<Value> {
 }
 
 /// Select regular base paths that the target allows an intake agent to edit.
-pub(crate) fn editable_files(config: &Value, base_files: &[String]) -> Result<Vec<String>> {
+pub fn editable_files(config: &Value, base_files: &[String]) -> Result<Vec<String>> {
     let rules = path_rules(config)?;
     let list = |key: &str| -> Result<Vec<&str>> {
         rules[key]
@@ -148,6 +165,30 @@ pub(crate) fn editable_files(config: &Value, base_files: &[String]) -> Result<Ve
         })
         .cloned()
         .collect())
+}
+
+/// Merge target limits with the current native runner defaults.
+pub fn effective_limits(config: &Value) -> Result<Value> {
+    let mut limits = json!({
+        "primary_files": null,
+        "scope_paths": null,
+        "scope_path_characters": 200,
+        "changed_files": null,
+        "overlay_files": null,
+        "workspace_files": null,
+    })
+    .as_object()
+    .expect("default limits")
+    .clone();
+    if let Some(configured) = config.get("limits") {
+        limits.extend(
+            configured
+                .as_object()
+                .context("target limits are invalid")?
+                .clone(),
+        );
+    }
+    Ok(Value::Object(limits))
 }
 
 #[cfg(test)]

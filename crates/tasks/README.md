@@ -1,9 +1,14 @@
 # Task application (Phase 3)
 
 The Rust task service consumes issue comments and closures, initializes tasks,
-admits intake turns, exchanges results with the Python exchange, writes request
-replies, one managed issue dashboard, intake notices, stage labels and runner refs,
-and stores turn diagnostics. State, notice, report, request and turn events are
+admits intake, planning, design review, implementation and PR review turns,
+publishes a task branch, draft PR and App-authored reviews with file and line threads,
+observes readiness
+gates and external PR closure or merge, exchanges results
+with the Python exchange, writes request replies, one managed issue dashboard,
+intake notices, stage labels and runner refs, and stores turn diagnostics.
+Complete reports are also queued as issue generic artifacts. State, notice,
+report, request and turn events are
 written to the outbox with their state changes and forwarded to the `TASKS`
 stream. The Phase 3
 implementation is still in progress; this executable is not ready for deployment.
@@ -17,10 +22,20 @@ Set `CONCURRO_TASKS_CONFIG` to a TOML settings file. The runtime reads these fie
 | Exchange | `exchange_url`, `exchange_token_file` |
 | Private archives | `archive_endpoint`, `archive_bucket`, `archive_prefix`, `archive_region`, `archive_credentials_file` |
 | `[intake]` | `workflow_ref`, `models`, `budget`, `lease`, and `[intake.gateway]` with the runner's gateway settings |
-| `[[targets]]` | `repository_id`, `issue_repository`, `fork`, `upstream`, `issue_permissions`, `issue_write_permissions`, `fork_permissions`, `fork_write_permissions`, `upstream_permissions`, `bot_login`, `publisher_logins`, `engine_sha` |
+| `[[targets]]` | `repository_id`, `issue_repository`, `fork`, `upstream`, `issue_permissions`, `issue_write_permissions`, `fork_permissions`, `fork_write_permissions`, `upstream_permissions`, `upstream_write_permissions`, `bot_login`, `publisher_logins`, `engine_sha` |
 
 `fork_permissions` needs Contents and Actions read. `fork_write_permissions`
 needs Contents, Actions and Workflows write for the pinned run ref and launcher.
+`upstream_write_permissions` needs Pull requests write for draft PR and review
+publication. `issue_write_permissions` needs Issues write for report artifacts.
+The upstream installation must grant it before this service reaches publication.
+
+Writer commands include `/concurro approve <plan-id>`, `/concurro retry`,
+`/concurro retry --plan-revisions N`, `/concurro resume`,
+`/concurro resume --description-only` and `/concurro invalidate`.
+An implementer-skill-only retry preserves design approval when bounded local Git
+history proves that no other bundle resource changed. The retry starts a fresh
+implementer session and retains spent budgets.
 
 The database URL, App key and exchange token are read from the named files. The archive
 credential file contains JSON with `access_key_id` and `secret_access_key`. An optional
@@ -39,10 +54,18 @@ concurro-tasks attempts cancel <attempt-uuid>
 concurro-tasks writes resolve <write-uuid> --written <comment-url>
 concurro-tasks writes resolve <write-uuid> --failed
 concurro-tasks writes resolve <write-uuid> --resend
+concurro-tasks writes resolve git:<attempt-uuid> --resend
+concurro-tasks writes resolve review:<turn-uuid> --failed
+concurro-tasks writes resolve action:<turn-uuid>:<sequence> --resend
+concurro-tasks writes resolve ready:<task-uuid> --failed
 ```
 
 `tasks show` includes request dispositions, attempt states, exchange sessions,
-intake reports, comment creates, the dashboard's desired revision and edit writes,
+intake, plan, design review, implementation and PR review reports, review seats
+and findings, native review action status and thread IDs, the latest Git publication
+and ready intents, terminal PR observation, report artifact writes, resume and
+invalidation audits, implementation design reopens, comment creates, the dashboard's
+desired revision and edit writes,
 managed stage labels, runner ref and dispatch status, turn artifact digests,
 and archives.
 It omits the stored submit body because that body may contain gateway headers.
@@ -51,8 +74,18 @@ turn; the running service executes that queued exchange effect. `writes resolve`
 records the host user. `--failed` stops sends while continuing readback for a
 late App comment. `--resend` overrides uncertainty and may duplicate a late
 create.
-`effects pending` includes dashboard edits awaiting readback, notice and reply
-creates, and uploads waiting, retrying, or exhausted. Dashboard creates and
+For Git publication, PR reviews, native review actions and ready intents, inspect
+GitHub and `effects pending` before choosing `--resend` or `--failed`. These typed
+targets are accepted with either flag; `review` applies only when no native action
+is sent, and `action` names the sent action sequence. `--resend` requeues the
+frozen write; `--failed` makes the task block visible. A late GitHub write may
+still arrive after this explicit operator decision. Every resolution records the
+host user in `operator_actions`.
+`effects pending` includes Git publication and ready intents, PR review and report
+artifact writes, the next native review action, dashboard edits awaiting readback,
+notice and reply creates,
+and uploads waiting, retrying, or exhausted.
+Dashboard creates and
 notices use the same marked-comment readback as replies. Dashboard edits read
 the App's existing marked comment before writing the latest task revision;
 an older uncertain edit stays watched so a late write is corrected.

@@ -6,10 +6,12 @@ production first: the task application consumes `github.*` from ingress.
 Phase 3 of the [architecture review](../architecture.md#migration) replaces the Python
 service's task controller with a Rust task application, with Postgres as the authority,
 and gives the backoffice a Rust API in front of it. Concurro is a multi-user team
-product, and phase 3 keeps every workflow the team has today. Only the rollout is
-private: the operator builds and verifies it on a dedicated test repository with
-distinct test identities, takes over every target in one cutover, uses it on real tasks,
-and then invites the team.
+product, and phase 3 keeps every workflow the team has today. The operator builds
+and verifies it locally, takes over every target in one cutover, uses it on real
+tasks, and then invites the team. The dedicated test repository was waived for
+phases 1–3; local executable, database, broker and controlled external-service
+fixtures provide implementation acceptance. They do not establish live publication
+behavior.
 
 Python and Rust never run tasks for the same targets at once: there is no per-issue
 ownership, pilot list or task import. The Python runner, exchange, gateway and vault
@@ -29,6 +31,10 @@ credentials pages. The Python service's controller retires at the cutover.
 M1 is an engineering milestone: it proves the lifecycle on GitHub alone. The cutover
 waits until no team workflow regresses (M3), and the team is invited after M4.
 
+M1's local implementation is accepted. The [M1 evidence](../../rust-phase-3-m1-evidence.md)
+records the full 123 test checkpoint and the separately tested five regression
+closure delta. No live target was exercised.
+
 ## Team workflows
 
 What the team can do with the Python service today, and where each continues. Nothing in
@@ -38,7 +44,7 @@ this table is dropped; [deferrals](#deferrals) lists what isn't carried over and
 | ---- | ---- |
 | `/concurro start`, `stop` by a writer, with replies and the dashboard | M1 |
 | Intake, plan, plan QC, `approve`, implementation, publication, review, gates and the terminal stages; clarification answered in comments | M2 |
-| `retry`, `resume`, `extend`, `invalidate` | M2 |
+| `retry`, `retry --plan-revisions N`, `resume`, `invalidate` | M2 |
 | Call budgets, plan revision and fix round limits, the uncertain-attempt limit | M1, M2 |
 | Personal credentials: the initiator's credentials filling a provider, `/concurro sponsor`, `withdraw`, `funding`, sponsorship before enrollment, ordered credentials and their fallback | M3 |
 | Autonomous enrollment by the `concurro` label | M3 |
@@ -258,7 +264,7 @@ repository's tasks never share an issue with the Python service's before it.
 
 ## M2, one contribution
 
-Before implementing M2, map each stage to its Python behavior and specify recovery
+The M2 implementation maps each stage to its Python behavior and records recovery
 cases for uncertain publication and review submission.
 The [M2 behavior and acceptance map](phase-3-m2-map.md) records those cases and
 the retained continuation admission boundary.
@@ -287,7 +293,7 @@ mode with org funding:
 8. **Terminal:** `observed_merged` when a person merges the PR (`:2261`), `closed` when
    it's closed unmerged, or `stopped`, `rejected`, `escalated` or `blocked` on the way.
 
-Exercise two regressions when implementing retained turns in M2:
+Retained-turn regression fixtures cover these boundaries:
 
 - Replay a complete journal with the same scope, ordinal and request digest but a
   null cached response. Verify refusal before any grant, call charge or dispatch.
@@ -301,9 +307,9 @@ Exercise two regressions when implementing retained turns in M2:
 GitHub or the exchange shows); `retry` re-runs a failed stage under a new attempt and
 `resume` adopts the current configuration, as today (`engine/commands.py:257`).
 
-**Done when,** on the test repository: the trace reaches a ready PR, and other issues
+**Done when,** in the local GitHub/exchange fixtures after the live test repository waiver: the trace reaches a ready PR, and other issues
 reach `observed_merged`, `closed`, `rejected`, `escalated`, `clarify` and `blocked`;
-`retry`, `resume`, `extend` and `invalidate` behave as today; the controller restarted
+`retry`, `retry --plan-revisions N`, `resume` and `invalidate` behave as specified; the controller restarted
 inside each stage duplicates no turn, commit, PR, review or comment; a lost reply on a
 branch, PR or review write is settled without a second write; a stuck task's cause and
 next step are readable in `tasks show`.

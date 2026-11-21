@@ -1,13 +1,21 @@
 //! PostgreSQL state and serialized request decisions for the task application.
 
 mod archive;
+use archive::{RetainedCheck, check_retained_attempt};
 mod artifacts;
 mod dashboard;
+mod design;
 mod effects;
+pub use design::{
+    DesignBatch, DesignCorrection, DesignResult, admit_design_batch, admit_design_correction,
+    apply_design_result, design_batch, design_correction, design_result, open_plan_objections,
+    reviewer_objections, reviewer_session_epoch,
+};
 mod events;
+mod gates;
 pub use archive::{
-    RetainedEligibility, fail_archive_upload, pending_archive, retained_eligibility,
-    retry_archive_upload, verify_archive,
+    RetainedEligibility, RetainedPreparation, fail_archive_upload, pending_archive,
+    retained_eligibility, retained_preparation, retry_archive_upload, verify_archive,
 };
 pub use dashboard::{
     DashboardSurface, begin_dashboard_edit, dashboard_surface, enqueue_dashboard,
@@ -15,16 +23,61 @@ pub use dashboard::{
 };
 pub use effects::{
     acknowledge_retirement, claim_effect, due_attempt_deadlines, expire_attempt,
-    pollable_generation, record_observation, record_poll_failure, record_submit_failure,
-    recover_retirements, settle_submit, settle_submit_refusal,
+    finish_unapplied_result, pollable_generation, record_observation, record_poll_failure,
+    record_submit_failure, recover_retirements, settle_submit, settle_submit_refusal,
 };
+mod git_publication;
+mod implementation;
 mod intake;
+mod plan;
+mod pr_review;
+mod pr_review_actions;
+mod recovery;
+pub use recovery::CommandEvidence;
+mod report_publication;
+pub use gates::{
+    GateInputs, TerminalPrInputs, confirm_ready, fail_ready_intent, gate_inputs, mark_ready_sent,
+    observe_ready_seen, record_gate_reason, record_terminal_pr, reserve_ready_intent,
+    retry_ready_intent, terminal_pr_inputs, watched_gate_issues,
+};
+pub use git_publication::{
+    GitPublicationInput, GitPublicationIntent, block_git_publication, complete_git_publication,
+    git_publication_input, queue_implementation_started, reserve_git_publication,
+    save_git_publication,
+};
+pub use implementation::{
+    ImplementationAssessment, ImplementationCorrection, ImplementationInputs, ImplementationResult,
+    apply_implementation_result, implementation_inputs, implementation_result,
+    implementation_session_epoch, latest_implementation_correction,
+};
+pub use plan::{
+    PlanCorrection, PlanRevision, continue_planner_answer, latest_plan_correction,
+    latest_plan_revision, planner_session_epoch,
+};
+pub use pr_review::{
+    PrReviewBatch, PrReviewCorrection, PrReviewPublication, PrReviewResult, admit_pr_review_batch,
+    admit_pr_review_correction, apply_pr_review_result, block_pr_review_batch,
+    confirm_pr_review_publication, fail_pr_review_publication, mark_pr_review_sent,
+    pending_pr_review_readbacks, pr_review_batch, pr_review_correction, pr_review_publication,
+    pr_review_result, retry_pr_review_publication,
+};
+pub use pr_review_actions::{
+    PrReviewAction, confirm_pr_review_action, fail_pr_review_action, fallback_pr_review_thread,
+    mark_pr_review_action_sent, next_pr_review_action, pr_review_actions_complete,
+    retry_pr_review_action,
+};
+pub use report_publication::{
+    ReportArtifactWrite, confirm_report_artifact, fail_report_artifact, mark_report_artifact_sent,
+    pending_report_artifact_readbacks, report_artifact_write, retry_report_artifact,
+};
 mod operator;
 mod publication;
 mod runner;
 mod stage_label;
 pub use intake::{IntakeCorrection, latest_intake_correction};
-pub use operator::{cancel_attempt, list_tasks, pending_effects, task_detail};
+pub use operator::{
+    cancel_attempt, list_tasks, pending_effects, resolve_pending_write, task_detail,
+};
 pub use publication::{
     CommentResolution, CommentWrite, claim_comment, comment_scope, defer_comment,
     due_comment_readbacks, fail_comment, queue_task_comment, resolve_comment, settle_comment,
@@ -49,7 +102,8 @@ use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
 use concurro_tasks_core::{
     Admission, AttemptSpec, Authority, CommentRevision, Decision, InitializationSnapshot, IssueKey,
-    Request, RequestStatus, SourceOrder, Stage, TaskState, decide, initialize, welcome_body,
+    LaterCommand, Request, RequestKind, RequestStatus, SourceOrder, Stage, TaskState, decide,
+    initialize, welcome_body,
 };
 use graphile_worker::WorkerUtils;
 use sqlx::{migrate::Migrator, types::Json};
@@ -205,6 +259,225 @@ async fn enqueue_intake(
     Ok(())
 }
 
+/// Queue a planner turn at the exact task revision accepted by intake.
+async fn enqueue_plan(uow: &mut UnitOfWork<'_>, task: &TaskState) -> Result<(), sqlx::Error> {
+    let queue = format!("task-plan:{}", task.id.0);
+    let key = format!("task-plan:{}:{}", task.id.0, task.revision);
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_plan', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2,'revision',$3), \
+         queue_name => $4, max_attempts => 25, job_key => $5)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(i64::try_from(task.revision).expect("task revision fits bigint"))
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue a source read for an authorized answer to planner questions.
+async fn enqueue_clarification(
+    uow: &mut UnitOfWork<'_>,
+    task: &TaskState,
+    request: Uuid,
+) -> Result<(), sqlx::Error> {
+    let queue = format!("task-clarification:{}", task.id.0);
+    let key = format!("task-clarification:{}:{}", task.id.0, task.revision);
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_clarification', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2,'revision',$3,'request_id',$4::text), \
+         queue_name => $5,max_attempts => 25,job_key => $6)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(i64::try_from(task.revision).expect("task revision fits bigint"))
+    .bind(request)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue the recorded independent design roster at one task revision.
+async fn enqueue_design_batch(
+    uow: &mut UnitOfWork<'_>,
+    task: &TaskState,
+    batch: Uuid,
+) -> Result<(), sqlx::Error> {
+    let queue = format!("task-design:{}", task.id.0);
+    let key = format!("task-design:{batch}");
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_design_batch', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2,'revision',$3,'batch',$4::text), \
+         queue_name => $5, max_attempts => 25, job_key => $6)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(i64::try_from(task.revision).expect("task revision fits bigint"))
+    .bind(batch)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue source-aware validation of one retained design reviewer result.
+async fn enqueue_design_result(uow: &mut UnitOfWork<'_>, turn: Uuid) -> Result<(), sqlx::Error> {
+    let key = format!("task-design-result:{turn}");
+    let queue = format!("task-design-result:{turn}");
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_design_result', payload => json_build_object('turn',$1::text), \
+         queue_name => $2, max_attempts => 25, job_key => $3)).id",
+    )
+    .bind(turn)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue source-aware validation of one retained implementer result.
+async fn enqueue_implementation_result(
+    uow: &mut UnitOfWork<'_>,
+    turn: Uuid,
+) -> Result<(), sqlx::Error> {
+    let key = format!("task-implementation-result:{turn}");
+    let queue = format!("task-implementation-result:{turn}");
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_implementation_result', payload => json_build_object('turn',$1::text), \
+         queue_name => $2, max_attempts => 25, job_key => $3)).id",
+    )
+    .bind(turn)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue one recoverable fork and draft PR publication for an accepted candidate.
+async fn enqueue_git_publication(
+    uow: &mut UnitOfWork<'_>,
+    task: &TaskState,
+) -> Result<(), sqlx::Error> {
+    let key = format!("task-git-publication:{}", task.id.0);
+    let queue = key.clone();
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_git_publication', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2), \
+         queue_name => $3,max_attempts => 25,job_key => $4)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue one bounded correction for a single review seat.
+async fn enqueue_design_correction(
+    uow: &mut UnitOfWork<'_>,
+    batch: Uuid,
+    reviewer: &str,
+    count: i32,
+) -> Result<(), sqlx::Error> {
+    let key = format!("task-design-correction:{batch}:{reviewer}:{count}");
+    let queue = format!("task-design-correction:{batch}:{reviewer}");
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_design_correction', \
+         payload => json_build_object('batch',$1::text,'reviewer',$2,'count',$3), \
+         queue_name => $4, max_attempts => 25, job_key => $5)).id",
+    )
+    .bind(batch)
+    .bind(reviewer)
+    .bind(count)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue one owner-bound PR review repair without disturbing sibling seats.
+async fn enqueue_pr_review_correction(
+    uow: &mut UnitOfWork<'_>,
+    batch: Uuid,
+    reviewer: &str,
+    count: i32,
+) -> Result<(), sqlx::Error> {
+    let key = format!("task-pr-review-correction:{batch}:{reviewer}:{count}");
+    let queue = format!("task-pr-review:{batch}:{reviewer}");
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_pr_review_correction', \
+         payload => json_build_object('batch',$1::text,'reviewer',$2,'count',$3), \
+         queue_name => $4,max_attempts => 25,job_key => $5)).id",
+    )
+    .bind(batch)
+    .bind(reviewer)
+    .bind(count)
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue the writer-approved implementer at its exact task revision.
+async fn enqueue_implementation(
+    uow: &mut UnitOfWork<'_>,
+    task: &TaskState,
+) -> Result<(), sqlx::Error> {
+    let queue = format!("task-implement:{}", task.id.0);
+    let key = format!("task-implement:{}:{}", task.id.0, task.revision);
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job( \
+         identifier => 'task_implement', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2,'revision',$3), \
+         queue_name => $4, max_attempts => 25, job_key => $5)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(i64::try_from(task.revision).expect("task revision fits bigint"))
+    .bind(queue)
+    .bind(key)
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
+/// Queue one current-head PR and CI gate observation.
+async fn enqueue_gates(uow: &mut UnitOfWork<'_>, task: &TaskState) -> Result<(), sqlx::Error> {
+    let _: i64 = sqlx::query_scalar(
+        "SELECT (graphile_worker.add_job(identifier => 'task_gates', \
+         payload => json_build_object('repository_id',$1,'issue_number',$2,'revision',$3), \
+         queue_name => $4,max_attempts => 25,job_key => $5)).id",
+    )
+    .bind(task.issue.repository_id)
+    .bind(task.issue.number)
+    .bind(i64::try_from(task.revision).expect("task revision fits bigint"))
+    .bind(format!("task-gates:{}", task.id.0))
+    .bind(format!("task-gates:{}:{}", task.id.0, task.revision))
+    .fetch_one(uow.connection())
+    .await?;
+    Ok(())
+}
+
 /// Queue the next generation of a turn's long poll in its own serial queue.
 async fn enqueue_poll(
     uow: &mut UnitOfWork<'_>,
@@ -338,6 +611,25 @@ async fn append_task_snapshot(
     state: &TaskState,
 ) -> anyhow::Result<()> {
     let pins = state.pins.as_ref();
+    let accepted_plan: Option<(String, Json<serde_json::Value>)> = sqlx::query_as(
+        "SELECT plan_id,raw_report FROM tasks.plan_reports \
+         WHERE task_id=$1 AND accepted AND current ORDER BY recorded_at DESC,attempt_id DESC LIMIT 1",
+    )
+    .bind(state.id.0)
+    .fetch_optional(uow.connection())
+    .await?;
+    let rejected_implementations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tasks.implementation_reports WHERE task_id=$1 AND status='rejected'",
+    )
+    .bind(state.id.0)
+    .fetch_one(uow.connection())
+    .await?;
+    let revision_budget: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT spent_revisions,extra_plan_revisions FROM tasks.initialization_inputs WHERE task_id=$1",
+    )
+    .bind(state.id.0)
+    .fetch_optional(uow.connection())
+    .await?;
     let data = TaskSnapshot {
         task_id: state.id,
         issue: state.issue,
@@ -349,6 +641,15 @@ async fn append_task_snapshot(
             Stage::Initializing => None,
             Stage::Intake => Some("intake".to_owned()),
             Stage::Plan => Some("plan".to_owned()),
+            Stage::PlanQc => Some("plan_qc".to_owned()),
+            Stage::Planned => Some("planned".to_owned()),
+            Stage::Implement => Some("implement".to_owned()),
+            Stage::Publish => Some("publish".to_owned()),
+            Stage::Review => Some("review".to_owned()),
+            Stage::Gates => Some("gates".to_owned()),
+            Stage::Ready => Some("ready".to_owned()),
+            Stage::ObservedMerged => Some("observed_merged".to_owned()),
+            Stage::Closed => Some("closed".to_owned()),
             Stage::Clarify => Some("clarify".to_owned()),
             Stage::Rejected => Some("rejected".to_owned()),
             Stage::Escalated => Some("escalated".to_owned()),
@@ -357,19 +658,22 @@ async fn append_task_snapshot(
         },
         stage_reason: state.stage_reason.clone(),
         enrollment: None,
-        plan: None,
+        plan: accepted_plan
+            .as_ref()
+            .map(|(id, body)| serde_json::json!({"id":id,"body":body.0})),
         budgets: TaskBudgets {
             model_calls: TaskBudget {
                 used: state.used_model_calls,
                 max: pins.map_or(0, |pins| pins.max_model_calls),
             },
             fix_rounds: TaskBudget {
-                used: 0,
+                used: u64::try_from(rejected_implementations)?,
                 max: pins.map_or(0, |pins| pins.max_fix_rounds),
             },
             plan_revisions: TaskBudget {
-                used: 0,
-                max: pins.map_or(0, |pins| pins.max_plan_revisions),
+                used: u64::try_from(revision_budget.map_or(0, |(spent, _)| spent))?,
+                max: pins.map_or(0, |pins| pins.max_plan_revisions)
+                    + u64::try_from(revision_budget.map_or(0, |(_, extra)| extra))?,
             },
         },
         attention: state.stage == Stage::Blocked,
@@ -626,7 +930,7 @@ pub async fn pin_start_config(
     config_sha: &str,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        task.stage == Stage::Initializing
+        matches!(task.stage, Stage::Initializing | Stage::Clarify)
             && config_sha.len() == 40
             && config_sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "applied start has no valid configuration commit"
@@ -674,6 +978,18 @@ pub async fn apply_request(
     issue: IssueKey,
     authority: Authority,
 ) -> anyhow::Result<Option<(Request, Decision)>> {
+    apply_request_with_evidence(uow, outbox, candidate, issue, authority, None).await
+}
+
+/// Apply a source-ordered request with fresh evidence for recovery commands.
+pub async fn apply_request_with_evidence(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    candidate: Uuid,
+    issue: IssueKey,
+    authority: Authority,
+    evidence: Option<&CommandEvidence>,
+) -> anyhow::Result<Option<(Request, Decision)>> {
     let control: Option<(Option<Json<SourceOrder>>, Option<Json<SourceOrder>>)> = sqlx::query_as(
         "SELECT applied_stop,applied_lifecycle FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2 FOR UPDATE",
     )
@@ -709,6 +1025,190 @@ pub async fn apply_request(
         lifecycle.as_ref().map(|row| &row.0),
         authority,
     );
+    let mut approval_binding = None;
+    let mut clarification_start = false;
+    let mut reset_from_pause = false;
+    let mut spend_reassessment_revision = false;
+    let mut resume_adoption: Option<recovery::ResumeAdoption> = None;
+    if authority.writer
+        && authority.issue_open
+        && decision.status != RequestStatus::Superseded
+        && request.kind == RequestKind::Start
+        && let Some(current) = current.as_ref().map(|row| &row.0.0)
+        && current.stage == Stage::Clarify
+    {
+        let planner_questions: bool = sqlx::query_scalar(
+            "SELECT COALESCE(jsonb_array_length(p.raw_report->'questions')>0,false) \
+             FROM tasks.plan_reports p WHERE p.task_id=$1 AND p.accepted AND p.current \
+             ORDER BY p.recorded_at DESC,p.attempt_id DESC LIMIT 1",
+        )
+        .bind(current.id.0)
+        .fetch_optional(uow.connection())
+        .await?
+        .unwrap_or(false);
+        if planner_questions {
+            clarification_start = true;
+            decision = Decision {
+                status: RequestStatus::Applied,
+                reason: None,
+                task: Some(TaskState {
+                    revision: current.revision + 1,
+                    stage_reason: Some("Checking answer to planner questions".to_owned()),
+                    ..current.clone()
+                }),
+                stop_order: None,
+            };
+        }
+    }
+    if authority.writer
+        && authority.issue_open
+        && decision.status != RequestStatus::Superseded
+        && request.kind == RequestKind::Start
+        && !clarification_start
+        && let Some(current) = current.as_ref().map(|row| &row.0.0)
+        && matches!(current.stage, Stage::Blocked | Stage::Clarify)
+    {
+        let (spent, extra): (i64, i64) = sqlx::query_as(
+            "SELECT spent_revisions,extra_plan_revisions FROM tasks.initialization_inputs WHERE task_id=$1",
+        )
+        .bind(current.id.0)
+        .fetch_optional(uow.connection())
+        .await?
+        .unwrap_or_default();
+        let spent = u64::try_from(spent)?;
+        if current.pins.as_ref().is_some_and(|pins| {
+            spent >= pins.max_plan_revisions + u64::try_from(extra).unwrap_or(0)
+        }) {
+            decision = Decision {
+                status: RequestStatus::Refused,
+                reason: Some("plan_revision_exhausted"),
+                task: None,
+                stop_order: None,
+            };
+        } else {
+            reset_from_pause = true;
+            spend_reassessment_revision = current.pins.is_some();
+            decision = Decision {
+                status: RequestStatus::Applied,
+                reason: None,
+                task: Some(TaskState {
+                    stage: Stage::Initializing,
+                    revision: current.revision + 1,
+                    stage_reason: Some("Writer requested reassessment".to_owned()),
+                    pins: None,
+                    current_attempt: None,
+                    ..current.clone()
+                }),
+                stop_order: None,
+            };
+        }
+    }
+    if request.kind == RequestKind::Start
+        && decision.status == RequestStatus::Applied
+        && !clarification_start
+        && let Some(current) = current.as_ref().map(|row| &row.0.0)
+    {
+        let prepared: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tasks.git_publications WHERE task_id=$1) \
+             OR EXISTS (SELECT 1 FROM tasks.implementation_reports \
+                 WHERE task_id=$1 AND status='accepted')",
+        )
+        .bind(current.id.0)
+        .fetch_one(uow.connection())
+        .await?;
+        if prepared {
+            reset_from_pause = false;
+            spend_reassessment_revision = false;
+            decision = Decision {
+                status: RequestStatus::Refused,
+                reason: Some("publication_prepared"),
+                task: None,
+                stop_order: None,
+            };
+        }
+    }
+    if spend_reassessment_revision && decision.status == RequestStatus::Applied {
+        sqlx::query(
+            "UPDATE tasks.initialization_inputs SET spent_revisions=spent_revisions+1 \
+             WHERE task_id=$1",
+        )
+        .bind(current.as_ref().expect("reassessment has task").0.0.id.0)
+        .execute(uow.connection())
+        .await?;
+    }
+    if reset_from_pause && decision.status == RequestStatus::Applied {
+        cancel_attempts(
+            uow,
+            outbox,
+            current.as_ref().expect("reassessment has task").0.0.id.0,
+            None,
+        )
+        .await?;
+    }
+    if authority.writer
+        && decision.status != RequestStatus::Superseded
+        && let RequestKind::Later(LaterCommand::Approve { plan_id }) = &request.kind
+    {
+        decision = if let Some(current) = current.as_ref().map(|row| &row.0.0) {
+            if current.stage != Stage::Planned {
+                Decision {
+                    status: RequestStatus::Refused,
+                    reason: Some("not_planned"),
+                    task: None,
+                    stop_order: None,
+                }
+            } else if let Some((bound_plan, binding)) =
+                design::approval_proof(uow, current.id.0).await?
+            {
+                if bound_plan == *plan_id {
+                    approval_binding = Some(binding);
+                    Decision {
+                        status: RequestStatus::Applied,
+                        reason: None,
+                        task: Some(TaskState {
+                            stage: Stage::Implement,
+                            revision: current.revision + 1,
+                            stage_reason: Some("Writer approved the reviewed plan".to_owned()),
+                            ..current.clone()
+                        }),
+                        stop_order: None,
+                    }
+                } else {
+                    Decision {
+                        status: RequestStatus::Refused,
+                        reason: Some("plan_id_mismatch"),
+                        task: None,
+                        stop_order: None,
+                    }
+                }
+            } else {
+                Decision {
+                    status: RequestStatus::Refused,
+                    reason: Some("design_consensus_missing"),
+                    task: None,
+                    stop_order: None,
+                }
+            }
+        } else {
+            Decision {
+                status: RequestStatus::Refused,
+                reason: Some("not_planned"),
+                task: None,
+                stop_order: None,
+            }
+        };
+    }
+    recovery::decide_recovery(
+        uow,
+        outbox,
+        &request,
+        current.as_ref().map(|row| &row.0.0),
+        authority,
+        evidence,
+        &mut decision,
+        &mut resume_adoption,
+    )
+    .await?;
     if request.channel == "issue_close" && authority.issue_open {
         decision = Decision {
             status: RequestStatus::Refused,
@@ -744,6 +1244,10 @@ pub async fn apply_request(
             };
         }
     }
+    if let (Some(adoption), Some(task)) = (resume_adoption.as_ref(), decision.task.as_ref()) {
+        let previous = &current.as_ref().expect("resume has current task").0.0;
+        recovery::apply_resume_adoption(uow, outbox, &request, previous, task, adoption).await?;
+    }
     if let Some(task) = &decision.task {
         let updated = sqlx::query(
             "INSERT INTO tasks.task_state (repository_id, issue_number, task_id, revision, state) \
@@ -763,6 +1267,43 @@ pub async fn apply_request(
         if task.stage == Stage::Initializing {
             enqueue_initialization(uow, &request, task.revision).await?;
         }
+        if clarification_start {
+            enqueue_clarification(uow, task, request.id).await?;
+        }
+        if task.stage == Stage::Implement && approval_binding.is_some() {
+            enqueue_implementation(uow, task).await?;
+        }
+        recovery::enqueue_command_stage(
+            uow,
+            &request,
+            current.as_ref().map(|row| &row.0.0),
+            task,
+            resume_adoption.is_some(),
+        )
+        .await?;
+        if let Some(binding) = &approval_binding {
+            let RequestKind::Later(LaterCommand::Approve { plan_id }) = &request.kind else {
+                unreachable!("approval binding requires an approve command")
+            };
+            sqlx::query(
+                "INSERT INTO tasks.plan_approvals (request_id,task_id,plan_id,binding,actor) \
+                 VALUES ($1,$2,$3,$4,$5)",
+            )
+            .bind(request.id)
+            .bind(task.id.0)
+            .bind(plan_id)
+            .bind(binding)
+            .bind(Json(&request.actor))
+            .execute(uow.connection())
+            .await?;
+            sqlx::query(
+                "UPDATE tasks.initialization_inputs SET implementation_failure_count=0 \
+                 WHERE task_id=$1",
+            )
+            .bind(task.id.0)
+            .execute(uow.connection())
+            .await?;
+        }
     }
     if let Some(stop) = &decision.stop_order {
         sqlx::query("UPDATE tasks.issue_controls SET applied_stop=$3 WHERE repository_id=$1 AND issue_number=$2")
@@ -772,12 +1313,7 @@ pub async fn apply_request(
             .execute(uow.connection())
             .await?;
     }
-    if decision.status == RequestStatus::Applied
-        && matches!(
-            request.kind,
-            concurro_tasks_core::RequestKind::Start | concurro_tasks_core::RequestKind::Stop
-        )
-    {
+    if decision.status == RequestStatus::Applied {
         sqlx::query("UPDATE tasks.issue_controls SET applied_lifecycle=$3 WHERE repository_id=$1 AND issue_number=$2")
             .bind(issue.repository_id)
             .bind(issue.number)
@@ -860,6 +1396,17 @@ pub async fn initialize_task(
     .bind(Json(snapshot))
     .execute(uow.connection())
     .await?;
+    sqlx::query("UPDATE tasks.plan_reports SET current=false WHERE task_id=$1 AND current")
+        .bind(initialized.id.0)
+        .execute(uow.connection())
+        .await?;
+    sqlx::query(
+        "UPDATE tasks.plan_review_batches SET status='superseded' \
+         WHERE task_id=$1 AND status IN ('recorded','admitted','settled')",
+    )
+    .bind(initialized.id.0)
+    .execute(uow.connection())
+    .await?;
     append_task_snapshot(uow, outbox, &initialized).await?;
     let welcome_actor: Option<String> = sqlx::query_scalar(
         "SELECT r.request->'actor'->>'login' FROM tasks.start_pins p \
@@ -894,6 +1441,108 @@ pub async fn admit_intake(
     issue: IssueKey,
     spec: &AttemptSpec,
 ) -> anyhow::Result<Admission> {
+    admit_stage(uow, outbox, issue, spec, Stage::Intake, "intake").await
+}
+
+/// Charge and record one planner turn against its current task revision.
+pub async fn admit_plan(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    issue: IssueKey,
+    spec: &AttemptSpec,
+) -> anyhow::Result<Admission> {
+    admit_stage(uow, outbox, issue, spec, Stage::Plan, "plan").await
+}
+
+/// Admit one implementer only while its writer and design bindings remain current.
+pub async fn admit_implementation(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    issue: IssueKey,
+    spec: &AttemptSpec,
+) -> anyhow::Result<Admission> {
+    let approved: Option<(String, String)> = sqlx::query_as(
+        "SELECT plan_id,binding FROM tasks.plan_approvals WHERE task_id=$1 \
+         ORDER BY recorded_at DESC,request_id DESC LIMIT 1",
+    )
+    .bind(spec.task.0)
+    .fetch_optional(uow.connection())
+    .await?;
+    if approved.is_none() || approved != design::approval_proof(uow, spec.task.0).await? {
+        return Ok(Admission::Stale);
+    }
+    admit_stage(uow, outbox, issue, spec, Stage::Implement, "develop").await
+}
+
+/// Stop funding a task whose exact role journal cannot be restored.
+async fn block_preflight(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    state: &mut TaskState,
+    reason: &str,
+    batch: Option<Uuid>,
+) -> anyhow::Result<Admission> {
+    state.retry_stage = Some(state.stage);
+    state.stage = Stage::Blocked;
+    state.stage_reason = Some(reason.to_owned());
+    state.revision += 1;
+    sqlx::query("UPDATE tasks.task_state SET revision=$2,state=$3 WHERE task_id=$1")
+        .bind(state.id.0)
+        .bind(i64::try_from(state.revision)?)
+        .bind(Json(&state))
+        .execute(uow.connection())
+        .await?;
+    if let Some(batch) = batch {
+        sqlx::query("UPDATE tasks.plan_review_batches SET status='superseded' WHERE id=$1")
+            .bind(batch)
+            .execute(uow.connection())
+            .await?;
+    }
+    append_task_snapshot(uow, outbox, state).await?;
+    Ok(Admission::RetainedUnavailable)
+}
+
+/// Record a permanent preflight refusal without charging a model turn.
+pub async fn refuse_stage_preflight(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    task: Uuid,
+    revision: u64,
+    reason: &str,
+) -> anyhow::Result<bool> {
+    let row: Option<(Json<TaskState>,)> =
+        sqlx::query_as("SELECT state FROM tasks.task_state WHERE task_id=$1 FOR UPDATE")
+            .bind(task)
+            .fetch_optional(uow.connection())
+            .await?;
+    let Some((Json(mut state),)) = row else {
+        return Ok(false);
+    };
+    if state.revision != revision
+        || !matches!(state.stage, Stage::Plan | Stage::PlanQc | Stage::Implement)
+    {
+        return Ok(false);
+    }
+    block_preflight(uow, outbox, &mut state, reason, None).await?;
+    sqlx::query(
+        "UPDATE tasks.plan_review_batches SET status='superseded' \
+         WHERE task_id=$1 AND status IN ('recorded','admitted')",
+    )
+    .bind(task)
+    .execute(uow.connection())
+    .await?;
+    Ok(true)
+}
+
+/// Apply the shared call budget, staffing and exact-body admission boundary.
+async fn admit_stage(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    issue: IssueKey,
+    spec: &AttemptSpec,
+    stage: Stage,
+    operation: &str,
+) -> anyhow::Result<Admission> {
     sqlx::query(
         "SELECT 1 FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2 FOR UPDATE",
     )
@@ -911,8 +1560,8 @@ pub async fn admit_intake(
     let Some((Json(mut current),)) = current else {
         return Ok(Admission::Stale);
     };
-    let existing: Option<(Uuid, i64, String, String, String, Vec<u8>, Option<Vec<u8>>, chrono::DateTime<Utc>, bool)> = sqlx::query_as(
-        "SELECT task_id,expected_revision,staffing_group,fork,config_sha,submit_body,prompt_body,initial_deadline,unbounded_running \
+    let existing: Option<(Uuid, String, i64, String, String, String, Vec<u8>, Option<Vec<u8>>, chrono::DateTime<Utc>, bool)> = sqlx::query_as(
+        "SELECT task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,prompt_body,initial_deadline,unbounded_running \
          FROM tasks.attempts WHERE id=$1",
     )
     .bind(spec.id)
@@ -920,6 +1569,7 @@ pub async fn admit_intake(
     .await?;
     if let Some((
         task_id,
+        stored_operation,
         revision,
         group,
         fork,
@@ -932,6 +1582,7 @@ pub async fn admit_intake(
     {
         anyhow::ensure!(
             task_id == spec.task.0
+                && stored_operation == operation
                 && revision == i64::try_from(spec.expected_revision)?
                 && group == spec.staffing_group
                 && fork == spec.fork
@@ -947,13 +1598,28 @@ pub async fn admit_intake(
     if current.id != spec.task || current.revision != spec.expected_revision {
         return Ok(Admission::Stale);
     }
-    if current.stage != Stage::Intake || current.current_attempt.is_some() {
+    if current.stage != stage || current.current_attempt.is_some() {
         return Ok(Admission::Stale);
+    }
+    let retained = check_retained_attempt(uow, spec).await?;
+    if let RetainedCheck::Refused(reason) = retained {
+        return block_preflight(
+            uow,
+            outbox,
+            &mut current,
+            &format!("Retained continuation unavailable: {reason}"),
+            None,
+        )
+        .await;
+    }
+    if matches!(retained, RetainedCheck::Replay) {
+        return Ok(Admission::Existing);
     }
     let Some(pins) = &current.pins else {
         return Ok(Admission::Stale);
     };
     if current.used_model_calls >= pins.max_model_calls {
+        current.retry_stage = Some(current.stage);
         current.stage = Stage::Blocked;
         current.stage_reason = Some("model-call budget exhausted".to_owned());
         current.revision += 1;
@@ -984,9 +1650,17 @@ pub async fn admit_intake(
     if owner != spec.id {
         return Ok(Admission::WaitingForGroup);
     }
+    let (retained_scope, retained_turn, retained_request) = match &retained {
+        RetainedCheck::Eligible {
+            scope,
+            turn,
+            digest,
+        } => (Some(scope.as_str()), Some(*turn), Some(digest.as_str())),
+        _ => (None, None, None),
+    };
     sqlx::query(
-        "INSERT INTO tasks.attempts (id, task_id, operation, expected_revision, staffing_group, fork, config_sha, submit_body, prompt_body, initial_deadline, deadline, unbounded_running, status) \
-         VALUES ($1, $2, 'intake', $3, $4, $5, $6, $7, $8, $9, $9, $10, 'ready')",
+        "INSERT INTO tasks.attempts (id, task_id, operation, expected_revision, staffing_group, fork, config_sha, submit_body, prompt_body, initial_deadline, deadline, unbounded_running, status, retained_scope, retained_turn, retained_request) \
+         VALUES ($1, $2, $11, $3, $4, $5, $6, $7, $8, $9, $9, $10, 'ready', $12, $13, $14)",
     )
     .bind(spec.id)
     .bind(spec.task.0)
@@ -998,9 +1672,13 @@ pub async fn admit_intake(
     .bind(&spec.prompt_body)
     .bind(spec.deadline)
     .bind(spec.unbounded_running)
+    .bind(operation)
+    .bind(retained_scope)
+    .bind(retained_turn)
+    .bind(retained_request)
     .execute(uow.connection())
     .await?;
-    events::append_turn_submitted(uow, outbox, &current, spec).await?;
+    events::append_turn_submitted(uow, outbox, &current, spec, operation).await?;
     let effect_id: i64 = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id, kind, status) VALUES ($1, 'submit', 'recorded') RETURNING id",
     )

@@ -3,8 +3,11 @@
 use std::{fmt, sync::Arc};
 
 use anyhow::Result;
+use base64::Engine;
 use concurro_db::Database;
-use concurro_tasks_postgres::{fail_archive_upload, pending_archive, verify_archive};
+use concurro_tasks_postgres::{
+    RetainedPreparation, fail_archive_upload, pending_archive, verify_archive,
+};
 use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,22 @@ pub struct ArchiveContext {
     /// Prefix beneath the configured bucket for gzip archives.
     pub prefix: String,
 }
+
+/// A permanent missing or corrupt predecessor detected before admission.
+#[derive(Debug)]
+pub(crate) struct RetainedPreflightRefusal(
+    /// Stable refusal reason recorded on the task.
+    pub &'static str,
+);
+
+impl fmt::Display for RetainedPreflightRefusal {
+    /// Show the durable diagnostic reason.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for RetainedPreflightRefusal {}
 
 impl fmt::Debug for ArchiveContext {
     /// Hide store configuration and credentials from worker diagnostics.
@@ -130,5 +149,104 @@ pub async fn upload_archive(
                 Err(error)
             }
         }
+    }
+}
+
+/// Read and hash the exact predecessor gzip before a continuation can be funded.
+pub(crate) async fn preflight_retained(
+    archive: &ArchiveContext,
+    preparation: &RetainedPreparation,
+) -> Result<Option<String>> {
+    let Some(sha) = preparation.gzip_sha256.as_deref() else {
+        if preparation.turn != 0 {
+            return Err(RetainedPreflightRefusal("retained_predecessor_archive_missing").into());
+        }
+        return Ok(None);
+    };
+    let bytes = if let Some(bytes) = &preparation.pending_bytes {
+        bytes.clone()
+    } else {
+        let key = Path::parse(format!(
+            "{}/sha256/{sha}.tar.gz",
+            archive.prefix.trim_matches('/')
+        ))?;
+        match archive.store.get(&key).await {
+            Ok(object) => object.bytes().await?.to_vec(),
+            Err(object_store::Error::NotFound { .. }) => {
+                return Err(RetainedPreflightRefusal("retained_object_missing").into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    if hex::encode(Sha256::digest(&bytes)) != sha {
+        return Err(RetainedPreflightRefusal("retained_digest_mismatch").into());
+    }
+    Ok(Some(
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use concurro_tasks_postgres::RetainedPreparation;
+    use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
+    use sha2::{Digest, Sha256};
+
+    use super::{ArchiveContext, RetainedPreflightRefusal, preflight_retained};
+
+    /// A verified object must be fetched and hashed before a paid continuation.
+    #[tokio::test]
+    async fn retained_preflight_uses_exact_pending_or_verified_gzip() {
+        let store = Arc::new(InMemory::new());
+        let archive = ArchiveContext {
+            store: store.clone(),
+            prefix: "private/turns".to_owned(),
+        };
+        let bytes = b"original gzip".to_vec();
+        let sha = hex::encode(Sha256::digest(&bytes));
+        let pending = RetainedPreparation {
+            turn: 1,
+            predecessor_digest: Some("prior".to_owned()),
+            gzip_sha256: Some(sha.clone()),
+            pending_bytes: Some(bytes.clone()),
+        };
+        assert_eq!(
+            preflight_retained(&archive, &pending)
+                .await
+                .expect("pending bytes"),
+            Some(STANDARD.encode(&bytes))
+        );
+        let key = Path::parse(format!("private/turns/sha256/{sha}.tar.gz")).expect("key");
+        store
+            .put(&key, bytes.clone().into())
+            .await
+            .expect("verified object");
+        let verified = RetainedPreparation {
+            pending_bytes: None,
+            ..pending
+        };
+        assert_eq!(
+            preflight_retained(&archive, &verified)
+                .await
+                .expect("verified bytes"),
+            Some(STANDARD.encode(&bytes))
+        );
+        store
+            .put(&key, b"corrupt".to_vec().into())
+            .await
+            .expect("corrupt object");
+        let error = preflight_retained(&archive, &verified)
+            .await
+            .expect_err("digest mismatch");
+        assert_eq!(
+            error
+                .downcast_ref::<RetainedPreflightRefusal>()
+                .expect("refusal")
+                .0,
+            "retained_digest_mismatch"
+        );
     }
 }

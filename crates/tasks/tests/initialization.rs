@@ -5,6 +5,10 @@ use std::{
     io::Write,
     process::Command,
     process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration as StdDuration,
 };
 
@@ -22,7 +26,7 @@ use concurro_exchange_v1::TurnObservation;
 use concurro_github_v1::AppClient;
 use concurro_tasks::{
     InitializationContext, InitializationTarget, IntakeContext, IntakeTransport, TaskInitializeJob,
-    TaskIntakeJob, read_initialization,
+    TaskIntakeJob, read_initialization, read_requirements,
 };
 use concurro_tasks_core::{Actor, Authority, IssueKey, Request, RequestKind, SourceOrder, Stage};
 use concurro_tasks_postgres::{
@@ -37,6 +41,9 @@ use uuid::Uuid;
 async fn source_snapshot_reads_fork_config_and_upstream_policy_at_distinct_commits() {
     let fork_sha = "a".repeat(40);
     let base_sha = "b".repeat(40);
+    let moved_base = Arc::new(AtomicBool::new(false));
+    let base_reads = Arc::new(AtomicUsize::new(0));
+    let tree_reads = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
         .route("/repos/acme/demo/installation", get(|| async {
             Json(json!({"id": 7, "repository_selection": "selected", "account": {"login": "acme"}}))
@@ -60,7 +67,22 @@ async fn source_snapshot_reads_fork_config_and_upstream_policy_at_distinct_commi
         }))
         .route("/repos/acme/demo/git/ref/heads/main", get({
             let base_sha = base_sha.clone();
-            move || async move { Json(json!({"object": {"sha": base_sha}})) }
+            let moved_base = moved_base.clone();
+            let base_reads = base_reads.clone();
+            move || {
+                let base_sha = base_sha.clone();
+                let moved_base = moved_base.clone();
+                let base_reads = base_reads.clone();
+                async move {
+                    base_reads.fetch_add(1, Ordering::SeqCst);
+                    let sha = if moved_base.load(Ordering::SeqCst) {
+                        "c".repeat(40)
+                    } else {
+                        base_sha
+                    };
+                    Json(json!({"object": {"sha": sha}}))
+                }
+            }
         }))
         .route("/repos/acme/demo/contents/{*path}", get({
             let fork_sha = fork_sha.clone();
@@ -88,9 +110,12 @@ async fn source_snapshot_reads_fork_config_and_upstream_policy_at_distinct_commi
         }))
         .route("/repos/acme/demo/git/trees/{sha}", get({
             let base_sha = base_sha.clone();
+            let tree_reads = tree_reads.clone();
             move |Path(sha): Path<String>| {
                 let base_sha = base_sha.clone();
+                let tree_reads = tree_reads.clone();
                 async move {
+                    tree_reads.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(sha, base_sha);
                     Json(json!({"truncated": false, "tree": [
                         {"path": "README.md", "type": "blob"},
@@ -204,6 +229,16 @@ async fn source_snapshot_reads_fork_config_and_upstream_policy_at_distinct_commi
         "Target guidance"
     );
     assert_eq!(snapshot.base_files.len(), 3);
+    let reads_before_answer = base_reads.load(Ordering::SeqCst);
+    let trees_before_answer = tree_reads.load(Ordering::SeqCst);
+    moved_base.store(true, Ordering::SeqCst);
+    let (answered, _) = read_requirements(&github, &target, &request)
+        .await
+        .expect("read clarified requirements after base moved");
+    assert_eq!(answered, snapshot.requirements);
+    assert_eq!(base_reads.load(Ordering::SeqCst), reads_before_answer);
+    assert_eq!(tree_reads.load(Ordering::SeqCst), trees_before_answer);
+    moved_base.store(false, Ordering::SeqCst);
 
     let postgres = PostgresContainer::start().await.expect("Postgres");
     let database = Database::connect(postgres.url(), 3)

@@ -70,3 +70,21 @@ changes need no documentation unless they make existing guidance inaccurate.
   Use an outer `||` failure message; never put `set -e` in the user's interactive shell.
   Before recommending a pilot retry, verify the running service serves that release and
   the target's caller and `gateway.workflow_ref` name the same launcher ref. Never print gateway secrets or tokens.
+
+## Quality and risk tolerance
+
+Concurro is ordinary application software, not safety-critical software. Prefer
+maintainable code, agreed functionality, representative end-to-end tests and practical
+roll-forward repair. Fix reproducible material correctness and authorization defects;
+keep optional hardening and hypothetical low-impact edge cases out of acceptance gates.
+A visible, diagnosable failure with a practical operator remedy can be acceptable.
+Consolidate reviews at meaningful checkpoints instead of repeatedly expanding the
+failure matrix.
+
+A turn or two of additional billing around withdrawal or expiration is an acceptable
+operational tradeoff. Preserve consent and eventual revocation, and prevent unbounded
+automatic retries or billing loops. An instantaneous zero-extra-turn cutoff is not
+required; do not add synchronization machinery solely to guarantee it. This preference
+supersedes stricter boundary guarantees in older plans; update affected documentation
+and tests honestly. Keep simple working mechanisms rather than refactoring merely to
+weaken them.
