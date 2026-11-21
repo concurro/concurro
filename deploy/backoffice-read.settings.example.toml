@@ -5,4 +5,6 @@ task_api_bearer_file = "/etc/concurro/backoffice-read/task-read-bearer"
 viewer_authority_url = "http://concurro-backoffice:8791"
 viewer_authority_bearer_file = "/etc/concurro/backoffice-read/viewer-authority-bearer"
 nats_url = "nats://concurro-nats:4222"
+# Private JSON object with "user" and "password"; omit only for an unauthenticated broker.
+nats_credentials_file = "/etc/concurro/backoffice-read/nats-credentials.json"
 consumer_name = "backoffice-read"

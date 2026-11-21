@@ -10,6 +10,7 @@ fault-injection = []
 [dependencies]
 anyhow.workspace = true
 async-nats.workspace = true
+concurro-config = { path = "../config" }
 concurro-events-postgres = { path = "../events-postgres" }
 concurro-contracts = { path = "../contracts" }
 concurro-db = { path = "../db" }

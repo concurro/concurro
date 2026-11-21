@@ -17,7 +17,8 @@ use concurro_contracts::{
 use concurro_db::Database;
 use concurro_events::Handler;
 use concurro_events_nats::{
-    ConsumerStream, Forwarder, ensure_pull_consumer, ensure_stream, run_consumer,
+    ConsumerStream, Forwarder, connect as connect_nats, ensure_pull_consumer, ensure_stream,
+    run_consumer,
 };
 use concurro_events_postgres::{
     ForwarderLease, Outbox, consumer_status, migrate as migrate_events,
@@ -88,15 +89,6 @@ struct TargetSettings {
     reviewer_grant_file: Option<String>,
     /// Upstream repository ID when it differs from the issue repository ID.
     upstream_repository_id: Option<i64>,
-}
-
-/// NATS user credentials read only from a private file.
-#[derive(Deserialize)]
-struct NatsCredentials {
-    /// NATS account user.
-    user: String,
-    /// NATS account password.
-    password: String,
 }
 
 /// Private object-store credentials read from a host file.
@@ -239,27 +231,15 @@ impl Validate for Settings {
     }
 }
 
-/// Connect to the shared broker with only the configured NATS identity.
-async fn connect_nats(settings: &Settings) -> Result<async_nats::Client> {
-    match &settings.nats_credentials_file {
-        Some(path) => {
-            let credentials: NatsCredentials = serde_json::from_str(&read_secret(path)?)?;
-            Ok(async_nats::ConnectOptions::with_user_and_password(
-                credentials.user,
-                credentials.password,
-            )
-            .connect(&settings.nats_url)
-            .await?)
-        }
-        None => Ok(async_nats::connect(&settings.nats_url).await?),
-    }
-}
-
 /// Reconnect the task event producer and advance only acknowledged outbox rows.
 async fn run_forwarder(settings: Settings, database: Database) {
     loop {
         let result: Result<()> = async {
-            let client = connect_nats(&settings).await?;
+            let client = connect_nats(
+                &settings.nats_url,
+                settings.nats_credentials_file.as_deref(),
+            )
+            .await?;
             let context = jetstream::new(client.clone());
             ensure_stream(
                 &context,
@@ -773,7 +753,11 @@ async fn run_events<T, H>(
 {
     loop {
         let result: Result<()> = async {
-            let client = connect_nats(&settings).await?;
+            let client = connect_nats(
+                &settings.nats_url,
+                settings.nats_credentials_file.as_deref(),
+            )
+            .await?;
             let context = jetstream::new(client);
             let consumer = ensure_pull_consumer(
                 &context,

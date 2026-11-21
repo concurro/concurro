@@ -22,7 +22,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use concurro_config::{Validate, load, read_secret};
 use concurro_db::Database;
 use concurro_events::{ReplayAnswer, ReplayRequest};
-use concurro_events_nats::{Forwarder, ensure_stream};
+use concurro_events_nats::{Forwarder, connect as connect_nats, ensure_stream};
 use concurro_events_postgres::{ForwarderLease, Outbox, replay_retained};
 use concurro_ingress_core::{DeliveryAttempt, DeliveryPage, decide_recovery};
 use concurro_ingress_postgres::{
@@ -115,15 +115,6 @@ impl Validate for Settings {
         );
         Ok(())
     }
-}
-
-/// NATS user credentials loaded from a private JSON file.
-#[derive(Deserialize)]
-struct NatsCredentials {
-    /// Account user name.
-    user: String,
-    /// Account password.
-    password: String,
 }
 
 /// Shared immutable HTTP configuration and database access.
@@ -249,18 +240,11 @@ async fn replay(
 async fn run_forwarder(settings: Settings, database: Database) {
     loop {
         let result: Result<()> = async {
-            let client = match &settings.nats_credentials_file {
-                Some(path) => {
-                    let credentials: NatsCredentials = serde_json::from_str(&read_secret(path)?)?;
-                    async_nats::ConnectOptions::with_user_and_password(
-                        credentials.user,
-                        credentials.password,
-                    )
-                    .connect(&settings.nats_url)
-                    .await?
-                }
-                None => async_nats::connect(&settings.nats_url).await?,
-            };
+            let client = connect_nats(
+                &settings.nats_url,
+                settings.nats_credentials_file.as_deref(),
+            )
+            .await?;
             let context = jetstream::new(client.clone());
             ensure_stream(
                 &context,

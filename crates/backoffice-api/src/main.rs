@@ -19,7 +19,9 @@ use concurro_contracts::{
 };
 use concurro_db::Database;
 use concurro_events::{Handler, Outcome};
-use concurro_events_nats::{ConsumerStream, ensure_pull_consumer, inspect_consumer, run_consumer};
+use concurro_events_nats::{
+    ConsumerStream, connect as connect_nats, ensure_pull_consumer, inspect_consumer, run_consumer,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{api::ApiState, model::TaskEvent};
@@ -41,6 +43,8 @@ struct Settings {
     viewer_authority_bearer_file: String,
     /// Task event broker URL.
     nats_url: String,
+    /// Private JSON file containing the NATS user and password.
+    nats_credentials_file: Option<String>,
     /// Prefix for three durable task, request and turn consumers.
     consumer_name: String,
 }
@@ -122,7 +126,11 @@ async fn main() -> Result<()> {
     concurro_events_postgres::migrate(&database).await?;
     model::migrate(&database).await?;
     let targets = Arc::new(RwLock::new(Vec::new()));
-    let client = async_nats::connect(&settings.nats_url).await?;
+    let client = connect_nats(
+        &settings.nats_url,
+        settings.nats_credentials_file.as_deref(),
+    )
+    .await?;
     let stream = jetstream::new(client);
     let mut watched_consumers = Vec::new();
     for (suffix, subject) in [

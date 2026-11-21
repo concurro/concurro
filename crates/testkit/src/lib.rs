@@ -30,10 +30,23 @@ pub struct NatsContainer {
 impl NatsContainer {
     /// Start the pinned development NATS image with JetStream enabled.
     pub async fn start() -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::start_with_args(vec!["-js"]).await
+    }
+
+    /// Start a broker that requires the supplied user and password.
+    pub async fn start_authenticated(
+        user: &str,
+        password: &str,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::start_with_args(vec!["-js", "--user", user, "--pass", password]).await
+    }
+
+    /// Start the pinned server with the requested authentication options.
+    async fn start_with_args(args: Vec<&str>) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let container = GenericImage::new("nats", "2.15.3")
             .with_exposed_port(4222.tcp())
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-            .with_cmd(["-js"])
+            .with_cmd(args)
             .start()
             .await?;
         let port = tokio::time::timeout(Duration::from_secs(5), async {

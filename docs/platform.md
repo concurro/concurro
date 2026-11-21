@@ -124,3 +124,10 @@ The example deployment helper reads `/etc/concurro/compose.platform.host.yaml`
 and `/etc/concurro/compose.service.host.yaml` when present. These optional Compose
 overrides allow operators to adapt the example without changing the bundled files.
 Manual Compose commands must include the applicable override files too.
+
+### Rust service NATS authentication
+
+Ingress, tasks and the backoffice read API use `nats_credentials_file` for a private
+JSON object containing `user` and `password`. Keep `nats_url` free of credentials;
+URL-embedded credentials do not authenticate these clients. Omit the credentials file
+only when connecting to an unauthenticated development broker.

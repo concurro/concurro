@@ -1,6 +1,9 @@
 //! NATS JetStream transport for Concurro events.
 
+mod connection;
 mod consumer;
+
+pub use connection::connect;
 
 #[cfg(feature = "fault-injection")]
 pub use consumer::{ConsumerFault, run_consumer_with_fault};
