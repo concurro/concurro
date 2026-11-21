@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    extract::Query,
     http::{HeaderMap, StatusCode},
     routing::get,
 };
@@ -7,7 +8,10 @@ use concurro_db::Database;
 use concurro_testkit::PostgresContainer;
 use serde_json::{Value, json};
 use sqlx::types::Json as SqlJson;
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 use uuid::Uuid;
 
 use crate::{Target, model};
@@ -39,6 +43,11 @@ async fn issue_tiers_scope_task_records_and_diagnostics() {
             "turn",
             turn.to_string(),
             json!({"turn_id":turn,"task_id":task,"submit_body_base64":"private prompt"}),
+        ),
+        (
+            "imported_turn",
+            "legacy:old-turn".to_owned(),
+            json!({"repository":"acme/demo","issue_number":7}),
         ),
         (
             "consent",
@@ -95,6 +104,20 @@ async fn issue_tiers_scope_task_records_and_diagnostics() {
                 Json(json!({"user":{"id":42,"login":"octo"},"tier":tier,
                     "checked_at":"2026-11-20T00:00:00Z"}))
             }),
+        );
+    let transcript = get(|Query(query): Query<HashMap<String, String>>| async move {
+        let position = query
+            .get("cursor")
+            .map_or(100, |value| value.parse::<i64>().unwrap() + 100);
+        Json(
+            json!({"lines":[{"position":position}],"next_cursor":if position == 100 { Some(100) } else { None }}),
+        )
+    });
+    let authority = authority
+        .route("/v1/turns/{turn}/transcript", transcript.clone())
+        .route(
+            "/v1/imports/{deployment}/turns/{source}/transcript",
+            transcript,
         );
     let auth_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -197,6 +220,46 @@ async fn issue_tiers_scope_task_records_and_diagnostics() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    for route in [
+        format!("/api/v2/tasks/{task}/turns/{turn}/transcript"),
+        "/api/v2/imports/legacy/turns/old-turn/transcript".to_owned(),
+    ] {
+        let first: Value = client
+            .get(format!("http://{address}{route}"))
+            .header("x-concurro-viewer", "writer")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(first["next_cursor"], 100);
+        let second: Value = client
+            .get(format!("http://{address}{route}?cursor=100"))
+            .header("x-concurro-viewer", "writer")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(second["lines"][0]["position"], 200, "{route}");
+        assert!(second["next_cursor"].is_null());
+        assert_eq!(
+            client
+                .get(format!("http://{address}{route}?cursor=100"))
+                .header("x-concurro-viewer", "reader")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
     api_task.abort();
     auth_task.abort();
 }

@@ -88,6 +88,13 @@ pub struct IndexQuery {
     pub cursor: Option<String>,
 }
 
+/// Optional source position for both current and imported transcript pages.
+#[derive(Deserialize)]
+pub struct TranscriptQuery {
+    /// Last transcript position received by the viewer.
+    pub cursor: Option<i64>,
+}
+
 /// Serve read-only task, issue and diagnostic routes.
 pub fn router(state: ApiState) -> Router {
     Router::new()
@@ -813,7 +820,7 @@ async fn get_imported_turn(
 async fn get_imported_transcript(
     State(state): State<ApiState>,
     Path((deployment, source)): Path<(String, String)>,
-    Query(query): Query<Value>,
+    Query(query): Query<TranscriptQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     writer_for_import(&state, &headers, &deployment, &source).await?;
@@ -824,7 +831,7 @@ async fn get_imported_transcript(
             state.task_api_url.trim_end_matches('/')
         ))
         .bearer_auth(&state.task_read_bearer);
-    if let Some(cursor) = query["cursor"].as_i64() {
+    if let Some(cursor) = query.cursor {
         request = request.query(&[("cursor", cursor)]);
     }
     let response = request
@@ -840,7 +847,7 @@ async fn get_imported_transcript(
 async fn get_transcript(
     State(state): State<ApiState>,
     Path((task, turn)): Path<(Uuid, Uuid)>,
-    Query(query): Query<Value>,
+    Query(query): Query<TranscriptQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     writer_for_turn(&state, &headers, task, turn).await?;
@@ -851,7 +858,7 @@ async fn get_transcript(
             state.task_api_url.trim_end_matches('/')
         ))
         .bearer_auth(&state.task_read_bearer);
-    if let Some(cursor) = query["cursor"].as_i64() {
+    if let Some(cursor) = query.cursor {
         request = request.query(&[("cursor", cursor)]);
     }
     let response = request
