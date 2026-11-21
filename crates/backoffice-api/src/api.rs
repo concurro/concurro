@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 use crate::{Target, auth};
 
+mod views;
+
 /// Read-only dependencies; no GitHub, Exchange, Vault or command credential.
 #[derive(Clone)]
 pub struct ApiState {
@@ -100,6 +102,11 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v2/tasks", get(list_tasks))
         .route("/api/v2/targets", get(list_targets))
+        .route(
+            "/api/v2/targets/{owner}/{repo}/configuration",
+            get(views::target_configuration),
+        )
+        .route("/api/v2/operator", get(views::operator))
         .route("/api/v2/targets/{owner}/{repo}/index", get(get_index))
         .route("/api/v2/me/sponsorships", get(my_sponsorships))
         .route("/api/v2/events", get(events))
@@ -936,3 +943,7 @@ fn unavailable(_error: impl std::fmt::Display) -> ApiError {
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "api_views_tests.rs"]
+mod views_tests;

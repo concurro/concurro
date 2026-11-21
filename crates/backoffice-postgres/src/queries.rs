@@ -1,6 +1,10 @@
 //! Read-only projections used by viewer-scoped HTTP handlers.
 
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
 use concurro_db::Database;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::{Error, types::Json};
 
@@ -192,4 +196,87 @@ pub async fn turn_owned(database: &Database, task: &str, turn: &str) -> Result<b
     .bind(task)
     .fetch_one(database.pool())
     .await
+}
+
+/// Generic projection state; buffered events describe this database, not broker backlog.
+#[derive(Serialize)]
+pub struct ProjectionHealth {
+    /// A complete source baseline has been installed.
+    pub ready: bool,
+    /// Browser change revision.
+    pub revision: i64,
+    /// Received events still awaiting projection application.
+    pub buffered_events: i64,
+    /// Latest received event time, absent before the first event.
+    pub last_event_at: Option<DateTime<Utc>>,
+}
+
+/// Read generic projection health, including the loading state.
+pub async fn projection_health(database: &Database) -> Result<ProjectionHealth, Error> {
+    let (ready, revision, buffered_events, last_event_at) = sqlx::query_as(
+        "SELECT ready,revision,(SELECT count(*) FROM backoffice.model_events WHERE NOT applied), \
+         (SELECT max(received_at) FROM backoffice.model_events) \
+         FROM backoffice.model_state WHERE singleton",
+    )
+    .fetch_one(database.pool())
+    .await?;
+    Ok(ProjectionHealth {
+        ready,
+        revision,
+        buffered_events,
+        last_event_at,
+    })
+}
+
+/// A task and its projected turn-state counts, filtered for viewer access by the API.
+pub struct OperationalTask {
+    /// Task identity and state used by the existing entitlement path.
+    pub task: ModelRow,
+    /// Projected unfinished states and unknown terminal outcomes.
+    pub turns: BTreeMap<String, i64>,
+}
+
+/// Read task operations without loading prompts, results or provider credentials.
+pub async fn operational_tasks(database: &Database) -> Result<Vec<OperationalTask>, Error> {
+    /// Storage tuple for one task and its aggregated unfinished turns.
+    type Row = (
+        String,
+        String,
+        i64,
+        Json<Value>,
+        Json<BTreeMap<String, i64>>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT t.entity,t.entity_id,t.revision,t.body, \
+         COALESCE((SELECT jsonb_object_agg(status,n) FROM ( \
+           SELECT status,count(*) n FROM ( \
+             SELECT CASE \
+               WHEN jsonb_typeof(a.body->'finished')='object' THEN \
+                 CASE WHEN a.body#>>'{finished,outcome}'='unknown' THEN 'unknown_outcome' END \
+               WHEN a.body->>'status'='unknown' THEN 'unknown_outcome' \
+               WHEN a.body->>'status'='finished' AND \
+                 a.body#>>'{result,outcome}' IN ('uncertain','lost','timed_out') THEN 'unknown_outcome' \
+               WHEN COALESCE(a.body->>'status','pending') IN ('pending','ready','sending','queued','running') \
+                 THEN COALESCE(a.body->>'status','pending') \
+             END status FROM backoffice.model_items a WHERE a.entity='turn' \
+             AND (a.body->>'task_id'=t.entity_id OR a.body->>'standalone_task_id'=t.entity_id) \
+           ) observations WHERE status IS NOT NULL GROUP BY status \
+         ) counts),'{}'::jsonb) \
+         FROM backoffice.model_items t WHERE t.entity IN ('contribution_task','standalone_review') \
+         ORDER BY t.entity,t.entity_id",
+    ).fetch_all(database.pool()).await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(entity, entity_id, revision, Json(body), Json(turns))| OperationalTask {
+                task: ModelRow {
+                    entity,
+                    entity_id,
+                    revision,
+                    body,
+                },
+                turns,
+            },
+        )
+        .collect())
 }

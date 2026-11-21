@@ -195,6 +195,10 @@ pub fn router(api: TaskApi) -> Router {
         .route("/v1/requests/{id}", get(get_request))
         .route("/v1/baseline", get(get_baseline))
         .route("/v1/index", get(get_index))
+        .route(
+            "/v1/targets/{owner}/{repo}/configuration",
+            get(get_target_configuration),
+        )
         .route("/v1/index/item", get(get_index_item))
         .route("/v1/history", get(get_history))
         .route("/v1/deliveries", get(get_deliveries))
@@ -209,6 +213,32 @@ pub fn router(api: TaskApi) -> Router {
             get(get_turn_artifact),
         )
         .with_state(api)
+}
+
+/// Read allowlisted current target settings at the fork's exact default commit.
+async fn get_target_configuration(
+    State(api): State<TaskApi>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    read_authorized(&headers, &api)?;
+    let upstream = format!("{owner}/{repo}");
+    let target = api
+        .decisions
+        .targets
+        .values()
+        .chain(api.standalone_targets.values())
+        .filter_map(|target| target.initialization.as_ref())
+        .find(|target| target.upstream.eq_ignore_ascii_case(&upstream))
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "target_not_found"))?;
+    let result = crate::target_display::current_configuration(&api.decisions.github, target).await;
+    result.map(Json).map_err(|error| {
+        tracing::warn!(%error, "current target configuration unavailable");
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "target_configuration_unavailable",
+        )
+    })
 }
 
 /// Read one internal page of persistent target list rows.

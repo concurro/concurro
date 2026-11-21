@@ -29,6 +29,7 @@ mod standalone_checks;
 mod standalone_payload;
 mod standalone_publication;
 mod target_config;
+mod target_display;
 mod target_index;
 
 pub use archive::{ArchiveContext, UploadArchiveJob, upload_archive};

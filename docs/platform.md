@@ -131,3 +131,37 @@ Ingress, tasks and the backoffice read API use `nats_credentials_file` for a pri
 JSON object containing `user` and `password`. Keep `nats_url` free of credentials;
 URL-embedded credentials do not authenticate these clients. Omit the credentials file
 only when connecting to an unauthenticated development broker.
+
+
+## Backoffice read views
+
+The target page loads current models and policy separately from task lists through
+`GET /api/v2/targets/{owner}/{repo}/configuration`. The read API requires fresh
+writer authority on that target, including fork visibility. It proxies the private
+read-bearer endpoint in the task service, which resolves the fork's current default
+branch and reads the validated configuration at that exact commit. The response
+includes the source repository, branch and full SHA, normalized model assignments,
+profiles, mode and allowlisted policy limits. MCP settings, arbitrary config keys
+and credentials are excluded. These are current settings for new work; existing
+tasks retain their pinned configuration. A configuration failure does not block
+saved target task lists.
+
+`GET /api/v2/operator` requires writer authority on at least one configured target.
+It reports generic projection readiness, revision, received-but-unapplied event
+count and last received event time. Task stage and turn-observation counts include
+only tasks with a fresh issue-specific writer decision. Baseline loading returns
+null task counts, not zero. Buffered events measure the read database, not broker
+backlog; baseline readiness does not prove upstream service health.
+
+The Operator page is read-only. Host actions, gateway health, deployment drift,
+leases and live pending-request counts are not exposed. Pending requests occur in
+the baseline but have no admission event stream, so they are not presented as a
+live queue. Unknown terminal outcomes are separate from unfinished turns; streamed
+finished facts take precedence over active status observations. A null finished field
+is absent. Counts describe retained projection observations, including any source
+event gaps, rather than a live Exchange queue. The page shows a timestamped snapshot and updates on reload. Authority
+or storage failures return a visible unavailable error.
+
+These additive endpoints require the task service before the read API and frontend.
+They use existing read credentials and App read permissions, with no new settings
+or schema migrations.
