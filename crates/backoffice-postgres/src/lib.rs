@@ -312,7 +312,8 @@ async fn apply_event(work: &mut UnitOfWork<'_>, event: &TaskEvent) -> Result<()>
     sqlx::query(
         "INSERT INTO backoffice.model_items (entity,entity_id,revision,body) \
          VALUES ($1,$2,$3,$4) ON CONFLICT (entity,entity_id) DO UPDATE SET \
-         revision=EXCLUDED.revision,body=backoffice.model_items.body||EXCLUDED.body \
+         revision=EXCLUDED.revision,body=CASE WHEN EXCLUDED.entity='config_targets' \
+         THEN EXCLUDED.body ELSE backoffice.model_items.body||EXCLUDED.body END \
          WHERE backoffice.model_items.revision<=EXCLUDED.revision",
     )
     .bind(entity)

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use axum::{Json, Router, extract::Query, routing::get};
+use concurro_backoffice_postgres::{begin_baseline, finish_baseline, stage_baseline_row};
 use concurro_db::Database;
 use concurro_testkit::PostgresContainer;
 use serde_json::{Value, json};
@@ -126,4 +127,81 @@ async fn applied_event_wins_over_frozen_baseline_page() {
     assert_eq!(turn_body["status"], "running");
     assert_eq!(turn_body["finished"]["outcome"], "succeeded");
     task.abort();
+}
+
+/// Target snapshots replace arrays across baseline overlap, revisions and removals.
+#[tokio::test]
+async fn target_snapshots_replace_instead_of_concatenating() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 3)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("schema");
+    let snapshot = Uuid::now_v7();
+    let floor = begin_baseline(&database).await.expect("baseline floor");
+    let original = json!([{"repository_id":1,"upstream":"acme/first",
+        "fork":"bot/first","issue_repository":"acme/first"}]);
+    let mut work = database.begin().await.expect("transaction");
+    stage_baseline_row(
+        &mut work,
+        snapshot,
+        1,
+        "config_targets",
+        "current",
+        1,
+        original.clone(),
+    )
+    .await
+    .expect("baseline row");
+    work.commit().await.expect("commit row");
+    ingest_event(
+        &database,
+        &TaskEvent {
+            id: Uuid::now_v7(),
+            event_type: "config.targets".to_owned(),
+            entity: Some("config:targets".to_owned()),
+            revision: Some(1),
+            data: json!({"targets":original}),
+        },
+    )
+    .await
+    .expect("buffer overlapping snapshot");
+    finish_baseline(&database, snapshot, floor)
+        .await
+        .expect("finish baseline");
+    let targets = super::configured_targets(&database).await.expect("targets");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].upstream, "acme/first");
+
+    for (revision, body, expected) in [
+        (
+            2,
+            json!([{"repository_id":2,"upstream":"acme/second",
+            "fork":"bot/second","issue_repository":"acme/second"}]),
+            Some("acme/second"),
+        ),
+        (1, original, Some("acme/second")),
+        (3, json!([]), None),
+    ] {
+        ingest_event(
+            &database,
+            &TaskEvent {
+                id: Uuid::now_v7(),
+                event_type: "config.targets".to_owned(),
+                entity: Some("config:targets".to_owned()),
+                revision: Some(revision),
+                data: json!({"targets":body}),
+            },
+        )
+        .await
+        .expect("target snapshot");
+        let targets = super::configured_targets(&database)
+            .await
+            .expect("updated targets");
+        assert_eq!(targets.len(), usize::from(expected.is_some()));
+        assert_eq!(
+            targets.first().map(|target| target.upstream.as_str()),
+            expected
+        );
+    }
 }
