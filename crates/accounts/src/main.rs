@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use concurro_accounts::{
-    AccountState, AuthorityConfig, browser_router,
+    AccountState, AuthorityConfig, Credentials, browser_router,
     commands::Commands,
     github::Access,
     http_client, internal_router,
@@ -52,6 +52,18 @@ async fn main() -> Result<()> {
         settings.task_api_url.clone(),
         read_secret(&settings.command_proof_private_key_file)?.as_bytes(),
     )?;
+    let credentials = Credentials::new(
+        client.clone(),
+        settings.vault_url.clone().filter(|value| !value.is_empty()),
+        settings
+            .relay_server
+            .clone()
+            .filter(|value| !value.is_empty()),
+        settings
+            .relay_download_url
+            .clone()
+            .filter(|value| !value.is_empty()),
+    )?;
     let targets = Targets::new(client, settings.task_api_url.clone());
     if let Err(error) = targets.refresh().await {
         tracing::warn!(%error, "task target snapshot unavailable at startup");
@@ -68,7 +80,8 @@ async fn main() -> Result<()> {
             secure_cookies: settings.secure_cookies(),
         },
     )
-    .with_commands(commands);
+    .with_commands(commands)
+    .with_credentials(credentials);
     let worker = WorkerOptions::default()
         .pg_pool(database.pool().clone())
         .schema("graphile_worker")

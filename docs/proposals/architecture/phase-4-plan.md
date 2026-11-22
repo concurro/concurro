@@ -1,6 +1,6 @@
 # Phase 4 plan: sign-in, commands and credentials in Rust
 
-**Status: Slice 1 implemented locally; cutover not started.** Phase 4 of the [migration](../architecture.md#migration).
+**Status: Slices 1–3 implemented locally; cutover not started.** Phase 4 of the [migration](../architecture.md#migration).
 It builds on phase 3 as deployed: the task application is the sole controller, the
 backoffice read API serves every view under `/api/v2`, and the Python backoffice is left
 with sign-in, browser commands and the credentials pages.

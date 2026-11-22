@@ -2,6 +2,7 @@
 
 mod browser;
 pub mod commands;
+mod credentials;
 pub mod github;
 mod internal;
 pub mod logout;
@@ -20,6 +21,7 @@ use reqwest::Client;
 use tokio::sync::Mutex;
 
 use commands::Commands;
+pub use credentials::Credentials;
 use github::Access;
 use logout::Logout;
 use oauth::OAuth;
@@ -52,6 +54,8 @@ pub struct AccountState {
     secure_cookies: bool,
     tier_cache: Arc<Mutex<TierCache>>,
     commands: Option<Commands>,
+    /// Owner-scoped credential adapter, attached by the accounts binary.
+    credentials: Option<Credentials>,
 }
 
 impl AccountState {
@@ -75,12 +79,19 @@ impl AccountState {
             secure_cookies: config.secure_cookies,
             tier_cache: Arc::new(Mutex::new(HashMap::new())),
             commands: None,
+            credentials: None,
         }
     }
 
     /// Attach browser command signing and task delivery authority.
     pub fn with_commands(mut self, commands: Commands) -> Self {
         self.commands = Some(commands);
+        self
+    }
+
+    /// Attach owner-scoped vault calls and relay setup details to browser routes.
+    pub fn with_credentials(mut self, credentials: Credentials) -> Self {
+        self.credentials = Some(credentials);
         self
     }
 }

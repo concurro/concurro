@@ -1,15 +1,16 @@
-# Accounts service: Phase 4 Slices 1–2
+# Accounts service: Phase 4 Slices 1–3
 
 The Rust `accounts` binary implements browser sign-in, in-memory sessions, logout,
-browser commands and the private viewer authority. It is local implementation work;
+browser commands, credential and relay routes, and the private viewer authority. It is local implementation work;
 the Python backoffice still owns the live routes until cutover.
 
 Set `CONCURRO_ACCOUNTS_CONFIG` to a TOML file based on
 [`deploy/accounts.settings.example.toml`](../../deploy/accounts.settings.example.toml).
 The process has separate browser and internal listeners. The browser listener serves
 `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/logout-status`, `/api/me`,
-`/api/health`, and both existing `/api/repos/.../commands` and
-`/api/tasks/.../commands` routes. Only `/internal/v1/viewer` is on the internal
+`/api/health`, both existing `/api/repos/.../commands` and
+`/api/tasks/.../commands` routes, and `/api/me/credentials` and `/api/me/relays`.
+Only `/internal/v1/viewer` is on the internal
 listener. Keep that listener on the platform network at cutover.
 
 The sign-in client must be the existing Sign-in **OAuth App**, with callback URL
@@ -44,3 +45,14 @@ the private task API. The first source time stays with the session action ID, so
 a retry can receive the recorded outcome with a fresh proof. The task application
 keeps its apply-time actor check. Set `command_proof_private_key_file` to the RSA
 PEM paired with the task application's `command_proof_public_key_file`.
+
+Credential and relay requests use the signed-in user's GitHub bearer against
+`vault_url`. The vault owns verification, list revisions and `mutation_id`
+idempotency; accounts keeps no credential secrets. Writes require the same
+session cookie and `X-Concurro-Request: 1` header as commands. Vault `401`
+invalidates the browser session. Entry and relay responses retain the existing
+frontend shape, and vault `409`, `410` and `422` messages pass through.
+An unreachable vault returns `503` for credential routes; `/api/me/relays`
+shows `service: unavailable`. Set optional `relay_server` and
+`relay_download_url` to display Sponsor setup commands and a download link.
+Relay approval and device replacement have a 60-second request deadline.

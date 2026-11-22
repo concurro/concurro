@@ -78,6 +78,15 @@ pub fn router(state: AccountState) -> Router {
             get(|| async { Json(json!({"status":"ok"})) }),
         )
         .route("/api/me", get(me))
+        .route(
+            "/api/me/credentials",
+            axum::routing::any(crate::credentials::credentials),
+        )
+        .route(
+            "/api/me/credentials/{*path}",
+            axum::routing::any(crate::credentials::credentials),
+        )
+        .route("/api/me/relays", get(crate::credentials::relays))
         .with_state(state)
 }
 

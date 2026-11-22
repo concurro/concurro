@@ -1,5 +1,7 @@
 //! File-backed accounts settings and public URL conventions.
 
+use std::net::Ipv6Addr;
+
 use anyhow::{Context, Result, ensure};
 use concurro_config::Validate;
 use reqwest::Url;
@@ -34,11 +36,11 @@ pub struct Settings {
     pub viewer_authority_bearer_file: String,
     /// Private task application origin for target snapshots.
     pub task_api_url: String,
-    /// Reserved for the credentials slice's vault owner calls.
+    /// Private vault owner API for browser credential and relay calls.
     pub vault_url: Option<String>,
-    /// Optional relay setup hostname for the credentials slice.
+    /// Optional public host:port advertised to Sponsor relays.
     pub relay_server: Option<String>,
-    /// Optional relay download URL for the credentials slice.
+    /// Optional HTTPS download URL shown to owners.
     pub relay_download_url: Option<String>,
 }
 
@@ -54,8 +56,67 @@ impl Validate for Settings {
             self.listen != self.internal_listen,
             "accounts listeners must be separate"
         );
+        if let Some(server) = self
+            .relay_server
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            ensure!(
+                relay_address(server),
+                "accounts relay_server must be host:port"
+            );
+        }
+        if let Some(download) = self
+            .relay_download_url
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let url = Url::parse(download).context("accounts relay_download_url is invalid")?;
+            ensure!(
+                url.scheme() == "https"
+                    && url.host().is_some()
+                    && !download.chars().any(char::is_whitespace),
+                "accounts relay_download_url must be HTTPS"
+            );
+        }
         Ok(())
     }
+}
+
+/// Match the portal's DNS/IPv4 or bracketed IPv6 address with an explicit port.
+fn relay_address(value: &str) -> bool {
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return false;
+    };
+    if port.is_empty()
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+        || !port.parse::<u16>().is_ok_and(|port| port > 0)
+    {
+        return false;
+    }
+    if let Some(ipv6) = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+    {
+        return ipv6.parse::<Ipv6Addr>().is_ok();
+    }
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 impl Settings {
@@ -76,5 +137,39 @@ impl Settings {
     /// Whether browsers require TLS for issued cookies.
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relay_address;
+
+    /// Match Python's configured relay address grammar, including default HTTP port 80.
+    #[test]
+    fn relay_address_parity() {
+        for value in [
+            "relay.invalid:7443",
+            "relay.invalid:80",
+            "127.0.0.1:80",
+            "[::1]:80",
+            "[2001:db8::1]:7443",
+            "relay.invalid:00080",
+        ] {
+            assert!(relay_address(value), "{value}");
+        }
+        for value in [
+            "relay.invalid",
+            "relay.invalid:0",
+            "relay.invalid:65536",
+            " relay.invalid:80",
+            "relay.invalid:80 ",
+            "relay_name:80",
+            "relay;bad:80",
+            "relay$(bad):80",
+            "::1:80",
+            "[::1]:+80",
+        ] {
+            assert!(!relay_address(value), "{value}");
+        }
     }
 }

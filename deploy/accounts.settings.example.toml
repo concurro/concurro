@@ -1,4 +1,4 @@
-# Phase 4 Slice 1 local configuration. Do not route browser traffic here until later slices land.
+# Phase 4 local configuration. Browser cutover is part of Slice 4.
 listen = "0.0.0.0:8793"
 internal_listen = "127.0.0.1:8794" # Local use; bind the platform-only interface at cutover.
 database_url_file = "/etc/concurro/accounts/database-url"
@@ -12,3 +12,6 @@ reader_private_key_file = "/etc/concurro/accounts/reader-app.pem"
 command_proof_private_key_file = "/etc/concurro/accounts/command-proof.pem"
 viewer_authority_bearer_file = "/etc/concurro/accounts/viewer-authority-bearer"
 task_api_url = "http://concurro-tasks:8792"
+vault_url = "http://concurro-vault:8090"
+relay_server = "relay.<host>:7443"
+relay_download_url = "https://<host>/concurro/relay/download"
