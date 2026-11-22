@@ -100,6 +100,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt markdown-it-py==3.0.0
+      - name: Install vault test client
+        if: matrix.suite == 'gateway' || matrix.suite == 'service'
+        run: python3 -m pip install -r gateway/vault/requirements-test.txt
       # One process per test file, one file per core; each file's output is printed whole.
       - name: Run tests
         env:
