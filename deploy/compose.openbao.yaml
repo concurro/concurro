@@ -1,0 +1,32 @@
+# OpenBao for Concurro's secrets, reachable only on the private concurro-secrets network
+# that the platform Compose file creates. See docs/platform.md#openbao.
+name: concurro-openbao
+
+services:
+  openbao:
+    image: openbao/openbao:2.7.3
+    command: ["server", "-config=/openbao/config/openbao.hcl"]
+    # BAO_PG_CONNECTION_URL, and the INITIAL_* passwords for the first boot only.
+    env_file: /etc/concurro/openbao/openbao.env
+    environment:
+      # For the `bao` CLI run inside the container; the listener has no TLS.
+      BAO_ADDR: http://127.0.0.1:8200
+    volumes:
+      - /etc/concurro/openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
+      - /etc/concurro/openbao/seal.key:/openbao/secrets/seal.key:ro
+      - /var/log/concurro/openbao:/openbao/logs
+    networks:
+      secrets:
+        aliases:
+          - concurro-openbao
+    healthcheck:
+      # `bao status` exits 0 only when OpenBao is unsealed.
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 10s
+      timeout: 5s
+    restart: unless-stopped
+
+networks:
+  secrets:
+    external: true
+    name: concurro-secrets

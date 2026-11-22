@@ -191,7 +191,9 @@ window, against a copy of the stopped vault's database.
    - The report holds IDs, counts and pass or fail, and never secret material or
      digests of it.
 
-The `migrator` AppRole is revoked once the report is clean.
+Once the report is clean, the `migrator` AppRole is deleted and its tokens revoked
+([platform guide](../../../platform.md#openbao)). Deleting the role alone would leave
+issued tokens working.
 
 ## Acceptance
 

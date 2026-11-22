@@ -50,6 +50,122 @@ phase 3 archive import is recorded complete.
   the retained journal. Restoring a producer database requires a declared coverage
   gap for any period the restored backup may have lost.
 
+## OpenBao
+
+Phase 5 keeps personal credential material and routinely rotated operational secrets
+in OpenBao ([S2](proposals/architecture/phase-5/s2-openbao.md)). Rust services reach it
+through `concurro-secrets`. The example pins OpenBao 2.7.3; follow its patch releases,
+since only the latest is fixed.
+
+**Setup.** `deploy/openbao/openbao.hcl` is the server configuration:
+
+- PostgreSQL storage;
+- the static seal;
+- a file audit device;
+- self-init, which creates the `concurro` KV v2 mount, the policies, the `accounts`,
+  `gateway` and `exchange` AppRoles and the `admin`, `admin-recovery` and `operator`
+  users at the first boot of an empty database.
+
+With the Compose example:
+
+1. Create OpenBao's PostgreSQL database and role. The role owns only its database.
+2. In `/etc/concurro/openbao/`:
+   - Copy `openbao.hcl` there.
+   - Create `seal.key` with `openssl rand -out seal.key 32`. Give it to uid 100 (the
+     image's `openbao` user, which the server runs as) with mode `0400`.
+   - Create `openbao.env` with `BAO_PG_CONNECTION_URL` and, for the first boot only,
+     `INITIAL_ADMIN_PASSWORD`, `INITIAL_ADMIN_RECOVERY_PASSWORD` and
+     `INITIAL_OPERATOR_PASSWORD`. Remove the passwords once OpenBao has initialized.
+3. Create the audit log directory owned by the `openbao` user:
+   `install -d -o 100 -g 1000 -m 0750 /var/log/concurro/openbao`. The image's entrypoint
+   exits if it can't take ownership of the directory. Rotate the log with `SIGHUP` after
+   moving the file.
+4. Recreate PostgreSQL from `deploy/compose.platform.yaml` so it joins the
+   `concurro-secrets` network, then start `deploy/compose.openbao.yaml`.
+5. As `admin`:
+   - Create the recovery keys:
+     `bao operator rotate-keys -target=recovery -init -key-shares=1 -key-threshold=1`.
+   - Issue each service's AppRole secret ID:
+     `bao write -f auth/approle/role/<service>/secret-id`. Store each in a file only
+     that service reads, and give the service the role ID
+     (`bao read auth/approle/role/<service>/role-id`).
+
+OpenBao listens only on `concurro-secrets`. A client service joins that network and
+names `http://concurro-openbao:8200`. The operator and admins run the `bao` CLI inside the
+OpenBao container, where `BAO_ADDR` is set:
+
+```bash
+docker compose -f deploy/compose.openbao.yaml exec openbao bao login -method=userpass username=operator
+```
+
+A value read with `@file` comes from inside the container, so pass values on standard
+input with `=-` instead.
+
+**Startup.** PostgreSQL, then OpenBao, which unseals itself with the seal key, then the
+services. OpenBao waits for PostgreSQL. A service retries sign-in until OpenBao is
+unsealed. Neither OpenBao's storage URL nor the seal key is kept in OpenBao.
+
+**Rotating an operational secret.** Sign in as `operator` as above, then patch the field
+from standard input, for example:
+
+```bash
+docker compose -f deploy/compose.openbao.yaml exec -T openbao bao kv patch -mount=concurro ops/gateway/providers chatgpt_access_token=- < token.txt
+```
+
+Readers pick it up within their refresh interval (60 seconds by default), or at once
+after a provider refuses the old value. No restart is needed. The operator can't read
+personal credential material.
+
+**Administration.** Self-init runs once. Change policies, roles or users with an `admin`
+identity and the `bao` CLI, and record each change with the deployment records. Keep
+the `admin` and `admin-recovery` passwords offline and apart from each other.
+
+If a service's secret ID leaks:
+
+1. Issue a new one.
+2. Destroy the old one with `bao write auth/approle/role/<service>/secret-id/destroy`
+   and its value on standard input.
+3. Revoke the AppRole tokens: `bao lease revoke -prefix auth/approle/login`.
+
+OpenBao's lease IDs don't name the role, so this revokes every service's AppRole token.
+Each service signs in again on its next request, the affected one with its new secret
+ID.
+
+**The phase 5 import.** The credential import uses a `migrator` AppRole, which exists
+only during the import. As `admin`, before the import:
+
+```bash
+bao write auth/approle/role/migrator token_policies=migrator token_ttl=1h token_max_ttl=4h
+```
+
+Then issue its secret ID as for a service. Once the import's report is clean:
+
+```bash
+bao delete auth/approle/role/migrator
+```
+
+```bash
+bao lease revoke -prefix auth/approle/login
+```
+
+Deleting the role stops new sign-ins, but tokens already issued keep working until
+revoked. The second command revokes them, along with every other service's AppRole
+token. Those services sign in again on their next request; the import runs in an idle
+window, so nothing is interrupted.
+
+**Recovery.** If both admin identities are lost:
+
+1. Add `disable_unauthed_generate_root_endpoints = false` to the listener in
+   `openbao.hcl`, and restart OpenBao.
+2. Generate a root token with the recovery keys through the legacy
+   `sys/generate-root/attempt` and `sys/generate-root/update` endpoints. The CLI's
+   `operator generate-root` uses the authenticated endpoint instead.
+3. Repair the identities, revoke the root token, remove the setting and restart.
+
+**Backups.** OpenBao's database is in the PostgreSQL backup. Back up `seal.key` and the
+recovery keys separately: a restore needs the database and the key, and either alone
+decrypts nothing.
+
 ## Compose ingress example
 
 This example uses the bundled Compose files and deployment helper. Other deployment

@@ -1,4 +1,5 @@
-# PostgreSQL and JetStream for the ingress producer, private to Concurro services.
+# PostgreSQL and JetStream, private to Concurro services. PostgreSQL also joins the
+# concurro-secrets network, where OpenBao reaches its storage (compose.openbao.yaml).
 name: concurro-platform
 
 services:
@@ -11,6 +12,10 @@ services:
       - /etc/concurro/platform/postgres-password:/run/secrets/postgres-password:ro
     networks:
       platform:
+        aliases:
+          - concurro-postgres
+      # OpenBao's storage connection; OpenBao itself joins only this network.
+      secrets:
         aliases:
           - concurro-postgres
     healthcheck:
@@ -34,6 +39,9 @@ services:
 networks:
   platform:
     name: platform
+  secrets:
+    name: concurro-secrets
+    internal: true
 
 volumes:
   postgres-data:

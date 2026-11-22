@@ -31,6 +31,8 @@ rand = { version = "=0.10.4", default-features = false, features = ["sys_rng"] }
 schemars = { version = "=1.2.3", default-features = false, features = ["derive", "std"] }
 sha2 = { version = "=0.11.1", default-features = false }
 subtle = "=2.6.1"
+secrecy = { version = "=0.10.3", default-features = false }
+vaultrs = { version = "=0.8.0", default-features = false, features = ["rustls"] }
 tar = { version = "=0.4.46", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std", "arbitrary_precision", "preserve_order"] }

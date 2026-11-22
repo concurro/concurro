@@ -4,6 +4,15 @@ Part of the [phase 5 plan](../phase-5-plan.md). OpenBao deploys before the cutov
 first users are the operator, storing org provider credentials, and its own checks.
 Accounts, the exchange and the gateway use it from S7.
 
+**Implemented:**
+
+- `crates/secrets` (`concurro-secrets`).
+- The server configuration `deploy/openbao/openbao.hcl`, which the integration tests run
+  against.
+- The Compose overlay `deploy/compose.openbao.yaml`.
+- The [platform guide](../../../platform.md#openbao).
+- Evidence in [S2 evidence](../../../rust-phase-5-s2-evidence.md).
+
 ## Server
 
 - **Release.** OpenBao 2.7.x, pinned to an exact patch (2.7.3 at planning time).
@@ -15,8 +24,9 @@ Accounts, the exchange and the gateway use it from S7.
     itself.
   - OpenBao's docs mark PostgreSQL production-ready and recommend it to new users over
     Raft. Single-node Raft would add snapshot operations for no gain here.
-- **Seal: static.** The key is a 32-byte AES-256-GCM key in a root-owned file outside
-  PostgreSQL, with a key ID.
+- **Seal: static.** The key is a 32-byte AES-256-GCM key in a file outside PostgreSQL,
+  with a key ID. It's readable only by OpenBao's user (uid 100 in the image), which the
+  server runs as.
   - A restart unseals without anyone stepping in.
   - Anyone holding both the key file and the database can decrypt everything, so they
     are stored and backed up separately.
@@ -28,8 +38,9 @@ Accounts, the exchange and the gateway use it from S7.
 - **Audit.** A file audit device in the configuration file's `audit` stanza, with
   rotation handled by the host. Values are HMAC'd. If the device can't write, OpenBao
   refuses requests, so a full disk shows up as an outage rather than unaudited access.
-- **Network.** One listener on a private network that only OpenBao's clients join:
-  accounts, the exchange, the gateway, and the operator's access path. It has no edge
+- **Network.** OpenBao joins only a private network, `concurro-secrets`. Its clients
+  join that network: accounts, the exchange, the gateway, and the operator's access
+  path. PostgreSQL joins it too, so OpenBao can reach its storage. OpenBao has no edge
   route.
 
 ## Layout and policies
@@ -53,9 +64,9 @@ One KV v2 mount, `concurro`, without a mount-wide `cas_required`.
 | `accounts` | `create` on `data/personal/*`, `read` on `metadata/personal/*`, `update` on `destroy/personal/*`, `delete` on `metadata/personal/*`; `read` on `data/ops/accounts/*` |
 | `gateway` | `read` on `data/personal/*`, `data/ops/gateway/*` |
 | `exchange` | `read` on `data/ops/exchange/*` |
-| `migrator` | `create` and `read` on `data/personal/*`, `read` on `metadata/personal/*`. Used only by S7's import, and revoked afterwards |
-| `operator` | `create`, `update`, `patch` and `read` on `data/ops/*`, `read` on `metadata/*`. No access to `data/personal/*` |
-| `admin` | Policies, auth methods and AppRole roles and secret IDs, audit configuration, mounts' configuration; token revocation. No access to `data/personal/*` |
+| `migrator` | `create` and `read` on `data/personal/*`, `read` on `metadata/personal/*`. Its AppRole exists only during S7's import, with a one-hour token TTL; afterwards the role is deleted and its tokens revoked |
+| `operator` | `create`, `update`, `patch` and `read` on `data/ops/*`, `read` and `list` on `metadata/ops/*`. No access to anything under `personal/` |
+| `admin` | Policies, auth methods and AppRole roles and secret IDs, audit configuration, mounts' configuration, recovery keys; revoking the tokens of AppRole sign-ins. No access to `data/personal/*` |
 
 - **Accounts can't read material back.** `create` without `read` refuses any data read.
   An existing path (any version, deleted or destroyed) makes a write an `update`,
@@ -77,7 +88,8 @@ One KV v2 mount, `concurro`, without a mount-wide `cas_required`.
   are used only for:
   - changing policies or AppRoles;
   - issuing a replacement secret ID for a service;
-  - revoking the `migrator` role after S7's import;
+  - creating the `migrator` role for S7's import, then deleting it and revoking its
+    tokens (deleting a role doesn't revoke tokens it already issued);
   - recovering from a lost operator password.
 - **Self-init runs once.** Later changes are made with the `admin` identity through the
   `bao` CLI, and recorded with the deployment records; editing the `initialize` stanza
@@ -168,8 +180,10 @@ backoff until OpenBao's `sys/health` reports it unsealed. There is no cycle:
 - The `operator` and `admin` policies can't read `data/personal/*`.
 - The operator's `bao kv patch` of `ops/gateway/providers` succeeds without naming a
   version, and accounts' overwrite of an existing personal path is refused.
-- The `admin` identity revokes the `migrator` role and issues a replacement secret ID
-  for a service; the `operator` identity can do neither.
+- The `admin` identity issues a replacement secret ID for a service, and the `operator`
+  identity can't.
+- After the import cleanup (deleting the `migrator` role and revoking AppRole tokens),
+  a migrator token issued before it reads nothing and can't sign in again.
 - A recovery key created by `admin` yields a root token through the temporarily enabled
   legacy endpoint, which is disabled again afterwards.
 - An operator patch of `ops/gateway/providers` is seen by a `concurro-secrets` reader

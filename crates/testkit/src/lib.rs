@@ -1,15 +1,19 @@
-//! Local Postgres and NATS containers for integration tests.
+//! Local Postgres, NATS and OpenBao containers for integration tests.
 
 use std::error::Error;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use concurro_db::{Database, UnitOfWork};
 use sqlx::Executor;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
+    core::{ExecCommand, IntoContainerPort, Mount, WaitFor},
     runners::AsyncRunner,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A disposable Postgres server and its connection URL.
 pub struct PostgresContainer {
@@ -121,6 +125,150 @@ impl PostgresContainer {
     /// URL for a client in this test process.
     pub fn url(&self) -> &str {
         &self.url
+    }
+}
+
+/// A disposable OpenBao with its own PostgreSQL storage, both on a private network,
+/// started from a server configuration file such as `deploy/openbao/openbao.hcl`.
+pub struct OpenBaoContainer {
+    /// OpenBao, stopped before its storage on restart.
+    openbao: ContainerAsync<GenericImage>,
+    /// OpenBao's PostgreSQL storage.
+    postgres: ContainerAsync<GenericImage>,
+    /// Holds the generated seal key; removed on drop.
+    directory: PathBuf,
+    /// Host-side address.
+    url: String,
+}
+
+/// Distinguishes the networks and names of containers started by one test process.
+static OPENBAO_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+impl OpenBaoContainer {
+    /// Start PostgreSQL, then OpenBao 2.7.3 with `config` mounted as its server
+    /// configuration, a fresh static seal key, and `env` (such as self-init passwords).
+    pub async fn start(
+        config: &Path,
+        env: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let name = format!(
+            "concurro-test-openbao-{}-{}",
+            std::process::id(),
+            OPENBAO_INSTANCE.fetch_add(1, Ordering::SeqCst)
+        );
+        let directory = std::env::temp_dir().join(&name);
+        std::fs::create_dir_all(&directory)?;
+        let mut key = [0_u8; 32];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut key)?;
+        std::fs::write(directory.join("seal.key"), key)?;
+        let postgres = GenericImage::new("postgres", "18.7")
+            .with_wait_for(WaitFor::message_on_stdout(
+                "PostgreSQL init process complete; ready for start up.",
+            ))
+            .with_network(&name)
+            .with_container_name(format!("{name}-postgres"))
+            .with_env_var("POSTGRES_PASSWORD", "test")
+            .with_env_var("POSTGRES_DB", "openbao")
+            .start()
+            .await?;
+        let mut request = GenericImage::new("openbao/openbao", "2.7.3")
+            .with_exposed_port(8200.tcp())
+            .with_wait_for(WaitFor::message_on_either_std("OpenBao server started"))
+            .with_network(&name)
+            .with_container_name(&name)
+            .with_env_var(
+                "BAO_PG_CONNECTION_URL",
+                format!("postgres://postgres:test@{name}-postgres:5432/openbao?sslmode=disable"),
+            )
+            .with_mount(Mount::bind_mount(
+                std::fs::canonicalize(config)?.to_string_lossy(),
+                "/openbao/config/openbao.hcl",
+            ))
+            .with_mount(Mount::bind_mount(
+                directory.join("seal.key").to_string_lossy(),
+                "/openbao/secrets/seal.key",
+            ))
+            .with_cmd(["server", "-config=/openbao/config/openbao.hcl"]);
+        for (variable, value) in env {
+            request = request.with_env_var(*variable, *value);
+        }
+        let openbao = request.start().await?;
+        let url = openbao_url(&openbao).await?;
+        wait_unsealed(&url).await?;
+        Ok(Self {
+            openbao,
+            postgres,
+            directory,
+            url,
+        })
+    }
+
+    /// OpenBao's address for a client in this test process.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Stop OpenBao and then PostgreSQL, start PostgreSQL and then OpenBao, and wait until
+    /// OpenBao reports itself unsealed. The address may change.
+    pub async fn restart(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.openbao.stop().await?;
+        self.postgres.stop().await?;
+        self.postgres.start().await?;
+        self.openbao.start().await?;
+        self.url = openbao_url(&self.openbao).await?;
+        wait_unsealed(&self.url).await
+    }
+
+    /// Run a command in the OpenBao container and return its standard output.
+    pub async fn exec(&self, command: &[&str]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut result = self
+            .openbao
+            .exec(ExecCommand::new(command.iter().copied()))
+            .await?;
+        Ok(result.stdout_to_vec().await?)
+    }
+}
+
+impl Drop for OpenBaoContainer {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// The host address of a running OpenBao container.
+async fn openbao_url(
+    container: &ContainerAsync<GenericImage>,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let port = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(port) = container.get_host_port_ipv4(8200).await {
+                break port;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+/// Wait until `sys/health` answers 200: initialized, unsealed and active.
+async fn wait_unsealed(url: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let address = url.trim_start_matches("http://").to_owned();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(mut stream) = tokio::net::TcpStream::connect(&address).await {
+            let request = format!("GET /v1/sys/health HTTP/1.0\r\nHost: {address}\r\n\r\n");
+            if stream.write_all(request.as_bytes()).await.is_ok() {
+                let mut status = [0_u8; 12];
+                if stream.read_exact(&mut status).await.is_ok() && status.ends_with(b"200") {
+                    return Ok(());
+                }
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("OpenBao did not report itself unsealed".into());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
