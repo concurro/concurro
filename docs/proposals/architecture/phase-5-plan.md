@@ -105,12 +105,12 @@ Each decision names the older proposal text it replaces, where there is one.
     and audits the verifier's native path. So the older plan to reuse it is withdrawn.
 12. **Codex WebSocket keeps `responses-bridge`,** pointed at the Rust gateway instead
     of agentgateway. Native WebSocket support in the gateway is later work.
-13. **The relay release deploys first, after Sponsor 0.2.0.** Protocol 5 changed the
-    native session, so one verifier can't serve both protocols
-    ([S0](../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)). The owner's Sponsors
-    upgrade first. The release splits the three caller credentials, adds owner API v1,
-    persists claim revocation and allowance, and verifies signed claims. Claims stay
-    optional until the cutover makes them required.
+13. **The relay is replaced without Python compatibility.** Sponsor 0.2.0 and the
+    verifier use protocol 5 ([S0](../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)).
+    The release splits the three caller credentials, adds owner API v1, persists claim
+    revocation and allowance, and requires signed claims for every dispatch. Old private
+    APIs are removed. The unused relay can be replaced before S7; pairing and inference
+    resume when the new accounts, exchange and gateway callers are connected.
 14. **No runner network isolation in phase 5.** The tailnet option is evaluated and
     deferred ([exchange brief](phase-5/s4-exchange.md#network-isolation)).
 
@@ -149,8 +149,8 @@ S0 ──┬──▶ S1 (relay repo) ──────────────
 
   This runs end to end in the integration harness, so integration problems surface long
   before the cutover.
-- **S1 lands independently.** It must be deployed before S5's relay route can be
-  qualified.
+- **S1 lands independently and can deploy inactive.** It must be deployed before S5's
+  relay route can be qualified; it does not serve the Python vault or exchange.
 - **S2 lands independently.** It is a prerequisite for S3's and S5's secret reads.
 
 ### Deployability
@@ -161,7 +161,7 @@ production traffic on its own (P), or needs the coordinated switch (C).
 | Slice | M | D | P | C | Running before → after | Authoritative stores before → after | Retires |
 | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
 | S0 | ✓ | — | — | — | No change | No change | — |
-| S1 | ✓ | ✓ | ✓ | — | Verifier with one bearer → verifier with three credentials and owner API v1, claims optional; the vault and Python exchange use their own credentials | Verifier registry file → plus a durable revocation and allowance store | The shared verifier bearer |
+| S1 | ✓ | ✓ | — | ✓ | Verifier with one bearer → verifier with three credentials, owner API v1 and mandatory claims; new Phase 5 callers are needed for use | Verifier registry file → plus a durable revocation and allowance store | Shared bearer and old private APIs |
 | S2 | ✓ | ✓ | ✓ | — | — → OpenBao running, unused except by its own checks | — → OpenBao database | — |
 | S3 | ✓ | ✓ | — | ✓ | Accounts proxies to the vault → the same, with native mode deployed inactive | Vault → vault until S7 | — |
 | S4 | ✓ | ✓ | — | ✓ | Python exchange → the same, with the Rust exchange deployed inactive | Exchange SQLite → unchanged until S7 | — |
@@ -273,8 +273,8 @@ installation's own commands belong in its private deployment records.
 1. **The phase 4 baseline holds.** Its live checks of credential add, reorder and
    delete, a browser command's receipt and actor, and fresh Sponsor pairing passed on
    the old stack ([S0](phase-5/s0-baseline.md#phase-4-baseline)).
-2. **S1 is deployed and serving.** The vault and the Python exchange use their own
-   verifier credentials.
+2. **S1 is deployed,** with Sponsor 0.2.0 available. Its new APIs are ready for the
+   Phase 5 callers; the Python vault and exchange no longer use the verifier.
 3. **S2 is running.** Its self-init policies are verified. OpenBao holds:
    - the org provider credentials;
    - the exchange's claim signing key and key ID;
@@ -310,7 +310,7 @@ installation's own commands belong in its private deployment records.
    - every material version written and read back.
 5. **Switch,** in this order:
    1. Update each target fork's executor workflow ref to the v2 launcher tag.
-   2. Make claims required at the verifier.
+   2. Verify the verifier has the exchange signing key and the three caller credentials.
    3. Start accounts in native mode, the exchange and the gateway.
    4. Install the edge routes for the runner and inference APIs, and point
       `responses-bridge` at the gateway.
@@ -369,7 +369,8 @@ release SHAs, recorded in the private deployment records.
 
 S0 tested the plan's original assumptions ([evidence](../../rust-phase-5-s0-evidence.md)):
 
-- **The relay protocol range was infeasible.** Sponsor 0.2.0 ships first.
+- **The relay protocol range was infeasible.** Sponsor 0.2.0 and the verifier move to
+  protocol 5 together; no Python API compatibility is required.
 - **OpenBao works as planned,** with two corrections in S2.
 - **Streaming passthrough with a usage tap works,** as does `responses-bridge` in front
   of a Rust proxy.

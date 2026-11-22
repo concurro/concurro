@@ -369,7 +369,7 @@ Released by `concurro-relay` for phase 5.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Owner API v1 | API | Accounts service (the vault until phase 5) → verifier, with the owner credential only | 5 | Full ([below](#verifier-owner-api)) |
+| Owner API v1 | API | Native accounts service → verifier, with the owner credential only | 5 | Full ([below](#verifier-owner-api)) |
 | Dispatch with a session claim | API | Gateway → verifier, with the inference credential | 5 | Full ([session claims](#session-claims)) |
 | Release | API | Exchange → verifier, with the release credential | 5 | Full ([session claims](#session-claims)) |
 
@@ -412,7 +412,7 @@ Released by `concurro-relay` for phase 5.
 | [Turn payload v1](#turn-payload-v1) | Task application → today's runner | [Turn payload v2](#turn-payload-v2) | The exchange integration module | 5, at the cutover |
 | [Vault metadata and events](#vault) | Task application → vault | The accounts service's `GET /v1/credentials/{user_id}` and `credential.<user_id>.changed` | The funding module's vault adapter (`concurro-vault-v1`) | 5 |
 | Vault owner API (`gateway/vault/vault.py:1534`) | Accounts service (the Python backoffice in phase 3) → vault, with the user's token | The accounts service's own credential store | The accounts service's credentials module ([credentials](#credentials)) | 5 |
-| Verifier owner and dispatch API, `x-concurro-binding` | Vault, exchange forwarder → verifier | Verifier owner API, dispatch with a session claim, release | None. The relay release splits the single bearer into three credentials before the cutover; the old routes go in the next relay release after it | 5 |
+| Verifier owner and dispatch API, `x-concurro-binding` | Vault, exchange forwarder → verifier | Verifier owner API, dispatch with a session claim, release | None. S1 removes the old private routes and splits the bearer into three credentials; the unused relay resumes service with the new Phase 5 callers | 5 |
 | [Python backoffice sessions](#python-backoffice-sessions) | Backoffice API → Python backoffice | The accounts service's [viewer authority](#viewer-authority) | None | 4 |
 | Python backoffice `/api/*`, `/auth/*` | Frontend → Python backoffice | The [accounts service](#accounts-service) | None; the frontend calls `/api/v2` for tasks from 3/M3, and the Python task and list pages are off from the Cutover | 4 |
 
@@ -1528,9 +1528,13 @@ change.
 ### Session claims
 
 Phase 5, full. An EdDSA (Ed25519) compact JWS that the exchange signs. The gateway sends
-it to the verifier in `x-concurro-claim` on `/dispatch/v2/*`.
+it to the verifier in `x-concurro-claim` on `/dispatch/v2/*`. Claims are mandatory;
+S1 removes unsigned dispatch and the old private routes.
 
-**Header:** `{alg: EdDSA, typ: JWT, kid}`.
+**Header:** `{alg: EdDSA, typ: JWT, kid}`. The public key file is an Ed25519 JWKS:
+`{keys: [{kty: OKP, crv: Ed25519, kid, x}]}`, where `x` is the unpadded base64url
+encoding of the raw 32-byte public key. The `hosted-api` codec signs with PKCS #8
+Ed25519 private-key bytes. Exchange reuses one immutable claim per session.
 
 **Claims:**
 
@@ -1539,7 +1543,7 @@ it to the verifier in `x-concurro-claim` on `/dispatch/v2/*`.
 | `jti` | Claim ID |
 | `iss` | `concurro-exchange` |
 | `sub` | Session ID |
-| `iat`, `exp` | Issue time and the session's deadline |
+| `iat`, `exp` | Integral Unix seconds: issue time and the session's deadline |
 | `relay_id`, `user_id`, `entry_id`, `record_id`, `version`, `route` | Must equal the verifier's registered binding |
 | `models` | The models a dispatch may request |
 | `calls`, `tokens` | The session's allowance |
@@ -1549,21 +1553,34 @@ it to the verifier in `x-concurro-claim` on `/dispatch/v2/*`.
 
 - checks the signature against its configured exchange public keys by `kid`;
 - checks the expiry, the binding equality and the model;
-- checks the claim isn't revoked and has allowance left;
+- checks the claim isn't revoked and has recorded allowance left;
+- counts every admitted call and charges observed provider tokens, including partial
+  usage on interruption. Incomplete usage is identified as such, not invented; call
+  allowance and expiry still apply when token usage is unavailable;
 - leases under `sub`, reusing one lease, link and native session for the session's
   requests, and uses `x-concurro-request` only for allowance and accounting.
 
-**Release:** `POST /release/v1/claims/{jti}` with the `release` credential revokes the
-claim and ends its leases.
+**Dispatch errors:** `{error: {code, message}}`. `403 claim_refused` covers missing,
+invalid, expired, out-of-scope or revoked claims; `409 request_reused` refuses an
+already-admitted request ID; `429 allowance_spent` reports exhausted claim allowance;
+`503 unavailable` reports a missing native link or unavailable durable storage.
+Missing or incorrect caller credentials return `403 forbidden`. A verifier allowance
+refusal is not a provider rate limit.
 
-- It answers once the revocation is durable.
+**Release:** `POST /release/v1/claims/{jti}` with the `release` credential revokes the
+claim and ends its leases. Encode `jti` as one path segment; no body is sent.
+
+- It returns `204` once revocation is durable, including on an identical retry.
+- Release before first dispatch fences the ID. Its record remains until a signed
+  claim supplies its expiry.
 - Revocations and spent allowance survive restarts until `exp`.
 
 ### Verifier owner API
 
 Phase 5, full. Part of the relay release
 ([relay brief](architecture/phase-5/s1-relay.md)), behind the `owner` credential, held by
-the accounts service (the vault until the cutover).
+the native accounts service. S1 removes the old vault-facing verifier API; it has no
+compatibility adapter.
 
 | Call | Purpose |
 | ---- | ---- |
@@ -1572,7 +1589,7 @@ the accounts service (the vault until the cutover).
 | `GET /owner/v1/relays?user_id=` | `{started, checked, relays: [{relay_id, idle, last_seen, active: [{slot, route, entry_id, version, since, task?}]}]}` |
 
 - The bearer goes in `Authorization`.
-- Times are RFC 3339.
+- Times are RFC 3339; `last_seen` is null when no liveness has been observed.
 - Every error is `{error: {code, message}}`.
 
 ### Target identities

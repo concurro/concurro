@@ -1,7 +1,9 @@
 # S1: relay verifier release
 
 Part of the [phase 5 plan](../phase-5-plan.md). The work is in `concurro-relay`, and it
-deploys and serves production on its own, before the cutover.
+can deploy before the cutover, but Sponsor functionality requires the new Phase 5
+callers. The relay is unused during this replacement; Python API compatibility is
+not required.
 
 ## Today
 
@@ -18,27 +20,25 @@ bearer on its private listener:
 
 ## Scope
 
-1. **Sponsor 0.2.0 first.** S0 found that protocol 5 changed the native session the
+1. **Sponsor 0.2.0 and a protocol-5 verifier.** S0 found that protocol 5 changed the native session the
    Sponsor and the verifier run together, not just the link messages
    ([evidence](../../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)). Accepting
    protocol 4 would mean keeping two native session implementations.
    - So Sponsor 0.2.0 is released from relay `main`, speaking protocol 5.
-   - The owner's Sponsor devices upgrade to it.
-   - Only then is the S1 verifier deployed. It stays at exact protocol 5.
+   - Sponsor and verifier are upgraded together before relay qualification.
+   - The verifier accepts only protocol 5; no dual-protocol transition is needed.
 2. **Three caller credentials,** each a separate token file and each accepted only on
    its own routes, as `Authorization: Bearer`:
 
-   | Credential | Routes | Holder from S7 | Holder until S7 |
-   | ---- | ---- | ---- | ---- |
-   | `owner` | `/owner/v1/*`, and the old `/approve`, `/pending`, `/status` | Accounts | Vault |
-   | `inference` | `/dispatch/v2/*`, and the old `/dispatch/v1/*` | Gateway | Python exchange |
-   | `release` | `/release/v1/*`, and the old `/release` | Exchange | — (the Python exchange uses `inference`) |
+   | Credential | Routes | Holder |
+   | ---- | ---- | ---- |
+   | `owner` | `/owner/v1/*` | Accounts |
+   | `inference` | `/dispatch/v2/*` | Gateway |
+   | `release` | `/release/v1/*` | Exchange |
 
-   The old routes keep accepting `x-concurro-verifier-auth`. The old `/release` also
-   accepts the `inference` credential until S7, because the Python exchange reads one
-   token file for both dispatch and release (`exchange.py:1777-1779`). So the vault reads
-   the owner token, the Python exchange reads the inference token, and neither needs a
-   code change.
+   Remove the old private routes and `x-concurro-verifier-auth`. The Python vault
+   and exchange cannot call the replacement verifier; no compatibility bridge is
+   introduced. Sponsor registration and link transport remain available.
 3. **Owner API v1** ([contract](../../contracts.md#verifier-owner-api)):
    `GET /owner/v1/registrations/{code}`, `POST /owner/v1/approvals` and
    `GET /owner/v1/relays?user_id=`.
@@ -61,16 +61,19 @@ bearer on its private listener:
    - **Calls** are counted when a dispatch is admitted.
    - **Tokens** are counted from the usage the verifier already parses: Codex's
      `Turn.usage`, and for Claude a tap on the SSE stream through `summarize_sse`.
-   - A dispatch is refused once either is spent. A stream already running isn't cut,
-     so it may overshoot by that one request, within the owner's tolerance.
+   - A dispatch is refused once either recorded allowance is spent. A stream already
+     running isn't cut, so known usage may overshoot by that one request.
+   - Cancellation stops provider work promptly. Observed partial usage is charged as
+     a lower bound, with incomplete accounting identified in the journal. Unavailable
+     usage is not invented; call allowance and expiry still bound subsequent requests.
+     The one-request token overshoot bound assumes usage was observed.
 6. **Persisted revocation and allowance.** `POST /release/v1/claims/{claim_id}`
    revokes a whole claim and ends its leases.
    - It answers only after the revocation is durable.
    - Revoked claims and spent allowance live in an append-only journal beside the
      registry, written with the registry's atomic-file and journal pattern. They
      survive restarts and are pruned after the claim's expiry.
-   - The old per-turn `/release` stays for the Python exchange until S7.
-7. **`--require-claims`.** When set, `/dispatch/v1/*` is refused. S7 sets it.
+7. **Claims are always required.** There is no unsigned dispatch or compatibility flag.
 8. **A `hosted-api` library crate** carries the owner, dispatch and release types and
    the claim codec. Concurro depends on it through a git tag. The hosted binary uses it
    too, so the types are defined once.
@@ -80,7 +83,7 @@ bearer on its private listener:
 - TLS on the private listener. It stays on its internal network; TLS is later
   hardening.
 - Changes to the Sponsor client beyond releasing current `main` as 0.2.0.
-- Removing the old routes. The relay release after S7 removes them.
+- Python vault or exchange bridges to the replacement verifier.
 
 ## Release
 
@@ -88,19 +91,19 @@ bearer on its private listener:
   process. The owner upgrades their Sponsor devices to it.
 - Tag the relay repository, and build the verifier image from that tag.
 - Document the new flags in its README: the three token files, the exchange public key
-  file with its key ID, `--require-claims`, and the revocation journal path.
-- `concurro-deploy` installs three token files in place of the shared one. The vault
-  then reads the owner token, and the Python exchange reads the inference token, which
-  the old `/release` also accepts until S7. The release token waits for the Rust
-  exchange.
+  file with its key ID, and the revocation journal path.
+- `concurro-deploy` installs three token files in place of the shared one. Only the
+  native accounts service, Rust gateway and Rust exchange receive their respective
+  credentials. Until those callers are connected, pairing through the backoffice and
+  relay inference are unavailable. S7 qualifies them together.
 
 ## Acceptance
 
 - A Sponsor 0.2.0 client registers, links and serves a dispatch against the S1 verifier.
   A protocol 4 client is refused with the existing "update concurro-relay" message.
 - Each credential is refused on the other credentials' routes.
-- The old routes keep working with their matching credential, which is the vault's and
-  the Python exchange's path until S7.
+- The removed private routes are unavailable, and the old authentication header is
+  refused on the new APIs.
 - A claim signed with an unknown `kid`, expired, scoped to another relay, record,
   version or route, or naming a model outside its list is refused, and no lease is
   opened.
@@ -109,6 +112,6 @@ bearer on its private listener:
 - Allowance is enforced: one call more than `calls` is refused. A token count past
   `tokens`, from a recorded Claude stream and a recorded Codex turn, refuses the next
   call.
-- With `--require-claims`, `/dispatch/v1/*` is refused.
-- Live, after deployment: the Phase 4 Sponsor pairing check passes again, using the
-  vault's new owner credential.
+- Dispatch without a signed claim is refused.
+- Live, with the Phase 5 callers connected: Sponsor pairing passes through the native
+  accounts service, and the Rust gateway and exchange complete a relay turn.

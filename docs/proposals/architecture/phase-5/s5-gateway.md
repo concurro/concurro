@@ -68,6 +68,9 @@ it holds no binding state.
 | `claude-subscription`, relay | Verifier `/dispatch/v2/messages` | `Authorization: Bearer <inference credential>`, `x-concurro-claim`, `x-concurro-request` |
 | `chatgpt-subscription`, relay | Verifier `/dispatch/v2/responses` | Same |
 
+- Relay errors use the shared `hosted-api` codes before provider error classification.
+  `429 allowance_spent` means claim-budget exhaustion, not provider throttling;
+  `409 request_reused` must not cause another dispatch with a fresh request ID.
 - Upstream base URLs are settings, so tests point them at fakes.
 - **Codex WebSocket** keeps reaching the gateway through `responses-bridge`, which turns
   each turn into a streaming `POST /v1/responses` with the session key.
