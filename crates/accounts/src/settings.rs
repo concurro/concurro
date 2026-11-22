@@ -4,6 +4,7 @@ use std::net::Ipv6Addr;
 
 use anyhow::{Context, Result, ensure};
 use concurro_config::Validate;
+use concurro_secrets::OpenBaoSettings;
 use reqwest::Url;
 use serde::Deserialize;
 
@@ -46,6 +47,92 @@ pub struct Settings {
     pub relay_server: Option<String>,
     /// Optional HTTPS download URL shown to owners.
     pub relay_download_url: Option<String>,
+    /// The native credential store, its metadata API and maintenance; absent until it is
+    /// deployed.
+    pub credentials: Option<CredentialSettings>,
+    /// Event publication for credential change facts; required with `credentials`.
+    pub events: Option<EventSettings>,
+}
+
+/// Native credential store settings.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSettings {
+    /// Which store serves the browser's credential routes.
+    #[serde(default)]
+    pub store: CredentialStore,
+    /// OpenBao, where version material is created.
+    pub openbao: OpenBaoSettings,
+    /// Bearer file the task application presents to read credential metadata.
+    pub metadata_bearer_file: String,
+    /// The relay verifier's owner API, for Sponsor approval and status.
+    pub verifier: Option<VerifierSettings>,
+}
+
+/// The relay verifier's owner API.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifierSettings {
+    /// Owner API origin on the credential-private network.
+    pub url: String,
+    /// File holding the `owner` bearer.
+    pub owner_token_file: String,
+}
+
+/// The store behind the browser's credential routes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CredentialStore {
+    /// The Python vault's owner API, at `vault_url`.
+    #[default]
+    Vault,
+    /// Accounts' native store.
+    Native,
+}
+
+/// The accounts event stream's NATS connection and outbox limits.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventSettings {
+    /// NATS server URL.
+    pub nats_url: String,
+    /// Optional NATS credentials file.
+    pub nats_credentials_file: Option<String>,
+    /// Maximum event size accepted to the outbox.
+    #[serde(default = "default_max_message_bytes")]
+    pub max_message_bytes: usize,
+    /// How long published outbox rows are kept.
+    #[serde(default = "default_published_retention_seconds")]
+    pub published_retention_seconds: u64,
+    /// Idle outbox poll interval.
+    #[serde(default = "default_forwarder_poll_ms")]
+    pub forwarder_poll_ms: u64,
+    /// Failed applications of a consumed event before it is parked.
+    #[serde(default = "default_consumer_max_attempts")]
+    pub consumer_max_attempts: i32,
+    /// How often held consumed events are retried.
+    #[serde(default = "default_consumer_poll_ms")]
+    pub consumer_poll_ms: u64,
+}
+
+fn default_consumer_max_attempts() -> i32 {
+    25
+}
+
+fn default_consumer_poll_ms() -> u64 {
+    1000
+}
+
+fn default_max_message_bytes() -> usize {
+    1024 * 1024
+}
+
+fn default_published_retention_seconds() -> u64 {
+    7 * 24 * 3600
+}
+
+fn default_forwarder_poll_ms() -> u64 {
+    1000
 }
 
 impl Validate for Settings {
@@ -60,6 +147,19 @@ impl Validate for Settings {
             self.listen != self.internal_listen,
             "accounts listeners must be separate"
         );
+        ensure!(
+            self.credentials.is_some() == self.events.is_some(),
+            "accounts credentials and events must be configured together"
+        );
+        if let Some(events) = &self.events {
+            ensure!(
+                events.max_message_bytes > 0
+                    && events.forwarder_poll_ms > 0
+                    && events.consumer_max_attempts > 0
+                    && events.consumer_poll_ms > 0,
+                "accounts event limits must be positive"
+            );
+        }
         if let Some(server) = self
             .relay_server
             .as_deref()
@@ -138,6 +238,15 @@ impl Settings {
         format!("{}/auth/callback", self.public_url.trim_end_matches('/'))
     }
 
+    /// Whether the native credential store serves the browser routes and runs its
+    /// maintenance (settlement and expiry). Until then a vault import may be in
+    /// progress, which maintenance must not change.
+    pub fn native_store_active(&self) -> bool {
+        self.credentials
+            .as_ref()
+            .is_some_and(|credentials| credentials.store == CredentialStore::Native)
+    }
+
     /// Whether browsers require TLS for issued cookies.
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
@@ -146,7 +255,38 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::relay_address;
+    use super::{Settings, relay_address};
+
+    /// Settings with optional credential and event sections.
+    fn settings(credentials: Option<serde_json::Value>) -> Settings {
+        let mut value = serde_json::json!({
+            "listen": "0.0.0.0:1", "internal_listen": "0.0.0.0:2", "database_url_file": "x",
+            "logout_key_file": "x", "public_url": "https://example.invalid",
+            "oauth_client_id": "x", "oauth_client_secret_file": "x",
+            "github_api_base": "https://api.github.com", "reader_app_id": 1,
+            "reader_private_key_file": "x", "command_proof_private_key_file": "x",
+            "viewer_authority_bearer_file": "x", "task_api_url": "http://tasks.invalid",
+        });
+        if let Some(mut credentials) = credentials {
+            credentials["metadata_bearer_file"] = "x".into();
+            credentials["openbao"] = serde_json::json!({"url": "http://openbao.invalid",
+                "role_id": "r", "secret_id_file": "s"});
+            value["credentials"] = credentials;
+            value["events"] = serde_json::json!({"nats_url": "nats://nats.invalid"});
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// The native store, and its maintenance, stay inactive unless selected, so a vault
+    /// import in progress isn't changed by settlement or expiry.
+    #[test]
+    fn native_store_activation() {
+        use serde_json::json;
+        assert!(!settings(None).native_store_active());
+        assert!(!settings(Some(json!({}))).native_store_active());
+        assert!(!settings(Some(json!({"store": "vault"}))).native_store_active());
+        assert!(settings(Some(json!({"store": "native"}))).native_store_active());
+    }
 
     /// Match Python's configured relay address grammar, including default HTTP port 80.
     #[test]

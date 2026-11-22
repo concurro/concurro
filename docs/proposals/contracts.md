@@ -1289,8 +1289,9 @@ these are the target contracts that replace it.
 internal listener, for the task application's funding module, authorized by the funding
 module's own bearer. The response is field for field the vault's
 `/metadata/{user_id}?at=` (`gateway/vault/vault.py:1086-1165`), plus `relay_id`. The
-task application's client keeps `custody` and `relay_id`, and selection freezes both into
-the grant's credential:
+task application's client (`concurro-vault-v1`, `MetadataClient::accounts`) keeps
+`custody` and `relay_id`, and selection freezes both into the grant's credential. The
+metadata's `vault` custody is the grant's `secret_store` (`Credential::grant_custody`):
 
 | Field | Meaning |
 | ---- | ---- |
@@ -1303,7 +1304,8 @@ the grant's credential:
 | `lists` | `{provider: {revision, entries}}` |
 
 Implicit fill reads it with `at` set to the boundary; a new attempt reads it without
-`at`.
+`at`. A wrong bearer is `401`; a `user_id` below 1 or an `at` that isn't an aware ISO-8601
+instant is `422`, with `{"detail": ...}` as the accounts service's other errors.
 
 **Status rules** are the vault's:
 
@@ -1311,15 +1313,23 @@ Implicit fill reads it with `at` set to the boundary; a new attempt reads it wit
 - A known expiry at or before the cutoff makes it `invalid`.
 - An entry missing from its list is `enabled = false` and `removed = true`.
 
-**`credential.<user_id>.changed`.** A fact on the accounts service's stream, appended in
-the transaction of each committed change, with ID `credential:<sequence>`.
+**`credential.<user_id>.changed`.** A fact (`credential.changed` v1) on the accounts
+service's `ACCOUNTS` stream, appended in the transaction of each committed change. Its
+event ID is the UUID v5 of `credential:<sequence>`.
 
 - **Data:** `{user_id, sequence, entry_id, provider, change, list_revision, revoked,
-  at}`.
+  at}`:
+  - `user_id` is the GitHub owner ID as a number;
+  - `sequence` increases across all owners;
+  - `entry_id` is `null` for a reorder;
+  - `list_revision` is the provider list's revision after the change.
 - **`change`** is `added`, `replaced`, `edited`, `reordered`, `removed` or `unusable`.
-- **`revoked`** lists each `{record_id, version, route, custody}` the change retired:
-  the previous versions on a replace, every version on a remove, and the expired version
-  on `unusable`.
+  Enabling and disabling an entry are `edited`.
+- **`revoked`** lists each `{record_id, version, route, custody}` the change retired, with
+  `custody` as in the metadata (`vault` or `relay`):
+  - the previous versions on a replace;
+  - every version on a remove;
+  - the expired version on `unusable`.
 
 The task application's funding module revises every grant on a revoked version to
 `revoked`, and asks the exchange to [revoke](#exchange-operator-api) those still issued.

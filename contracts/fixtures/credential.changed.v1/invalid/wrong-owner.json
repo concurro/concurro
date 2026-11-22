@@ -1,0 +1,25 @@
+{
+  "id": "6c3a8a5e-3f0d-5e1e-9b0b-2b1d6f0f4c11",
+  "version": 1,
+  "producer": "accounts",
+  "occurred_at": "2027-01-15T08:04:00Z",
+  "type": "credential.202.changed",
+  "kind": "fact",
+  "data": {
+    "user_id": 101,
+    "sequence": 4,
+    "entry_id": "e1989f460afb6e69b8631ada6af43dee",
+    "provider": "anthropic",
+    "change": "replaced",
+    "list_revision": 3,
+    "revoked": [
+      {
+        "record_id": "58c9ba622eea630110e0e19fcaafcf43214ca1a3e618a124a27dfbdde45babba",
+        "version": 1,
+        "route": "anthropic-api-key",
+        "custody": "vault"
+      }
+    ],
+    "at": "2027-01-15T08:04:00Z"
+  }
+}

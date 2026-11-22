@@ -24,7 +24,11 @@ impl EventId {
 
     /// Derive the stable ID of one GitHub delivery mapping revision.
     pub fn github(delivery_id: &str, mapping_revision: u32) -> Self {
-        let name = format!("{delivery_id}:{mapping_revision}");
+        Self::named(&format!("{delivery_id}:{mapping_revision}"))
+    }
+
+    /// Derive a stable ID from a producer-scoped name.
+    pub fn named(name: &str) -> Self {
         Self(Uuid::new_v5(&Uuid::NAMESPACE_OID, name.as_bytes()))
     }
 }

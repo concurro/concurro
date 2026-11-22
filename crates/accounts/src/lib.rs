@@ -2,8 +2,9 @@
 
 mod browser;
 pub mod commands;
-mod credentials;
+pub mod credentials;
 pub mod github;
+pub mod import;
 mod internal;
 pub mod logout;
 pub mod oauth;
@@ -56,6 +57,8 @@ pub struct AccountState {
     commands: Option<Commands>,
     /// Owner-scoped credential adapter, attached by the accounts binary.
     credentials: Option<Credentials>,
+    /// Native credential metadata and the bearer the task application presents for it.
+    credential_metadata: Option<(credentials::Native, String)>,
 }
 
 impl AccountState {
@@ -80,6 +83,7 @@ impl AccountState {
             tier_cache: Arc::new(Mutex::new(HashMap::new())),
             commands: None,
             credentials: None,
+            credential_metadata: None,
         }
     }
 
@@ -92,6 +96,12 @@ impl AccountState {
     /// Attach owner-scoped vault calls and relay setup details to browser routes.
     pub fn with_credentials(mut self, credentials: Credentials) -> Self {
         self.credentials = Some(credentials);
+        self
+    }
+
+    /// Serve the native store's credential metadata to holders of `bearer`.
+    pub fn with_credential_metadata(mut self, native: credentials::Native, bearer: String) -> Self {
+        self.credential_metadata = Some((native, bearer));
         self
     }
 }

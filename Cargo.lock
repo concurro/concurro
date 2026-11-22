@@ -595,6 +595,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-nats",
  "axum",
  "axum-extra",
  "base64 0.22.1",
@@ -605,8 +606,12 @@ dependencies = [
  "concurro-config",
  "concurro-contracts",
  "concurro-db",
+ "concurro-events",
+ "concurro-events-nats",
  "concurro-events-postgres",
  "concurro-github-v1",
+ "concurro-relay-hosted-api",
+ "concurro-secrets",
  "concurro-tasks",
  "concurro-tasks-postgres",
  "concurro-telemetry",
@@ -617,6 +622,7 @@ dependencies = [
  "oauth2",
  "rand 0.10.4",
  "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -782,6 +788,7 @@ dependencies = [
  "concurro-tasks-core",
  "concurro-telemetry",
  "concurro-testkit",
+ "concurro-vault-v1",
  "reqwest",
  "serde",
  "serde_json",
@@ -920,6 +927,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "concurro-relay-hosted-api"
+version = "0.1.1"
+source = "git+https://github.com/concurro/concurro-relay?rev=c1ea48bfa3fbd67a4531e8bfa9f28c166721853d#c1ea48bfa3fbd67a4531e8bfa9f28c166721853d"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "percent-encoding",
+ "ring",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
 name = "concurro-secrets"
 version = "0.1.0"
 dependencies = [
@@ -1055,6 +1076,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "concurro-contracts",
  "reqwest",
  "serde",
  "serde_json",
@@ -2869,6 +2891,7 @@ version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
 dependencies = [
+ "cc",
  "pkg-config",
  "vcpkg",
 ]

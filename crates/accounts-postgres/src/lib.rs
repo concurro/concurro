@@ -1,4 +1,8 @@
-//! Durable logout revocation receipts and encrypted token jobs.
+//! Accounts storage: durable logout revocation receipts and encrypted token jobs, the
+//! native credential store ([`credentials`]) and its vault import ([`vault_import`]).
+
+pub mod credentials;
+pub mod vault_import;
 
 use concurro_db::Database;
 use graphile_worker::WorkerUtils;

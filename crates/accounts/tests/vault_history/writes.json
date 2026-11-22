@@ -1,0 +1,1764 @@
+{
+ "reads": [
+  {
+   "at": "2027-01-15T08:01:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:01:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "58c9ba622eea630110e0e19fcaafcf43214ca1a3e618a124a27dfbdde45babba",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "replaced",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:01:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:02:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:01:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "58c9ba622eea630110e0e19fcaafcf43214ca1a3e618a124a27dfbdde45babba",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "replaced",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:01:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Second",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153",
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 2
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:03:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:01:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "58c9ba622eea630110e0e19fcaafcf43214ca1a3e618a124a27dfbdde45babba",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "replaced",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:01:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Second",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153",
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 2
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:04:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Second",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153",
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 3
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:05:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Second",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153",
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 3
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:06:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "ea1896531e1d4f6c8c51b1b334ddd153",
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 4
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:07:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": false,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "valid",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74",
+       "ea1896531e1d4f6c8c51b1b334ddd153"
+      ],
+      "revision": 5
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:08:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": null,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": true,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "revoked",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 6
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:09:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": null,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": true,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "revoked",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 6
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:10:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": null,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": true,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "revoked",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 6
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": "2027-01-15T08:11:00+00:00",
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": null,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": true,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "revoked",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 6
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  },
+  {
+   "at": null,
+   "response": {
+    "credentials": [
+     {
+      "created": "2027-01-15T08:04:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "api_key",
+      "models": null,
+      "name": "First",
+      "position": null,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+      "removed": true,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "status": "revoked",
+      "status_reason": "revoked",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:08:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 2
+     },
+     {
+      "created": "2027-01-15T08:03:00+00:00",
+      "custody": "vault",
+      "enabled": true,
+      "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Third",
+      "position": 0,
+      "profiles": [
+       {
+        "profile": "gpt-high",
+        "target": "acme/demo"
+       }
+      ],
+      "provider": "openai",
+      "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+      "removed": false,
+      "roles": [],
+      "route": "chatgpt-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:03:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     },
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "custody": "vault",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "expires_at": null,
+      "expiry_known": false,
+      "kind": "subscription",
+      "models": null,
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+      "removed": false,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "status": "valid",
+      "status_reason": "stored",
+      "token_revision": 1,
+      "updated": "2027-01-15T08:02:00+00:00",
+      "user_id": "101",
+      "validated": null,
+      "version": 1
+     }
+    ],
+    "history_complete": true,
+    "lists": {
+     "anthropic": {
+      "entries": [
+       "f5b5e35462024e55b7e9562055bcdc74"
+      ],
+      "revision": 6
+     },
+     "openai": {
+      "entries": [
+       "d4927543ec6e4a1b8adf60316709d881"
+      ],
+      "revision": 1
+     }
+    }
+   }
+  }
+ ],
+ "steps": [
+  {
+   "at": "2027-01-15T08:01:00+00:00",
+   "operation": "add",
+   "request": {
+    "mutation_id": "writes-add-first-01",
+    "name": "First",
+    "profiles": [],
+    "roles": [
+     "triage"
+    ],
+    "route": "anthropic-api-key",
+    "secret": "sk-ant-api03-firstAAAA"
+   },
+   "response": {
+    "created": "2027-01-15T08:01:00+00:00",
+    "enabled": true,
+    "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+    "kind": "api_key",
+    "name": "First",
+    "position": 0,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "AAAA:10d7a8cb",
+     "kind": "api_key",
+     "last_used": null,
+     "models": null,
+     "record_id": "58c9ba622eea630110e0e19fcaafcf43214ca1a3e618a124a27dfbdde45babba",
+     "relay_id": null,
+     "route": "anthropic-api-key",
+     "status": "valid",
+     "status_reason": "stored",
+     "updated": "2027-01-15T08:01:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 1
+    },
+    "removed": null,
+    "revision": 1,
+    "roles": [
+     "triage"
+    ],
+    "route": "anthropic-api-key",
+    "updated": "2027-01-15T08:01:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:02:00+00:00",
+   "operation": "add",
+   "request": {
+    "mutation_id": "writes-add-second-1",
+    "name": "Second",
+    "profiles": [],
+    "roles": [],
+    "route": "claude-subscription",
+    "secret": "sk-ant-oat01-secondBBBB"
+   },
+   "response": {
+    "created": "2027-01-15T08:02:00+00:00",
+    "enabled": true,
+    "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+    "kind": "subscription",
+    "name": "Second",
+    "position": 1,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "BBBB:fcb883ed",
+     "kind": "subscription",
+     "last_used": null,
+     "models": null,
+     "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+     "relay_id": null,
+     "route": "claude-subscription",
+     "status": "valid",
+     "status_reason": "stored",
+     "updated": "2027-01-15T08:02:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 1
+    },
+    "removed": null,
+    "revision": 1,
+    "roles": [],
+    "route": "claude-subscription",
+    "updated": "2027-01-15T08:02:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:03:00+00:00",
+   "operation": "add",
+   "request": {
+    "account_id": "acct-1",
+    "mutation_id": "writes-add-third-01",
+    "name": "Third",
+    "profiles": [
+     {
+      "profile": "gpt-high",
+      "target": "acme/demo"
+     }
+    ],
+    "roles": [],
+    "route": "chatgpt-subscription",
+    "secret": "chatgpt-token-CCCC"
+   },
+   "response": {
+    "created": "2027-01-15T08:03:00+00:00",
+    "enabled": true,
+    "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+    "kind": "subscription",
+    "name": "Third",
+    "position": 0,
+    "profiles": [
+     {
+      "profile": "gpt-high",
+      "target": "acme/demo"
+     }
+    ],
+    "provider": "openai",
+    "record": {
+     "account_label": "Supplied ChatGPT account ba36a4ed",
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "CCCC:f25501df",
+     "kind": "subscription",
+     "last_used": null,
+     "models": null,
+     "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+     "relay_id": null,
+     "route": "chatgpt-subscription",
+     "status": "valid",
+     "status_reason": "stored",
+     "updated": "2027-01-15T08:03:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 1
+    },
+    "removed": null,
+    "revision": 1,
+    "roles": [],
+    "route": "chatgpt-subscription",
+    "updated": "2027-01-15T08:03:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:04:00+00:00",
+   "operation": "replace",
+   "request": {
+    "entry": 0,
+    "mutation_id": "writes-replace-0001",
+    "revision": 1,
+    "secret": "sk-ant-api03-replacedDDDD"
+   },
+   "response": {
+    "created": "2027-01-15T08:01:00+00:00",
+    "enabled": true,
+    "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+    "kind": "api_key",
+    "name": "First",
+    "position": 0,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "DDDD:df040bca",
+     "kind": "api_key",
+     "last_used": null,
+     "models": null,
+     "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+     "relay_id": null,
+     "route": "anthropic-api-key",
+     "status": "valid",
+     "status_reason": "stored",
+     "updated": "2027-01-15T08:04:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 2
+    },
+    "removed": null,
+    "revision": 2,
+    "roles": [
+     "triage"
+    ],
+    "route": "anthropic-api-key",
+    "updated": "2027-01-15T08:04:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:05:00+00:00",
+   "operation": "replace",
+   "request": {
+    "entry": 0,
+    "mutation_id": "writes-replace-0002",
+    "revision": 1,
+    "secret": "sk-ant-api03-staleEEEE"
+   },
+   "response": {
+    "error": "credential changed; refresh before retrying"
+   },
+   "status": 409
+  },
+  {
+   "at": "2027-01-15T08:06:00+00:00",
+   "operation": "edit",
+   "request": {
+    "enabled": false,
+    "entry": 1,
+    "mutation_id": "writes-edit-000001",
+    "name": "Renamed",
+    "revision": 1,
+    "roles": [
+     "planner"
+    ]
+   },
+   "response": {
+    "created": "2027-01-15T08:02:00+00:00",
+    "enabled": false,
+    "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+    "kind": "subscription",
+    "name": "Renamed",
+    "position": 1,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "BBBB:fcb883ed",
+     "kind": "subscription",
+     "last_used": null,
+     "models": null,
+     "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+     "relay_id": null,
+     "route": "claude-subscription",
+     "status": "valid",
+     "status_reason": "stored",
+     "updated": "2027-01-15T08:02:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 1
+    },
+    "removed": null,
+    "revision": 2,
+    "roles": [
+     "planner"
+    ],
+    "route": "claude-subscription",
+    "updated": "2027-01-15T08:06:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:07:00+00:00",
+   "operation": "reorder",
+   "request": {
+    "entries": [
+     1,
+     0
+    ],
+    "mutation_id": "writes-reorder-0001",
+    "provider": "anthropic",
+    "revision": 4
+   },
+   "response": {
+    "entries": [
+     {
+      "created": "2027-01-15T08:02:00+00:00",
+      "enabled": false,
+      "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+      "kind": "subscription",
+      "name": "Renamed",
+      "position": 0,
+      "profiles": [],
+      "provider": "anthropic",
+      "record": {
+       "account_label": null,
+       "custody": "vault",
+       "expires_at": null,
+       "expiry_known": false,
+       "fingerprint": "BBBB:fcb883ed",
+       "kind": "subscription",
+       "last_used": null,
+       "models": null,
+       "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+       "relay_id": null,
+       "route": "claude-subscription",
+       "status": "valid",
+       "status_reason": "stored",
+       "updated": "2027-01-15T08:02:00+00:00",
+       "validated": null,
+       "verified_account": null,
+       "version": 1
+      },
+      "removed": null,
+      "revision": 2,
+      "roles": [
+       "planner"
+      ],
+      "route": "claude-subscription",
+      "updated": "2027-01-15T08:06:00+00:00"
+     },
+     {
+      "created": "2027-01-15T08:01:00+00:00",
+      "enabled": true,
+      "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+      "kind": "api_key",
+      "name": "First",
+      "position": 1,
+      "profiles": [],
+      "provider": "anthropic",
+      "record": {
+       "account_label": null,
+       "custody": "vault",
+       "expires_at": null,
+       "expiry_known": false,
+       "fingerprint": "DDDD:df040bca",
+       "kind": "api_key",
+       "last_used": null,
+       "models": null,
+       "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+       "relay_id": null,
+       "route": "anthropic-api-key",
+       "status": "valid",
+       "status_reason": "stored",
+       "updated": "2027-01-15T08:04:00+00:00",
+       "validated": null,
+       "verified_account": null,
+       "version": 2
+      },
+      "removed": null,
+      "revision": 2,
+      "roles": [
+       "triage"
+      ],
+      "route": "anthropic-api-key",
+      "updated": "2027-01-15T08:04:00+00:00"
+     }
+    ],
+    "provider": "anthropic",
+    "revision": 5
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:08:00+00:00",
+   "operation": "remove",
+   "request": {
+    "entry": 0,
+    "revision": 2
+   },
+   "response": {
+    "created": "2027-01-15T08:01:00+00:00",
+    "enabled": true,
+    "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+    "kind": "api_key",
+    "name": "First",
+    "position": null,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "DDDD:df040bca",
+     "kind": "api_key",
+     "last_used": null,
+     "models": null,
+     "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+     "relay_id": null,
+     "route": "anthropic-api-key",
+     "status": "revoked",
+     "status_reason": "revoked",
+     "updated": "2027-01-15T08:08:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 2
+    },
+    "removed": "2027-01-15T08:08:00+00:00",
+    "revision": 3,
+    "roles": [
+     "triage"
+    ],
+    "route": "anthropic-api-key",
+    "updated": "2027-01-15T08:08:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:09:00+00:00",
+   "operation": "remove",
+   "request": {
+    "entry": 0,
+    "revision": 2
+   },
+   "response": {
+    "created": "2027-01-15T08:01:00+00:00",
+    "enabled": true,
+    "entry_id": "ea1896531e1d4f6c8c51b1b334ddd153",
+    "kind": "api_key",
+    "name": "First",
+    "position": null,
+    "profiles": [],
+    "provider": "anthropic",
+    "record": {
+     "account_label": null,
+     "custody": "vault",
+     "expires_at": null,
+     "expiry_known": false,
+     "fingerprint": "DDDD:df040bca",
+     "kind": "api_key",
+     "last_used": null,
+     "models": null,
+     "record_id": "8d4b89b95737a8801f717a730654820da32c16e5fd0d39c5c4a853da63165d05",
+     "relay_id": null,
+     "route": "anthropic-api-key",
+     "status": "revoked",
+     "status_reason": "revoked",
+     "updated": "2027-01-15T08:08:00+00:00",
+     "validated": null,
+     "verified_account": null,
+     "version": 2
+    },
+    "removed": "2027-01-15T08:08:00+00:00",
+    "revision": 3,
+    "roles": [
+     "triage"
+    ],
+    "route": "anthropic-api-key",
+    "updated": "2027-01-15T08:08:00+00:00"
+   },
+   "status": 200
+  },
+  {
+   "at": "2027-01-15T08:10:00+00:00",
+   "operation": "edit",
+   "request": {
+    "entry": 1,
+    "mutation_id": "writes-edit-000002",
+    "name": "Stale",
+    "revision": 1
+   },
+   "response": {
+    "error": "credential changed; refresh before retrying"
+   },
+   "status": 409
+  },
+  {
+   "at": "2027-01-15T08:11:00+00:00",
+   "operation": "listing",
+   "request": {},
+   "response": {
+    "providers": [
+     {
+      "entries": [
+       {
+        "created": "2027-01-15T08:02:00+00:00",
+        "enabled": false,
+        "entry_id": "f5b5e35462024e55b7e9562055bcdc74",
+        "kind": "subscription",
+        "name": "Renamed",
+        "position": 0,
+        "profiles": [],
+        "provider": "anthropic",
+        "record": {
+         "account_label": null,
+         "custody": "vault",
+         "expires_at": null,
+         "expiry_known": false,
+         "fingerprint": "BBBB:fcb883ed",
+         "kind": "subscription",
+         "last_used": null,
+         "models": null,
+         "record_id": "910948225309dbc2be6ae5c2bddf18bcd1f18f919af90f5570c7737b14a3a30f",
+         "relay_id": null,
+         "route": "claude-subscription",
+         "status": "valid",
+         "status_reason": "stored",
+         "updated": "2027-01-15T08:02:00+00:00",
+         "validated": null,
+         "verified_account": null,
+         "version": 1
+        },
+        "removed": null,
+        "revision": 2,
+        "roles": [
+         "planner"
+        ],
+        "route": "claude-subscription",
+        "updated": "2027-01-15T08:06:00+00:00"
+       }
+      ],
+      "provider": "anthropic",
+      "revision": 6
+     },
+     {
+      "entries": [
+       {
+        "created": "2027-01-15T08:03:00+00:00",
+        "enabled": true,
+        "entry_id": "d4927543ec6e4a1b8adf60316709d881",
+        "kind": "subscription",
+        "name": "Third",
+        "position": 0,
+        "profiles": [
+         {
+          "profile": "gpt-high",
+          "target": "acme/demo"
+         }
+        ],
+        "provider": "openai",
+        "record": {
+         "account_label": "Supplied ChatGPT account ba36a4ed",
+         "custody": "vault",
+         "expires_at": null,
+         "expiry_known": false,
+         "fingerprint": "CCCC:f25501df",
+         "kind": "subscription",
+         "last_used": null,
+         "models": null,
+         "record_id": "1ef9e7f4aa072b26d5d00e51caca5224088653a050858a2d44b169c646c4c157",
+         "relay_id": null,
+         "route": "chatgpt-subscription",
+         "status": "valid",
+         "status_reason": "stored",
+         "updated": "2027-01-15T08:03:00+00:00",
+         "validated": null,
+         "verified_account": null,
+         "version": 1
+        },
+        "removed": null,
+        "revision": 1,
+        "roles": [],
+        "route": "chatgpt-subscription",
+        "updated": "2027-01-15T08:03:00+00:00"
+       }
+      ],
+      "provider": "openai",
+      "revision": 1
+     }
+    ],
+    "types": [
+     {
+      "kind": "api_key",
+      "label": "OpenAI API key",
+      "provider": "openai",
+      "route": "openai-api-key"
+     },
+     {
+      "kind": "api_key",
+      "label": "Anthropic API key",
+      "provider": "anthropic",
+      "route": "anthropic-api-key"
+     },
+     {
+      "kind": "subscription",
+      "label": "ChatGPT subscription",
+      "provider": "openai",
+      "route": "chatgpt-subscription"
+     },
+     {
+      "kind": "subscription",
+      "label": "Claude subscription",
+      "provider": "anthropic",
+      "route": "claude-subscription"
+     }
+    ]
+   },
+   "status": 200
+  }
+ ]
+}

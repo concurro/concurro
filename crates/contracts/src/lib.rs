@@ -1,5 +1,6 @@
 //! Versioned wire contracts shared by Concurro services.
 
+mod credentials;
 mod exchange;
 mod github;
 mod github_events;
@@ -9,6 +10,7 @@ mod schema;
 mod tasks;
 mod turns;
 
+pub use credentials::{CredentialChange, CredentialChanged, RevokedVersion};
 pub use exchange::{
     Admission, AdmissionRequest, BlobRef, Dispatch, ExchangeSessionClaim, ExchangeTurnFinished,
     ExchangeTurnStatus, ExpectedClaims, FinishRequest, Grant, GrantCredential, GrantLimits,
@@ -454,6 +456,14 @@ pub const REGISTRY: &[ContractRegistration] = &[
         prepare_schema: schema::prepare_turn_status,
         round_trip: round_trip::<TurnStatus>,
         python_decoder: "decode_turn_status",
+    },
+    ContractRegistration {
+        family: CredentialChanged::FAMILY,
+        version: CredentialChanged::VERSION,
+        schema: generate_schema::<CredentialChanged>,
+        prepare_schema: schema::prepare_credential_changed,
+        round_trip: round_trip::<CredentialChanged>,
+        python_decoder: "decode_credential_changed",
     },
     ContractRegistration {
         family: TurnFinished::FAMILY,

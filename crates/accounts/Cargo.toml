@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
+async-nats.workspace = true
 axum = { workspace = true, features = ["query"] }
 axum-extra.workspace = true
 base64.workspace = true
@@ -19,7 +20,12 @@ concurro-accounts-postgres = { path = "../accounts-postgres" }
 concurro-config = { path = "../config" }
 concurro-contracts = { path = "../contracts" }
 concurro-db = { path = "../db" }
+concurro-events = { path = "../events" }
+concurro-events-nats = { path = "../events-nats" }
+concurro-events-postgres = { path = "../events-postgres" }
 concurro-github-v1 = { path = "../github-v1" }
+concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "c1ea48bfa3fbd67a4531e8bfa9f28c166721853d" }
+concurro-secrets = { path = "../secrets" }
 concurro-telemetry = { path = "../telemetry" }
 graphile_worker.workspace = true
 hex.workspace = true
@@ -27,8 +33,11 @@ jsonwebtoken.workspace = true
 oauth2.workspace = true
 rand.workspace = true
 reqwest.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 time.workspace = true
 tracing.workspace = true
@@ -36,12 +45,10 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite"] }
 concurro-backoffice-api = { path = "../backoffice-api" }
 concurro-backoffice-postgres = { path = "../backoffice-postgres" }
-concurro-events-postgres = { path = "../events-postgres" }
 concurro-tasks-postgres = { path = "../tasks-postgres" }
 concurro-testkit = { path = "../testkit" }
 concurro-tasks = { path = "../tasks" }
-sqlx.workspace = true
-sha2.workspace = true
 tower = "=0.5.3"

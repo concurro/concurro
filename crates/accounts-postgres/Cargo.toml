@@ -8,5 +8,5 @@ publish.workspace = true
 anyhow.workspace = true
 concurro-db = { path = "../db" }
 graphile_worker.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
 uuid.workspace = true

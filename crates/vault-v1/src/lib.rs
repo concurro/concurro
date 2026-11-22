@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
+use concurro_contracts::GrantCredential;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -105,9 +106,51 @@ pub struct Credential {
     pub position: Option<usize>,
     /// Whether the entry was absent from the provider list.
     pub removed: Option<bool>,
+    /// `vault` (the secret store) or `relay`; legacy answers without it are the store's.
+    #[serde(default = "store_custody")]
+    pub custody: String,
+    /// Relay identity of a relay-custody version, from the accounts service.
+    #[serde(default)]
+    pub relay_id: Option<String>,
     /// Governing list revision; zero means pre-list legacy evidence.
     #[serde(skip)]
     pub list_revision: Option<u64>,
+}
+
+/// The custody of a version the metadata doesn't qualify.
+fn store_custody() -> String {
+    "vault".to_owned()
+}
+
+impl Credential {
+    /// Custody as funding grants name it: `secret_store` for the metadata's `vault`, or
+    /// `relay`. Unknown custody has no grant name.
+    pub fn grant_custody(&self) -> Option<&'static str> {
+        match self.custody.as_str() {
+            "vault" => Some("secret_store"),
+            "relay" => Some("relay"),
+            _ => None,
+        }
+    }
+
+    /// The exact version a contributed grant spends, with custody normalized; `None` for
+    /// legacy evidence without an entry, unknown custody, or relay custody without its
+    /// relay.
+    pub fn grant_credential(&self) -> Option<GrantCredential> {
+        let custody = self.grant_custody()?;
+        let relay_id = match custody {
+            "relay" => Some(self.relay_id.clone()?),
+            _ => None,
+        };
+        Some(GrantCredential {
+            route: self.route.clone(),
+            entry_id: Some(self.entry_id.clone()?),
+            record_id: Some(self.record_id.clone()),
+            version: Some(i64::try_from(self.version).ok()?),
+            custody: Some(custody.to_owned()),
+            relay_id,
+        })
+    }
 }
 
 /// One target-specific profile filter on an owner entry.
@@ -185,12 +228,15 @@ pub enum VaultError {
     InvalidResponse,
 }
 
-/// Authenticated read-only client for the Vault metadata listener.
+/// Authenticated read-only client for credential metadata: the Vault's metadata listener,
+/// or the accounts service's `/v1/credentials`.
 #[derive(Clone)]
 pub struct MetadataClient {
     client: Client,
     base: String,
     token: String,
+    /// Path prefix of one owner's metadata.
+    owners: &'static str,
 }
 
 impl fmt::Debug for MetadataClient {
@@ -202,12 +248,22 @@ impl fmt::Debug for MetadataClient {
 }
 
 impl MetadataClient {
-    /// Bind the dedicated metadata bearer to a reusable HTTP client.
+    /// Read the Vault's metadata listener with its dedicated bearer.
     pub fn new(client: Client, base: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
             client,
             base: base.into().trim_end_matches('/').to_owned(),
             token: token.into(),
+            owners: "metadata",
+        }
+    }
+
+    /// Read the accounts service's credential metadata with the funding module's bearer.
+    /// It has no event feed; change facts arrive on its stream.
+    pub fn accounts(client: Client, base: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            owners: "v1/credentials",
+            ..Self::new(client, base, token)
         }
     }
 
@@ -216,7 +272,7 @@ impl MetadataClient {
         if owner < 1 {
             return Err(VaultError::InvalidResponse);
         }
-        let mut request = self.request(&format!("metadata/{owner}"));
+        let mut request = self.request(&format!("{}/{owner}", self.owners));
         if let Some(at) = at {
             request = request.query(&[("at", at)]);
         }
@@ -463,6 +519,88 @@ mod tests {
         let error = client.read(44, None).await.expect_err("refusal");
         assert_eq!(error, VaultError::Refused(StatusCode::FORBIDDEN));
         assert!(!format!("{error:?} {error}").contains("secret"));
+        server.abort();
+    }
+
+    /// The accounts service's metadata carries custody and the relay identity, which
+    /// grants name as `secret_store` or `relay`.
+    #[tokio::test]
+    async fn reads_accounts_metadata_with_custody() {
+        let credential = |route: &str, custody: &str, relay: Option<&str>| {
+            let mut value = json!({
+                "record_id": format!("{route}-record"), "user_id": "303", "route": route,
+                "version": 1, "status": "valid", "models": null,
+                "created": "2027-01-15T08:24:00+00:00", "updated": "2027-01-15T08:24:00+00:00",
+                "kind": "subscription", "custody": custody, "status_reason": "stored",
+                "validated": null, "expires_at": null, "expiry_known": false,
+                "token_revision": 1, "provider": "anthropic", "entry_id": format!("{route}-entry"),
+                "name": "Desk", "enabled": true, "roles": [], "profiles": [],
+                "position": 0, "removed": false
+            });
+            if let Some(relay) = relay {
+                value["relay_id"] = json!(relay);
+            }
+            value
+        };
+        let body = json!({
+            "history_complete": true,
+            "credentials": [credential("claude-subscription", "relay", Some("relay-0002")),
+                credential("anthropic-api-key", "vault", None)],
+            "lists": {"anthropic": {"revision": 2,
+                "entries": ["claude-subscription-entry", "anthropic-api-key-entry"]}}
+        });
+        let app = Router::new().route(
+            "/v1/credentials/303",
+            get(move |headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer funding");
+                Json(body)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = MetadataClient::accounts(
+            reqwest::Client::new(),
+            format!("http://{address}"),
+            "funding",
+        );
+        let metadata = client.read(303, None).await.expect("metadata");
+        let relay = &metadata.credentials[0];
+        let grant = relay.grant_credential().expect("relay grant");
+        assert_eq!(
+            (
+                grant.custody.as_deref(),
+                grant.relay_id.as_deref(),
+                grant.version
+            ),
+            (Some("relay"), Some("relay-0002"), Some(1))
+        );
+        let grant = metadata.credentials[1]
+            .grant_credential()
+            .expect("stored grant");
+        assert_eq!(
+            (grant.custody.as_deref(), grant.relay_id),
+            (Some("secret_store"), None)
+        );
+        assert_eq!(
+            (
+                relay.custody.as_str(),
+                relay.relay_id.as_deref(),
+                relay.grant_custody()
+            ),
+            ("relay", Some("relay-0002"), Some("relay"))
+        );
+        let stored = &metadata.credentials[1];
+        assert_eq!(
+            (
+                stored.custody.as_str(),
+                stored.relay_id.as_deref(),
+                stored.grant_custody()
+            ),
+            ("vault", None, Some("secret_store"))
+        );
         server.abort();
     }
 }

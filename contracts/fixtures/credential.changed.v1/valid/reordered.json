@@ -1,0 +1,18 @@
+{
+  "id": "0b8f4f2e-8a43-5c55-8f3c-3a7c9f2d1e20",
+  "version": 1,
+  "producer": "accounts",
+  "occurred_at": "2027-01-15T08:07:00Z",
+  "type": "credential.101.changed",
+  "kind": "fact",
+  "data": {
+    "user_id": 101,
+    "sequence": 6,
+    "entry_id": null,
+    "provider": "anthropic",
+    "change": "reordered",
+    "list_revision": 5,
+    "revoked": [],
+    "at": "2027-01-15T08:07:00Z"
+  }
+}

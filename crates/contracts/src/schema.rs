@@ -71,6 +71,16 @@ fn prepare_turn_fact(schema: &mut Value, suffix: &str) {
     schema["properties"]["revision"] = json!({"type":"null"});
 }
 
+/// Restrict credential change facts to one owner's subject.
+pub(crate) fn prepare_credential_changed(schema: &mut Value) {
+    schema["properties"]["version"] = json!({"const":1});
+    schema["properties"]["kind"] = json!({"const":"fact"});
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^credential\\.[1-9][0-9]*\\.changed$"});
+    schema["properties"]["entity"] = json!({"type":"null"});
+    schema["properties"]["revision"] = json!({"type":"null"});
+}
+
 /// Restrict status snapshots to turn-scoped subjects and revisions.
 pub(crate) fn prepare_turn_status(schema: &mut Value) {
     prepare_task_snapshot(schema);

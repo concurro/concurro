@@ -37,10 +37,10 @@ identities:
 | `credential_entries` | `entry_id` | `user_id`, `provider`, `route`, `name`, `enabled`, `roles`, `profiles`, `revision`, `created`, `updated`, `removed` |
 | `credential_lists` | `(user_id, provider)` | `revision` and the ordered live entry IDs |
 | `credential_policy` | `(user_id, provider, revision)` | `at` (null means always in force, as the vault's legacy revision 0) and the list's policy document |
-| `credential_versions` | `record_id` | `user_id`, `route`, `version`, `entry_id`, `status`, `status_reason`, `kind`, `custody`, `relay_id`, `fingerprint`, `account_label`, `verified_account`, `expires_at`, `expiry_known`, `created`, `updated`, `retired`, `last_used`, `activated`, and `material`: `pending`, `stored`, `failed`, `superseded`, `destroying`, `destroyed` or `none` (relay); `mutation_id` and the expected entry while pending |
-| `credential_mutations` | `(user_id, mutation_id)` | A digest of the request's nonsecret fields and the response. Nothing derived from secret material is stored |
+| `credential_versions` | `record_id` | `user_id`, `route`, `version`, `entry_id`, `status`, `status_reason`, `kind`, `custody`, `relay_id`, `fingerprint`, `account_label`, `verified_account`, `expires_at`, `expiry_known`, `created`, `updated`, `retired`, `last_used`, `activated`, and `material`: `pending`, `importing`, `stored`, `failed`, `superseded`, `destroying`, `destroyed` or `none` (relay); `mutation_id`, and the expected entry revision (replace) or the new entry's policy (add) while pending |
+| `credential_mutations` | `(user_id, mutation_id)` | A digest of the request's nonsecret fields and the response, which is null while the mutation's version is pending. Nothing derived from secret material is stored |
 | `relay_intents` | `(user_id, route, version)` | Reserved bindings before an owner approval |
-| `vault_import`, `vault_import_material` | Import run, `record_id` | Import progress ([below](#import)) |
+| `vault_imports` | SHA-256 of the vault copy | Import progress ([below](#import)); each version's material progress is its `material` (`importing`, then `stored`) |
 
 Plus the shared outbox and consumer tables.
 
@@ -121,7 +121,8 @@ task application's own bearer ([contract](../../contracts.md#credentials)).
   - The task application's client (`crates/vault-v1/src/lib.rs:69`) gains `custody` and
     `relay_id`.
   - Selection freezes both into the grant's credential, so the exchange can sign a relay
-    claim without asking anyone.
+    claim without asking anyone. Custody is normalized there: the metadata's `vault`
+    is the grant's `secret_store`.
   - Otherwise `Metadata::select` is unchanged.
 - **The response's contents:**
   - `credentials` holds each entry's latest version created at or before `at`, with the
@@ -159,21 +160,23 @@ forwarded to accounts' own stream ([contract](../../contracts.md#credentials)):
 
 ## Import
 
-`accounts import-vault --vault-db <copy> --keyring <file> --capture <file>` runs in S7's
-window, against a copy of the stopped vault's database.
+`accounts import-vault --vault-db <copy> --master-key <file> [--keyring <file>] --capture
+<file> --migrator-role-id <id> --migrator-secret-id-file <file>` runs in S7's window,
+against a copy of the stopped vault's database. The key arguments are the vault's
+`VAULT_MASTER_KEY_FILE` and `VAULT_KEYRING_FILE`.
 
 1. **Preconditions.** It refuses to start if the copy has a relay intent, or if
    accounts' native tables already hold data from another import.
 2. **Metadata, in one transaction:**
    - all entries, lists, policy revisions (`at = ""` becomes null) and versions, retired
      and revoked ones included;
-   - `material` set to `pending` where ciphertext exists, `destroyed` where it was
+   - `material` set to `importing` where ciphertext exists, `destroyed` where it was
      nulled, and `none` for relay custody.
 
    The mutation journal isn't imported: its digests include plaintext, and writes are
    paused. Neither are vault events: the change feed starts empty, and no consumer
    needs vault history.
-3. **Material, resumable.** For each `pending` version:
+3. **Material, resumable.** For each `importing` version:
    - decrypt it with the keyring, handling envelope formats 1 and 2, and check its
      fingerprint against the stored one;
    - `create` it in OpenBao with the `migrator` policy and `cas=0`;
@@ -182,11 +185,13 @@ window, against a copy of the stopped vault's database.
    An existing path is read back and compared instead of written. A mismatch stops the
    import and names the `record_id`.
 4. **Verification.**
-   - **The capture file is recorded before the pause:** the live vault's
-     `/metadata/{user_id}?at=` for every user, at every policy revision time and at the
-     current time.
+   - **The capture file is recorded after writes pause and before the vault stops,** by
+     `accounts capture-vault`: the live vault's `/metadata/{user_id}?at=` for every user
+     in the database copy, at every policy revision time, version creation and
+     retirement, and at the current time.
    - Accounts' metadata API must answer each of those reads identically, with
-     `user_id` a string as the vault returns it.
+     `user_id` a string as the vault returns it, and `relay_id` left out. Current reads
+     are answered as of the capture's time.
    - Counts per table must match.
    - The report holds IDs, counts and pass or fail, and never secret material or
      digests of it.

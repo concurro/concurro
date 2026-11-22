@@ -759,3 +759,53 @@ async fn status_event_failure_rolls_back_operator_state() {
     assert_eq!(counts, (0, 0, 0, 0));
     server.abort();
 }
+
+/// Grants built from the accounts service's credential metadata are admitted for both
+/// custodies; the metadata's own `vault` custody is not a grant custody.
+#[tokio::test]
+async fn accounts_metadata_grants_are_admitted() {
+    let (_postgres, _database, _store, base, server) = setup().await;
+    let client = OperatorClient::new(reqwest::Client::new(), &base, "operator-test");
+    let metadata: concurro_vault_v1::Metadata = serde_json::from_value(json!({
+        "history_complete": true,
+        "lists": {"anthropic": {"revision": 2, "entries": ["relay-entry", "store-entry"]}},
+        "credentials": [
+            {"record_id": "relay-record", "user_id": "35576205", "route": "claude-subscription",
+             "version": 2, "status": "valid", "models": null, "created": "2027-01-15T08:25:00+00:00",
+             "updated": "2027-01-15T08:25:00+00:00", "kind": "subscription", "custody": "relay",
+             "relay_id": "relay-0002", "expiry_known": false, "expires_at": null,
+             "entry_id": "relay-entry", "provider": "anthropic", "position": 0},
+            {"record_id": "store-record", "user_id": "35576205", "route": "anthropic-api-key",
+             "version": 1, "status": "valid", "models": null, "created": "2027-01-15T08:24:00+00:00",
+             "updated": "2027-01-15T08:24:00+00:00", "kind": "api_key", "custody": "vault",
+             "expiry_known": false, "expires_at": null, "entry_id": "store-entry",
+             "provider": "anthropic", "position": 1}
+        ]
+    }))
+    .expect("accounts metadata");
+    for (index, credential) in metadata.credentials.iter().enumerate() {
+        let turn = Uuid::now_v7();
+        let mut body = submission(turn, &format!("personal-{index}"));
+        body.grant.purpose = "task_contributed".to_owned();
+        body.grant.payer = Some(RequestActor {
+            id: 35576205,
+            login: "payer".to_owned(),
+        });
+        body.grant.credential = credential.grant_credential().expect("grant credential");
+        client
+            .submit(turn, &body)
+            .await
+            .unwrap_or_else(|error| panic!("{} grant refused: {error:?}", credential.custody));
+        let raw = Uuid::now_v7();
+        let mut unnormalized = submission(raw, &format!("raw-{index}"));
+        unnormalized.grant = body.grant.clone();
+        unnormalized.grant.credential.custody = Some(credential.custody.clone());
+        if credential.custody == "vault" {
+            std::assert_matches!(
+                client.submit(raw, &unnormalized).await,
+                Err(ClientError::Refused { status: 422, ref code }) if code == "invalid_grant"
+            );
+        }
+    }
+    server.abort();
+}

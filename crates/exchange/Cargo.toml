@@ -30,5 +30,6 @@ uuid.workspace = true
 concurro-exchange-client = { path = "../exchange-client" }
 concurro-testkit = { path = "../testkit" }
 concurro-tasks-core = { path = "../tasks-core" }
+concurro-vault-v1 = { path = "../vault-v1" }
 reqwest.workspace = true
 sqlx.workspace = true

@@ -1,6 +1,12 @@
-//! Owner-scoped credential and relay browser calls to the vault.
+//! Owner-scoped credential and relay browser routes, served by the Python vault or by
+//! accounts' native store.
 
-use std::time::Duration;
+mod jobs;
+mod native;
+#[cfg(test)]
+pub mod tests;
+mod vault;
+pub mod view;
 
 use axum::{
     Json,
@@ -10,9 +16,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+
+pub use jobs::{DestroyMaterialJob, UsageHandler, run_maintenance};
+pub use native::{Clock, Native, Outcome, Verifier, material_path, read_metadata};
+pub use vault::Vault;
 
 use crate::{
     AccountState,
@@ -35,28 +45,44 @@ const TYPES: [(&str, &str); 4] = [
     ("chatgpt_subscription", "chatgpt-subscription"),
 ];
 
-/// HTTP vault owner adapter and public relay setup values.
+/// Which store serves the browser's credential routes.
+#[derive(Clone)]
+pub enum Backend {
+    /// The Python vault's owner API.
+    Vault(Vault),
+    /// Accounts' native store.
+    Native(Native),
+}
+
+/// The credential store and public relay setup values.
 #[derive(Clone)]
 pub struct Credentials {
-    /// Shared accounts HTTP client.
-    client: Client,
-    /// Owner API origin, if configured.
-    url: Option<Url>,
+    backend: Backend,
     /// Public Sponsor setup fields.
     setup: Value,
 }
 
 impl Credentials {
-    /// Validate the optional vault origin and prepare relay setup fields.
+    /// Serve the browser routes from the vault at `vault_url`.
     pub fn new(
         client: Client,
         vault_url: Option<String>,
         relay_server: Option<String>,
         relay_download_url: Option<String>,
     ) -> anyhow::Result<Self> {
-        let url = vault_url
-            .map(|value| Url::parse(&format!("{}/", value.trim_end_matches('/'))))
-            .transpose()?;
+        Ok(Self::with_backend(
+            Backend::Vault(Vault::new(client, vault_url)?),
+            relay_server,
+            relay_download_url,
+        ))
+    }
+
+    /// Serve the browser routes from `backend`, with relay setup fields.
+    pub fn with_backend(
+        backend: Backend,
+        relay_server: Option<String>,
+        relay_download_url: Option<String>,
+    ) -> Self {
         let argument = relay_server.as_ref().map(|server| {
             if server.starts_with('[') {
                 format!("'{server}'")
@@ -70,72 +96,48 @@ impl Credentials {
         let login = argument
             .as_ref()
             .map(|server| format!("concurro-relay login --server {server}"));
-        Ok(Self {
-            client,
-            url,
+        Self {
+            backend,
             setup: json!({"server":relay_server,"download":relay_download_url,
                 "command":command,"login":login}),
-        })
+        }
     }
 
-    /// Apply the owner's token and operation-specific request deadline.
-    fn request(
-        &self,
-        session: &Session,
-        method: Method,
-        path: &str,
-        approval: bool,
-    ) -> Result<reqwest::RequestBuilder, CredentialError> {
-        let base = self.url.as_ref().ok_or_else(|| {
-            CredentialError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the credentials vault is not configured",
-            )
-        })?;
-        let url = base
-            .join(path.trim_start_matches('/'))
-            .map_err(|_| CredentialError::unavailable())?;
-        Ok(self
-            .client
-            .request(method, url)
-            .bearer_auth(&session.token)
-            .timeout(Duration::from_secs(if approval { 60 } else { 30 })))
+    /// Run one owner operation against the configured store.
+    async fn run(&self, session: &Session, operation: Operation) -> Result<Value, CredentialError> {
+        match &self.backend {
+            Backend::Vault(vault) => vault.run(session, operation).await,
+            Backend::Native(native) => native.run(&session.user, operation).await,
+        }
     }
+}
 
-    /// Forward the user's bearer and JSON unchanged within a bounded owner call.
-    async fn call(
-        &self,
-        session: &Session,
-        method: Method,
-        path: &str,
-        body: Option<Value>,
-        revision: Option<i64>,
-        approval: bool,
-    ) -> Result<Value, CredentialError> {
-        let mut request = self.request(session, method, path, approval)?;
-        if let Some(revision) = revision {
-            request = request.query(&[("revision", revision)]);
+/// One owner operation, decoded from a browser route.
+pub enum Operation {
+    List,
+    Add { route: &'static str, body: AddBody },
+    RelayPending(CodeBody),
+    Relay(RelayBody),
+    Device(DeviceBody),
+    Reorder { provider: String, body: OrderBody },
+    Edit { entry_id: String, body: EditBody },
+    Replace { entry_id: String, body: SecretBody },
+    Remove { entry_id: String, revision: i64 },
+    RelayStatus,
+}
+
+impl Operation {
+    /// The browser mapping of this operation's answer.
+    fn mapping(&self) -> &'static str {
+        match self {
+            Self::List => "listing",
+            Self::Add { .. } | Self::Edit { .. } | Self::Replace { .. } | Self::Remove { .. } => {
+                "entry"
+            }
+            Self::Reorder { .. } => "group",
+            Self::Relay(_) | Self::Device(_) => "entries",
+            Self::RelayPending(_) | Self::RelayStatus => "raw",
         }
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| CredentialError::unavailable())?;
-        let status = response.status();
-        let value: Value = response.json().await.unwrap_or(Value::Null);
-        if status.is_client_error() || status.is_server_error() {
-            let detail = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("vault request failed");
-            return Err(CredentialError::new(status, detail));
-        }
-        if value.is_null() {
-            return Err(CredentialError::unavailable());
-        }
-        Ok(value)
     }
 }
 
@@ -145,7 +147,7 @@ pub struct CredentialError(StatusCode, String);
 
 impl CredentialError {
     /// Construct a browser error without retaining a request body or token.
-    fn new(status: StatusCode, detail: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, detail: impl Into<String>) -> Self {
         Self(status, detail.into())
     }
 
@@ -216,8 +218,8 @@ fn policy(roles: Option<&[String]>) -> Result<(), CredentialError> {
 }
 
 /// One target and profile filter sent to the vault.
-#[derive(Deserialize, Serialize)]
-struct ProfileFilter {
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
+pub struct ProfileFilter {
     /// Target repository name.
     target: String,
     /// Selected profile key.
@@ -226,7 +228,7 @@ struct ProfileFilter {
 
 /// Browser fields for adding a write-only credential.
 #[derive(Deserialize, Serialize)]
-struct AddBody {
+pub struct AddBody {
     /// Frontend type identifier.
     #[serde(rename = "type")]
     kind: String,
@@ -249,7 +251,7 @@ struct AddBody {
 
 /// Browser changes to one existing credential entry.
 #[derive(Deserialize, Serialize)]
-struct EditBody {
+pub struct EditBody {
     /// Entry revision last read by the browser.
     revision: i64,
     /// Vault-owned idempotency key.
@@ -270,7 +272,7 @@ struct EditBody {
 
 /// Browser's replacement secret and current entry revision.
 #[derive(Deserialize, Serialize)]
-struct SecretBody {
+pub struct SecretBody {
     /// Entry revision last read by the browser.
     revision: i64,
     /// Write-only replacement candidate.
@@ -284,7 +286,7 @@ struct SecretBody {
 
 /// Browser's exact ordered entry IDs at one provider revision.
 #[derive(Deserialize, Serialize)]
-struct OrderBody {
+pub struct OrderBody {
     /// Provider list revision last read.
     revision: i64,
     /// Entry IDs in requested order.
@@ -295,14 +297,14 @@ struct OrderBody {
 
 /// One Sponsor code used for a relay preview.
 #[derive(Deserialize, Serialize)]
-struct CodeBody {
+pub struct CodeBody {
     /// Displayed Sponsor device code.
     code: String,
 }
 
 /// Browser approval of a Sponsor device and route set.
 #[derive(Deserialize, Serialize)]
-struct RelayBody {
+pub struct RelayBody {
     /// Displayed Sponsor device code.
     code: String,
     /// Exact registered routes to approve.
@@ -321,7 +323,7 @@ struct RelayBody {
 
 /// One previously read entry to rebind to a Sponsor device.
 #[derive(Deserialize)]
-struct DeviceEntry {
+pub struct DeviceEntry {
     /// Existing browser entry ID.
     id: String,
     /// Entry revision last read.
@@ -330,7 +332,7 @@ struct DeviceEntry {
 
 /// Browser device replacement with one entry per route.
 #[derive(Deserialize)]
-struct DeviceBody {
+pub struct DeviceBody {
     /// New displayed Sponsor device code.
     code: String,
     /// Existing entry for each registered route.
@@ -430,23 +432,17 @@ fn relay_status(value: &Value) -> Value {
         "checked":value.get("checked"),"relays":relays})
 }
 
-/// Convert one vault call, ending the local session if the owner token was refused.
+/// Run one operation, ending the local session if the vault refused the owner token.
 async fn call(
     state: &AccountState,
     session: &Session,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-    revision: Option<i64>,
-    approval: bool,
+    operation: Operation,
 ) -> Result<Value, CredentialError> {
     let credentials = state
         .credentials
         .as_ref()
         .ok_or_else(CredentialError::unavailable)?;
-    let result = credentials
-        .call(session, method, path, body, revision, approval)
-        .await;
+    let result = credentials.run(session, operation).await;
     if matches!(&result, Err(CredentialError(StatusCode::UNAUTHORIZED, _))) {
         state.sessions.end(Some(&session.id));
     }
@@ -468,24 +464,14 @@ pub async fn credentials(
     }
     let path = uri.path().strip_prefix("/api/me/credentials").unwrap_or("");
     let segments = path.trim_start_matches('/').split('/').collect::<Vec<_>>();
-    let (vault_method, vault_path, vault_body, revision, approval, mapping) = match (
-        method,
-        segments.as_slice(),
-    ) {
-        (Method::GET, [""]) => (
-            Method::GET,
-            "/credentials".to_owned(),
-            None,
-            None,
-            false,
-            "listing",
-        ),
+    let operation = match (method, segments.as_slice()) {
+        (Method::GET, [""]) => Operation::List,
         (Method::POST, [""]) => {
-            let input: AddBody = parse(&body)?;
-            policy(Some(&input.roles))?;
+            let body: AddBody = parse(&body)?;
+            policy(Some(&body.roles))?;
             let route = TYPES
                 .iter()
-                .find(|(kind, _)| *kind == input.kind)
+                .find(|(kind, _)| *kind == body.kind)
                 .map(|(_, route)| *route)
                 .ok_or_else(|| {
                     CredentialError::new(
@@ -493,97 +479,40 @@ pub async fn credentials(
                         "this credential type can't be stored",
                     )
                 })?;
-            let mut value = wire(input)?;
-            value.as_object_mut().unwrap().remove("type");
-            value["route"] = json!(route);
-            (
-                Method::POST,
-                "/credentials".to_owned(),
-                Some(value),
-                None,
-                false,
-                "entry",
-            )
+            Operation::Add { route, body }
         }
-        (Method::POST, ["relay", "pending"]) => {
-            let input: CodeBody = parse(&body)?;
-            (
-                Method::POST,
-                "/credentials/relay/pending".to_owned(),
-                Some(wire(input)?),
-                None,
-                false,
-                "raw",
-            )
-        }
+        (Method::POST, ["relay", "pending"]) => Operation::RelayPending(parse(&body)?),
         (Method::POST, ["relay"]) => {
-            let input: RelayBody = parse(&body)?;
-            if !(1..=2).contains(&input.routes.len()) {
+            let body: RelayBody = parse(&body)?;
+            if !(1..=2).contains(&body.routes.len()) {
                 return Err(CredentialError::malformed());
             }
-            policy(Some(&input.roles))?;
-            (
-                Method::POST,
-                "/credentials/relay".to_owned(),
-                Some(wire(input)?),
-                None,
-                true,
-                "entries",
-            )
+            policy(Some(&body.roles))?;
+            Operation::Relay(body)
         }
         (Method::PUT, ["relay", "device"]) => {
-            let input: DeviceBody = parse(&body)?;
-            if !(1..=2).contains(&input.entries.len()) {
+            let body: DeviceBody = parse(&body)?;
+            if !(1..=2).contains(&body.entries.len()) {
                 return Err(CredentialError::malformed());
             }
-            let entries = input
-                .entries
-                .into_iter()
-                .map(|item| json!({"entry_id":item.id,"revision":item.revision}))
-                .collect::<Vec<_>>();
-            (
-                Method::PUT,
-                "/credentials/relay/device".to_owned(),
-                Some(json!({"code":input.code,"entries":entries,"mutation_id":input.mutation_id})),
-                None,
-                true,
-                "entries",
-            )
+            Operation::Device(body)
         }
-        (Method::PUT, ["order", provider]) => {
-            let input: OrderBody = parse(&body)?;
-            (
-                Method::PUT,
-                format!("/credentials/order/{provider}"),
-                Some(wire(input)?),
-                None,
-                false,
-                "group",
-            )
-        }
+        (Method::PUT, ["order", provider]) => Operation::Reorder {
+            provider: (*provider).to_owned(),
+            body: parse(&body)?,
+        },
         (Method::PATCH, [entry_id]) => {
-            let input: EditBody = parse(&body)?;
-            policy(input.roles.as_deref())?;
-            (
-                Method::PATCH,
-                format!("/credentials/{entry_id}"),
-                Some(wire(input)?),
-                None,
-                false,
-                "entry",
-            )
+            let body: EditBody = parse(&body)?;
+            policy(body.roles.as_deref())?;
+            Operation::Edit {
+                entry_id: (*entry_id).to_owned(),
+                body,
+            }
         }
-        (Method::PUT, [entry_id, "secret"]) => {
-            let input: SecretBody = parse(&body)?;
-            (
-                Method::PUT,
-                format!("/credentials/{entry_id}/secret"),
-                Some(wire(input)?),
-                None,
-                false,
-                "entry",
-            )
-        }
+        (Method::PUT, [entry_id, "secret"]) => Operation::Replace {
+            entry_id: (*entry_id).to_owned(),
+            body: parse(&body)?,
+        },
         (Method::DELETE, [entry_id]) => {
             let revision = uri
                 .query()
@@ -594,27 +523,15 @@ pub async fn credentials(
                 })
                 .and_then(|value| value.parse::<i64>().ok())
                 .ok_or_else(|| CredentialError::new(StatusCode::GONE, STALE))?;
-            (
-                Method::DELETE,
-                format!("/credentials/{entry_id}"),
-                None,
-                Some(revision),
-                false,
-                "entry",
-            )
+            Operation::Remove {
+                entry_id: (*entry_id).to_owned(),
+                revision,
+            }
         }
         _ => return Err(CredentialError::new(StatusCode::NOT_FOUND, "not found")),
     };
-    let value = call(
-        &state,
-        &session,
-        vault_method,
-        &vault_path,
-        vault_body,
-        revision,
-        approval,
-    )
-    .await?;
+    let mapping = operation.mapping();
+    let value = call(&state, &session, operation).await?;
     let value = match mapping {
         "listing" => listing(&value),
         "entry" => entry(&value),
@@ -647,17 +564,7 @@ pub async fn relays(
         .credentials
         .as_ref()
         .ok_or_else(CredentialError::unavailable)?;
-    let status = match call(
-        &state,
-        &session,
-        Method::GET,
-        "/credentials/relay/status",
-        None,
-        None,
-        false,
-    )
-    .await
-    {
+    let status = match call(&state, &session, Operation::RelayStatus).await {
         Ok(value) => relay_status(&value),
         Err(CredentialError(StatusCode::SERVICE_UNAVAILABLE, _)) => {
             json!({"service":"unavailable","relays":[]})
@@ -667,55 +574,4 @@ pub async fn relays(
     let mut result = status.as_object().cloned().unwrap_or_default();
     result.insert("setup".to_owned(), credentials.setup.clone());
     Ok(Json(Value::Object(result)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{github::User, sessions::Sessions};
-
-    /// Relay approvals and device replacements retain Python's 60-second deadline.
-    #[test]
-    fn approval_deadline() {
-        let credentials = Credentials::new(
-            Client::new(),
-            Some("http://vault.invalid".to_owned()),
-            None,
-            None,
-        )
-        .unwrap();
-        let session = Sessions::new().create(
-            "synthetic-token".to_owned(),
-            User {
-                id: 1,
-                login: "owner".to_owned(),
-                name: None,
-                avatar_url: None,
-            },
-            3600,
-        );
-        for (path, approval, seconds) in [
-            ("/credentials", false, 30),
-            ("/credentials/relay", true, 60),
-            ("/credentials/relay/device", true, 60),
-        ] {
-            let request = credentials
-                .request(&session, Method::POST, path, approval)
-                .unwrap()
-                .build()
-                .unwrap();
-            assert_eq!(request.timeout(), Some(&Duration::from_secs(seconds)));
-            assert_eq!(request.headers()["authorization"], "Bearer synthetic-token");
-        }
-        let fixture: Value =
-            serde_json::from_str(include_str!("../tests/credentials_python.json")).unwrap();
-        let ipv6 = Credentials::new(
-            Client::new(),
-            Some("http://vault.invalid".to_owned()),
-            Some("[::1]:80".to_owned()),
-            Some("https://example.invalid/relay".to_owned()),
-        )
-        .unwrap();
-        assert_eq!(ipv6.setup, fixture["relay_setup_ipv6"]);
-    }
 }

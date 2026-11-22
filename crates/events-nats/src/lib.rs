@@ -253,6 +253,115 @@ impl Forwarder {
     }
 }
 
+/// A producing service's NATS connection, stream and outbox limits.
+pub struct Producer {
+    /// NATS server URL.
+    pub nats_url: String,
+    /// Optional private NATS credentials file.
+    pub credentials_file: Option<String>,
+    /// The service's stream; its name is also the journal stream.
+    pub stream: stream::Config,
+    /// Idle outbox poll interval.
+    pub poll_interval: Duration,
+    /// How long published outbox rows are kept.
+    pub published_retention: Duration,
+    /// Maximum outbox message size.
+    pub max_message_bytes: usize,
+}
+
+/// Forward a service's outbox to its stream until the process stops, reconnecting after
+/// any failure and advancing only acknowledged rows.
+pub async fn run_producer(producer: Producer, database: Database) {
+    loop {
+        let result: Result<()> = async {
+            let client = connect(&producer.nats_url, producer.credentials_file.as_deref()).await?;
+            ensure_stream(&jetstream::new(client.clone()), producer.stream.clone()).await?;
+            let Some(mut lease) = ForwarderLease::try_acquire(&database).await? else {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                return Ok(());
+            };
+            Forwarder::new(client, producer.poll_interval)
+                .with_journal_stream(producer.stream.name.clone())
+                .run(
+                    &database,
+                    &mut lease,
+                    producer.published_retention,
+                    producer.max_message_bytes,
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(stream = %producer.stream.name, %error, "event forwarder disconnected");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// A durable consumer of one subject on a producer's stream.
+pub struct Subscription {
+    /// NATS server URL.
+    pub nats_url: String,
+    /// Optional private NATS credentials file.
+    pub credentials_file: Option<String>,
+    /// The producer's stream.
+    pub stream: String,
+    /// Durable consumer name, also its receipt namespace.
+    pub consumer: String,
+    /// Subject filter.
+    pub subject: String,
+    /// Failed applications before an event is parked.
+    pub max_attempts: i32,
+    /// How often released held events are retried.
+    pub held_poll_interval: Duration,
+}
+
+/// Apply a subscription's events through `handler` until the process stops, reconnecting
+/// after any failure.
+pub async fn run_subscription<T, H>(subscription: Subscription, database: Database, handler: H)
+where
+    T: concurro_contracts::Contract + serde::de::DeserializeOwned + Clone + Send,
+    H: concurro_events::Handler<T>,
+{
+    loop {
+        let result: Result<()> = async {
+            let client = connect(
+                &subscription.nats_url,
+                subscription.credentials_file.as_deref(),
+            )
+            .await?;
+            let context = jetstream::new(client);
+            let pull = ensure_pull_consumer(
+                &context,
+                &subscription.stream,
+                &subscription.consumer,
+                &subscription.subject,
+                Duration::from_secs(60),
+                Duration::from_secs(1),
+            )
+            .await?;
+            run_consumer::<T, _>(
+                ConsumerStream {
+                    pull: &pull,
+                    context: &context,
+                    name: &subscription.stream,
+                },
+                &database,
+                &subscription.consumer,
+                subscription.max_attempts,
+                subscription.held_poll_interval,
+                &handler,
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(consumer = %subscription.consumer, %error, "event consumer disconnected");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PublishError, PublishErrorKind, parse_stream_identity, publish_outage};

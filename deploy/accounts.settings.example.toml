@@ -15,3 +15,20 @@ task_api_url = "http://concurro-tasks:8792"
 vault_url = "http://concurro-vault:8090"
 relay_server = "relay.<host>:7443"
 relay_download_url = "https://<host>/concurro/relay/download"
+
+# The native credential store (phase 5), deployed inactive until the cutover.
+# [credentials]
+# store = "vault"
+# metadata_bearer_file = "/etc/concurro/accounts/credential-metadata-bearer"
+#
+# [credentials.openbao]
+# url = "http://concurro-openbao:8200"
+# role_id = "ACCOUNTS_ROLE_ID"
+# secret_id_file = "/etc/concurro/accounts/openbao-secret-id"
+#
+# [credentials.verifier]
+# url = "http://concurro-verifier-private:7450"
+# owner_token_file = "/etc/concurro/accounts/verifier-owner-token"
+#
+# [events]
+# nats_url = "nats://concurro-nats:4222"

@@ -138,7 +138,9 @@ only during the import. As `admin`, before the import:
 bao write auth/approle/role/migrator token_policies=migrator token_ttl=1h token_max_ttl=4h
 ```
 
-Then issue its secret ID as for a service. Once the import's report is clean:
+Then issue its secret ID as for a service, and run `accounts import-vault`
+([accounts service](../crates/accounts/README.md#vault-import)). Once its report is
+clean:
 
 ```bash
 bao delete auth/approle/role/migrator

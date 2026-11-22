@@ -168,6 +168,13 @@
     "version": 1
   },
   {
+    "family": "credential.changed",
+    "python_decoder": "decode_credential_changed",
+    "python_module": "credential_changed_v1",
+    "stem": "credential.changed.v1",
+    "version": 1
+  },
+  {
     "family": "turn.finished",
     "python_decoder": "decode_turn_finished",
     "python_module": "turn_finished_v1",

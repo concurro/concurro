@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -13,7 +13,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{AccountState, github::AccessError};
+use crate::{AccountState, credentials::CredentialError, github::AccessError};
 
 /// Issue-specific target requested by the read API.
 #[derive(Deserialize)]
@@ -36,11 +36,41 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Build only the platform listener's viewer lookup.
+/// The optional as-of instant of a credential metadata read.
+#[derive(Deserialize)]
+struct MetadataQuery {
+    /// Read as of this instant instead of now.
+    at: Option<String>,
+}
+
+/// Build the platform listener's viewer lookup and credential metadata reads.
 pub fn router(state: AccountState) -> Router {
     Router::new()
         .route("/internal/v1/viewer", get(viewer))
+        .route("/v1/credentials/{user_id}", get(credential_metadata))
         .with_state(state)
+}
+
+/// Serve one owner's nonsecret credential metadata to the task application.
+async fn credential_metadata(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+    Path(user_id): Path<i64>,
+    Query(query): Query<MetadataQuery>,
+) -> Result<Json<serde_json::Value>, CredentialError> {
+    let Some((native, bearer)) = &state.credential_metadata else {
+        return Err(CredentialError::new(StatusCode::NOT_FOUND, "not found"));
+    };
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if supplied != Some(format!("Bearer {bearer}").as_str()) {
+        return Err(CredentialError::new(
+            StatusCode::UNAUTHORIZED,
+            "service credential required",
+        ));
+    }
+    Ok(Json(native.metadata(user_id, query.at.as_deref()).await?))
 }
 
 /// Resolve the current session and issue-specific GitHub tier.

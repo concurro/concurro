@@ -3,6 +3,7 @@
 import json
 
 from concurro_contracts.config_targets_v1 import Envelope as ConfigTargetsEnvelope
+from concurro_contracts.credential_changed_v1 import Envelope as CredentialChangedEnvelope
 from concurro_contracts.exchange_turn_finished_v1 import Envelope as ExchangeTurnFinishedEnvelope
 from concurro_contracts.exchange_turn_status_v1 import Envelope as ExchangeTurnStatusEnvelope
 from concurro_contracts.github_check_run_v1 import Envelope as CheckRunEnvelope
@@ -228,6 +229,14 @@ def decode_inference_usage(raw: bytes) -> InferenceUsageEnvelope:
     event = _decode_fact(raw, InferenceUsageEnvelope, "inference.usage")
     if event.type != "inference.usage":
         raise ValueError("inference usage subject mismatch")
+    return event
+
+
+def decode_credential_changed(raw: bytes) -> CredentialChangedEnvelope:
+    """Validate one owner's credential change fact and its subject."""
+    event = _decode_fact(raw, CredentialChangedEnvelope, "credential.changed")
+    if event.type != f"credential.{event.data.user_id}.changed":
+        raise ValueError(f"event type does not match owner: {event.type}")
     return event
 
 
