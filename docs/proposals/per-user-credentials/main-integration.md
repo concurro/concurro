@@ -39,7 +39,7 @@ instructions in the [previous final review](final-review.md) and
   explicit host configuration. Preserve Registry8/source policies, vault3 and checkpoint9 state.
   Optional logout state binds at container `/var/lib/concurro/backoffice-auth`, separately
   from the named read-cache volume; existing host auth files remain in place. Update the
-  configured container path when adopting this overlay. Recovery is roll-forward only. See [App migration](../../../backoffice/APP-MIGRATION.md).
+  configured container path when adopting this overlay. Recovery is roll-forward only. See [Phase 4 retirement](../architecture/phase-4-plan.md#retirement).
 
 ## Evidence and remaining work
 

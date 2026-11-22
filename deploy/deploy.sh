@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy CI-published images; execute with bash, never source this file.
-#   deploy.sh service FULL_COMMIT_SHA   a concurro release: service, backoffice API and gateway
+#   deploy.sh service FULL_COMMIT_SHA   a concurro release: accounts, tasks, read API and gateway
 #   deploy.sh web FULL_COMMIT_SHA       a concurro-backoffice release: the web app only
 set -euo pipefail
 usage='Usage: bash deploy.sh service|web FULL_COMMIT_SHA'

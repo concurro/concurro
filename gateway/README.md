@@ -27,17 +27,17 @@ clone; everything host-specific lives under `/etc` and `/var/lib`.
 | Vault master key (0400, uid 65532) | `/etc/concurro/gateway/vault-master-key` |
 | Service settings and secrets (0700, uid 65533) | `/etc/concurro/service`: `settings.json`, `github-app.pem`, `gateway-operator-token`, NATS credentials and private delivery/replay bearers |
 | Service state (0700, uid 65533) | `/var/lib/concurro/service`: the task registry and reports |
-| Backoffice settings and App secrets (0700, uid 65533) | `/etc/concurro/backoffice`: `settings.json`, the Sign-in OAuth App's `client-secret`, the Backoffice App's `reader-app.pem` (see `backoffice/README.md`) |
-| Backoffice command signing key (0600, uid 65533) | `/etc/concurro/service/delegation-key`, enabled by `"delegation_key_path"` in the service's `settings.json`; create it with `openssl rand -hex 32` |
-| List index token (0600, owned by each container's user) | The same value in `/etc/concurro/service/lists-token` and `/etc/concurro/backoffice/lists-token`, enabled by `"lists_token_path"` in each `settings.json`; create it with `openssl rand -hex 32`. Set the service's first: the backoffice keeps reading lists on its one-minute rule until its own is set |
+| Accounts settings and secrets (0700, uid 65533) | `/etc/concurro/accounts`: `settings.toml`, `database-url`, `logout-key`, OAuth client secret, read-only App PEM, command-proof private PEM and viewer bearer; see [Phase 4 cutover](#phase-4-accounts-cutover) |
+| Task and read API settings (0700, uid 65533) | `/etc/concurro/tasks` and `/etc/concurro/backoffice-read`; each has its own database URL and NATS credentials. Tasks receive the command-proof public PEM; the read API shares the accounts viewer bearer. |
 | Run diagnostics (0700, uid 65533) | `/var/lib/concurro/diagnostics`: per-turn requests, prompts, results and transcripts, recorded when `settings.json` sets `"diagnostics_dir"` to this path |
 | Bundled edge, if used: Compose project `edge` | `/etc/edge/compose.yaml`, `/etc/edge/Caddyfile` (copies of `edge/`) |
 | Bundled edge route files | `/etc/edge/sites/*.caddy`; Concurro's is a copy of `concurro.caddy` |
 | Bundled edge certificates | `/etc/edge/tls/{fullchain,privkey}.pem`; a domain name's in `/etc/edge/tls/<name>/` |
 | Bundled edge domain sites | `/etc/edge/domains/<name>.caddy` |
 
-The gateway joins the external `edge` network as `concurro-gateway`, the service as
-`concurro-service`; neither publishes ports. Clients use `https://<host>/concurro` as
+The gateway, accounts and read API join the external `edge` network. Accounts,
+tasks and the read API also join the private `platform` network. None publishes a
+host port. Clients use `https://<host>/concurro` as
 the base URL, and the GitHub App delivers webhooks to `https://<host>/concurro/webhook`.
 The service reaches the exchange's operator API at the same base URL with the operator
 token; runner jobs reach it with their OIDC token and then their session's runner token.
@@ -69,7 +69,8 @@ git clone https://github.com/concurro/concurro.git ~/concurro
 
 ```bash
 sudo install -d -m 0700 /etc/concurro/gateway
-sudo install -d -m 0700 -o 65533 -g 65533 /etc/concurro/service /etc/concurro/backoffice \
+sudo install -d -m 0700 -o 65533 -g 65533 /etc/concurro/service /etc/concurro/accounts \
+  /etc/concurro/tasks /etc/concurro/backoffice-read \
   /var/lib/concurro/service /var/lib/concurro/diagnostics
 ```
 
@@ -101,77 +102,39 @@ and event subscriptions in [Target and App prerequisites](#target-and-app-prereq
 Store the webhook secret with Rust ingress. Follow the [release 1 cutover](../docs/platform.md#compose-ingress-example)
 before deploying release 2; this checkout's edge route targets Rust ingress.
 
-Backoffice sign-in uses a separate OAuth App; repository reads use a separate read-only
-GitHub App. Configure both as described in [Backoffice settings](../backoffice/README.md#settings).
-The service App needs no backoffice callback URL.
+Browser sign-in uses a separate OAuth App; repository reads use a separate read-only
+GitHub App. Configure them in `deploy/accounts.settings.example.toml`. The OAuth
+callback stays `https://<host>/concurro/auth/callback`. The service App needs no
+browser callback URL.
 
-**5. Service settings**
+**5. Rust service settings**
 
-In `/etc/concurro/service`, each a regular file owned by uid 65533 with mode 0600:
-`github-app.pem` (the App's private key), `gateway-operator-token` (the token from
-`exchange.env`), `delivery-recovery-bearer`, `nats-credentials.json`, `replay-bearer`,
-`delegation-key` and `settings.json`. The delegation key signs
-the commands the backoffice delivers; without it they are refused with 503:
-
-```bash
-sudo sh -c 'umask 077 && openssl rand -hex 32 > /etc/concurro/service/delegation-key'
-sudo chown 65533:65533 /etc/concurro/service/delegation-key
-```
-
-```json
-{
-  "controller_id": "service:main",
-  "app_id": 123456,
-  "private_key_path": "/etc/concurro/service/github-app.pem",
-  "delivery_recovery_bearer_path": "/etc/concurro/service/delivery-recovery-bearer",
-  "bus_url": "nats://concurro-nats:4222",
-  "bus_credentials_path": "/etc/concurro/service/nats-credentials.json",
-  "bus_replay_url": "http://concurro-ingress-platform:8790",
-  "bus_replay_bearer_path": "/etc/concurro/service/replay-bearer",
-  "state_dir": "/var/lib/concurro/service",
-  "registry_id": "main",
-  "targets": [{"upstream": "OWNER/UPSTREAM", "fork": "OWNER/FORK", "issues": "fork"}],
-  "limits": {"global": 4, "per_repository": 2},
-  "gateway": {
-    "url": "https://<host>/concurro",
-    "operator_token_path": "/etc/concurro/service/gateway-operator-token",
-    "executor": "runner",
-    "workflow_ref": "concurro/concurro/.github/workflows/agent.yml@refs/heads/main",
-    "models": ["claude-*", "gpt-*"],
-    "budget": 20000000,
-    "headers": {"codex": {"x-concurro-plan": "chatgpt"}}
-  },
-  "diagnostics_dir": "/var/lib/concurro/diagnostics",
-  "delegation_key_path": "/etc/concurro/service/delegation-key"
-}
-```
-
-`headers.codex` selects the ChatGPT subscription route; use `"headers": {}` with an OpenAI
-API key. With the relay overlay enabled, set `gateway.codex_ws_url` to the same
-`https://<host>/concurro` URL. The edge sends Codex WebSocket upgrades to
-`responses-bridge`, which POSTs each turn to the real gateway for key, model,
-budget and usage handling. Ordinary HTTP inference stays on agentgateway.
-`issues` is `upstream`, `fork` or `both`. Omit `engine`: the service then serves
-the release it was deployed with. An optional `reviewer` block enables
-[standalone PR reviews](#standalone-pr-reviews). Backoffice settings are in
-[`backoffice/README.md`](../backoffice/README.md#settings).
+Provision PostgreSQL, NATS and the private `platform` network as in the
+[platform guide](../docs/platform.md). Create separate database URL files and
+settings from `deploy/accounts.settings.example.toml`,
+`deploy/tasks.settings.example.toml` and
+`deploy/backoffice-read.settings.example.toml`, each readable by uid 65533.
+Generate an accounts `logout-key` with `openssl rand -hex 32`. Generate an RSA
+command-proof key pair; put its private PEM in accounts and its public PEM in
+tasks. Share one new viewer-authority bearer between accounts and the read API,
+and give the read API its task-read bearer. Set the accounts OAuth App, read-only
+App, vault and task URLs. Do not place the accounts platform listener on `edge`.
+See [Phase 4 accounts cutover](#phase-4-accounts-cutover) for an existing
+installation's token and historical-display prerequisites.
 
 **6. Targets**
 
 Prepare each fork as in [Target and App prerequisites](#target-and-app-prerequisites): the
-caller workflow, `.concurro/` and the `CONCURRO_GATEWAY_URL` secret.
+caller workflow, `.concurro/` and the `CONCURRO_GATEWAY_URL` secret. Add the
+matching configured target to the task settings. Check installation grants and
+requested token permissions for each role before deployment.
 
-**7. Registry**
+**7. Ingress and release settings**
 
-Create the empty task registry once, with the release you are about to deploy. The command
-validates the settings, creates the registry and exits; it contacts nothing and starts no
-task processing, and refuses to run over an existing registry:
-
-```bash
-sudo docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
-  --volume /var/lib/concurro/service:/var/lib/concurro/service \
-  ghcr.io/concurro/service:FULL_COMMIT_SHA initialize
-```
+Prepare Rust ingress as in the [platform guide](../docs/platform.md#compose-ingress-example).
+The release helper layers `service/compose.ingress.yaml` when ingress settings exist
+and `service/compose.rust.yaml` for releases containing the accounts image. A host
+Compose override must not restore the retired Python backoffice service.
 
 **8. Deploy**
 
@@ -186,7 +149,8 @@ commit SHA. Nothing is built on the host.
 | Image | Source |
 | ---- | ---- |
 | `ghcr.io/concurro/service` | `service/Dockerfile`; holds the commit's checkout with its history |
-| `ghcr.io/concurro/backoffice-api` | `backoffice/Dockerfile` |
+| `ghcr.io/concurro/accounts` | `crates/accounts/Dockerfile` |
+| `ghcr.io/concurro/tasks`, `ghcr.io/concurro/backoffice-read`, `ghcr.io/concurro/ingress` | Their Rust crate Dockerfiles |
 | `ghcr.io/concurro/exchange`, `ghcr.io/concurro/vault` | `gateway/exchange`, `gateway/vault` |
 | `ghcr.io/concurro/backoffice-web` | [concurro-backoffice](https://github.com/concurro/concurro-backoffice), released on its own |
 
@@ -225,9 +189,9 @@ quota. Neither `gh` nor SSH is used by this host command.
 
 After CI succeeds, one deployment lock covers the combined update. The helper checks out
 the service release's Compose files, records both image tags, stops service dispatch, pulls
-all images, starts the gateway and service components, and verifies health and the served
-service commit. This includes the service, backoffice API, backoffice web, exchange, vault,
-and the gateway image pinned by that release's Compose configuration. Nothing is built on
+the images selected by that release, starts its application components, and verifies their
+health and release tags. Phase 4 Rust releases start accounts, tasks, the read API, web and
+ingress; exchange, vault and the gateway remain separately managed. Nothing is built on
 the host. Separate edge/Caddy infrastructure is not part of an application release.
 
 To deploy a previously selected pair, or repeat a failed update with the same pair:
@@ -248,7 +212,66 @@ release's instructions **before** the normal update. The updater neither modifie
 nor runs arbitrary migration hooks. Updating the installed deployment helpers is also an
 explicit installer operation, separate from pulling application images.
 
-### Save-only credential rollout
+### Phase 4 accounts cutover
+
+This is a single roll-forward deployment window. The approved
+[Phase 4 cutover plan](../docs/proposals/architecture/phase-4-plan.md#cutover) gives the
+exact order. Before switching, complete the historical-display export/import if its
+coverage is not already recorded. The exporter must run from a pinned pre-retirement
+release while the Python backoffice and its sign-in token still work. Then settle
+Python logout jobs and revoke remaining Sign-in OAuth App authorizations. A single
+browser's `revoked` receipt does not cover other tokens.
+
+Prepare `/etc/concurro/accounts` with its own PostgreSQL URL, new 64-hex-character
+logout key, existing Sign-in OAuth App credentials, read-only App PEM, new RS256
+command-proof private PEM and new viewer-authority bearer. The task application
+gets the matching public PEM; the read API gets the same viewer bearer and names
+`http://concurro-accounts-platform:8794`. Prepare the vault, relay and task URLs
+in `deploy/accounts.settings.example.toml`. On an existing PostgreSQL cluster,
+provision the accounts role and database before updating; the development init
+script only runs for a fresh volume. Use a distinct production password:
+
+```sql
+CREATE ROLE accounts LOGIN PASSWORD '<new password>';
+CREATE DATABASE accounts OWNER accounts;
+REVOKE CONNECT ON DATABASE accounts FROM PUBLIC;
+GRANT CONNECT ON DATABASE accounts TO accounts;
+```
+
+Place the matching connection string in `/etc/concurro/accounts/database-url`.
+Replace any host Compose override that defines `backoffice`. The release helper
+starts accounts, tasks and the read API with the Rust overlay, checks their exact
+image tags, and leaves the Python controller stopped. The edge sends `/api/*` and
+`/auth/*` to accounts and `/api/v2/*` to the read API.
+
+After the helper succeeds, install the new Caddy route file, validate it, then
+reload Caddy. This edge step is separate from the application release:
+
+```bash
+sudo install -m 0644 ~/concurro/gateway/concurro.caddy /etc/edge/sites/concurro.caddy
+sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile
+sudo docker compose -f /etc/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force
+```
+
+After the switch, remove the Python backoffice container, image reference,
+`backoffice-data` volume and `/var/lib/concurro/backoffice`, and archive/remove
+`/etc/concurro/backoffice` after its logout queue is settled. Keep the stopped
+Python controller state until the phase 3 archive import is recorded complete.
+The operator then performs P1–P3 from the cutover plan with their own account.
+These live checks have not been run by this local implementation.
+
+The sign-in callback URL remains `https://<host>/concurro/auth/callback`; no App
+permission change is implied by this cutover. Sessions and viewer tokens do not
+carry over. A failed cutover is repaired by a corrective release; the Python
+backoffice is not restarted.
+
+### Historical rollout notes
+
+The following migration procedures describe earlier releases and their Python
+backoffice at the time. They are retained as operator evidence, not as current
+Phase 4 deployment instructions.
+
+#### Save-only credential rollout
 
 The save-only release emits `stored` lifecycle events. Older service and Exchange consumers
 cannot advance past them, including to later revocations. Upgrade both consumers before
@@ -267,7 +290,7 @@ Preserve vault, registry and Exchange state and their event cursors. Recovery is
 only: once `stored` events exist, every corrective consumer release must understand them.
 This change requires no new App grants, settings or database migration.
 
-### Ordered credential lists rollout
+#### Ordered credential lists rollout
 
 This release moves the vault to schema 4, writes checkpoint format 10 for tasks that select
 from a credential list, and replaces the route-addressed credential API and page. Registry
@@ -490,7 +513,7 @@ before this release is refused with "runner engine differs from the session's".
 
 [`vault/`](vault/vault.py) stores per-user provider credentials
 ([proposal §5](../docs/proposals/per-user-credentials.md#5-vault)). It has no Caddy route
-and publishes no port: other `edge` services, such as the backoffice API, reach it as
+and publishes no port: other `edge` services, such as accounts, reach it as
 `http://concurro-vault:8090`. Owner credential requests carry
 `Authorization: Bearer <GitHub user token>`; the vault resolves the user with
 `GET https://api.github.com/user` (cached for five minutes by token SHA-256) and answers
@@ -536,7 +559,7 @@ model, budget, turn and exact-version checks, then forwards it to the verifier o
 the private network. A live Sponsor link is required; one task retains one native
 provider session for cold and warm requests. The verifier ends an idle link whose relay
 disconnects, or stops answering TCP keepalive within about a minute, and reports live links
-only to their owner through the Vault. Set the backoffice's `relay_server` to the public
+only to their owner through the Vault. Set accounts' `relay_server` to the public
 `<host>:<port>` of the relay listener so the portal shows the launch command. The overlay
 requires a TLS certificate and key, and a shared private service token.
 It is not part of the base deployment.
@@ -976,14 +999,14 @@ describes schema 4 and the isolated gateway principal used for private events an
 The release helper reads `/etc/concurro/gateway/compose.host.yaml`; merge the needed
 `compose.private.yaml` network/listener/mount entries into that existing override, preserving
 its persistent volume bindings. Merely leaving the optional overlay in the checkout does not
-activate it. Service/backoffice remain outside the private resolver network.
+activate it. Accounts uses the vault's owner routes on `edge`; tasks use the
+private resolver only through Exchange.
 
-For optional durable GitHub logout cleanup, the helper also reads
-`/etc/concurro/compose.service.host.yaml` **when present** on both service and web updates. The override is nonsecret and must be stat-able by the
-deploy user; keep it outside the uid-65533/0700 service settings directory.
-Merge `service/compose.portal.yaml` there and provision its state/key before setting
-`auth_state_dir`/`auth_key_path`. Without that optional file/configuration, existing base-only
-service deployments are unchanged. Do not edit tracked Compose files on the release host.
+The helper reads `/etc/concurro/compose.service.host.yaml` when present on both
+service and web updates. Keep this nonsecret override stat-able by the deploy user
+and outside uid-65533 private settings. The retired Python portal override is not
+part of the Rust deployment. Accounts queues encrypted logout revocations in its
+own PostgreSQL database using the required `logout-key`.
 
 ## Contributed inference
 
@@ -1003,11 +1026,8 @@ adds service-principal nonsecret event polling and eligible automatic recovery. 
 schema 8 migrates forward; preserve vault event sequence and Registry state when moving
 services. No new secret or recovery enablement setting is required.
 
-### Backoffice issue read cache
+### Read API cache
 
-The backoffice image uses `/var/lib/concurro/backoffice` for rebuildable issue metadata and
-verified checkpoint summaries. Compose retains it in the `backoffice-data` named volume,
-separately from the service registry and diagnostics. The image seeds directory ownership for
-uid 65533. `read_cache_dir` in backoffice settings overrides `CONCURRO_READ_CACHE_DIR`; custom
-paths need a corresponding writable mount. See [issue-page loading](../backoffice/README.md#issue-page-loading)
-for refresh and invalidation behavior. This cache does not alter engine checkpoint formats.
+The Rust read API retains indexed issue metadata and task projections in its own
+PostgreSQL database. The retired Python backoffice cache and `backoffice-data`
+volume do not participate in current reads.

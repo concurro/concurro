@@ -36,8 +36,14 @@ async fn main() -> Result<()> {
         settings.oauth_client_id.clone(),
         read_secret(&settings.oauth_client_secret_file)?,
         settings.callback_url(),
-        "https://github.com/login/oauth/authorize".to_owned(),
-        "https://github.com/login/oauth/access_token".to_owned(),
+        settings
+            .oauth_authorize_url
+            .clone()
+            .unwrap_or_else(|| "https://github.com/login/oauth/authorize".to_owned()),
+        settings
+            .oauth_token_url
+            .clone()
+            .unwrap_or_else(|| "https://github.com/login/oauth/access_token".to_owned()),
         settings.github_api_base.clone(),
     );
     let app = AppClient::new(

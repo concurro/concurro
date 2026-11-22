@@ -4,7 +4,7 @@ COPY . .
 RUN cargo build --release --locked -p concurro-accounts
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65533 --user-group --no-create-home --home-dir /nonexistent concurro
 COPY --from=build /src/target/release/accounts /usr/local/bin/accounts

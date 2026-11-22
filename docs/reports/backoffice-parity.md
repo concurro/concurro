@@ -2,8 +2,9 @@
 
 The comparison baseline is frontend `56dc58a` (before the Rust API switch),
 `backoffice/tasks.py`, `review_tasks.py`, `turns.py`, `activity.py`, and
-`service/github_reads.py`. Current reads use Rust; the retained Python session,
-credential and command authority stays in place.
+`service/github_reads.py`. Current reads use Rust. Phase 4 moves session,
+credential and command authority to the Rust accounts service; Python backoffice
+source is retired. The comparison paths below refer to the pinned prior release.
 
 | View | Previous source | Corrected Rust / frontend path | Acceptance evidence |
 | ---- | ---- | ---- | ---- |
@@ -17,7 +18,7 @@ credential and command authority stays in place.
 | Runs | GitHub attempt timestamps plus recorded turn association | Index retains start/update timestamps and names; recorded runner sessions supply contribution attribution; reruns do not borrow attempt-one ownership | Collector/storage and adapter tests |
 | Activity | Recorded diagnostic turns | Writer-scoped durable Rust turn activity plus imported historical task timelines | API authorization and live-loader tests |
 | Own sponsorships | Own consent, current payer and historical debits | Actual consent facts and provider slots reach the page; own debits combine Rust funding grants (excluding released contribution reservations) with the verified historical `state.credentials` ledger | Own-reader API, funding storage and adapter tests |
-| Credentials / relays | Retained Python/Vault handlers | Existing credential/relay endpoints and UI stay in use | Frontend credential/relay suites; no new Python feature path |
+| Credentials / relays | Python/Vault handlers in the prior release | Rust accounts forwards the same owner routes to the retained vault; the frontend UI stays in use | Accounts R5 and frontend B5 browser suite |
 | Configuration / operator | Target settings and Python controller operations | Existing allowlisted pinned configuration and writer-scoped Rust operational status | Existing configuration/operator integration suites |
 
 ## Historical display migration
@@ -27,7 +28,8 @@ It starts no controller, server, command client or task. GitHub reads use the Re
 App; the user token only establishes current visibility and writer authority through
 the retained access checks. Exported content is private evidence, not public build output.
 
-From the backend source checkout with its pinned Python requirements installed:
+From a pinned pre-retirement backend checkout with its pinned Python requirements
+installed. The exporter and `backoffice/` no longer exist in the current tree:
 
 ```sh
 PYTHONPATH=engine:contracts/python python3 -m deploy.export_historical_display \
@@ -37,12 +39,12 @@ PYTHONPATH=engine:contracts/python python3 -m deploy.export_historical_display \
   /path/to/private-historical-display.json
 ```
 
-The exporter verifies the user token through the retained backoffice's
+The exporter verifies the user token through the prior backoffice's
 `GitHubOAuth.user()` account lookup. Repository reads still use the existing scoped
 `Access` transport; its repository boundary is unchanged.
 
-The retained Python backoffice image does not contain `deploy/`. To use its compatible
-checkpoint/projector runtime, stream the corrected release's exporter into a one-off
+The prior Python backoffice image does not contain `deploy/`. Before retiring that
+image, stream the pinned pre-retirement release's exporter into a one-off
 Python process in that container, keeping the existing private input/output paths:
 
 ```sh
@@ -53,10 +55,10 @@ docker exec -i \
   --user-token-file "$TOKEN_IN_CONTAINER" \
   --deployment "$DISPLAY_DEPLOYMENT" \
   "$MANIFEST_IN_CONTAINER" \
-  < "$CORRECTED_RELEASE/deploy/export_historical_display.py"
+  < "$PINNED_PRE_RETIREMENT_RELEASE/deploy/export_historical_display.py"
 ```
 
-`CORRECTED_RELEASE` must contain the identity-lookup correction. This command starts no
+`PINNED_PRE_RETIREMENT_RELEASE` must contain the identity-lookup correction. This command starts no
 controller or HTTP server and does not replace files in the retained image. The token
 and manifest paths must already be accessible to the container's configured user.
 

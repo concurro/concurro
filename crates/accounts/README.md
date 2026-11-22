@@ -1,8 +1,12 @@
-# Accounts service: Phase 4 Slices 1–3
+# Accounts service
 
 The Rust `accounts` binary implements browser sign-in, in-memory sessions, logout,
-browser commands, credential and relay routes, and the private viewer authority. It is local implementation work;
-the Python backoffice still owns the live routes until cutover.
+browser commands, credential and relay routes, and the private viewer authority.
+Phase 4 deployment is prepared locally; the Python backoffice owns live routes until cutover.
+
+CI builds `ghcr.io/concurro/accounts:<service SHA>` from this crate's Dockerfile.
+The Rust Compose overlay starts accounts with an edge listener and a separate
+platform listener. The image serves `/api/health` for its container healthcheck.
 
 Set `CONCURRO_ACCOUNTS_CONFIG` to a TOML file based on
 [`deploy/accounts.settings.example.toml`](../../deploy/accounts.settings.example.toml).
@@ -17,6 +21,8 @@ The sign-in client must be the existing Sign-in **OAuth App**, with callback URL
 `<public_url>/auth/callback`. Sign-in requests no scopes and uses one-use state and
 S256 PKCE. Sessions and user tokens stay in process memory; a restart signs users
 out. The distinct viewer cookie is read-only. GitHub `401` invalidates the session.
+For local fake OAuth tests, `oauth_authorize_url` and `oauth_token_url` may override
+the GitHub defaults; production settings omit both.
 Sign-in failures redirect with a URL-encoded explanation. `/api/me` always returns
 string `name` and `avatarUrl` fields, falling back to the login and an empty URL.
 The read API's `viewer_authority_url` points to the internal listener at cutover;

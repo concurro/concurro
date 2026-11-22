@@ -2,7 +2,7 @@
 # Everything under /concurro/ arrives with the prefix removed: /concurro/v1/* is inference and
 # /concurro/exchange/* the key exchange (the gateway), /concurro/webhook GitHub App deliveries
 # (Rust ingress, which verifies their signatures), /concurro/api/v2/* the read-only Rust
-# API, /concurro/api/* and /concurro/auth/* the Python session authority; everything
+# API, /concurro/api/* and /concurro/auth/* the Rust accounts service; everything
 # else is the backoffice web app.
 handle /concurro/* {
 	uri strip_prefix /concurro
@@ -30,13 +30,6 @@ handle /concurro/* {
 		}
 	}
 
-	handle /api/events {
-		reverse_proxy concurro-backoffice:8788 {
-			# Stream live updates as they arrive.
-			flush_interval -1
-		}
-	}
-
 	handle /api/v2/events {
 		reverse_proxy concurro-backoffice-read:8790 {
 			header_up X-Concurro-Viewer {http.request.cookie.concurro_viewer}
@@ -52,10 +45,10 @@ handle /concurro/* {
 		}
 	}
 
-	# The backoffice API and GitHub sign-in.
-	@backoffice path /api/* /auth/*
-	handle @backoffice {
-		reverse_proxy concurro-backoffice:8788
+	# Browser account authority and GitHub sign-in.
+	@accounts path /api/* /auth/*
+	handle @accounts {
+		reverse_proxy concurro-accounts:8793
 	}
 
 	handle {

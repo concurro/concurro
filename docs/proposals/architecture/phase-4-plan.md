@@ -1,6 +1,6 @@
 # Phase 4 plan: sign-in, commands and credentials in Rust
 
-**Status: Slices 1–3 implemented locally; cutover not started.** Phase 4 of the [migration](../architecture.md#migration).
+**Status: Slices 1–4 implemented locally; cutover not started.** Phase 4 of the [migration](../architecture.md#migration).
 It builds on phase 3 as deployed: the task application is the sole controller, the
 backoffice read API serves every view under `/api/v2`, and the Python backoffice is left
 with sign-in, browser commands and the credentials pages.
@@ -539,6 +539,8 @@ The Python backoffice is not restarted.
   - `gateway/tests/phase5_spike.py`: retired. It is an opt-in qualification of the old
     portal → vault → exchange path, and its evidence is recorded in
     [per-user credentials phase 5 review](../per-user-credentials/phase-5-review.md).
+    `gateway/tests/hosted_relay_spike.py` subclasses that retired fixture and is
+    retired with it.
     The vault and exchange keep their own suites (`gateway/tests/test_vault*.py`,
     `test_exchange*.py`), and its run instructions in
     [phase 5](../per-user-credentials/phase-5.md) are marked retired.

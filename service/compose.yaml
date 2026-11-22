@@ -1,4 +1,5 @@
-# The Concurro service on the gateway's host: Rust ingress receives webhooks through edge;
+# Legacy Python controller retained stopped for phase 3 archive completion; the Rust overlay
+# starts accounts, tasks and the read API. Rust ingress receives webhooks through edge;
 # all model turns run natively on the
 # targets' GitHub-hosted runners. Settings and secrets, and the state directory, are mounted at the
 # same paths as on the host, so the paths in settings.json hold in both. CI publishes the images;
@@ -35,36 +36,6 @@ services:
       timeout: 10s
     restart: unless-stopped
 
-  # The backoffice API, at /concurro/api and /concurro/auth on the edge (gateway/concurro.caddy). It reads
-  # the diagnostics directory the service writes; settings and the OAuth client secret are its own.
-  backoffice:
-    image: ghcr.io/concurro/backoffice-api:${CONCURRO_RELEASE:?}
-    build:
-      context: ..
-      dockerfile: backoffice/Dockerfile
-    volumes:
-      - /etc/concurro/backoffice:/etc/concurro/backoffice:ro
-      - backoffice-data:/var/lib/concurro/backoffice
-      - /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics
-    networks:
-      edge:
-        aliases:
-          - concurro-backoffice
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: 512m
-    pids_limit: 128
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/health', timeout=5)"]
-      interval: 60s
-      timeout: 10s
-    restart: unless-stopped
-
   # The backoffice web app (github.com/concurro/concurro-backoffice), released on its own.
   web:
     image: ghcr.io/concurro/backoffice-web:${CONCURRO_WEB_RELEASE:?}
@@ -92,6 +63,3 @@ networks:
   edge:
     external: true
     name: edge
-
-volumes:
-  backoffice-data:

@@ -74,14 +74,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
+      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt markdown-it-py==3.0.0 ruff==0.17.4 pyright==1.1.408
       - name: Lint Python
-        run: ruff check engine service gateway backoffice deploy
+        run: ruff check engine service gateway deploy
       - name: Check Python formatting
-        run: ruff format --check engine service gateway backoffice deploy
+        run: ruff format --check engine service gateway deploy
       - name: Check extracted engine types
         run: pyright --project pyrightconfig.json
-      - run: python3 -m compileall -q engine service gateway/exchange gateway/vault backoffice
+      - run: python3 -m compileall -q engine service gateway/exchange gateway/vault
       - run: shellcheck deploy/*.sh
       - name: Verify trusted role, skill, schema and example charter packaging
         run: python3 engine/bundle.py examples/stacks-core
@@ -93,13 +93,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [engine, service, gateway, backoffice, deploy]
+        suite: [engine, service, gateway, deploy]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt -r backoffice/requirements.txt markdown-it-py==3.0.0
+      - run: python3 -m pip install -r service/requirements.txt -r contracts/python/requirements.txt -r gateway/vault/requirements.txt markdown-it-py==3.0.0
       # One process per test file, one file per core; each file's output is printed whole.
       - name: Run tests
         env:
@@ -136,9 +136,9 @@ jobs:
           - image: backoffice-read
             context: .
             dockerfile: crates/backoffice-api/Dockerfile
-          - image: backoffice-api
+          - image: accounts
             context: .
-            dockerfile: backoffice/Dockerfile
+            dockerfile: crates/accounts/Dockerfile
           - image: exchange
             context: .
             dockerfile: gateway/exchange/Dockerfile

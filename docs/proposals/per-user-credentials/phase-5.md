@@ -65,7 +65,7 @@ Isolated tests cover both providers/two accounts, saves without provider calls o
 atomic replacement, stale writes, revoke during saving including empty slots, forward
 migration, private-principal isolation and redaction. The real Controller/Registry/Exchange
 journey tests running-turn trusted expiry, one charged failure, no replacement auto-wake,
-explicit writer retry/new version and preserved grants. The opt-in `phase5_spike.py` runs the
+explicit writer retry/new version and preserved grants. The retired opt-in `phase5_spike.py` ran the
 actual pinned gateway and native CLIs against fake providers, with actual BFF/public-private
 vault storage, replacement, retained resume, graceful account transfer and isolated revocation.
 Its manually admitted native turns do not independently prove Controller budget accounting.
@@ -95,7 +95,9 @@ from historical Phase 0/4 evidence. Raw isolated evidence is retained under
 `/private/tmp/concurro-phase5-runtime09` and
 `/private/tmp/concurro-phase5-inference-regression01`.
 
-Reproduce from the repository with the pinned installed CLI bin directory and isolated Docker:
+The following historical reproduction requires a pinned pre-retirement checkout;
+`gateway/tests/phase5_spike.py` is absent from the current tree. Use that
+checkout with its pinned CLI bin directory and isolated Docker:
 
 ```bash
 python gateway/tests/phase5_spike.py --output /tmp/NEW_PHASE5_RUN --clients /path/to/pinned/node_modules/.bin

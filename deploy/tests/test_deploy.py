@@ -96,12 +96,20 @@ elif [[ "$name" == sudo ]]; then
   fi
   case " $* " in
     *' ps -q service '*) echo container-id ;;
+    *' ps -q accounts '*) echo accounts-id ;;
+    *' ps -q tasks '*) echo tasks-id ;;
+    *' ps -q backoffice-read '*) echo backoffice-read-id ;;
+    *" inspect --format {{.Config.Image}} accounts-id "*) echo "ghcr.io/concurro/accounts:$SHA" ;;
+    *" inspect --format {{.Config.Image}} tasks-id "*) echo "ghcr.io/concurro/tasks:$SHA" ;;
+    *" inspect --format {{.Config.Image}} backoffice-read-id "*) echo "ghcr.io/concurro/backoffice-read:$SHA" ;;
     *' inspect '*) echo '2026-11-05T00:00:00Z' ;;
     *' logs '*) echo "serving engine $SHA" ;;
   esac
 elif [[ "$name" == git && "$1" == merge-base ]]; then
   # Only the fetched main, or the release itself, descends from a recorded release.
   [[ "$FAIL" != backward || "$3" == "$4" || "$4" == origin/main ]]
+elif [[ "$name" == git && "$1" == show ]]; then
+  [[ -f "$HOME/concurro/service/compose.rust.yaml" ]] && echo '  accounts:'
 fi
 """
 WEB = "CONCURRO_WEB_RELEASE=" + "1" * 40 + "\n"
@@ -119,11 +127,16 @@ class HostTests(unittest.TestCase):
         private_settings=False,
         installed=False,
         staged=False,
+        rust_cutover=False,
     ):
         """Return helper output, calls and the release file from an isolated fake host."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "concurro").mkdir()
+            if rust_cutover:
+                marker = root / "concurro/service/compose.rust.yaml"
+                marker.parent.mkdir(parents=True)
+                marker.write_text("services:\n  accounts:\n    image: accounts\n")
             (root / ".local/lib/concurro-deploy").mkdir(parents=True)
             (root / "concurro-release.env").write_text(releases)
             commands = root / "bin"
@@ -148,7 +161,7 @@ class HostTests(unittest.TestCase):
             override = root / "compose.service.host.yaml"
             if service_override:
                 override.write_text(
-                    "services:\n  backoffice:\n    volumes:\n      - /var/lib/concurro/backoffice:/var/lib/concurro/backoffice-auth\n"
+                    "services:\n  accounts:\n    volumes:\n      - /etc/concurro/accounts:/etc/concurro/accounts:ro\n"
                 )
                 private_override.write_text(override.read_text())
             if private_settings:
@@ -368,6 +381,21 @@ class HostTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"CONCURRO_RELEASE={SHA}\n", releases)
         self.assertLess(trace.index(f"ghcr.io/concurro/service:{SHA}"), trace.index(" stop service"))
+
+    def test_rust_cutover_starts_only_rust_authority_and_checks_release_images(self):
+        result, trace, _ = self.run_host("service", rust_cutover=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line for line in trace.splitlines() if "docker compose" in line]
+        self.assertTrue(all("compose.rust.yaml" in line for line in calls if "/concurro/service/compose.yaml" in line))
+        self.assertIn(" stop service", trace)
+        self.assertNotIn(f"ghcr.io/concurro/service:{SHA}", trace)
+        self.assertNotIn(" run --rm --no-deps --entrypoint python3 service", trace)
+        self.assertIn(" pull accounts tasks backoffice-read web", trace)
+        self.assertIn(" up -d --no-build --wait --wait-timeout 180 accounts tasks backoffice-read web", trace)
+        self.assertNotIn(" up -d --no-build --wait --wait-timeout 180 service", trace)
+        for name in ("accounts", "tasks", "backoffice-read"):
+            self.assertIn(f"ps -q {name}", trace)
+            self.assertIn(f"{{{{.Config.Image}}}} {name}-id", trace)
 
 
 if __name__ == "__main__":

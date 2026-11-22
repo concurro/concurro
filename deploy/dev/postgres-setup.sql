@@ -33,3 +33,8 @@ CREATE ROLE backoffice LOGIN PASSWORD 'backoffice-dev';
 CREATE DATABASE backoffice OWNER backoffice;
 REVOKE CONNECT ON DATABASE backoffice FROM PUBLIC;
 GRANT CONNECT ON DATABASE backoffice TO backoffice;
+
+CREATE ROLE accounts LOGIN PASSWORD 'accounts-dev';
+CREATE DATABASE accounts OWNER accounts;
+REVOKE CONNECT ON DATABASE accounts FROM PUBLIC;
+GRANT CONNECT ON DATABASE accounts TO accounts;

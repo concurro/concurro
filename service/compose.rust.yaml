@@ -1,10 +1,5 @@
-# Phase 3 processes. Keep the Python service stopped at the controller activation boundary.
+# Rust controller, read and account processes. Keep the Python service stopped.
 services:
-  backoffice:
-    command: ["--listen", "0.0.0.0:8788", "--internal-listen", "0.0.0.0:8791"]
-    networks:
-      platform: {}
-
   tasks:
     image: ghcr.io/concurro/tasks:${CONCURRO_RELEASE:?}
     build:
@@ -37,6 +32,37 @@ services:
         aliases:
           - concurro-backoffice-read
       platform: {}
+    restart: unless-stopped
+
+  accounts:
+    image: ghcr.io/concurro/accounts:${CONCURRO_RELEASE:?}
+    build:
+      context: ..
+      dockerfile: crates/accounts/Dockerfile
+    environment:
+      CONCURRO_ACCOUNTS_CONFIG: /etc/concurro/accounts/settings.toml
+    volumes:
+      - /etc/concurro/accounts:/etc/concurro/accounts:ro
+    networks:
+      edge:
+        aliases:
+          - concurro-accounts
+      platform:
+        aliases:
+          - concurro-accounts-platform
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8793/api/health"]
+      interval: 30s
+      timeout: 10s
     restart: unless-stopped
 
 networks:

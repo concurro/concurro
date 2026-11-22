@@ -2,8 +2,7 @@ listen = "0.0.0.0:8790"
 database_url_file = "/etc/concurro/backoffice-read/database-url"
 task_api_url = "http://concurro-tasks:8792"
 task_api_bearer_file = "/etc/concurro/backoffice-read/task-read-bearer"
-viewer_authority_url = "http://concurro-backoffice:8791"
-# At the Phase 4 cutover, use http://concurro-accounts:8794 instead.
+viewer_authority_url = "http://concurro-accounts-platform:8794"
 viewer_authority_bearer_file = "/etc/concurro/backoffice-read/viewer-authority-bearer"
 nats_url = "nats://concurro-nats:4222"
 # Private JSON object with "user" and "password"; omit only for an unauthenticated broker.

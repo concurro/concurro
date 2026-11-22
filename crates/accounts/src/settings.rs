@@ -24,6 +24,10 @@ pub struct Settings {
     pub oauth_client_id: String,
     /// Sign-in OAuth App client secret file.
     pub oauth_client_secret_file: String,
+    /// Optional OAuth authorization URL for local integration tests.
+    pub oauth_authorize_url: Option<String>,
+    /// Optional OAuth token URL for local integration tests.
+    pub oauth_token_url: Option<String>,
     /// GitHub REST API origin.
     pub github_api_base: String,
     /// Read-only Backoffice App ID.

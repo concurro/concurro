@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Server half of deploy.sh. `service` stops dispatch, pulls a release's images and starts them;
+# Server half of deploy.sh. `service` stops legacy dispatch, pulls a release's images and starts them;
 # `web` moves the backoffice web app on its own; `all` updates both release tags together.
 set -euo pipefail
 phase=${1:?Missing phase}
@@ -20,6 +20,10 @@ svc() {
   local files=(-f "$HOME/concurro/service/compose.yaml")
   if [[ -f /etc/concurro/ingress/settings.toml ]]; then
     files+=(-f "$HOME/concurro/service/compose.ingress.yaml")
+  fi
+  if [[ -f "$HOME/concurro/service/compose.rust.yaml" ]] &&
+    grep -q '^  accounts:' "$HOME/concurro/service/compose.rust.yaml"; then
+    files+=(-f "$HOME/concurro/service/compose.rust.yaml")
   fi
   if [[ -f /etc/concurro/compose.service.host.yaml ]]; then
     files+=(-f /etc/concurro/compose.service.host.yaml)
@@ -69,25 +73,30 @@ if [[ -n "$current" ]] && ! git merge-base --is-ancestor "$current" "$release"; 
   echo "Release $release does not include the deployed $current; refusing to move backward or sideways." >&2
   exit 1
 fi
-settings_file=/etc/concurro/service/settings.json
-staged_file=/etc/concurro/service/settings.next.json
-candidate=$settings_file
-# Validate the candidate with the release image before switching the checkout or stopping services.
-sudo -n docker pull "ghcr.io/concurro/service:$release"
-if sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
-  --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
-  'import os, sys; sys.exit(not os.path.isfile("/etc/concurro/service/settings.next.json"))'; then
-  candidate=$staged_file
+rust_release=false
+if git show "$release:service/compose.rust.yaml" 2>/dev/null | grep -q '^  accounts:'; then
+  rust_release=true
+else
+  settings_file=/etc/concurro/service/settings.json
+  staged_file=/etc/concurro/service/settings.next.json
+  candidate=$settings_file
+  # Legacy service releases validate the candidate before changing the checkout.
+  sudo -n docker pull "ghcr.io/concurro/service:$release"
+  if sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
+    --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+    'import os, sys; sys.exit(not os.path.isfile("/etc/concurro/service/settings.next.json"))'; then
+    candidate=$staged_file
+  fi
+  sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
+    --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+    'import json, sys; s=json.load(open(sys.argv[2])); assert s.get("engine") in (None, sys.argv[1]), "Service settings have a different engine pin; update it explicitly before deploying."' "$release" "$candidate"
+  sudo -n docker run --rm --network none \
+    --volume /etc/concurro/service:/etc/concurro/service:ro \
+    --volume /var/lib/concurro/service:/var/lib/concurro/service:ro \
+    --volume /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics:ro \
+    --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
+    'from service.settings import load; from service.__main__ import host_checks; import sys; s=host_checks(load(sys.argv[2])); assert s.engine == sys.argv[1]' "$release" "$candidate"
 fi
-sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service:ro \
-  --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
-  'import json, sys; s=json.load(open(sys.argv[2])); assert s.get("engine") in (None, sys.argv[1]), "Service settings have a different engine pin; update it explicitly before deploying."' "$release" "$candidate"
-sudo -n docker run --rm --network none \
-  --volume /etc/concurro/service:/etc/concurro/service:ro \
-  --volume /var/lib/concurro/service:/var/lib/concurro/service:ro \
-  --volume /var/lib/concurro/diagnostics:/var/lib/concurro/diagnostics:ro \
-  --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
-  'from service.settings import load; from service.__main__ import host_checks; import sys; s=host_checks(load(sys.argv[2])); assert s.engine == sys.argv[1]' "$release" "$candidate"
 git switch --detach "$release"
 if [[ -z "$current" && "$phase" == all ]]; then
   record CONCURRO_WEB_RELEASE "$web_release"
@@ -102,7 +111,7 @@ if [[ -f /etc/concurro/ingress/settings.toml ]]; then
 else
   svc stop service
 fi
-if [[ "$candidate" == "$staged_file" ]]; then
+if [[ "$rust_release" == false && "$candidate" == "$staged_file" ]]; then
   sudo -n docker run --rm --network none --volume /etc/concurro/service:/etc/concurro/service \
     --entrypoint python3 "ghcr.io/concurro/service:$release" -c \
     'import os, shutil; source, target = "/etc/concurro/service/settings.next.json", "/etc/concurro/service/settings.json"; shutil.copy2(target, target + ".previous"); os.replace(source, target)'
@@ -116,14 +125,33 @@ fi
 gw config --quiet
 svc config --quiet
 gw pull
-svc pull
-svc run --rm --no-deps --entrypoint python3 service -c \
-  'from service.settings import load; from service.__main__ import host_checks; import sys; s=host_checks(load("/etc/concurro/service/settings.json")); assert s.engine == sys.argv[1]; print("Pulled service verified:", s.engine)' "$release"
+if [[ "$rust_release" == true ]]; then
+  rust_services=(accounts tasks backoffice-read web)
+  if [[ -f /etc/concurro/ingress/settings.toml ]]; then
+    rust_services+=(ingress)
+  fi
+  svc pull "${rust_services[@]}"
+else
+  svc pull
+  svc run --rm --no-deps --entrypoint python3 service -c \
+    'from service.settings import load; from service.__main__ import host_checks; import sys; s=host_checks(load("/etc/concurro/service/settings.json")); assert s.engine == sys.argv[1]; print("Pulled service verified:", s.engine)' "$release"
+fi
 gw up -d --no-build
-svc up -d --no-build --wait --wait-timeout 180
-container=$(svc ps -q service)
-started=$(sudo -n docker inspect --format '{{.State.StartedAt}}' "$container")
-logs=$(svc logs --since "$started" --no-color service)
-printf '%s\n' "$logs"
-[[ "$logs" == *"serving engine $release"* ]]
+if [[ "$rust_release" == true ]]; then
+  # Leave the stopped Python controller down; only the Rust services and web run.
+  svc up -d --no-build --wait --wait-timeout 180 "${rust_services[@]}"
+  for name in accounts tasks backoffice-read; do
+    container=$(svc ps -q "$name")
+    [[ -n "$container" ]]
+    image=$(sudo -n docker inspect --format '{{.Config.Image}}' "$container")
+    [[ "$image" == "ghcr.io/concurro/$name:$release" ]]
+  done
+else
+  svc up -d --no-build --wait --wait-timeout 180
+  container=$(svc ps -q service)
+  started=$(sudo -n docker inspect --format '{{.State.StartedAt}}' "$container")
+  logs=$(svc logs --since "$started" --no-color service)
+  printf '%s\n' "$logs"
+  [[ "$logs" == *"serving engine $release"* ]]
+fi
 echo 'Startup, health and served commit checks passed.'

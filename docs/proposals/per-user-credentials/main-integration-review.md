@@ -79,7 +79,7 @@ no material duplication remained. Both merge indexes and parent identities were 
 
 ## Deployment limits
 
-Follow [current readiness](deployment-readiness.md) and [App migration](../../../backoffice/APP-MIGRATION.md):
+Follow [current readiness](deployment-readiness.md) and [Phase 4 retirement](../architecture/phase-4-plan.md#retirement):
 sign both accepted merges, pass exact-release CI/image publication, then verify external
 Sign-in/Reader App configuration/grants/callbacks, private principals/networks/mounts and
 active-task bundle handling. Optional encrypted logout state needs the documented container

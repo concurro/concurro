@@ -17,6 +17,25 @@ The setup creates a database and login role for each planned service. Each datab
 revokes `CONNECT` from `PUBLIC`; its role has access to that database. Tests use
 disposable containers through `concurro-testkit`.
 
+The Phase 4 accounts service has its own `accounts` database and login role. Its
+settings are illustrated in `deploy/accounts.settings.example.toml`. Give uid 65533
+read access to the settings directory and secret files. `database-url` contains only
+its PostgreSQL connection URL; `logout-key` contains 64 hex characters for a new
+AES-256 key. Keep the same viewer-authority bearer in accounts and the read API,
+and the corresponding command-proof private/public PEM pair in accounts and tasks.
+The accounts browser listener joins `edge`; its viewer listener binds the
+`concurro-accounts-platform` alias on `platform`. The read API's
+`viewer_authority_url` names that alias. Neither listener publishes a host port.
+
+The cutover requires the accounts image, both matching key pairs and all three
+service settings before the release helper starts the Rust overlay. Sign-in uses
+the existing OAuth App and callback `https://<host>/concurro/auth/callback`.
+Settle the retired Python backoffice's logout queue and remaining OAuth App
+authorizations before removing its settings; see the
+[Phase 4 cutover](../gateway/README.md#phase-4-accounts-cutover). Recovery is a
+corrective release. The stopped Python controller and its state remain until the
+phase 3 archive import is recorded complete.
+
 ## Service requirements
 
 - Each service has its own PostgreSQL database and role, with a private password
