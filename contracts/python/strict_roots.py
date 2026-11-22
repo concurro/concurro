@@ -9,7 +9,8 @@ def main():
     path = Path(sys.argv[1])
     source = path.read_text()
     assert "from concurro_contracts.strict import StrictModel" in source
-    assert "RootModel[" in source
+    if "RootModel[" not in source:
+        return
     source = source.replace(
         "from concurro_contracts.strict import StrictModel",
         "from concurro_contracts.strict import StrictModel, StrictRootModel, StrictTimestamp",

@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A content-addressed runner artifact.",
+      "properties": {
+        "sha256": {
+          "description": "Lowercase SHA-256 digest.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Original byte count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Runner result with blob references rather than embedded bytes.",
+  "properties": {
+    "elapsed_seconds": {
+      "default": null,
+      "description": "Elapsed execution time.",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "outcome": {
+      "description": "Engine outcome.",
+      "type": "string"
+    },
+    "response": {
+      "description": "Engine response content."
+    },
+    "retained": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlobRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Retained archive blob."
+    },
+    "termination_reason": {
+      "default": null,
+      "description": "Optional termination diagnostic.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "transcript": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlobRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Transcript archive blob."
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlobRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Workspace change JSON blob."
+    }
+  },
+  "required": [
+    "outcome",
+    "response"
+  ],
+  "title": "TurnResultV2",
+  "type": "object"
+}

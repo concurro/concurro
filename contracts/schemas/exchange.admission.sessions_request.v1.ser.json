@@ -1,0 +1,24 @@
+{
+  "$defs": {
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Sessions the gateway needs to check for stream cancellation.",
+  "properties": {
+    "session_ids": {
+      "description": "Session identities to inspect.",
+      "items": {
+        "$ref": "#/$defs/TaskId"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "session_ids"
+  ],
+  "title": "SessionStatusRequest",
+  "type": "object"
+}

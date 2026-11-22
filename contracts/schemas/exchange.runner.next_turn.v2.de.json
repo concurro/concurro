@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A content-addressed runner artifact.",
+      "properties": {
+        "sha256": {
+          "description": "Lowercase SHA-256 digest.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Original byte count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "type": "object"
+    },
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$(?![\\s\\S])",
+      "type": "string"
+    },
+    "TurnPayloadV2": {
+      "additionalProperties": false,
+      "description": "Turn input delivered to the v2 runner.",
+      "properties": {
+        "feedback": {
+          "description": "Prior-turn feedback."
+        },
+        "request": {
+          "description": "Frozen model request."
+        },
+        "retained": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlobRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Retained archive to restore, when continuing."
+        },
+        "spec": {
+          "description": "Frozen checkout and workspace specification."
+        },
+        "timeout": {
+          "description": "Engine timeout in seconds.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "request",
+        "feedback",
+        "spec",
+        "timeout"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Next runner turn after the session has bound its engine.",
+  "properties": {
+    "deadline": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Session deadline."
+    },
+    "payload": {
+      "$ref": "#/$defs/TurnPayloadV2",
+      "description": "Frozen engine input."
+    },
+    "turn_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Exchange turn identity."
+    }
+  },
+  "required": [
+    "turn_id",
+    "payload",
+    "deadline"
+  ],
+  "title": "RunnerNextTurn",
+  "type": "object"
+}

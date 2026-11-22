@@ -19,4 +19,4 @@ while IFS=$'\t' read -r stem module; do
     --disable-timestamp \
     --use-field-description
   python3 "$root/contracts/python/strict_roots.py" "$output"
-done < <(python3 -c 'import json,sys; [print(item["stem"] + "\t" + item["python_module"]) for item in json.load(open(sys.argv[1]))]' "$root/contracts/registry.json")
+done < <(python3 -c 'import json,sys; [print(item["stem"] + "\t" + item["python_module"]) for path in sys.argv[1:] for item in json.load(open(path))]' "$root/contracts/registry.json" "$root/contracts/api-registry.json")

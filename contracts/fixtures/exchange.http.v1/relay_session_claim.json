@@ -1,0 +1,1 @@
+{"jti":"claim-1","iss":"concurro-exchange","sub":"00000000-0000-0000-0000-000000000002","iat":1767225600,"exp":1767229200,"relay_id":"relay-1","user_id":35576205,"entry_id":"entry-1","record_id":"record-1","version":2,"route":"claude-subscription","models":["claude-test"],"calls":1000,"tokens":1000,"repository":"org/upstream","issue":42}

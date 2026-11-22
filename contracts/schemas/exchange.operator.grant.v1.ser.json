@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "GrantCredential": {
+      "additionalProperties": false,
+      "description": "Versioned funding route; personal routes identify their exact credential version.",
+      "properties": {
+        "custody": {
+          "description": "Custody kind, `secret_store` or `relay`, for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_id": {
+          "description": "Browser credential entry for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record_id": {
+          "description": "Secret record for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relay_id": {
+          "description": "Relay identity when custody is relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route": {
+          "description": "Provider route name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable secret version for contributed funding.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "route"
+      ],
+      "type": "object"
+    },
+    "GrantLimits": {
+      "additionalProperties": false,
+      "description": "Immutable spending limits attached to one grant.",
+      "properties": {
+        "lease_seconds": {
+          "description": "Maximum session lease in seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokens": {
+          "description": "Maximum provider tokens in a session.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens",
+        "lease_seconds"
+      ],
+      "type": "object"
+    },
+    "RequestActor": {
+      "additionalProperties": false,
+      "description": "Authenticated GitHub identity responsible for a request.",
+      "properties": {
+        "id": {
+          "description": "GitHub numeric account ID.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "login": {
+          "description": "GitHub login at source capture time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable authorization to spend one payer's selected route.",
+  "properties": {
+    "credential": {
+      "$ref": "#/$defs/GrantCredential",
+      "description": "Exact route or credential version."
+    },
+    "grant_id": {
+      "description": "Stable grant identity.",
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/GrantLimits",
+      "description": "Upper bounds for each session."
+    },
+    "models": {
+      "description": "Models permitted under this grant.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "payer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestActor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Contributing user identity, absent for org funding."
+    },
+    "purpose": {
+      "description": "`task_org` or `task_contributed`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "grant_id",
+    "purpose",
+    "credential",
+    "models",
+    "limits"
+  ],
+  "title": "Grant",
+  "type": "object"
+}

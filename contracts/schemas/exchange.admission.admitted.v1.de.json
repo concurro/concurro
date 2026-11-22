@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "GrantCredential": {
+      "additionalProperties": false,
+      "description": "Versioned funding route; personal routes identify their exact credential version.",
+      "properties": {
+        "custody": {
+          "description": "Custody kind, `secret_store` or `relay`, for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_id": {
+          "description": "Browser credential entry for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record_id": {
+          "description": "Secret record for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relay_id": {
+          "description": "Relay identity when custody is relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route": {
+          "description": "Provider route name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable secret version for contributed funding.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "route"
+      ],
+      "type": "object"
+    },
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An admitted request and its exact funding route.",
+  "properties": {
+    "claim": {
+      "description": "Signed relay claim when custody is relay.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "credential": {
+      "$ref": "#/$defs/GrantCredential",
+      "description": "Exact route or credential version."
+    },
+    "deadline": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Session deadline."
+    },
+    "grant_id": {
+      "description": "Funding grant.",
+      "type": "string"
+    },
+    "models": {
+      "description": "Models allowed by the session.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "remaining_tokens": {
+      "description": "Remaining known token allowance.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "request_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Accepted request identity."
+    },
+    "session_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Live runner session."
+    },
+    "turn_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Running turn."
+    }
+  },
+  "required": [
+    "request_id",
+    "session_id",
+    "turn_id",
+    "grant_id",
+    "credential",
+    "models",
+    "remaining_tokens",
+    "deadline"
+  ],
+  "title": "Admission",
+  "type": "object"
+}

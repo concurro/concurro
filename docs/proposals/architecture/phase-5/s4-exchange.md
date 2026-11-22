@@ -5,6 +5,120 @@ takes traffic at S7. It replaces `gateway/exchange/exchange.py`. The inference f
 in `gateway/exchange/inference.py` is replaced by the [gateway](s5-gateway.md) together
 with the exchange's admission API.
 
+## Implementation work order
+
+S4 is implemented in four deliverables. These are integration and review checkpoints,
+not separate production cutovers. They may merge and deploy inactive; S7 still switches
+traffic once the exchange, gateway, task application and runner are ready together.
+Authorization, idempotency and recovery belong with the workflow that introduces them.
+
+### Ownership and parallel work
+
+- The S4 owner owns the exchange operator, admission and runner APIs, turn payload v2,
+  `exchange.turn.*` and `inference.usage`, including shared types and clients.
+- The S3 owner owns credential metadata and `credential.<user_id>.changed`. Changes to
+  another owner's family are agreed with that owner before implementation. Producers
+  and consumers use the same shared contracts; fixtures do not invent alternate shapes.
+- S3 proceeds independently on accounts' store, metadata, history and import. Relay
+  approval then integrates S1's owner API.
+- After S4a, S5's org gateway can proceed alongside S4b using the admission client and
+  fixtures. S6's org submit/result adapter can proceed against the operator client and
+  exchange event fixtures. Neither waits for all contributed or relay behavior.
+- Before S4c integration, assign owners for its three pieces: exchange admission and
+  settlement (S4), org gateway routes (S5), and task Rust-mode submits, results and blob
+  ingestion (S6). S4c coordinates those pieces rather than waiting for all of S5 or S6.
+
+### S4a: operator workflow and shared contracts
+
+Deliver a working operator workflow against PostgreSQL and the shared outbox:
+
+1. Define the exchange contract families in `concurro-contracts`, generate schemas and
+   fixtures, and implement the operator and admission HTTP clients. Admission covers
+   `requests`, `requests/{id}/finish` and `sessions/status` now, even though its server
+   behavior lands in S4c. Exercise the clients against contract fixtures; do not use
+   client methods that merely return an unimplemented error.
+2. Implement grant validation and immutable grant IDs, canonical turn-body digests,
+   submit replay, observation reads and initial session allocation with its dispatch.
+3. Implement cancellation/retirement, durable turn tombstones, and grant-revocation
+   fences, including revocation before first submit. These apply to org grants too.
+   Preserve terminal results and the complete retired-session set through replay and
+   pruning. Relay release delivery itself lands in S4d; do not report pending releases
+   as acknowledged.
+4. Append status snapshots in the same transaction as their state changes. Use the
+   existing database, outbox and event infrastructure. Wire the operator listener and
+   settings so the workflow is usable through the real HTTP API.
+
+**Exit:** through the real operator client and HTTP API, submit an org turn, obtain and
+read its dispatch, replay it unchanged, reject changed contents, then cancel it. Cover
+cancel-before-submit, revoke-before-submit, stable retirement results after pruning,
+restart persistence, bearer isolation and transactional event rollback. Admission
+clients round-trip the agreed fixtures. Keep tests representative and focused.
+
+**Review:** a focused contract/API review, including Opus, at the completed checkpoint.
+This unblocks consumers; it does not claim that runner execution works yet.
+
+### S4b: runner execution and blobs
+
+Implement OIDC claim and engine-key handshake, deterministic token replay, heartbeat,
+next-turn delivery, content-addressed uploads/downloads, result submission and session
+end. Add the runner liveness/replacement behavior used by this workflow. Complete the
+runner and event types from S4a without changing their agreed semantics.
+
+This deliverable intentionally includes the migration changes to `engine/relay.py`,
+`engine/runner.py`, `engine/turns.py` and the launcher workflow. It changes transport,
+not engine behavior, and is permitted Python migration work under `AGENTS.md`.
+
+**Exit:** the real engine runner completes a canned turn against the Rust exchange and
+fake inference, including blobs and result replay. Verify lost claim reply across
+restart, OIDC refusals, cancellation, and representative liveness behavior. A late
+retirement of a prior turn must not end a shared session serving a subsequent turn;
+propagate active-turn ownership or avoid session reuse. Run the
+relevant tests here; fold the consolidated review into S4c.
+
+### S4c: org-funded execution end to end
+
+Implement the admission server, request accounting and settlement, alongside the S5 org
+routes and S6 org integration. Prove this path before completing contributed or relay
+work:
+
+```text
+task app -> exchange -> v2 runner -> org gateway -> provider fixture
+         <- exchange.turn.* and result blobs <- runner
+```
+
+Core failure handling is part of this deliverable:
+
+- budget denial is recorded and ends the turn;
+- admission refuses a failed turn and a cancelled or revoked session/grant;
+- finish reports are idempotent and usage is attributed;
+- the settlement deadline and `provider_requests` distinguish observed, undispatched
+  and unreported requests;
+- failed results wait for their requests to settle;
+- cancellation/revocation closes gateway streams within the agreed bound;
+- result events and reconciliation settle the task once and preserve its transcript,
+  retained archive and publication input.
+
+**Exit:** an org turn completes across the real services in the integration harness,
+with fake provider responses and the existing read-model ingestion. Representative
+failure/recovery cases exercise the rules above. No real paid turn is required.
+
+**Review:** one consolidated integration review, including Opus, across S4b/S4c and the
+participating S5/S6 changes. This is the main integration checkpoint.
+
+### S4d: contributed funding and relay completion
+
+Complete personal-grant handling and credential-failure attribution, and integrate S3's
+metadata and S6's credential-version revocation markers, selection and fallback. Add
+signed relay claims, durable release retries and S1 verifier integration. Generic grant
+fencing and org-path failure handling are already implemented in S4a/S4c.
+
+**Exit:** contributed selection, failure followed by fallback, credential replacement,
+withdrawal and relay claim/release pass through the integrated services. Run the
+remaining S4 acceptance cases below and relevant changed-component suites.
+
+**Review:** one consolidated final review, including Opus. Report remaining S7 release
+and live-cutover work separately; local acceptance does not authorize deployment.
+
 ## Crates
 
 - **`crates/exchange`:** the binary, with three listeners and modules `runner`

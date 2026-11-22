@@ -54,7 +54,7 @@ jobs:
         run: |
           cargo run -p concurro-contracts --bin generate --locked
           bash contracts/python/generate.sh
-          test -z "$(git status --porcelain -- contracts/registry.json contracts/schemas contracts/python/concurro_contracts)"
+          test -z "$(git status --porcelain -- contracts/registry.json contracts/api-registry.json contracts/schemas contracts/python/concurro_contracts)"
       - name: Test Python contract fixtures and compatibility checker
         env:
           PYTHONPATH: contracts/python

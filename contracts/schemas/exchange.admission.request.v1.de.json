@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Gateway's request for session admission.",
+  "properties": {
+    "key": {
+      "description": "Derived session key.",
+      "type": "string"
+    },
+    "model": {
+      "description": "Requested model.",
+      "type": "string"
+    },
+    "probe": {
+      "description": "Model-list probe that records no request.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Caller-generated stable request identity."
+    }
+  },
+  "required": [
+    "key",
+    "model"
+  ],
+  "title": "AdmissionRequest",
+  "type": "object"
+}

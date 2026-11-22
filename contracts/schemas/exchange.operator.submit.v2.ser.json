@@ -1,0 +1,376 @@
+{
+  "$defs": {
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A content-addressed runner artifact.",
+      "properties": {
+        "sha256": {
+          "description": "Lowercase SHA-256 digest.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Original byte count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "type": "object"
+    },
+    "ExpectedClaims": {
+      "additionalProperties": false,
+      "description": "GitHub OIDC identity expected from the dispatched runner.",
+      "properties": {
+        "actor_id": {
+          "description": "GitHub App actor that dispatches the job.",
+          "type": "string"
+        },
+        "job_workflow_ref": {
+          "description": "Launcher workflow reference.",
+          "type": "string"
+        },
+        "job_workflow_sha": {
+          "description": "Optional workflow content identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository_id": {
+          "description": "Numeric repository identity.",
+          "type": "string"
+        },
+        "repository_owner_id": {
+          "description": "Numeric repository owner identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "repository_owner_id",
+        "job_workflow_ref",
+        "actor_id"
+      ],
+      "type": "object"
+    },
+    "Grant": {
+      "additionalProperties": false,
+      "description": "Immutable authorization to spend one payer's selected route.",
+      "properties": {
+        "credential": {
+          "$ref": "#/$defs/GrantCredential",
+          "description": "Exact route or credential version."
+        },
+        "grant_id": {
+          "description": "Stable grant identity.",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/GrantLimits",
+          "description": "Upper bounds for each session."
+        },
+        "models": {
+          "description": "Models permitted under this grant.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "payer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestActor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Contributing user identity, absent for org funding."
+        },
+        "purpose": {
+          "description": "`task_org` or `task_contributed`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "grant_id",
+        "purpose",
+        "credential",
+        "models",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "GrantCredential": {
+      "additionalProperties": false,
+      "description": "Versioned funding route; personal routes identify their exact credential version.",
+      "properties": {
+        "custody": {
+          "description": "Custody kind, `secret_store` or `relay`, for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_id": {
+          "description": "Browser credential entry for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record_id": {
+          "description": "Secret record for contributed funding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relay_id": {
+          "description": "Relay identity when custody is relay.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route": {
+          "description": "Provider route name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable secret version for contributed funding.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "route"
+      ],
+      "type": "object"
+    },
+    "GrantLimits": {
+      "additionalProperties": false,
+      "description": "Immutable spending limits attached to one grant.",
+      "properties": {
+        "lease_seconds": {
+          "description": "Maximum session lease in seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokens": {
+          "description": "Maximum provider tokens in a session.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens",
+        "lease_seconds"
+      ],
+      "type": "object"
+    },
+    "RequestActor": {
+      "additionalProperties": false,
+      "description": "Authenticated GitHub identity responsible for a request.",
+      "properties": {
+        "id": {
+          "description": "GitHub numeric account ID.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "login": {
+          "description": "GitHub login at source capture time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login"
+      ],
+      "type": "object"
+    },
+    "RunnerEngine": {
+      "additionalProperties": false,
+      "description": "Engine repository and immutable commit named by a runner claim.",
+      "properties": {
+        "repository": {
+          "description": "Engine source repository.",
+          "type": "string"
+        },
+        "sha": {
+          "description": "Engine commit to execute.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "sha"
+      ],
+      "type": "object"
+    },
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "TurnBinding": {
+      "additionalProperties": true,
+      "description": "Runner checkout and task binding, excluding funding fields.",
+      "properties": {
+        "base": {
+          "description": "Frozen upstream base commit.",
+          "type": "string"
+        },
+        "config_sha": {
+          "description": "Frozen configuration commit.",
+          "type": "string"
+        },
+        "engine": {
+          "$ref": "#/$defs/RunnerEngine",
+          "description": "Engine source and commit."
+        },
+        "fork": {
+          "description": "Runner fork repository.",
+          "type": "string"
+        },
+        "issue": {
+          "description": "Issue number.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "repository": {
+          "description": "Issue repository name.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Agent role and provider.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream repository.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "issue",
+        "role",
+        "engine",
+        "fork",
+        "upstream",
+        "config_sha",
+        "base"
+      ],
+      "type": "object"
+    },
+    "TurnPayloadV2": {
+      "additionalProperties": false,
+      "description": "Turn input delivered to the v2 runner.",
+      "properties": {
+        "feedback": {
+          "description": "Prior-turn feedback."
+        },
+        "request": {
+          "description": "Frozen model request."
+        },
+        "retained": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlobRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Retained archive to restore, when continuing."
+        },
+        "spec": {
+          "description": "Frozen checkout and workspace specification."
+        },
+        "timeout": {
+          "description": "Engine timeout in seconds.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "request",
+        "feedback",
+        "spec",
+        "timeout",
+        "retained"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete body of a v2 operator submission.",
+  "properties": {
+    "attempt_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Attempt identity, equal to the URL turn ID."
+    },
+    "binding": {
+      "$ref": "#/$defs/TurnBinding",
+      "description": "Runner checkout binding."
+    },
+    "budget": {
+      "description": "Token budget, within the grant.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "expected_claims": {
+      "$ref": "#/$defs/ExpectedClaims",
+      "description": "Expected job identity."
+    },
+    "grant": {
+      "$ref": "#/$defs/Grant",
+      "description": "Immutable funding grant."
+    },
+    "lease_seconds": {
+      "description": "Session lease in seconds, within the grant.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "models": {
+      "description": "Models allowed in this turn.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "payload": {
+      "$ref": "#/$defs/TurnPayloadV2",
+      "description": "Runner input."
+    },
+    "staffing_group": {
+      "description": "Digest of staffing inputs.",
+      "type": "string"
+    },
+    "task_id": {
+      "$ref": "#/$defs/TaskId",
+      "description": "Owning task identity."
+    }
+  },
+  "required": [
+    "attempt_id",
+    "task_id",
+    "grant",
+    "binding",
+    "staffing_group",
+    "expected_claims",
+    "models",
+    "budget",
+    "lease_seconds",
+    "payload"
+  ],
+  "title": "TurnSubmissionV2",
+  "type": "object"
+}

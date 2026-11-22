@@ -3,6 +3,8 @@
 import json
 
 from concurro_contracts.config_targets_v1 import Envelope as ConfigTargetsEnvelope
+from concurro_contracts.exchange_turn_finished_v1 import Envelope as ExchangeTurnFinishedEnvelope
+from concurro_contracts.exchange_turn_status_v1 import Envelope as ExchangeTurnStatusEnvelope
 from concurro_contracts.github_check_run_v1 import Envelope as CheckRunEnvelope
 from concurro_contracts.github_check_suite_v1 import Envelope as CheckSuiteEnvelope
 from concurro_contracts.github_issue_comment_v1 import Envelope as IssueCommentEnvelope
@@ -16,6 +18,7 @@ from concurro_contracts.github_status_v1 import Envelope as StatusEnvelope
 from concurro_contracts.github_workflow_run_v1 import Envelope as WorkflowRunEnvelope
 from concurro_contracts.ingress_coverage_advanced_v1 import Envelope as AdvancedEnvelope
 from concurro_contracts.ingress_coverage_gap_v1 import Envelope as GapEnvelope
+from concurro_contracts.inference_usage_v1 import Envelope as InferenceUsageEnvelope
 from concurro_contracts.request_tasks_v1 import Envelope as RequestOutcomeEnvelope
 from concurro_contracts.request_tasks_v2 import Envelope as RequestOutcomeEnvelopeV2
 from concurro_contracts.task_notice_v1 import Envelope as TaskNoticeEnvelope
@@ -198,6 +201,33 @@ def decode_turn_finished(raw: bytes) -> TurnFinishedEnvelope:
     event = _decode_fact(raw, TurnFinishedEnvelope, "turn.finished")
     if event.type != f"turn.{event.data.turn_id.root}.finished":
         raise ValueError(f"event type does not match turn: {event.type}")
+    return event
+
+
+def decode_exchange_turn_status(raw: bytes) -> ExchangeTurnStatusEnvelope:
+    """Validate a versioned exchange lifecycle snapshot and its entity."""
+    event = _decode_envelope(raw, ExchangeTurnStatusEnvelope, "exchange.turn.status")
+    turn_id = str(event.data.turn_id.root)
+    if event.type != f"exchange.turn.{turn_id}.status":
+        raise ValueError("exchange turn status subject mismatch")
+    if event.entity != f"turn:{turn_id}" or not event.revision:
+        raise ValueError("exchange turn status metadata is invalid")
+    return event
+
+
+def decode_exchange_turn_finished(raw: bytes) -> ExchangeTurnFinishedEnvelope:
+    """Validate one terminal exchange fact and its subject."""
+    event = _decode_fact(raw, ExchangeTurnFinishedEnvelope, "exchange.turn.finished")
+    if event.type != f"exchange.turn.{event.data.turn_id.root}.finished":
+        raise ValueError("exchange turn finished subject mismatch")
+    return event
+
+
+def decode_inference_usage(raw: bytes) -> InferenceUsageEnvelope:
+    """Validate one finished request's accounting fact."""
+    event = _decode_fact(raw, InferenceUsageEnvelope, "inference.usage")
+    if event.type != "inference.usage":
+        raise ValueError("inference usage subject mismatch")
     return event
 
 

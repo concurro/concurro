@@ -1,0 +1,1 @@
+{"session_key":"sk-concurro-fixture","inference_base_url":"https://gateway.example/v1","models":["claude-test"],"deadline":"2026-01-01T01:00:00Z","binding":{"repository":"org/upstream","issue":42,"role":"intake:claude","engine":{"repository":"org/engine","sha":"ab123"},"fork":"org/fork","upstream":"org/upstream","config_sha":"config","base":"base"}}

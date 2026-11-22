@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exact relay claim payload accepted by the S1 hosted verifier.",
+  "properties": {
+    "calls": {
+      "description": "Maximum admitted calls.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "entry_id": {
+      "description": "Approved entry ID.",
+      "type": "string"
+    },
+    "exp": {
+      "description": "Expiry as integral Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "iat": {
+      "description": "Issue time as integral Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "iss": {
+      "description": "Always `concurro-exchange`.",
+      "type": "string"
+    },
+    "issue": {
+      "description": "Issue number shown to the Sponsor.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "jti": {
+      "description": "Unique claim identity.",
+      "type": "string"
+    },
+    "models": {
+      "description": "Allowed provider models.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "record_id": {
+      "description": "Approved immutable credential record.",
+      "type": "string"
+    },
+    "relay_id": {
+      "description": "Approved relay ID.",
+      "type": "string"
+    },
+    "repository": {
+      "description": "Repository shown to the Sponsor.",
+      "type": "string"
+    },
+    "route": {
+      "description": "Approved route.",
+      "type": "string"
+    },
+    "sub": {
+      "description": "Exchange session ID.",
+      "type": "string"
+    },
+    "tokens": {
+      "description": "Token allowance.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "user_id": {
+      "description": "Approved numeric owner ID.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "version": {
+      "description": "Approved version.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "jti",
+    "iss",
+    "sub",
+    "iat",
+    "exp",
+    "relay_id",
+    "user_id",
+    "entry_id",
+    "record_id",
+    "version",
+    "route",
+    "models",
+    "calls",
+    "tokens",
+    "repository",
+    "issue"
+  ],
+  "title": "ExchangeSessionClaim",
+  "type": "object"
+}

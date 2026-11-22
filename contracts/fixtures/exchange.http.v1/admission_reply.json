@@ -1,0 +1,1 @@
+{"request_id":"00000000-0000-0000-0000-000000000003","session_id":"00000000-0000-0000-0000-000000000002","turn_id":"00000000-0000-0000-0000-000000000001","grant_id":"org-1","credential":{"route":"claude_org"},"models":["claude-test"],"remaining_tokens":1000,"deadline":"2026-01-01T01:00:00Z"}

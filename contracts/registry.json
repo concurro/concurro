@@ -1,5 +1,26 @@
 [
   {
+    "family": "exchange.turn.status",
+    "python_decoder": "decode_exchange_turn_status",
+    "python_module": "exchange_turn_status_v1",
+    "stem": "exchange.turn.status.v1",
+    "version": 1
+  },
+  {
+    "family": "exchange.turn.finished",
+    "python_decoder": "decode_exchange_turn_finished",
+    "python_module": "exchange_turn_finished_v1",
+    "stem": "exchange.turn.finished.v1",
+    "version": 1
+  },
+  {
+    "family": "inference.usage",
+    "python_decoder": "decode_inference_usage",
+    "python_module": "inference_usage_v1",
+    "stem": "inference.usage.v1",
+    "version": 1
+  },
+  {
     "family": "config.targets",
     "python_decoder": "decode_config_targets",
     "python_module": "config_targets_v1",

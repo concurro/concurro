@@ -1,5 +1,6 @@
 //! Versioned wire contracts shared by Concurro services.
 
+mod exchange;
 mod github;
 mod github_events;
 mod identifiers;
@@ -8,6 +9,14 @@ mod schema;
 mod tasks;
 mod turns;
 
+pub use exchange::{
+    Admission, AdmissionRequest, BlobRef, Dispatch, ExchangeSessionClaim, ExchangeTurnFinished,
+    ExchangeTurnStatus, ExpectedClaims, FinishRequest, Grant, GrantCredential, GrantLimits,
+    InferenceUsage, ProbeResponse, ProviderFailure, ProviderRequests, RetiredSessions,
+    RunnerClaimReply, RunnerEngine, RunnerKeyReply, RunnerKeyRequest, RunnerNextTurn,
+    SessionStatusRequest, SessionStatusResponse, TurnBinding, TurnObservation, TurnPayloadV2,
+    TurnResultV2, TurnSubmissionV2, TurnUsage, UsageTokens,
+};
 pub use github::{
     Actor, ActorKind, GithubIssues, Issue, IssueAction, IssueChanges, IssueState, KnownIssueAction,
     Label, NewIssue, Repository,
@@ -320,6 +329,30 @@ where
 
 /// Contract families emitted by the schema generator.
 pub const REGISTRY: &[ContractRegistration] = &[
+    ContractRegistration {
+        family: ExchangeTurnStatus::FAMILY,
+        version: ExchangeTurnStatus::VERSION,
+        schema: generate_schema::<ExchangeTurnStatus>,
+        prepare_schema: schema::prepare_exchange_turn_status,
+        round_trip: round_trip::<ExchangeTurnStatus>,
+        python_decoder: "decode_exchange_turn_status",
+    },
+    ContractRegistration {
+        family: ExchangeTurnFinished::FAMILY,
+        version: ExchangeTurnFinished::VERSION,
+        schema: generate_schema::<ExchangeTurnFinished>,
+        prepare_schema: schema::prepare_exchange_turn_finished,
+        round_trip: round_trip::<ExchangeTurnFinished>,
+        python_decoder: "decode_exchange_turn_finished",
+    },
+    ContractRegistration {
+        family: InferenceUsage::FAMILY,
+        version: InferenceUsage::VERSION,
+        schema: generate_schema::<InferenceUsage>,
+        prepare_schema: schema::prepare_inference_usage,
+        round_trip: round_trip::<InferenceUsage>,
+        python_decoder: "decode_inference_usage",
+    },
     ContractRegistration {
         family: ConfigTargets::FAMILY,
         version: ConfigTargets::VERSION,

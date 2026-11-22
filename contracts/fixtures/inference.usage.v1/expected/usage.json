@@ -1,0 +1,27 @@
+{
+  "data": {
+    "category": "ok",
+    "finished": "2026-01-01T00:00:01Z",
+    "grant_id": "org-1",
+    "model": "claude-test",
+    "record_id": null,
+    "request_id": "00000000-0000-0000-0000-000000000003",
+    "session_id": "00000000-0000-0000-0000-000000000002",
+    "started": "2026-01-01T00:00:00Z",
+    "turn_id": "00000000-0000-0000-0000-000000000001",
+    "usage": {
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": null,
+      "input_tokens": 12,
+      "output_tokens": 4
+    },
+    "usage_unavailable": null,
+    "version": null
+  },
+  "id": "00000000-0000-0000-0000-000000000103",
+  "kind": "fact",
+  "occurred_at": "2026-01-01T00:00:00Z",
+  "producer": "exchange",
+  "type": "inference.usage",
+  "version": 1
+}

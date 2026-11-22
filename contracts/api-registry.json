@@ -1,0 +1,74 @@
+[
+  {
+    "python_module": "exchange_operator_submit_v2",
+    "stem": "exchange.operator.submit.v2"
+  },
+  {
+    "python_module": "exchange_operator_observation_v1",
+    "stem": "exchange.operator.observation.v1"
+  },
+  {
+    "python_module": "exchange_operator_retirement_v1",
+    "stem": "exchange.operator.retirement.v1"
+  },
+  {
+    "python_module": "exchange_operator_grant_v1",
+    "stem": "exchange.operator.grant.v1"
+  },
+  {
+    "python_module": "exchange_admission_request_v1",
+    "stem": "exchange.admission.request.v1"
+  },
+  {
+    "python_module": "exchange_admission_admitted_v1",
+    "stem": "exchange.admission.admitted.v1"
+  },
+  {
+    "python_module": "exchange_admission_probe_v1",
+    "stem": "exchange.admission.probe.v1"
+  },
+  {
+    "python_module": "exchange_admission_finish_v1",
+    "stem": "exchange.admission.finish.v1"
+  },
+  {
+    "python_module": "exchange_admission_sessions_request_v1",
+    "stem": "exchange.admission.sessions_request.v1"
+  },
+  {
+    "python_module": "exchange_admission_sessions_response_v1",
+    "stem": "exchange.admission.sessions_response.v1"
+  },
+  {
+    "python_module": "exchange_runner_payload_v2",
+    "stem": "exchange.runner.payload.v2"
+  },
+  {
+    "python_module": "exchange_runner_result_v2",
+    "stem": "exchange.runner.result.v2"
+  },
+  {
+    "python_module": "exchange_runner_blob_v2",
+    "stem": "exchange.runner.blob.v2"
+  },
+  {
+    "python_module": "exchange_runner_claim_reply_v2",
+    "stem": "exchange.runner.claim_reply.v2"
+  },
+  {
+    "python_module": "exchange_runner_key_request_v2",
+    "stem": "exchange.runner.key_request.v2"
+  },
+  {
+    "python_module": "exchange_runner_key_reply_v2",
+    "stem": "exchange.runner.key_reply.v2"
+  },
+  {
+    "python_module": "exchange_runner_next_turn_v2",
+    "stem": "exchange.runner.next_turn.v2"
+  },
+  {
+    "python_module": "exchange_relay_session_claim_v1",
+    "stem": "exchange.relay.session_claim.v1"
+  }
+]

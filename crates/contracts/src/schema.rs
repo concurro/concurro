@@ -78,6 +78,25 @@ pub(crate) fn prepare_turn_status(schema: &mut Value) {
         json!({"type":"string","pattern":"^turn\\.[0-9a-f-]{36}\\.status$"});
 }
 
+/// Restrict exchange lifecycle snapshots to their turn-scoped subject.
+pub(crate) fn prepare_exchange_turn_status(schema: &mut Value) {
+    prepare_task_snapshot(schema);
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^exchange\\.turn\\.[0-9a-f-]{36}\\.status$"});
+}
+
+/// Restrict terminal exchange facts to their turn-scoped subject.
+pub(crate) fn prepare_exchange_turn_finished(schema: &mut Value) {
+    prepare_turn_fact(schema, "finished");
+    schema["properties"]["type"] =
+        json!({"type":"string","pattern":"^exchange\\.turn\\.[0-9a-f-]{36}\\.finished$"});
+}
+
+/// Restrict accounting facts to the inference subject.
+pub(crate) fn prepare_inference_usage(schema: &mut Value) {
+    fix_fact_envelope(schema, "inference.usage");
+}
+
 /// Fix the envelope metadata for an action-bearing or bare GitHub fact.
 pub(crate) fn prepare_github_event<P: GithubPayload>(schema: &mut Value) {
     schema["properties"]["version"] = json!({"const": 1});

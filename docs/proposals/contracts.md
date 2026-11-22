@@ -1357,6 +1357,14 @@ network, for the task application only, with the task application's bearer
 
 **The submit body:**
 
+The `grant` here is the exchange projection of the task funding module's internal
+grant: it omits funding status, provider, slot epoch and issue history. Its `purpose`
+is `task_org` or `task_contributed`; contributed `payer` is `{id, login}` with a
+numeric GitHub ID, and custody is `secret_store` or `relay`. The exchange owns its
+issued/revoked state. Unknown submit fields are refused, except for existing runner
+binding fields, which are preserved. The digest uses the submitted JSON body with
+sorted keys, so an omitted field and an explicit `null` have different identities.
+
 | Field | Meaning |
 | ---- | ---- |
 | `attempt_id`, `task_id` | The attempt the turn runs; `turn_id` equals `attempt_id` |

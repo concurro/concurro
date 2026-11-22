@@ -765,6 +765,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "concurro-exchange"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "axum",
+ "chrono",
+ "concurro-config",
+ "concurro-contracts",
+ "concurro-db",
+ "concurro-events-nats",
+ "concurro-events-postgres",
+ "concurro-exchange-client",
+ "concurro-exchange-postgres",
+ "concurro-tasks-core",
+ "concurro-telemetry",
+ "concurro-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "concurro-exchange-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "concurro-contracts",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "concurro-exchange-postgres"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "concurro-contracts",
+ "concurro-db",
+ "concurro-events-postgres",
+ "concurro-tasks-core",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "concurro-exchange-v1"
 version = "0.1.0"
 dependencies = [

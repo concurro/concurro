@@ -1,0 +1,24 @@
+{
+  "$defs": {
+    "TaskId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "All sessions allocated or used by a turn or grant.",
+  "properties": {
+    "sessions": {
+      "description": "Complete, stable set of session IDs.",
+      "items": {
+        "$ref": "#/$defs/TaskId"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "sessions"
+  ],
+  "title": "RetiredSessions",
+  "type": "object"
+}

@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "UsageTokens": {
+      "description": "Token accounting reported after one inference request.",
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": null,
+          "description": "Cache-created input tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_read_input_tokens": {
+          "default": null,
+          "description": "Cache-read input tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "description": "Provider input tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Provider output tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Gateway's final report for one admitted request.",
+  "properties": {
+    "category": {
+      "description": "Outcome category.",
+      "type": "string"
+    },
+    "dispatched": {
+      "description": "Whether a request reached the provider or verifier.",
+      "type": "boolean"
+    },
+    "retry_after": {
+      "description": "Retry delay in seconds.",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageTokens"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Parsed provider usage, if known."
+    },
+    "usage_unavailable": {
+      "description": "Reason known usage is absent.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "dispatched",
+    "category"
+  ],
+  "title": "FinishRequest",
+  "type": "object"
+}

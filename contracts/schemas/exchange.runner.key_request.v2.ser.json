@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Runner's engine-key handshake request.",
+  "properties": {
+    "engine_sha": {
+      "description": "Checked-out engine commit.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "engine_sha"
+  ],
+  "title": "RunnerKeyRequest",
+  "type": "object"
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Allowed models returned by an admission probe without recording a request.",
+  "properties": {
+    "models": {
+      "description": "Session models visible to the gateway.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "models"
+  ],
+  "title": "ProbeResponse",
+  "type": "object"
+}

@@ -1,0 +1,17 @@
+[package]
+name = "concurro-exchange-postgres"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+concurro-contracts = { path = "../contracts" }
+concurro-db = { path = "../db" }
+concurro-events-postgres = { path = "../events-postgres" }
+concurro-tasks-core = { path = "../tasks-core" }
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

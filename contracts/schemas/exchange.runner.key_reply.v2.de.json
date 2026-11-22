@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "RunnerEngine": {
+      "additionalProperties": false,
+      "description": "Engine repository and immutable commit named by a runner claim.",
+      "properties": {
+        "repository": {
+          "description": "Engine source repository.",
+          "type": "string"
+        },
+        "sha": {
+          "description": "Engine commit to execute.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "sha"
+      ],
+      "type": "object"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$(?![\\s\\S])",
+      "type": "string"
+    },
+    "TurnBinding": {
+      "additionalProperties": true,
+      "description": "Runner checkout and task binding, excluding funding fields.",
+      "properties": {
+        "base": {
+          "description": "Frozen upstream base commit.",
+          "type": "string"
+        },
+        "config_sha": {
+          "description": "Frozen configuration commit.",
+          "type": "string"
+        },
+        "engine": {
+          "$ref": "#/$defs/RunnerEngine",
+          "description": "Engine source and commit."
+        },
+        "fork": {
+          "description": "Runner fork repository.",
+          "type": "string"
+        },
+        "issue": {
+          "description": "Issue number.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "repository": {
+          "description": "Issue repository name.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Agent role and provider.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream repository.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "issue",
+        "role",
+        "engine",
+        "fork",
+        "upstream",
+        "config_sha",
+        "base"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Runner's derived inference key and frozen execution binding.",
+  "properties": {
+    "binding": {
+      "$ref": "#/$defs/TurnBinding",
+      "description": "Frozen task and checkout binding."
+    },
+    "deadline": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Session deadline."
+    },
+    "inference_base_url": {
+      "description": "Gateway endpoint for provider traffic.",
+      "type": "string"
+    },
+    "models": {
+      "description": "Session models.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "session_key": {
+      "description": "Derived key accepted by the inference gateway.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_key",
+    "inference_base_url",
+    "models",
+    "deadline",
+    "binding"
+  ],
+  "title": "RunnerKeyReply",
+  "type": "object"
+}
