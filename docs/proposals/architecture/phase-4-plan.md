@@ -428,8 +428,9 @@ cutover dependency.
 - **P2:** add, reorder and delete a throwaway credential against the real vault, and
   confirm the task application's next funding read sees the change.
 - **P3:**
-  - Run one browser command on an issue of a configured target and confirm the GitHub
-    reply names the user.
+  - Run one browser command on an issue of a configured target and confirm its
+    request receipt and durable actor identity. Browser commands enter the task
+    request API directly; GitHub replies belong to issue-comment commands.
   - Start a Sponsor device with the setup panel's command, approve its code from the
     verifier's approval link, and confirm the device shows as connected.
   - Sign out and confirm the notice reads `revoked`.
