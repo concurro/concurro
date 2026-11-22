@@ -605,8 +605,8 @@ operator records the phase 3 archive import complete; nothing in phase 4 uses it
 
 ## Phase 5: credential metadata in the accounts service
 
-Phase 5 plans its own steps. This section fixes the ownership and contracts phase 4
-commits to ([contracts](../contracts.md#credentials)).
+Phase 5 plans its own steps ([phase 5 plan](phase-5-plan.md)). This section fixes the
+ownership and contracts phase 4 commits to ([contracts](../contracts.md#credentials)).
 
 **Ownership:**
 
@@ -638,8 +638,9 @@ are replaced one for one:
   transaction per event, the funding module revises each grant on a revoked version to
   `revoked` and records the version as unusable for that task's exclusions. A replay
   then returns the original grant with its current status, as the grant rules require.
-- **The gateway consumes the same facts.** It drops bindings on a revoked version and
-  refuses one that arrives later.
+- **The exchange stops spending on a revoked version.** The funding module revokes each
+  grant on it at the exchange, and the gateway, which is admitted per request, can't use
+  the grant after that ([phase 5 decision 3](phase-5-plan.md#decisions)).
 - **Revocation is eventual.** A selection made just before a revocation commits, or
   before its event is delivered, can still be used briefly. Consent and eventual
   revocation are preserved within the repository's accepted operational tolerance; the

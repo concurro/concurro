@@ -178,9 +178,9 @@ database and a bus provide directly.
 | GitHub ingress | Webhook receipt: signature check, deduplication and delivery recovery; maps each delivery to a typed GitHub event | Public endpoint; holds the webhook secret only; asks the task application for redeliveries | Delivery receipts, raw payloads, recovery coverage, the GitHub event models |
 | Task application | Tasks, as modules of one service: intake (channels, requests, enrollment), task state and stages (plans, findings, reviews), consent and funding policy (who pays, the funding boundary, credential selection and grants), attempts (call and token budgets, admission, charges), the exchange integration, GitHub publication (dashboard, notices, replies, reviews, threads, labels, check runs, branches, PRs, run refs and dispatch; webhook redeliveries for ingress), and the task views | Sole controller of tasks and sole writer to GitHub; holds the App's private key and the reviewer account's token | Tasks, requests, consent logs, attempts, grants, write records and their outcomes |
 | Accounts service | Signed-in users and what they do as themselves: GitHub sign-in and sessions, viewer authority for the backoffice API, browser commands signed for the task application, and credential management (entries, lists, filters, relay approvals, the route catalog). From phase 4 ([plan](architecture/phase-4-plan.md)); the Python backoffice until then, with credentials kept by the Python vault until phase 5 | Holds users' GitHub tokens and the command-signing key; no App key with write permissions. Hands new secret material to the secret store on save but can't read it back | Sessions (in memory), credential metadata from phase 5 |
-| Exchange | Runner sessions, turn queue, turn results, transcripts and turn diagnostics; publishes turn results as events | Runner OIDC; issues session keys bound to a grant | Sessions, turns |
-| Inference gateway | Authenticates session keys, enforces token budgets, routes and forwards to providers or the relay verifier, records usage | Org provider secrets; reads personal secret material | Inference requests and their usage |
-| Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime | Relay registrations and sessions |
+| Exchange | Runner sessions, the turn queue and turn results; admits each inference request under its session's grant and budget, and records its usage; stores runner uploads as blobs; publishes turn results and usage as events | Runner OIDC; issues session keys and signs relay claims; the verifier's release credential | Sessions, turns, grants as submitted, inference requests |
+| Inference gateway | Forwards runners' inference to providers or the relay verifier under the exchange's per-request admission; injects credentials; reports each request's outcome and usage | Faces runners; org provider secrets; reads personal secret material; the verifier's inference credential | Nothing durable: stateless |
+| Relay verifier | `concurro-relay`'s hosted verifier: verified inference through sponsors' relays | Public relay listener; relay TLS key and sponsor registrations; native MPC runtime; separate owner, inference and release callers, and exchange-signed claims | Relay registrations and sessions, claim revocations and allowance |
 | Secret store (OpenBao) | Personal credential material and routinely rotated operational secrets | Unseal key and service bootstrap identities outside the database; a least-privilege policy per client service | Encrypted material |
 | Backoffice API | Signed-in users' views | No App key, exchange or vault token, no user token and no command path; asks the accounts service who a viewer is | A read model fed by the task application's events |
 
@@ -239,12 +239,16 @@ database and a bus provide directly.
     earlier grant for that slot and sponsor, and checks it in the same transaction that
     inserts a grant, so a delayed attempt is refused and another provider's or a later
     sponsor's grant isn't. Grants already issued are revoked at the exchange by a job
-    retried until acknowledged, and spending has stopped once the gateway publishes
-    `inference.binding.closed` for each affected binding (and the exchange has released
-    any relay session) or the binding has expired.
+    retried until acknowledged; the exchange refuses new requests under them at once,
+    ends their sessions and releases their relay claims before acknowledging, and the
+    gateway closes any stream still open within its 10-second session check. Spending
+    has stopped at the acknowledgement plus that bound.
   - A revoked grant or a credential that's usable again is a new input to the task's
-    decisions. The exchange binds sessions to grant IDs; the inference gateway reports
-    usage as events, which funding charges. The route catalog is defined once, by the
+    decisions. The accounts service reports retired credential versions as
+    `credential.<user_id>.changed`, and funding revokes the grants on them. The exchange
+    binds sessions to grant IDs; it records each request's usage from the gateway's
+    reports and publishes `inference.usage`, which funding records per attempt. The
+    route catalog is defined once, by the
     accounts service, as a contract the gateway and the backoffice build from. A sponsor
     approves a relay's registration code in the backoffice; the accounts service, as the
     vault does today, calls the verifier's owner endpoints, records a relay-custody
@@ -278,20 +282,25 @@ database and a bus provide directly.
   secrets; personal and relay traffic pass through the exchange's own forwarder behind
   it, which for relay custody consumes a one-use request nonce, rechecks the exact relay
   record and turn authority, and forwards to the verifier (deployed with the hosted relay
-  overlay). The gateway does all
-  of it in one hop, parses usage with the Rust `provider-protocol` crate from
-  `concurro-relay`, and can stop a stream when the budget runs out. Every route is native
-  passthrough today, so no translation is lost.
-- **How the gateway authorizes a request.** The exchange publishes each session binding:
-  the key's hash, the grant, its credential version, allowed models and token budget.
-  The gateway checks the key against it, enforces the budget on the hot path and
-  publishes `inference.usage`; funding sets budgets and keeps the ledger.
-  - **Bindings end.** Each binding has a hard expiry. Session end, grant revocation and
-    credential-version revocation reach the gateway as events; it drops the binding and
-    publishes `inference.binding.closed`, and a revocation is effective from that event.
-    The gateway keeps revoked grants and versions on record and refuses a binding that
-    arrives after their revocation. Usage before it is still recorded and charged, and
-    the expiry bounds the exposure if an event is missed.
+  overlay). The gateway does all of it in one hop, parses usage with a port of today's
+  `gateway/provider_protocol.py` (`concurro-relay`'s `provider-protocol` is shaped for the
+  verifier's audit path), and stops a stream when its session ends. Every route is native
+  passthrough today, so no translation is lost. Codex's WebSocket keeps reaching it
+  through `responses-bridge` until the gateway serves WebSockets itself.
+- **How the gateway authorizes a request.** It asks the exchange, per request
+  ([phase 5](architecture/phase-5-plan.md#decisions)). The exchange checks the key's
+  hash, the live session and its running turn, the issued grant, the model and the
+  remaining token budget, records the request, and returns the credential reference
+  (and, for relay custody, the session's signed claim). The gateway reports the
+  request's outcome and usage when it finishes, and the exchange publishes
+  `inference.usage`; funding sets budgets and keeps the ledger.
+  - **Revocation takes effect at the exchange.** A revoked grant or ended session is
+    refused at the next admission. Streams already open are closed when the gateway's
+    10-second session check no longer finds their session live. A request whose outcome
+    is never reported is recorded as usage `not_reported` at its settlement deadline,
+    five minutes after the turn's result or the session's end.
+  - **No binding state outside the exchange.** The gateway is stateless, so a restart or
+    lost event can't leave it with a stale or missing binding.
 - **The gateway and the relay verifier stay separate processes.** The gateway faces
   runners, which run code we don't control; the verifier holds the relay TLS key and
   sponsor registrations, serves its own public listener and runs native MPC code. The
@@ -333,9 +342,10 @@ database and a bus provide directly.
   the task application's events, not from webhooks and GitHub reads, and shows each
   signed-in user what their own access allows. The backoffice's GitHub caches go away
   with the list index.
-- **Diagnostics** become turn records: today the task application records each turn's
-  submission, observed status and result from its polls and publishes them for the
-  backoffice read model, and in phase 5 the exchange records them itself.
+- **Diagnostics** become turn records: the task application records each turn's
+  submission, status and result and publishes them for the backoffice read model. Until
+  phase 5 it learns them from its polls; from phase 5 from the exchange's
+  `exchange.turn.*` events, with runner uploads as blobs in the object store.
 - **Offline tools** such as retrospective collection read events and APIs; they aren't
   services.
 - **Event plumbing is a shared library, not a service.** Every service links the same
@@ -366,13 +376,15 @@ Inference:
     │                                            ▲   │   │   │
     └───────── inference, session key ───────────┘   │   │   └──▶ Relay verifier ──▶ Sponsors' relays
                                                      │   │
- Funding ◀────────────── usage events ───────────────┘   │
-    │                                                    │ read exact version
-    └──write, destroy──▶ OpenBao ◀───────────────────────┘
+ Exchange ◀─────── admission, outcome and usage ──────┘   │
+    │ inference.usage                                    │ read exact version
+    ▼                                                    │
+ Funding (task application)      Accounts service ──write, destroy──▶ OpenBao
 ```
 
 Events between services (`github.*`, the task application's task, request and turn
-events for the backoffice API, usage, binding changes) travel through the bus
+events for the backoffice API, the exchange's turn events and usage, credential
+changes) travel through the bus
 ([below](#events-and-the-bus)); inside the task application, modules share one
 transaction. Secret material goes through OpenBao's API. Not drawn: the task application
 polls the exchange for turn results until phase 5, dispatches runner workflows for the
@@ -413,9 +425,11 @@ verifier's owner endpoints from phase 5.
 - **Subjects say what happened and who said it.** Ingress publishes
   `github.<event>.<action>`. The task application publishes, for the backoffice API,
   `task.<task>.<event>`, `request.tasks.<outcome>`,
-  `consent.<repository_id>.<number>.<event>`, `index.<repository_id>.<kind>` and, until
-  phase 5, `turn.<turn>.<event>`. The exchange publishes `turn.<turn>.<event>` from
-  phase 5, and the inference gateway `inference.usage`. A service publishes only what
+  `consent.<repository_id>.<number>.<event>`, `index.<repository_id>.<kind>` and
+  `turn.<turn>.<event>`. From phase 5 the exchange publishes `exchange.turn.<turn>.<event>`
+  for the task application and `inference.usage` for funding and the accounts service,
+  and the accounts service publishes `credential.<user_id>.changed`. A service publishes
+  only what
   another process consumes; nothing inside the task application consumes its own
   events. A subject that names a task uses its subject-safe ID, not `owner/repo#n`,
   whose `.` separates NATS tokens. Each publishing service owns one stream over its
@@ -578,32 +592,41 @@ deployment.
    - **Sessions stay in memory,** as today: a restart signs users out, and the cutover
      signs everyone out once. Logout revocations keep their durable retries, since the
      sign-in token is also the user's owner identity to the vault.
-5. **Exchange, inference gateway and secrets in Rust.** The exchange moves to Postgres,
-   records diagnostics as turn records and publishes `turn.*` itself. To hand over, the
-   task application stops submitting to the Python exchange, polls its outstanding turns
-   until each is finished and recorded, then switches to the Rust exchange and retires
-   the polling. Turn records are identified by turn ID, so a completion seen by both the
-   polling and the new exchange is recorded once. The gateway
-   replaces agentgateway and the exchange's forwarder, and the relay verifier sits behind
-   it, with the separate credentials and admission check of a `concurro-relay` release.
-   The accounts service imports the credential metadata from the vault once and owns it
-   from then on: the task application's funding module reads it at each boundary and
-   attempt through the same contract it reads from the vault, and consumes
-   `credential.<user_id>.changed` facts to revoke grants on retired versions
-   ([phase 4 plan](architecture/phase-4-plan.md#phase-5-credential-metadata-in-the-accounts-service)).
-   A one-time migrator
-   holding the vault's keyring decrypts each usable version and writes it to OpenBao
-   under a migration-only policy, keeping record and version IDs (relay-custody versions
-   hold no material and move as metadata only); credential writes pause
-   while it runs. Routinely rotated operational secrets also move from host files to
-   service-specific OpenBao paths; each service reads only the credentials its role needs.
-   Bootstrap identities remain outside OpenBao and must avoid a circular startup dependency.
-   Done when routine secret rotation no longer requires editing host files, the handover
-   publishes each outstanding turn's completion once, diagnostics come from turn records,
-   every funding mode and inference route
-   works through the gateway, and a revocation holds across a gateway and verifier
-   restart. Only then are agentgateway, the vault (with the exchange's own sponsorship
-   tables and vault feed) and the Python exchange retired, and the polling stopped.
+5. **Exchange, inference gateway and secrets in Rust.** The Python exchange, its
+   inference forwarder, agentgateway and the vault are replaced in one idle-window
+   cutover, after the parts that can ship on their own have
+   ([implementation plan](architecture/phase-5-plan.md)):
+   - **Before the cutover:**
+     - The `concurro-relay` release gives the verifier separate owner, inference and
+       release credentials, owner API v1, and signed session claims with persisted
+       revocation and allowance, while accepting installed Sponsors.
+     - OpenBao runs on its own PostgreSQL database with a static seal, and holds the
+       org provider credentials.
+   - **Deployed inactive until the cutover:**
+     - The accounts service's native credential store, with the vault import.
+     - The Rust exchange, with runner API v2 and the v2 launcher.
+     - The stateless gateway.
+     - The task application's Rust mode.
+   - **At the cutover:**
+     - The quiesced system stops, and credential writes pause.
+     - The accounts service imports the vault's metadata, and a migrator writes each
+       usable version to OpenBao, keeping record and version IDs. Relay-custody versions
+       hold no material and move as metadata.
+     - The task application switches to the Rust exchange and the accounts service's
+       metadata API.
+     - Every target moves to the v2 launcher.
+     - The verifier requires claims.
+   - **Afterwards:**
+     - The exchange publishes `exchange.turn.*` and `inference.usage`.
+     - The funding module revokes grants on credential versions the accounts service
+       retires.
+     - Routine secret rotation is an OpenBao write instead of a host-file edit.
+
+   Done when every funding mode and inference route works through the gateway, a
+   revocation holds across a gateway and verifier restart, credential as-of reads match
+   the vault's, and the qualification in the plan passes. Then the Python exchange, the
+   forwarder, agentgateway, the vault, the sponsorship slots and runner API v1 are
+   retired.
 
 Until the cutover, the Python service gets fixes only, and none are expected, since it
 runs no tasks. New features such as [request intake](request-intake.md) and

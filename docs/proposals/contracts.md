@@ -340,21 +340,28 @@ transactions, so none is a wire contract. Their rules are below.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Operator API | API | Task application → exchange | 5 | Sketch ([below](#exchange-operator-api)) |
-| Runner API | API | Launcher workflow → exchange | 5 | Sketch ([below](#runner-api)) |
-| Runner protocol (turn spec and result) | Runner protocol | Task application ↔ runner, through the exchange | 5 | Sketch ([below](#runner-protocol)) |
-| `session.<session>.binding` | Snapshot | → gateway, task application | 5 | Sketch: key hash, grant, credential version, models, token budget, expiry, status; a relay session is `revoked` only after the verifier confirms its release |
-| `exchange.grant.released` | Fact | → task application | 5 | Sketch: grant ID and every session the exchange ever bound to it, published once it refuses new ones |
-| Session claim | Signed token | Exchange → verifier, carried by the gateway | 5 | Sketch: claim ID, relay, record and version, route, models, session, expiry, call and token allowance, key ID; Ed25519 |
+| Operator API v1 | API | Task application → exchange | 5 | Full ([below](#exchange-operator-api)) |
+| Admission API | API | Gateway → exchange | 5 | Full ([below](#exchange-admission-api)) |
+| Runner API v2 | API | Launcher workflow → exchange | 5 | Full ([below](#runner-api)) |
+| Turn payload v2 | Runner protocol | Task application ↔ runner, through the exchange | 5 | Full ([below](#turn-payload-v2)) |
+| `exchange.turn.<turn>.{status,finished}` | Snapshot, fact | → task application | 5 | Full ([below](#exchange-events)) |
+| Session claim | Signed token | Exchange → verifier, carried by the gateway | 5 | Full ([below](#session-claims)) |
+
+Phase 5 drops the older sketches `session.<session>.binding` and
+`exchange.grant.released`. The gateway asks the exchange at admission instead, and a
+grant revocation answers with its sessions
+([phase 5 decision 3](architecture/phase-5-plan.md#decisions)).
 
 ### Inference gateway
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Inference endpoint | API | Runner harnesses → gateway | 5 | Sketch: native provider passthrough authenticated by the session key; route chosen by the binding, not by client headers |
-| `inference.usage` | Fact | → task application, backoffice API read model | 5 | Sketch: binding, grant, turn, model, input and output tokens |
-| `inference.failure` | Fact | → task application | 5 | Sketch: category ([failure categories](#retries-and-exclusions)), model, retry after, version |
-| `inference.binding.closed` | Fact | → task application (spending stopped), exchange | 5 | Sketch: binding, reason, closed at |
+| Inference endpoint | API | Runner harnesses → gateway | 5 | Full: native provider passthrough authenticated by the session key; the route comes from the admission, never from client headers ([gateway brief](architecture/phase-5/s5-gateway.md)) |
+| `inference.usage` | Fact | Exchange, from the gateway's reports → the task application's funding module, accounts service | 5 | Full ([exchange events](#exchange-events)) |
+
+Failures reach the task application as the turn's trusted `provider_failure` in
+`exchange.turn.<turn>.finished`, not as a separate `inference.failure`.
+`inference.binding.closed` is dropped with the binding events.
 
 ### Relay verifier
 
@@ -362,16 +369,16 @@ Released by `concurro-relay` for phase 5.
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
-| Owner API | API | Accounts service (the vault until phase 5) → verifier, with the owner credential only | 5 | Sketch ([below](#verifier-owner-api)) |
-| Dispatch with a session claim | API | Gateway → verifier | 5 | Sketch: the claim replaces the session, turn and deadline the verifier trusts today |
-| Release | API | Exchange → verifier | 5 | Sketch: revoke a claim or cancel one turn; persisted until the claim expires; acknowledged |
+| Owner API v1 | API | Accounts service (the vault until phase 5) → verifier, with the owner credential only | 5 | Full ([below](#verifier-owner-api)) |
+| Dispatch with a session claim | API | Gateway → verifier, with the inference credential | 5 | Full ([session claims](#session-claims)) |
+| Release | API | Exchange → verifier, with the release credential | 5 | Full ([session claims](#session-claims)) |
 
 ### Storage
 
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
 | Turn diagnostics and original archives | PostgreSQL search rows and artifacts, S3-compatible archive objects | Task application stores turn content (3/M1); backoffice API fetches it through the task application (3/M3); exchange accepts runner uploads (5) | 3/M1 | Full ([below](#blobs)) |
-| KV path per credential version | OpenBao KV v2 | Accounts service writes and destroys (no read of material); gateway reads; migrator writes once | 5 | Sketch: `{secret, account}`, check-and-set 0, custom metadata `{entry, record, route}` |
+| KV path per credential version | OpenBao KV v2 | Accounts service writes and destroys (no read of material); gateway reads; migrator writes once | 5 | Full ([credentials](#credentials), [OpenBao brief](architecture/phase-5/s2-openbao.md)) |
 
 ### Backoffice
 
@@ -380,8 +387,8 @@ Released by `concurro-relay` for phase 5.
 | Backoffice API under `/api/v2` | API | Frontend → backoffice API | 3/M3 | Full for 3/M3 ([below](#backoffice-api)) |
 | [Viewer authority](#viewer-authority) | API | Backoffice API → accounts service (the Python backoffice in phase 3), on the platform network; read-scoped | 3/M3; the accounts service from 4 | Full |
 | [Accounts browser API](#accounts-service): sign-in, current user, commands, credentials, relays | API | Frontend → accounts service (the Python backoffice in phase 3), with its CSRF check; commands forwarded as signed requests | 4 | Full |
-| `GET /v1/credentials/{user_id}?at=` | API | Accounts service → the task application's funding module | 5 | Sketch ([credentials](#credentials)) |
-| `credential.<user_id>.changed` | Fact | Accounts service → the task application's funding module, gateway | 5 | Sketch ([credentials](#credentials)) |
+| `GET /v1/credentials/{user_id}?at=` | API | Accounts service → the task application's funding module | 5 | Full ([credentials](#credentials)) |
+| `credential.<user_id>.changed` | Fact | Accounts service → the task application's funding module | 5 | Full ([credentials](#credentials)) |
 
 ### Operations
 
@@ -390,7 +397,7 @@ Released by `concurro-relay` for phase 5.
 | Parked events | API | Operator → every consumer | 1 | Sketch: list, inspect, replay or discard a parked event, by consumer and event ID |
 | Operator views and recovery | CLI | Operator → task application | 3/M1 | Full ([M1 plan](architecture/phase-3-m1-plan.md)) |
 | Reconciliation | CLI | Operator → task application | 3/M3 | Sketch: reconcile a task or a repository over a period, as for a [coverage gap](#coverage-gaps) |
-| Cutovers and migrations | Runbook | Operator | 3, 5 | Sketch: the phase 3 Cutover (the window announced; outstanding tasks finished or stopped while Python still runs normally, unknown writes settled with `resolve` until Python is quiescent; the whole daemon stopped, its exit confirmed, and `A` set then; its final registry read through `Registry.inspect` (`service/registry.py:356-360`) and the exchange checked for no queued or running turns and no live sessions; sources dated strictly before `A` in the window checked against evidence specific to each (Python's reply, the writes it caused, records such as `approval.comment`, the issue's dashboard and labels), reissued only on positive evidence that Python missed them, and an ambiguous one left to its author's fresh decision with no automatic action; `S` and the exchange's generations and epochs recorded; the [Python archives imported](#python-archive-import); the reviewer grant transferred; the task application started; the backoffice baseline refreshed before switching the frontend; [cutover sources](#cutover-sources)). The reused-issue slot check (an exported epoch 2 replaced by epoch 3) is mandatory in the rehearsal, against a test exchange holding a historical slot; at the live Cutover it runs when the export holds a slot, and otherwise the operator confirms the export is empty and a first slot initializes normally. Also the phase 5 handover and secret migration, each with its checks |
+| Cutovers and migrations | Runbook | Operator | 3, 5 | Sketch: the phase 3 Cutover (the window announced; outstanding tasks finished or stopped while Python still runs normally, unknown writes settled with `resolve` until Python is quiescent; the whole daemon stopped, its exit confirmed, and `A` set then; its final registry read through `Registry.inspect` (`service/registry.py:356-360`) and the exchange checked for no queued or running turns and no live sessions; sources dated strictly before `A` in the window checked against evidence specific to each (Python's reply, the writes it caused, records such as `approval.comment`, the issue's dashboard and labels), reissued only on positive evidence that Python missed them, and an ambiguous one left to its author's fresh decision with no automatic action; `S` and the exchange's generations and epochs recorded; the [Python archives imported](#python-archive-import); the reviewer grant transferred; the task application started; the backoffice baseline refreshed before switching the frontend; [cutover sources](#cutover-sources)). The reused-issue slot check (an exported epoch 2 replaced by epoch 3) is mandatory in the rehearsal, against a test exchange holding a historical slot; at the live Cutover it runs when the export holds a slot, and otherwise the operator confirms the export is empty and a first slot initializes normally. Also the [phase 5 cutover](architecture/phase-5-plan.md#cutover) |
 
 ## Bridge catalog
 
@@ -399,13 +406,13 @@ Released by `concurro-relay` for phase 5.
 | `github.*` and `ingress.*` consumers | Ingress → Python service, list index | Nothing: Python consumes target events through generated models | None | 3, at the Cutover |
 | [Delivery recovery](#delivery-recovery), served by Python | Ingress → Python service | The task application's delivery recovery API | None: Python implements the target contract | 3, at the Cutover |
 | [Python exchange](#python-exchange) operator API, capabilities and observations | Task application → Python exchange | Exchange operator API, grants on the exchange's side, `inference.*` | The exchange integration module (`concurro-exchange-v1`) | 5 |
-| Sponsorship slot transitions | Task application → Python exchange | Nothing: target grants carry their decision | The funding policy's slot adapter | 5 |
-| Turn polling | Task application → Python exchange | `turn.*` published by the exchange | The exchange integration module publishes `turn.*` | 5 |
-| Runner API v1 (`engine`, `key`, `next`, `turns/{turn}`, `end`) | Launcher workflow → exchange | Runner API | Python exchange serves it; the Rust exchange serves it until no target's launcher is on v1 | When the last launcher moves |
-| [Turn payload v1](#turn-payload-v1) | Task application → today's runner | Runner protocol | The exchange integration module | Phase 5, with the runner ([decisions](#decisions)) |
+| Sponsorship slot transitions | Task application → Python exchange | Nothing: the submitted grant carries its decision, and revocations go through the operator API | The funding policy's slot adapter | 5, at the cutover |
+| Turn polling | Task application → Python exchange | [`exchange.turn.*`](#exchange-events) | The exchange integration module | 5, at the cutover |
+| Runner API v1 (`engine`, `key`, `next`, `turns/{turn}`, `end`) | Launcher workflow → Python exchange | [Runner API v2](#runner-api) | None: every target moves to the v2 launcher in the cutover window | 5, at the cutover |
+| [Turn payload v1](#turn-payload-v1) | Task application → today's runner | [Turn payload v2](#turn-payload-v2) | The exchange integration module | 5, at the cutover |
 | [Vault metadata and events](#vault) | Task application → vault | The accounts service's `GET /v1/credentials/{user_id}` and `credential.<user_id>.changed` | The funding module's vault adapter (`concurro-vault-v1`) | 5 |
 | Vault owner API (`gateway/vault/vault.py:1534`) | Accounts service (the Python backoffice in phase 3) → vault, with the user's token | The accounts service's own credential store | The accounts service's credentials module ([credentials](#credentials)) | 5 |
-| Verifier owner and dispatch API, single bearer, `x-concurro-binding` | Vault, exchange forwarder → verifier | Verifier owner API, dispatch with a session claim, release | None | 5 |
+| Verifier owner and dispatch API, `x-concurro-binding` | Vault, exchange forwarder → verifier | Verifier owner API, dispatch with a session claim, release | None. The relay release splits the single bearer into three credentials before the cutover; the old routes go in the next relay release after it | 5 |
 | [Python backoffice sessions](#python-backoffice-sessions) | Backoffice API → Python backoffice | The accounts service's [viewer authority](#viewer-authority) | None | 4 |
 | Python backoffice `/api/*`, `/auth/*` | Frontend → Python backoffice | The [accounts service](#accounts-service) | None; the frontend calls `/api/v2` for tasks from 3/M3, and the Python task and list pages are off from the Cutover | 4 |
 
@@ -435,8 +442,9 @@ authoritative:
 | `targets[].reviewer_user_id` | The reviewer account for standalone PR reviews, when configured |
 | `targets[].launcher` | `{workflow, ref}`: the executor workflow file and the ref task settings select |
 
-Phase 5's sketches name a target by `target_id`, which is its `repository_id`. The
-launcher version they need is added to `launcher` then, as an additive change.
+A target is identified by its `repository_id` wherever a contract needs a target ID.
+`launcher.ref` names the launcher release; after phase 5 every supported launcher speaks
+runner API v2, so no separate version field is needed.
 
 - Publication admits writes and mints read tokens only for these repositories.
 - Until phase 5 the task application sends a run's expected OIDC claims, built from the
@@ -800,10 +808,11 @@ published for the backoffice: "withdrawal recorded" when the `withdraw` request 
 applied (`request.tasks.applied`); "new grants blocked" when the cutoff commits, in the
 same transaction that would record a grant (`request.tasks.blocked`); and "spending
 stopped" once every session under the revoked grants has ended
-(`request.tasks.stopped`). From phase 5
-that's each session the exchange lists in `exchange.grant.released` having its binding
-closed (`inference.binding.closed`) and, for relay custody, its binding `revoked`. Before
-phase 5 a time bound stands in ([Python exchange](#python-exchange)).
+(`request.tasks.stopped`). From phase 5 that's every revoked grant's
+[revoke](#exchange-operator-api) acknowledged by the exchange, which by then has ended its
+sessions and released their relay claims, plus the gateway's worst-case stream bound of
+40 seconds.
+Before phase 5 a longer time bound stands in ([Python exchange](#python-exchange)).
 
 ### Turn events
 
@@ -978,8 +987,11 @@ application:
 
 | Record | Data |
 | ---- | ---- |
-| Dispatch | `session_id`, `task_id`, `turn_id`, `target_id`, `repository_id` (the fork), `ref {name, sha}`, `workflow`, `launcher_version`, `inputs` (defined by the launcher version) |
-| Session ended | `session_id`, `turn_id`, `repository_id`, `ref`, `reason` (`ended`, `cancelled`, `replaced` by a new session for the turn, or `turn_finished`) |
+| Dispatch | `session_id`, `task_id`, `turn_id`, `repository_id` (the fork), `ref {name, sha}`, `workflow` (`concurro-executor.yml`), `inputs` (the session and the three runner labels), `dispatch_status` |
+| Session ended | `session_id`, `turn_id`, `repository_id`, `ref`, `desired_present = false` |
+
+These are the implemented `tasks.runner_sessions` records (`crates/tasks/src/runner.rs`);
+phase 5 doesn't change them.
 
 Before first submit, reserve the exchange staffing group for the turn in PostgreSQL.
 Use the exchange's equality rule: expected claims excluding `ref`, binding, models,
@@ -1268,91 +1280,300 @@ Writes also need `x-concurro-request: 1`.
   the server address, the download URL, and the `concurro-relay` and
   `concurro-relay login` commands that name the server.
 
-**Phase 5, sketch.** The accounts service imports the vault's metadata and becomes the
-store. The browser routes above don't change. Everything the vault serves today is a
-temporary bridge ([vault](#vault)); these are the target contracts that replace it:
+**Phase 5, full.** The accounts service imports the vault's metadata and becomes the
+store ([accounts brief](architecture/phase-5/s3-accounts.md)). The browser routes above
+don't change. Everything the vault serves today is a temporary bridge ([vault](#vault));
+these are the target contracts that replace it.
 
-- **Metadata reads.** `GET /v1/credentials/{user_id}?at=` on the accounts service's
-  internal listener, for the task application's funding module, with a bearer of its own.
-  - The response has the fields of the vault's `/metadata/{user_id}?at=`: entries with
-    their route, kind, enabled state, filters, revision, record ID, version, status,
-    expiry and custody; lists with their revision and order; and `history_complete`.
-  - Implicit fill reads it with `at` set to the boundary, and a new attempt reads it
-    without `at`.
-- **`credential.<user_id>.changed`.** A fact, one per committed metadata change,
-  identified by the accounts service's change sequence:
-  `{user_id, sequence, entry_id, provider, change, list_revision, revoked, at}`.
-  - `change` is `added`, `replaced`, `edited`, `reordered`, `removed` or `unusable`.
-  - `revoked` lists each `{record_id, version, route, custody}` the change retired.
-  - Consumers:
-    - The task application's funding module revises grants on a revoked version to
-      `revoked` and excludes the version.
-    - The gateway drops bindings on that version.
-- **Version material.** One OpenBao path per version ([storage](#storage)). The accounts
-  service creates it and reads its metadata; it can't read the material back.
-- **Relay.** The verifier's [owner API](#verifier-owner-api), with a credential only the
-  accounts service holds, separate from the gateway's inference credential and the
-  exchange's release credential.
+**Metadata reads.** `GET /v1/credentials/{user_id}?at=` on the accounts service's
+internal listener, for the task application's funding module, authorized by the funding
+module's own bearer. The response is field for field the vault's
+`/metadata/{user_id}?at=` (`gateway/vault/vault.py:1086-1165`), plus `relay_id`. The
+task application's client keeps `custody` and `relay_id`, and selection freezes both into
+the grant's credential:
+
+| Field | Meaning |
+| ---- | ---- |
+| `history_complete` | False only if a listed version's status at `at` can't be known |
+| `credentials[]` | Per entry, its latest version created at or before `at` |
+| `credentials[].record_id`, `user_id` (a string), `route`, `version`, `entry_id`, `provider`, `kind`, `custody`, `relay_id?` | Identity. `relay_id` is present for relay custody; it is new relative to the vault's response, which left it to the resolver |
+| `credentials[].status`, `status_reason`, `expires_at?`, `expiry_known` | Status at `at` |
+| `credentials[].name`, `enabled`, `roles`, `profiles`, `position`, `removed` | From the policy revision in force at `at` |
+| `credentials[].created`, `updated`, `models`, `validated`, `token_revision` | Carried over from the vault, as imported |
+| `lists` | `{provider: {revision, entries}}` |
+
+Implicit fill reads it with `at` set to the boundary; a new attempt reads it without
+`at`.
+
+**Status rules** are the vault's:
+
+- With `at`, a retired version is `valid` before it was retired and `revoked` after.
+- A known expiry at or before the cutoff makes it `invalid`.
+- An entry missing from its list is `enabled = false` and `removed = true`.
+
+**`credential.<user_id>.changed`.** A fact on the accounts service's stream, appended in
+the transaction of each committed change, with ID `credential:<sequence>`.
+
+- **Data:** `{user_id, sequence, entry_id, provider, change, list_revision, revoked,
+  at}`.
+- **`change`** is `added`, `replaced`, `edited`, `reordered`, `removed` or `unusable`.
+- **`revoked`** lists each `{record_id, version, route, custody}` the change retired:
+  the previous versions on a replace, every version on a remove, and the expired version
+  on `unusable`.
+
+The task application's funding module revises every grant on a revoked version to
+`revoked`, and asks the exchange to [revoke](#exchange-operator-api) those still issued.
+The gateway doesn't consume these facts: it is told at admission.
+
+**Version material.** One OpenBao KV v2 path per version, `personal/<record_id>`:
+
+- **Value:** `{secret, account?}`.
+- **No custom metadata.** The accounts service's database maps each path to its entry,
+  route and version.
+- **Create-only.** The accounts service creates it with `cas=0` and reads its metadata;
+  it can't read the material back. The gateway reads exactly the version an admission
+  names.
+
+**Relay.** The verifier's [owner API](#verifier-owner-api), with a credential only the
+accounts service holds. It's separate from the gateway's inference credential and the
+exchange's release credential.
 
 Every mutation keeps its revision and idempotency rules.
 
 ### Exchange operator API
 
-Sketch, phase 5. The task application submits turns with their grant.
+Phase 5, full. The Rust exchange serves it on its operator listener on the platform
+network, for the task application only, with the task application's bearer
+([exchange brief](architecture/phase-5/s4-exchange.md)).
+
+**Calls:**
 
 | Call | Purpose |
 | ---- | ---- |
-| `PUT /v1/turns/{turn_id}` | Submit: `task_id`, `grant_id`, `target_id`, `limits`, `spec` blob, `session_pin?`. Idempotent on the turn ID |
-| `GET /v1/turns/{turn_id}?wait=` | Status and, once finished, the result; the same data as `turn.*` |
-| `DELETE /v1/turns/{turn_id}` | Cancel; a later submit with that ID is refused |
-| `DELETE /v1/sessions/{session_id}` | End a session |
+| `PUT /v1/turns/{turn_id}` | Submit; idempotent on the body's digest |
+| `GET /v1/turns/{turn_id}` | The turn's observation, for reconciliation |
+| `DELETE /v1/turns/{turn_id}` | Cancel or retire; returns every session the turn used |
+| `POST /v1/grants/{grant_id}/revoke` | Revoke a grant; returns its sessions once they've ended and their relay claims are released |
 
-The exchange admits a turn only under an `issued` grant whose models, limits and
-credential match it. When a grant is revoked it refuses new sessions under it, ends the
-existing ones, and publishes `exchange.grant.released` with every session it bound to
-the grant.
+**The submit body:**
+
+| Field | Meaning |
+| ---- | ---- |
+| `attempt_id`, `task_id` | The attempt the turn runs; `turn_id` equals `attempt_id` |
+| `grant` | `{grant_id, purpose, payer?, credential, models, limits {tokens, lease_seconds}}`. For a contributed grant, `credential` is `{entry_id, record_id, version, route, custody, relay_id?}`; for org, `{route}` with an org route |
+| `binding` | Today's session binding without its funding fields (`crates/tasks/src/intake_payload.rs:321-331`): task, role, engine `{repository, sha}`, fork, upstream, `config_sha` and base. The runner checks out from it, and the exchange names the engine from it |
+| `staffing_group` | The group digest, as today, over the expected claims less the ref, the binding, models, budget and lease; the exchange recomputes and checks it |
+| `expected_claims` | `{repository_id, repository_owner_id, job_workflow_ref, actor_id, job_workflow_sha?}`; `actor_id` is the App's bot user, so only the App can dispatch a funded run |
+| `models`, `budget`, `lease_seconds` | Within the grant's |
+| `payload` | [Turn payload v2](#turn-payload-v2), to the runner |
+
+- **The digest** is SHA-256 over the canonical JSON body. The same digest returns the
+  current observation; a different one is `409`.
+- **Tombstones.** A pruned turn answers `410 turn_expired` with the same digest. A turn
+  cancelled before it was submitted answers `410 turn_cancelled`.
+- **Grants.** A grant ID resubmitted with different contents is `409`. Admission needs an
+  `issued` grant whose models and limits cover the turn. A grant revoked before its first
+  submit is a durable fence: the submit answers `410 grant_revoked`.
+
+**The observation:** `{turn_id, status, session_id?, run_id?, dispatch?: {session_id},
+refusal?, created, started?, finished?, result?, provider_failure?, provider_requests?}`.
+
+- `status` is `queued`, `running`, `finished`, `lost` or `cancelled`.
+- `dispatch` is present when a new session needs a runner workflow.
+
+**Cancel:**
+
+- keeps a terminal result;
+- writes a fence tombstone for an unknown ID;
+- retires every session in the turn's set, and returns `{sessions}`, also on a retry
+  after pruning;
+- answers `502` after a partial failure, and can be retried.
+
+**Revoke:**
+
+- records the grant as revoked even if no turn has been submitted under it yet, so a
+  later submit under it is refused;
+- refuses new admissions under the grant at once;
+- ends its sessions;
+- queues the release of each relay claim with the verifier;
+- answers `{sessions}` once every release is acknowledged, and a repeat returns the same
+  answer.
+
+### Exchange admission API
+
+Phase 5, full. On the exchange's admission listener, on a private network it shares with
+the gateway, authorized by the admission bearer.
+
+**`POST /internal/v1/requests`:** `{key, model, request_id?, probe?}`. With `probe`, the
+gateway's `GET /v1/models`, it checks the session and returns its models without
+recording a request.
+
+- **Admits** when:
+  - the key's hash names a live session with exactly one running turn;
+  - the session's grant is `issued`, and the model is in its models;
+  - the session's spent tokens are below its budget.
+- **Records the request** and returns `{request_id, session_id, turn_id, grant_id,
+  credential, models, remaining_tokens, deadline, claim?}`.
+  - `credential` is the grant's.
+  - `claim` is the session's [claim](#session-claims), for relay custody only.
+- **Refuses** with a status and one of the [failure categories](#retries-and-exclusions)
+  or `budget_denied`, `session_ended` or `grant_revoked`.
+  - A `budget_denied` refusal is recorded as a finished request, which sets the turn's
+    `provider_failure`.
+  - Once the turn has a `provider_failure`, later admissions for it are refused.
+- **A non-`ok` result** is published in `exchange.turn.<turn>.finished` only once each of
+  the turn's requests is finished or has reached its settlement deadline.
+
+**`POST /internal/v1/requests/{request_id}/finish`:** `{dispatched, category, usage?,
+usage_unavailable?, retry_after?}`. `dispatched` is true once the request was sent to the
+provider or verifier. A local failure, such as a destroyed version, is
+`dispatched = false`.
+
+- `category` is `ok` or a failure category.
+- `usage` is `{input_tokens, output_tokens, cache_read_input_tokens?,
+  cache_creation_input_tokens?}`.
+- `usage_unavailable` is one of `ambiguous`, `incomplete`, `provider_error` or
+  `unparsed_shape`.
+- **Idempotent.** It adds tokens to the session's spent count, sets the turn's trusted
+  `provider_failure` from the first terminal failure category, and appends
+  [`inference.usage`](#exchange-events).
+- **The settlement deadline.** A request still open five minutes after the first of its
+  turn's result arriving or its session ending is closed with
+  `usage_unavailable = not_reported`. A later finish is acknowledged and ignored.
+
+**`POST /internal/v1/sessions/status`:** `{session_ids}` → `{live: [session_id]}`. The
+gateway calls it every 10 seconds with a five-second timeout. It closes a stream whose
+session is no longer live, or for which no check has succeeded for 30 seconds.
 
 ### Runner API
 
-Sketch, phase 5, served by the Rust exchange to launchers on version 2.
+Phase 5, full: runner API v2. The exchange serves it on its runner listener, routed by the
+edge at `<public_url>/runner/`. It is the only runner API after the phase 5 cutover.
 
 | Call | Auth | Purpose |
 | ---- | ---- | ---- |
-| `POST /runner/v2/sessions/{id}/token` | OIDC | Exchanges the job's OIDC token once for a runner token, the inference base URL and session key, and the engine bundle to run |
-| `GET /runner/v2/sessions/{id}/turns/next?wait=` | Runner token | The next turn spec, or `204` |
-| `POST /runner/v2/sessions/{id}/blobs` | Runner token | Upload a transcript, workspace or session archive; content-addressed |
-| `PUT /runner/v2/sessions/{id}/turns/{turn}/result` | Runner token | The result, referencing uploaded blobs; idempotent |
-| `POST /runner/v2/sessions/{id}/heartbeat` | Runner token | Liveness |
-| `DELETE /runner/v2/sessions/{id}` | Runner token | End the session |
+| `POST /runner/v2/sessions/{id}/claim` | OIDC (`Authorization: Bearer`) | `{engine {repository, sha}, runner_token, deadline}`. A repeat from the same run returns the same token |
+| `POST /runner/v2/sessions/{id}/key` | Runner token | Body `{engine_sha}` → `{session_key, inference_base_url, models, deadline, binding}`. An engine mismatch is `409`, with the refusal recorded |
+| `POST /runner/v2/sessions/{id}/heartbeat` | Runner token | `204`, or `410` once ended |
+| `GET /runner/v2/sessions/{id}/turns/next?wait=` | Runner token | `{turn_id, payload, deadline}`, or `204` after at most 50 seconds. Also a heartbeat |
+| `PUT /runner/v2/sessions/{id}/blobs/{kind}/{sha256}` | Runner token | Content-addressed upload of up to 256 MiB, verified against the digest; `kind` is `archive` or `workspace` |
+| `GET /runner/v2/sessions/{id}/blobs/{sha256}` | Runner token | A blob one of this session's turns references |
+| `PUT /runner/v2/sessions/{id}/turns/{turn}/result` | Runner token | The [result](#turn-payload-v2), at most 1 MiB of JSON. Accepted only while this session runs the turn; the same result again succeeds, a different one is `409` |
+| `DELETE /runner/v2/sessions/{id}` | Runner token | Ends the session; `410` counts as success |
 
-Each call has one kind of credential, and large content moves as blobs, not as base64
-inside results. Each target's launcher version is in [its settings](#configuration-1),
-and a contract test runs every supported launcher version against the exchange; v1
-retires when no target is on it.
+**OIDC checks:**
 
-### Runner protocol
+- RS256 against GitHub's JWKS;
+- issuer `https://token.actions.githubusercontent.com` and audience `concurro-gateway`;
+- 60 seconds of clock skew, `iat` at most 600 seconds old, and `jti` used once;
+- the expected claims, `event_name = workflow_dispatch`,
+  `ref = refs/heads/concurro/runs/<session>`, `runner_environment = github-hosted` and
+  `run_attempt = 1`.
 
-Sketch, phase 5.
+A repository or owner mismatch is refused without being recorded; any other mismatch
+records the session's refusal.
 
-- **Turn spec:** `turn_id`, `role`, `harness`, `model`, `effort`, `limits {timeout,
-  context_bytes, retained_bytes}`, `session {scope, turn, archive blob?}`, `workspace
-  {repository_id, base, head, refs}`, and `inputs`: instructions, charter, policy,
-  requirements and context as blobs.
-- **Result:** `outcome` and `reason` as in [turn events](#turn-events), `response`,
-  `workspace_changes` blob, `session_archive` blob, `transcript` blob, timing.
+**Liveness:**
+
+- a session must be claimed within 1,200 seconds;
+- every call is a heartbeat, and a session dies after 180 seconds without one;
+- the deadline is the session's creation time plus its lease.
+
+### Turn payload v2
+
+Phase 5, full. Payload v1's content, with its base64 fields replaced by blob references.
+The engine executes it as it executes v1.
+
+- **To the runner:** `{request, feedback, spec, timeout, retained: {sha256, size} |
+  null}`.
+  - `request`, `feedback`, `spec` and `timeout` are as in
+    [payload v1](#turn-payload-v1).
+  - `retained` is the session archive to restore, fetched from the runner API by digest.
+- **The result:** `{outcome, response, termination_reason?, elapsed_seconds?, workspace:
+  {sha256, size} | null, transcript: {sha256, size} | null, retained: {sha256, size} | null}`.
+  - `outcome` and `response` are as in payload v1.
+  - `workspace` is today's workspace JSON (`{edits, removed}` or `{error}`) as a blob, and
+    null where today's field is null (`engine/turns.py:410-427`).
+  - The blobs must have been uploaded before the result.
+
+**Blobs** are stored in the object store create-only, keyed by kind:
+`<prefix>/sha256/<digest>.tar.gz` for archives (transcript and retained session), as the
+task application's archives are ([original archive bundles](#original-archive-bundles)),
+and `<prefix>/sha256/<digest>.json` for the workspace. The runner names the kind when it
+uploads (`PUT .../blobs/{kind}/{sha256}`). The exchange writes runner uploads, and the task
+application reads them for ingestion.
+
+### Exchange events
+
+Phase 5, full. On the exchange's stream, appended in the transaction that makes each
+change.
+
+| Event | Kind | Consumers | Data |
+| ---- | ---- | ---- | ---- |
+| `exchange.turn.<turn>.status` | Snapshot, entity `turn:<turn>` | Task application | `{turn_id, status, session_id?, run_id?, dispatch?: {session_id}, refusal?, provider_failure?, created, started?, finished?}`; a `provider_failure` is terminal for the attempt |
+| `exchange.turn.<turn>.finished` | Fact | Task application | `{turn_id, attempt_id, status, result?, provider_failure?, provider_requests, usage {requests, input_tokens, output_tokens, unavailable}}` |
+| `inference.usage` | Fact | Task application's funding module, accounts service | `{request_id, session_id, turn_id, grant_id, record_id?, version?, model, category, usage?, usage_unavailable?, started, finished}` |
+
+- **`provider_requests`** is:
+  - `some` when any request was `dispatched`, even if another was closed
+    `not_reported`. The usage summary counts those separately as `unavailable`.
+  - `none` when every request finished undispatched.
+  - `unknown` when none was dispatched and at least one was closed `not_reported`.
+- **`provider_failure`** is `{category, model, retry_after?, request_id, grant_id,
+  record_id?, version?}`, from the first terminal failure the gateway reported or the
+  exchange recorded (`budget_denied`). It is the trusted input for credential fallback.
+- **Event IDs** derive from the turn ID, event type and revision for turn events, and
+  from the request ID for usage. Redelivery changes nothing.
+
+### Session claims
+
+Phase 5, full. An EdDSA (Ed25519) compact JWS that the exchange signs. The gateway sends
+it to the verifier in `x-concurro-claim` on `/dispatch/v2/*`.
+
+**Header:** `{alg: EdDSA, typ: JWT, kid}`.
+
+**Claims:**
+
+| Claim | Meaning |
+| ---- | ---- |
+| `jti` | Claim ID |
+| `iss` | `concurro-exchange` |
+| `sub` | Session ID |
+| `iat`, `exp` | Issue time and the session's deadline |
+| `relay_id`, `user_id`, `entry_id`, `record_id`, `version`, `route` | Must equal the verifier's registered binding |
+| `models` | The models a dispatch may request |
+| `calls`, `tokens` | The session's allowance |
+| `repository`, `issue` | Display only: the task the relay status shows for an active slot |
+
+**The verifier:**
+
+- checks the signature against its configured exchange public keys by `kid`;
+- checks the expiry, the binding equality and the model;
+- checks the claim isn't revoked and has allowance left;
+- leases under `sub`, reusing one lease, link and native session for the session's
+  requests, and uses `x-concurro-request` only for allowance and accounting.
+
+**Release:** `POST /release/v1/claims/{jti}` with the `release` credential revokes the
+claim and ends its leases.
+
+- It answers once the revocation is durable.
+- Revocations and spent allowance survive restarts until `exp`.
 
 ### Verifier owner API
 
-Sketch, part of `concurro-relay`'s phase 5 release, behind the owner credential.
+Phase 5, full. Part of the relay release
+([relay brief](architecture/phase-5/s1-relay.md)), behind the `owner` credential, held by
+the accounts service (the vault until the cutover).
 
 | Call | Purpose |
 | ---- | ---- |
-| `GET /owner/v1/registrations/{code}` | A pending registration: name, routes, expiry |
-| `POST /owner/v1/approvals` | `{code, user {id, login}, bindings: [{route, entry_id, record_id, version}]}` → `{relay_id}`; idempotent for identical bindings |
-| `GET /owner/v1/relays?user_id=` | The user's relays with idle and active slots |
+| `GET /owner/v1/registrations/{code}` | A pending registration: `{name, routes, expires_at}`; `404` if unknown or expired |
+| `POST /owner/v1/approvals` | `{code, user {id, login}, bindings: [{route, entry_id, record_id, version}]}` → `{relay_id}`; idempotent for identical bindings, `409` for others |
+| `GET /owner/v1/relays?user_id=` | `{started, checked, relays: [{relay_id, idle, last_seen, active: [{slot, route, entry_id, version, since, task?}]}]}` |
 
-Bearer in `Authorization`; one request type per call; RFC 3339 times; every error an HTTP
-response with one error shape.
+- The bearer goes in `Authorization`.
+- Times are RFC 3339.
+- Every error is `{error: {code, message}}`.
 
 ### Target identities
 
@@ -1882,8 +2103,10 @@ only their settings.
 ## Decisions
 
 1. **The runner.** M1 uses today's runner unchanged, on [payload v1](#turn-payload-v1).
-   Its protocol moves to the target protocol and runner API v2 in phase 5, with the
-   exchange. Porting its code to Rust is a separate, later step.
+   In phase 5 its transport moves to [runner API v2](#runner-api) and
+   [payload v2](#turn-payload-v2), with the exchange; the turn's content stays the same.
+   Porting its code to Rust, and any redesign of the turn spec, is a separate, later
+   step.
 2. **Edited commands** follow the kind of the new revision:
    - A revision still pending is superseded by the next one, and stays recorded as
      `superseded`.
@@ -1897,8 +2120,10 @@ only their settings.
    - A standalone review command applies per revision, as today.
    - Any other command isn't applied if an earlier revision of the comment was; its
      request is refused as `already_applied`.
-3. **Launchers** are versioned per target in [the settings](#configuration-1), every
-   supported version is contract-tested, and v1 retires when no target is on it.
+3. **Launchers** are selected per target by their release ref in
+   [the settings](#configuration-1). Every target moves to the v2 launcher in the
+   phase 5 cutover window, so the Rust exchange serves v2 only and v1 retires with the
+   Python exchange.
 
 ## Open items
 

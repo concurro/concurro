@@ -337,31 +337,37 @@ As trace 13, with P's credential in relay custody, before phase 5.
 
 ### 15. A relay session revoked, phase 5
 
-1. As trace 13 to the cutoff; the task application publishes the grant's revocation.
-2. The exchange refuses new sessions under the grant, sends the verifier `/release
-   {claim}` and publishes each relay session's binding as `revoked` once the verifier
-   confirms. It then publishes `exchange.grant.released {grant, sessions}`.
-3. The gateway drops each binding and publishes `inference.binding.closed`.
-4. "Spending stopped" is replied once every session in `exchange.grant.released` is
-   closed and, for relay, revoked.
+1. As trace 13 to the cutoff. The task application revokes grant G and records the
+   exchange effect `POST /v1/grants/G/revoke`.
+2. The exchange marks G revoked, so any admission under it is refused from now on. It
+   ends G's sessions and queues the release of each session's relay claim with the
+   verifier, through the `release` credential.
+3. The verifier persists each claim's revocation, ends its leases and acknowledges.
+4. The exchange answers the revoke with G's sessions. The task application settles the
+   effect.
+5. The gateway's next session check finds those sessions no longer live and closes any
+   stream still open.
+6. "Spending stopped" is replied at the acknowledgement plus that 10-second bound.
 
-**Checks.** A verifier restart doesn't restore a revoked claim, and "spending stopped"
-covers the relay as well as the gateway.
+**Checks.**
 
-### 16. A binding event delayed during a withdrawal
+- A verifier restart doesn't restore a revoked claim.
+- A request that reaches the gateway after step 2 is refused at admission.
+- "Spending stopped" covers the relay as well as the gateway.
 
-Phase 5. The exchange binds session S2 under grant G just before G is revoked; the
-`session.binding` event for S2 is delayed.
+### 16. A request racing a revocation, phase 5
 
-1. The task application revokes G. The gateway gets the revocation before it sees S2's
-   binding, records G as revoked, and refuses S2's binding when it arrives, publishing
-   `inference.binding.closed` for it.
-2. The task application doesn't rely on having seen S2: `exchange.grant.released` lists
-   every session the exchange bound to G, S2 included, so it waits for S2's close
-   ([finding 20](#findings)).
+The gateway admits request R under grant G just before G is revoked; R's stream is
+still open when the revoke is acknowledged.
 
-**Checks.** A delayed binding can neither spend under a revoked grant nor let "stopped"
-be reported too early.
+1. R's admission came before the revocation, so the exchange recorded R as G's.
+2. The revoke ends R's session. Within 10 seconds the gateway's session check closes R's
+   upstream stream, and R's finish reports the usage spent until then.
+3. A second request from the same runner, arriving after the revocation, is refused at
+   admission with `grant_revoked`.
+
+**Checks.** No request is admitted under a revoked grant, and R's usage before the close
+is recorded against G. The bound is the documented one, not an event's delivery time.
 
 ## Recovery
 
@@ -630,19 +636,22 @@ Phase 3, M3, before the cutover.
 
 **Checks.** Edits by anyone but the author never count for payment.
 
-### 27. The phase 5 turn handover
+### 27. The phase 5 cutover's turn handover
 
-1. The task application stops submitting to the Python exchange; new attempts wait.
-2. It polls the Python exchange's outstanding turns until each is finished and its
-   result recorded.
-3. It switches to the Rust exchange and stops polling the Python one, and stops sending
-   it transitions.
-4. The Rust exchange publishes `turn.*` for the turns it runs. Turn event IDs derive from
-   turn ID, type and (for status) revision, so a turn reported twice would still be
-   deduplicated ([finding 21](#findings)).
+1. The window is announced. No task is running or queued, every attempt is settled, and
+   `effects pending` is empty.
+2. The Python exchange has no queued or running turn and no live session. The task
+   application stops.
+3. The task application starts in Rust mode. Its next submits go to the Rust exchange,
+   which publishes `exchange.turn.*`.
+4. No Python-era turn is resubmitted: none was unsettled, and stored submit bodies of
+   settled attempts are never replayed.
 
-**Checks.** No turn is lost or completed twice, following the architecture's
-drain-then-switch order ([finding 22](#findings)).
+**Checks.**
+
+- No turn spans the two exchanges, so none is lost or completed twice.
+- Turn event IDs derive from the turn ID, type and revision, so a redelivered event
+  changes nothing ([finding 21](#findings)).
 
 ## Commands
 
@@ -949,8 +958,8 @@ the single cutover; their numbers are kept.
 9. **The interpreter on the Python exchange needs bridge changes:** an `interpreter` role
    and interpretation grants without a slot.
 10. **Retries carry the failure they follow:** `retry_of` in the attempt.
-11. **Relay release is acknowledged in phase 5:** a relay session's binding is `revoked`
-    only after the verifier confirms.
+11. **Relay release is acknowledged in phase 5:** the exchange answers a grant revocation
+    only after the verifier confirms each claim's revocation is durable.
 12. **Withdrawn:** ownership records existed only for two controllers.
 13. **Publication outcomes carry their time:** `written_at`.
 14. **Enrollment requests come from the timeline,** identified by its event ID; a
@@ -966,11 +975,12 @@ the single cutover; their numbers are kept.
     `provider_requests` whether paid work may have happened.
 19. **Before phase 5, "spending stopped" is a time bound:** the acknowledgement time plus
     the longest grant lease, since a failed relay release isn't reported.
-20. **The exchange lists a revoked grant's sessions:** `exchange.grant.released`, so a
-    delayed binding can't let "stopped" be reported early.
+20. **The exchange answers a grant revocation with its sessions,** after ending them.
+    Admission is checked per request, so no binding can arrive late.
 21. **Snapshot event IDs include the revision,** so successive status snapshots aren't
     deduplicated as one.
-22. **The handover drains before it switches,** as the architecture says.
+22. **The phase 5 cutover drains before it switches:** an idle window, with no turn
+    spanning the two exchanges.
 23. **Withdrawn:** the list bridge existed only for two controllers.
 24. **Consent changes reach the exchange in order:** one slot change per change from the
     funding boundary on, each naming the previous one. The slot adapter applies them
