@@ -11,7 +11,9 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use concurro_contracts::{RequestActor, RequestCommand, TaskIssue};
+use concurro_contracts::{
+    CommandClaims, CommandContent, CommandSubmission, RequestActor, RequestCommand,
+};
 use concurro_db::Database;
 use concurro_github_v1::AppDeliveryPage;
 use concurro_tasks_core::{IssueKey, LaterCommand, Request, RequestKind, SourceOrder};
@@ -45,47 +47,6 @@ pub struct TaskApi {
     pub read_bearer: Arc<String>,
     /// Ingress-only bearer for App delivery recovery.
     pub delivery_bearer: Option<Arc<String>>,
-}
-
-/// Exact browser command contents signed by the Python session authority.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandContent {
-    /// Numeric issue identity.
-    pub issue: TaskIssue,
-    /// Command kind.
-    pub kind: String,
-    /// Typed argument object, empty for argument-free commands.
-    pub argument: Value,
-    /// Command detail, including optional feedback.
-    pub detail: Value,
-    /// Original browser action time retained across retries.
-    pub source_at: DateTime<Utc>,
-}
-
-/// Forwarded browser command without a caller-supplied actor.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandSubmission {
-    /// Exact contents bound by the proof.
-    #[serde(flatten)]
-    pub content: CommandContent,
-    /// Short-lived signed proof.
-    pub proof: String,
-}
-
-/// Session identity and exact contents bound to one action ID.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandClaims {
-    /// Authenticated numeric GitHub identity.
-    pub actor: RequestActor,
-    /// Browser action ID from Idempotency-Key.
-    pub action_id: Uuid,
-    /// Exact command, detail, issue and source time.
-    pub content: CommandContent,
-    /// Expiry epoch second.
-    pub exp: u64,
 }
 
 /// Current state of an admitted request.
@@ -448,7 +409,8 @@ pub fn verify_proof(
 ) -> Result<CommandClaims, ApiError> {
     let key = DecodingKey::from_rsa_pem(public_key)
         .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "proof_key_invalid"))?;
-    let validation = Validation::new(Algorithm::RS256);
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.leeway = 0;
     let claims = jsonwebtoken::decode::<CommandClaims>(proof, &key, &validation)
         .map_err(|_| ApiError(StatusCode::FORBIDDEN, "proof_invalid"))?
         .claims;
@@ -844,36 +806,7 @@ fn action_error(error: anyhow::Error) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn python_proof_binds_all_command_fields() {
-        let fixture: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/browser_command_proof.json"))
-                .unwrap();
-        let public = fixture["public"].as_str().unwrap();
-        let proof = fixture["proof"].as_str().unwrap();
-        let content: CommandContent = serde_json::from_value(fixture["content"].clone()).unwrap();
-        let action_id = "00ced378-49a4-4c99-a2d2-7bd7eac05801".parse().unwrap();
-        let claims = verify_proof(public.as_bytes(), action_id, &content, proof).unwrap();
-        assert_eq!(claims.actor.id, 9);
-        let wrong_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, b"different action");
-        std::assert_matches!(
-            verify_proof(public.as_bytes(), wrong_id, &content, proof),
-            Err(ApiError(StatusCode::FORBIDDEN, "proof_mismatch"))
-        );
-        for changed in [
-            json!({"issue":{"repository_id":42,"number":8},"kind":"retry","argument":{},"detail":{"feedback":"same work"},"source_at":"2026-11-20T10:11:12Z"}),
-            json!({"issue":{"repository_id":42,"number":7},"kind":"stop","argument":{},"detail":{"feedback":"same work"},"source_at":"2026-11-20T10:11:12Z"}),
-            json!({"issue":{"repository_id":42,"number":7},"kind":"retry","argument":{},"detail":{"feedback":"changed"},"source_at":"2026-11-20T10:11:12Z"}),
-            json!({"issue":{"repository_id":42,"number":7},"kind":"retry","argument":{},"detail":{"feedback":"same work"},"source_at":"2026-11-20T10:11:13Z"}),
-        ] {
-            let changed = serde_json::from_value(changed).unwrap();
-            std::assert_matches!(
-                verify_proof(public.as_bytes(), action_id, &changed, proof),
-                Err(ApiError(StatusCode::FORBIDDEN, "proof_mismatch"))
-            );
-        }
-    }
+    use concurro_contracts::TaskIssue;
 
     #[test]
     fn browser_body_cannot_supply_an_actor() {

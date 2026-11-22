@@ -28,8 +28,8 @@ pub struct Settings {
     pub reader_app_id: i64,
     /// Read-only Backoffice App private key file.
     pub reader_private_key_file: String,
-    /// Reserved for the command slice's proof signer.
-    pub command_proof_private_key_file: Option<String>,
+    /// Private RSA PEM for browser command proofs.
+    pub command_proof_private_key_file: String,
     /// Service bearer file for the internal viewer route.
     pub viewer_authority_bearer_file: String,
     /// Private task application origin for target snapshots.

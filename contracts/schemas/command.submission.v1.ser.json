@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "TaskIssue": {
+      "description": "Stable issue identity used by task and request records.",
+      "properties": {
+        "number": {
+          "description": "Repository-local issue number.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "repository_id": {
+          "description": "GitHub repository ID.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repository_id",
+        "number"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Forwarded browser command with its short-lived proof.",
+  "properties": {
+    "argument": {
+      "description": "Typed argument object, empty for argument-free commands."
+    },
+    "detail": {
+      "description": "Optional browser feedback."
+    },
+    "issue": {
+      "$ref": "#/$defs/TaskIssue",
+      "description": "Numeric issue identity."
+    },
+    "kind": {
+      "description": "Typed request command kind.",
+      "type": "string"
+    },
+    "proof": {
+      "description": "RS256 signed authority proof.",
+      "type": "string"
+    },
+    "source_at": {
+      "description": "Original time of this browser action.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "issue",
+    "kind",
+    "argument",
+    "detail",
+    "source_at",
+    "proof"
+  ],
+  "title": "CommandSubmission",
+  "type": "object"
+}

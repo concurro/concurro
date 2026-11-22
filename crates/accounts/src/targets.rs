@@ -85,6 +85,25 @@ impl Targets {
 
     /// Find a target, refreshing stale or unknown identities before deciding.
     pub async fn find(&self, upstream: &str) -> Result<Option<ConfigTarget>> {
+        self.find_matching(|target| target.upstream.eq_ignore_ascii_case(upstream))
+            .await
+    }
+
+    /// Find a configured target by any of its browser command repositories.
+    pub async fn for_repository(&self, repository: &str) -> Result<Option<ConfigTarget>> {
+        self.find_matching(|target| {
+            [&target.upstream, &target.fork, &target.issue_repository]
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(repository))
+        })
+        .await
+    }
+
+    /// Refresh the cached row before applying one target identity predicate.
+    async fn find_matching(
+        &self,
+        matches: impl Fn(&ConfigTarget) -> bool,
+    ) -> Result<Option<ConfigTarget>> {
         let stale = self
             .cache
             .read()
@@ -97,26 +116,24 @@ impl Targets {
                 result?;
             }
         }
-        let found = self.cache.read().await.as_ref().and_then(|cache| {
-            cache
-                .targets
-                .iter()
-                .find(|target| target.upstream.eq_ignore_ascii_case(upstream))
-                .cloned()
-        });
+        let found = self
+            .cache
+            .read()
+            .await
+            .as_ref()
+            .and_then(|cache| cache.targets.iter().find(|target| matches(target)).cloned());
         if found.is_some() {
             return Ok(found);
         }
         if !stale {
             let _ = self.refresh().await;
         }
-        Ok(self.cache.read().await.as_ref().and_then(|cache| {
-            cache
-                .targets
-                .iter()
-                .find(|target| target.upstream.eq_ignore_ascii_case(upstream))
-                .cloned()
-        }))
+        Ok(self
+            .cache
+            .read()
+            .await
+            .as_ref()
+            .and_then(|cache| cache.targets.iter().find(|target| matches(target)).cloned()))
     }
 
     /// Return the last observed source revision for diagnostics.

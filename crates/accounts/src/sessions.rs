@@ -6,6 +6,8 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::github::User;
 
@@ -35,6 +37,20 @@ pub struct Session {
     pub token: String,
     /// Expiration epoch second.
     pub expires_at: i64,
+    /// Original source times for this session's browser action IDs.
+    action_times: Arc<Mutex<HashMap<Uuid, DateTime<Utc>>>>,
+}
+
+impl Session {
+    /// Retain the first timestamp for retries of one browser action.
+    pub fn source_at(&self, action_id: Uuid) -> DateTime<Utc> {
+        *self
+            .action_times
+            .lock()
+            .expect("action times lock")
+            .entry(action_id)
+            .or_insert_with(Utc::now)
+    }
 }
 
 /// Local indexes for pending sign-ins and active sessions.
@@ -127,6 +143,7 @@ impl Sessions {
             user,
             token,
             expires_at: now + expires_in,
+            action_times: Arc::new(Mutex::new(HashMap::new())),
         };
         let mut inner = self.inner.lock().expect("session lock");
         let Inner {

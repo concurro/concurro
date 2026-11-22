@@ -87,6 +87,26 @@ impl Access {
         }
     }
 
+    /// Require visibility of both repositories for consent withdrawal.
+    pub async fn target_visible(
+        &self,
+        token: &str,
+        target: &ConfigTarget,
+    ) -> Result<bool, AccessError> {
+        Ok(self.repository_visible(token, &target.upstream).await?
+            && self.repository_visible(token, &target.fork).await?)
+    }
+
+    /// Resolve the repository's numeric identity under the signed-in user bearer.
+    pub async fn repository_id(&self, token: &str, repository: &str) -> Result<i64, AccessError> {
+        let (owner, repo) = repository.split_once('/').ok_or(AccessError::Unavailable)?;
+        let metadata: Value = self.user_read(token, &["repos", owner, repo]).await?;
+        metadata
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or(AccessError::Unavailable)
+    }
+
     /// Distinguish hidden repositories from refused or unavailable user tokens.
     async fn repository_visible(&self, token: &str, repository: &str) -> Result<bool, AccessError> {
         let (owner, repo) = repository.split_once('/').ok_or(AccessError::Unavailable)?;

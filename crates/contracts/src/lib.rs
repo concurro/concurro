@@ -22,9 +22,9 @@ pub use github_events::{
 pub use identifiers::{EventId, RequestId, TaskId, Timestamp};
 pub use ingress::{CoverageAdvanced, CoverageGap};
 pub use tasks::{
-    ConfigLauncher, ConfigTarget, ConfigTargets, ReadModelRecord, RequestActor, RequestCommand,
-    RequestOutcome, RequestOutcomeStatus, TaskBudget, TaskBudgets, TaskIssue, TaskNotice,
-    TaskReport, TaskSnapshot,
+    CommandClaims, CommandContent, CommandSubmission, ConfigLauncher, ConfigTarget, ConfigTargets,
+    ReadModelRecord, RequestActor, RequestCommand, RequestOutcome, RequestOutcomeStatus,
+    TaskBudget, TaskBudgets, TaskIssue, TaskNotice, TaskReport, TaskSnapshot,
 };
 pub use turns::{
     TurnArtifact, TurnFinished, TurnRunner, TurnStatus, TurnSubmitted, TurnTranscript,

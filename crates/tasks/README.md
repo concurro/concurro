@@ -101,12 +101,13 @@ credential file contains JSON with `access_key_id` and `secret_access_key`. An o
 NATS credential file contains JSON with `user` and `password`. The task service runs
 its local migrations before starting the consumer and jobs.
 
-The optional private task API accepts `POST /v1/requests` with a Python
-backoffice RS256 proof and UUID `Idempotency-Key`. It binds the actor, issue,
+The optional private task API accepts `POST /v1/requests` with a session-authority
+RS256 proof and UUID `Idempotency-Key`. It binds the actor, issue,
 command, arguments, detail and original source time. A newly signed retry with
 identical contents returns the original result; changed contents conflict.
-`GET /v1/requests/{id}` requires a read-only internal bearer. Python holds the
-signing key; this process reads only its public key. `GET /v1/baseline` uses
+`GET /v1/requests/{id}` requires a read-only internal bearer. The Rust accounts
+service signs the proof for Phase 4; Python remains the live signer until cutover.
+This process reads only the public key. `GET /v1/baseline` uses
 the same read bearer. Its first page materializes durable task, request, turn,
 report and consent records from one PostgreSQL statement snapshot; `next_cursor`
 continues that frozen snapshot across later writes. The final page releases it;

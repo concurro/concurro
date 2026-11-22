@@ -3,7 +3,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use concurro_contracts::REGISTRY;
+use concurro_contracts::{CommandClaims, CommandSubmission, REGISTRY};
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
 
@@ -54,6 +54,43 @@ fn main() -> Result<()> {
             )
             .with_context(|| format!("write {}", output.display()))?;
         }
+    }
+    for (name, schema) in [
+        (
+            "command.submission.v1.de",
+            SchemaSettings::draft2020_12()
+                .for_deserialize()
+                .into_generator()
+                .into_root_schema_for::<CommandSubmission>(),
+        ),
+        (
+            "command.claims.v1.de",
+            SchemaSettings::draft2020_12()
+                .for_deserialize()
+                .into_generator()
+                .into_root_schema_for::<CommandClaims>(),
+        ),
+        (
+            "command.submission.v1.ser",
+            SchemaSettings::draft2020_12()
+                .for_serialize()
+                .into_generator()
+                .into_root_schema_for::<CommandSubmission>(),
+        ),
+        (
+            "command.claims.v1.ser",
+            SchemaSettings::draft2020_12()
+                .for_serialize()
+                .into_generator()
+                .into_root_schema_for::<CommandClaims>(),
+        ),
+    ] {
+        let mut schema = serde_json::to_value(schema)?;
+        sort_json_keys(&mut schema);
+        fs::write(
+            schemas.join(format!("{name}.json")),
+            format!("{}\n", serde_json::to_string_pretty(&schema)?),
+        )?;
     }
     let mut manifest = Value::Array(manifest);
     sort_json_keys(&mut manifest);

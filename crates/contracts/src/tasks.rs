@@ -1,8 +1,10 @@
 //! Task request outcomes published from the task application's decisions.
 
 use crate::{Contract, ContractError, EventKind, RequestId, TaskId, Timestamp};
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Task-owned target and launcher identity distributed to read-only consumers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -118,6 +120,49 @@ pub struct RequestActor {
     pub id: i64,
     /// GitHub login at source capture time.
     pub login: String,
+}
+
+/// Exact browser command contents bound to a signed action proof.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandContent {
+    /// Numeric issue identity.
+    pub issue: TaskIssue,
+    /// Typed request command kind.
+    pub kind: String,
+    /// Typed argument object, empty for argument-free commands.
+    pub argument: serde_json::Value,
+    /// Optional browser feedback.
+    pub detail: serde_json::Value,
+    /// Original time of this browser action.
+    #[schemars(with = "String")]
+    pub source_at: DateTime<Utc>,
+}
+
+/// Forwarded browser command with its short-lived proof.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandSubmission {
+    /// Exact signed contents.
+    #[serde(flatten)]
+    pub content: CommandContent,
+    /// RS256 signed authority proof.
+    pub proof: String,
+}
+
+/// Session actor and exact command contents bound to one action ID.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandClaims {
+    /// Confirmed GitHub actor.
+    pub actor: RequestActor,
+    /// Browser action ID from Idempotency-Key.
+    #[schemars(with = "String")]
+    pub action_id: Uuid,
+    /// Exact submitted command.
+    pub content: CommandContent,
+    /// Expiry epoch second.
+    pub exp: u64,
 }
 
 /// Final disposition of a request in the task decision queue.

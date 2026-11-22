@@ -20,9 +20,17 @@ use uuid::Uuid;
 use crate::{AccountState, github::AccessError, sessions::Sessions};
 
 const LOGIN: &str = "concurro_login";
-const SESSION: &str = "concurro_session";
+pub(crate) const SESSION: &str = "concurro_session";
 const VIEWER: &str = "concurro_viewer";
 const LOGOUT: &str = "concurro_logout";
+
+/// Require the browser's existing custom header on every mutation.
+pub(crate) fn csrf(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-concurro-request")
+        .and_then(|value| value.to_str().ok())
+        == Some("1")
+}
 
 /// Optional destination after successful sign-in.
 #[derive(Deserialize)]
@@ -57,6 +65,14 @@ pub fn router(state: AccountState) -> Router {
         .route("/auth/callback", get(callback))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-status", get(logout_status))
+        .route(
+            "/api/repos/{owner}/{repo}/issues/{number}/commands",
+            post(crate::commands::command),
+        )
+        .route(
+            "/api/tasks/{owner}/{repo}/{number}/commands",
+            post(crate::commands::command),
+        )
         .route(
             "/api/health",
             get(|| async { Json(json!({"status":"ok"})) }),
@@ -218,11 +234,7 @@ async fn logout(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
-    if headers
-        .get("x-concurro-request")
-        .and_then(|value| value.to_str().ok())
-        != Some("1")
-    {
+    if !csrf(&headers) {
         return Err(ApiError(StatusCode::FORBIDDEN, "missing request header"));
     }
     let session = state.sessions.end(jar.get(SESSION).map(Cookie::value));

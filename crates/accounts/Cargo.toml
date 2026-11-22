@@ -23,6 +23,7 @@ concurro-github-v1 = { path = "../github-v1" }
 concurro-telemetry = { path = "../telemetry" }
 graphile_worker.workspace = true
 hex.workspace = true
+jsonwebtoken.workspace = true
 oauth2.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -37,7 +38,10 @@ uuid.workspace = true
 [dev-dependencies]
 concurro-backoffice-api = { path = "../backoffice-api" }
 concurro-backoffice-postgres = { path = "../backoffice-postgres" }
+concurro-events-postgres = { path = "../events-postgres" }
+concurro-tasks-postgres = { path = "../tasks-postgres" }
 concurro-testkit = { path = "../testkit" }
+concurro-tasks = { path = "../tasks" }
 sqlx.workspace = true
 sha2.workspace = true
 tower = "=0.5.3"

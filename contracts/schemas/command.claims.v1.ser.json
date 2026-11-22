@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "CommandContent": {
+      "additionalProperties": false,
+      "description": "Exact browser command contents bound to a signed action proof.",
+      "properties": {
+        "argument": {
+          "description": "Typed argument object, empty for argument-free commands."
+        },
+        "detail": {
+          "description": "Optional browser feedback."
+        },
+        "issue": {
+          "$ref": "#/$defs/TaskIssue",
+          "description": "Numeric issue identity."
+        },
+        "kind": {
+          "description": "Typed request command kind.",
+          "type": "string"
+        },
+        "source_at": {
+          "description": "Original time of this browser action.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue",
+        "kind",
+        "argument",
+        "detail",
+        "source_at"
+      ],
+      "type": "object"
+    },
+    "RequestActor": {
+      "description": "Authenticated GitHub identity responsible for a request.",
+      "properties": {
+        "id": {
+          "description": "GitHub numeric account ID.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "login": {
+          "description": "GitHub login at source capture time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login"
+      ],
+      "type": "object"
+    },
+    "TaskIssue": {
+      "description": "Stable issue identity used by task and request records.",
+      "properties": {
+        "number": {
+          "description": "Repository-local issue number.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "repository_id": {
+          "description": "GitHub repository ID.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repository_id",
+        "number"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Session actor and exact command contents bound to one action ID.",
+  "properties": {
+    "action_id": {
+      "description": "Browser action ID from Idempotency-Key.",
+      "type": "string"
+    },
+    "actor": {
+      "$ref": "#/$defs/RequestActor",
+      "description": "Confirmed GitHub actor."
+    },
+    "content": {
+      "$ref": "#/$defs/CommandContent",
+      "description": "Exact submitted command."
+    },
+    "exp": {
+      "description": "Expiry epoch second.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "actor",
+    "action_id",
+    "content",
+    "exp"
+  ],
+  "title": "CommandClaims",
+  "type": "object"
+}

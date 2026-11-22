@@ -1,15 +1,16 @@
-# Accounts service: Phase 4 Slice 1
+# Accounts service: Phase 4 Slices 1–2
 
-The Rust `accounts` binary now implements browser sign-in, in-memory sessions, logout and
-the private viewer authority. It is local implementation work; the Python backoffice
-still owns the live routes until the later Phase 4 slices and cutover.
+The Rust `accounts` binary implements browser sign-in, in-memory sessions, logout,
+browser commands and the private viewer authority. It is local implementation work;
+the Python backoffice still owns the live routes until cutover.
 
 Set `CONCURRO_ACCOUNTS_CONFIG` to a TOML file based on
 [`deploy/accounts.settings.example.toml`](../../deploy/accounts.settings.example.toml).
-The process has separate browser and internal listeners. Route only `/auth/login`,
-`/auth/callback`, `/auth/logout`, `/auth/logout-status`, `/api/me` and `/api/health` to
-the browser listener for this slice. Only `/internal/v1/viewer` is on the internal
-listener. Do not expose the internal listener at the edge.
+The process has separate browser and internal listeners. The browser listener serves
+`/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/logout-status`, `/api/me`,
+`/api/health`, and both existing `/api/repos/.../commands` and
+`/api/tasks/.../commands` routes. Only `/internal/v1/viewer` is on the internal
+listener. Keep that listener on the platform network at cutover.
 
 The sign-in client must be the existing Sign-in **OAuth App**, with callback URL
 `<public_url>/auth/callback`. Sign-in requests no scopes and uses one-use state and
@@ -34,3 +35,12 @@ viewer lookups return `503` until a usable snapshot is available, then use the
 last snapshot if a refresh fails. The read-only
 Backoffice App checks upstream writer permission, while the user's plain bearer
 checks repository and issue visibility.
+
+Each command requires the session cookie, `X-Concurro-Request: 1` and a UUID
+`Idempotency-Key`. All commands except `withdraw` require writer access;
+`withdraw` requires visibility of both target repositories. Accounts signs the
+confirmed actor and exact command as a 180-second RS256 proof, then forwards it to
+the private task API. The first source time stays with the session action ID, so
+a retry can receive the recorded outcome with a fresh proof. The task application
+keeps its apply-time actor check. Set `command_proof_private_key_file` to the RSA
+PEM paired with the task application's `command_proof_public_key_file`.

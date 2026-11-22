@@ -9,5 +9,6 @@ oauth_client_secret_file = "/etc/concurro/accounts/oauth-client-secret"
 github_api_base = "https://api.github.com"
 reader_app_id = 12345
 reader_private_key_file = "/etc/concurro/accounts/reader-app.pem"
+command_proof_private_key_file = "/etc/concurro/accounts/command-proof.pem"
 viewer_authority_bearer_file = "/etc/concurro/accounts/viewer-authority-bearer"
 task_api_url = "http://concurro-tasks:8792"

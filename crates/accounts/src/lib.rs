@@ -1,6 +1,7 @@
 //! In-memory browser sessions and the private viewer authority.
 
 mod browser;
+pub mod commands;
 pub mod github;
 mod internal;
 pub mod logout;
@@ -18,6 +19,7 @@ use std::{
 use reqwest::Client;
 use tokio::sync::Mutex;
 
+use commands::Commands;
 use github::Access;
 use logout::Logout;
 use oauth::OAuth;
@@ -49,6 +51,7 @@ pub struct AccountState {
     base_path: String,
     secure_cookies: bool,
     tier_cache: Arc<Mutex<TierCache>>,
+    commands: Option<Commands>,
 }
 
 impl AccountState {
@@ -71,7 +74,14 @@ impl AccountState {
             base_path: config.base_path,
             secure_cookies: config.secure_cookies,
             tier_cache: Arc::new(Mutex::new(HashMap::new())),
+            commands: None,
         }
+    }
+
+    /// Attach browser command signing and task delivery authority.
+    pub fn with_commands(mut self, commands: Commands) -> Self {
+        self.commands = Some(commands);
+        self
     }
 }
 
