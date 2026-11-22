@@ -89,6 +89,25 @@ class TurnResultV2(StrictModel):
     """
 
 
+class TurnUsage(StrictModel):
+    input_tokens: conint(ge=0, strict=True)
+    """
+    Input tokens with known usage.
+    """
+    output_tokens: conint(ge=0, strict=True)
+    """
+    Output tokens with known usage.
+    """
+    requests: conint(ge=0, strict=True)
+    """
+    Recorded request count.
+    """
+    unavailable: conint(ge=0, strict=True)
+    """
+    Requests with unavailable usage.
+    """
+
+
 class Dispatch(StrictModel):
     session_id: TaskId
     """
@@ -156,6 +175,10 @@ class TurnObservation(StrictModel):
     """
     Terminal runner result.
     """
+    revision: conint(ge=0, strict=True) | None = None
+    """
+    Monotonic exchange lifecycle revision for readback fencing.
+    """
     run_id: StrictStr | None = None
     """
     Bound GitHub Actions run.
@@ -175,4 +198,8 @@ class TurnObservation(StrictModel):
     turn_id: TaskId
     """
     Exchange turn identity.
+    """
+    usage: TurnUsage | None = None
+    """
+    Settled request totals, available with terminal request evidence.
     """

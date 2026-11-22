@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
-use concurro_contracts::{TaskId, TaskSnapshot, TurnFinished, decode};
+use concurro_contracts::{ProviderRequests, TaskId, TaskSnapshot, TurnFinished, TurnUsage, decode};
 use concurro_db::Database;
 use concurro_events_postgres::{Outbox, migrate as migrate_events};
 use concurro_exchange_v1::{TurnObservation, TurnSubmission};
@@ -19,8 +19,8 @@ use concurro_tasks_postgres::{
     apply_request, apply_request_with_evidence, continue_planner_answer, design_correction,
     finish_unapplied_result, git_publication_input, implementation_result,
     latest_implementation_correction, latest_plan_correction, latest_plan_revision, migrate,
-    pending_effects, record_observation, record_request, reserve_git_publication,
-    save_git_publication, task, task_detail,
+    pending_effects, record_observation, record_request, record_rust_finished,
+    reserve_git_publication, save_git_publication, task, task_detail,
 };
 use concurro_testkit::PostgresContainer;
 use serde_json::{Value, json};
@@ -929,9 +929,20 @@ async fn planner_result_is_atomic_with_plan_report_and_task_snapshot() {
     }))
     .expect("implementer result");
     let mut work = database.begin().await.expect("retain implementation");
-    record_observation(&mut work, &outbox, &result, None)
-        .await
-        .expect("retain result");
+    record_rust_finished(
+        &mut work,
+        &outbox,
+        &result,
+        ProviderRequests::Some,
+        &TurnUsage {
+            requests: 2,
+            input_tokens: 31,
+            output_tokens: 9,
+            unavailable: 0,
+        },
+    )
+    .await
+    .expect("retain result");
     work.commit().await.expect("result commit");
     let premature: i64 = sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type=$1")
         .bind(format!("turn.{develop_turn}.finished"))
@@ -969,6 +980,15 @@ async fn planner_result_is_atomic_with_plan_report_and_task_snapshot() {
             .expect("invalid develop fact");
     let invalid_finished = decode::<TurnFinished>(&invalid_finished).expect("finished contract");
     assert_eq!(invalid_finished.data.outcome, "failed");
+    assert_eq!(invalid_finished.data.provider_requests, "some");
+    assert_eq!(
+        invalid_finished
+            .data
+            .usage
+            .expect("deferred Rust usage")
+            .input_tokens,
+        31
+    );
     assert_eq!(
         invalid_finished.data.reason.as_deref(),
         Some("invalid_output")

@@ -59,9 +59,13 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=concurro-gateway" | jq -r .value)
           echo "::add-mask::$token"
           # The exchange checks this job against the session and names the engine its service runs.
-          read -r repository sha < <(curl -fsS -X POST -H "Authorization: Bearer $token" \
-            -H 'Content-Type: application/json' -d '{}' "${GATEWAY%/}/exchange/sessions/$SESSION/engine" \
-            | jq -r '"\(.repository) \(.engine)"')
+          claim=$(curl -fsS -X POST -H "Authorization: Bearer $token" \
+            "${GATEWAY%/}/runner/v2/sessions/$SESSION/claim")
+          echo "::add-mask::$(jq -r .runner_token <<< "$claim")"
+          mkdir -m 700 "$RUNNER_TEMP/concurro-session"
+          umask 077
+          printf '%s' "$claim" > "$RUNNER_TEMP/concurro-session/claim.json"
+          read -r repository sha < <(jq -r '"\(.engine.repository) \(.engine.sha)"' <<< "$claim")
           [[ "$repository" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ && "$sha" =~ ^[0-9a-f]{40}$ ]]
           git init -q "$RUNNER_TEMP/concurro"
           git -C "$RUNNER_TEMP/concurro" fetch -q --depth 1 "https://github.com/$repository.git" "$sha"

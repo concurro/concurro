@@ -1005,6 +1005,7 @@ async fn comment_to_attempt_and_stop_to_retirement_survive_durable_boundaries() 
         .define_job::<ExchangePollJob>()
         .add_extension(ExchangeContext {
             operator: exchange.clone(),
+            rust: None,
             outbox: outbox.clone(),
         })
         .init()

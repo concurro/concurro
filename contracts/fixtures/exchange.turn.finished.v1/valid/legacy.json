@@ -1,0 +1,30 @@
+{
+  "data": {
+    "attempt_id": "00000000-0000-0000-0000-000000000001",
+    "provider_failure": null,
+    "provider_requests": "some",
+    "result": {
+      "outcome": "ok",
+      "response": {
+        "text": "done"
+      },
+      "retained": null,
+      "transcript": null,
+      "workspace": null
+    },
+    "status": "finished",
+    "turn_id": "00000000-0000-0000-0000-000000000001",
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 4,
+      "requests": 1,
+      "unavailable": 0
+    }
+  },
+  "id": "00000000-0000-0000-0000-000000000102",
+  "kind": "fact",
+  "occurred_at": "2026-01-01T00:00:00Z",
+  "producer": "exchange",
+  "type": "exchange.turn.00000000-0000-0000-0000-000000000001.finished",
+  "version": 1
+}

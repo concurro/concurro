@@ -26,6 +26,16 @@ class FixtureTests(unittest.TestCase):
                 with self.subTest(path=path.name):
                     event = decode(path.read_bytes())
                     actual = event.model_dump(mode="json", by_alias=True)
+                    if registration["stem"] == "exchange.turn.finished.v1":
+                        observation = actual["data"].get("observation")
+                        if observation is None:
+                            actual["data"].pop("observation", None)
+                        else:
+                            actual["data"]["observation"] = {
+                                key: value for key, value in observation.items() if value is not None
+                            }
+                    if registration["stem"] == "turn.finished.v1" and actual["data"].get("usage") is None:
+                        actual["data"].pop("usage", None)
                     for field in ("entity", "revision", "causation"):
                         if actual.get(field) is None:
                             actual.pop(field, None)

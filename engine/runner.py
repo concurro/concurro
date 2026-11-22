@@ -8,7 +8,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 import protocol
@@ -17,21 +16,10 @@ import runner_layout
 import turns
 from mirror import Mirror, git_environment
 from policy import runner_bound
-from relay import SESSION_GONE, ExchangeError, Runner
+from relay import SESSION_GONE, ExchangeError, RunnerV2
 from vocab import TurnOutcome
 
-AUDIENCE = "concurro-gateway"
 HEARTBEAT = 30
-
-
-def oidc_token():
-    """Request fresh GitHub proof of this job for the exchange."""
-    request = urllib.request.Request(
-        os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=" + AUDIENCE,
-        headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)["value"]
 
 
 def engine_commit():
@@ -56,7 +44,7 @@ def heartbeat(client, stopped, interval=HEARTBEAT):
     last = time.monotonic()
     while not stopped.is_set():
         try:
-            client.next(0, 0)
+            client.heartbeat()
             last = time.monotonic()
         except ExchangeError as error:
             if error.status in SESSION_GONE or time.monotonic() - last >= 150:
@@ -68,11 +56,12 @@ def heartbeat(client, stopped, interval=HEARTBEAT):
 class Loop:
     """Run sequential turns in a stable workspace, with a separate heartbeat during long turns."""
 
-    def __init__(self, runner, key, mirror, root, idle=600, task=None):
+    def __init__(self, runner, key, mirror, root, idle=600, task=None, inference_url=None):
         """Keep display receipts beside turn workspaces using the claimed task binding."""
         self.runner, self.key, self.mirror, self.root = runner, key, mirror, Path(root)
         self.idle, self.stopped = idle, threading.Event()
         self.task = task or {}
+        self.inference_url = inference_url
 
     def serve(self):
         """Serve only this bound role until idle, revoked or expired."""
@@ -103,6 +92,7 @@ class Loop:
     def run(self, turn):
         """Execute and acknowledge one turn; the provider journal remains recoverable in its result."""
         identifier, payload = turn["id"], turn["payload"]
+        payload = {**payload, "request": {**payload["request"]}}
         # Stable across turns and replacement jobs: Claude's transcript lookup includes the cwd.
         directory = self.root / runner_layout.TURN
         directory.mkdir(parents=True, mode=0o700)
@@ -111,10 +101,43 @@ class Loop:
         started, result, acknowledged = time.monotonic(), None, False
         try:
             try:
-                result = turns.execute(payload, self.key, self.mirror, directory, self.stopped)
+                if getattr(self.runner, "v2", False):
+                    if isinstance(payload.get("timeout"), float) and payload["timeout"].is_integer():
+                        payload["timeout"] = int(payload["timeout"])
+                    if self.inference_url:
+                        payload["request"]["gateway"] = {
+                            **payload["request"].get("gateway", {}), "url": self.inference_url
+                        }
+                if getattr(self.runner, "v2", False) and payload.get("retained"):
+                    archive = directory / "input-retained.tar.gz"
+                    try:
+                        archive.write_bytes(self.transfer(self.runner.download, payload["retained"]["sha256"]))
+                    except (ExchangeError, OSError) as error:
+                        log(f"turn {identifier} retained input unavailable ({type(error).__name__}); delivery uncertain")
+                        self.stopped.set()
+                        return
+                    payload["retained"] = archive
+                result = turns.execute(
+                    payload, self.key, self.mirror, directory, self.stopped,
+                    file_artifacts=getattr(self.runner, "v2", False),
+                )
             except Exception as error:
                 log(f"turn {identifier} could not run ({type(error).__name__}); details suppressed")
                 result = {"outcome": TurnOutcome.FAILED, "response": None, "workspace": None, "retained": None}
+            if getattr(self.runner, "v2", False):
+                try:
+                    for name in ("retained", "transcript"):
+                        if result.get(name):
+                            result[name] = self.transfer(self.runner.upload, "archive", Path(result[name]).read_bytes())
+                    if result.get("workspace") is not None:
+                        result["workspace"] = self.transfer(
+                            self.runner.upload, "workspace", json.dumps(result["workspace"], sort_keys=True).encode()
+                        )
+                except (ExchangeError, OSError, ValueError, TypeError) as error:
+                    # Native execution may already have billed. Leave its result uncertain.
+                    log(f"turn {identifier} blob delivery uncertain ({type(error).__name__})")
+                    self.stopped.set()
+                    return
             for attempt in range(5):
                 if self.stopped.is_set():
                     return
@@ -134,7 +157,23 @@ class Loop:
             log(
                 f"turn {identifier}: {record['outcome']} · {record['elapsed']} · delivery {'acknowledged' if acknowledged else 'unconfirmed'}"
             )
-            turns.remove(directory)
+            if acknowledged or not getattr(self.runner, "v2", False):
+                turns.remove(directory)
+
+    def transfer(self, operation, *args):
+        """Retry an idempotent blob transfer without re-executing native work."""
+        for attempt in range(5):
+            if self.stopped.is_set():
+                raise ExchangeError(0, "runner stopped")
+            try:
+                return operation(*args)
+            except ExchangeError as error:
+                if error.status in SESSION_GONE:
+                    self.stopped.set()
+                    raise
+                if attempt == 4:
+                    raise
+                self.stopped.wait(5 * (attempt + 1))
 
 
 def save_grant(root, grant):
@@ -200,7 +239,7 @@ def renew_before_serve(client):
     """Retry a transient handover failure while the setup helper continues renewing."""
     for attempt in range(5):
         try:
-            client.next(0, 0)
+            client.heartbeat()
             return
         except ExchangeError as error:
             if error.status in SESSION_GONE or attempt == 4:
@@ -225,16 +264,19 @@ def main():
     """Workflow entry points; claim starts the setup heartbeat before tool installation."""
     parser = arguments()
     args = parser.parse_args()
-    root, client = Path(args.root).resolve(), Runner(args.gateway, args.session)
+    root, client = Path(args.root).resolve(), RunnerV2(args.gateway, args.session)
     if args.command == "summary":
         run_display.summary(root / "turns")
         return
     if args.command == "claim":
-        grant = client.key(oidc_token(), engine_commit())
+        claimed = json.loads((root / "claim.json").read_text())
+        client.token = claimed["runner_token"]
+        grant = client.key(engine_commit())
         if not grant.get("binding"):
             client.end()
             raise ValueError("session has no task/role binding")
         save_grant(root, grant)
+        (root / "claim.json").unlink()
         helper = subprocess.Popen(
             [
                 sys.executable,
@@ -272,7 +314,8 @@ def main():
         binding = grant["binding"]
         mirror = Mirror(root / "mirrors", binding["upstream"], sources=(binding["fork"],))
         try:
-            Loop(client, grant["key"], mirror, root / "turns", args.idle, binding).serve()
+            Loop(client, grant["key"], mirror, root / "turns", args.idle, binding,
+                 grant["inference_base_url"]).serve()
         finally:
             try:
                 end_session(root, client)

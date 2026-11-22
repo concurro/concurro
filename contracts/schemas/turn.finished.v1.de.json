@@ -119,6 +119,17 @@
           "$ref": "#/$defs/TaskId",
           "description": "Turn that ended."
         },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exchange token and call totals when supplied by the Rust exchange."
+        },
         "workspace": {
           "anyOf": [
             {
@@ -156,6 +167,42 @@
       "required": [
         "blob",
         "bytes"
+      ],
+      "type": "object"
+    },
+    "TurnUsage": {
+      "description": "Usage totals in one completed turn.",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens with known usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Output tokens with known usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "description": "Recorded request count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unavailable": {
+          "description": "Requests with unavailable usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "input_tokens",
+        "output_tokens",
+        "unavailable"
       ],
       "type": "object"
     }

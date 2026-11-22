@@ -181,6 +181,42 @@
         "response"
       ],
       "type": "object"
+    },
+    "TurnUsage": {
+      "description": "Usage totals in one completed turn.",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens with known usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Output tokens with known usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "description": "Recorded request count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unavailable": {
+          "description": "Requests with unavailable usage.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "input_tokens",
+        "output_tokens",
+        "unavailable"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -252,6 +288,15 @@
       ],
       "description": "Terminal runner result."
     },
+    "revision": {
+      "description": "Monotonic exchange lifecycle revision for readback fencing.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "run_id": {
       "description": "Bound GitHub Actions run.",
       "type": [
@@ -288,6 +333,17 @@
     "turn_id": {
       "$ref": "#/$defs/TaskId",
       "description": "Exchange turn identity."
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TurnUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Settled request totals, available with terminal request evidence."
     }
   },
   "required": [

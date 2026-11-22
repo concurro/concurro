@@ -148,6 +148,10 @@ class FakeRunner:
         batch = self.batches.pop(0)
         return batch[:capacity]
 
+    def heartbeat(self):
+        """Renew the scripted session without taking a turn."""
+        return None
+
     def complete(self, turn, result):
         self.completed.append((turn, result))
 

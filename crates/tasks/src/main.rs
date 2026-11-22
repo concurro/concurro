@@ -12,18 +12,20 @@ use anyhow::{Context, Result, ensure};
 use async_nats::jetstream::{self, stream};
 use concurro_config::{Validate, load, read_secret};
 use concurro_contracts::{
-    ConfigLauncher, ConfigTarget, ConfigTargets, Contract, CoverageGap, GithubEvent, GithubIssues,
-    IssueCommentPayload, PullRequestPayload, WorkflowRunPayload,
+    ConfigLauncher, ConfigTarget, ConfigTargets, Contract, CoverageGap, ExchangeTurnFinished,
+    ExchangeTurnStatus, GithubEvent, GithubIssues, InferenceUsage, IssueCommentPayload,
+    PullRequestPayload, WorkflowRunPayload,
 };
 use concurro_db::Database;
 use concurro_events::Handler;
 use concurro_events_nats::{
-    ConsumerStream, Forwarder, connect as connect_nats, ensure_pull_consumer, ensure_stream,
-    run_consumer,
+    ConsumerStream, Forwarder, Subscription, connect as connect_nats, ensure_pull_consumer,
+    ensure_stream, run_consumer, run_subscription,
 };
 use concurro_events_postgres::{
     ForwarderLease, Outbox, consumer_status, migrate as migrate_events,
 };
+use concurro_exchange_client::OperatorClient;
 use concurro_exchange_v1::Operator;
 use concurro_github_v1::{AppClient, user_grant::UserGrant};
 use concurro_tasks::api::{TaskApi, router as task_api_router};
@@ -33,35 +35,35 @@ use concurro_tasks::{
     GitPublicationTarget, IndexRunHandler, IndexTarget, InitializationContext,
     InitializationTarget, IntakeContext, IntakeTransport, LabelScanJob, PublicationContext,
     PublicationTarget, PublishRequestReplyJob, PublishTaskReportJob, RunnerContext,
-    RunnerSessionJob, RunnerTarget, SponsorshipTransitionJob, StageLabelJob,
-    StandaloneReviewContext, StandaloneReviewDecisionJob, StandaloneReviewHandler,
-    StandaloneReviewPublishJob, StandaloneReviewResultJob, StandaloneReviewRoundJob,
-    StandaloneReviewScanJob, StandaloneReviewTarget, TaskClarificationJob, TaskDecisionJob,
-    TaskDesignBatchJob, TaskDesignCorrectionJob, TaskDesignResultJob, TaskGatesJob,
-    TaskGitPublicationJob, TaskImplementJob, TaskImplementationResultJob, TaskInitializeJob,
-    TaskIntakeJob, TaskPlanJob, TaskPrReviewBatchJob, TaskPrReviewCorrectionJob,
-    TaskPrReviewPublishJob, TaskPrReviewResultJob, UploadArchiveJob,
-    observe_standalone_funding_policy, observe_target_funding_policy, publish_pr_review,
-    publish_request_reply, publish_standalone_dispositions, publish_standalone_review,
-    publish_task_report, reconcile_coverage_gap, run_standalone_review_decision,
-    run_standalone_review_pr_state, run_standalone_review_result, run_standalone_review_round,
-    run_task_decision, run_task_gates, scan_label_wake, scan_standalone_review_wake,
-    scan_target_index, sync_standalone_review_check, upload_archive,
+    RunnerSessionJob, RunnerTarget, RustExchangeContext, RustExchangeEvents,
+    SponsorshipTransitionJob, StageLabelJob, StandaloneReviewContext, StandaloneReviewDecisionJob,
+    StandaloneReviewHandler, StandaloneReviewPublishJob, StandaloneReviewResultJob,
+    StandaloneReviewRoundJob, StandaloneReviewScanJob, StandaloneReviewTarget,
+    TaskClarificationJob, TaskDecisionJob, TaskDesignBatchJob, TaskDesignCorrectionJob,
+    TaskDesignResultJob, TaskGatesJob, TaskGitPublicationJob, TaskImplementJob,
+    TaskImplementationResultJob, TaskInitializeJob, TaskIntakeJob, TaskPlanJob,
+    TaskPrReviewBatchJob, TaskPrReviewCorrectionJob, TaskPrReviewPublishJob, TaskPrReviewResultJob,
+    UploadArchiveJob, observe_standalone_funding_policy, observe_target_funding_policy,
+    publish_pr_review, publish_request_reply, publish_standalone_dispositions,
+    publish_standalone_review, publish_task_report, reconcile_coverage_gap,
+    run_standalone_review_decision, run_standalone_review_pr_state, run_standalone_review_result,
+    run_standalone_review_round, run_task_decision, run_task_gates, scan_label_wake,
+    scan_standalone_review_wake, scan_target_index, sync_standalone_review_check, upload_archive,
 };
 use concurro_tasks_core::IssueKey;
 use concurro_tasks_postgres::{
     CommentResolution, cancel_attempt, due_attempt_deadlines, due_comment_readbacks,
-    enqueue_dashboard, enqueue_runner_session, enqueue_stage_label, expire_attempt,
-    fail_coverage_gap, import_cutover_manifest, import_historical_display, import_python_manifest,
-    list_tasks, pending_coverage_gaps, pending_effects, pending_issues, pending_label_wakes,
-    pending_pr_review_readbacks, pending_python_import_archives, pending_report_artifact_readbacks,
-    pending_standalone_dispositions, pending_standalone_review_commands,
-    pending_standalone_review_issues, pending_standalone_review_readbacks,
-    pending_standalone_review_results, pending_standalone_review_rounds,
-    pending_standalone_review_wakes, recover_retirements, resolve_comment, resolve_pending_write,
-    resume_standalone_review_credentials, sync_config_targets, task_detail, watched_dashboards,
-    watched_gate_issues, watched_runner_sessions, watched_stage_labels,
-    watched_standalone_review_prs,
+    due_rust_observations, enqueue_dashboard, enqueue_runner_session, enqueue_stage_label,
+    expire_attempt, fail_coverage_gap, import_cutover_manifest, import_historical_display,
+    import_python_manifest, list_tasks, pending_coverage_gaps, pending_effects, pending_issues,
+    pending_label_wakes, pending_pr_review_readbacks, pending_python_import_archives,
+    pending_report_artifact_readbacks, pending_standalone_dispositions,
+    pending_standalone_review_commands, pending_standalone_review_issues,
+    pending_standalone_review_readbacks, pending_standalone_review_results,
+    pending_standalone_review_rounds, pending_standalone_review_wakes, recover_retirements,
+    resolve_comment, resolve_pending_write, resume_standalone_review_credentials,
+    sync_config_targets, task_detail, watched_dashboards, watched_gate_issues,
+    watched_runner_sessions, watched_stage_labels, watched_standalone_review_prs,
 };
 use concurro_vault_v1::MetadataClient;
 use graphile_worker::WorkerOptions;
@@ -90,6 +92,9 @@ struct TargetSettings {
     reviewer_grant_file: Option<String>,
     /// Upstream repository ID when it differs from the issue repository ID.
     upstream_repository_id: Option<i64>,
+    /// Rust mode org routes keyed by runner provider (`codex`, `claude`).
+    #[serde(default)]
+    org_routes: HashMap<String, String>,
 }
 
 /// Private object-store credentials read from a host file.
@@ -126,6 +131,11 @@ struct Settings {
     exchange_url: String,
     /// Python exchange operator bearer file.
     exchange_token_file: String,
+    /// `python` until the Rust exchange is selected for this deployment.
+    #[serde(default = "python_exchange_kind")]
+    exchange_kind: String,
+    /// Engine repository used in Rust runner bindings.
+    rust_engine_repository: Option<String>,
     /// Optional metadata-only Vault endpoint for personal funding.
     vault_metadata_url: Option<String>,
     /// Host file containing only the Vault metadata bearer.
@@ -166,10 +176,19 @@ struct Settings {
     delivery_recovery_bearer_file: Option<String>,
 }
 
+/// Keep existing installations on the Python operator until cutover.
+fn python_exchange_kind() -> String {
+    "python".to_owned()
+}
+
 impl Validate for Settings {
     /// Refuse settings that cannot identify or persist a task source.
     fn validate(&self) -> Result<()> {
         ensure!(!self.targets.is_empty(), "task targets are empty");
+        ensure!(
+            matches!(self.exchange_kind.as_str(), "python" | "rust"),
+            "invalid exchange kind"
+        );
         ensure!(
             self.targets
                 .iter()
@@ -482,6 +501,23 @@ async fn run_retirement_recovery(database: Database) {
             tracing::warn!(%error, "retirement recovery failed");
         }
         tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// Read stale Rust turns from the operator when exchange delivery is unavailable.
+async fn run_rust_exchange_recovery(database: Database, events: RustExchangeEvents) {
+    loop {
+        match due_rust_observations(&database).await {
+            Ok(turns) => {
+                for turn in turns {
+                    if let Err(error) = events.reconcile_turn(&database, turn).await {
+                        tracing::warn!(%error, %turn, "Rust exchange readback pending");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "Rust exchange readback scan failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(300)).await;
     }
 }
 
@@ -1032,12 +1068,74 @@ async fn main() -> Result<()> {
         (None, None) => None,
         _ => anyhow::bail!("Vault metadata URL and token file must be configured together"),
     };
+    let archive = archive_context(&settings)?;
+    let rust_exchange = if settings.exchange_kind == "rust" {
+        let engine_repository = settings
+            .rust_engine_repository
+            .clone()
+            .context("Rust exchange engine repository missing")?;
+        Some(RustExchangeContext {
+            operator: OperatorClient::new(
+                client.clone(),
+                &settings.exchange_url,
+                read_secret(&settings.exchange_token_file)?,
+            ),
+            engine_repository,
+            routes: settings
+                .targets
+                .iter()
+                .map(|target| (target.repository_id, target.org_routes.clone()))
+                .collect(),
+            archive: archive.clone(),
+        })
+    } else {
+        None
+    };
     let operator = Operator::new(
         client,
         &settings.exchange_url,
         read_secret(&settings.exchange_token_file)?,
     );
-    let archive = archive_context(&settings)?;
+    if let Some(rust) = &rust_exchange {
+        let events = RustExchangeEvents {
+            operator: rust.operator.clone(),
+            outbox: outbox.clone(),
+            archive: archive.clone(),
+        };
+        tokio::spawn(run_rust_exchange_recovery(database.clone(), events.clone()));
+        for (name, subject, kind) in [
+            ("status", "exchange.turn.*.status", 0_u8),
+            ("finished", "exchange.turn.*.finished", 1),
+            ("usage", "inference.usage", 2),
+        ] {
+            let subscription = Subscription {
+                nats_url: settings.nats_url.clone(),
+                credentials_file: settings.nats_credentials_file.clone(),
+                stream: "EXCHANGE".to_owned(),
+                consumer: format!("{}-exchange-{name}", settings.consumer_name),
+                subject: subject.to_owned(),
+                max_attempts: settings.consumer_max_attempts,
+                held_poll_interval: Duration::from_millis(settings.consumer_poll_ms),
+            };
+            let database = database.clone();
+            let events = events.clone();
+            tokio::spawn(async move {
+                match kind {
+                    0 => {
+                        run_subscription::<ExchangeTurnStatus, _>(subscription, database, events)
+                            .await
+                    }
+                    1 => {
+                        run_subscription::<ExchangeTurnFinished, _>(subscription, database, events)
+                            .await
+                    }
+                    _ => {
+                        run_subscription::<InferenceUsage, _>(subscription, database, events).await
+                    }
+                }
+            });
+        }
+    }
     let targets = settings
         .targets
         .iter()
@@ -1305,6 +1403,7 @@ async fn main() -> Result<()> {
         .add_extension(intake.clone())
         .add_extension(ExchangeContext {
             operator,
+            rust: rust_exchange,
             outbox: outbox.clone(),
         })
         .add_extension(archive)

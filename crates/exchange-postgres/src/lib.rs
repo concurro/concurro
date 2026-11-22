@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 use concurro_contracts::{
-    Dispatch, Envelope, EventId, ExchangeTurnStatus, RetiredSessions, Timestamp, TurnObservation,
-    TurnResultV2, TurnSubmissionV2,
+    Dispatch, Envelope, EventId, ExchangeTurnStatus, ProviderFailure, ProviderRequests,
+    RetiredSessions, Timestamp, TurnObservation, TurnResultV2, TurnSubmissionV2, TurnUsage,
 };
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::{Outbox, OutboxError};
@@ -13,6 +13,11 @@ use sqlx::{FromRow, migrate::Migrator, types::Json};
 use uuid::Uuid;
 
 static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
+
+mod admission;
+mod runner;
+use admission::arm_settlement;
+pub use runner::{ClaimContext, KeyContext, RunnerTurn};
 
 /// Install exchange tables in the exchange schema.
 pub async fn migrate(database: &Database) -> anyhow::Result<()> {
@@ -53,6 +58,8 @@ pub struct Store {
 struct TurnRow {
     /// Turn identity.
     turn_id: Uuid,
+    /// Monotonic lifecycle revision.
+    revision: i64,
     /// Current lifecycle status.
     status: String,
     /// Assigned or last serving session.
@@ -65,6 +72,10 @@ struct TurnRow {
     finished: Option<DateTime<Utc>>,
     /// Terminal result, when available.
     result: Option<Json<TurnResultV2>>,
+    /// First trusted provider failure.
+    provider_failure: Option<Json<ProviderFailure>>,
+    /// Request evidence after settlement.
+    provider_requests: Option<String>,
 }
 
 impl Store {
@@ -199,12 +210,13 @@ impl Store {
         .fetch_all(work.connection())
         .await?;
         for session in &sessions {
-            sqlx::query("UPDATE exchange.sessions SET ended=COALESCE(ended,now()),end_reason=COALESCE(end_reason,'turn_cancelled') WHERE session_id=$1")
-                .bind(session).execute(work.connection()).await?;
+            sqlx::query("UPDATE exchange.sessions SET ended=COALESCE(ended,now()),end_reason=COALESCE(end_reason,'turn_cancelled') WHERE session_id=$1 AND NOT EXISTS (SELECT 1 FROM exchange.turns WHERE session_id=$1 AND turn_id<>$2 AND status IN ('queued','running'))")
+                .bind(session).bind(turn).execute(work.connection()).await?;
         }
         if let Some(revision) = changed {
             let observation = observe(&mut work, turn).await?.expect("updated turn");
             append_status(&mut work, &self.outbox, &observation, revision, None).await?;
+            arm_settlement(&mut work, self, turn).await?;
         }
         for group in groups {
             staff_next(&mut work, &self.outbox, &group, None).await?;
@@ -250,6 +262,7 @@ impl Store {
                 .bind(turn).fetch_one(work.connection()).await?;
             let observation = observe(&mut work, turn).await?.expect("updated turn");
             append_status(&mut work, &self.outbox, &observation, revision, None).await?;
+            arm_settlement(&mut work, self, turn).await?;
         }
         for group in groups {
             staff_next(&mut work, &self.outbox, &group, None).await?;
@@ -267,13 +280,14 @@ impl Store {
     pub async fn prune(&self, cutoff: DateTime<Utc>) -> Result<u64, StoreError> {
         let mut work = self.database.begin().await?;
         lock(&mut work).await?;
-        sqlx::query("INSERT INTO exchange.turn_tombstones(turn_id,digest,result) SELECT turn_id,digest,result FROM exchange.turns WHERE finished<$1 ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO exchange.turn_tombstones(turn_id,digest,result) SELECT turn_id,digest,result FROM exchange.turns WHERE finished<$1 AND finished_event_emitted ON CONFLICT DO NOTHING")
             .bind(cutoff).execute(work.connection()).await?;
-        let deleted = sqlx::query("DELETE FROM exchange.turns WHERE finished<$1")
-            .bind(cutoff)
-            .execute(work.connection())
-            .await?
-            .rows_affected();
+        let deleted =
+            sqlx::query("DELETE FROM exchange.turns WHERE finished<$1 AND finished_event_emitted")
+                .bind(cutoff)
+                .execute(work.connection())
+                .await?
+                .rows_affected();
         work.commit().await?;
         Ok(deleted)
     }
@@ -468,7 +482,7 @@ async fn observe(
     work: &mut UnitOfWork<'_>,
     turn: Uuid,
 ) -> Result<Option<TurnObservation>, StoreError> {
-    let row = sqlx::query_as::<_, TurnRow>("SELECT turn_id,status,session_id,created,started,finished,result FROM exchange.turns WHERE turn_id=$1")
+    let row = sqlx::query_as::<_, TurnRow>("SELECT turn_id,revision,status,session_id,created,started,finished,result,provider_failure,provider_requests FROM exchange.turns WHERE turn_id=$1")
         .bind(turn).fetch_optional(work.connection()).await?;
     let Some(row) = row else {
         return Ok(None);
@@ -483,13 +497,36 @@ async fn observe(
     } else {
         None
     };
-    let (run_id, refusal, ended) = session.unwrap_or((None, None, None));
+    let (run_id, mut refusal, ended) = session.unwrap_or((None, None, None));
+    if refusal.is_none() {
+        refusal = sqlx::query_scalar(
+            "SELECT s.refusal FROM exchange.turn_sessions ts JOIN exchange.sessions s USING (session_id) \
+             WHERE ts.turn_id=$1 AND s.refusal IS NOT NULL ORDER BY s.created DESC LIMIT 1",
+        )
+        .bind(turn)
+        .fetch_optional(work.connection())
+        .await?;
+    }
     let dispatch = row
         .session_id
         .filter(|_| row.status == "queued" && run_id.is_none() && ended.is_none())
         .map(|session_id| Dispatch { session_id });
+    let usage = if row.provider_requests.is_some() {
+        let (requests, input_tokens, output_tokens, unavailable): (i64, i64, i64, i64) =
+            sqlx::query_as("SELECT count(*),coalesce(sum((usage->>'input_tokens')::bigint),0)::bigint,coalesce(sum((usage->>'output_tokens')::bigint),0)::bigint,count(*) FILTER (WHERE usage IS NULL) FROM exchange.inference_requests WHERE turn_id=$1")
+                .bind(turn).fetch_one(work.connection()).await?;
+        Some(TurnUsage {
+            requests: requests as u64,
+            input_tokens: input_tokens as u64,
+            output_tokens: output_tokens as u64,
+            unavailable: unavailable as u64,
+        })
+    } else {
+        None
+    };
     Ok(Some(TurnObservation {
         turn_id: row.turn_id,
+        revision: Some(row.revision as u64),
         status: row.status,
         session_id: row.session_id,
         run_id,
@@ -499,8 +536,14 @@ async fn observe(
         started: row.started.map(Timestamp),
         finished: row.finished.map(Timestamp),
         result: row.result.map(|value| value.0),
-        provider_failure: None,
-        provider_requests: None,
+        provider_failure: row.provider_failure.map(|value| value.0),
+        provider_requests: row.provider_requests.as_deref().map(|value| match value {
+            "some" => ProviderRequests::Some,
+            "none" => ProviderRequests::None,
+            "unknown" => ProviderRequests::Unknown,
+            _ => unreachable!("constrained request evidence"),
+        }),
+        usage,
     }))
 }
 

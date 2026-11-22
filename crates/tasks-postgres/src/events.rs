@@ -3,8 +3,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use concurro_contracts::{
-    Envelope, EventId, TaskId, TaskNotice, TaskReport, Timestamp, TurnFinished, TurnRunner,
-    TurnStatus, TurnSubmitted, TurnTranscript,
+    Envelope, EventId, ProviderRequests, TaskId, TaskNotice, TaskReport, Timestamp, TurnFinished,
+    TurnRunner, TurnStatus, TurnSubmitted, TurnTranscript, TurnUsage,
 };
 use concurro_db::UnitOfWork;
 use concurro_events_postgres::Outbox;
@@ -257,7 +257,20 @@ pub(crate) async fn append_turn_disposition(
     reason: &str,
 ) -> Result<()> {
     append_turn_status(uow, outbox, turn).await?;
-    append_turn_finished(uow, outbox, turn, None, Some(reason), 0.0, None, None, None).await
+    append_turn_finished(
+        uow,
+        outbox,
+        turn,
+        None,
+        Some(reason),
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Publish at most one terminal outcome after the archive rows exist.
@@ -271,6 +284,8 @@ pub(crate) async fn append_turn_finished(
     started: Option<f64>,
     finished: Option<f64>,
     provider_failure: Option<&Value>,
+    provider_requests: Option<&concurro_contracts::ProviderRequests>,
+    usage: Option<&concurro_contracts::TurnUsage>,
 ) -> Result<()> {
     let newly_emitted: Option<Uuid> = sqlx::query_scalar(
         "UPDATE tasks.attempts SET finished_event_emitted=true \
@@ -365,7 +380,13 @@ pub(crate) async fn append_turn_finished(
         turn_id: turn,
         outcome: outcome.to_owned(),
         reason: reason.map(str::to_owned),
-        provider_requests: "unknown".to_owned(),
+        provider_requests: match provider_requests {
+            Some(concurro_contracts::ProviderRequests::Some) => "some",
+            Some(concurro_contracts::ProviderRequests::None) => "none",
+            _ => "unknown",
+        }
+        .to_owned(),
+        usage: usage.cloned(),
         response,
         workspace,
         transcript,
@@ -398,8 +419,9 @@ pub(crate) async fn append_deferred_turn_finished(
     turn: Uuid,
     reason: Option<&str>,
 ) -> Result<()> {
-    let (Json(observation), raw_result): (Json<Value>, Option<Vec<u8>>) =
-        sqlx::query_as("SELECT observation,result_raw FROM tasks.attempts WHERE id=$1")
+    let (Json(observation), raw_result, requests, usage):
+        (Json<Value>, Option<Vec<u8>>, Option<String>, Option<Json<TurnUsage>>) =
+        sqlx::query_as("SELECT observation,result_raw,rust_provider_requests,rust_usage FROM tasks.attempts WHERE id=$1")
             .bind(turn)
             .fetch_one(uow.connection())
             .await?;
@@ -416,6 +438,15 @@ pub(crate) async fn append_deferred_turn_finished(
         observation["started"].as_f64(),
         observation["finished"].as_f64(),
         None,
+        requests
+            .as_deref()
+            .map(|value| match value {
+                "some" => ProviderRequests::Some,
+                "none" => ProviderRequests::None,
+                _ => ProviderRequests::Unknown,
+            })
+            .as_ref(),
+        usage.as_ref().map(|value| &value.0),
     )
     .await
 }

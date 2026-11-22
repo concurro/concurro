@@ -21,6 +21,19 @@
       ],
       "type": "object"
     },
+    "Dispatch": {
+      "description": "New runner session that the operator must dispatch.",
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Session to launch."
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "EventId": {
       "format": "uuid",
       "type": "string"
@@ -46,6 +59,17 @@
         "attempt_id": {
           "$ref": "#/$defs/TaskId",
           "description": "Task attempt identity."
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnObservation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Terminal operator snapshot retained with this fact beyond live-row pruning."
         },
         "provider_failure": {
           "anyOf": [
@@ -176,6 +200,140 @@
       "format": "date-time",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$(?![\\s\\S])",
       "type": "string"
+    },
+    "TurnObservation": {
+      "description": "One durable turn observation returned by the operator API.",
+      "properties": {
+        "created": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Admission time."
+        },
+        "dispatch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dispatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Session requiring an external dispatch."
+        },
+        "finished": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Terminal time."
+        },
+        "provider_failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trusted provider failure."
+        },
+        "provider_requests": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderRequests"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recorded request evidence."
+        },
+        "refusal": {
+          "description": "Latest runner refusal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnResultV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Terminal runner result."
+        },
+        "revision": {
+          "description": "Monotonic exchange lifecycle revision for readback fencing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "Bound GitHub Actions run.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Current or last session."
+        },
+        "started": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runner start time."
+        },
+        "status": {
+          "description": "Queued, running, finished, lost or cancelled.",
+          "type": "string"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Exchange turn identity."
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Settled request totals, available with terminal request evidence."
+        }
+      },
+      "required": [
+        "turn_id",
+        "status",
+        "created"
+      ],
+      "type": "object"
     },
     "TurnResultV2": {
       "additionalProperties": false,

@@ -1,5 +1,6 @@
 //! Exchange effect claims, retries, observations, and retirement.
 
+use concurro_contracts::{ProviderRequests, TurnUsage};
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
 use concurro_exchange_v1::{TurnObservation, TurnSubmission};
@@ -501,6 +502,46 @@ pub async fn record_observation(
     observation: &TurnObservation,
     expected_generation: Option<i64>,
 ) -> anyhow::Result<bool> {
+    record_observation_inner(uow, outbox, observation, expected_generation, true, None).await
+}
+
+/// Apply a Rust exchange observation without scheduling the Python long poll.
+pub async fn record_rust_observation(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    observation: &TurnObservation,
+) -> anyhow::Result<bool> {
+    record_observation_inner(uow, outbox, observation, None, false, None).await
+}
+
+/// Apply a settled Rust fact with its provider-request and usage evidence.
+pub async fn record_rust_finished(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    observation: &TurnObservation,
+    provider_requests: ProviderRequests,
+    usage: &TurnUsage,
+) -> anyhow::Result<bool> {
+    record_observation_inner(
+        uow,
+        outbox,
+        observation,
+        None,
+        false,
+        Some((provider_requests, usage)),
+    )
+    .await
+}
+
+/// Keep the shared task settlement and archive path for both exchange modes.
+async fn record_observation_inner(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    observation: &TurnObservation,
+    expected_generation: Option<i64>,
+    python_poll: bool,
+    exchange_usage: Option<(ProviderRequests, &TurnUsage)>,
+) -> anyhow::Result<bool> {
     let Some(owner) = lock_execution_owner(uow, observation.turn).await? else {
         return Ok(false);
     };
@@ -617,7 +658,10 @@ pub async fn record_observation(
         "UPDATE tasks.attempts SET status=$2, observation=$3, observation_raw=$8, \
          result=COALESCE(result,$4), result_raw=COALESCE(result_raw,$9), \
          poll_generation=$5, poll_failures=0, outcome_reason=COALESCE(outcome_reason,$7), \
-         deadline=CASE WHEN $6='running' AND unbounded_running THEN NULL ELSE deadline END \
+         deadline=CASE WHEN $6='running' AND unbounded_running THEN NULL ELSE deadline END, \
+         rust_observed_at=CASE WHEN $10 THEN now() ELSE rust_observed_at END, \
+         rust_provider_requests=COALESCE($11,rust_provider_requests), \
+         rust_usage=COALESCE($12,rust_usage) \
          WHERE id=$1",
     )
     .bind(observation.turn)
@@ -633,6 +677,13 @@ pub async fn record_observation(
     .bind(&failure_reason)
     .bind(raw_observation)
     .bind(raw_result)
+    .bind(!python_poll)
+    .bind(exchange_usage.as_ref().map(|(requests, _)| match requests {
+        ProviderRequests::Some => "some",
+        ProviderRequests::None => "none",
+        ProviderRequests::Unknown => "unknown",
+    }))
+    .bind(exchange_usage.as_ref().map(|(_, usage)| Json(*usage)))
     .execute(uow.connection())
     .await?;
     if next == "finished"
@@ -708,7 +759,7 @@ pub async fn record_observation(
                 .result
                 .as_ref()
                 .is_some_and(|result| result["outcome"] == "ok");
-        if !deferred_validation {
+        if !deferred_validation && (python_poll || exchange_usage.is_some()) {
             let obsolete_before_validation =
                 matches!(operation.as_str(), "plan_qc" | "develop" | "review")
                     && !awaiting_validation
@@ -736,11 +787,13 @@ pub async fn record_observation(
                 observation.started,
                 observation.finished,
                 observation.provider_failure.as_ref(),
+                exchange_usage.as_ref().map(|(requests, _)| requests),
+                exchange_usage.as_ref().map(|(_, usage)| *usage),
             )
             .await?;
         }
     }
-    if schedule_next {
+    if schedule_next && python_poll {
         enqueue_poll(uow, observation.turn, next_generation, 15).await?;
     }
     if terminal {

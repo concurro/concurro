@@ -125,6 +125,13 @@ class TurnUsage(StrictModel):
     """
 
 
+class Dispatch(StrictModel):
+    session_id: TaskId
+    """
+    Session to launch.
+    """
+
+
 class ProviderFailure(StrictModel):
     category: StrictStr
     """
@@ -156,10 +163,73 @@ class ProviderFailure(StrictModel):
     """
 
 
+class TurnObservation(StrictModel):
+    created: Timestamp
+    """
+    Admission time.
+    """
+    dispatch: Dispatch | None = None
+    """
+    Session requiring an external dispatch.
+    """
+    finished: Timestamp | None = None
+    """
+    Terminal time.
+    """
+    provider_failure: ProviderFailure | None = None
+    """
+    Trusted provider failure.
+    """
+    provider_requests: ProviderRequests | None = None
+    """
+    Recorded request evidence.
+    """
+    refusal: StrictStr | None = None
+    """
+    Latest runner refusal.
+    """
+    result: TurnResultV2 | None = None
+    """
+    Terminal runner result.
+    """
+    revision: conint(ge=0, strict=True) | None = None
+    """
+    Monotonic exchange lifecycle revision for readback fencing.
+    """
+    run_id: StrictStr | None = None
+    """
+    Bound GitHub Actions run.
+    """
+    session_id: TaskId | None = None
+    """
+    Current or last session.
+    """
+    started: Timestamp | None = None
+    """
+    Runner start time.
+    """
+    status: StrictStr
+    """
+    Queued, running, finished, lost or cancelled.
+    """
+    turn_id: TaskId
+    """
+    Exchange turn identity.
+    """
+    usage: TurnUsage | None = None
+    """
+    Settled request totals, available with terminal request evidence.
+    """
+
+
 class ExchangeTurnFinished(StrictModel):
     attempt_id: TaskId
     """
     Task attempt identity.
+    """
+    observation: TurnObservation | None = None
+    """
+    Terminal operator snapshot retained with this fact beyond live-row pruning.
     """
     provider_failure: ProviderFailure | None = None
     """

@@ -1,4 +1,4 @@
-# Task application (Phase 3)
+# Task application
 
 The Rust task service consumes issue comments, opt-in label changes and closures,
 initializes tasks,
@@ -6,13 +6,13 @@ admits intake, planning, design review, implementation and PR review turns,
 publishes a task branch, draft PR and App-authored reviews with file and line threads,
 observes readiness
 gates and external PR closure or merge, exchanges results
-with the Python exchange, writes request replies, one managed issue dashboard,
+with the selected exchange, writes request replies, one managed issue dashboard,
 intake notices, stage labels and runner refs, and stores turn diagnostics.
 Complete reports are also queued as issue generic artifacts. State, notice,
 report, request and turn events are
 written to the outbox with their state changes and forwarded to the `TASKS`
-stream. The Phase 3
-implementation is still in progress; this executable is not ready for deployment.
+stream. The Rust exchange mode is prepared for inactive Phase 5 deployment;
+the Python mode remains active until the coordinated S7 cutover.
 
 Opt-in label deliveries scan the issue events timeline and record one request
 per `concurro` label event ID. A current label and current writer are required
@@ -54,11 +54,22 @@ Set `CONCURRO_TASKS_CONFIG` to a TOML settings file. The runtime reads these fie
 | Ingress recovery | `delivery_recovery_bearer_file` for authenticated delivery listing and redelivery |
 | GitHub App | `github_api_base`, `github_app_id`, `github_private_key_file` |
 | Reviewer OAuth | Optional `reviewer_oauth_base`, `reviewer_oauth_client_id`, `reviewer_oauth_client_secret_file` for standalone user-grant refresh |
-| Exchange | `exchange_url`, `exchange_token_file` |
+| Exchange | `exchange_url`, `exchange_token_file`, `exchange_kind = "python"` or `"rust"`; Rust mode also needs `rust_engine_repository` |
 | Vault metadata | Optional paired `vault_metadata_url`, `vault_metadata_token_file` |
 | Private archives | `archive_endpoint`, `archive_bucket`, `archive_prefix`, `archive_region`, `archive_credentials_file` |
 | `[intake]` | `workflow_ref`, `models`, `budget`, `lease`, and `[intake.gateway]` with the runner's gateway settings |
-| `[[targets]]` | `repository_id`, `issue_repository`, `fork`, `upstream`, `issue_permissions`, `issue_write_permissions`, `fork_permissions`, `fork_write_permissions`, `upstream_permissions`, `upstream_write_permissions`, `bot_login`, `publisher_logins`, `engine_sha`; optional `reviewer_user_id`, `upstream_repository_id`, `reviewer_grant_file` for standalone reviews |
+| `[[targets]]` | `repository_id`, `issue_repository`, `fork`, `upstream`, `issue_permissions`, `issue_write_permissions`, `fork_permissions`, `fork_write_permissions`, `upstream_permissions`, `upstream_write_permissions`, `bot_login`, `publisher_logins`, `engine_sha`; optional `org_routes = { claude = "claude_org", codex = "openai_org" }` maps provider names to frozen Rust gateway route names, and `reviewer_user_id`, `upstream_repository_id`, `reviewer_grant_file` configure standalone reviews |
+
+Rust mode sends frozen org submissions to the Rust operator, consumes
+`exchange.turn.*` and `inference.usage`, and reads stale attempts from the
+operator at startup and every five minutes. It does not run the Python slot
+adapter or fifteen-second exchange poll. Its `org_routes` map supplies the
+provider route frozen on each org grant, including standalone reviewer turns.
+Before sending or replaying a turn with retained input, it verifies that the
+exact archive object is available to the exchange runner.
+The task and exchange archive bucket and `archive_prefix` settings must match.
+Contributed credential selection, version revocation and relay grants remain
+for the later Phase 5 integration slice.
 
 `fork_permissions` needs Contents and Actions read. `fork_write_permissions`
 needs Contents, Actions and Workflows write for the pinned run ref and launcher.

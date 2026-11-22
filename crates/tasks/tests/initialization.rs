@@ -489,6 +489,7 @@ async fn verify_initialization(
         .define_job::<ExchangeEffectJob>()
         .add_extension(ExchangeContext {
             operator: exchange,
+            rust: None,
             outbox: outbox.clone(),
         })
         .add_extension(InitializationContext {

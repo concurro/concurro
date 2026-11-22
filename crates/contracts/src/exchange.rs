@@ -287,6 +287,9 @@ pub struct TurnObservation {
     /// Exchange turn identity.
     #[schemars(with = "TaskId")]
     pub turn_id: Uuid,
+    /// Monotonic exchange lifecycle revision for readback fencing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     /// Queued, running, finished, lost or cancelled.
     pub status: String,
     /// Current or last session.
@@ -319,6 +322,9 @@ pub struct TurnObservation {
     /// Recorded request evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_requests: Option<ProviderRequests>,
+    /// Settled request totals, available with terminal request evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TurnUsage>,
 }
 
 /// All sessions allocated or used by a turn or grant.
@@ -435,6 +441,9 @@ pub struct ExchangeTurnFinished {
     /// Exchange turn identity.
     #[schemars(with = "TaskId")]
     pub turn_id: Uuid,
+    /// Terminal operator snapshot retained with this fact beyond live-row pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<TurnObservation>,
     /// Task attempt identity.
     #[schemars(with = "TaskId")]
     pub attempt_id: Uuid,

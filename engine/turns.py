@@ -225,6 +225,16 @@ def unpack(archive, directory):
         bundle.extractall(directory, filter="data")
 
 
+def unpack_file(archive, directory):
+    """Restore a downloaded retained archive without base64 transport."""
+    if archive is None:
+        return
+    if Path(archive).stat().st_size > MAX_RETAINED:
+        raise TurnError("retained session archive is too large")
+    with tarfile.open(archive, mode="r:gz") as bundle:
+        bundle.extractall(directory, filter="data")
+
+
 def retained_entries(directory):
     """A retained directory's archived entries, sorted: everything but the CLIs' regenerable caches."""
     root = Path(directory)
@@ -249,6 +259,16 @@ def pack(directory):
     return base64.b64encode(data).decode()
 
 
+def pack_file(directory, path):
+    """Write one bounded gzip artifact for v2 blob upload."""
+    with tarfile.open(path, mode="w:gz") as bundle:
+        for entry in retained_entries(directory):
+            bundle.add(entry, arcname=str(entry.relative_to(directory)), recursive=False)
+    if Path(path).stat().st_size > MAX_RETAINED:
+        raise TurnError("retained session archive is too large; largest (uncompressed): " + largest(directory))
+    return Path(path)
+
+
 def transcript(directory):
     """A fresh turn's CLI homes and scratch files for diagnostics, or None when too large to send."""
     try:
@@ -256,6 +276,15 @@ def transcript(directory):
     except TurnError:
         return None
     return archive if len(archive) <= MAX_TRANSCRIPT else None
+
+
+def transcript_file(directory, path):
+    """Keep a bounded diagnostic gzip, dropping oversized optional transcripts."""
+    try:
+        archive = pack_file(directory, path)
+    except TurnError:
+        return None
+    return archive if archive.stat().st_size <= MAX_TRANSCRIPT else None
 
 
 def largest(directory, count=5):
@@ -353,7 +382,7 @@ def _termination(code, stopped):
     return "process_signal"
 
 
-def execute(turn, key, mirror, root, stopped=None):
+def execute(turn, key, mirror, root, stopped=None, file_artifacts=False):
     """Run one native agent process group and return JSON, extracted files and its retained journal."""
     started = time.monotonic()
     request, spec, timeout = turn["request"], turn["spec"], turn["timeout"]
@@ -392,7 +421,10 @@ def execute(turn, key, mirror, root, stopped=None):
         )
         shutil.copytree(root / runner_layout.WORKSPACE / ".git", root / "pristine.git", symlinks=True)
         if session:
-            unpack(turn.get("retained"), root / "retained")
+            if file_artifacts:
+                unpack_file(turn.get("retained"), root / "retained")
+            else:
+                unpack(turn.get("retained"), root / "retained")
         payload = {
             **request,
             "workspace": str(root / runner_layout.WORKSPACE),
@@ -412,10 +444,15 @@ def execute(turn, key, mirror, root, stopped=None):
             "outcome": result,
             "response": response,
             "workspace": None,
-            "retained": pack(root / "retained") if session else None,
+            "retained": (
+                pack_file(root / "retained", root / "retained.tar.gz") if file_artifacts else pack(root / "retained")
+            ) if session else None,
         }
         if not session:
-            reply["transcript"] = transcript(root / "scratch")
+            reply["transcript"] = (
+                transcript_file(root / "scratch", root / "transcript.tar.gz") if file_artifacts
+                else transcript(root / "scratch")
+            )
         if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
             reply["termination_reason"] = _termination(code, stopped)
             reply["elapsed_seconds"] = round(time.monotonic() - started, 3)

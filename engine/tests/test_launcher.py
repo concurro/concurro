@@ -41,6 +41,62 @@ class Issuer(BaseHTTPRequestHandler):
         pass
 
 
+class V2(BaseHTTPRequestHandler):
+    """Expose the old exchange oracle through only the runner v2 handshake routes."""
+
+    def send_json(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        session, action = self.path.split("/sessions/", 1)[1].split("/", 1)
+        token = self.headers["Authorization"].removeprefix("Bearer ")
+        try:
+            if action == "claim":
+                engine = self.server.exchange.bound_engine(session, self.server.exchange.row(session))
+                grant = self.server.exchange.key(session, token, engine=engine)
+                self.server.grants[session] = grant
+                self.send_json(200, {
+                    "engine": {"repository": "concurro/concurro", "sha": engine},
+                    "runner_token": grant["token"], "deadline": grant["deadline"],
+                })
+            elif action == "key":
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                grant = self.server.grants[session]
+                if body["engine_sha"] != self.server.exchange.bound_engine(session, self.server.exchange.row(session)):
+                    self.server.exchange.refuse(session, 403, "runner engine differs from the session's")
+                if token != grant["token"]:
+                    self.send_json(401, {"error": "invalid runner token"})
+                    return
+                self.send_json(200, {
+                    "session_key": grant["key"], "inference_base_url": "http://fake-inference.invalid/v1",
+                    "models": grant["models"], "deadline": grant["deadline"],
+                    "binding": {**grant["binding"], "engine": {
+                        "repository": "concurro/concurro", "sha": grant["binding"]["engine"]}},
+                })
+            else:
+                self.send_json(404, {"error": "unknown route"})
+        except exchange_module.Refused as error:
+            self.send_json(error.status, {"error": str(error)})
+
+    def do_DELETE(self):
+        session = self.path.split("/sessions/", 1)[1]
+        token = self.headers["Authorization"].removeprefix("Bearer ")
+        try:
+            self.server.exchange.end(session, runner=token)
+            self.send_response(204)
+            self.end_headers()
+        except exchange_module.Refused as error:
+            self.send_json(error.status, {"error": str(error)})
+
+    def log_message(self, fmt, *args):
+        pass
+
+
 class LauncherTests(unittest.TestCase):
     """Run the workflow's own step scripts with GitHub, the token endpoint and the exchange local."""
 
@@ -55,7 +111,9 @@ class LauncherTests(unittest.TestCase):
             exchange_module.Keys(fetch=lambda: {"keys": [self.signer.jwk]}),
             exchange_fixtures.AUDIENCE,
         )
-        self.gateway = self.serve(exchange_module.server(self.exchange, "127.0.0.1:0", "operator-secret"))
+        v2 = ThreadingHTTPServer(("127.0.0.1", 0), V2)
+        v2.exchange, v2.grants = self.exchange, {}
+        self.gateway = self.serve(v2)
         issuer = ThreadingHTTPServer(("127.0.0.1", 0), Issuer)
         issuer.requests, issuer.mint = [], lambda: self.signer.token(**self.claims)
         self.issuer = issuer
@@ -139,8 +197,9 @@ class LauncherTests(unittest.TestCase):
         claimed = self.step("Claim agent session")
         self.assertEqual(claimed.returncode, 0, claimed.stderr)
         grant = json.loads((self.temp / "concurro-session/grant.json").read_text())
-        self.assertEqual(grant["binding"]["engine"], self.engine)
-        self.assertNotIn(grant["token"], loaded.stdout + claimed.stdout + claimed.stderr)
+        self.assertEqual(grant["binding"]["engine"]["sha"], self.engine)
+        unmasked = "\n".join(line for line in loaded.stdout.splitlines() if not line.startswith("::add-mask::"))
+        self.assertNotIn(grant["token"], unmasked + claimed.stdout + claimed.stderr)
         closed = self.step("Close agent session")
         self.assertEqual(closed.returncode, 0, closed.stderr)
         self.assertTrue(self.exchange.row(self.session)["ended"])
@@ -160,7 +219,9 @@ class LauncherTests(unittest.TestCase):
 
     def test_a_runner_on_another_engine_is_refused_the_session(self):
         """A launcher that loaded its own commit, as before sessions named the engine, cannot claim."""
-        self.git("clone", "--quiet", str(self.remote), str(self.temp / "concurro"), cwd=self.tmp)
+        self.assertEqual(self.step("Load Concurro runtime").returncode, 0)
+        self.git("-C", str(self.temp / "concurro"), "fetch", "--quiet", str(self.remote), self.launcher, cwd=self.tmp)
+        self.git("-C", str(self.temp / "concurro"), "checkout", "--quiet", "--detach", self.launcher, cwd=self.tmp)
         self.assertEqual(self.checked_out(), self.launcher)
         claimed = self.step("Claim agent session")
         self.assertNotEqual(claimed.returncode, 0)

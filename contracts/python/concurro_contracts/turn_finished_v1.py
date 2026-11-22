@@ -68,6 +68,25 @@ class TurnTranscript(StrictModel):
     """
 
 
+class TurnUsage(StrictModel):
+    input_tokens: conint(ge=0, strict=True)
+    """
+    Input tokens with known usage.
+    """
+    output_tokens: conint(ge=0, strict=True)
+    """
+    Output tokens with known usage.
+    """
+    requests: conint(ge=0, strict=True)
+    """
+    Recorded request count.
+    """
+    unavailable: conint(ge=0, strict=True)
+    """
+    Requests with unavailable usage.
+    """
+
+
 class TurnFinished(StrictModel):
     elapsed_seconds: StrictFloat | None = None
     """
@@ -108,6 +127,10 @@ class TurnFinished(StrictModel):
     turn_id: TaskId
     """
     Turn that ended.
+    """
+    usage: TurnUsage | None = None
+    """
+    Exchange token and call totals when supplied by the Rust exchange.
     """
     workspace: TurnArtifact | None = None
     """

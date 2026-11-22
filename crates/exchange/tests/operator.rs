@@ -420,10 +420,47 @@ async fn staffing_group_fifo_never_reuses_another_grants_session() {
     server.abort();
 }
 
+/// An idle live session still cannot serve a later grant in the same staffing group.
+#[tokio::test]
+async fn live_idle_session_is_not_reused_across_grants() {
+    let (_postgres, database, _store, base, server) = setup().await;
+    let client = OperatorClient::new(reqwest::Client::new(), &base, "operator-test");
+    let first_turn = Uuid::now_v7();
+    let first = client
+        .submit(first_turn, &submission(first_turn, "grant-one"))
+        .await
+        .expect("first grant")
+        .dispatch
+        .expect("first dispatch")
+        .session_id;
+    sqlx::query("UPDATE exchange.turns SET status='finished',finished=now() WHERE turn_id=$1")
+        .bind(first_turn)
+        .execute(database.pool())
+        .await
+        .expect("finish without retiring session");
+    let still_live: bool =
+        sqlx::query_scalar("SELECT ended IS NULL FROM exchange.sessions WHERE session_id=$1")
+            .bind(first)
+            .fetch_one(database.pool())
+            .await
+            .expect("live first session");
+    assert!(still_live);
+    let second_turn = Uuid::now_v7();
+    let second = client
+        .submit(second_turn, &submission(second_turn, "grant-two"))
+        .await
+        .expect("second grant")
+        .dispatch
+        .expect("second dispatch")
+        .session_id;
+    assert_ne!(first, second);
+    server.abort();
+}
+
 /// A new submit replaces the oldest expired assignment before newer waiters.
 #[tokio::test]
 async fn expired_unbound_session_is_replaced_without_leapfrogging() {
-    let (_postgres, database, _store, base, server) = setup().await;
+    let (_postgres, database, store, base, server) = setup().await;
     let client = OperatorClient::new(reqwest::Client::new(), &base, "operator-test");
     let a = Uuid::now_v7();
     let b = Uuid::now_v7();
@@ -443,6 +480,10 @@ async fn expired_unbound_session_is_replaced_without_leapfrogging() {
             .session_id
             .is_none()
     );
+    store
+        .claim_refusal(old, "OIDC setup refused")
+        .await
+        .expect("original refusal");
     sqlx::query("UPDATE exchange.sessions SET deadline=now()-interval '1 second',created=now()-interval '1201 seconds' WHERE session_id=$1")
         .bind(old).execute(database.pool()).await.expect("expire unbound session");
     assert!(
@@ -453,13 +494,9 @@ async fn expired_unbound_session_is_replaced_without_leapfrogging() {
             .session_id
             .is_none()
     );
-    let replacement = client
-        .observe(a)
-        .await
-        .expect("A replaced")
-        .dispatch
-        .expect("replacement dispatch")
-        .session_id;
+    let replaced = client.observe(a).await.expect("A replaced");
+    assert_eq!(replaced.refusal.as_deref(), Some("OIDC setup refused"));
+    let replacement = replaced.dispatch.expect("replacement dispatch").session_id;
     assert_ne!(replacement, old);
     assert!(
         client
@@ -639,7 +676,7 @@ async fn terminal_result_survives_cancel_and_tombstone() {
     let result = json!({"outcome":"ok","response":{"text":"done"},
         "workspace":null,"transcript":null,"retained":null});
     sqlx::query(
-        "UPDATE exchange.turns SET status='finished',result=$2,finished=now() WHERE turn_id=$1",
+        "UPDATE exchange.turns SET status='finished',result=$2,finished=now(),finished_event_emitted=true WHERE turn_id=$1",
     )
     .bind(turn)
     .bind(&result)

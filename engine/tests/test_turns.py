@@ -19,6 +19,7 @@ from support import (
 
 import agent_entry
 import runner
+import runner_layout
 import turns
 from agents import Agents, GatewayUnavailable, Retained, RunnerExecutor
 from bundle import Bundle
@@ -572,6 +573,72 @@ class RunnerLoopTests(unittest.TestCase):
             loop.serve()
         self.assertEqual(client.completed[0][1]["outcome"], "failed")
 
+    def test_uncertain_result_delivery_stops_after_five_attempts(self):
+        """A lost result acknowledgement must not start another native turn."""
+        turn = {"id": "t2", "payload": {"request": {"stage": "plan", "provider": "codex"}}}
+        client = FakeRunner([[turn], [{"id": "t3", "payload": turn["payload"]}]])
+        loop = runner.Loop(client, "k", object(), tempfile.mkdtemp(), 3600)
+        with (
+            patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute,
+            patch.object(client, "complete", side_effect=ExchangeError(0, "unreachable")) as complete,
+            patch.object(loop.stopped, "wait", return_value=False),
+            patch.object(runner, "HEARTBEAT", 0),
+        ):
+            loop.serve()
+        self.assertEqual(complete.call_count, 5)
+        self.assertEqual(execute.call_count, 1)
+
+    def test_v2_blob_transfer_retries_without_reexecuting_or_fabricating_failure(self):
+        """A transient upload preserves the native result; exhaustion leaves delivery uncertain."""
+        turn = {"id": "blob-turn", "payload": {"request": {"stage": "plan", "provider": "codex"}}}
+        for recover in (True, False):
+            with self.subTest(recover=recover), tempfile.TemporaryDirectory() as root:
+                artifact = Path(root) / "retained.tar.gz"
+                artifact.write_bytes(b"blob")
+                client = FakeRunner([])
+                client.v2 = True
+                loop = runner.Loop(client, "key", object(), root)
+                receipt = {"sha256": "a" * 64, "size": 4}
+                replies = [ExchangeError(0, "temporary")] + ([receipt] if recover else [ExchangeError(0, "temporary")] * 4)
+                with (
+                    patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}, "retained": artifact}) as execute,
+                    patch.object(client, "upload", side_effect=replies, create=True) as upload,
+                    patch.object(loop.stopped, "wait", return_value=False),
+                ):
+                    loop.run(turn)
+                self.assertEqual(execute.call_count, 1)
+                self.assertEqual(upload.call_count, 2 if recover else 5)
+                if recover:
+                    self.assertEqual(client.completed[0][1]["outcome"], "ok")
+                    self.assertEqual(client.completed[0][1]["retained"], receipt)
+                else:
+                    self.assertEqual(client.completed, [])
+                    self.assertTrue(loop.stopped.is_set())
+                    self.assertEqual(json.loads((Path(root) / "run-summary.json").read_text())["blob-turn"]["outcome"], "ok")
+                    self.assertTrue((Path(root) / runner_layout.TURN).exists())
+
+    def test_v2_retained_download_retries_before_native_execution(self):
+        """A download outage cannot turn an unstarted native attempt into FAILED."""
+        turn = {"id": "download-turn", "payload": {"request": {"stage": "plan", "provider": "codex"},
+                "retained": {"sha256": "a" * 64}}}
+        for recover in (True, False):
+            with self.subTest(recover=recover), tempfile.TemporaryDirectory() as root:
+                client = FakeRunner([])
+                client.v2 = True
+                loop = runner.Loop(client, "key", object(), root)
+                replies = [ExchangeError(0, "temporary")] + ([b"blob"] if recover else [ExchangeError(0, "temporary")] * 4)
+                with (
+                    patch.object(client, "download", side_effect=replies, create=True) as download,
+                    patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute,
+                    patch.object(loop.stopped, "wait", return_value=False),
+                ):
+                    loop.run(turn)
+                self.assertEqual(download.call_count, 2 if recover else 5)
+                self.assertEqual(execute.call_count, 1 if recover else 0)
+                self.assertEqual(len(client.completed), 1 if recover else 0)
+                if not recover:
+                    self.assertEqual(json.loads((Path(root) / "run-summary.json").read_text())["download-turn"]["outcome"], "No result recorded")
+
     def test_an_idle_session_ends(self):
         client = FakeRunner([[], [], []])
         loop = runner.Loop(client, "k", object(), tempfile.mkdtemp(), -1)
@@ -807,14 +874,13 @@ class SetupLifecycleTests(unittest.TestCase):
         calls = []
 
         class Client:
-            def next(self, capacity, wait):
-                calls.append((capacity, wait))
+            def heartbeat(self):
+                calls.append("heartbeat")
                 if len(calls) == 4:
                     raise ExchangeError(410, "ended")
-                return []
 
         runner.heartbeat(Client(), stopped, interval=0)
-        self.assertEqual(calls, [(0, 0)] * 4)
+        self.assertEqual(calls, ["heartbeat"] * 4)
         self.assertTrue(stopped.is_set())
 
     def test_setup_uses_recorded_config_and_upstream_base(self):
@@ -838,17 +904,19 @@ class SetupLifecycleTests(unittest.TestCase):
             root = Path(temporary) / "session"
             args = ["runner.py", "claim", "--session", "s", "--gateway", "https://gateway.invalid", "--root", str(root)]
             grant = {"key": "session-key", "token": "runner-token", "binding": TASK}
+            root.mkdir()
+            (root / "claim.json").write_text(json.dumps({"runner_token": "runner-token"}))
             with (
                 patch.object(sys, "argv", args),
-                patch.object(runner, "oidc_token", return_value="jwt"),
                 patch.object(runner, "engine_commit", return_value=TASK["engine"]),
-                patch.object(runner.Runner, "key", return_value=grant) as claim,
+                patch.object(runner.RunnerV2, "key", return_value=grant) as claim,
                 patch.object(runner.subprocess, "Popen") as start,
             ):
                 start.return_value.pid = 42
                 runner.main()
-            claim.assert_called_once_with("jwt", TASK["engine"])
+            claim.assert_called_once_with(TASK["engine"])
             self.assertEqual(json.loads((root / "grant.json").read_text()), grant)
+            self.assertFalse((root / "claim.json").exists())
             self.assertEqual((root / "grant.json").stat().st_mode & 0o777, 0o600)
             self.assertTrue(start.call_args.kwargs["start_new_session"])
             self.assertIn("heartbeat", start.call_args.args[0])

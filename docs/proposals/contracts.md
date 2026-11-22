@@ -1393,11 +1393,14 @@ sorted keys, so an omitted field and an explicit `null` have different identitie
   `issued` grant whose models and limits cover the turn. A grant revoked before its first
   submit is a durable fence: the submit answers `410 grant_revoked`.
 
-**The observation:** `{turn_id, status, session_id?, run_id?, dispatch?: {session_id},
-refusal?, created, started?, finished?, result?, provider_failure?, provider_requests?}`.
+**The observation:** `{turn_id, revision?, status, session_id?, run_id?, dispatch?: {session_id},
+refusal?, created, started?, finished?, result?, provider_failure?, provider_requests?, usage?}`.
 
 - `status` is `queued`, `running`, `finished`, `lost` or `cancelled`.
 - `dispatch` is present when a new session needs a runner workflow.
+- `revision` fences late status snapshots after operator readback. `provider_requests`
+  and `usage` appear together after request settlement, so reconciliation can emit
+  the same terminal task fact as the event consumer.
 
 **Cancel:**
 
@@ -1529,7 +1532,7 @@ change.
 | Event | Kind | Consumers | Data |
 | ---- | ---- | ---- | ---- |
 | `exchange.turn.<turn>.status` | Snapshot, entity `turn:<turn>` | Task application | `{turn_id, status, session_id?, run_id?, dispatch?: {session_id}, refusal?, provider_failure?, created, started?, finished?}`; a `provider_failure` is terminal for the attempt |
-| `exchange.turn.<turn>.finished` | Fact | Task application | `{turn_id, attempt_id, status, result?, provider_failure?, provider_requests, usage {requests, input_tokens, output_tokens, unavailable}}` |
+| `exchange.turn.<turn>.finished` | Fact | Task application | `{turn_id, observation?, attempt_id, status, result?, provider_failure?, provider_requests, usage {requests, input_tokens, output_tokens, unavailable}}`; the producer includes the terminal `observation` so a delayed consumer can apply it after the live operator row is pruned; a pre-change fact without it uses operator readback |
 | `inference.usage` | Fact | Task application's funding module, accounts service | `{request_id, session_id, turn_id, grant_id, record_id?, version?, model, category, usage?, usage_unavailable?, started, finished}` |
 
 - **`provider_requests`** is:

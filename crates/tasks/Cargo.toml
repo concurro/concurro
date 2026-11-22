@@ -18,6 +18,7 @@ concurro-events = { path = "../events" }
 concurro-events-nats = { path = "../events-nats" }
 concurro-events-postgres = { path = "../events-postgres" }
 concurro-exchange-v1 = { path = "../exchange-v1" }
+concurro-exchange-client = { path = "../exchange-client" }
 concurro-github-v1 = { path = "../github-v1" }
 concurro-tasks-core = { path = "../tasks-core" }
 concurro-tasks-postgres = { path = "../tasks-postgres" }
@@ -41,7 +42,13 @@ yaml-rust2.workspace = true
 [dev-dependencies]
 chrono.workspace = true
 concurro-testkit = { path = "../testkit" }
+concurro-exchange = { path = "../exchange" }
+concurro-exchange-postgres = { path = "../exchange-postgres" }
+concurro-inference-gateway = { path = "../inference-gateway" }
+concurro-secrets = { path = "../secrets" }
 flate2.workspace = true
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 reqwest.workspace = true
 sqlx.workspace = true
 tar.workspace = true

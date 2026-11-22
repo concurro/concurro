@@ -11,7 +11,9 @@ concurro-contracts = { path = "../contracts" }
 concurro-db = { path = "../db" }
 concurro-events-postgres = { path = "../events-postgres" }
 concurro-tasks-core = { path = "../tasks-core" }
+hex.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 thiserror.workspace = true

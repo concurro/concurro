@@ -147,6 +147,9 @@ pub struct TurnFinished {
     pub reason: Option<String>,
     /// None, some or unknown paid provider requests.
     pub provider_requests: String,
+    /// Exchange token and call totals when supplied by the Rust exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::TurnUsage>,
     /// Original model response artifact, when one was retained.
     pub response: Option<TurnArtifact>,
     /// Original workspace change artifact, when supplied.

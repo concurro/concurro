@@ -53,7 +53,8 @@ pub use diagnostic_reads::{
 pub use effects::{
     acknowledge_retirement, claim_effect, due_attempt_deadlines, expire_attempt,
     finish_unapplied_result, pollable_generation, record_observation, record_poll_failure,
-    record_submit_failure, recover_retirements, settle_submit, settle_submit_refusal,
+    record_rust_finished, record_rust_observation, record_submit_failure, recover_retirements,
+    settle_submit, settle_submit_refusal,
 };
 pub use python_import::{import_python_manifest, pending_python_import_archives};
 mod git_publication;
@@ -65,7 +66,12 @@ mod pr_review_actions;
 mod python_import;
 mod read_model;
 mod recovery;
+mod rust_exchange;
 pub use recovery::CommandEvidence;
+pub use rust_exchange::{
+    OrgAttempt, admit_rust_revision, due_rust_observations, freeze_org_submit, org_attempt,
+    record_usage,
+};
 mod report_publication;
 pub use gates::{
     GateInputs, TerminalPrInputs, confirm_ready, fail_ready_intent, gate_inputs, mark_ready_sent,

@@ -23,6 +23,8 @@ mod pr_review_threads;
 mod publication;
 mod report_publication;
 mod runner;
+mod rust_exchange;
+pub use rust_exchange::{RustExchangeContext, RustExchangeEvents};
 mod stage_label;
 mod standalone;
 mod standalone_checks;
@@ -415,6 +417,8 @@ pub struct IntakeContext {
 pub struct ExchangeContext {
     /// Python exchange operator client.
     pub operator: Operator,
+    /// Rust operator and org route settings when the selected mode is Rust.
+    pub rust: Option<RustExchangeContext>,
     /// Task event writer used when an observation changes stage.
     pub outbox: Outbox,
 }
@@ -1933,6 +1937,9 @@ impl TaskHandler for SponsorshipTransitionJob {
         let exchange = context
             .get_ext::<ExchangeContext>()
             .ok_or("exchange unavailable")?;
+        if exchange.rust.is_some() {
+            return Ok(());
+        }
         let database = Database::from_pool(context.pg_pool().clone());
         run_sponsorship_transition(&database, &exchange.operator, &self.transition)
             .await
@@ -1991,9 +1998,12 @@ impl TaskHandler for ExchangeEffectJob {
             .get_ext::<ExchangeContext>()
             .ok_or("exchange unavailable")?;
         let database = Database::from_pool(context.pg_pool().clone());
-        run_exchange_effect(&database, &exchange.operator, &exchange.outbox, self.id)
-            .await
-            .map_err(|error| error.to_string())
+        if let Some(rust) = &exchange.rust {
+            rust_exchange::run_effect(&database, rust, &exchange.outbox, self.id).await
+        } else {
+            run_exchange_effect(&database, &exchange.operator, &exchange.outbox, self.id).await
+        }
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -2014,6 +2024,9 @@ impl TaskHandler for ExchangePollJob {
         let exchange = context
             .get_ext::<ExchangeContext>()
             .ok_or("exchange unavailable")?;
+        if exchange.rust.is_some() {
+            return Ok(());
+        }
         let database = Database::from_pool(context.pg_pool().clone());
         run_exchange_poll(
             &database,

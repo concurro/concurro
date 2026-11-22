@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{post, put},
 };
-use concurro_contracts::{AdmissionRequest, FinishRequest, SessionStatusRequest};
+use concurro_contracts::{AdmissionRequest, FinishRequest, SessionStatusRequest, TurnObservation};
 use concurro_exchange_client::{AdmissionClient, OperatorClient};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -72,6 +72,12 @@ async fn operator_client_round_trips_fixture_routes() {
         turn.to_string()
     );
     assert_eq!(client.observe(turn).await.expect("observe"), submitted);
+    let terminal: TurnObservation = serde_json::from_str(include_str!(
+        "../../../contracts/fixtures/exchange.http.v1/operator_terminal_observation.json"
+    ))
+    .expect("terminal observation fixture");
+    assert_eq!(terminal.revision, Some(3));
+    assert_eq!(terminal.usage.expect("settled usage").input_tokens, 13);
     let expected = serde_json::from_str::<Value>(RETIREMENT).expect("retirement fixture");
     assert_eq!(
         serde_json::to_value(client.cancel(turn).await.expect("cancel")).expect("cancel JSON"),

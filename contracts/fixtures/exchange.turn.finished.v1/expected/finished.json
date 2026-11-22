@@ -1,6 +1,30 @@
 {
   "data": {
     "attempt_id": "00000000-0000-0000-0000-000000000001",
+    "observation": {
+      "created": "2026-01-01T00:00:00Z",
+      "finished": "2026-01-01T00:00:00Z",
+      "provider_requests": "some",
+      "result": {
+        "elapsed_seconds": null,
+        "outcome": "ok",
+        "response": {
+          "text": "done"
+        },
+        "retained": null,
+        "termination_reason": null,
+        "transcript": null,
+        "workspace": null
+      },
+      "status": "finished",
+      "turn_id": "00000000-0000-0000-0000-000000000001",
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 4,
+        "requests": 1,
+        "unavailable": 0
+      }
+    },
     "provider_failure": null,
     "provider_requests": "some",
     "result": {
