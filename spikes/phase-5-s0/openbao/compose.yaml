@@ -1,0 +1,25 @@
+# Throwaway OpenBao on PostgreSQL storage with the static seal and self-init.
+name: s0-openbao
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: openbao
+      POSTGRES_PASSWORD: spike-only
+      POSTGRES_DB: openbao
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "openbao"]
+      interval: 2s
+  openbao:
+    image: openbao/openbao:2.7.3
+    command: ["server", "-config=/openbao/config/server.hcl"]
+    environment:
+      BAO_PG_CONNECTION_URL: postgres://openbao:spike-only@postgres:5432/openbao?sslmode=disable
+      INITIAL_ADMIN_PASSWORD: spike-admin
+      INITIAL_OPERATOR_PASSWORD: spike-operator
+    volumes:
+      - ./server.hcl:/openbao/config/server.hcl:ro
+      - ./seal.key:/openbao/secrets/seal.key:ro
+    ports:
+      - "18200:8200"
+    cap_add: [IPC_LOCK]

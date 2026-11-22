@@ -18,9 +18,13 @@ bearer on its private listener:
 
 ## Scope
 
-1. **Protocol range.** The acceptor accepts protocols 4 and 5 (per S0), so installed
-   Sponsors keep working. If S0 shows it can't, Sponsor 0.2.0 ships first and the
-   verifier deploys after the owner's Sponsors upgrade.
+1. **Sponsor 0.2.0 first.** S0 found that protocol 5 changed the native session the
+   Sponsor and the verifier run together, not just the link messages
+   ([evidence](../../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)). Accepting
+   protocol 4 would mean keeping two native session implementations.
+   - So Sponsor 0.2.0 is released from relay `main`, speaking protocol 5.
+   - The owner's Sponsor devices upgrade to it.
+   - Only then is the S1 verifier deployed. It stays at exact protocol 5.
 2. **Three caller credentials,** each a separate token file and each accepted only on
    its own routes, as `Authorization: Bearer`:
 
@@ -75,11 +79,13 @@ bearer on its private listener:
 
 - TLS on the private listener. It stays on its internal network; TLS is later
   hardening.
-- Changes to the Sponsor client, beyond accepting protocol 4.
+- Changes to the Sponsor client beyond releasing current `main` as 0.2.0.
 - Removing the old routes. The relay release after S7 removes them.
 
 ## Release
 
+- Release Sponsor 0.2.0 from relay `main` through the existing `release-plz` and `dist`
+  process. The owner upgrades their Sponsor devices to it.
 - Tag the relay repository, and build the verifier image from that tag.
 - Document the new flags in its README: the three token files, the exchange public key
   file with its key ID, `--require-claims`, and the revocation journal path.
@@ -90,8 +96,8 @@ bearer on its private listener:
 
 ## Acceptance
 
-- A protocol 4 client and a protocol 5 client both register, link and serve a dispatch
-  against the same verifier build.
+- A Sponsor 0.2.0 client registers, links and serves a dispatch against the S1 verifier.
+  A protocol 4 client is refused with the existing "update concurro-relay" message.
 - Each credential is refused on the other credentials' routes.
 - The old routes keep working with their matching credential, which is the vault's and
   the Python exchange's path until S7.

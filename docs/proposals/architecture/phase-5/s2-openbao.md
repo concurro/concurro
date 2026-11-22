@@ -34,7 +34,13 @@ Accounts, the exchange and the gateway use it from S7.
 
 ## Layout and policies
 
-One KV v2 mount, `concurro`, with `cas_required = true`.
+One KV v2 mount, `concurro`, without a mount-wide `cas_required`.
+
+- **Create-only comes from the `accounts` policy.** A write to an existing path is an
+  `update`, and that policy grants only `create`. Accounts also always sends `cas=0`.
+- **Requiring CAS mount-wide would break routine rotation:** it makes the operator's
+  `bao kv patch` name the current version
+  ([S0](../../../rust-phase-5-s0-evidence.md#2-openbao)).
 
 | Path | Holds |
 | ---- | ---- |
@@ -66,8 +72,9 @@ One KV v2 mount, `concurro`, with `cas_required = true`.
     again after a failure.
 - **The operator signs in with userpass** on the `operator` policy for routine secret
   rotation. Its password is kept with the installation's other operator credentials.
-- **Administration uses a separate `admin` userpass identity,** which self-init creates
-  with the `admin` policy. Its password is kept offline, and it is used only for:
+- **Administration uses two `admin` userpass identities,** both created by self-init with
+  the `admin` policy. Their passwords are kept offline and apart from each other. They
+  are used only for:
   - changing policies or AppRoles;
   - issuing a replacement secret ID for a service;
   - revoking the `migrator` role after S7's import;
@@ -75,9 +82,23 @@ One KV v2 mount, `concurro`, with `cas_required = true`.
 - **Self-init runs once.** Later changes are made with the `admin` identity through the
   `bao` CLI, and recorded with the deployment records; editing the `initialize` stanza
   doesn't apply them.
-- **Recovery keys.** OpenBao can generate a root token from recovery keys if the `admin`
-  identity is lost. S0's spike confirms how self-init with the static seal produces
-  them, and they are stored offline with the seal key's backup, apart from the database.
+- **Recovery keys are the break-glass** ([S0](../../../rust-phase-5-s0-evidence.md#2-openbao)).
+  - Self-init creates none. Right after first boot, `admin` creates them with
+    `bao operator rotate-keys -target=recovery`. They're stored offline with the seal
+    key's backup, apart from the database.
+  - **To recover** when both `admin` identities are lost:
+    1. Set `disable_unauthed_generate_root_endpoints = false` on the listener and
+       restart.
+    2. Generate a root token through the legacy `sys/generate-root` endpoint with the
+       recovery keys.
+    3. Repair the identities.
+    4. Revoke the token, remove the setting and restart.
+
+    The endpoint stays disabled the rest of the time.
+- **Initial passwords come from the environment.** Self-init reads the `admin` and
+  `operator` passwords with `eval_source = "env"` and `require_present = true`, so
+  they're never written into the configuration file. Whether to change them at first
+  sign-in is an operational choice.
 
 ## Shared client: `concurro-secrets`
 
@@ -145,8 +166,12 @@ backoff until OpenBao's `sys/health` reports it unsealed. There is no cycle:
 - With the `gateway` policy, a personal read succeeds, and writes and destroys are
   refused.
 - The `operator` and `admin` policies can't read `data/personal/*`.
+- The operator's `bao kv patch` of `ops/gateway/providers` succeeds without naming a
+  version, and accounts' overwrite of an existing personal path is refused.
 - The `admin` identity revokes the `migrator` role and issues a replacement secret ID
   for a service; the `operator` identity can do neither.
+- A recovery key created by `admin` yields a root token through the temporarily enabled
+  legacy endpoint, which is disabled again afterwards.
 - An operator patch of `ops/gateway/providers` is seen by a `concurro-secrets` reader
   within its refresh interval, and at once after `refresh`.
 - An audit entry records each request with HMAC'd values.

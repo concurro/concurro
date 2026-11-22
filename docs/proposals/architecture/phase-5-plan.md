@@ -105,10 +105,12 @@ Each decision names the older proposal text it replaces, where there is one.
     and audits the verifier's native path. So the older plan to reuse it is withdrawn.
 12. **Codex WebSocket keeps `responses-bridge`,** pointed at the Rust gateway instead
     of agentgateway. Native WebSocket support in the gateway is later work.
-13. **The relay release deploys first.** It accepts relay protocols 4 and 5, so
-    installed Sponsors keep working. It splits the three caller credentials, adds owner
-    API v1, persists claim revocation and allowance, and verifies signed claims. Claims
-    stay optional until the cutover makes them required.
+13. **The relay release deploys first, after Sponsor 0.2.0.** Protocol 5 changed the
+    native session, so one verifier can't serve both protocols
+    ([S0](../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)). The owner's Sponsors
+    upgrade first. The release splits the three caller credentials, adds owner API v1,
+    persists claim revocation and allowance, and verifies signed claims. Claims stay
+    optional until the cutover makes them required.
 14. **No runner network isolation in phase 5.** The tailnet option is evaluated and
     deferred ([exchange brief](phase-5/s4-exchange.md#network-isolation)).
 
@@ -117,7 +119,7 @@ Each decision names the older proposal text it replaces, where there is one.
 | Slice | Delivers | Brief |
 | ---- | ---- | ---- |
 | S0 | Contract decisions and feasibility spikes, on top of the recorded phase 4 baseline | [s0](phase-5/s0-baseline.md) |
-| S1 | `concurro-relay` release: protocol range, caller credentials, owner API v1, claims, persisted revocation and allowance | [s1](phase-5/s1-relay.md) |
+| S1 | `concurro-relay` release: Sponsor 0.2.0, caller credentials, owner API v1, claims, persisted revocation and allowance | [s1](phase-5/s1-relay.md) |
 | S2 | OpenBao and the shared secrets client | [s2](phase-5/s2-openbao.md) |
 | S3 | Accounts credential store, OpenBao writes, metadata API, change facts, vault import | [s3](phase-5/s3-accounts.md) |
 | S4 | Rust exchange, runner API v2, launcher and engine client | [s4](phase-5/s4-exchange.md) |
@@ -365,12 +367,17 @@ release SHAs, recorded in the private deployment records.
 
 ## Untested assumptions
 
-- **Relay protocols 4 and 5** can both be accepted by one verifier build. S0 spikes it;
-  the fallback is shipping Sponsor 0.2.0 before S1 deploys.
-- **OpenBao's static seal, PostgreSQL storage and a create-only policy** behave as
-  documented with `vaultrs` 0.8 and `cas=0`. S0 spikes it.
-- **Provider streams pass through with a usage tap and no added buffering** for all nine
-  routes. S0 spikes it with recorded fixtures.
-- **`responses-bridge` works unchanged** against the Rust gateway. S0 spikes it.
-- **The deployed verifier image's protocol version** is recorded during S0, before S1
-  is planned against it.
+S0 tested the plan's original assumptions ([evidence](../../rust-phase-5-s0-evidence.md)):
+
+- **The relay protocol range was infeasible.** Sponsor 0.2.0 ships first.
+- **OpenBao works as planned,** with two corrections in S2.
+- **Streaming passthrough with a usage tap works,** as does `responses-bridge` in front
+  of a Rust proxy.
+- **OIDC verification with `jsonwebtoken` works.**
+
+Still untested:
+
+- **A real GitHub Actions token.** S0 used a synthetic one with today's claim names. The
+  first real one is S4's optional probe or S7's qualification.
+- **Real provider responses through the Rust gateway.** S0 used fakes in the providers'
+  stream shapes. S7's qualification is the first real traffic.

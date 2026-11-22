@@ -2,6 +2,13 @@
 
 Part of the [phase 5 plan](../phase-5-plan.md). S0 changes no running service.
 
+**Done.** Results are in the [S0 evidence](../../../rust-phase-5-s0-evidence.md), and the
+affected briefs are updated:
+
+- S1 ships Sponsor 0.2.0 first.
+- S2 drops the mount-wide `cas_required`, sources self-init passwords from the
+  environment, and documents recovery-key break-glass.
+
 ## Phase 4 baseline
 
 Phase 4's live checks passed on the current stack with the operator's own account, and
@@ -39,7 +46,7 @@ recorded result:
    0.2.0 first and asks installed Sponsors to upgrade before the verifier deploys.
 2. **OpenBao.** OpenBao 2.7.3 on a throwaway PostgreSQL database, with:
    - the static seal and declarative self-init;
-   - a KV v2 mount with `cas_required`;
+   - a KV v2 mount;
    - an AppRole whose policy has `create` on `data/personal/*` and `read` on
      `metadata/personal/*`.
 

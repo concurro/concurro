@@ -246,7 +246,7 @@ until it's built, the [bridge catalog](#bridge-catalog) says so.
 | Contract | Kind | Producer → consumers | Phase | Level |
 | ---- | ---- | ---- | ---- | ---- |
 | `config.targets` | Snapshot | Task application → backoffice API; exchange in phase 5 | 3/M3 | Full ([below](#configuration-1)) |
-| `funding.routes` | Snapshot | Accounts service → gateway, backoffice API | 5 | Sketch: the route catalog, each route's provider, kind, custody and endpoint |
+| `funding.routes` | Snapshot | Accounts service → gateway, backoffice API | Later | Sketch: the route catalog, each route's provider, kind, custody and endpoint. Not needed in phase 5: the four routes stay defined in code, in the accounts service's credential types and the gateway's route table |
 
 ### GitHub ingress
 
@@ -295,7 +295,7 @@ API. The [records](#task-application-records) its modules share are not contract
 | `GET /v1/baseline` | API | Backoffice API → task application: every current snapshot and the durable history the views show, read as one consistent snapshot | 3/M3 | Full ([below](#target-index-and-baseline)) |
 | `GET /v1/turns/{turn}/artifacts/{sha256}` | API | Backoffice API → task application: bytes for one PostgreSQL artifact referenced by the turn | 3/M3 | Full ([below](#blobs)) |
 | `GET /v1/turns/{turn}/transcript` | API | Backoffice API → task application: ordered transcript entries from PostgreSQL | 3/M3 | Full ([below](#transcript-search)) |
-| `funding.charge` | Fact | → backoffice API read model | 5 | Sketch: grant, usage, cost basis |
+| `funding.charge` | Fact | → backoffice API read model | Later | Sketch: grant, usage, cost basis. Not needed in phase 5: calls stay the charged unit, and a turn's usage reaches the read model in `turn.finished`'s usage summary |
 | [Delivery recovery](#delivery-recovery) | API | Ingress → task application | 3/M3; the Python service until the Cutover | Full |
 | GitHub REST, with captured fixtures | Client | Task application → GitHub | 3/M1 | Full for each milestone's calls |
 | [Python exchange](#python-exchange) operator API | Bridge | Task application → exchange | 3/M1; slots, provenances, `custody` and per-turn observations in 3/M3 | Full |
