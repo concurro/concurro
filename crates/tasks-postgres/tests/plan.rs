@@ -2513,11 +2513,31 @@ async fn design_credential_fallback_preserves_first_session_retry() {
             pin: None,
             binding: binding.clone(),
         };
+        let submit_body = if number == 1 {
+            let mut rust: Value = serde_json::from_str(include_str!(
+                "../../../contracts/fixtures/exchange.http.v1/operator_submit.json"
+            ))
+            .expect("v2 fixture");
+            rust["attempt_id"] = json!(turn);
+            rust["task_id"] = json!(task_id.0);
+            rust["grant"]["grant_id"] = json!(turn.to_string());
+            rust["grant"]["purpose"] = json!("task_contributed");
+            rust["grant"]["payer"] = json!({"id":7,"login":"writer"});
+            rust["grant"]["credential"] = json!({"route":"openai-api-key","entry_id":"entry",
+                "record_id":"record","version":1,"custody":"secret_store"});
+            rust["models"] = json!(["gpt-test"]);
+            rust["grant"]["models"] = json!(["gpt-test"]);
+            rust["payload"]["request"]["model"] = json!("gpt-test");
+            rust["payload"]["request"]["admission"] = json!({"grant_id":"grant"});
+            serde_json::to_vec(&rust).expect("v2 source")
+        } else {
+            serde_json::to_vec(&submission).expect("submission")
+        };
         sqlx::query("INSERT INTO tasks.attempts (id,task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES ($1,$2,'plan_qc',1,'reviewer','acme/demo',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'running')")
             .bind(turn)
             .bind(task_id.0)
             .bind("a".repeat(40))
-            .bind(serde_json::to_vec(&submission).expect("submission"))
+            .bind(submit_body)
             .execute(database.pool())
             .await
             .expect("attempt");
@@ -2544,8 +2564,8 @@ async fn design_credential_fallback_preserves_first_session_retry() {
         }
         let observation: TurnObservation = if number == 1 {
             serde_json::from_value(json!({"turn":turn,"status":"running","created":1.0,
-                "provider_failure":{"turn":turn,"model":"gpt-test","binding":binding,
-                    "category":"auth","request":"provider-request-1","retry_after":null}}))
+                "provider_failure":{"grant_id":turn.to_string(),"record_id":"record","version":1,
+                    "model":"gpt-test","category":"auth","request_id":Uuid::now_v7(),"retry_after":null}}))
             .expect("credential failure")
         } else {
             serde_json::from_value(json!({"turn":turn,"status":"done","created":1.0,

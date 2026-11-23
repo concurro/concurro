@@ -12,9 +12,9 @@ use anyhow::{Context, Result, ensure};
 use async_nats::jetstream::{self, stream};
 use concurro_config::{Validate, load, read_secret};
 use concurro_contracts::{
-    ConfigLauncher, ConfigTarget, ConfigTargets, Contract, CoverageGap, ExchangeTurnFinished,
-    ExchangeTurnStatus, GithubEvent, GithubIssues, InferenceUsage, IssueCommentPayload,
-    PullRequestPayload, WorkflowRunPayload,
+    ConfigLauncher, ConfigTarget, ConfigTargets, Contract, CoverageGap, CredentialChanged,
+    ExchangeTurnFinished, ExchangeTurnStatus, GithubEvent, GithubIssues, InferenceUsage,
+    IssueCommentPayload, PullRequestPayload, WorkflowRunPayload,
 };
 use concurro_db::Database;
 use concurro_events::Handler;
@@ -1135,6 +1135,20 @@ async fn main() -> Result<()> {
                 }
             });
         }
+        let credentials = Subscription {
+            nats_url: settings.nats_url.clone(),
+            credentials_file: settings.nats_credentials_file.clone(),
+            stream: "ACCOUNTS".to_owned(),
+            consumer: format!("{}-credential-revocations", settings.consumer_name),
+            subject: "credential.*.changed".to_owned(),
+            max_attempts: settings.consumer_max_attempts,
+            held_poll_interval: Duration::from_millis(settings.consumer_poll_ms),
+        };
+        tokio::spawn(run_subscription::<CredentialChanged, _>(
+            credentials,
+            database.clone(),
+            events,
+        ));
     }
     let targets = settings
         .targets
@@ -1354,6 +1368,7 @@ async fn main() -> Result<()> {
         targets,
         outbox: outbox.clone(),
         vault,
+        rust_exchange: rust_exchange.is_some(),
     };
     let intake = IntakeContext {
         initialization: initialization.clone(),

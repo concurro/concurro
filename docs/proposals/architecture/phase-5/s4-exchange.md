@@ -133,9 +133,11 @@ and live-cutover work separately; local acceptance does not authorize deployment
 - **Shared:**
   - `concurro-events-postgres` and `concurro-events-nats`: the outbox and the
     `EXCHANGE` stream;
-  - `concurro-secrets`: the claim signing key and the verifier release credential;
+  - `concurro-secrets`: the claim signing key; the verifier release bearer is a
+    private file setting;
   - `object_store`, as the task application configures it, for blobs;
-  - `graphile_worker`, for verifier releases.
+  - the PostgreSQL release ledger and periodic exchange worker, for verifier
+    releases across process restarts.
 
 ## Listeners
 
@@ -351,8 +353,11 @@ Every 60 seconds, and at startup:
 
 - end dead sessions and close their open requests;
 - turn sessions lost to death or revocation into lost turns;
-- prune turns finished over a day ago into tombstones;
-- retry outstanding verifier releases.
+- prune turns finished over a day ago into tombstones.
+
+A separate exchange worker retries pending verifier releases, pausing one
+second between scans until S1 acknowledges them. Keep its signing, verifier URL
+and release bearer settings configured while claims await release.
 
 Tombstones and session rows are kept, as today.
 

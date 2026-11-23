@@ -68,8 +68,8 @@ provider route frozen on each org grant, including standalone reviewer turns.
 Before sending or replaying a turn with retained input, it verifies that the
 exact archive object is available to the exchange runner.
 The task and exchange archive bucket and `archive_prefix` settings must match.
-Contributed credential selection, version revocation and relay grants remain
-for the later Phase 5 integration slice.
+Rust mode also freezes selected contributed credential versions and consumes
+accounts' credential-change facts to retire revoked grants.
 
 `fork_permissions` needs Contents and Actions read. `fork_write_permissions`
 needs Contents, Actions and Workflows write for the pinned run ref and launcher.
@@ -106,9 +106,18 @@ A trusted provider failure excludes that exact personal credential version for
 later selection; intake, planning, implementer and reviewer turns can select the
 next eligible entry. A lost turn with an unknown provider outcome does not
 exclude the credential or start a fallback attempt. Automatic recovery when no
-entry is currently usable remains
-under development. The archive
-credential file contains JSON with `access_key_id` and `secret_access_key`. An optional
+entry is currently usable remains under development.
+
+In Rust exchange mode the selected accounts entry, custody, relay and payer
+login are frozen in the v2 grant. `credential.changed` facts fence retired
+versions before grant insertion and queue retirement for submitted turns.
+Withdrawn provider slots are acknowledged only after the Rust exchange has
+fenced their grants and the verifier has acknowledged any relay releases.
+Replacing or removing a version retires submitted turns; the current stage
+follows its existing cancelled or lost-turn handling. A new entry alone does
+not automatically resume a stopped turn. A trusted provider failure selects
+the next eligible version when the stage's existing retry applies.
+The archive credential file contains JSON with `access_key_id` and `secret_access_key`. An optional
 NATS credential file contains JSON with `user` and `password`. The task service runs
 its local migrations before starting the consumer and jobs.
 

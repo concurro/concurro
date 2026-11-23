@@ -4,17 +4,20 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Result, ensure};
 use async_nats::jetstream::{self, stream};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration as ChronoDuration, Utc};
 use concurro_config::{Validate, load, read_secret};
 use concurro_db::Database;
 use concurro_events_nats::{Forwarder, connect as connect_nats, ensure_stream};
 use concurro_events_postgres::{ForwarderLease, Outbox, migrate as migrate_events};
 use concurro_exchange::{
-    AdmissionState, OperatorState, RunnerState, admission_router, operator_router, runner_router,
+    AdmissionState, OperatorState, RunnerState, admission_router, deliver_pending_releases,
+    operator_router, runner_router,
 };
-use concurro_exchange_postgres::{Store, migrate as migrate_exchange};
+use concurro_exchange_postgres::{RelaySigner, Store, migrate as migrate_exchange};
 use concurro_secrets::{OpenBao, OpenBaoSettings, SecretRef, Secrets};
 use object_store::aws::AmazonS3Builder;
+use secrecy::ExposeSecret;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
@@ -41,6 +44,17 @@ struct Settings {
     token_key: SecretRef,
     /// OpenBao AppRole settings when token_key uses OpenBao.
     openbao: Option<OpenBaoSettings>,
+    /// Ed25519 PKCS #8 signing key encoded as standard base64.
+    relay_claim_key: Option<SecretRef>,
+    /// Public verifier key ID for relay claims.
+    relay_claim_kid: Option<String>,
+    /// Private S1 verifier base URL for release delivery.
+    relay_verifier_url: Option<String>,
+    /// Private verifier release bearer file.
+    relay_release_bearer_file: Option<String>,
+    /// Per-session relay call allowance.
+    #[serde(default = "default_relay_calls")]
+    relay_claim_calls: u64,
     /// GitHub Actions signing keys, replaceable by a local fake in tests.
     #[serde(default = "default_jwks_url")]
     jwks_url: String,
@@ -75,6 +89,20 @@ impl Validate for Settings {
             self.max_message_bytes >= 1024,
             "exchange message cap too small"
         );
+        let relay = [
+            self.relay_claim_key.is_some(),
+            self.relay_claim_kid.is_some(),
+            self.relay_verifier_url.is_some(),
+            self.relay_release_bearer_file.is_some(),
+        ];
+        ensure!(
+            relay.iter().all(|value| *value) || relay.iter().all(|value| !*value),
+            "relay signing and release settings must be configured together"
+        );
+        ensure!(
+            self.relay_claim_calls > 0,
+            "relay call allowance must be positive"
+        );
         Ok(())
     }
 }
@@ -96,6 +124,26 @@ fn default_jwks_url() -> String {
 /// Default to the shared stream's one-megabyte event cap.
 fn default_max_message_bytes() -> usize {
     1_048_576
+}
+
+/// Default verifier allowance for one relay session.
+fn default_relay_calls() -> u64 {
+    1000
+}
+
+/// Retry every unacknowledged verifier release until S1 returns 204.
+async fn run_releases(store: Store, base: String, bearer: String) {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("release HTTP client");
+    loop {
+        match deliver_pending_releases(&store, &http, &base, &bearer).await {
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "verifier release scan pending"),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 /// Forward committed exchange events, reconnecting after transport outages.
@@ -168,14 +216,34 @@ async fn main() -> Result<()> {
         settings.max_message_bytes,
         vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
     );
-    let store = Store::new(database.clone(), outbox);
-    let state = OperatorState {
-        store: store.clone(),
-        bearer: read_secret(&settings.operator_bearer_file)?,
-    };
     let openbao = match settings.openbao.clone() {
         Some(settings) => Some(OpenBao::connect(settings).await?),
         None => None,
+    };
+    let secrets = Arc::new(Secrets::new(openbao, Duration::from_secs(60)));
+    let mut store = Store::new(database.clone(), outbox);
+    if let (Some(key), Some(kid), Some(base), Some(bearer_file)) = (
+        &settings.relay_claim_key,
+        &settings.relay_claim_kid,
+        &settings.relay_verifier_url,
+        &settings.relay_release_bearer_file,
+    ) {
+        let encoded = secrets.get(key).await?;
+        let pkcs8 = STANDARD.decode(encoded.expose_secret())?;
+        store = store.with_relay(RelaySigner::new(
+            kid.clone(),
+            pkcs8,
+            settings.relay_claim_calls,
+        )?);
+        tokio::spawn(run_releases(
+            store.clone(),
+            base.clone(),
+            read_secret(bearer_file)?,
+        ));
+    }
+    let state = OperatorState {
+        store: store.clone(),
+        bearer: read_secret(&settings.operator_bearer_file)?,
     };
     let credentials: ArchiveCredentials =
         serde_json::from_str(&read_secret(&settings.archive_credentials_file)?)?;
@@ -189,7 +257,7 @@ async fn main() -> Result<()> {
         .build()?;
     let runner = RunnerState {
         store: store.clone(),
-        secrets: Arc::new(Secrets::new(openbao, Duration::from_secs(60))),
+        secrets,
         token_key: settings.token_key.clone(),
         jwks_url: settings.jwks_url.clone(),
         inference_base_url: settings.inference_base_url.clone(),

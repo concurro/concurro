@@ -22,7 +22,7 @@ use concurro_tasks_postgres::{
     standalone_review_source_is_current, standalone_review_task,
 };
 use concurro_testkit::PostgresContainer;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Separate signed actions on one PR do not share a synthetic comment identity.
@@ -325,18 +325,21 @@ async fn standalone_provider_failure_retries_with_a_new_credential() {
         .await
         .expect("review stage");
     let turn = Uuid::now_v7();
-    let binding = json!({"sponsor":"7","credential":"record", "credential_version":1,
-        "grant_id":"grant"});
-    let submission = TurnSubmission {
-        turn,
-        expected: json!({}),
-        models: vec!["gpt-test".to_owned()],
-        budget: 1,
-        lease: 1,
-        payload: json!({"request":{"model":"gpt-test"}}),
-        pin: None,
-        binding: binding.clone(),
-    };
+    let mut submission: Value = serde_json::from_str(include_str!(
+        "../../../contracts/fixtures/exchange.http.v1/operator_submit.json"
+    ))
+    .expect("v2 fixture");
+    submission["attempt_id"] = json!(turn);
+    submission["task_id"] = json!(task);
+    submission["grant"]["grant_id"] = json!(turn.to_string());
+    submission["grant"]["purpose"] = json!("task_contributed");
+    submission["grant"]["payer"] = json!({"id":7,"login":"writer"});
+    submission["grant"]["credential"] = json!({"route":"openai-api-key","entry_id":"entry",
+        "record_id":"record","version":1,"custody":"secret_store"});
+    submission["models"] = json!(["gpt-test"]);
+    submission["grant"]["models"] = json!(["gpt-test"]);
+    submission["payload"]["request"]["model"] = json!("gpt-test");
+    submission["payload"]["request"]["admission"] = json!({"grant_id":"grant"});
     sqlx::query(
         "INSERT INTO tasks.attempts \
         (id,standalone_task_id,operation,expected_revision,staffing_group,fork,config_sha, \
@@ -373,8 +376,8 @@ async fn standalone_provider_failure_retries_with_a_new_credential() {
     .expect("grant");
     let observation: TurnObservation = serde_json::from_value(json!({
         "turn":turn,"status":"running","created":1.0,
-        "provider_failure":{"turn":turn,"model":"gpt-test","binding":binding,
-            "category":"auth","request":"provider-request-1","retry_after":null}
+        "provider_failure":{"grant_id":turn.to_string(),"record_id":"record","version":1,
+            "model":"gpt-test","category":"auth","request_id":Uuid::now_v7(),"retry_after":null}
     }))
     .expect("trusted failure");
     let mut work = database.begin().await.expect("observation transaction");

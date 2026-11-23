@@ -231,6 +231,8 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
                 },
             ),
         ])),
+        personal_routes: Arc::new(HashMap::new()),
+        relay: None,
         secrets: Arc::new(Secrets::new(None, Duration::from_secs(60))),
     });
     let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

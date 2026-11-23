@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::{Result, ensure};
 use concurro_config::{Validate, load, read_secret};
 use concurro_exchange_client::AdmissionClient;
-use concurro_inference_gateway::{GatewayState, OrgRoute, router};
+use concurro_inference_gateway::{GatewayState, OrgRoute, PersonalRoute, RelayDispatch, router};
 use concurro_secrets::{OpenBao, OpenBaoSettings, Secrets};
 use serde::Deserialize;
 
@@ -20,6 +20,11 @@ struct Settings {
     admission_bearer_file: String,
     /// Org routes keyed by the grant's route name.
     routes: HashMap<String, OrgRoute>,
+    /// Provider destinations for exact personal OpenBao versions.
+    #[serde(default)]
+    personal_routes: HashMap<String, PersonalRoute>,
+    /// Hosted verifier for relay-custody grants.
+    relay: Option<RelayDispatch>,
     /// OpenBao AppRole when route tokens use OpenBao.
     openbao: Option<OpenBaoSettings>,
 }
@@ -30,7 +35,10 @@ impl Validate for Settings {
             !self.listen.is_empty() && !self.exchange_admission_url.is_empty(),
             "gateway listener and admission URL required"
         );
-        ensure!(!self.routes.is_empty(), "gateway needs org routes");
+        ensure!(
+            !self.routes.is_empty() || !self.personal_routes.is_empty() || self.relay.is_some(),
+            "gateway needs at least one route"
+        );
         for route in self.routes.values() {
             ensure!(
                 matches!(route.auth.as_str(), "bearer" | "x-api-key"),
@@ -59,6 +67,8 @@ async fn main() -> Result<()> {
         ),
         provider: http,
         routes: Arc::new(settings.routes),
+        personal_routes: Arc::new(settings.personal_routes),
+        relay: settings.relay,
         secrets: Arc::new(Secrets::new(openbao, Duration::from_secs(60))),
     };
     let listener = tokio::net::TcpListener::bind(&settings.listen).await?;

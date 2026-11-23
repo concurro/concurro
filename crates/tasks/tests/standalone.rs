@@ -614,6 +614,7 @@ async fn verify_standalone_review(contributed: bool) {
                     "metadata-only",
                 )
             }),
+            rust_exchange: false,
         },
         transport: IntakeTransport {
             gateway: json!({"url":"http://gateway.invalid"}),

@@ -20,18 +20,23 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Duration, Utc};
+use concurro_contracts::{AdmissionRequest, Envelope, ExchangeTurnStatus, FinishRequest};
 use concurro_db::Database;
+use concurro_events::{Handler, Outcome};
 use concurro_events_postgres::{Outbox, migrate as migrate_events};
+use concurro_exchange_client::OperatorClient;
+use concurro_exchange_postgres::{Store, migrate as migrate_exchange};
 use concurro_exchange_v1::{Operator, TurnObservation};
 use concurro_github_v1::AppClient;
 use concurro_tasks::{
-    ExchangeContext, ExchangeEffectJob, InitializationContext, InitializationTarget, IntakeContext,
-    IntakeTransport, SponsorshipTransitionJob, TaskInitializeJob, TaskIntakeJob,
-    read_initialization, read_requirements,
+    ArchiveContext, ExchangeContext, ExchangeEffectJob, InitializationContext,
+    InitializationTarget, IntakeContext, IntakeTransport, RustExchangeEvents,
+    SponsorshipTransitionJob, TaskInitializeJob, TaskIntakeJob, read_initialization,
+    read_requirements,
 };
 use concurro_tasks_core::{
     Actor, Authority, CommentRevision, IssueKey, LaterCommand, Provider, Request, RequestKind,
-    SourceOrder, Stage,
+    SourceOrder, Stage, python_digest,
 };
 use concurro_tasks_postgres::{
     apply_request, funding_slot, migrate, pin_start_config, record_comment_revision,
@@ -40,6 +45,7 @@ use concurro_tasks_postgres::{
 use concurro_testkit::PostgresContainer;
 use concurro_vault_v1::MetadataClient;
 use graphile_worker::WorkerOptions;
+use object_store::memory::InMemory;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::types::Json as SqlJson;
@@ -47,27 +53,32 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn source_snapshot_reads_fork_config_and_upstream_policy_at_distinct_commits() {
-    verify_initialization(false, false, false, false).await;
+    verify_initialization(false, false, false, false, false).await;
 }
 
 #[tokio::test]
 async fn withdrawal_before_initial_slots_prevents_personal_charge() {
-    verify_initialization(true, false, false, false).await;
+    verify_initialization(true, false, false, false, false).await;
 }
 
 #[tokio::test]
 async fn removing_sponsor_comment_after_enrollment_cuts_off_its_grant() {
-    verify_initialization(false, true, false, false).await;
+    verify_initialization(false, true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn trusted_provider_failure_uses_next_sponsor_credential() {
-    verify_initialization(false, false, true, false).await;
+    verify_initialization(false, false, true, false, false).await;
+}
+
+#[tokio::test]
+async fn rust_provider_failure_reselects_a_different_credential_version() {
+    verify_initialization(false, false, true, false, true).await;
 }
 
 #[tokio::test]
 async fn unknown_provider_outcome_does_not_start_credential_fallback() {
-    verify_initialization(false, false, false, true).await;
+    verify_initialization(false, false, false, true, false).await;
 }
 
 /// Exercise one contributed enrollment with withdrawal before or after its first turn.
@@ -76,6 +87,7 @@ async fn verify_initialization(
     remove_source: bool,
     fallback: bool,
     unknown_outcome: bool,
+    rust_mode: bool,
 ) {
     let fork_sha = "a".repeat(40);
     let base_sha = "b".repeat(40);
@@ -368,6 +380,9 @@ async fn verify_initialization(
         .expect("database");
     migrate(&database).await.expect("tasks schema");
     migrate_events(&database).await.expect("event schema");
+    if rust_mode {
+        migrate_exchange(&database).await.expect("exchange schema");
+    }
     let outbox = Outbox::new(
         1024 * 1024,
         vec![
@@ -497,6 +512,7 @@ async fn verify_initialization(
             targets: HashMap::from([(8, target.clone())]),
             outbox: outbox.clone(),
             vault: Some(vault.clone()),
+            rust_exchange: rust_mode,
         })
         .add_extension(IntakeContext {
             initialization: InitializationContext {
@@ -504,6 +520,7 @@ async fn verify_initialization(
                 targets: HashMap::from([(8, target)]),
                 outbox,
                 vault: Some(vault),
+                rust_exchange: rust_mode,
             },
             transport: IntakeTransport {
                 gateway: json!({"url": "https://gateway.example", "headers": {"x-test": "value"}}),
@@ -695,20 +712,129 @@ async fn verify_initialization(
             .expect("deadline");
     assert!(deadline.is_none());
     if fallback {
-        let failure: TurnObservation = serde_json::from_value(json!({
-            "turn":turn,"status":"running","created":1.0,"started":2.0,
-            "provider_failure":{
-                "turn":turn,"model":"gpt-test","binding":submission["binding"],
-                "category":"auth","request":"provider-request-1",
-                "retry_after":null
-            }
-        }))
-        .expect("trusted provider failure");
-        let mut work = database.begin().await.expect("provider failure");
-        record_observation(&mut work, &observed_outbox, &failure, None)
+        if rust_mode {
+            let mut frozen: Value = serde_json::from_str(include_str!(
+                "../../../contracts/fixtures/exchange.http.v1/operator_submit.json"
+            ))
+            .expect("v2 submit fixture");
+            frozen["attempt_id"] = json!(turn);
+            frozen["task_id"] = json!(applied.task.as_ref().expect("task").id.0);
+            frozen["grant"]["grant_id"] = json!(turn.to_string());
+            frozen["grant"]["purpose"] = json!("task_contributed");
+            frozen["grant"]["payer"] = json!({"id":2,"login":"writer"});
+            frozen["grant"]["credential"] =
+                submission["payload"]["request"]["grant_credential"].clone();
+            frozen["grant"]["models"] = json!(["gpt-test"]);
+            frozen["grant"]["limits"] = json!({"tokens":1000,"lease_seconds":3600});
+            frozen["models"] = json!(["gpt-test"]);
+            frozen["payload"]["request"]["model"] = json!("gpt-test");
+            frozen["payload"]["request"]["admission"] =
+                json!({"grant_id":submission["binding"]["grant_id"]});
+            let group = python_digest(&json!([
+                frozen["expected_claims"],
+                frozen["binding"],
+                frozen["models"],
+                frozen["budget"],
+                3600.0
+            ]))
+            .expect("staffing digest");
+            frozen["staffing_group"] = json!(group);
+            let frozen_bytes = serde_json::to_vec(&frozen).expect("frozen v2 body");
+            sqlx::query("UPDATE tasks.attempts SET submit_body=$2 WHERE id=$1")
+                .bind(turn)
+                .bind(&frozen_bytes)
+                .execute(database.pool())
+                .await
+                .expect("Rust submit freeze");
+            let exchange = Store::new(
+                database.clone(),
+                Outbox::new(
+                    1_048_576,
+                    vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
+                ),
+            );
+            let session = exchange
+                .submit(turn, &frozen)
+                .await
+                .expect("real exchange personal submit")
+                .dispatch
+                .expect("dispatch")
+                .session_id;
+            sqlx::query("UPDATE exchange.sessions SET session_key_hash=$2,bound_at=now(),last_seen=now() WHERE session_id=$1")
+                .bind(session)
+                .bind(hex::encode(Sha256::digest(b"rust-fallback-key")))
+                .execute(database.pool()).await.expect("session key");
+            sqlx::query("UPDATE exchange.turns SET status='running' WHERE turn_id=$1")
+                .bind(turn)
+                .execute(database.pool())
+                .await
+                .expect("running turn");
+            let admitted = exchange
+                .admit(&AdmissionRequest {
+                    key: "rust-fallback-key".to_owned(),
+                    model: "gpt-test".to_owned(),
+                    request_id: Some(Uuid::now_v7()),
+                    probe: None,
+                })
+                .await
+                .expect("real exchange admission")
+                .expect("request");
+            exchange
+                .finish_request(
+                    admitted.request_id,
+                    &FinishRequest {
+                        dispatched: true,
+                        category: "auth".to_owned(),
+                        usage: None,
+                        usage_unavailable: Some("provider_error".to_owned()),
+                        retry_after: None,
+                    },
+                )
+                .await
+                .expect("real exchange provider refusal");
+            let message: Value = sqlx::query_scalar(
+                "SELECT message FROM events.outbox WHERE subject=$1 \
+                 AND message->'data'->'provider_failure' IS NOT NULL \
+                 AND message->'data'->'provider_failure'<>'null'::jsonb \
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(format!("exchange.turn.{turn}.status"))
+            .fetch_one(database.pool())
             .await
-            .expect("record provider failure");
-        work.commit().await.expect("failure commit");
+            .expect("real exchange status fact");
+            let event: Envelope<ExchangeTurnStatus> =
+                serde_json::from_value(message).expect("status contract");
+            let events = RustExchangeEvents {
+                operator: OperatorClient::new(
+                    reqwest::Client::new(),
+                    format!("http://{address}"),
+                    "operator-only",
+                ),
+                outbox: observed_outbox.clone(),
+                archive: ArchiveContext {
+                    store: Arc::new(InMemory::new()),
+                    prefix: "blobs".to_owned(),
+                },
+            };
+            let mut work = database.begin().await.expect("Rust status consumer");
+            assert_eq!(events.handle(&mut work, event).await, Outcome::Done);
+            work.commit().await.expect("status consumer commit");
+        } else {
+            let failure: TurnObservation = serde_json::from_value(json!({
+                "turn":turn,"status":"running","created":1.0,"started":2.0,
+                "provider_failure":{
+                    "turn":turn,"model":"gpt-test","binding":submission["binding"],
+                    "category":"auth","request":"provider-request-1",
+                    "retry_after":null
+                }
+            }))
+            .expect("trusted provider failure");
+            let mut work = database.begin().await.expect("provider failure");
+            record_observation(&mut work, &observed_outbox, &failure, None)
+                .await
+                .expect("record provider failure");
+            work.commit().await.expect("failure commit");
+        }
         tokio::time::timeout(StdDuration::from_secs(15), async {
             loop {
                 let attempts: i64 =
@@ -737,6 +863,16 @@ async fn verify_initialization(
         assert_eq!(replacement["binding"]["credential"], "f".repeat(64));
         assert_eq!(replacement["binding"]["credential_version"], 2);
         assert_eq!(replacement["payload"]["request"]["admission"]["call"], 2);
+        if rust_mode {
+            assert_eq!(
+                replacement["payload"]["request"]["grant_credential"]["entry_id"],
+                "entry-secondary"
+            );
+            assert_eq!(
+                replacement["payload"]["request"]["grant_credential"]["custody"],
+                "secret_store"
+            );
+        }
         let category: String =
             sqlx::query_scalar("SELECT category FROM tasks.funding_exclusions WHERE attempt_id=$1")
                 .bind(turn)

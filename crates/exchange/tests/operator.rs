@@ -1,15 +1,21 @@
 //! Real operator router, client, PostgreSQL and outbox workflow checks.
 
+use axum::{
+    Router,
+    http::{HeaderMap, StatusCode},
+    routing::post,
+};
 use chrono::{Duration, Utc};
 use concurro_contracts::{
-    ExpectedClaims, Grant, GrantCredential, GrantLimits, RequestActor, RunnerEngine, TurnBinding,
-    TurnPayloadV2, TurnSubmissionV2,
+    AdmissionRequest, ExpectedClaims, Grant, GrantCredential, GrantLimits, RequestActor,
+    RunnerEngine, TurnBinding, TurnPayloadV2, TurnSubmissionV2,
 };
 use concurro_db::Database;
 use concurro_events_postgres::{Outbox, migrate as migrate_events};
-use concurro_exchange::{OperatorState, operator_router};
+use concurro_exchange::{OperatorState, deliver_pending_releases, operator_router};
 use concurro_exchange_client::{ClientError, OperatorClient};
-use concurro_exchange_postgres::{Store, migrate as migrate_exchange};
+use concurro_exchange_postgres::{RelaySigner, Store, migrate as migrate_exchange};
+use concurro_relay_hosted_api::claim::VerificationKeys;
 use concurro_tasks_core::python_digest;
 use concurro_testkit::PostgresContainer;
 use serde_json::{Map, Value, json};
@@ -844,5 +850,313 @@ async fn accounts_metadata_grants_are_admitted() {
             );
         }
     }
+    server.abort();
+}
+
+/// An exchange-signed relay claim survives admission replay and stays fenced until S1 releases it.
+#[tokio::test]
+async fn relay_claim_is_signed_once_and_release_is_durable() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+
+    let (_postgres, database, _store, _base, server) = setup().await;
+    let key = URL_SAFE_NO_PAD
+        .decode("MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g")
+        .expect("PKCS8 fixture");
+    let store = Store::new(
+        database.clone(),
+        Outbox::new(
+            1_048_576,
+            vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
+        ),
+    )
+    .with_relay(RelaySigner::new("fixture".to_owned(), key, 1000).expect("signer"));
+    let turn = Uuid::now_v7();
+    let mut body = submission(turn, "relay-grant");
+    body.grant.purpose = "task_contributed".to_owned();
+    body.grant.payer = Some(RequestActor {
+        id: 35576205,
+        login: "payer".to_owned(),
+    });
+    body.grant.credential = GrantCredential {
+        route: "claude-subscription".to_owned(),
+        entry_id: Some("entry".to_owned()),
+        record_id: Some("record".to_owned()),
+        version: Some(2),
+        custody: Some("relay".to_owned()),
+        relay_id: Some("relay-test".to_owned()),
+    };
+    let observation = store
+        .submit(turn, &serde_json::to_value(body).expect("body"))
+        .await
+        .expect("submit");
+    let session = observation.session_id.expect("session");
+    let secret = "derived-key";
+    sqlx::query(
+        "UPDATE exchange.sessions SET session_key_hash=$2,last_seen=now() WHERE session_id=$1",
+    )
+    .bind(session)
+    .bind(hex::encode(Sha256::digest(secret.as_bytes())))
+    .execute(database.pool())
+    .await
+    .expect("key");
+    sqlx::query("UPDATE exchange.turns SET status='running' WHERE turn_id=$1")
+        .bind(turn)
+        .execute(database.pool())
+        .await
+        .expect("running");
+    let request = AdmissionRequest {
+        key: secret.to_owned(),
+        model: "claude-test".to_owned(),
+        request_id: Some(Uuid::now_v7()),
+        probe: None,
+    };
+    let admitted = store
+        .admit(&request)
+        .await
+        .expect("admit")
+        .expect("request");
+    let second = store
+        .admit(&request)
+        .await
+        .expect("replay")
+        .expect("request");
+    assert_eq!(admitted.claim, second.claim);
+    let keys = VerificationKeys::from_jwks(br#"{"keys":[{"kid":"fixture","kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}]}"#).expect("keys");
+    let claim = keys
+        .verify(
+            admitted.claim.as_deref().expect("claim"),
+            Utc::now().timestamp(),
+        )
+        .expect("S1 verifier signature");
+    assert_eq!(claim.sub, session.to_string());
+    assert_eq!(claim.relay_id, "relay-test");
+    assert_eq!(claim.record_id, "record");
+    assert_eq!(claim.version, 2);
+    std::assert_matches!(
+        store.revoke("relay-grant").await,
+        Err(concurro_exchange_postgres::StoreError::Refused {
+            status: 502,
+            code: "release_pending"
+        })
+    );
+    let pending = store.pending_releases().await.expect("pending releases");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].to_string(), claim.jti);
+    let restarted = Store::new(
+        database.clone(),
+        Outbox::new(
+            1_048_576,
+            vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
+        ),
+    );
+    if let Ok(binary) = std::env::var("CONCURRO_S1_HOSTED_BIN") {
+        use std::{fs, net::TcpListener, process::Stdio, time::Duration as StdDuration};
+        use tokio::process::Command;
+
+        let directory = std::env::temp_dir().join(format!("concurro-s4d-s1-{}", Uuid::now_v7()));
+        fs::create_dir_all(&directory).expect("verifier files");
+        let certificate = directory.join("cert.pem");
+        let private_key = directory.join("key.pem");
+        assert!(
+            std::process::Command::new("openssl")
+                .args([
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-days",
+                    "1",
+                    "-subj",
+                    "/CN=localhost",
+                    "-keyout"
+                ])
+                .arg(&private_key)
+                .arg("-out")
+                .arg(&certificate)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("openssl")
+                .success()
+        );
+        let registry = directory.join("relays.json");
+        fs::write(
+            &registry,
+            serde_json::to_vec(&json!({
+                "pending":{},"blocked":[],"approved":{"relay-test":[vec![1_u8;32],{
+                    "user_id":35576205,"login":"payer","route":"claude-subscription",
+                    "entry_id":"entry","record_id":"record","version":2
+                }]}
+            }))
+            .expect("registry"),
+        )
+        .expect("approved verifier registry");
+        let jwks = directory.join("exchange.jwks");
+        fs::write(&jwks, br#"{"keys":[{"kid":"fixture","kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}]}"#)
+            .expect("public JWKS");
+        for (name, value) in [
+            ("owner", "owner-test"),
+            ("inference", "inference-test"),
+            ("release", "release-test"),
+        ] {
+            fs::write(directory.join(name), value).expect("private verifier bearer");
+        }
+        let private_port = TcpListener::bind("127.0.0.1:0").expect("private port");
+        let private_addr = private_port.local_addr().expect("private address");
+        drop(private_port);
+        let relay_port = TcpListener::bind("127.0.0.1:0").expect("relay port");
+        let relay_addr = relay_port.local_addr().expect("relay address");
+        drop(relay_port);
+        let private_url = format!("http://{private_addr}");
+        let args = vec![
+            format!("--certificate={}", certificate.display()),
+            format!("--private-key={}", private_key.display()),
+            format!("--registry={}", registry.display()),
+            format!("--owner-token={}", directory.join("owner").display()),
+            format!(
+                "--inference-token={}",
+                directory.join("inference").display()
+            ),
+            format!("--release-token={}", directory.join("release").display()),
+            format!("--exchange-public-keys={}", jwks.display()),
+            format!("--private-listen={private_addr}"),
+            format!("--relay-listen={relay_addr}"),
+            "--verification-url=https://example.test/credentials/relay".to_owned(),
+        ];
+        let http = reqwest::Client::new();
+        for after_restart in [false, true] {
+            let mut child = Command::new(&binary)
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("S1 verifier process");
+            tokio::time::timeout(StdDuration::from_secs(5), async {
+                loop {
+                    if http
+                        .get(format!("{private_url}/owner/v1/relays?user_id=35576205"))
+                        .bearer_auth("owner-test")
+                        .send()
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(StdDuration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("S1 private listener ready");
+            let response = http
+                .post(format!("{private_url}/dispatch/v2/messages"))
+                .bearer_auth("inference-test")
+                .header(
+                    "x-concurro-claim",
+                    admitted.claim.as_deref().expect("claim"),
+                )
+                .header("x-concurro-request", Uuid::now_v7().to_string())
+                .json(&json!({"model":"claude-test","messages":[]}))
+                .send()
+                .await
+                .expect("S1 claim dispatch");
+            let status = response.status();
+            let error: serde_json::Value = response.json().await.expect("S1 refusal");
+            if after_restart {
+                assert_eq!(status.as_u16(), 403);
+                assert_eq!(error["error"]["code"], "claim_refused");
+            } else {
+                assert_eq!(status.as_u16(), 503);
+                assert_eq!(
+                    error["error"]["code"], "unavailable",
+                    "valid claim reached a verifier without a connected Sponsor"
+                );
+                let release = http
+                    .post(format!(
+                        "{private_url}{}",
+                        concurro_exchange_postgres::release_path(pending[0])
+                    ))
+                    .bearer_auth("release-test")
+                    .send()
+                    .await
+                    .expect("S1 release");
+                assert_eq!(release.status().as_u16(), 204);
+                assert_eq!(
+                    deliver_pending_releases(&restarted, &http, &private_url, "release-test")
+                        .await
+                        .expect("retry lost release acknowledgement"),
+                    1
+                );
+                assert!(restarted.revoke("relay-grant").await.is_ok());
+            }
+            child.kill().await.expect("stop S1");
+            child.wait().await.expect("S1 exit");
+        }
+        fs::remove_dir_all(directory).expect("remove verifier fixture");
+    } else {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake verifier listener");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("verifier address")
+        );
+        let expected_claim = pending[0];
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let verifier = Router::new().route(
+            "/release/v1/claims/{claim_id}",
+            post({
+                let calls = calls.clone();
+                move |headers: HeaderMap,
+                      axum::extract::Path(claim_id): axum::extract::Path<Uuid>| {
+                    let calls = calls.clone();
+                    async move {
+                        assert_eq!(headers["authorization"], "Bearer release-test");
+                        assert_eq!(claim_id, expected_claim);
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }
+            }),
+        );
+        let verifier_server = tokio::spawn(async move {
+            axum::serve(listener, verifier)
+                .await
+                .expect("fake verifier");
+        });
+        let http = reqwest::Client::new();
+        let lost = http
+            .post(format!(
+                "{base}{}",
+                concurro_exchange_postgres::release_path(pending[0])
+            ))
+            .bearer_auth("release-test")
+            .send()
+            .await
+            .expect("unrecorded S1 release");
+        assert_eq!(lost.status().as_u16(), 204);
+        assert_eq!(
+            restarted.pending_releases().await.expect("restart scan"),
+            pending
+        );
+        assert_eq!(
+            deliver_pending_releases(&restarted, &http, &base, "release-test")
+                .await
+                .expect("retry lost release acknowledgement"),
+            1
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(restarted.revoke("relay-grant").await.is_ok());
+        verifier_server.abort();
+    }
+    assert!(
+        restarted
+            .pending_releases()
+            .await
+            .expect("acknowledged")
+            .is_empty()
+    );
     server.abort();
 }

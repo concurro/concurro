@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use concurro_contracts::{
     Admission, AdmissionRequest, Envelope, EventId, ExchangeTurnFinished, FinishRequest, Grant,
     InferenceUsage, ProbeResponse, ProviderFailure, ProviderRequests, SessionStatusResponse,
-    Timestamp, TurnResultV2, TurnUsage, UsageTokens,
+    Timestamp, TurnBinding, TurnResultV2, TurnUsage, UsageTokens,
 };
 use concurro_db::UnitOfWork;
 use sha2::Digest;
@@ -22,6 +22,8 @@ struct SessionRow {
     grant_id: String,
     /// Granted route and limits.
     body: Json<Grant>,
+    /// Frozen runner task binding for relay claim display.
+    binding: Json<TurnBinding>,
     /// Grant lifecycle.
     grant_status: String,
     /// Session model allowance.
@@ -88,7 +90,7 @@ impl Store {
         lock(&mut work).await?;
         let digest = hex::encode(sha2::Sha256::digest(body.key.as_bytes()));
         let session: Option<SessionRow> = sqlx::query_as(
-            "SELECT s.session_id,s.grant_id,g.body,g.status AS grant_status,s.models,s.budget,s.spent_tokens,s.deadline,s.ended,s.last_seen FROM exchange.sessions s JOIN exchange.grants g ON g.grant_id=s.grant_id WHERE s.session_key_hash=$1 FOR UPDATE OF s"
+            "SELECT s.session_id,s.grant_id,g.body,g.status AS grant_status,s.binding,s.models,s.budget,s.spent_tokens,s.deadline,s.ended,s.last_seen FROM exchange.sessions s JOIN exchange.grants g ON g.grant_id=s.grant_id WHERE s.session_key_hash=$1 FOR UPDATE OF s"
         ).bind(digest).fetch_optional(work.connection()).await?;
         let Some(session) = session else {
             return Err(refused(403, "invalid_key"));
@@ -112,9 +114,6 @@ impl Store {
         }
         if !session.models.0.contains(&body.model) {
             return Err(refused(403, "model_denied"));
-        }
-        if session.body.0.credential.custody.as_deref() == Some("relay") {
-            return Err(refused(503, "relay_unavailable"));
         }
         let running: Vec<(Uuid, Option<Json<ProviderFailure>>)> = sqlx::query_as(
             "SELECT turn_id,provider_failure FROM exchange.turns WHERE session_id=$1 AND status='running'"
@@ -167,6 +166,22 @@ impl Store {
                 .bind(request).bind(session.session_id).bind(turn).bind(&session.grant_id).bind(&body.model)
                 .execute(work.connection()).await?;
         }
+        let claim = if session.body.0.credential.custody.as_deref() == Some("relay") {
+            Some(
+                self.relay_claim(
+                    &mut work,
+                    session.session_id,
+                    &session.body.0,
+                    &session.binding.0,
+                    &session.models.0,
+                    session.budget,
+                    session.deadline,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let admission = Admission {
             request_id: request,
             session_id: session.session_id,
@@ -176,7 +191,7 @@ impl Store {
             models: session.models.0,
             remaining_tokens: session.budget - session.spent_tokens,
             deadline: Timestamp(session.deadline),
-            claim: None,
+            claim,
         };
         work.commit().await?;
         Ok(Ok(admission))

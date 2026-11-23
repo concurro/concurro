@@ -5,6 +5,7 @@ mod baseline;
 mod browser_actions;
 mod config;
 mod coverage_gap;
+mod credential_revocation;
 mod cutover;
 mod funding_reads;
 mod historical;
@@ -42,6 +43,9 @@ pub use coverage_gap::{
     record_coverage_source_failure, resolve_coverage_source_failure,
     unresolved_coverage_source_count,
 };
+pub use credential_revocation::{
+    apply_credential_change, lock_credential_versions, withdrawn_grants,
+};
 pub use cutover::{CutoverFloor, cutover_floor, import_cutover_manifest, source_after_activation};
 pub use dashboard::{
     DashboardSurface, begin_dashboard_edit, dashboard_surface, enqueue_dashboard,
@@ -69,7 +73,7 @@ mod recovery;
 mod rust_exchange;
 pub use recovery::CommandEvidence;
 pub use rust_exchange::{
-    OrgAttempt, admit_rust_revision, due_rust_observations, freeze_org_submit, org_attempt,
+    OrgAttempt, admit_rust_revision, due_rust_observations, freeze_submit, org_attempt,
     record_usage,
 };
 mod report_publication;

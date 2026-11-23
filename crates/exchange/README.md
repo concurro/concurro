@@ -1,6 +1,6 @@
 # Exchange operator service
 
-Phase 5 S4c serves the private operator API, the OIDC authenticated runner API,
+Phase 5 S4 serves the private operator API, the OIDC authenticated runner API,
 and the gateway's private admission API.
 It persists grants, turns, sessions, retirement fences, results and status snapshots
 in PostgreSQL. Terminal turns older than one day become tombstones while their
@@ -27,6 +27,12 @@ archive_credentials_file = "/run/secrets/exchange-archive-credentials"
 archive_prefix = "blobs"
 # nats_credentials_file = "/run/secrets/nats-creds"
 # max_message_bytes = 1048576
+# Configure all four relay fields together when contributed relay grants are enabled:
+# relay_claim_key = "openbao:ops/exchange/relay-claims#pkcs8_base64"
+# relay_claim_kid = "exchange-key-1"
+# relay_verifier_url = "http://relay-verifier:7450"
+# relay_release_bearer_file = "/run/secrets/relay-release-bearer"
+# relay_claim_calls = 1000
 
 [openbao]
 url = "http://openbao:8200"
@@ -49,7 +55,15 @@ The operator listener accepts `PUT`, `GET` and `DELETE /v1/turns/{turn_id}`, and
 `POST /v1/grants/{grant_id}/revoke` with the private operator bearer. The task
 application dispatches the session ID returned by a submit or status event. A
 pending relay release answers `502 release_pending`; release delivery is completed
-with the relay workflow in S4d.
+by a retrying worker until the S1 verifier returns 204. The claim key is an
+Ed25519 PKCS #8 key encoded as standard base64. Its `kid` and public key must
+be installed in the verifier's exchange JWKS before relay traffic is enabled.
+The verifier's release bearer is distinct from its inference bearer. A claim
+is signed once per session, retained in PostgreSQL, and released after grant
+revocation, session end, or deadline, including after exchange restart.
+The worker pauses one second between scans; keep all four relay settings
+configured while any claim still awaits release. The release bearer comes from
+the named file.
 
 Schemas and cross-language fixtures live under `contracts/`. `concurro-exchange-client`
 provides both task operator and gateway admission clients against those types.

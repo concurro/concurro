@@ -1,5 +1,7 @@
 //! Durable exchange operator state and transactional event append.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Duration, Utc};
 use concurro_contracts::{
     Dispatch, Envelope, EventId, ExchangeTurnStatus, ProviderFailure, ProviderRequests,
@@ -15,8 +17,10 @@ use uuid::Uuid;
 static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
 
 mod admission;
+mod relay_claims;
 mod runner;
 use admission::arm_settlement;
+pub use relay_claims::{RelaySigner, release_path};
 pub use runner::{ClaimContext, KeyContext, RunnerTurn};
 
 /// Install exchange tables in the exchange schema.
@@ -51,6 +55,7 @@ pub enum StoreError {
 pub struct Store {
     database: Database,
     outbox: Outbox,
+    relay: Option<Arc<RelaySigner>>,
 }
 
 /// Columns needed to assemble a current operator observation.
@@ -81,7 +86,17 @@ struct TurnRow {
 impl Store {
     /// Bind the operator store to an exchange event stream.
     pub fn new(database: Database, outbox: Outbox) -> Self {
-        Self { database, outbox }
+        Self {
+            database,
+            outbox,
+            relay: None,
+        }
+    }
+
+    /// Enable signed relay claims for contributed relay-custody grants.
+    pub fn with_relay(mut self, signer: RelaySigner) -> Self {
+        self.relay = Some(Arc::new(signer));
+        self
     }
 
     /// Submit a canonical turn once and return the live observation on replay.
@@ -221,6 +236,7 @@ impl Store {
         for group in groups {
             staff_next(&mut work, &self.outbox, &group, None).await?;
         }
+        relay_claims::queue_releases(&mut work, &sessions).await?;
         let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM exchange.relay_claims WHERE session_id=ANY($1) AND release_status='pending'")
             .bind(&sessions).fetch_one(work.connection()).await?;
         work.commit().await?;
@@ -267,6 +283,7 @@ impl Store {
         for group in groups {
             staff_next(&mut work, &self.outbox, &group, None).await?;
         }
+        relay_claims::queue_releases(&mut work, &sessions).await?;
         let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM exchange.relay_claims WHERE session_id=ANY($1) AND release_status='pending'")
             .bind(&sessions).fetch_one(work.connection()).await?;
         work.commit().await?;

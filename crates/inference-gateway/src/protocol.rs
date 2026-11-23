@@ -4,8 +4,6 @@ use axum::body::Bytes;
 use concurro_contracts::UsageTokens;
 use serde_json::{Value, json};
 
-use crate::OrgRoute;
-
 /// Largest single event or JSON error body inspected by the gateway.
 pub const MAX_EVENT: usize = 8 * 1024 * 1024;
 
@@ -22,10 +20,10 @@ pub enum RouteKind {
 
 impl RouteKind {
     /// Derive the response grammar from the frozen route and request path.
-    pub fn for_request(route: &OrgRoute, path: &str) -> Self {
+    pub fn for_request(chatgpt: bool, path: &str) -> Self {
         if path.ends_with("messages") {
             Self::Anthropic
-        } else if route.account.is_some() {
+        } else if chatgpt {
             Self::ChatGpt
         } else {
             Self::OpenAi

@@ -1007,11 +1007,14 @@ pub async fn admit_standalone_review_attempt(
     } else {
         None
     };
-    sqlx::query(
+    crate::lock_credential_versions(uow).await?;
+    let inserted = sqlx::query(
         "INSERT INTO tasks.standalone_review_funding_grants \
          (attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id, \
           credential_record_id,credential_version,route) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10 \
+         WHERE NOT EXISTS (SELECT 1 FROM tasks.revoked_credential_versions \
+             WHERE payer_id=$4 AND record_id=$8 AND version=$9)",
     )
     .bind(spec.id)
     .bind(task_id)
@@ -1024,7 +1027,9 @@ pub async fn admit_standalone_review_attempt(
     .bind(admission["credential"]["version"].as_i64())
     .bind(admission["route"].as_str())
     .execute(uow.connection())
-    .await?;
+    .await?
+    .rows_affected();
+    anyhow::ensure!(inserted == 1, "selected credential version was revoked");
     events::append_turn_submitted(uow, outbox, TaskId(task_id), spec, "review").await?;
     let effect: i64 = sqlx::query_scalar(
         "INSERT INTO tasks.effects (turn_id,kind,status) VALUES ($1,'submit','recorded') RETURNING id",

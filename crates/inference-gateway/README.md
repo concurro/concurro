@@ -1,9 +1,9 @@
-# Org inference gateway
+# Inference gateway
 
-Phase 5 S4c supplies the org-funded HTTP route. It remains inactive until S7.
+Phase 5 S4 supplies org and contributed HTTP routes. It remains inactive until S7.
 The runner sends its derived session key; the gateway asks the exchange's
 private admission listener to authorize each request and select the grant's
-frozen route. It injects only the configured org credential, streams provider
+frozen route. It injects the frozen org or personal credential, streams provider
 bytes, reports request usage, and checks live sessions every ten seconds while
 a stream is open. Revoked or expired sessions close their streams; an exchange
 outage closes them after 30 seconds without a successful check.
@@ -32,6 +32,23 @@ token = "openbao:ops/gateway/providers#chatgpt_token"
 auth = "bearer"
 account = "openbao:ops/gateway/providers#chatgpt_account"
 
+[personal_routes.anthropic-api-key]
+upstream = "https://api.anthropic.com/v1"
+
+[personal_routes.claude-subscription]
+upstream = "https://api.anthropic.com/v1"
+anthropic_beta = "oauth-2025-04-20"
+
+[personal_routes.openai-api-key]
+upstream = "https://api.openai.com/v1"
+
+[personal_routes.chatgpt-subscription]
+upstream = "https://chatgpt.com/backend-api/codex"
+
+[relay]
+verifier = "http://relay-verifier:7450"
+credential = "openbao:ops/gateway/relay#inference_bearer"
+
 [openbao]
 url = "http://openbao:8200"
 role_id = "<gateway-role-id>"
@@ -42,4 +59,8 @@ Routes may also use `auth = "x-api-key"` for an Anthropic API key. The
 upstream base URL is configurable for fixture servers. Token and account
 values stay in file or OpenBao references; no client credential header is
 forwarded. A finish report is retried for up to five minutes after a temporary
-exchange error. Personal secret-store and relay routes are completed in S4d.
+exchange error. Personal routes read only the admitted immutable
+`personal/<record_id>` version in OpenBao, using its `secret` field and the
+ChatGPT `account` field when needed. Relay routes send the exchange's signed
+claim and one stable request ID to the S1 verifier. A verifier
+`request_reused` refusal is reported for that same ID without another dispatch.

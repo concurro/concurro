@@ -15,6 +15,7 @@ chrono.workspace = true
 concurro-config = { path = "../config" }
 concurro-contracts = { path = "../contracts" }
 concurro-exchange-client = { path = "../exchange-client" }
+concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "c1ea48bfa3fbd67a4531e8bfa9f28c166721853d" }
 concurro-secrets = { path = "../secrets" }
 concurro-telemetry = { path = "../telemetry" }
 futures-util.workspace = true
@@ -27,6 +28,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 concurro-db = { path = "../db" }
 concurro-events-postgres = { path = "../events-postgres" }
 concurro-exchange = { path = "../exchange" }

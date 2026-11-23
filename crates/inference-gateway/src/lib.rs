@@ -13,7 +13,11 @@ use axum::{
 use chrono::Utc;
 use concurro_contracts::{AdmissionRequest, FinishRequest, SessionStatusRequest};
 use concurro_exchange_client::{AdmissionClient, ClientError};
-use concurro_secrets::{SecretRef, Secrets};
+use concurro_relay_hosted_api::dispatch::{
+    ALLOWANCE_SPENT_CODE, CLAIM_HEADER, CLAIM_REFUSED_CODE, MESSAGES_PATH, REQUEST_HEADER,
+    REQUEST_REUSED_CODE, RESPONSES_PATH,
+};
+use concurro_secrets::{Error as SecretError, SecretRef, Secrets};
 use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use secrecy::ExposeSecret;
@@ -63,6 +67,26 @@ pub struct OrgRoute {
     pub anthropic_beta: Option<String>,
 }
 
+/// Provider destination for a personal OpenBao version; authorization comes from that version.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalRoute {
+    /// Provider API prefix.
+    pub upstream: String,
+    /// Server-owned Anthropic beta value, when the route needs one.
+    pub anthropic_beta: Option<String>,
+}
+
+/// Private hosted verifier and its inference credential.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayDispatch {
+    /// Hosted verifier base URL.
+    pub verifier: String,
+    /// Private inference bearer, separate from the runner's derived key.
+    pub credential: SecretRef,
+}
+
 /// Gateway dependencies shared by request handlers.
 #[derive(Clone)]
 pub struct GatewayState {
@@ -72,6 +96,10 @@ pub struct GatewayState {
     pub provider: Client,
     /// Org route table, indexed by frozen grant route.
     pub routes: Arc<HashMap<String, OrgRoute>>,
+    /// Personal provider destinations keyed by approved credential route.
+    pub personal_routes: Arc<HashMap<String, PersonalRoute>>,
+    /// Hosted verifier for relay-custody versions.
+    pub relay: Option<RelayDispatch>,
     /// Cached OpenBao and file secret resolver.
     pub secrets: Arc<Secrets>,
 }
@@ -118,6 +146,25 @@ fn admission_status(error: &ClientError) -> StatusCode {
     }
 }
 
+/// Exclude a version only when its immutable personal material is absent or incomplete.
+fn secret_failure(error: &SecretError, personal: bool) -> &'static str {
+    match error {
+        SecretError::NotFound { .. } | SecretError::MissingField { .. } if personal => "auth",
+        SecretError::Unavailable { .. } => "unavailable",
+        _ => "unknown",
+    }
+}
+
+/// Keep session-claim refusals separate from permanent personal credential failures.
+fn relay_refusal_category(value: &Value) -> Option<&'static str> {
+    match value["error"]["code"].as_str() {
+        Some(CLAIM_REFUSED_CODE | REQUEST_REUSED_CODE) => Some("unknown"),
+        Some(ALLOWANCE_SPENT_CODE) => Some("budget_denied"),
+        Some("unavailable") => Some("unavailable"),
+        _ => None,
+    }
+}
+
 /// Probe the current session without recording a provider request.
 async fn models(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
     let Some(key) = key(&headers) else {
@@ -158,55 +205,165 @@ async fn forward(
         Ok(value) => value,
         Err(error) => return refusal(admission_status(&error)),
     };
-    let Some(route) = state.routes.get(&admission.credential.route) else {
-        finish_local(&state.admission, admission.request_id, "auth").await;
-        return refusal(StatusCode::BAD_GATEWAY);
-    };
-    let token = match state.secrets.get(&route.token).await {
+    let route = &admission.credential.route;
+    let (upstream, auth, token_ref, account_ref, beta, path, relay) =
+        match admission.credential.custody.as_deref() {
+            None => {
+                let Some(org) = state.routes.get(route) else {
+                    finish_local(&state.admission, admission.request_id, "unknown").await;
+                    return refusal(StatusCode::BAD_GATEWAY);
+                };
+                (
+                    org.upstream.clone(),
+                    org.auth.as_str(),
+                    org.token.clone(),
+                    org.account.clone(),
+                    org.anthropic_beta.clone(),
+                    path,
+                    false,
+                )
+            }
+            Some("secret_store") => {
+                let Some(personal) = state.personal_routes.get(route) else {
+                    finish_local(&state.admission, admission.request_id, "unknown").await;
+                    return refusal(StatusCode::BAD_GATEWAY);
+                };
+                let Some(record) = admission.credential.record_id.as_deref() else {
+                    finish_local(&state.admission, admission.request_id, "unknown").await;
+                    return refusal(StatusCode::BAD_GATEWAY);
+                };
+                let source = format!("personal/{record}");
+                let account = (route == "chatgpt-subscription").then(|| SecretRef::OpenBao {
+                    path: source.clone(),
+                    field: "account".to_owned(),
+                });
+                (
+                    personal.upstream.clone(),
+                    if route == "anthropic-api-key" {
+                        "x-api-key"
+                    } else {
+                        "bearer"
+                    },
+                    SecretRef::OpenBao {
+                        path: source,
+                        field: "secret".to_owned(),
+                    },
+                    account,
+                    personal.anthropic_beta.clone(),
+                    path,
+                    false,
+                )
+            }
+            Some("relay") => {
+                let Some(relay) = &state.relay else {
+                    finish_local(&state.admission, admission.request_id, "unknown").await;
+                    return refusal(StatusCode::BAD_GATEWAY);
+                };
+                let destination = if path.ends_with("messages") {
+                    MESSAGES_PATH
+                } else if path.ends_with("responses") {
+                    RESPONSES_PATH
+                } else {
+                    finish_local(&state.admission, admission.request_id, "unknown").await;
+                    return refusal(StatusCode::UNPROCESSABLE_ENTITY);
+                };
+                (
+                    relay.verifier.clone(),
+                    "bearer",
+                    relay.credential.clone(),
+                    None,
+                    None,
+                    destination.trim_start_matches('/').to_owned(),
+                    true,
+                )
+            }
+            Some(_) => {
+                finish_local(&state.admission, admission.request_id, "unknown").await;
+                return refusal(StatusCode::BAD_GATEWAY);
+            }
+        };
+    let token = match state.secrets.get(&token_ref).await {
         Ok(value) => value,
-        Err(_) => {
-            finish_local(&state.admission, admission.request_id, "auth").await;
+        Err(error) => {
+            finish_local(
+                &state.admission,
+                admission.request_id,
+                secret_failure(
+                    &error,
+                    admission.credential.custody.as_deref() == Some("secret_store"),
+                ),
+            )
+            .await;
             return refusal(StatusCode::BAD_GATEWAY);
         }
     };
-    let url = format!("{}/{}", route.upstream.trim_end_matches('/'), path);
+    let url = format!("{}/{}", upstream.trim_end_matches('/'), path);
     let mut request = state
         .provider
         .post(url)
         .body(body)
         .headers(forward_headers(&headers, true));
-    let beta = headers
+    let client_beta = headers
         .get("anthropic-beta")
         .and_then(|value| value.to_str().ok());
-    if let Some(server_beta) = &route.anthropic_beta {
+    if let Some(server_beta) = &beta {
         request = request.header(
             "anthropic-beta",
-            match beta {
+            match client_beta {
                 Some(client_beta) if !client_beta.is_empty() => {
                     format!("{client_beta},{server_beta}")
                 }
                 _ => server_beta.clone(),
             },
         );
-    } else if let Some(beta) = beta {
-        request = request.header("anthropic-beta", beta);
+    } else if let Some(client_beta) = client_beta {
+        request = request.header("anthropic-beta", client_beta);
     }
-    match route.auth.as_str() {
+    match auth {
         "bearer" => request = request.bearer_auth(token.expose_secret()),
         "x-api-key" => request = request.header("x-api-key", token.expose_secret()),
         _ => {
-            finish_local(&state.admission, admission.request_id, "auth").await;
+            finish_local(&state.admission, admission.request_id, "unknown").await;
             return refusal(StatusCode::BAD_GATEWAY);
         }
     }
-    if let Some(account) = &route.account {
+    if let Some(account) = &account_ref {
         match state.secrets.get(account).await {
+            Ok(value)
+                if !relay && admission.credential.custody.as_deref() == Some("secret_store") =>
+            {
+                let account = serde_json::from_str::<Value>(value.expose_secret())
+                    .ok()
+                    .and_then(|body| body["chatgpt_account_id"].as_str().map(str::to_owned));
+                let Some(account) = account else {
+                    finish_local(&state.admission, admission.request_id, "auth").await;
+                    return refusal(StatusCode::BAD_GATEWAY);
+                };
+                request = request.header("chatgpt-account-id", account);
+            }
             Ok(value) => request = request.header("chatgpt-account-id", value.expose_secret()),
-            Err(_) => {
-                finish_local(&state.admission, admission.request_id, "auth").await;
+            Err(error) => {
+                finish_local(
+                    &state.admission,
+                    admission.request_id,
+                    secret_failure(
+                        &error,
+                        admission.credential.custody.as_deref() == Some("secret_store"),
+                    ),
+                )
+                .await;
                 return refusal(StatusCode::BAD_GATEWAY);
             }
         }
+    }
+    if relay {
+        let Some(claim) = &admission.claim else {
+            finish_local(&state.admission, admission.request_id, "unknown").await;
+            return refusal(StatusCode::BAD_GATEWAY);
+        };
+        request = request
+            .header(CLAIM_HEADER, claim)
+            .header(REQUEST_HEADER, admission.request_id.to_string());
     }
     request = request.header(header::ACCEPT_ENCODING, "identity");
     let (cancel_tx, mut cancelled) = watch::channel(false);
@@ -245,7 +402,10 @@ async fn forward(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let kind = RouteKind::for_request(route, &path);
+    let kind = RouteKind::for_request(
+        route == "chatgpt-subscription" || account_ref.is_some(),
+        &path,
+    );
     let retry_after = provider
         .headers()
         .get(header::RETRY_AFTER)
@@ -275,7 +435,12 @@ async fn forward(
         let value = serde_json::from_slice::<Value>(&bytes).ok();
         let category = value
             .as_ref()
-            .and_then(|value| protocol::classify(kind, value))
+            .and_then(|value| {
+                if relay && let Some(category) = relay_refusal_category(value) {
+                    return Some(category);
+                }
+                protocol::classify(kind, value)
+            })
             .unwrap_or("unknown");
         let report = FinishRequest {
             dispatched: true,
@@ -523,4 +688,43 @@ async fn pump(
     };
     drop(sender);
     report_finish(admission, request, report).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{relay_refusal_category, secret_failure};
+    use concurro_secrets::Error as SecretError;
+
+    /// S1 claim, allowance, reuse and link failures retain their distinct accounting.
+    #[test]
+    fn relay_refusals_preserve_credential_attribution() {
+        for (code, category) in [
+            ("claim_refused", "unknown"),
+            ("request_reused", "unknown"),
+            ("allowance_spent", "budget_denied"),
+            ("unavailable", "unavailable"),
+        ] {
+            assert_eq!(
+                relay_refusal_category(&json!({"error":{"code":code}})),
+                Some(category)
+            );
+        }
+        let missing = SecretError::NotFound {
+            path: "personal/record".to_owned(),
+        };
+        assert_eq!(secret_failure(&missing, true), "auth");
+        assert_eq!(secret_failure(&missing, false), "unknown");
+        let unavailable = SecretError::Unavailable {
+            path: "personal/record".to_owned(),
+            status: None,
+        };
+        assert_eq!(secret_failure(&unavailable, true), "unavailable");
+        assert_eq!(secret_failure(&unavailable, false), "unavailable");
+        let refused = SecretError::Refused {
+            path: "personal/record".to_owned(),
+        };
+        assert_eq!(secret_failure(&refused, true), "unknown");
+    }
 }

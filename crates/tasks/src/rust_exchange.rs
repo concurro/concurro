@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use concurro_contracts::{
-    BlobRef, Envelope, ExchangeTurnFinished, ExchangeTurnStatus, ExpectedClaims, Grant,
-    GrantCredential, GrantLimits, InferenceUsage, ProviderRequests, RunnerEngine, TurnBinding,
-    TurnObservation as RustObservation, TurnPayloadV2, TurnResultV2, TurnSubmissionV2, TurnUsage,
+    BlobRef, CredentialChanged, Envelope, ExchangeTurnFinished, ExchangeTurnStatus, ExpectedClaims,
+    Grant, GrantCredential, GrantLimits, InferenceUsage, ProviderRequests, RequestActor,
+    RunnerEngine, TurnBinding, TurnObservation as RustObservation, TurnPayloadV2, TurnResultV2,
+    TurnSubmissionV2, TurnUsage,
 };
 use concurro_db::{Database, UnitOfWork};
 use concurro_events::{Handler, Outcome};
@@ -16,8 +17,8 @@ use concurro_exchange_client::{ClientError, OperatorClient};
 use concurro_exchange_v1::{Runner, TurnObservation, TurnSubmission};
 use concurro_tasks_core::python_digest;
 use concurro_tasks_postgres::{
-    EffectKind, acknowledge_retirement, admit_rust_revision, claim_effect, expire_attempt,
-    freeze_org_submit, org_attempt, record_rust_finished, record_rust_observation,
+    EffectKind, acknowledge_retirement, admit_rust_revision, apply_credential_change, claim_effect,
+    expire_attempt, freeze_submit, org_attempt, record_rust_finished, record_rust_observation,
     record_submit_failure, record_usage, settle_submit, settle_submit_refusal,
 };
 use object_store::{ObjectStoreExt, path::Path};
@@ -67,19 +68,84 @@ async fn submission(
     let old: TurnSubmission = serde_json::from_slice(bytes)?;
     ensure!(old.turn == turn, "stored turn identity changed");
     let org = org_attempt(database, turn).await?;
+    ensure!(org.status == "issued", "funding grant was revoked");
     let provider = old.payload["request"]["provider"]
         .as_str()
         .context("runner provider missing")?;
+    let personal = matches!(org.purpose.as_str(), "task_contributed" | "contributed");
     let route = org
         .route
         .or_else(|| {
-            context
-                .routes
-                .get(&org.repository_id)
-                .and_then(|routes| routes.get(provider))
-                .cloned()
+            (!personal)
+                .then(|| {
+                    context
+                        .routes
+                        .get(&org.repository_id)
+                        .and_then(|routes| routes.get(provider))
+                        .cloned()
+                })
+                .flatten()
         })
-        .context("org route missing for target provider")?;
+        .context("funding route missing for target provider")?;
+    let admission = &old.payload["request"]["admission"];
+    let (payer, credential, purpose) = if personal {
+        let payer_id = org.payer_id.context("personal grant payer missing")?;
+        ensure!(
+            admission["sponsor"]
+                .as_str()
+                .and_then(|value| value.parse::<i64>().ok())
+                == Some(payer_id),
+            "personal grant payer changed"
+        );
+        let (record_id, version) = org.credential.context("personal grant version missing")?;
+        let selected = &admission["credential"];
+        let grant_credential = &old.payload["request"]["grant_credential"];
+        ensure!(
+            selected["record_id"] == record_id
+                && selected["version"] == version
+                && selected["route"] == route,
+            "personal grant version changed"
+        );
+        let credential = GrantCredential {
+            route: route.clone(),
+            entry_id: Some(
+                grant_credential["entry_id"]
+                    .as_str()
+                    .context("entry identity missing")?
+                    .to_owned(),
+            ),
+            record_id: Some(record_id),
+            version: Some(version),
+            custody: Some(
+                grant_credential["custody"]
+                    .as_str()
+                    .context("custody missing")?
+                    .to_owned(),
+            ),
+            relay_id: grant_credential["relay_id"].as_str().map(str::to_owned),
+        };
+        let payer = RequestActor {
+            id: payer_id,
+            login: old.payload["request"]["sponsor_login"]
+                .as_str()
+                .context("payer login missing")?
+                .to_owned(),
+        };
+        (Some(payer), credential, "task_contributed")
+    } else {
+        (
+            None,
+            GrantCredential {
+                route: route.clone(),
+                entry_id: None,
+                record_id: None,
+                version: None,
+                custody: None,
+                relay_id: None,
+            },
+            "task_org",
+        )
+    };
     let mut binding = old.binding.clone();
     let engine_sha = binding["engine"]
         .as_str()
@@ -139,16 +205,9 @@ async fn submission(
         task_id: org.task_id,
         grant: Grant {
             grant_id: turn.to_string(),
-            purpose: "task_org".to_owned(),
-            payer: None,
-            credential: GrantCredential {
-                route: route.clone(),
-                entry_id: None,
-                record_id: None,
-                version: None,
-                custody: None,
-                relay_id: None,
-            },
+            purpose: purpose.to_owned(),
+            payer,
+            credential,
             models: old.models.clone(),
             limits: GrantLimits {
                 tokens: old.budget,
@@ -386,6 +445,20 @@ impl Handler<InferenceUsage> for RustExchangeEvents {
     }
 }
 
+impl Handler<CredentialChanged> for RustExchangeEvents {
+    /// Fence retired personal versions before any later task grant can be inserted.
+    async fn handle(
+        &self,
+        work: &mut UnitOfWork<'_>,
+        event: Envelope<CredentialChanged>,
+    ) -> Outcome {
+        match apply_credential_change(work, &event.data).await {
+            Ok(()) => Outcome::Done,
+            Err(error) => Outcome::Retry(error.to_string()),
+        }
+    }
+}
+
 /// Send one frozen org effect and apply its durable acknowledgement.
 pub async fn run_effect(
     database: &Database,
@@ -417,10 +490,16 @@ pub async fn run_effect(
                 .submit_body
                 .as_deref()
                 .context("stored submit body missing")?;
+            if org_attempt(database, job.turn).await?.status != "issued" {
+                let mut work = database.begin().await?;
+                settle_submit_refusal(&mut work, outbox, &job, 410, "grant_revoked").await?;
+                work.commit().await?;
+                return Ok(());
+            }
             let (body, freeze) = submission(database, context, job.turn, original).await?;
             if let Some(route) = freeze {
                 let mut work = database.begin().await?;
-                freeze_org_submit(&mut work, job.turn, original, &body, &route).await?;
+                freeze_submit(&mut work, job.turn, original, &body, &route).await?;
                 work.commit().await?;
             }
             let response = match context.operator.submit_bytes(job.turn, &body).await {
@@ -478,10 +557,11 @@ mod tests {
         time::Duration as StdDuration,
     };
 
+    use async_nats::jetstream::stream;
     use axum::{
         Json, Router,
         body::Bytes,
-        http::HeaderMap,
+        http::{HeaderMap, StatusCode},
         routing::{get, post},
     };
     use base64::{
@@ -490,26 +570,28 @@ mod tests {
     };
     use chrono::Utc;
     use concurro_contracts::{
-        BlobRef, Envelope, ExchangeTurnFinished, ExchangeTurnStatus, InferenceUsage,
+        AdmissionRequest, BlobRef, CredentialChanged, Envelope, ExchangeTurnFinished,
+        ExchangeTurnStatus, InferenceUsage,
     };
     use concurro_db::Database;
     use concurro_events::Handler;
+    use concurro_events_nats::{Producer, Subscription, run_producer, run_subscription};
     use concurro_events_postgres::{Outbox, migrate as migrate_events};
     use concurro_exchange::{
-        AdmissionState, OperatorState, RunnerState, admission_router, operator_router,
-        runner_router,
+        AdmissionState, OperatorState, RunnerState, admission_router, deliver_pending_releases,
+        operator_router, runner_router,
     };
-    use concurro_exchange_postgres::{Store, migrate as migrate_exchange};
+    use concurro_exchange_postgres::{RelaySigner, Store, migrate as migrate_exchange};
     use concurro_inference_gateway::{GatewayState, OrgRoute, router as gateway_router};
     use concurro_secrets::{SecretRef, Secrets};
     use concurro_tasks_core::{
         Actor, InitializationSnapshot, IssueKey, PinnedInputs, Requirements, Stage, TaskState,
     };
     use concurro_tasks_postgres::{
-        due_rust_observations, freeze_org_submit, migrate as migrate_tasks, org_attempt,
-        record_usage, runner_session,
+        apply_credential_change, due_rust_observations, freeze_submit, migrate as migrate_tasks,
+        org_attempt, record_usage, runner_session,
     };
-    use concurro_testkit::PostgresContainer;
+    use concurro_testkit::{NatsContainer, PostgresContainer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
     use rand::thread_rng;
@@ -521,7 +603,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{RustExchangeContext, RustExchangeEvents, result_value, run_effect, submission};
-    use crate::ArchiveContext;
+    use crate::{ArchiveContext, run_rust_sponsorship_transition};
 
     /// Freeze a task, execute its v2 engine through the org gateway, and ingest the result.
     #[tokio::test]
@@ -534,13 +616,17 @@ mod tests {
         migrate_tasks(&database).await.expect("tasks");
         migrate_exchange(&database).await.expect("exchange");
         let task_outbox = Outbox::new(1_048_576, vec!["task.>".to_owned(), "turn.>".to_owned()]);
+        let relay_key = URL_SAFE_NO_PAD
+            .decode("MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g")
+            .expect("relay signing fixture");
         let exchange = Store::new(
             database.clone(),
             Outbox::new(
                 1_048_576,
                 vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
             ),
-        );
+        )
+        .with_relay(RelaySigner::new("fixture".to_owned(), relay_key, 1000).expect("signer"));
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let helper = repo.join("engine/tests/s4b_canned.py");
         let root = std::env::temp_dir().join(format!("concurro-s4c-engine-{}", Uuid::now_v7()));
@@ -686,6 +772,188 @@ mod tests {
                 prefix: "blobs".to_owned(),
             },
         };
+        let contributed = Uuid::now_v7();
+        let mut personal_body = body.clone();
+        personal_body["turn"] = json!(contributed);
+        personal_body["binding"]["funding"] = json!("contributed");
+        personal_body["payload"]["request"]["admission"] = json!({
+            "sponsor":"35576205","grant_id":"slot-grant",
+            "credential":{"route":"claude-subscription","record_id":"record-1","version":2}
+        });
+        personal_body["payload"]["request"]["sponsor_login"] = json!("payer");
+        personal_body["payload"]["request"]["grant_credential"] = json!({
+            "entry_id":"entry-1","custody":"relay","relay_id":"relay-1"
+        });
+        let personal_bytes = serde_json::to_vec(&personal_body).expect("personal source");
+        sqlx::query("INSERT INTO tasks.attempts(id,task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES($1,$2,'intake',1,'personal','acme/fork',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'sending')")
+            .bind(contributed).bind(task).bind("a".repeat(40)).bind(&personal_bytes)
+            .execute(database.pool()).await.expect("personal attempt");
+        sqlx::query("INSERT INTO tasks.funding_grants(attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id,credential_record_id,credential_version,route) VALUES($1,$2,'task_contributed',35576205,'anthropic',1,'slot-grant','record-1',2,'claude-subscription')")
+            .bind(contributed).bind(task).execute(database.pool()).await.expect("personal grant");
+        let (personal_submit, _) = submission(&database, &context, contributed, &personal_bytes)
+            .await
+            .expect("personal conversion");
+        let personal_submit: concurro_contracts::TurnSubmissionV2 =
+            serde_json::from_slice(&personal_submit).expect("personal v2 body");
+        assert_eq!(personal_submit.grant.purpose, "task_contributed");
+        assert_eq!(
+            personal_submit.grant.payer.as_ref().expect("payer").login,
+            "payer"
+        );
+        assert_eq!(
+            personal_submit.grant.credential.custody.as_deref(),
+            Some("relay")
+        );
+        assert_eq!(
+            personal_submit.grant.credential.relay_id.as_deref(),
+            Some("relay-1")
+        );
+        let personal_session = operator
+            .submit(contributed, &personal_submit)
+            .await
+            .expect("relay turn submitted")
+            .dispatch
+            .expect("relay dispatch")
+            .session_id;
+        sqlx::query("UPDATE exchange.sessions SET session_key_hash=$2,bound_at=now(),last_seen=now() WHERE session_id=$1")
+            .bind(personal_session)
+            .bind(hex::encode(Sha256::digest(b"relay-key")))
+            .execute(database.pool()).await.expect("relay session key");
+        sqlx::query("UPDATE exchange.turns SET status='running' WHERE turn_id=$1")
+            .bind(contributed)
+            .execute(database.pool())
+            .await
+            .expect("running relay turn");
+        let admitted = exchange
+            .admit(&AdmissionRequest {
+                key: "relay-key".to_owned(),
+                model: "claude-test".to_owned(),
+                request_id: Some(Uuid::now_v7()),
+                probe: None,
+            })
+            .await
+            .expect("relay admission")
+            .expect("relay request");
+        assert!(admitted.claim.is_some());
+        let changed: CredentialChanged = serde_json::from_value(json!({
+            "user_id":35576205,"sequence":1,"entry_id":"entry-1", "provider":"anthropic",
+            "change":"replaced","list_revision":2,"at":Utc::now(),
+            "revoked":[{"record_id":"record-1","version":2,
+                "route":"claude-subscription","custody":"relay"}]
+        }))
+        .expect("accounts fact");
+        let mut work = database.begin().await.expect("version fact");
+        apply_credential_change(&mut work, &changed)
+            .await
+            .expect("fence old version");
+        work.commit().await.expect("version marker commit");
+        assert_eq!(
+            org_attempt(&database, contributed)
+                .await
+                .expect("grant")
+                .status,
+            "revoked"
+        );
+        let marker: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks.revoked_credential_versions WHERE payer_id=35576205 AND record_id='record-1' AND version=2")
+            .fetch_one(database.pool()).await.expect("durable version fence");
+        assert_eq!(marker, 1);
+        sqlx::query("INSERT INTO tasks.sponsorship_transitions(transition,task_id,provider,expected_epoch,epoch,body,status) VALUES($1,$2,'anthropic',-1,1,$3,'acknowledged')")
+            .bind("1".repeat(64)).bind(task).bind(b"{}".as_slice())
+            .execute(database.pool()).await.expect("prior slot");
+        let withdrawal = json!({"reason":"withdraw","provider":"anthropic",
+            "actor":"35576205","expected_epoch":1,"slot":{"epoch":2,"status":"withdrawn"}});
+        sqlx::query("INSERT INTO tasks.sponsorship_transitions(transition,task_id,provider,expected_epoch,epoch,body) VALUES($1,$2,'anthropic',1,2,$3)")
+            .bind("2".repeat(64)).bind(task).bind(serde_json::to_vec(&withdrawal).expect("withdrawal"))
+            .execute(database.pool()).await.expect("withdrawal slot");
+        std::assert_matches!(
+            run_rust_sponsorship_transition(&database, &operator, &"2".repeat(64)).await,
+            Err(_)
+        );
+        let pending: String = sqlx::query_scalar(
+            "SELECT status FROM tasks.sponsorship_transitions WHERE transition=$1",
+        )
+        .bind("2".repeat(64))
+        .fetch_one(database.pool())
+        .await
+        .expect("pending withdrawal");
+        assert_eq!(pending, "sending");
+        assert_eq!(
+            exchange
+                .pending_releases()
+                .await
+                .expect("pending verifier release")
+                .len(),
+            1
+        );
+        let verifier = Router::new().route(
+            "/release/v1/claims/{claim_id}",
+            post(|headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer release-test");
+                StatusCode::NO_CONTENT
+            }),
+        );
+        let release_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("release listener");
+        let release_base = format!(
+            "http://{}",
+            release_listener.local_addr().expect("release address")
+        );
+        let release_server = tokio::spawn(async move {
+            axum::serve(release_listener, verifier)
+                .await
+                .expect("release server");
+        });
+        let exchange_after_restart = Store::new(
+            database.clone(),
+            Outbox::new(
+                1_048_576,
+                vec!["exchange.turn.>".to_owned(), "inference.usage".to_owned()],
+            ),
+        );
+        assert_eq!(
+            deliver_pending_releases(
+                &exchange_after_restart,
+                &reqwest::Client::new(),
+                &release_base,
+                "release-test"
+            )
+            .await
+            .expect("release sender"),
+            1
+        );
+        run_rust_sponsorship_transition(&database, &operator, &"2".repeat(64))
+            .await
+            .expect("Rust withdrawal acknowledges verifier fence");
+        release_server.abort();
+        let acknowledged: String = sqlx::query_scalar(
+            "SELECT status FROM tasks.sponsorship_transitions WHERE transition=$1",
+        )
+        .bind("2".repeat(64))
+        .fetch_one(database.pool())
+        .await
+        .expect("withdrawal receipt");
+        assert_eq!(acknowledged, "acknowledged");
+        assert_eq!(
+            operator
+                .submit(contributed, &personal_submit)
+                .await
+                .expect("replay withdrawn relay turn")
+                .status,
+            "lost"
+        );
+        assert!(
+            exchange
+                .admit(&AdmissionRequest {
+                    key: "relay-key".to_owned(),
+                    model: "claude-test".to_owned(),
+                    request_id: Some(Uuid::now_v7()),
+                    probe: None,
+                })
+                .await
+                .is_err(),
+            "withdrawn relay session cannot admit another request"
+        );
         let missing = RustExchangeContext {
             archive: ArchiveContext {
                 store: Arc::new(InMemory::new()),
@@ -823,6 +1091,8 @@ mod tests {
                             anthropic_beta: None,
                         },
                     )])),
+                    personal_routes: Arc::new(HashMap::new()),
+                    relay: None,
                     secrets: Arc::new(Secrets::new(None, StdDuration::from_secs(60))),
                 }),
             )
@@ -1053,6 +1323,22 @@ mod tests {
                 .await
                 .expect("funding usage");
         assert_eq!(count, 1);
+        let mut contributed_usage = review_usage.clone();
+        contributed_usage.request_id = Uuid::now_v7();
+        contributed_usage.turn_id = contributed;
+        contributed_usage.grant_id = contributed.to_string();
+        let mut work = database.begin().await.expect("contributed usage");
+        record_usage(&mut work, Uuid::now_v7(), &contributed_usage)
+            .await
+            .expect("contributed usage row");
+        work.commit().await.expect("contributed usage commit");
+        let contributed_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tasks.funding_usage WHERE turn_id=$1")
+                .bind(contributed)
+                .fetch_one(database.pool())
+                .await
+                .expect("contributed usage count");
+        assert_eq!(contributed_count, 1);
         let stage: String =
             sqlx::query_scalar("SELECT state->>'stage' FROM tasks.task_state WHERE task_id=$1")
                 .bind(task)
@@ -1100,7 +1386,7 @@ mod tests {
             .expect("review route source");
         assert_eq!((selected.task_id, selected.repository_id), (review_task, 7));
         let mut work = database.begin().await.expect("freeze review");
-        freeze_org_submit(
+        freeze_submit(
             &mut work,
             review_turn,
             &original,
@@ -1133,11 +1419,109 @@ mod tests {
                 .await
                 .expect("review usage count");
         assert_eq!(counted, 1);
+        let personal_review = Uuid::now_v7();
+        sqlx::query("INSERT INTO tasks.attempts (id,standalone_task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES($1,$2,'review',1,'personal-review','acme/fork',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'sending')")
+            .bind(personal_review).bind(review_task).bind("a".repeat(40)).bind(&original)
+            .execute(database.pool()).await.expect("personal review attempt");
+        sqlx::query("INSERT INTO tasks.standalone_review_funding_grants (attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id,credential_record_id,credential_version,route) VALUES($1,$2,'contributed',35576205,'anthropic',1,'review-slot','review-record',1,'anthropic-api-key')")
+            .bind(personal_review).bind(review_task).execute(database.pool()).await
+            .expect("personal review grant");
+        review_usage.request_id = Uuid::now_v7();
+        review_usage.turn_id = personal_review;
+        review_usage.grant_id = personal_review.to_string();
+        let mut work = database.begin().await.expect("personal review usage");
+        record_usage(&mut work, Uuid::now_v7(), &review_usage)
+            .await
+            .expect("personal review usage row");
+        work.commit().await.expect("personal review usage commit");
+        let personal_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tasks.funding_usage WHERE turn_id=$1")
+                .bind(personal_review)
+                .fetch_one(database.pool())
+                .await
+                .expect("personal review usage count");
+        assert_eq!(personal_count, 1);
         runner_server.abort();
         gateway_server.abort();
         admission_server.abort();
         provider_server.abort();
         jwks_server.abort();
         service.abort();
+    }
+
+    /// The accounts fact stream commits a version marker through the task consumer.
+    #[tokio::test]
+    async fn account_version_fact_reaches_task_storage_over_real_nats() {
+        let postgres = PostgresContainer::start().await.expect("PostgreSQL");
+        let nats = NatsContainer::start().await.expect("NATS");
+        let database = Database::connect(postgres.url(), 4)
+            .await
+            .expect("database");
+        migrate_tasks(&database).await.expect("task schema");
+        let changed: CredentialChanged = serde_json::from_value(json!({
+            "user_id":7,"sequence":9,"entry_id":"entry","provider":"anthropic",
+            "change":"removed","list_revision":3,"at":Utc::now(),
+            "revoked":[{"record_id":"record","version":2,
+                "route":"anthropic-api-key","custody":"vault"}]
+        }))
+        .expect("accounts fact");
+        let event = Envelope::fact(changed.event_id(), "accounts", changed.at, changed);
+        let outbox = Outbox::new(1_048_576, vec!["credential.>".to_owned()]);
+        let mut work = database.begin().await.expect("source transaction");
+        outbox
+            .append(&mut work, &event)
+            .await
+            .expect("source outbox");
+        work.commit().await.expect("source commit");
+        let producer = tokio::spawn(run_producer(
+            Producer {
+                nats_url: nats.url().to_owned(),
+                credentials_file: None,
+                stream: stream::Config {
+                    name: "ACCOUNTS".to_owned(),
+                    subjects: vec!["credential.>".to_owned()],
+                    ..Default::default()
+                },
+                poll_interval: StdDuration::from_millis(20),
+                published_retention: StdDuration::from_secs(3600),
+                max_message_bytes: 1_048_576,
+            },
+            database.clone(),
+        ));
+        let events = RustExchangeEvents {
+            operator: concurro_exchange_client::OperatorClient::new(
+                reqwest::Client::new(),
+                "http://127.0.0.1:9",
+                "unused",
+            ),
+            outbox: Outbox::new(1_048_576, vec!["task.>".to_owned()]),
+            archive: ArchiveContext {
+                store: Arc::new(InMemory::new()),
+                prefix: "blobs".to_owned(),
+            },
+        };
+        let subscriber = tokio::spawn(run_subscription::<CredentialChanged, _>(
+            Subscription {
+                nats_url: nats.url().to_owned(),
+                credentials_file: None,
+                stream: "ACCOUNTS".to_owned(),
+                consumer: "s4d-credential".to_owned(),
+                subject: "credential.*.changed".to_owned(),
+                max_attempts: 3,
+                held_poll_interval: StdDuration::from_millis(20),
+            },
+            database.clone(),
+            events,
+        ));
+        tokio::time::timeout(StdDuration::from_secs(15), async {
+            loop {
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks.revoked_credential_versions WHERE payer_id=7 AND record_id='record' AND version=2")
+                    .fetch_one(database.pool()).await.expect("marker count");
+                if count == 1 { break; }
+                tokio::time::sleep(StdDuration::from_millis(30)).await;
+            }
+        }).await.expect("accounts fact delivered");
+        subscriber.abort();
+        producer.abort();
     }
 }

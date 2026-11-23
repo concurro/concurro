@@ -349,6 +349,10 @@ pub(crate) async fn fund_attempt(
         .ok_or(FundingPreflightRefusal(
             "no eligible personal credential for this role",
         ))?;
+    let grant_credential = record.grant_credential();
+    if context.rust_exchange && grant_credential.is_none() {
+        return Err(FundingPreflightRefusal("selected credential has no grant identity").into());
+    }
     ensure!(
         record.user_id == sponsor,
         "Vault credential owner differs from sponsor"
@@ -388,6 +392,10 @@ pub(crate) async fn fund_attempt(
     });
     submission.payload["request"]["admission"] = admission;
     submission.payload["request"]["attempt"] = json!(attempt.id.to_string());
+    if context.rust_exchange {
+        submission.payload["request"]["grant_credential"] = serde_json::to_value(grant_credential)?;
+        submission.payload["request"]["sponsor_login"] = json!(current_login);
+    }
     let binding = submission
         .binding
         .as_object_mut()
@@ -566,6 +574,7 @@ mod tests {
             targets: HashMap::from([(8, target.clone())]),
             outbox: Outbox::new(1024 * 1024, vec!["task.>".to_owned()]),
             vault: None,
+            rust_exchange: false,
         };
         let issue = IssueKey {
             repository_id: 8,

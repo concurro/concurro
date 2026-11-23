@@ -77,7 +77,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use concurro_contracts::{
     CoverageGap, Envelope, GithubEvent, GithubIssues, IssueAction, IssueCommentPayload,
     KnownIssueAction, TaskId,
@@ -85,7 +85,8 @@ use concurro_contracts::{
 use concurro_db::{Database, UnitOfWork};
 use concurro_events::{Handler, Outcome};
 use concurro_events_postgres::Outbox;
-use concurro_exchange_v1::{ExchangeError, Operator};
+use concurro_exchange_client::OperatorClient;
+use concurro_exchange_v1::{ExchangeError, Operator, SponsorshipAck, SponsorshipTransitionAck};
 use concurro_github_v1::{AppClient, response_status};
 use concurro_tasks_core::{
     Actor, Admission, Authority, ConsentAction, FundingMode, IssueKey, LaterCommand, Provider,
@@ -110,7 +111,7 @@ use concurro_tasks_postgres::{
     record_standalone_review_command, record_submit_failure, record_withdraw_transition,
     refuse_request, refuse_stage_preflight, reviewer_objections, reviewer_session_epoch,
     settle_submit, settle_submit_refusal, source_after_activation, start_config_pin, task,
-    terminal_pr_inputs, upsert_index_event,
+    terminal_pr_inputs, upsert_index_event, withdrawn_grants,
 };
 use concurro_vault_v1::MetadataClient;
 use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
@@ -401,6 +402,8 @@ pub struct InitializationContext {
     pub outbox: Outbox,
     /// Metadata-only Vault reader for first-boundary credential availability.
     pub vault: Option<MetadataClient>,
+    /// Include immutable credential selection details for the Rust exchange.
+    pub rust_exchange: bool,
 }
 
 /// GitHub source reads and gateway settings for one pinned intake decision.
@@ -1937,14 +1940,58 @@ impl TaskHandler for SponsorshipTransitionJob {
         let exchange = context
             .get_ext::<ExchangeContext>()
             .ok_or("exchange unavailable")?;
-        if exchange.rust.is_some() {
-            return Ok(());
-        }
         let database = Database::from_pool(context.pg_pool().clone());
+        if let Some(rust) = &exchange.rust {
+            return run_rust_sponsorship_transition(&database, &rust.operator, &self.transition)
+                .await
+                .map_err(|error| error.to_string());
+        }
         run_sponsorship_transition(&database, &exchange.operator, &self.transition)
             .await
             .map_err(|error| error.to_string())
     }
+}
+
+/// Acknowledge a Rust provider slot only after every withdrawn grant has stopped spending.
+pub async fn run_rust_sponsorship_transition(
+    database: &Database,
+    exchange: &OperatorClient,
+    transition: &str,
+) -> Result<()> {
+    let mut claim = database.begin().await?;
+    let write = claim_sponsorship_transition(&mut claim, transition).await?;
+    claim.commit().await?;
+    let Some(write) = write else {
+        return Ok(());
+    };
+    let body: Value = serde_json::from_slice(&write.body)?;
+    if body["reason"] == "withdraw" || body["slot"]["status"] == "withdrawn" {
+        let payer = body["actor"]
+            .as_str()
+            .context("withdrawal actor missing")?
+            .parse::<i64>()?;
+        let provider = body["provider"]
+            .as_str()
+            .context("withdrawal provider missing")?;
+        let epoch = body["expected_epoch"]
+            .as_i64()
+            .context("withdrawal epoch missing")?;
+        for grant in withdrawn_grants(database, write.task_id, provider, payer, epoch).await? {
+            exchange.revoke(&grant).await?;
+        }
+    }
+    let ack = SponsorshipAck {
+        transitions: vec![SponsorshipTransitionAck {
+            transition: transition.to_owned(),
+            epoch: body["slot"]["epoch"]
+                .as_i64()
+                .context("slot epoch missing")?,
+        }],
+    };
+    let mut settle = database.begin().await?;
+    acknowledge_sponsorship_transition(&mut settle, &write, &ack).await?;
+    settle.commit().await?;
+    Ok(())
 }
 
 /// Send one persisted provider transition with fenced acknowledgement and retry.

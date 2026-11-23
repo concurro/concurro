@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use concurro_exchange_postgres::{Store, StoreError};
+use concurro_exchange_postgres::{Store, StoreError, release_path};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -15,6 +15,30 @@ mod admission;
 mod runner;
 pub use admission::{AdmissionState, admission_router};
 pub use runner::{RunnerState, runner_router};
+
+/// Deliver one batch of durable verifier releases and retain failures for a later pass.
+pub async fn deliver_pending_releases(
+    store: &Store,
+    client: &reqwest::Client,
+    base: &str,
+    bearer: &str,
+) -> Result<usize, StoreError> {
+    let mut acknowledged = 0;
+    for claim in store.pending_releases().await? {
+        let url = format!("{}{}", base.trim_end_matches('/'), release_path(claim));
+        match client.post(url).bearer_auth(bearer).send().await {
+            Ok(response) if response.status() == reqwest::StatusCode::NO_CONTENT => {
+                store.acknowledge_release(claim).await?;
+                acknowledged += 1;
+            }
+            Ok(response) => {
+                tracing::warn!(%claim, status=%response.status(), "verifier release pending")
+            }
+            Err(error) => tracing::warn!(%claim, %error, "verifier release pending"),
+        }
+    }
+    Ok(acknowledged)
+}
 
 /// Authenticated operator listener state.
 #[derive(Clone, Debug)]

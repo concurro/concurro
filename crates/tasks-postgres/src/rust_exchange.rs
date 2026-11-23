@@ -13,34 +13,46 @@ pub struct OrgAttempt {
     pub repository_id: i64,
     /// Persisted route, if this attempt was already converted.
     pub route: Option<String>,
+    /// Task funding purpose, including standalone review's older spelling.
+    pub purpose: String,
+    /// Personal payer ID, when this is a contributed attempt.
+    pub payer_id: Option<i64>,
+    /// Frozen personal credential record and version.
+    pub credential: Option<(String, i64)>,
+    /// Local grant state, including version revocation before the first send.
+    pub status: String,
 }
 
-/// Read only an issued org grant and its contribution or review runner target.
+/// Read an issued grant and its contribution or review runner target.
 pub async fn org_attempt(database: &Database, turn: Uuid) -> Result<OrgAttempt> {
-    let row: Option<(Uuid, i64, Option<String>)> = sqlx::query_as(
-        "SELECT a.task_id,t.repository_id,g.route FROM tasks.attempts a \
+    let row: Option<(Uuid, i64, Option<String>, String, Option<i64>, Option<String>, Option<i64>, String)> = sqlx::query_as(
+        "SELECT a.task_id,t.repository_id,g.route,g.purpose,g.payer_id,g.credential_record_id,g.credential_version,g.status FROM tasks.attempts a \
          JOIN tasks.task_state t ON t.task_id=a.task_id \
          JOIN tasks.funding_grants g ON g.attempt_id=a.id \
-         WHERE a.id=$1 AND g.purpose='task_org' AND g.status='issued' \
-         UNION ALL SELECT a.standalone_task_id,t.runner_repository_id,g.route \
+         WHERE a.id=$1 \
+         UNION ALL SELECT a.standalone_task_id,t.runner_repository_id,g.route,g.purpose,g.payer_id,g.credential_record_id,g.credential_version,g.status \
          FROM tasks.attempts a JOIN tasks.standalone_review_tasks t ON t.id=a.standalone_task_id \
          JOIN tasks.standalone_review_funding_grants g ON g.attempt_id=a.id \
-         WHERE a.id=$1 AND g.purpose='org' AND g.status='issued'",
+         WHERE a.id=$1",
     )
     .bind(turn)
     .fetch_optional(database.pool())
     .await?;
-    let (task_id, repository_id, route) =
-        row.ok_or_else(|| anyhow::anyhow!("issued org grant missing"))?;
+    let (task_id, repository_id, route, purpose, payer_id, record, version, status) =
+        row.ok_or_else(|| anyhow::anyhow!("issued funding grant missing"))?;
     Ok(OrgAttempt {
         task_id,
         repository_id,
         route,
+        purpose,
+        payer_id,
+        credential: record.zip(version),
+        status,
     })
 }
 
-/// Freeze converted bytes and route before the first Rust operator send.
-pub async fn freeze_org_submit(
+/// Freeze converted bytes and the issued route before the first Rust operator send.
+pub async fn freeze_submit(
     work: &mut UnitOfWork<'_>,
     turn: Uuid,
     original: &[u8],
@@ -59,7 +71,7 @@ pub async fn freeze_org_submit(
     .rows_affected();
     ensure!(updated == 1, "org submission changed before freeze");
     let contribution = sqlx::query(
-        "UPDATE tasks.funding_grants SET route=$2 WHERE attempt_id=$1 AND purpose='task_org' \
+        "UPDATE tasks.funding_grants SET route=$2 WHERE attempt_id=$1 \
          AND status='issued' AND (route IS NULL OR route=$2)",
     )
     .bind(turn)
@@ -69,7 +81,7 @@ pub async fn freeze_org_submit(
     .rows_affected();
     let review = sqlx::query(
         "UPDATE tasks.standalone_review_funding_grants SET route=$2 WHERE attempt_id=$1 \
-         AND purpose='org' AND status='issued' AND (route IS NULL OR route=$2)",
+         AND status='issued' AND (route IS NULL OR route=$2)",
     )
     .bind(turn)
     .bind(route)
@@ -78,7 +90,7 @@ pub async fn freeze_org_submit(
     .rows_affected();
     ensure!(
         contribution + review == 1,
-        "org grant route changed before freeze"
+        "funding grant route changed before freeze"
     );
     Ok(())
 }
@@ -96,9 +108,9 @@ pub async fn record_usage(
           cache_read_input_tokens,cache_creation_input_tokens,usage_unavailable,occurred_at) \
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 \
          WHERE $4=$3::text AND (EXISTS (SELECT 1 FROM tasks.funding_grants g WHERE g.attempt_id=$3 \
-             AND g.purpose='task_org' AND g.status IN ('issued','revoked')) OR \
+             AND g.purpose IN ('task_org','task_contributed') AND g.status IN ('issued','revoked')) OR \
              EXISTS (SELECT 1 FROM tasks.standalone_review_funding_grants g WHERE g.attempt_id=$3 \
-             AND g.purpose='org' AND g.status IN ('issued','revoked'))) \
+             AND g.purpose IN ('org','contributed') AND g.status IN ('issued','revoked'))) \
          ON CONFLICT (request_id) DO NOTHING",
     )
     .bind(usage.request_id)

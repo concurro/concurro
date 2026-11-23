@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, ensure};
 use chrono::{DateTime, Duration, Utc};
+use concurro_contracts::TurnSubmissionV2;
 use concurro_db::{Database, UnitOfWork};
 use concurro_exchange_v1::{SponsorshipAck, TurnObservation, TurnSubmission};
 use concurro_tasks_core::{
@@ -24,6 +25,8 @@ pub struct SponsorshipWrite {
     pub transition: String,
     /// Exact body persisted before its first send.
     pub body: Vec<u8>,
+    /// Contribution or standalone task owning this provider slot.
+    pub task_id: Uuid,
     /// Fences a late result from an older worker.
     pub claim_token: Uuid,
 }
@@ -679,6 +682,7 @@ pub(crate) async fn record_funding_grant(
     uow: &mut UnitOfWork<'_>,
     spec: &AttemptSpec,
 ) -> anyhow::Result<()> {
+    crate::lock_credential_versions(uow).await?;
     let submission = serde_json::from_slice::<TurnSubmission>(&spec.submit_body).ok();
     if let Some(submission) = &submission {
         ensure!(
@@ -728,11 +732,13 @@ pub(crate) async fn record_funding_grant(
     } else {
         (None, None, None, None, None, None, None)
     };
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO tasks.funding_grants \
          (attempt_id,task_id,purpose,payer_id,provider,slot_epoch,slot_grant_id, \
           credential_record_id,credential_version,route,models,limits) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 \
+         WHERE NOT EXISTS (SELECT 1 FROM tasks.revoked_credential_versions \
+             WHERE payer_id=$4 AND record_id=$8 AND version=$9)",
     )
     .bind(spec.id)
     .bind(spec.task.0)
@@ -757,7 +763,9 @@ pub(crate) async fn record_funding_grant(
         Json(json!({"calls":1,"tokens":submission.budget,"lease_seconds":submission.lease}))
     }))
     .execute(uow.connection())
-    .await?;
+    .await?
+    .rows_affected();
+    ensure!(inserted == 1, "selected credential version was revoked");
     Ok(())
 }
 
@@ -846,18 +854,34 @@ pub(crate) async fn record_credential_failure(
     else {
         return Ok(false);
     };
-    let submission: TurnSubmission = serde_json::from_slice(&body)?;
-    let Some(model) = submission.payload["request"]["model"].as_str() else {
+    let rust = serde_json::from_slice::<TurnSubmissionV2>(&body).ok();
+    let legacy = if rust.is_none() {
+        Some(serde_json::from_slice::<TurnSubmission>(&body)?)
+    } else {
+        None
+    };
+    let request = if let Some(submission) = &rust {
+        &submission.payload.request
+    } else {
+        &legacy.as_ref().expect("legacy submission").payload["request"]
+    };
+    let Some(model) = request["model"].as_str() else {
         return Ok(false);
     };
     let binding = &failure["binding"];
-    if failure["turn"] != observation.turn.to_string()
-        || binding["sponsor"] != payer.to_string()
-        || binding["credential"] != record
-        || binding["credential_version"] != version
-        || binding["grant_id"] != slot_grant
-        || failure["model"].as_str() != Some(model)
-    {
+    let trusted = if rust.is_some() {
+        failure["grant_id"] == observation.turn.to_string()
+            && failure["record_id"] == record
+            && failure["version"] == version
+            && request["admission"]["grant_id"] == slot_grant
+    } else {
+        failure["turn"] == observation.turn.to_string()
+            && binding["sponsor"] == payer.to_string()
+            && binding["credential"] == record
+            && binding["credential_version"] == version
+            && binding["grant_id"] == slot_grant
+    };
+    if !trusted || failure["model"].as_str() != Some(model) {
         return Ok(false);
     }
     let model = if category == "model_denied" {
@@ -866,8 +890,9 @@ pub(crate) async fn record_credential_failure(
         None
     };
     let hint = failure["retry_after"]
-        .as_i64()
-        .filter(|seconds| (0..=999_999_999).contains(seconds));
+        .as_f64()
+        .filter(|seconds| seconds.is_finite() && (0.0..=999_999_999.0).contains(seconds))
+        .map(|seconds| seconds.ceil() as i64);
     let retry_at = if category == "quota_exhausted" {
         hint.map(|seconds| Utc::now() + Duration::seconds(seconds))
     } else if matches!(category, "rate_limited" | "unavailable") {
@@ -1024,28 +1049,31 @@ pub async fn record_withdraw_transition(
     }
     transition["transition"] = Value::String(python_digest(&transition)?);
     record_sponsorship_transition(uow, task, &transition).await?;
-    sqlx::query(
+    let contribution: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE tasks.funding_grants SET status='revoked',revoked_at=now() \
          WHERE task_id=$1 AND provider=$2 AND payer_id=$3 AND slot_epoch<=$4 \
-         AND purpose='task_contributed' AND status='issued'",
+         AND purpose='task_contributed' AND status='issued' RETURNING attempt_id",
     )
     .bind(task)
     .bind(fact.provider.as_str())
     .bind(fact.actor.id)
     .bind(epoch)
-    .execute(uow.connection())
+    .fetch_all(uow.connection())
     .await?;
-    sqlx::query(
+    let standalone: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE tasks.standalone_review_funding_grants SET status='revoked' \
          WHERE task_id=$1 AND provider=$2 AND payer_id=$3 AND slot_epoch<=$4 \
-         AND purpose='contributed' AND status='issued'",
+         AND purpose='contributed' AND status='issued' RETURNING attempt_id",
     )
     .bind(task)
     .bind(fact.provider.as_str())
     .bind(fact.actor.id)
     .bind(epoch)
-    .execute(uow.connection())
+    .fetch_all(uow.connection())
     .await?;
+    for turn in contribution.into_iter().chain(standalone) {
+        crate::credential_revocation::enqueue_retirement(uow, turn).await?;
+    }
     Ok(())
 }
 
@@ -1319,6 +1347,7 @@ pub async fn claim_sponsorship_transition(
     Ok(Some(SponsorshipWrite {
         transition: transition.to_owned(),
         body,
+        task_id: task,
         claim_token,
     }))
 }
@@ -1486,4 +1515,124 @@ pub async fn funding_policy_at(
         "contributed" => FundingMode::Contributed,
         _ => unreachable!("funding mode constrained by schema"),
     }))
+}
+
+#[cfg(test)]
+mod version_tests {
+    use chrono::{Duration, Utc};
+    use concurro_contracts::{CredentialChanged, TaskId};
+    use concurro_db::Database;
+    use concurro_exchange_v1::TurnSubmission;
+    use concurro_tasks_core::AttemptSpec;
+    use concurro_testkit::PostgresContainer;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{record_credential_failure, record_funding_grant};
+    use crate::{apply_credential_change, migrate};
+
+    /// A committed version marker refuses an unseen attempt while a replacement inserts.
+    #[tokio::test]
+    async fn retired_version_cannot_insert_a_later_grant() {
+        let postgres = PostgresContainer::start().await.expect("PostgreSQL");
+        let database = Database::connect(postgres.url(), 4)
+            .await
+            .expect("database");
+        migrate(&database).await.expect("schema");
+        let task = Uuid::now_v7();
+        sqlx::query("INSERT INTO tasks.issue_controls(repository_id,issue_number) VALUES(7,42)")
+            .execute(database.pool())
+            .await
+            .expect("issue");
+        sqlx::query("INSERT INTO tasks.task_state(repository_id,issue_number,task_id,revision,state) VALUES(7,42,$1,1,'{}')")
+            .bind(task).execute(database.pool()).await.expect("task");
+        let change: CredentialChanged = serde_json::from_value(json!({
+            "user_id":7,"sequence":1,"entry_id":"entry","provider":"anthropic",
+            "change":"replaced","list_revision":2,"at":Utc::now(),
+            "revoked":[{"record_id":"old-record","version":1,
+                "route":"anthropic-api-key","custody":"vault"}]
+        }))
+        .expect("change");
+        let mut work = database.begin().await.expect("marker transaction");
+        apply_credential_change(&mut work, &change)
+            .await
+            .expect("marker");
+        work.commit().await.expect("marker commit");
+        let mut replacement_turn = None;
+        for (record, version, allowed) in
+            [("old-record", 1_i64, false), ("new-record", 2_i64, true)]
+        {
+            let turn = Uuid::now_v7();
+            let source = TurnSubmission {
+                turn,
+                expected: json!({}),
+                models: vec!["claude-test".to_owned()],
+                budget: 1000,
+                lease: 3600,
+                pin: None,
+                binding: json!({"funding":"contributed"}),
+                payload: json!({"request":{"model":"claude-test","admission":{
+                    "sponsor":"7","sponsorship_provider":"anthropic","epoch":1,
+                    "grant_id":"slot","route":"anthropic-api-key",
+                    "credential":{"record_id":record,"version":version}
+                }}}),
+            };
+            let bytes = serde_json::to_vec(&source).expect("source");
+            sqlx::query("INSERT INTO tasks.attempts(id,task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,initial_deadline,deadline,unbounded_running,status) VALUES($1,$2,'intake',1,'group','acme/fork',$3,$4,now()+interval '1 hour',now()+interval '1 hour',false,'ready')")
+                .bind(turn).bind(task).bind("a".repeat(40)).bind(&bytes)
+                .execute(database.pool()).await.expect("attempt");
+            let spec = AttemptSpec {
+                id: turn,
+                task: TaskId(task),
+                expected_revision: 1,
+                staffing_group: "group".to_owned(),
+                fork: "acme/fork".to_owned(),
+                config_sha: "a".repeat(40),
+                submit_body: bytes,
+                prompt_body: None,
+                deadline: Utc::now() + Duration::hours(1),
+                unbounded_running: false,
+            };
+            let mut work = database.begin().await.expect("grant transaction");
+            let result = record_funding_grant(&mut work, &spec).await;
+            assert_eq!(result.is_ok(), allowed);
+            if allowed {
+                replacement_turn = Some(turn);
+                work.commit().await.expect("replacement grant");
+            }
+        }
+        let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks.funding_grants")
+            .fetch_one(database.pool())
+            .await
+            .expect("grant count");
+        assert_eq!(grants, 1);
+        let turn = replacement_turn.expect("replacement attempt");
+        let observation: concurro_exchange_v1::TurnObservation = serde_json::from_value(json!({
+            "turn":turn,"status":"running","created":1.0,
+            "provider_failure":{
+                "turn":turn.to_string(),"grant_id":"slot","model":"claude-test",
+                "category":"quota_exhausted","retry_after":2.25,
+                "binding":{"sponsor":"7","credential":"new-record",
+                    "credential_version":2,"grant_id":"slot"}
+            }
+        }))
+        .expect("fractional quota failure");
+        let mut work = database.begin().await.expect("exclusion transaction");
+        assert!(
+            record_credential_failure(&mut work, &observation)
+                .await
+                .expect("quota exclusion")
+        );
+        work.commit().await.expect("exclusion commit");
+        let (retry_source, temporary): (String, bool) = sqlx::query_as(
+            "SELECT retry_source,retry_at>now() AND retry_at<now()+interval '10 seconds' \
+             FROM tasks.funding_exclusions WHERE attempt_id=$1",
+        )
+        .bind(turn)
+        .fetch_one(database.pool())
+        .await
+        .expect("temporary quota hint");
+        assert_eq!(retry_source, "provider");
+        assert!(temporary);
+    }
 }
