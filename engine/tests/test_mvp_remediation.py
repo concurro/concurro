@@ -28,13 +28,18 @@ class RunnerCleanupTests(unittest.TestCase):
     def test_serve_then_always_cleanup_and_lost_end_response(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            grant = {"token": "runner", "key": "session", "binding": {"upstream": "o/u", "fork": "o/f"}}
+            grant = {
+                "token": "runner",
+                "key": "session",
+                "binding": {"upstream": "o/u", "fork": "o/f"},
+                "inference_base_url": "https://g/inference/v1",
+            }
             runner.save_grant(root, grant)
             client = Mock()
             args = ["runner.py", "serve", "--session", "s", "--gateway", "https://g", "--root", directory]
             with (
                 patch.object(sys, "argv", args),
-                patch.object(runner, "Runner", return_value=client),
+                patch.object(runner, "RunnerV2", return_value=client),
                 patch.object(runner, "Mirror"),
                 patch.object(runner, "Loop"),
             ):
@@ -53,10 +58,10 @@ class RunnerCleanupTests(unittest.TestCase):
 
     def test_first_heartbeat_retries_without_stopping_setup_helper(self):
         client = Mock()
-        client.next.side_effect = [ExchangeError(0, "network"), []]
+        client.heartbeat.side_effect = [ExchangeError(0, "network"), None]
         with patch.object(runner.time, "sleep"):
             runner.renew_before_serve(client)
-        self.assertEqual(client.next.call_count, 2)
+        self.assertEqual(client.heartbeat.call_count, 2)
 
     def test_detached_child_reaping_preserves_existing_helpers(self):
         with (

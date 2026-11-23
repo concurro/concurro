@@ -259,6 +259,7 @@ async fn browser_commands_record_only_authorized_actor_and_replay_exactly() {
             github: app.clone(),
             targets: HashMap::from([(8, issue_target)]),
             outbox: Outbox::new(1024, vec![]),
+            rust_exchange: false,
         },
         standalone_targets: HashMap::from([(9, pr_target)]),
         proof_public_key: Arc::new(public.stdout.clone()),
