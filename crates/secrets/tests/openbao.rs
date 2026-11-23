@@ -240,7 +240,7 @@ async fn operator_rotation_reaches_readers() {
         Some(&operator),
         Method::POST,
         path,
-        Some(json!({"data": {"chatgpt_access_token": "tok-1"}})),
+        Some(json!({"data": {"chatgpt_access_token": "tok-1", "chatgpt_account": "account-1"}})),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -249,6 +249,13 @@ async fn operator_rotation_reaches_readers() {
     let reference: SecretRef = "openbao:ops/gateway/providers#chatgpt_access_token"
         .parse()
         .unwrap();
+    let account: SecretRef = "openbao:ops/gateway/providers#chatgpt_account"
+        .parse()
+        .unwrap();
+    let (cached_token, cached_account) =
+        secrets.get_pair(&reference, Some(&account)).await.unwrap();
+    assert_eq!(cached_token.expose_secret(), "tok-1");
+    assert_eq!(cached_account.unwrap().expose_secret(), "account-1");
     assert_eq!(
         secrets.get(&reference).await.unwrap().expose_secret(),
         "tok-1"
@@ -260,7 +267,7 @@ async fn operator_rotation_reaches_readers() {
         Some(&operator),
         Method::PATCH,
         path,
-        Some(json!({"data": {"chatgpt_access_token": "tok-2"}})),
+        Some(json!({"data": {"chatgpt_access_token": "tok-2", "chatgpt_account": "account-2"}})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "operator patch without cas");
@@ -274,6 +281,12 @@ async fn operator_rotation_reaches_readers() {
         "tok-2",
         "seen at once on refresh"
     );
+    let (token, account_value) = secrets
+        .refresh_pair(&reference, Some(&account))
+        .await
+        .unwrap();
+    assert_eq!(token.expose_secret(), "tok-2");
+    assert_eq!(account_value.unwrap().expose_secret(), "account-2");
     call(
         url,
         Some(&operator),

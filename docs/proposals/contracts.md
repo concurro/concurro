@@ -664,12 +664,13 @@ API's read model; publication reads the same outcomes in-process for replies.
 | Type | Data |
 | ---- | ---- |
 | `request.tasks.{applied,refused,superseded}` | `request_id`, `task_id?`, `issue`, `kind`, `argument`, `actor`, `channel`, `source`, `source_at`, `reason?`, `reply` (route) |
-| `request.tasks.{blocked,stopped}` | `request_id`, `task_id`, `provider`, `actor`: a withdrawal's later [steps](#withdrawal-steps) |
+| `request.tasks.{blocked,stopped}` | The v3 request outcome body, with `status` selecting the withdrawal [step](#withdrawal-steps); `task_id` remains optional before enrollment |
 | `request.source.received` | `source`, `issue`, `channel`, `reply`, `acknowledge` (`reaction` for mentions) |
 | `request.source.final` | `source`, `request_ids`, `failure?` (`interpreter_deadline`, `interpreter_unavailable`, `unresolved_edit`) |
 
-The implemented `request.tasks` wire contract is v2 for new outcomes, including
-the `unenroll` command. The original v1 schema remains valid for retained facts.
+The implemented `request.tasks` wire contract is v3 for withdrawal steps. The
+backoffice event consumer still decodes retained v1 and v2 facts when replaying
+its durable stream.
 
 Publication replies to a source once it's final and each of its requests has an outcome;
 a final source with no requests gets its failure reply.
@@ -803,8 +804,8 @@ exclusion in the same transaction that records the next credential's selection, 
 
 ### Withdrawal steps
 
-Part of 3/M3. A withdrawal records three steps, each reported to its author on GitHub and
-published for the backoffice: "withdrawal recorded" when the `withdraw` request is
+Part of 3/M3. A Rust-mode withdrawal records three steps, published for the
+backoffice and reported to comment authors on GitHub: "withdrawal recorded" when the `withdraw` request is
 applied (`request.tasks.applied`); "new grants blocked" when the cutoff commits, in the
 same transaction that would record a grant (`request.tasks.blocked`); and "spending
 stopped" once every session under the revoked grants has ended
@@ -812,7 +813,8 @@ stopped" once every session under the revoked grants has ended
 [revoke](#exchange-operator-api) acknowledged by the exchange, which by then has ended its
 sessions and released their relay claims, plus the gateway's worst-case stream bound of
 40 seconds.
-Before phase 5 a longer time bound stands in ([Python exchange](#python-exchange)).
+The retained Python-mode path reports its existing applied outcome; it does not
+use Rust exchange acknowledgements or this 40-second bound.
 
 ### Turn events
 

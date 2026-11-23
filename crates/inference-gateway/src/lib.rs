@@ -17,7 +17,7 @@ use concurro_relay_hosted_api::dispatch::{
     ALLOWANCE_SPENT_CODE, CLAIM_HEADER, CLAIM_REFUSED_CODE, MESSAGES_PATH, REQUEST_HEADER,
     REQUEST_REUSED_CODE, RESPONSES_PATH,
 };
-use concurro_secrets::{Error as SecretError, SecretRef, Secrets};
+use concurro_secrets::{Error as SecretError, SecretRef, SecretString, Secrets};
 use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use secrecy::ExposeSecret;
@@ -165,6 +165,60 @@ fn relay_refusal_category(value: &Value) -> Option<&'static str> {
     }
 }
 
+/// Resolve a provider credential, keeping same-path OpenBao account data paired.
+async fn credential_material(
+    secrets: &Secrets,
+    token: &SecretRef,
+    account: Option<&SecretRef>,
+    personal: bool,
+    fresh: bool,
+) -> Result<(SecretString, Option<String>), SecretError> {
+    let (token, account) = if fresh {
+        secrets.refresh_pair(token, account).await?
+    } else {
+        secrets.get_pair(token, account).await?
+    };
+    let account = match account {
+        Some(value) if personal => {
+            let id = serde_json::from_str::<Value>(value.expose_secret())
+                .ok()
+                .and_then(|body| body["chatgpt_account_id"].as_str().map(str::to_owned))
+                .ok_or_else(|| SecretError::MissingField {
+                    path: "personal account".to_owned(),
+                    field: "chatgpt_account_id".to_owned(),
+                })?;
+            Some(id)
+        }
+        Some(value) => Some(value.expose_secret().to_owned()),
+        None => None,
+    };
+    Ok((token, account))
+}
+
+/// Apply only server-owned provider or verifier authority to a copied request.
+fn authorized_request(
+    mut request: reqwest::RequestBuilder,
+    auth: &str,
+    token: &SecretString,
+    account: Option<&str>,
+    claim: Option<&str>,
+    request_id: Uuid,
+) -> reqwest::RequestBuilder {
+    request = match auth {
+        "x-api-key" => request.header("x-api-key", token.expose_secret()),
+        _ => request.bearer_auth(token.expose_secret()),
+    };
+    if let Some(account) = account {
+        request = request.header("chatgpt-account-id", account);
+    }
+    if let Some(claim) = claim {
+        request = request
+            .header(CLAIM_HEADER, claim)
+            .header(REQUEST_HEADER, request_id.to_string());
+    }
+    request
+}
+
 /// Probe the current session without recording a provider request.
 async fn models(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
     let Some(key) = key(&headers) else {
@@ -282,16 +336,22 @@ async fn forward(
                 return refusal(StatusCode::BAD_GATEWAY);
             }
         };
-    let token = match state.secrets.get(&token_ref).await {
+    let personal = admission.credential.custody.as_deref() == Some("secret_store");
+    let (token, account) = match credential_material(
+        &state.secrets,
+        &token_ref,
+        account_ref.as_ref(),
+        personal,
+        false,
+    )
+    .await
+    {
         Ok(value) => value,
         Err(error) => {
             finish_local(
                 &state.admission,
                 admission.request_id,
-                secret_failure(
-                    &error,
-                    admission.credential.custody.as_deref() == Some("secret_store"),
-                ),
+                secret_failure(&error, personal),
             )
             .await;
             return refusal(StatusCode::BAD_GATEWAY);
@@ -319,53 +379,24 @@ async fn forward(
     } else if let Some(client_beta) = client_beta {
         request = request.header("anthropic-beta", client_beta);
     }
-    match auth {
-        "bearer" => request = request.bearer_auth(token.expose_secret()),
-        "x-api-key" => request = request.header("x-api-key", token.expose_secret()),
-        _ => {
-            finish_local(&state.admission, admission.request_id, "unknown").await;
-            return refusal(StatusCode::BAD_GATEWAY);
-        }
+    if !matches!(auth, "bearer" | "x-api-key") {
+        finish_local(&state.admission, admission.request_id, "unknown").await;
+        return refusal(StatusCode::BAD_GATEWAY);
     }
-    if let Some(account) = &account_ref {
-        match state.secrets.get(account).await {
-            Ok(value)
-                if !relay && admission.credential.custody.as_deref() == Some("secret_store") =>
-            {
-                let account = serde_json::from_str::<Value>(value.expose_secret())
-                    .ok()
-                    .and_then(|body| body["chatgpt_account_id"].as_str().map(str::to_owned));
-                let Some(account) = account else {
-                    finish_local(&state.admission, admission.request_id, "auth").await;
-                    return refusal(StatusCode::BAD_GATEWAY);
-                };
-                request = request.header("chatgpt-account-id", account);
-            }
-            Ok(value) => request = request.header("chatgpt-account-id", value.expose_secret()),
-            Err(error) => {
-                finish_local(
-                    &state.admission,
-                    admission.request_id,
-                    secret_failure(
-                        &error,
-                        admission.credential.custody.as_deref() == Some("secret_store"),
-                    ),
-                )
-                .await;
-                return refusal(StatusCode::BAD_GATEWAY);
-            }
-        }
-    }
-    if relay {
-        let Some(claim) = &admission.claim else {
-            finish_local(&state.admission, admission.request_id, "unknown").await;
-            return refusal(StatusCode::BAD_GATEWAY);
-        };
-        request = request
-            .header(CLAIM_HEADER, claim)
-            .header(REQUEST_HEADER, admission.request_id.to_string());
+    if relay && admission.claim.is_none() {
+        finish_local(&state.admission, admission.request_id, "unknown").await;
+        return refusal(StatusCode::BAD_GATEWAY);
     }
     request = request.header(header::ACCEPT_ENCODING, "identity");
+    let retry_request = request.try_clone();
+    let request = authorized_request(
+        request,
+        auth,
+        &token,
+        account.as_deref(),
+        admission.claim.as_deref(),
+        admission.request_id,
+    );
     let (cancel_tx, mut cancelled) = watch::channel(false);
     let monitor = tokio::spawn(monitor_session(
         state.admission.clone(),
@@ -379,7 +410,7 @@ async fn forward(
         monitor: Some(monitor),
         active: true,
     };
-    let provider = match tokio::select! {
+    let mut provider = match tokio::select! {
         result = request.send() => result,
         _ = cancelled.changed() => return refusal(StatusCode::SERVICE_UNAVAILABLE),
     } {
@@ -387,6 +418,40 @@ async fn forward(
         // A transport error may follow provider receipt of the request body.
         Err(_) => return refusal(StatusCode::BAD_GATEWAY),
     };
+    // A provider's 401 can be caused by a rotated org secret. Repeat the exact
+    // admitted request only when a fresh snapshot actually changed authority.
+    if !personal && !relay && provider.status() == StatusCode::UNAUTHORIZED {
+        let fresh = tokio::select! {
+            result = credential_material(
+                &state.secrets,
+                &token_ref,
+                account_ref.as_ref(),
+                false,
+                true,
+            ) => result,
+            _ = cancelled.changed() => return refusal(StatusCode::SERVICE_UNAVAILABLE),
+        };
+        if let (Some(retry_request), Ok((fresh_token, fresh_account))) = (retry_request, fresh)
+            && (fresh_token.expose_secret() != token.expose_secret() || fresh_account != account)
+        {
+            drop(provider);
+            let retry = authorized_request(
+                retry_request,
+                auth,
+                &fresh_token,
+                fresh_account.as_deref(),
+                None,
+                admission.request_id,
+            );
+            provider = match tokio::select! {
+                result = retry.send() => result,
+                _ = cancelled.changed() => return refusal(StatusCode::SERVICE_UNAVAILABLE),
+            } {
+                Ok(value) => value,
+                Err(_) => return refusal(StatusCode::BAD_GATEWAY),
+            };
+        }
+    }
     let status = provider.status();
     if provider
         .headers()

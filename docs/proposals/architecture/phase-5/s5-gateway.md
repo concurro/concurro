@@ -8,23 +8,17 @@ exchange's forwarder hooks (`gateway/exchange/inference.py`: `/start`, `/resolve
 ## Shape
 
 **A separate, stateless process.** Every decision comes from the exchange's admission
-API, and every secret from OpenBao. A restart drops only the streams in flight, which
+API; secrets come from configured OpenBao or file references. A restart drops only the streams in flight, which
 the runner's harness retries. It needs no readiness rebuild after event loss, because
 it holds no binding state.
 
-**Crate `crates/inference-gateway`,** with these modules:
+**Crate `crates/inference-gateway`,** with these components:
 
 | Module | Does |
 | ---- | ---- |
-| `listener` | `axum` on `hyper`, `/v1/*` |
-| `keys` | Reads the session key from `authorization: Bearer` or `x-api-key`, as the harnesses send it |
-| `admission` | Uses `exchange-client` |
-| `routes` | The route table |
-| `credentials` | `concurro-secrets`: org credentials cached and refreshed; personal versions read per admission, cached in memory for the session's deadline at most |
-| `forward` | Header policy, streaming passthrough, cancellation |
-| `usage` | A port of `gateway/provider_protocol.py`: Responses and Messages, streaming and non-streaming |
-| `errors` | Today's category map and sanitized error bodies |
-| `relay` | Verifier dispatch with the claim |
+| `main.rs` | TOML settings and private listener |
+| `lib.rs` | Admission, route selection, credentials, forwarding, cancellation and relay dispatch |
+| `protocol.rs` | Responses and Messages observations, usage and error classification |
 
 ## Request flow
 
@@ -35,7 +29,7 @@ it holds no binding state.
    status with `{"error":{"type":"unknown","message":"private request refused"}}`.
 3. **Pick the route from the admission's credential:**
    - Org: the route the grant froze, chosen by the task application from target
-     configuration. Today a client header (`x-concurro-plan`) picks it.
+     configuration. The caller's `x-concurro-plan` is stripped.
    - Secret store: the exact version at `personal/<record_id>`.
    - Relay: the verifier.
 4. **Forward:**
@@ -91,9 +85,10 @@ it holds no binding state.
 
 ## Credentials and rotation
 
-- **Org credentials** come from `ops/gateway/providers` and are refreshed every 60
-  seconds. After a provider `401` the gateway refreshes them once at once, and retries
-  the request if the value changed.
+- **Org credentials** come from `ops/gateway/providers` and are refreshed within the
+  configured OpenBao interval (60 seconds in the example). After a provider `401`,
+  the gateway reads them together and retries the same admitted request only if
+  the token or account changed. Same-path OpenBao fields come from one snapshot.
 - **Personal versions** are read when admitted. A version destroyed in OpenBao becomes
   the `auth` category, as today's resolve failure does.
 - **No value appears in logs or errors.** Tests check this with known values.
@@ -114,12 +109,12 @@ it holds no binding state.
 | ---- | ---- |
 | `listen` | Inference listener |
 | `exchange_admission_url` | The exchange's admission API |
-| `admission_bearer` | `SecretRef` |
+| `admission_bearer_file` | Private bearer file |
 | `openbao` | URL, AppRole role ID, secret ID file |
-| `upstreams` | Base URL per provider |
-| `verifier_url` | The verifier's private API |
-| `verifier_inference_credential` | `SecretRef` |
-| `limits` | Body limit, event limit, concurrency |
+| `routes`, `personal_routes` | Org credential references and personal provider destinations |
+| `relay.verifier`, `relay.credential` | Verifier private API and `SecretRef` bearer |
+
+The body and event limits are fixed in the router and protocol implementation.
 
 ## Acceptance
 

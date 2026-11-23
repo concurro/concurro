@@ -993,7 +993,7 @@ pub async fn record_withdraw_transition(
     uow: &mut UnitOfWork<'_>,
     task: Uuid,
     fact: &ConsentFact,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let previous: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT body FROM tasks.sponsorship_transitions \
          WHERE COALESCE(task_id,standalone_task_id)=$1 AND provider=$2 \
@@ -1004,7 +1004,7 @@ pub async fn record_withdraw_transition(
     .fetch_optional(uow.connection())
     .await?;
     let Some((body,)) = previous else {
-        return Ok(());
+        return Ok(None);
     };
     let prior: Value = serde_json::from_slice(&body)?;
     let slot = &prior["slot"];
@@ -1017,7 +1017,7 @@ pub async fn record_withdraw_transition(
             } if slot["source_id"] != *source
         )
     {
-        return Ok(());
+        return Ok(None);
     }
     let epoch = slot["epoch"]
         .as_i64()
@@ -1048,7 +1048,7 @@ pub async fn record_withdraw_transition(
         transition["slot"]["funding_order"] = slot["funding_order"].clone();
     }
     transition["transition"] = Value::String(python_digest(&transition)?);
-    record_sponsorship_transition(uow, task, &transition).await?;
+    let transition_id = record_sponsorship_transition(uow, task, &transition).await?;
     let contribution: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE tasks.funding_grants SET status='revoked',revoked_at=now() \
          WHERE task_id=$1 AND provider=$2 AND payer_id=$3 AND slot_epoch<=$4 \
@@ -1074,7 +1074,33 @@ pub async fn record_withdraw_transition(
     for turn in contribution.into_iter().chain(standalone) {
         crate::credential_revocation::enqueue_retirement(uow, turn).await?;
     }
-    Ok(())
+    Ok(Some(transition_id))
+}
+
+/// Include earlier unacknowledged cutoffs for the same actor and provider.
+pub(crate) async fn pending_withdraw_transitions(
+    uow: &mut UnitOfWork<'_>,
+    task: Uuid,
+    fact: &ConsentFact,
+) -> anyhow::Result<Vec<String>> {
+    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT transition,body FROM tasks.sponsorship_transitions \
+         WHERE COALESCE(task_id,standalone_task_id)=$1 AND provider=$2 \
+         AND status<>'acknowledged' ORDER BY sequence",
+    )
+    .bind(task)
+    .bind(fact.provider.as_str())
+    .fetch_all(uow.connection())
+    .await?;
+    let actor = fact.actor.id.to_string();
+    let mut pending = Vec::new();
+    for (id, body) in rows {
+        let body: Value = serde_json::from_slice(&body)?;
+        if body["reason"] == "withdraw" && body["actor"] == actor {
+            pending.push(id);
+        }
+    }
+    Ok(pending)
 }
 
 /// Reconcile one later standalone funding fact against the latest provider slot.
@@ -1096,7 +1122,8 @@ pub async fn record_standalone_funding_fact_transition(
         return Ok(());
     }
     if matches!(fact.action, ConsentAction::Withdraw { .. }) {
-        return record_withdraw_transition(uow, task, fact).await;
+        record_withdraw_transition(uow, task, fact).await?;
+        return Ok(());
     }
     if let ConsentAction::FundingRemoved {
         removed_source,

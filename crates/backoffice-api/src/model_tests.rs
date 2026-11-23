@@ -205,3 +205,50 @@ async fn target_snapshots_replace_instead_of_concatenating() {
         );
     }
 }
+
+/// A late applied or blocked fact cannot replace a stopped withdrawal projection.
+#[tokio::test]
+async fn withdrawal_steps_project_in_source_order_across_event_reordering() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 3)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("schema");
+    sqlx::query("UPDATE backoffice.model_state SET ready=true WHERE singleton")
+        .execute(database.pool())
+        .await
+        .expect("ready projection");
+    let request = Uuid::now_v7();
+    for status in ["stopped", "applied", "blocked"] {
+        let event = TaskEvent {
+            id: Uuid::now_v7(),
+            event_type: format!("request.tasks.{status}"),
+            entity: None,
+            revision: None,
+            data: json!({"request_id":request,"task_id":null,
+                "issue":{"repository_id":8,"number":3},"status":status,
+                "kind":"withdraw","argument":{"provider":"openai"}}),
+        };
+        ingest_event(&database, &event).await.expect("request step");
+        ingest_event(&database, &event)
+            .await
+            .expect("idempotent redelivery");
+    }
+    let (revision, SqlJson(body)): (i64, SqlJson<Value>) = sqlx::query_as(
+        "SELECT revision,body FROM backoffice.model_items WHERE entity='request' AND entity_id=$1",
+    )
+    .bind(request.to_string())
+    .fetch_one(database.pool())
+    .await
+    .expect("request projection");
+    assert_eq!(revision, 3);
+    assert_eq!(body["status"], "stopped");
+    assert_eq!(body["outcome"]["status"], "stopped");
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM backoffice.model_events WHERE event_type LIKE 'request.tasks.%'",
+    )
+    .fetch_one(database.pool())
+    .await
+    .expect("deduped events");
+    assert_eq!(count, 3);
+}

@@ -73,3 +73,7 @@ with its own private bearer. It records usage, fences revoked grants, closes
 unreported requests after their five-minute settlement window, and emits each
 terminal turn fact once its requests have settled. The gateway is the only
 admission listener caller.
+
+The inactive Compose example mounts an exchange-only settings directory. Keep
+operator and admission bearers, runner token derivation, relay signing and
+release credentials there; do not mount that directory into the gateway.

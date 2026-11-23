@@ -16,16 +16,17 @@ use concurro_tasks_core::{
 };
 use concurro_tasks_postgres::{
     CommandEvidence, EffectKind, RetainedEligibility, acknowledge_retirement, admit_intake,
-    apply_request, apply_request_with_evidence, baseline_page, browser_action,
-    browser_retry_feedback, cancel_attempt, claim_dispatch, claim_effect,
-    confirm_current_sponsorship_sources, consent_projection, create_baseline,
-    due_attempt_deadlines, expire_attempt, fail_pr_review_action, initialize_task,
-    latest_intake_correction, list_tasks, mark_pr_review_action_sent, migrate, next_pending,
-    pending_effects, record_browser_action, record_comment_revision, record_observation,
-    record_poll_failure, record_request, record_sponsorship_transition, record_submit_failure,
-    record_withdraw_transition, recover_retirements, request_record, resolve_pending_write,
-    retained_eligibility, runner_session, settle_submit, settle_submit_refusal, task, task_detail,
-    transcript_page, turn_artifact,
+    apply_request, apply_request_with_evidence, apply_request_with_evidence_mode, baseline_page,
+    browser_action, browser_retry_feedback, cancel_attempt, claim_dispatch, claim_effect,
+    complete_withdrawal_step, confirm_current_sponsorship_sources, consent_projection,
+    create_baseline, due_attempt_deadlines, due_withdrawal_steps, expire_attempt,
+    fail_pr_review_action, initialize_task, latest_intake_correction, list_tasks,
+    mark_pr_review_action_sent, migrate, next_pending, pending_effects, record_browser_action,
+    record_comment_revision, record_observation, record_poll_failure, record_request,
+    record_sponsorship_transition, record_submit_failure, record_withdraw_transition,
+    recover_retirements, request_record, resolve_pending_write, retained_eligibility,
+    runner_session, settle_submit, settle_submit_refusal, task, task_detail, transcript_page,
+    turn_artifact,
 };
 use concurro_testkit::PostgresContainer;
 use flate2::{Compression, write::GzEncoder};
@@ -1421,6 +1422,262 @@ async fn superseded_sponsor_source_removal_keeps_newer_grant() {
             .expect("transition count");
     assert_eq!(count, 3);
     work.commit().await.expect("commit");
+}
+
+/// A committed cutoff survives restart but cannot report stopped before its release settles.
+#[tokio::test]
+async fn withdrawal_reports_blocked_then_stopped_after_acknowledged_stream_bound() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec!["request.>".to_owned(), "task.>".to_owned()],
+    );
+    let authority = Authority {
+        writer: true,
+        issue_open: true,
+    };
+    let start = request(10, RequestKind::Start);
+    let mut work = database.begin().await.expect("start");
+    record_request(&mut work, &start)
+        .await
+        .expect("record start");
+    let state = apply_request(&mut work, &outbox, start.id, start.issue, authority)
+        .await
+        .expect("start decision")
+        .expect("pending start")
+        .1
+        .task
+        .expect("task");
+    let mut active = json!({
+        "repository":"acme/demo", "issue":start.issue.number,
+        "provider":"openai", "generation":1, "expected_epoch":0, "reason":"sponsor",
+        "slot": {
+            "status":"active", "sponsor_id":start.actor.id.to_string(),
+            "epoch":1, "grant_id":"grant-1", "funding":"contributed",
+            "source_id":20, "source_order":["2026-11-20T00:00:00Z",20,0]
+        }
+    });
+    active["transition"] = json!(python_digest(&active).expect("digest"));
+    record_sponsorship_transition(&mut work, state.id.0, &active)
+        .await
+        .expect("active slot");
+    work.commit().await.expect("start commit");
+
+    let withdraw = request(
+        30,
+        RequestKind::Later(LaterCommand::Withdraw {
+            provider: "openai".to_owned(),
+        }),
+    );
+    let mut work = database.begin().await.expect("withdraw");
+    record_request(&mut work, &withdraw)
+        .await
+        .expect("record withdrawal");
+    let decision = apply_request_with_evidence_mode(
+        &mut work,
+        &outbox,
+        withdraw.id,
+        withdraw.issue,
+        authority,
+        None,
+        true,
+    )
+    .await
+    .expect("withdrawal decision")
+    .expect("pending withdrawal")
+    .1;
+    assert_eq!(decision.status, RequestStatus::Applied);
+    work.commit().await.expect("withdrawal commit");
+    let transitions: Vec<String> = sqlx::query_scalar(
+        "SELECT unnest(transitions) FROM tasks.withdrawal_steps WHERE request_id=$1",
+    )
+    .bind(withdraw.id)
+    .fetch_all(database.pool())
+    .await
+    .expect("withdrawal transitions");
+    assert_eq!(transitions.len(), 1);
+    let blocked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type='request.tasks.blocked'")
+            .fetch_one(database.pool())
+            .await
+            .expect("blocked fact");
+    assert_eq!(blocked, 1);
+    let again = request(
+        31,
+        RequestKind::Later(LaterCommand::Withdraw {
+            provider: "openai".to_owned(),
+        }),
+    );
+    let mut work = database.begin().await.expect("repeat withdrawal");
+    record_request(&mut work, &again)
+        .await
+        .expect("record repeat");
+    assert_eq!(
+        apply_request_with_evidence_mode(
+            &mut work,
+            &outbox,
+            again.id,
+            again.issue,
+            authority,
+            None,
+            true,
+        )
+        .await
+        .expect("repeat decision")
+        .expect("pending repeat")
+        .1
+        .status,
+        RequestStatus::Applied
+    );
+    work.commit().await.expect("repeat commit");
+    let repeated: Vec<String> = sqlx::query_scalar(
+        "SELECT unnest(transitions) FROM tasks.withdrawal_steps WHERE request_id=$1",
+    )
+    .bind(again.id)
+    .fetch_all(database.pool())
+    .await
+    .expect("repeat obligations");
+    assert_eq!(repeated, transitions);
+    let blocked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type='request.tasks.blocked'")
+            .fetch_one(database.pool())
+            .await
+            .expect("both blocked facts");
+    assert_eq!(blocked, 2);
+    sqlx::query("UPDATE tasks.withdrawal_steps SET blocked_at=now()-interval '41 seconds' WHERE request_id IN ($1,$2)")
+        .bind(withdraw.id).bind(again.id).execute(database.pool()).await.expect("age cutoff");
+    assert!(
+        due_withdrawal_steps(&database)
+            .await
+            .expect("pending scan")
+            .is_empty()
+    );
+    drop(database);
+
+    let restarted = Database::connect(postgres.url(), 2).await.expect("reopen");
+    assert!(
+        due_withdrawal_steps(&restarted)
+            .await
+            .expect("restart pending scan")
+            .is_empty()
+    );
+    sqlx::query(
+        "UPDATE tasks.sponsorship_transitions SET status='acknowledged', \
+         acknowledged_at=now() WHERE transition=$1",
+    )
+    .bind(&transitions[0])
+    .execute(restarted.pool())
+    .await
+    .expect("acknowledge revoke");
+    assert!(
+        due_withdrawal_steps(&restarted)
+            .await
+            .expect("stream bound scan")
+            .is_empty()
+    );
+    sqlx::query(
+        "UPDATE tasks.sponsorship_transitions SET acknowledged_at=now()-interval '41 seconds' \
+         WHERE transition=$1",
+    )
+    .bind(&transitions[0])
+    .execute(restarted.pool())
+    .await
+    .expect("age acknowledgement");
+    assert_eq!(
+        due_withdrawal_steps(&restarted).await.expect("ready scan"),
+        vec![withdraw.id, again.id]
+    );
+    let mut work = restarted.begin().await.expect("complete");
+    assert!(
+        complete_withdrawal_step(&mut work, &outbox, withdraw.id)
+            .await
+            .expect("stopped")
+    );
+    work.commit().await.expect("stopped commit");
+    let mut work = restarted.begin().await.expect("complete repeat");
+    assert!(
+        complete_withdrawal_step(&mut work, &outbox, again.id)
+            .await
+            .expect("repeat stopped")
+    );
+    work.commit().await.expect("repeat stopped commit");
+    let mut replay = restarted.begin().await.expect("replay");
+    assert!(
+        !complete_withdrawal_step(&mut replay, &outbox, withdraw.id)
+            .await
+            .expect("idempotent")
+    );
+    replay.commit().await.expect("replay commit");
+    let stopped: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type='request.tasks.stopped'")
+            .fetch_one(restarted.pool())
+            .await
+            .expect("stopped fact");
+    assert_eq!(stopped, 2);
+    let steps: Vec<String> = sqlx::query_scalar(
+        "SELECT body FROM tasks.publication_comments WHERE marker LIKE '<!-- concurro:withdrawal:%' ORDER BY body",
+    ).fetch_all(restarted.pool()).await.expect("step replies");
+    assert_eq!(steps.len(), 4);
+    assert!(steps.iter().any(|body| body.contains("new grants blocked")));
+    assert!(steps.iter().any(|body| body.contains("spending stopped")));
+}
+
+/// Python-mode withdrawals preserve their original single applied outcome.
+#[tokio::test]
+async fn python_withdrawal_does_not_stage_rust_exchange_steps() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec!["request.>".to_owned(), "task.>".to_owned()],
+    );
+    let authority = Authority {
+        writer: true,
+        issue_open: true,
+    };
+    let start = request(10, RequestKind::Start);
+    let mut work = database.begin().await.expect("start");
+    record_request(&mut work, &start)
+        .await
+        .expect("record start");
+    apply_request(&mut work, &outbox, start.id, start.issue, authority)
+        .await
+        .expect("start decision")
+        .expect("pending start");
+    work.commit().await.expect("start commit");
+    let withdraw = request(
+        30,
+        RequestKind::Later(LaterCommand::Withdraw {
+            provider: "openai".to_owned(),
+        }),
+    );
+    let mut work = database.begin().await.expect("withdraw");
+    record_request(&mut work, &withdraw)
+        .await
+        .expect("record withdraw");
+    apply_request(&mut work, &outbox, withdraw.id, withdraw.issue, authority)
+        .await
+        .expect("withdraw decision")
+        .expect("pending withdraw");
+    work.commit().await.expect("withdraw commit");
+    let staged: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks.withdrawal_steps")
+        .fetch_one(database.pool())
+        .await
+        .expect("step count");
+    assert_eq!(staged, 0);
+    let blocked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events.outbox WHERE type IN ('request.tasks.blocked','request.tasks.stopped')",
+    ).fetch_one(database.pool()).await.expect("later facts");
+    assert_eq!(blocked, 0);
 }
 
 /// Supply exact inputs while exercising initialization transaction boundaries.

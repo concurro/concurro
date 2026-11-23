@@ -1,0 +1,27 @@
+{
+  "id": "ee3cbdde-e3f5-5e40-82fd-39a42c0813d2",
+  "type": "request.tasks.applied",
+  "version": 3,
+  "kind": "fact",
+  "producer": "tasks",
+  "occurred_at": "2026-11-19T10:01:00Z",
+  "data": {
+    "request_id": "019aa320-1d3c-7b10-80a1-334b3fac3a81",
+    "task_id": null,
+    "issue": {
+      "repository_id": 8,
+      "number": 3
+    },
+    "kind": "stop",
+    "actor": {
+      "id": 10,
+      "login": "writer"
+    },
+    "channel": "comment",
+    "source": "11:91f3d1a1",
+    "source_at": "2026-11-19T10:00:00Z",
+    "status": "applied",
+    "reason": null,
+    "reply": "issue_comment:11"
+  }
+}

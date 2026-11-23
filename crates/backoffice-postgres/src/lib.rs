@@ -295,10 +295,15 @@ async fn apply_event(work: &mut UnitOfWork<'_>, event: &TaskEvent) -> Result<()>
         && let Some(id) = source["request_id"].as_str()
     {
         let issue = &source["issue"];
+        let step_revision = match event.event_type.as_str() {
+            "request.tasks.blocked" => 2,
+            "request.tasks.stopped" => 3,
+            _ => 1,
+        };
         (
             "request",
             id.to_owned(),
-            1,
+            step_revision,
             json!({"repository_id":issue["repository_id"],"issue_number":issue["number"],
                 "task_id":source["task_id"],"status":source["status"],
                 "reason":source["reason"],"outcome":source}),

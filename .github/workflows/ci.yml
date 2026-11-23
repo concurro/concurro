@@ -145,6 +145,12 @@ jobs:
           - image: exchange
             context: .
             dockerfile: gateway/exchange/Dockerfile
+          - image: exchange-rust
+            context: .
+            dockerfile: crates/exchange/Dockerfile
+          - image: inference-gateway-rust
+            context: .
+            dockerfile: crates/inference-gateway/Dockerfile
           - image: vault
             context: .
             dockerfile: gateway/vault/Dockerfile

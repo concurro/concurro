@@ -98,7 +98,7 @@ use concurro_tasks_postgres::{
     CommandEvidence, EffectKind, IndexRow, acknowledge_retirement,
     acknowledge_sponsorship_transition, activate_funding_policy, admit_design_batch,
     admit_design_correction, admit_implementation, admit_intake, admit_plan, applied_request,
-    apply_design_result, apply_request_with_evidence, browser_retry_feedback, claim_effect,
+    apply_design_result, apply_request_with_evidence_mode, browser_retry_feedback, claim_effect,
     claim_sponsorship_transition, confirm_current_sponsorship_sources, consent_sources,
     continue_planner_answer, cutover_floor, design_batch, design_correction, design_result,
     enqueue_label_scan, expire_attempt, fail_sponsorship_transition, finish_unapplied_result,
@@ -389,6 +389,8 @@ pub struct DecisionContext {
     pub targets: HashMap<i64, DecisionTarget>,
     /// Durable request and task event writer.
     pub outbox: Outbox,
+    /// Whether withdrawal steps use Rust exchange acknowledgements.
+    pub rust_exchange: bool,
 }
 
 /// Dependencies shared by pinned task initialization jobs.
@@ -746,7 +748,7 @@ pub async fn run_task_decision(
             None
         };
         let mut apply = database.begin().await?;
-        let decision = apply_request_with_evidence(
+        let decision = apply_request_with_evidence_mode(
             &mut apply,
             &context.outbox,
             request.id,
@@ -756,6 +758,7 @@ pub async fn run_task_decision(
                 issue_open: observed.open,
             },
             evidence.as_ref(),
+            context.rust_exchange,
         )
         .await?;
         if let Some((applied, outcome)) = decision {

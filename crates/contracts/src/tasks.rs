@@ -171,6 +171,10 @@ pub struct CommandClaims {
 pub enum RequestOutcomeStatus {
     /// The request applied its allowed decision.
     Applied,
+    /// A withdrawal cutoff now blocks new grants.
+    Blocked,
+    /// Revoked grants and already open streams have passed their stop bound.
+    Stopped,
     /// The request could not be applied.
     Refused,
     /// A newer source revision or applied control made the request obsolete.
@@ -256,12 +260,14 @@ pub struct RequestOutcome {
 
 impl Contract for RequestOutcome {
     const FAMILY: &'static str = "request.tasks";
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
     const KIND: EventKind = EventKind::Fact;
 
     fn event_type(&self) -> String {
         let status = match self.status {
             RequestOutcomeStatus::Applied => "applied",
+            RequestOutcomeStatus::Blocked => "blocked",
+            RequestOutcomeStatus::Stopped => "stopped",
             RequestOutcomeStatus::Refused => "refused",
             RequestOutcomeStatus::Superseded => "superseded",
         };
@@ -270,6 +276,28 @@ impl Contract for RequestOutcome {
 
     fn subject(&self) -> String {
         self.event_type()
+    }
+}
+
+/// A retained request outcome envelope decoded with its original wire version.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RetainedRequestOutcome<const VERSION: u32>(
+    /// Payload shared with the current request outcome family.
+    pub RequestOutcome,
+);
+
+impl<const VERSION: u32> Contract for RetainedRequestOutcome<VERSION> {
+    const FAMILY: &'static str = RequestOutcome::FAMILY;
+    const VERSION: u32 = VERSION;
+    const KIND: EventKind = EventKind::Fact;
+
+    fn event_type(&self) -> String {
+        self.0.event_type()
+    }
+
+    fn subject(&self) -> String {
+        self.0.subject()
     }
 }
 

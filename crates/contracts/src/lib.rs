@@ -35,7 +35,8 @@ pub use ingress::{CoverageAdvanced, CoverageGap};
 pub use tasks::{
     CommandClaims, CommandContent, CommandSubmission, ConfigLauncher, ConfigTarget, ConfigTargets,
     ReadModelRecord, RequestActor, RequestCommand, RequestOutcome, RequestOutcomeStatus,
-    TaskBudget, TaskBudgets, TaskIssue, TaskNotice, TaskReport, TaskSnapshot,
+    RetainedRequestOutcome, TaskBudget, TaskBudgets, TaskIssue, TaskNotice, TaskReport,
+    TaskSnapshot,
 };
 pub use turns::{
     TurnArtifact, TurnFinished, TurnRunner, TurnStatus, TurnSubmitted, TurnTranscript,

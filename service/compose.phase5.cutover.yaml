@@ -1,0 +1,19 @@
+# Layer over compose.rust.yaml when accounts switches to the native store.
+# The verifier's private API and OpenBao are separate from the public edge.
+services:
+  accounts:
+    networks:
+      edge:
+        aliases: [concurro-accounts]
+      platform:
+        aliases: [concurro-accounts-platform]
+      secrets: {}
+      relay-private: {}
+
+networks:
+  secrets:
+    external: true
+    name: concurro-secrets
+  relay-private:
+    external: true
+    name: concurro-relay-private-v2

@@ -71,11 +71,13 @@ mod python_import;
 mod read_model;
 mod recovery;
 mod rust_exchange;
+mod withdrawal;
 pub use recovery::CommandEvidence;
 pub use rust_exchange::{
     OrgAttempt, admit_rust_revision, due_rust_observations, freeze_submit, org_attempt,
     record_usage,
 };
+pub use withdrawal::{complete_withdrawal_step, due_withdrawal_steps};
 mod report_publication;
 pub use gates::{
     GateInputs, TerminalPrInputs, confirm_ready, fail_ready_intent, gate_inputs, mark_ready_sent,
@@ -173,7 +175,8 @@ pub use standalone_commands::{
     StandaloneReviewCommand, apply_standalone_review_control, browser_standalone_action,
     next_standalone_review_command, pending_standalone_review_commands,
     record_browser_standalone_action, record_standalone_funding_revision,
-    record_standalone_review_command, settle_standalone_review_command, standalone_action_record,
+    record_standalone_review_command, record_standalone_withdrawal_steps,
+    settle_standalone_review_command, standalone_action_record,
 };
 pub use standalone_publication::{
     StandaloneDisposition, StandaloneReviewPublication, confirm_standalone_disposition_reply,
@@ -986,15 +989,40 @@ async fn finish_request(
     .bind(task_id.map(|id| id.0))
     .execute(uow.connection())
     .await?;
-    let command = request.kind.outcome_command();
     let outcome_status = match status {
         RequestStatus::Applied => RequestOutcomeStatus::Applied,
         RequestStatus::Refused => RequestOutcomeStatus::Refused,
         RequestStatus::Superseded => RequestOutcomeStatus::Superseded,
     };
+    append_request_fact(uow, outbox, request, task_id, outcome_status, reason).await?;
+    publication::queue_request_reply(uow, request, status, reason).await?;
+    Ok(())
+}
+
+/// Append one immutable request step under the request's existing event family.
+async fn append_request_fact(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    request: &Request,
+    task_id: Option<TaskId>,
+    status: RequestOutcomeStatus,
+    reason: Option<&str>,
+) -> anyhow::Result<()> {
+    let command = request.kind.outcome_command();
+    let step = match status {
+        RequestOutcomeStatus::Applied
+        | RequestOutcomeStatus::Refused
+        | RequestOutcomeStatus::Superseded => None,
+        RequestOutcomeStatus::Blocked => Some("blocked"),
+        RequestOutcomeStatus::Stopped => Some("stopped"),
+    };
     let event_id = Uuid::new_v5(
         &Uuid::NAMESPACE_OID,
-        format!("request-outcome:{}", request.id).as_bytes(),
+        match step {
+            Some(step) => format!("request-outcome:{}:{step}", request.id),
+            None => format!("request-outcome:{}", request.id),
+        }
+        .as_bytes(),
     );
     let event = Envelope::fact(
         EventId(event_id),
@@ -1009,13 +1037,12 @@ async fn finish_request(
             channel: request.channel.clone(),
             source: request.order.source.clone(),
             source_at: Timestamp(request.order.at),
-            status: outcome_status,
+            status,
             reason: reason.map(str::to_owned),
             reply: request.reply.clone(),
         },
     );
     outbox.append(uow, &event).await?;
-    publication::queue_request_reply(uow, request, status, reason).await?;
     Ok(())
 }
 
@@ -1351,6 +1378,20 @@ pub async fn apply_request_with_evidence(
     authority: Authority,
     evidence: Option<&CommandEvidence>,
 ) -> anyhow::Result<Option<(Request, Decision)>> {
+    apply_request_with_evidence_mode(uow, outbox, candidate, issue, authority, evidence, false)
+        .await
+}
+
+/// Apply a request with the selected exchange mode's withdrawal reporting.
+pub async fn apply_request_with_evidence_mode(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    candidate: Uuid,
+    issue: IssueKey,
+    authority: Authority,
+    evidence: Option<&CommandEvidence>,
+    rust_exchange: bool,
+) -> anyhow::Result<Option<(Request, Decision)>> {
     let control: Option<(Option<Json<SourceOrder>>, Option<Json<SourceOrder>>, Option<Json<SourceOrder>>)> = sqlx::query_as(
         "SELECT applied_stop,applied_lifecycle,applied_label FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2 FOR UPDATE",
     )
@@ -1435,7 +1476,8 @@ pub async fn apply_request_with_evidence(
             sponsorship::record_consent(uow, &request).await?;
         }
     }
-    if current.is_some()
+    let mut withdrawn_transitions = Vec::new();
+    if let Some((Json(state),)) = current.as_ref()
         && matches!(
             request.kind,
             RequestKind::Later(LaterCommand::Withdraw { .. })
@@ -1449,12 +1491,9 @@ pub async fn apply_request_with_evidence(
         };
         sponsorship::record_consent(uow, &request).await?;
         for fact in consent_facts(&request) {
-            sponsorship::record_withdraw_transition(
-                uow,
-                current.as_ref().expect("enrolled task").0.0.id.0,
-                &fact,
-            )
-            .await?;
+            sponsorship::record_withdraw_transition(uow, state.id.0, &fact).await?;
+            withdrawn_transitions
+                .extend(sponsorship::pending_withdraw_transitions(uow, state.id.0, &fact).await?);
         }
     }
     let mut approval_binding = None;
@@ -1782,6 +1821,27 @@ pub async fn apply_request_with_evidence(
         decision.reason,
     )
     .await?;
+    if rust_exchange
+        && decision.status == RequestStatus::Applied
+        && matches!(
+            request.kind,
+            RequestKind::Later(LaterCommand::Withdraw { .. })
+        )
+    {
+        withdrawal::record_withdrawal_blocked(
+            uow,
+            outbox,
+            &request,
+            decision
+                .task
+                .as_ref()
+                .map(|task| task.id)
+                .or_else(|| current.as_ref().map(|row| row.0.0.id)),
+            &withdrawn_transitions,
+            false,
+        )
+        .await?;
+    }
     Ok(Some((request, decision)))
 }
 

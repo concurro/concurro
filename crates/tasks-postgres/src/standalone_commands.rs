@@ -2,7 +2,9 @@
 
 use anyhow::{Result, ensure};
 use chrono::{DateTime, Utc};
+use concurro_contracts::{RequestOutcomeStatus, TaskId};
 use concurro_db::{Database, UnitOfWork};
+use concurro_events_postgres::Outbox;
 use concurro_tasks_core::{
     Actor, CommentRevision, ConsentAction, ConsentFact, IssueKey, LaterCommand, Request,
     RequestKind, SourceOrder, consent_facts,
@@ -13,10 +15,78 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::{
+    append_request_fact,
     browser_actions::RequestRecord,
     read_model::{append_read_model_record, append_standalone_view},
+    sponsorship::pending_withdraw_transitions,
     sponsorship::record_standalone_funding_fact_transition,
+    withdrawal::record_withdrawal_blocked,
 };
+
+/// Record later spending steps for an accepted standalone withdrawal.
+pub async fn record_standalone_withdrawal_steps(
+    uow: &mut UnitOfWork<'_>,
+    outbox: &Outbox,
+    command: &StandaloneReviewCommand,
+) -> Result<()> {
+    let Some(kind @ RequestKind::Later(LaterCommand::Withdraw { .. })) = command.kind.clone()
+    else {
+        return Ok(());
+    };
+    let browser = command.source.starts_with("browser:");
+    let request = Request {
+        id: command.id,
+        channel: if browser {
+            "browser"
+        } else {
+            "standalone_comment"
+        }
+        .to_owned(),
+        reply: if browser {
+            String::new()
+        } else {
+            format!("issue_comment:{}", command.comment_id)
+        },
+        comment_id: (!browser).then_some(command.comment_id),
+        issue: IssueKey {
+            repository_id: command.repository_id,
+            number: command.pr_number,
+        },
+        issue_author: command.actor.clone(),
+        actor: command.actor.clone(),
+        kind,
+        order: SourceOrder {
+            at: command.source_at,
+            source_id: command.comment_id,
+            source: command.source.clone(),
+            index: 0,
+        },
+    };
+    let task: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM tasks.standalone_review_tasks WHERE upstream=$1 AND pr_number=$2",
+    )
+    .bind(&command.upstream)
+    .bind(command.pr_number)
+    .fetch_optional(uow.connection())
+    .await?;
+    let mut transitions = Vec::new();
+    if let Some(task) = task {
+        for fact in consent_facts(&request) {
+            transitions.extend(pending_withdraw_transitions(uow, task, &fact).await?);
+        }
+    }
+    let task = task.map(TaskId);
+    append_request_fact(
+        uow,
+        outbox,
+        &request,
+        task,
+        RequestOutcomeStatus::Applied,
+        None,
+    )
+    .await?;
+    record_withdrawal_blocked(uow, outbox, &request, task, &transitions, true).await
+}
 
 /// Read a signed standalone action after validating its original actor and content.
 pub async fn browser_standalone_action(

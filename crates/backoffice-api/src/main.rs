@@ -10,8 +10,8 @@ use async_nats::jetstream::{self, consumer::PullConsumer};
 use concurro_backoffice_api::{api, model};
 use concurro_config::{Validate, load, read_secret};
 use concurro_contracts::{
-    ConfigTargets, Contract, Envelope, ReadModelRecord, RequestOutcome, TaskNotice, TaskReport,
-    TaskSnapshot, TurnFinished, TurnStatus, TurnSubmitted,
+    ConfigTargets, Contract, Envelope, ReadModelRecord, RequestOutcome, RetainedRequestOutcome,
+    TaskNotice, TaskReport, TaskSnapshot, TurnFinished, TurnStatus, TurnSubmitted,
 };
 use concurro_db::Database;
 use concurro_events::{Handler, Outcome};
@@ -134,6 +134,8 @@ async fn main() -> Result<()> {
         ("task-notice", "task.*.notice"),
         ("task-report", "task.*.report"),
         ("request", "request.>"),
+        ("request-v1", "request.>"),
+        ("request-v3", "request.>"),
         ("turn-submitted", "turn.*.submitted"),
         ("turn-status", "turn.*.status"),
         ("turn-finished", "turn.*.finished"),
@@ -170,7 +172,19 @@ async fn main() -> Result<()> {
                 consumer,
                 name,
             )),
-            "request" => tokio::spawn(run_feed::<RequestOutcome>(
+            "request" => tokio::spawn(run_feed::<RetainedRequestOutcome<2>>(
+                database.clone(),
+                stream.clone(),
+                consumer,
+                name,
+            )),
+            "request-v1" => tokio::spawn(run_feed::<RetainedRequestOutcome<1>>(
+                database.clone(),
+                stream.clone(),
+                consumer,
+                name,
+            )),
+            "request-v3" => tokio::spawn(run_feed::<RequestOutcome>(
                 database.clone(),
                 stream.clone(),
                 consumer,
@@ -327,7 +341,10 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use concurro_contracts::{Envelope, EventId, ReadModelRecord, Timestamp};
+    use concurro_contracts::{
+        Envelope, EventId, ReadModelRecord, RequestOutcome, RetainedRequestOutcome, Timestamp,
+        decode,
+    };
     use concurro_events::ProcessResult;
     use concurro_events_postgres::process_delivery;
     use concurro_testkit::PostgresContainer;
@@ -389,5 +406,64 @@ mod tests {
         .await
         .expect("projected row");
         assert_eq!(body["slots"]["openai"]["sponsor_id"], "7");
+    }
+
+    /// Retained request consumers apply old facts before later v3 steps.
+    #[tokio::test]
+    async fn retained_request_outcome_then_v3_step_projects_in_order() {
+        let postgres = PostgresContainer::start().await.expect("Postgres");
+        let database = Database::connect(postgres.url(), 3)
+            .await
+            .expect("database");
+        concurro_events_postgres::migrate(&database)
+            .await
+            .expect("event schema");
+        model::migrate(&database).await.expect("read model schema");
+        sqlx::query("UPDATE backoffice.model_state SET ready=true WHERE singleton")
+            .execute(database.pool())
+            .await
+            .expect("ready model");
+        let old = include_bytes!("../../../contracts/fixtures/request.tasks.v2/valid/applied.json");
+        assert_eq!(
+            process_delivery::<RetainedRequestOutcome<2>, _>(
+                &database,
+                "backoffice-request",
+                3,
+                old,
+                "old",
+                &ReadHandler,
+            )
+            .await
+            .expect("retained v2"),
+            ProcessResult::Done
+        );
+        let legacy =
+            include_bytes!("../../../contracts/fixtures/request.tasks.v1/valid/applied.json");
+        decode::<RetainedRequestOutcome<1>>(legacy).expect("retained v1 decoder");
+        let mut step: Value = serde_json::from_slice(include_bytes!(
+            "../../../contracts/fixtures/request.tasks.v3/valid/withdraw_blocked.json"
+        ))
+        .expect("step fixture");
+        step["id"] = json!(Uuid::now_v7());
+        let raw = serde_json::to_vec(&step).expect("wire step");
+        assert_eq!(
+            process_delivery::<RequestOutcome, _>(
+                &database,
+                "backoffice-request-v3",
+                3,
+                &raw,
+                "step",
+                &ReadHandler,
+            )
+            .await
+            .expect("v3 step"),
+            ProcessResult::Done
+        );
+        let request = step["data"]["request_id"].as_str().expect("request id");
+        let (revision, Json(body)): (i64, Json<Value>) = sqlx::query_as(
+            "SELECT revision,body FROM backoffice.model_items WHERE entity='request' AND entity_id=$1",
+        ).bind(request).fetch_one(database.pool()).await.expect("request projection");
+        assert_eq!(revision, 2);
+        assert_eq!(body["status"], "blocked");
     }
 }

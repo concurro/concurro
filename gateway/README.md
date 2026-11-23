@@ -45,6 +45,37 @@ The service's image holds the release's commit, which it serves. Every runner se
 that commit and the launcher workflow runs it, so a deployment changes nothing on GitHub and
 ordinary `main` pushes do not change the engine a deployment runs.
 
+## Phase 5 cutover candidates
+
+These files are inactive preparation for the coordinated [Phase 5 cutover](../docs/proposals/architecture/phase-5-plan.md#cutover):
+
+| Component | Compose files |
+| ---- | ---- |
+| OpenBao | `deploy/compose.openbao.yaml`, with a host database-network overlay when using an existing PostgreSQL cluster |
+| Rust exchange and inference gateway | `deploy/compose.phase5.inactive.yaml`, then `deploy/compose.phase5.cutover.yaml` at the switch |
+| Accounts native store | Existing service Compose files, then `service/compose.phase5.cutover.yaml` at the switch |
+| Protocol 5 verifier and Responses bridge | `deploy/compose.relay-v2.yaml` in its own project at the switch |
+| Edge routes | `gateway/concurro.phase5.caddy`, merged with the installed site and validated before reload |
+
+The cutover overlays use the external `concurro-secrets` and
+`concurro-relay-private-v2` networks. The exchange operator, runner and admission
+listeners bind to their platform, edge and private aliases respectively; the
+gateway's public listener binds to its edge alias. Keep each service's settings
+and secret mount separate. The verifier's old and new releases cannot hold the
+public Sponsor port at once. The existing general updater still selects the old
+gateway stack and is not a Phase 5 switch command; use installation-specific,
+reviewed steps and exact image pins.
+
+The fork's `CONCURRO_GATEWAY_URL` secret is the public runner control base,
+`https://<host>/concurro`. The v2 launcher appends
+`/runner/v2/sessions/<session>/claim`, yielding
+`https://<host>/concurro/runner/v2/sessions/<session>/claim`. The exchange's
+`inference_base_url` is separately
+`https://<host>/concurro/inference/v1`; model calls use that URL. Check the
+fork secret when changing the launcher ref. Release `backoffice-read` from the
+same backend commit no later than v3-producing tasks, while preserving its
+database and public read routes.
+
 ## New installation
 
 For a host that has never run Concurro. This sequence follows the scripts, Compose files

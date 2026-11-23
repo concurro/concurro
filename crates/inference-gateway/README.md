@@ -1,6 +1,6 @@
 # Inference gateway
 
-Phase 5 S4 supplies org and contributed HTTP routes. It remains inactive until S7.
+Phase 5 S5 supplies org, contributed and relay HTTP routes. It remains inactive until S7.
 The runner sends its derived session key; the gateway asks the exchange's
 private admission listener to authorize each request and select the grant's
 frozen route. It injects the frozen org or personal credential, streams provider
@@ -64,3 +64,18 @@ exchange error. Personal routes read only the admitted immutable
 ChatGPT `account` field when needed. Relay routes send the exchange's signed
 claim and one stable request ID to the S1 verifier. A verifier
 `request_reused` refusal is reported for that same ID without another dispatch.
+Org values are cached for at most the OpenBao refresh interval (60 seconds in
+the example). A provider 401 triggers one fresh read of the token and account
+from the same OpenBao secret; the admitted request is retried once only when
+that material changed. A second 401 is reported as a provider authentication
+failure. Personal versions and relay claims are never retried this way.
+
+The pinned S1 `responses-bridge` takes `--gateway` pointing to this service's
+HTTP listener. It carries Codex WebSocket `response.create` calls into
+`POST /v1/responses`, and closing or cancelling the WebSocket drops the active
+gateway stream. S7 routes the WebSocket edge path to the bridge.
+
+The inactive Compose example mounts a gateway-only settings directory. It must
+contain only the gateway's admission bearer, route references and OpenBao AppRole
+secret ID; exchange operator, runner-token and signing material belong in the
+separate exchange-only directory.

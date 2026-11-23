@@ -1,0 +1,29 @@
+# Layer over compose.phase5.inactive.yaml only for the coordinated S7 switch.
+# Bind each listener to its own network alias in exchange.toml and
+# inference-gateway.toml; operator and admission listeners must not bind on edge.
+services:
+  exchange-rust:
+    networks:
+      platform:
+        aliases: [concurro-exchange-operator]
+      secrets: {}
+      edge:
+        aliases: [concurro-exchange-runner]
+      relay-private:
+        aliases: [concurro-exchange-admission]
+
+  inference-gateway-rust:
+    networks:
+      platform: {}
+      secrets: {}
+      edge:
+        aliases: [concurro-inference-gateway]
+      relay-private: {}
+
+networks:
+  edge:
+    external: true
+    name: edge
+  relay-private:
+    external: true
+    name: concurro-relay-private-v2

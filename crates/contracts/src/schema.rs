@@ -19,10 +19,9 @@ pub(crate) fn prepare_read_model_record(schema: &mut Value) {
 
 /// Restrict request outcome facts to the implemented dispositions.
 pub(crate) fn prepare_request_outcome(schema: &mut Value) {
-    schema["properties"]["version"] = json!({"const": 2});
+    schema["properties"]["version"] = json!({"const": 3});
     schema["properties"]["kind"] = json!({"const": "fact"});
-    schema["properties"]["type"] =
-        json!({"type": "string", "pattern": "^request\\.tasks\\.(?:applied|refused|superseded)$"});
+    schema["properties"]["type"] = json!({"type": "string", "pattern": "^request\\.tasks\\.(?:applied|blocked|stopped|refused|superseded)$"});
     schema["properties"]["entity"] = json!({"type": "null"});
     schema["properties"]["revision"] = json!({"type": "null"});
 }

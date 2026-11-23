@@ -1,7 +1,7 @@
 # S6: task application on the Rust exchange
 
 Part of the [phase 5 plan](../phase-5-plan.md). The same release starts in either mode,
-`exchange = "python"` or `"rust"`, chosen in settings. S7 switches it to `"rust"` after
+`exchange_kind = "python"` or `"rust"`, chosen in settings. S7 switches it to `"rust"` after
 the quiesce, and the retirement slice removes the Python mode.
 
 The funding module keeps consent, selection, grants, budgets and accounting. Phase 5
@@ -12,34 +12,31 @@ learns about revocations and usage.
 
 - **`crates/tasks` and `crates/tasks-postgres`:** the changes below. SQL stays in the
   storage crate.
-- **`crates/exchange-client`** ([S4](s4-exchange.md)) replaces `crates/exchange-v1` in
-  Rust mode.
+- **`crates/exchange-client`** ([S4](s4-exchange.md)) serves Rust mode alongside
+  the retained `crates/exchange-v1` Python-mode client.
 - **`crates/vault-v1`'s client and `Metadata::select`** are reused against accounts'
   metadata API. Only the base URL, path and bearer change. The crate is renamed when the
   Python mode goes.
 
 ## Submits
 
-- **The body is the operator API v1 submit,** built once and stored as today, so replays
+- **The body is the operator API v2 submit,** built once and stored as today, so replays
   resend it unchanged. It carries:
   - the attempt as the turn;
   - the attempt's grant: `task_org` with the org route, or `task_contributed` with the
     selected credential;
   - the binding (today's, without its funding fields), the staffing group, expected
     OIDC claims, models, token budget, lease, and turn payload v2.
-- **The org route** comes from the target configuration that sets today's
-  `gateway.headers.codex` plan: ChatGPT subscription or the OpenAI key for Codex, and
-  Claude OAuth for Claude. It is frozen on the grant.
-  - A migration lets `task_org` grants carry a `route`. Today a check constraint keeps
-    it null for org grants (`crates/tasks-postgres/migrations/0004_funding_grants.sql:20-23`,
-    `0008_standalone_reviews.sql:182-186`).
+- **The org route** comes from the target's `org_routes` map for the selected runner
+  provider, and is frozen in the submitted grant.
 - **The retained archive** is referenced by digest. The submit waits until the archive
   object is verified in the object store, which the task application already does for
   session restore (`crates/tasks/src/archive.rs:156`).
 - **Effects are unchanged:** the effect job claims, sends, retries transient failures,
   and settles a refusal as today (`crates/tasks-postgres/src/effects.rs`).
-- **No sponsorship slot transitions are sent in Rust mode;** the slot adapter doesn't
-  run.
+- **Internal provider-slot transitions remain** the task application's consent
+  coordination ledger. Rust mode acknowledges them locally after the required
+  grant revokes; it does not send the Python exchange's slot HTTP request.
 
 ## Results
 
@@ -77,16 +74,22 @@ learns about revocations and usage.
 
 ## Grant revocation
 
-- **Every revocation of an `issued` grant records an exchange effect:** withdrawal
-  cutoffs, attempt cancellation, permission loss, and a revoked credential version.
-  - The effect is `POST /v1/grants/{grant_id}/revoke`, through recorded, `sending` and
-    settled, retried until acknowledged.
-  - It's recorded in the same transaction as the revocation.
-- **Spending stopped.** The withdrawal's "spending stopped" step
-  (`request.tasks.stopped`) is published 40 seconds after every revoked grant's effect is
-  settled: the gateway's worst-case stream bound, which fails closed during an exchange
-  outage ([gateway](s5-gateway.md#cancellation-and-revocation)). Phase 3's time bound is
-  replaced by this shorter, documented one.
+- **Revocation follows the durable source transition.** A withdrawal commits the
+  provider-slot cutoff and its retryable sponsorship transition together. That
+  worker calls `POST /v1/grants/{grant_id}/revoke` for every affected submitted grant
+  before acknowledging the slot. Credential-version changes fence later grant
+  insertion and enqueue retryable turn retirement for grants that may have reached
+  exchange. Unsent attempts are refused locally.
+- **Withdrawal steps.** In Rust mode the accepted request emits `request.tasks.applied` and a
+  durable `request.tasks.blocked` fact when its cutoff commits. Rust mode acknowledges
+  the internal withdrawal slot only after every affected grant revoke succeeds.
+  A restart-safe recovery scan emits `request.tasks.stopped` after those
+  acknowledgements and the 40-second stream bound have elapsed. Each step also
+  queues an idempotent GitHub reply for issue and standalone PR comment requests;
+  browser requests use their normal receipt. Python mode retains its existing
+  applied outcome without Rust-only later steps. The gateway closes open
+  streams through its session check during an exchange outage
+  ([gateway](s5-gateway.md#cancellation-and-revocation)).
 
 ## Credential facts
 
@@ -138,9 +141,9 @@ replacement credential is picked up by the next attempt, as today.
   for the same recorded turn.
 - **Contributed:** selection from accounts' metadata API, the grant carried in the
   submit, and replay of an admitted attempt resending the same body.
-- **Withdrawal:** the cutoff, revoke effect and acknowledgement come first, and
-  "spending stopped" is published after the bound. A delayed acknowledgement delays the
-  step and doesn't skip it.
+- **Withdrawal:** the cutoff and blocked fact commit together; delayed revoke
+  acknowledgement keeps stopped pending through restart. The stopped fact and reply
+  follow all affected acknowledgements and the stream bound.
 - **Credential replaced:** the fact revises the grant to `revoked` and records a revoke
   effect. The next attempt selects the new version.
 - **Contributed failure and fallback:** a `quota_exhausted` failure on the first

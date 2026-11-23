@@ -206,7 +206,7 @@ class SummaryTests(unittest.TestCase):
                     loop = runner.Loop(client, "key", object(), self.root, task=TASK)
                     result = {"outcome": "ok", "response": {}}
 
-                    def execute(*args):
+                    def execute(*args, **kwargs):
                         """Simulate an agent damaging the receipt while completing its turn."""
                         if during:
                             path.write_bytes(data)

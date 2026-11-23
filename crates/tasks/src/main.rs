@@ -52,18 +52,19 @@ use concurro_tasks::{
 };
 use concurro_tasks_core::IssueKey;
 use concurro_tasks_postgres::{
-    CommentResolution, cancel_attempt, due_attempt_deadlines, due_comment_readbacks,
-    due_rust_observations, enqueue_dashboard, enqueue_runner_session, enqueue_stage_label,
-    expire_attempt, fail_coverage_gap, import_cutover_manifest, import_historical_display,
-    import_python_manifest, list_tasks, pending_coverage_gaps, pending_effects, pending_issues,
-    pending_label_wakes, pending_pr_review_readbacks, pending_python_import_archives,
-    pending_report_artifact_readbacks, pending_standalone_dispositions,
-    pending_standalone_review_commands, pending_standalone_review_issues,
-    pending_standalone_review_readbacks, pending_standalone_review_results,
-    pending_standalone_review_rounds, pending_standalone_review_wakes, recover_retirements,
-    resolve_comment, resolve_pending_write, resume_standalone_review_credentials,
-    sync_config_targets, task_detail, watched_dashboards, watched_gate_issues,
-    watched_runner_sessions, watched_stage_labels, watched_standalone_review_prs,
+    CommentResolution, cancel_attempt, complete_withdrawal_step, due_attempt_deadlines,
+    due_comment_readbacks, due_rust_observations, due_withdrawal_steps, enqueue_dashboard,
+    enqueue_runner_session, enqueue_stage_label, expire_attempt, fail_coverage_gap,
+    import_cutover_manifest, import_historical_display, import_python_manifest, list_tasks,
+    pending_coverage_gaps, pending_effects, pending_issues, pending_label_wakes,
+    pending_pr_review_readbacks, pending_python_import_archives, pending_report_artifact_readbacks,
+    pending_standalone_dispositions, pending_standalone_review_commands,
+    pending_standalone_review_issues, pending_standalone_review_readbacks,
+    pending_standalone_review_results, pending_standalone_review_rounds,
+    pending_standalone_review_wakes, recover_retirements, resolve_comment, resolve_pending_write,
+    resume_standalone_review_credentials, sync_config_targets, task_detail, watched_dashboards,
+    watched_gate_issues, watched_runner_sessions, watched_stage_labels,
+    watched_standalone_review_prs,
 };
 use concurro_vault_v1::MetadataClient;
 use graphile_worker::WorkerOptions;
@@ -501,6 +502,30 @@ async fn run_retirement_recovery(database: Database) {
             tracing::warn!(%error, "retirement recovery failed");
         }
         tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// Finish committed withdrawals after exchange acknowledgements and the stream bound.
+async fn run_withdrawal_recovery(database: Database, outbox: Outbox) {
+    loop {
+        match due_withdrawal_steps(&database).await {
+            Ok(requests) => {
+                for id in requests {
+                    let result: Result<()> = async {
+                        let mut work = database.begin().await?;
+                        complete_withdrawal_step(&mut work, &outbox, id).await?;
+                        work.commit().await?;
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        tracing::warn!(%error, %id, "withdrawal step recovery failed");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "withdrawal step scan failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
@@ -1200,6 +1225,7 @@ async fn main() -> Result<()> {
             })
             .collect(),
         outbox: outbox.clone(),
+        rust_exchange: rust_exchange.is_some(),
     };
     if let (Some(listen), Some(proof_file), Some(bearer_file)) = (
         &settings.api_listen,
@@ -1361,6 +1387,8 @@ async fn main() -> Result<()> {
     let standalone_reviews = StandaloneReviewContext {
         github: github.clone(),
         targets: standalone_targets,
+        outbox: outbox.clone(),
+        rust_exchange: rust_exchange.is_some(),
     };
     observe_funding_policies(&database, &decisions, &standalone_reviews).await;
     let initialization = InitializationContext {
@@ -1496,7 +1524,10 @@ async fn main() -> Result<()> {
         intake,
     ));
     tokio::spawn(run_decision_recovery(database.clone(), decisions));
-    tokio::spawn(run_deadline_recovery(database.clone(), outbox));
+    tokio::spawn(run_deadline_recovery(database.clone(), outbox.clone()));
+    if settings.exchange_kind == "rust" {
+        tokio::spawn(run_withdrawal_recovery(database.clone(), outbox.clone()));
+    }
     tokio::spawn(run_retirement_recovery(database.clone()));
     tokio::spawn(run_stage_label_recovery(database.clone()));
     tokio::spawn(run_dashboard_recovery(database.clone()));

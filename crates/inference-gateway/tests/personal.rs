@@ -98,6 +98,9 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
     let gateway_bao = service(&bao, admin, "gateway").await;
     let bad = "a".repeat(64);
     let good = "b".repeat(64);
+    let openai = "c".repeat(64);
+    let claude = "d".repeat(64);
+    let chatgpt = "e".repeat(64);
     for (record, secret) in [(&bad, "bad-key"), (&good, "good-key")] {
         accounts
             .create(
@@ -106,6 +109,25 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             )
             .await
             .expect("immutable personal version");
+    }
+    for (record, secret, account) in [
+        (&openai, "openai-key", None),
+        (&claude, "claude-oauth", None),
+        (
+            &chatgpt,
+            "chatgpt-token",
+            Some(r#"{"chatgpt_account_id":"paired-account"}"#),
+        ),
+    ] {
+        let mut fields =
+            BTreeMap::from([("secret".to_owned(), SecretString::from(secret.to_owned()))]);
+        if let Some(account) = account {
+            fields.insert("account".to_owned(), SecretString::from(account.to_owned()));
+        }
+        accounts
+            .create(&format!("personal/{record}"), &fields)
+            .await
+            .expect("route version");
     }
     let postgres = PostgresContainer::start().await.expect("PostgreSQL");
     let database = Database::connect(postgres.url(), 8)
@@ -149,7 +171,20 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             Some("good-key") => (StatusCode::OK, Json(json!({
                 "type":"message", "stop_reason":"end_turn", "usage":{"input_tokens":3,"output_tokens":2}
             }))),
+            _ if headers.get("authorization").is_some_and(|value| value == "Bearer claude-oauth")
+                && headers.get("anthropic-beta").is_some_and(|value| value == "oauth-2025-04-20") =>
+                (StatusCode::OK, Json(json!({"type":"message","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}))),
             _ => (StatusCode::FORBIDDEN, Json(json!({"error":{"type":"unknown"}}))),
+        }
+    })).route("/v1/responses", post(|headers: HeaderMap, Json(_): Json<Value>| async move {
+        let authorization = headers.get("authorization").and_then(|value| value.to_str().ok());
+        let account = headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok());
+        let valid = (authorization == Some("Bearer openai-key") && account.is_none())
+            || (authorization == Some("Bearer chatgpt-token") && account == Some("paired-account"));
+        if valid && headers.get("x-api-key").is_none() {
+            (StatusCode::OK, Json(json!({"status":"completed","usage":{"input_tokens":1,"output_tokens":1}})))
+        } else {
+            (StatusCode::FORBIDDEN, Json(json!({"error":{"type":"unknown"}})))
         }
     }));
     let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -172,13 +207,36 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
         ),
         provider: reqwest::Client::new(),
         routes: Arc::new(HashMap::new()),
-        personal_routes: Arc::new(HashMap::from([(
-            "anthropic-api-key".to_owned(),
-            PersonalRoute {
-                upstream,
-                anthropic_beta: None,
-            },
-        )])),
+        personal_routes: Arc::new(HashMap::from([
+            (
+                "anthropic-api-key".to_owned(),
+                PersonalRoute {
+                    upstream: upstream.clone(),
+                    anthropic_beta: None,
+                },
+            ),
+            (
+                "openai-api-key".to_owned(),
+                PersonalRoute {
+                    upstream: upstream.clone(),
+                    anthropic_beta: None,
+                },
+            ),
+            (
+                "chatgpt-subscription".to_owned(),
+                PersonalRoute {
+                    upstream: upstream.clone(),
+                    anthropic_beta: None,
+                },
+            ),
+            (
+                "claude-subscription".to_owned(),
+                PersonalRoute {
+                    upstream,
+                    anthropic_beta: Some("oauth-2025-04-20".to_owned()),
+                },
+            ),
+        ])),
         relay: None,
         secrets: Arc::new(Secrets::new(Some(gateway_bao), Duration::from_secs(0))),
     });
@@ -261,6 +319,50 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             assert_eq!(category, "ok");
             assert!(failure.is_none());
         }
+        store.cancel(turn).await.expect("release route session");
+    }
+    for (record, route, path, key) in [
+        (&openai, "openai-api-key", "responses", "openai-session"),
+        (
+            &chatgpt,
+            "chatgpt-subscription",
+            "responses",
+            "chatgpt-session",
+        ),
+        (&claude, "claude-subscription", "messages", "claude-session"),
+    ] {
+        let turn = Uuid::now_v7();
+        fixture["attempt_id"] = json!(turn);
+        fixture["grant"]["grant_id"] = json!(turn.to_string());
+        fixture["grant"]["credential"] = json!({"route":route,
+            "entry_id":"entry","record_id":record,"version":1,"custody":"secret_store"});
+        let session = store
+            .submit(turn, &fixture)
+            .await
+            .expect("route grant")
+            .dispatch
+            .expect("route dispatch")
+            .session_id;
+        sqlx::query("UPDATE exchange.sessions SET session_key_hash=$2,bound_at=now(),last_seen=now() WHERE session_id=$1")
+            .bind(session).bind(hex::encode(Sha256::digest(key.as_bytes())))
+            .execute(database.pool()).await.expect("route session bind");
+        sqlx::query("UPDATE exchange.turns SET status='running' WHERE turn_id=$1")
+            .bind(turn)
+            .execute(database.pool())
+            .await
+            .expect("route running");
+        let response = http
+            .post(format!("{gateway_url}/v1/{path}"))
+            .bearer_auth(key)
+            .header("x-api-key", "forged")
+            .header("chatgpt-account-id", "forged")
+            .json(&json!({"model":"claude-test","messages":[]}))
+            .send()
+            .await
+            .expect("route request");
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let _ = response.bytes().await.expect("route response");
+        store.cancel(turn).await.expect("release route");
     }
     gateway_server.abort();
     provider_server.abort();

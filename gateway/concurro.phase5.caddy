@@ -1,0 +1,53 @@
+# Candidate S7 site fragment. Install only after the Rust exchange, gateway and
+# bridge are reachable; keep the installed site's other routes and host overrides.
+handle /concurro/* {
+	uri strip_prefix /concurro
+
+	handle /webhook {
+		reverse_proxy concurro-ingress:8789
+	}
+
+	handle /runner/v2/* {
+		reverse_proxy concurro-exchange-runner:8096
+	}
+
+	@codex_websocket {
+		path /inference/v1/responses
+		header Upgrade websocket
+	}
+	handle @codex_websocket {
+		uri strip_prefix /inference
+		reverse_proxy concurro-responses-bridge:7451
+	}
+
+	handle /inference/v1/* {
+		uri strip_prefix /inference
+		reverse_proxy concurro-inference-gateway:8098 {
+			flush_interval -1
+		}
+	}
+
+	handle /api/v2/events {
+		reverse_proxy concurro-backoffice-read:8790 {
+			header_up X-Concurro-Viewer {http.request.cookie.concurro_viewer}
+			header_up -Cookie
+			flush_interval -1
+		}
+	}
+
+	handle /api/v2/* {
+		reverse_proxy concurro-backoffice-read:8790 {
+			header_up X-Concurro-Viewer {http.request.cookie.concurro_viewer}
+			header_up -Cookie
+		}
+	}
+
+	@accounts path /api/* /auth/*
+	handle @accounts {
+		reverse_proxy concurro-accounts:8793
+	}
+
+	handle {
+		reverse_proxy concurro-backoffice-web:8080
+	}
+}

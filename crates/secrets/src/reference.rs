@@ -117,6 +117,61 @@ impl Secrets {
         self.resolve(reference, true).await
     }
 
+    /// Read two fields from one OpenBao snapshot when both references share a path.
+    pub async fn get_pair(
+        &self,
+        first: &SecretRef,
+        second: Option<&SecretRef>,
+    ) -> Result<(SecretString, Option<SecretString>), Error> {
+        self.resolve_pair(first, second, false).await
+    }
+
+    /// Refresh a paired credential after a provider has refused the cached material.
+    pub async fn refresh_pair(
+        &self,
+        first: &SecretRef,
+        second: Option<&SecretRef>,
+    ) -> Result<(SecretString, Option<SecretString>), Error> {
+        self.resolve_pair(first, second, true).await
+    }
+
+    async fn resolve_pair(
+        &self,
+        first: &SecretRef,
+        second: Option<&SecretRef>,
+        fresh: bool,
+    ) -> Result<(SecretString, Option<SecretString>), Error> {
+        if let (
+            SecretRef::OpenBao { path, field },
+            Some(SecretRef::OpenBao {
+                path: second_path,
+                field: second_field,
+            }),
+        ) = (first, second)
+            && path == second_path
+        {
+            let openbao = self
+                .openbao
+                .as_ref()
+                .ok_or_else(|| Error::Settings(format!("{first} needs OpenBao settings")))?;
+            let secret = if fresh {
+                openbao.refresh(path).await?
+            } else {
+                openbao.read(path).await?
+            };
+            return Ok((
+                secret.field(field)?.clone(),
+                Some(secret.field(second_field)?.clone()),
+            ));
+        }
+        let first_value = self.resolve(first, fresh).await?;
+        let second_value = match second {
+            Some(reference) => Some(self.resolve(reference, fresh).await?),
+            None => None,
+        };
+        Ok((first_value, second_value))
+    }
+
     async fn resolve(&self, reference: &SecretRef, fresh: bool) -> Result<SecretString, Error> {
         match reference {
             SecretRef::File(path) => {

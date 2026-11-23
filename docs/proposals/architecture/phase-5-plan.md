@@ -60,10 +60,10 @@ Each decision names the older proposal text it replaces, where there is one.
      their late-binding races (old scenarios 15 and 16).
    - "Spending stopped" is the exchange's acknowledged revocation plus the stream
      recheck bound, as phase 3's time bound was. The owner accepts that tolerance.
-4. **Sponsorship slots retire.** The exchange admits a turn only under the grant
-   submitted with it, and the task application revokes grants through the operator
-   API. Today's slot transitions, generations and epochs are a Python bridge, and the
-   funding module already enforces cutoffs when it inserts a grant.
+4. **The Python sponsorship slot adapter retires.** The exchange admits a turn only
+   under its submitted grant, and the task application revokes grants through the
+   operator API. Internal provider-slot transitions remain the task application's
+   consent ledger and coordinate acknowledgement of those revokes.
 5. **Runner API v2 changes the transport, not the turn.** v2 brings:
    - one OIDC exchange for a runner token;
    - an explicit heartbeat;
@@ -167,7 +167,7 @@ production traffic on its own (P), or needs the coordinated switch (C).
 | S4 | ✓ | ✓ | — | ✓ | Python exchange → the same, with the Rust exchange deployed inactive | Exchange SQLite → unchanged until S7 | — |
 | S5 | ✓ | ✓ | — | ✓ | agentgateway and forwarder → the same, with the Rust gateway deployed inactive | — | — |
 | S6 | ✓ | ✓ | — | ✓ | Task application on the Python exchange → the same release can start in Rust mode | Task database (unchanged ownership) | — |
-| S7 | ✓ | — | — | ✓ | Python exchange, vault, agentgateway → Rust exchange, gateway, accounts native mode | Vault, exchange SQLite → accounts database, OpenBao, exchange database | Python exchange, forwarder, vault, agentgateway, sponsorship slots, payload v1 transport, runner API v1 |
+| S7 | ✓ | — | — | ✓ | Python exchange, vault, agentgateway → Rust exchange, gateway, accounts native mode | Vault, exchange SQLite → accounts database, OpenBao, exchange database | Python exchange, forwarder, vault, agentgateway, Python sponsorship slot adapter, payload v1 transport, runner API v1 |
 
 **Why not more independent slices:**
 
@@ -273,8 +273,10 @@ installation's own commands belong in its private deployment records.
 1. **The phase 4 baseline holds.** Its live checks of credential add, reorder and
    delete, a browser command's receipt and actor, and fresh Sponsor pairing passed on
    the old stack ([S0](phase-5/s0-baseline.md#phase-4-baseline)).
-2. **S1 is deployed,** with Sponsor 0.2.0 available. Its new APIs are ready for the
-   Phase 5 callers; the Python vault and exchange no longer use the verifier.
+2. **S1 is qualified for deployment,** with Sponsor 0.2.0 available. Stage its
+   protocol 5 image and settings inactive; the live protocol 4 verifier stays in
+   place until the coordinated switch. The new owner, dispatch and release APIs
+   need the Phase 5 callers.
 3. **S2 is running.** Its self-init policies are verified. OpenBao holds:
    - the org provider credentials;
    - the exchange's claim signing key and key ID;
@@ -298,24 +300,34 @@ installation's own commands belong in its private deployment records.
 1. **Quiesce.** No task is running or queued, `effects pending` is empty, and every
    attempt is settled. The Python exchange has no queued or running turn and no live
    session. Stop the task application.
-2. **Pause credential writes** by stopping the vault's public listener. Accounts then
-   answers credential writes with `503`. Confirm the vault has no pending relay
-   intents.
+2. **Pause credential writes** by stopping accounts after the task application and
+   all old exchange sessions are quiescent. Keep the vault reachable privately for
+   `accounts capture-vault`; it has no remaining browser writer. Confirm it has no
+   pending relay intents. Browser sign-in and credentials are unavailable until
+   accounts restarts in native mode.
 3. **Back up** the vault database and keyring, the exchange database, the agentgateway
    state, the task, accounts and OpenBao databases, and the verifier registry. Verify
    each archive.
-4. **Import** with `accounts import-vault`. Metadata imports in one transaction, and
-   material imports resumably. The verification report must be clean:
+4. **Capture and import.** Take a consistent SQLite copy, run `accounts
+   capture-vault` against the still-running vault and that copy, then stop the
+   vault. Run `accounts import-vault` against the stopped copy. Metadata imports
+   in one transaction, and material imports resumably. The verification report
+   must be clean:
    - every user's metadata compared at every policy revision;
    - every material version written and read back.
 5. **Switch,** in this order:
    1. Update each target fork's executor workflow ref to the v2 launcher tag.
-   2. Verify the verifier has the exchange signing key and the three caller credentials.
+      Set and verify its `CONCURRO_GATEWAY_URL` secret as
+      `https://<host>/concurro`; the launcher appends `/runner/v2/...`.
+   2. Stop the old verifier and start protocol 5 with the preserved registry,
+      durable claim journal, exchange public key and three caller credentials.
    3. Start accounts in native mode, the exchange and the gateway.
    4. Install the edge routes for the runner and inference APIs, and point
       `responses-bridge` at the gateway.
-   5. Start the task application in Rust mode, with `workflow_ref` set to the v2 launcher
-      tag and every target's `engine_sha` set to the v2 engine commit.
+   5. Update the read API to the same backend release no later than the task
+      application, so it decodes the new request outcome version. Start tasks in
+      Rust mode, with `workflow_ref` set to the v2 launcher tag and every
+      target's `engine_sha` set to the v2 engine commit.
 6. **Qualify,** in order:
    1. An org-funded intake turn.
    2. A contributed turn on a secret-store credential.
@@ -352,8 +364,9 @@ installation's own commands belong in its private deployment records.
   are rewritten for the Rust gateway and exchange.
 - **Engine:** the runner API v1 client paths in `engine/relay.py` and
   `engine/runner.py`, and payload v1's base64 fields.
-- **Rust:** `crates/exchange-v1`. The sponsorship slot adapter and its tables. The
-  task application's poll-only paths.
+- **Rust:** `crates/exchange-v1`, the Python exchange's sponsorship slot HTTP
+  adapter, and task poll-only paths. Retain the internal provider-slot consent
+  ledger and its tables until a separately designed replacement exists.
 - **Startup modes:** accounts' and the task application's old-mode code. `vault-v1` is
   renamed to the credential metadata client.
 - **Deployment:**

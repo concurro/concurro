@@ -176,6 +176,7 @@ async fn label_scan_records_timeline_sources_once_across_repeated_wakes() {
             },
         )]),
         outbox: Outbox::new(1024 * 1024, vec!["request.>".to_owned()]),
+        rust_exchange: false,
     };
     let wake = LabelScanJob {
         delivery_id: "label-delivery".to_owned(),
@@ -453,6 +454,7 @@ async fn decision_jobs_recheck_github_before_applying_each_request() {
             },
         )]),
         outbox,
+        rust_exchange: false,
     };
     let worker = WorkerOptions::default()
         .pg_pool(database.pool().clone())
@@ -777,6 +779,7 @@ async fn control_arrival_during_authority_read_drains_both_requests() {
             },
         )]),
         outbox: outbox.clone(),
+        rust_exchange: false,
     };
     let mut receipt = database.begin().await.expect("start receipt");
     record_request(&mut receipt, &unverified)

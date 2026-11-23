@@ -477,6 +477,8 @@ async fn verify_standalone_review(contributed: bool) {
                 grant: Some(grant),
             },
         )]),
+        outbox: Outbox::new(1024 * 1024, vec!["request.>".to_owned()]),
+        rust_exchange: false,
     };
     observe_standalone_funding_policy(&database, &context, 8, &"c".repeat(40))
         .await
@@ -1314,6 +1316,8 @@ async fn reviewer_account_publication_confirms_exact_native_review_once() {
                 grant: Some(grant),
             },
         )]),
+        outbox: Outbox::new(1024 * 1024, vec!["request.>".to_owned()]),
+        rust_exchange: false,
     };
     let requested = StandaloneReviewRequest {
         id: Uuid::now_v7(),

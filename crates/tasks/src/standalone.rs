@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use concurro_contracts::{Envelope, GithubEvent, PullRequestPayload};
 use concurro_db::{Database, UnitOfWork};
 use concurro_events::{Handler, Outcome};
+use concurro_events_postgres::Outbox;
 use concurro_github_v1::{AppClient, user_grant::UserGrant};
 use concurro_tasks_core::{
     Actor, Admission, DesignReviewer, FundingMode, LaterCommand, Provider, RequestKind,
@@ -26,10 +27,11 @@ use concurro_tasks_postgres::{
     observe_standalone_review_wake, pr_is_owned, record_sponsorship_transition,
     record_standalone_funding_fact_transition, record_standalone_funding_revision,
     record_standalone_initial_sponsorship, record_standalone_review_request,
-    settle_standalone_review_command, source_after_activation, standalone_consent_sources,
-    standalone_review_attempts, standalone_review_boundary, standalone_review_correction,
-    standalone_review_outstanding_findings, standalone_review_result, standalone_review_round,
-    standalone_review_source_is_current, standalone_sponsorship_initialized, upsert_index_event,
+    record_standalone_withdrawal_steps, settle_standalone_review_command, source_after_activation,
+    standalone_consent_sources, standalone_review_attempts, standalone_review_boundary,
+    standalone_review_correction, standalone_review_outstanding_findings, standalone_review_result,
+    standalone_review_round, standalone_review_source_is_current,
+    standalone_sponsorship_initialized, upsert_index_event,
 };
 use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
 use serde::{Deserialize, Serialize};
@@ -64,6 +66,10 @@ pub struct StandaloneReviewContext {
     pub github: AppClient,
     /// Targets keyed by numeric upstream repository ID.
     pub targets: HashMap<i64, StandaloneReviewTarget>,
+    /// Durable request event writer.
+    pub outbox: Outbox,
+    /// Whether Rust exchange acknowledgements drive later withdrawal steps.
+    pub rust_exchange: bool,
 }
 
 /// Observe a standalone target's current fork funding policy.
@@ -899,6 +905,9 @@ async fn run_standalone_review_command(
     } else {
         apply_standalone_review_control(&mut work, command, adoption.as_ref()).await?
     };
+    if context.rust_exchange && status == "applied" {
+        record_standalone_withdrawal_steps(&mut work, &context.outbox, command).await?;
+    }
     settle_standalone_review_command(&mut work, command, status, reason).await?;
     work.commit().await?;
     Ok(())

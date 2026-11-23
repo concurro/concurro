@@ -121,9 +121,9 @@
   {
     "family": "request.tasks",
     "python_decoder": "decode_request_outcome",
-    "python_module": "request_tasks_v2",
-    "stem": "request.tasks.v2",
-    "version": 2
+    "python_module": "request_tasks_v3",
+    "stem": "request.tasks.v3",
+    "version": 3
   },
   {
     "family": "task",

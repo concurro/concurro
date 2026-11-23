@@ -1,0 +1,33 @@
+# Local packaging for inactive Phase 5 services. S7 owns routing, credentials and cutover.
+name: concurro-phase5
+
+services:
+  exchange-rust:
+    image: ${CONCURRO_EXCHANGE_RUST_IMAGE:?pin a qualified commit image}
+    environment:
+      CONCURRO_EXCHANGE_CONFIG: /run/concurro/exchange.toml
+    volumes:
+      - ${CONCURRO_EXCHANGE_ETC:?exchange-only settings and secrets directory}:/run/concurro:ro
+    networks:
+      - platform
+      - secrets
+    restart: unless-stopped
+
+  inference-gateway-rust:
+    image: ${CONCURRO_INFERENCE_GATEWAY_RUST_IMAGE:?pin a qualified commit image}
+    environment:
+      CONCURRO_INFERENCE_GATEWAY_CONFIG: /run/concurro/inference-gateway.toml
+    volumes:
+      - ${CONCURRO_GATEWAY_ETC:?gateway-only settings and secrets directory}:/run/concurro:ro
+    networks:
+      - platform
+      - secrets
+    restart: unless-stopped
+
+networks:
+  platform:
+    external: true
+    name: platform
+  secrets:
+    external: true
+    name: concurro-secrets

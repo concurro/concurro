@@ -27,7 +27,7 @@ pub async fn comment_scope(
     id: Uuid,
 ) -> Result<Option<(i64, String, bool)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT repository_id,status,standalone_command_id IS NOT NULL \
+        "SELECT repository_id,status,standalone_command_id IS NOT NULL OR standalone_step_command_id IS NOT NULL \
         FROM tasks.publication_comments WHERE id=$1",
     )
     .bind(id)
@@ -154,6 +154,48 @@ pub(crate) async fn queue_request_reply(
     .await?;
     anyhow::ensure!(saved == Some(id), "request reply changed on replay");
     enqueue_comment_job(uow, id, request.issue).await?;
+    Ok(())
+}
+
+/// Queue a later withdrawal step through the existing uncertain-create reply path.
+pub(crate) async fn queue_request_step_reply(
+    work: &mut UnitOfWork<'_>,
+    request: &Request,
+    step: &str,
+) -> anyhow::Result<()> {
+    if request.channel != "comment" && request.channel != "standalone_comment" {
+        return Ok(());
+    }
+    let id = Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("publication-withdrawal:{}:{step}", request.id).as_bytes(),
+    );
+    let marker = format!("<!-- concurro:withdrawal:v1:{}:{step} -->", request.id);
+    let message = match step {
+        "blocked" => "new grants blocked",
+        "stopped" => "spending stopped",
+        _ => anyhow::bail!("unknown withdrawal step"),
+    };
+    let body = format!("{marker}\nConcurro `withdraw` request {message}.");
+    let saved: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO tasks.publication_comments \
+         (id,kind,repository_id,issue_number,marker,body,status,standalone_step_command_id) \
+         VALUES ($1,'notice',$2,$3,$4,$5,'recorded',$6) \
+         ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id \
+         WHERE tasks.publication_comments.marker=EXCLUDED.marker \
+         AND tasks.publication_comments.body=EXCLUDED.body \
+         AND tasks.publication_comments.standalone_step_command_id IS NOT DISTINCT FROM EXCLUDED.standalone_step_command_id RETURNING id",
+    )
+    .bind(id)
+    .bind(request.issue.repository_id)
+    .bind(request.issue.number)
+    .bind(marker)
+    .bind(body)
+    .bind((request.channel == "standalone_comment").then_some(request.id))
+    .fetch_optional(work.connection())
+    .await?;
+    anyhow::ensure!(saved == Some(id), "withdrawal reply changed on replay");
+    enqueue_comment_job(work, id, request.issue).await?;
     Ok(())
 }
 

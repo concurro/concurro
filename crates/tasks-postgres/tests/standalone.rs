@@ -9,14 +9,16 @@ use concurro_events_postgres::{Outbox, migrate as migrate_events};
 use concurro_exchange_v1::{TurnObservation, TurnSubmission};
 use concurro_tasks_core::{
     Actor, ConsentAction, LaterCommand, Provider, RequestKind, SourceOrder, SponsorSlot,
-    initialize_consent, project_consent, validate_standalone_pr_review,
+    initialize_consent, project_consent, python_digest, validate_standalone_pr_review,
 };
 use concurro_tasks_postgres::{
     StandaloneReviewCommand, StandaloneReviewRequest, apply_standalone_review_request,
     apply_standalone_review_result, await_standalone_review_credentials, browser_standalone_action,
-    confirm_standalone_review_publication, excluded_credential_versions, migrate,
+    comment_scope, complete_withdrawal_step, confirm_standalone_review_publication,
+    due_withdrawal_steps, excluded_credential_versions, migrate,
     observe_standalone_review_pr_state, record_browser_standalone_action, record_observation,
-    record_runner_session, record_standalone_funding_revision, record_standalone_review_request,
+    record_runner_session, record_sponsorship_transition, record_standalone_funding_revision,
+    record_standalone_review_request, record_standalone_withdrawal_steps,
     resume_standalone_review_credentials, standalone_consent_sources,
     standalone_review_outstanding_findings, standalone_review_result,
     standalone_review_source_is_current, standalone_review_task,
@@ -24,6 +26,154 @@ use concurro_tasks_postgres::{
 use concurro_testkit::PostgresContainer;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Browser and PR-comment withdrawals share durable later-step reporting.
+#[tokio::test]
+async fn standalone_withdrawal_steps_use_existing_request_facts_and_replies() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("task schema");
+    migrate_events(&database).await.expect("event schema");
+    let outbox = Outbox::new(1024 * 1024, vec!["request.>".to_owned()]);
+    let actor = Actor {
+        id: 7,
+        login: "writer".to_owned(),
+    };
+    let task = Uuid::now_v7();
+    let mut work = database.begin().await.expect("seed task");
+    sqlx::query(
+        "INSERT INTO tasks.standalone_review_tasks \
+         (id,repository_id,runner_repository_id,upstream,pr_number,reviewer_id,stage) \
+         VALUES ($1,8,8,'acme/demo',4,99,'review')",
+    )
+    .bind(task)
+    .execute(work.connection())
+    .await
+    .expect("task");
+    let mut withdrawal = json!({
+        "repository":"acme/demo", "issue":4, "provider":"openai",
+        "generation":1, "expected_epoch":1, "reason":"withdraw", "actor":"7",
+        "cutoff":1, "slot":{"status":"withdrawn","sponsor_id":null,"epoch":2,
+            "grant_id":"grant","funding":"contributed","source_id":70,
+            "source_order":["2026-11-20T00:00:00Z",70,0]}
+    });
+    withdrawal["transition"] = json!(python_digest(&withdrawal).expect("digest"));
+    let transition = record_sponsorship_transition(&mut work, task, &withdrawal)
+        .await
+        .expect("pending revoke");
+    work.commit().await.expect("seed commit");
+    let mut ids = Vec::new();
+    for (source, comment_id) in [("browser:action", -7), ("comment:action", 70)] {
+        let command = StandaloneReviewCommand {
+            id: Uuid::now_v7(),
+            repository_id: 8,
+            upstream: "acme/demo".to_owned(),
+            pr_number: 4,
+            comment_id,
+            source: source.to_owned(),
+            source_at: Utc::now(),
+            actor: actor.clone(),
+            kind: Some(RequestKind::Later(LaterCommand::Withdraw {
+                provider: "openai".to_owned(),
+            })),
+            body: "/concurro withdraw openai".to_owned(),
+            deleted: false,
+        };
+        let mut work = database.begin().await.expect("source transaction");
+        sqlx::query(
+            "INSERT INTO tasks.standalone_review_commands \
+             (id,repository_id,upstream,pr_number,comment_id,source,source_at,actor, \
+              comment_author_id,kind,body,deleted,status) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,7,$9,$10,false,'applied')",
+        )
+        .bind(command.id)
+        .bind(command.repository_id)
+        .bind(&command.upstream)
+        .bind(command.pr_number)
+        .bind(command.comment_id)
+        .bind(&command.source)
+        .bind(command.source_at)
+        .bind(sqlx::types::Json(&command.actor))
+        .bind(command.kind.as_ref().map(sqlx::types::Json))
+        .bind(&command.body)
+        .execute(work.connection())
+        .await
+        .expect("command source");
+        record_standalone_withdrawal_steps(&mut work, &outbox, &command)
+            .await
+            .expect("later steps");
+        work.commit().await.expect("source commit");
+        ids.push(command.id);
+    }
+    let blocked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type='request.tasks.blocked'")
+            .fetch_one(database.pool())
+            .await
+            .expect("blocked facts");
+    assert_eq!(blocked, 2);
+    for id in &ids {
+        let obligations: Vec<String> = sqlx::query_scalar(
+            "SELECT unnest(transitions) FROM tasks.withdrawal_steps WHERE source_id=$1",
+        )
+        .bind(id)
+        .fetch_all(database.pool())
+        .await
+        .expect("pending obligations");
+        assert_eq!(obligations, vec![transition.clone()]);
+    }
+    let replies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tasks.publication_comments WHERE marker LIKE '<!-- concurro:withdrawal:%'",
+    ).fetch_one(database.pool()).await.expect("comment replies");
+    assert_eq!(replies, 1);
+    let notice: Uuid = sqlx::query_scalar(
+        "SELECT id FROM tasks.publication_comments WHERE standalone_step_command_id IS NOT NULL",
+    )
+    .fetch_one(database.pool())
+    .await
+    .expect("standalone notice");
+    assert_eq!(
+        comment_scope(&database, notice)
+            .await
+            .expect("publication route"),
+        Some((8, "recorded".to_owned(), true))
+    );
+    sqlx::query("UPDATE tasks.withdrawal_steps SET blocked_at=now()-interval '41 seconds'")
+        .execute(database.pool())
+        .await
+        .expect("age bound");
+    assert!(
+        due_withdrawal_steps(&database)
+            .await
+            .expect("pending revoke")
+            .is_empty()
+    );
+    sqlx::query(
+        "UPDATE tasks.sponsorship_transitions SET status='acknowledged', \
+        acknowledged_at=now()-interval '41 seconds' WHERE transition=$1",
+    )
+    .bind(transition)
+    .execute(database.pool())
+    .await
+    .expect("acknowledge revoke");
+    assert_eq!(due_withdrawal_steps(&database).await.expect("due"), ids);
+    for id in ids {
+        let mut work = database.begin().await.expect("completion");
+        assert!(
+            complete_withdrawal_step(&mut work, &outbox, id)
+                .await
+                .expect("stopped")
+        );
+        work.commit().await.expect("completion commit");
+    }
+    let stopped: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events.outbox WHERE type='request.tasks.stopped'")
+            .fetch_one(database.pool())
+            .await
+            .expect("stopped facts");
+    assert_eq!(stopped, 2);
+}
 
 /// Separate signed actions on one PR do not share a synthetic comment identity.
 #[tokio::test]

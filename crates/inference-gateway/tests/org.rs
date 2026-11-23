@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
 };
@@ -19,7 +19,7 @@ use concurro_testkit::PostgresContainer;
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, copy_bidirectional};
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
@@ -68,10 +68,7 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("admission listener");
-    let admission_url = format!(
-        "http://{}",
-        listener.local_addr().expect("admission address")
-    );
+    let exchange_address = listener.local_addr().expect("admission address");
     let admission_server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -83,9 +80,33 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
         .await
         .expect("admission server");
     });
+    // The switch owns established sockets too, so dropping it proves an outage even
+    // when the gateway reused a keep-alive connection to the exchange listener.
+    let switch = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("admission switch");
+    let admission_url = format!("http://{}", switch.local_addr().expect("switch address"));
+    let switch_connections = Arc::new(Mutex::new(Vec::new()));
+    let connections = switch_connections.clone();
+    let switch_server = tokio::spawn(async move {
+        loop {
+            let Ok((mut gateway, _)) = switch.accept().await else {
+                break;
+            };
+            let Ok(mut exchange) = tokio::net::TcpStream::connect(exchange_address).await else {
+                continue;
+            };
+            let connection = tokio::spawn(async move {
+                let _ = copy_bidirectional(&mut gateway, &mut exchange).await;
+            });
+            connections.lock().await.push(connection);
+        }
+    });
     let received = Arc::new(Mutex::new(None::<HeaderMap>));
     let captured = received.clone();
     let response_captured = received.clone();
+    let rotation_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let provider_rotations = rotation_calls.clone();
     let stall_seen = Arc::new(Notify::new());
     let stalled_provider = stall_seen.clone();
     let provider = Router::new().route(
@@ -93,8 +114,17 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
         post(move |headers: HeaderMap, Json(body): Json<Value>| {
             let captured = captured.clone();
             let stalled_provider = stalled_provider.clone();
+            let provider_rotations = provider_rotations.clone();
             async move {
+                let supplied_key = headers.get("x-api-key").and_then(|value| value.to_str().ok()).unwrap_or_default().to_owned();
                 *captured.lock().await = Some(headers);
+                if body["rotate"] == true {
+                    provider_rotations.lock().await.push(supplied_key.clone());
+                    if supplied_key != "org-secret-rotated" {
+                        return (StatusCode::UNAUTHORIZED, Json(json!({"error":{"type":"authentication_error","message":"private provider text"}}))).into_response();
+                    }
+                    return Json(json!({"type":"message","stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}})).into_response();
+                }
                 if body["stall"] == true {
                     stalled_provider.notify_one();
                     tokio::time::sleep(Duration::from_secs(60)).await;
@@ -312,6 +342,33 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
     .await
     .expect("settled request");
     assert_eq!(counted, (13, 5));
+    std::fs::write(&key_file, "org-secret-rotated\n").expect("operator rotated token");
+    let rotated = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/messages"))
+        .bearer_auth("org-session-key")
+        .json(&json!({"model":"claude-test","rotate":true}))
+        .send()
+        .await
+        .expect("rotated request");
+    assert_eq!(rotated.status(), StatusCode::OK);
+    assert_eq!(
+        rotated.json::<Value>().await.expect("rotated body")["usage"]["output_tokens"],
+        1
+    );
+    assert_eq!(
+        &*rotation_calls.lock().await,
+        &["org-secret-test", "org-secret-rotated"]
+    );
+    let admitted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM exchange.inference_requests WHERE turn_id=$1")
+            .bind(turn)
+            .fetch_one(database.pool())
+            .await
+            .expect("single rotation admission");
+    assert_eq!(
+        admitted, 2,
+        "rotation retry created another chargeable request"
+    );
     let mut hanging = reqwest::Client::new()
         .post(format!("{gateway_url}/v1/messages"))
         .bearer_auth("org-session-key")
@@ -612,11 +669,110 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
         Some(true),
         "post-send loss cannot claim definite non-dispatch"
     );
+    control
+        .cancel(drop_turn)
+        .await
+        .expect("release dropper session");
+    let deadline_turn = Uuid::now_v7();
+    let mut deadline_body = openai_body.clone();
+    deadline_body["attempt_id"] = json!(deadline_turn);
+    deadline_body["grant"]["grant_id"] = json!(deadline_turn.to_string());
+    let deadline_session = control
+        .submit(deadline_turn, &deadline_body)
+        .await
+        .expect("deadline grant submit")
+        .dispatch
+        .expect("deadline dispatch")
+        .session_id;
+    sqlx::query("UPDATE exchange.sessions SET session_key_hash=$2,bound_at=now(),last_seen=now(),deadline=now()+interval '2 seconds' WHERE session_id=$1")
+        .bind(deadline_session).bind(hex::encode(Sha256::digest(b"deadline-session-key")))
+        .execute(database.pool()).await.expect("short deadline bind");
+    sqlx::query("UPDATE exchange.turns SET status='running',started=now() WHERE turn_id=$1")
+        .bind(deadline_turn)
+        .execute(database.pool())
+        .await
+        .expect("deadline turn running");
+    let mut deadline_stream = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/messages"))
+        .bearer_auth("deadline-session-key")
+        .json(&json!({"model":"claude-test","hang":true}))
+        .send()
+        .await
+        .expect("open deadline stream");
+    assert_eq!(deadline_stream.status(), StatusCode::OK);
+    assert!(
+        deadline_stream
+            .chunk()
+            .await
+            .expect("first deadline event")
+            .is_some()
+    );
+    let ended = tokio::time::timeout(Duration::from_secs(5), deadline_stream.chunk())
+        .await
+        .expect("deadline closed stream")
+        .expect("stream read");
+    assert!(ended.is_none(), "deadline left provider stream open");
+    control
+        .cancel(deadline_turn)
+        .await
+        .expect("release deadline session");
+    let outage_turn = Uuid::now_v7();
+    let mut outage_body = openai_body.clone();
+    outage_body["attempt_id"] = json!(outage_turn);
+    outage_body["grant"]["grant_id"] = json!(outage_turn.to_string());
+    let outage_session = control
+        .submit(outage_turn, &outage_body)
+        .await
+        .expect("outage grant submit")
+        .dispatch
+        .expect("outage dispatch")
+        .session_id;
+    sqlx::query("UPDATE exchange.sessions SET session_key_hash=$2,bound_at=now(),last_seen=now() WHERE session_id=$1")
+        .bind(outage_session).bind(hex::encode(Sha256::digest(b"outage-session-key")))
+        .execute(database.pool()).await.expect("outage session bind");
+    sqlx::query("UPDATE exchange.turns SET status='running',started=now() WHERE turn_id=$1")
+        .bind(outage_turn)
+        .execute(database.pool())
+        .await
+        .expect("outage turn running");
+    let mut outage_stream = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/messages"))
+        .bearer_auth("outage-session-key")
+        .json(&json!({"model":"claude-test","hang":true}))
+        .send()
+        .await
+        .expect("open outage stream");
+    assert_eq!(outage_stream.status(), StatusCode::OK);
+    assert!(
+        outage_stream
+            .chunk()
+            .await
+            .expect("first outage event")
+            .is_some()
+    );
+    switch_server.abort();
+    let _ = switch_server.await;
+    for connection in switch_connections.lock().await.drain(..) {
+        connection.abort();
+    }
+    let after_outage = reqwest::Client::new()
+        .post(format!("{gateway_url}/v1/messages"))
+        .bearer_auth("outage-session-key")
+        .json(&json!({"model":"claude-test"}))
+        .send()
+        .await
+        .expect("new request during exchange outage");
+    assert_eq!(after_outage.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let ended = tokio::time::timeout(Duration::from_secs(40), outage_stream.chunk())
+        .await
+        .expect("outage closed stream within bound")
+        .expect("stream read");
+    assert!(ended.is_none(), "outage left provider stream open");
     std::fs::remove_file(key_file).expect("remove token file");
     std::fs::remove_file(oauth_file).expect("remove OAuth file");
     std::fs::remove_file(openai_file).expect("remove OpenAI file");
     gateway_server.abort();
+    admission_server.abort();
     provider_server.abort();
     dropper_server.abort();
-    admission_server.abort();
 }

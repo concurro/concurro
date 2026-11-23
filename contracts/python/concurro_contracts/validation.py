@@ -22,6 +22,7 @@ from concurro_contracts.ingress_coverage_gap_v1 import Envelope as GapEnvelope
 from concurro_contracts.inference_usage_v1 import Envelope as InferenceUsageEnvelope
 from concurro_contracts.request_tasks_v1 import Envelope as RequestOutcomeEnvelope
 from concurro_contracts.request_tasks_v2 import Envelope as RequestOutcomeEnvelopeV2
+from concurro_contracts.request_tasks_v3 import Envelope as RequestOutcomeEnvelopeV3
 from concurro_contracts.task_notice_v1 import Envelope as TaskNoticeEnvelope
 from concurro_contracts.task_report_v1 import Envelope as TaskReportEnvelope
 from concurro_contracts.task_v1 import Envelope as TaskSnapshotEnvelope
@@ -132,12 +133,15 @@ def decode_read_model_record(raw: bytes) -> ReadModelRecordEnvelope:
     return event
 
 
-def decode_request_outcome(raw: bytes) -> RequestOutcomeEnvelope | RequestOutcomeEnvelopeV2:
+def decode_request_outcome(raw: bytes) -> RequestOutcomeEnvelope | RequestOutcomeEnvelopeV2 | RequestOutcomeEnvelopeV3:
     """Validate a task request outcome and its matching disposition subject."""
     document = json.loads(raw)
     version = document.get("version") if isinstance(document, dict) else None
-    model = RequestOutcomeEnvelope if version == 1 else RequestOutcomeEnvelopeV2
-    event = _decode_fact(raw, model, "request.tasks", version=version if version == 1 else 2)
+    models = {1: RequestOutcomeEnvelope, 2: RequestOutcomeEnvelopeV2, 3: RequestOutcomeEnvelopeV3}
+    model = models.get(version)
+    if model is None:
+        raise ValueError(f"unsupported request outcome version: {version}")
+    event = _decode_fact(raw, model, "request.tasks", version=version)
     if event.type != f"request.tasks.{event.data.root.status.value}":
         raise ValueError(f"event type does not match request outcome: {event.type}")
     return event

@@ -1,0 +1,62 @@
+# Protocol 5 verifier and Responses bridge. Keep inactive until S7; the old
+# verifier holds the public port and protocol 4 Sponsors cannot connect here.
+name: concurro-relay-v2
+
+services:
+  verifier:
+    image: ${CONCURRO_RELAY_IMAGE:?pin the qualified protocol 5 verifier image}
+    command:
+      - --relay-listen
+      - 0.0.0.0:7443
+      - --private-listen
+      - 0.0.0.0:7450
+      - --certificate
+      - /run/concurro/relay-cert.pem
+      - --private-key
+      - /run/concurro/relay-key.pem
+      - --registry
+      - /data/registry.json
+      - --claim-journal
+      - /data/registry.claims
+      - --owner-token
+      - /run/concurro/owner-bearer
+      - --inference-token
+      - /run/concurro/inference-bearer
+      - --release-token
+      - /run/concurro/release-bearer
+      - --exchange-public-keys
+      - /run/concurro/exchange-jwks.json
+      - --verification-url
+      - ${CONCURRO_RELAY_VERIFICATION_URL:?owner approval URL required}
+    ports:
+      - ${CONCURRO_RELAY_PORT:-7443}:7443
+    volumes:
+      - ${CONCURRO_RELAY_ETC:?verifier-only certificates and bearers directory}:/run/concurro:ro
+      - ${CONCURRO_RELAY_DATA:?durable existing registry and claim journal directory}:/data
+    networks:
+      relay-private:
+        aliases: [concurro-verifier-private]
+      relay-public: {}
+    restart: unless-stopped
+
+  responses-bridge:
+    image: ${CONCURRO_RELAY_IMAGE:?pin the qualified protocol 5 verifier image}
+    entrypoint: [responses-bridge]
+    command:
+      - --listen
+      - 0.0.0.0:7451
+      - --gateway
+      - http://concurro-inference-gateway:8098
+    networks:
+      edge:
+        aliases: [concurro-responses-bridge]
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true
+    name: edge
+  relay-private:
+    external: true
+    name: concurro-relay-private-v2
+  relay-public: {}
