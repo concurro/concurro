@@ -1,7 +1,7 @@
 """Clients of the gateway's exchange: the operator side (the service) and a runner job's side."""
 
-import json
 import hashlib
+import json
 import re
 import urllib.error
 import urllib.request
@@ -149,7 +149,11 @@ class RunnerV2:
         try:
             with urllib.request.urlopen(request, timeout=80) as response:
                 raw = response.read()
-                return json.loads(raw) if raw and response.headers.get("Content-Type", "").startswith("application/json") else raw
+                return (
+                    json.loads(raw)
+                    if raw and response.headers.get("Content-Type", "").startswith("application/json")
+                    else raw
+                )
         except urllib.error.HTTPError as error:
             try:
                 reason = json.loads(error.read()).get("error", "")

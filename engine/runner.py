@@ -106,19 +106,26 @@ class Loop:
                         payload["timeout"] = int(payload["timeout"])
                     if self.inference_url:
                         payload["request"]["gateway"] = {
-                            **payload["request"].get("gateway", {}), "url": self.inference_url
+                            **payload["request"].get("gateway", {}),
+                            "url": self.inference_url,
                         }
                 if getattr(self.runner, "v2", False) and payload.get("retained"):
                     archive = directory / "input-retained.tar.gz"
                     try:
                         archive.write_bytes(self.transfer(self.runner.download, payload["retained"]["sha256"]))
                     except (ExchangeError, OSError) as error:
-                        log(f"turn {identifier} retained input unavailable ({type(error).__name__}); delivery uncertain")
+                        log(
+                            f"turn {identifier} retained input unavailable ({type(error).__name__}); delivery uncertain"
+                        )
                         self.stopped.set()
                         return
                     payload["retained"] = archive
                 result = turns.execute(
-                    payload, self.key, self.mirror, directory, self.stopped,
+                    payload,
+                    self.key,
+                    self.mirror,
+                    directory,
+                    self.stopped,
                     file_artifacts=getattr(self.runner, "v2", False),
                 )
             except Exception as error:
@@ -314,8 +321,7 @@ def main():
         binding = grant["binding"]
         mirror = Mirror(root / "mirrors", binding["upstream"], sources=(binding["fork"],))
         try:
-            Loop(client, grant["key"], mirror, root / "turns", args.idle, binding,
-                 grant["inference_base_url"]).serve()
+            Loop(client, grant["key"], mirror, root / "turns", args.idle, binding, grant["inference_base_url"]).serve()
         finally:
             try:
                 end_session(root, client)

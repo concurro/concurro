@@ -60,10 +60,14 @@ class V2(BaseHTTPRequestHandler):
                 engine = self.server.exchange.bound_engine(session, self.server.exchange.row(session))
                 grant = self.server.exchange.key(session, token, engine=engine)
                 self.server.grants[session] = grant
-                self.send_json(200, {
-                    "engine": {"repository": "concurro/concurro", "sha": engine},
-                    "runner_token": grant["token"], "deadline": grant["deadline"],
-                })
+                self.send_json(
+                    200,
+                    {
+                        "engine": {"repository": "concurro/concurro", "sha": engine},
+                        "runner_token": grant["token"],
+                        "deadline": grant["deadline"],
+                    },
+                )
             elif action == "key":
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 grant = self.server.grants[session]
@@ -72,12 +76,19 @@ class V2(BaseHTTPRequestHandler):
                 if token != grant["token"]:
                     self.send_json(401, {"error": "invalid runner token"})
                     return
-                self.send_json(200, {
-                    "session_key": grant["key"], "inference_base_url": "http://fake-inference.invalid/v1",
-                    "models": grant["models"], "deadline": grant["deadline"],
-                    "binding": {**grant["binding"], "engine": {
-                        "repository": "concurro/concurro", "sha": grant["binding"]["engine"]}},
-                })
+                self.send_json(
+                    200,
+                    {
+                        "session_key": grant["key"],
+                        "inference_base_url": "http://fake-inference.invalid/v1",
+                        "models": grant["models"],
+                        "deadline": grant["deadline"],
+                        "binding": {
+                            **grant["binding"],
+                            "engine": {"repository": "concurro/concurro", "sha": grant["binding"]["engine"]},
+                        },
+                    },
+                )
             else:
                 self.send_json(404, {"error": "unknown route"})
         except exchange_module.Refused as error:

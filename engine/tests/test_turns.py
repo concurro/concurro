@@ -599,9 +599,13 @@ class RunnerLoopTests(unittest.TestCase):
                 client.v2 = True
                 loop = runner.Loop(client, "key", object(), root)
                 receipt = {"sha256": "a" * 64, "size": 4}
-                replies = [ExchangeError(0, "temporary")] + ([receipt] if recover else [ExchangeError(0, "temporary")] * 4)
+                replies = [ExchangeError(0, "temporary")] + (
+                    [receipt] if recover else [ExchangeError(0, "temporary")] * 4
+                )
                 with (
-                    patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}, "retained": artifact}) as execute,
+                    patch.object(
+                        turns, "execute", return_value={"outcome": "ok", "response": {}, "retained": artifact}
+                    ) as execute,
                     patch.object(client, "upload", side_effect=replies, create=True) as upload,
                     patch.object(loop.stopped, "wait", return_value=False),
                 ):
@@ -614,19 +618,25 @@ class RunnerLoopTests(unittest.TestCase):
                 else:
                     self.assertEqual(client.completed, [])
                     self.assertTrue(loop.stopped.is_set())
-                    self.assertEqual(json.loads((Path(root) / "run-summary.json").read_text())["blob-turn"]["outcome"], "ok")
+                    self.assertEqual(
+                        json.loads((Path(root) / "run-summary.json").read_text())["blob-turn"]["outcome"], "ok"
+                    )
                     self.assertTrue((Path(root) / runner_layout.TURN).exists())
 
     def test_v2_retained_download_retries_before_native_execution(self):
         """A download outage cannot turn an unstarted native attempt into FAILED."""
-        turn = {"id": "download-turn", "payload": {"request": {"stage": "plan", "provider": "codex"},
-                "retained": {"sha256": "a" * 64}}}
+        turn = {
+            "id": "download-turn",
+            "payload": {"request": {"stage": "plan", "provider": "codex"}, "retained": {"sha256": "a" * 64}},
+        }
         for recover in (True, False):
             with self.subTest(recover=recover), tempfile.TemporaryDirectory() as root:
                 client = FakeRunner([])
                 client.v2 = True
                 loop = runner.Loop(client, "key", object(), root)
-                replies = [ExchangeError(0, "temporary")] + ([b"blob"] if recover else [ExchangeError(0, "temporary")] * 4)
+                replies = [ExchangeError(0, "temporary")] + (
+                    [b"blob"] if recover else [ExchangeError(0, "temporary")] * 4
+                )
                 with (
                     patch.object(client, "download", side_effect=replies, create=True) as download,
                     patch.object(turns, "execute", return_value={"outcome": "ok", "response": {}}) as execute,
@@ -637,7 +647,10 @@ class RunnerLoopTests(unittest.TestCase):
                 self.assertEqual(execute.call_count, 1 if recover else 0)
                 self.assertEqual(len(client.completed), 1 if recover else 0)
                 if not recover:
-                    self.assertEqual(json.loads((Path(root) / "run-summary.json").read_text())["download-turn"]["outcome"], "No result recorded")
+                    self.assertEqual(
+                        json.loads((Path(root) / "run-summary.json").read_text())["download-turn"]["outcome"],
+                        "No result recorded",
+                    )
 
     def test_an_idle_session_ends(self):
         client = FakeRunner([[], [], []])

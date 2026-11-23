@@ -1,6 +1,5 @@
 """Local v2 runner integration helper used by Rust's real-listener test."""
 
-import json
 import sys
 import tarfile
 from pathlib import Path
@@ -53,12 +52,18 @@ if request['stage'] == 'intake':
 else:
     print(json.dumps({'summary': 'done', 'checks': [], 'design_issue': None}))
 """
-    with patch.object(turns, "command", return_value=[sys.executable, "-c", script]), patch.object(
-        runner, "HEARTBEAT", 1
+    with (
+        patch.object(turns, "command", return_value=[sys.executable, "-c", script]),
+        patch.object(runner, "HEARTBEAT", 1),
     ):
         runner.Loop(
-            client, grant["key"], mirror, root / "turns", idle=-1,
-            task=grant["binding"], inference_url=grant["inference_base_url"],
+            client,
+            grant["key"],
+            mirror,
+            root / "turns",
+            idle=-1,
+            task=grant["binding"],
+            inference_url=grant["inference_base_url"],
         ).serve()
     client.end()
 

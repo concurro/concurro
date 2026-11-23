@@ -446,11 +446,14 @@ def execute(turn, key, mirror, root, stopped=None, file_artifacts=False):
             "workspace": None,
             "retained": (
                 pack_file(root / "retained", root / "retained.tar.gz") if file_artifacts else pack(root / "retained")
-            ) if session else None,
+            )
+            if session
+            else None,
         }
         if not session:
             reply["transcript"] = (
-                transcript_file(root / "scratch", root / "transcript.tar.gz") if file_artifacts
+                transcript_file(root / "scratch", root / "transcript.tar.gz")
+                if file_artifacts
                 else transcript(root / "scratch")
             )
         if result in (TurnOutcome.TIMED_OUT, TurnOutcome.TERMINATED):
