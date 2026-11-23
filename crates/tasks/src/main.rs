@@ -69,6 +69,7 @@ use concurro_tasks_postgres::{
 use concurro_vault_v1::MetadataClient;
 use graphile_worker::WorkerOptions;
 use object_store::aws::AmazonS3Builder;
+use reqwest::Client;
 use serde::{Deserialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -1033,6 +1034,15 @@ async fn run_operator(
     Ok(())
 }
 
+/// Select the credential owner for the validated exchange backend.
+fn metadata_client(kind: &str, http: Client, url: &str, token: String) -> MetadataClient {
+    if kind == "rust" {
+        MetadataClient::accounts(http, url, token)
+    } else {
+        MetadataClient::new(http, url, token)
+    }
+}
+
 /// Start migrations, the issue consumer, exchange jobs and task event producer.
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1087,9 +1097,12 @@ async fn main() -> Result<()> {
         &settings.vault_metadata_url,
         &settings.vault_metadata_token_file,
     ) {
-        (Some(url), Some(file)) => {
-            Some(MetadataClient::new(client.clone(), url, read_secret(file)?))
-        }
+        (Some(url), Some(file)) => Some(metadata_client(
+            &settings.exchange_kind,
+            client.clone(),
+            url,
+            read_secret(file)?,
+        )),
         (None, None) => None,
         _ => anyhow::bail!("Vault metadata URL and token file must be configured together"),
     };
@@ -1575,4 +1588,50 @@ async fn main() -> Result<()> {
     ));
     worker.run().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
+    use reqwest::Client;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+
+    use super::metadata_client;
+
+    /// The configured backend reaches its owner with the bearer and boundary intact.
+    #[tokio::test]
+    async fn metadata_client_uses_backend_owner_path() {
+        for (kind, path) in [("python", "/metadata/303"), ("rust", "/v1/credentials/303")] {
+            let app = Router::new().route(
+                path,
+                get(
+                    |headers: HeaderMap, Query(query): Query<HashMap<String, String>>| async move {
+                        assert_eq!(headers["authorization"], "Bearer funding-test");
+                        assert_eq!(
+                            query.get("at").map(String::as_str),
+                            Some("2026-11-23T08:00:00Z")
+                        );
+                        Json(json!({"history_complete": true, "credentials": [], "lists": {}}))
+                    },
+                ),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind metadata owner");
+            let address = listener.local_addr().expect("metadata address");
+            let server = tokio::spawn(async move { axum::serve(listener, app).await });
+            let client = metadata_client(
+                kind,
+                Client::new(),
+                &format!("http://{address}"),
+                "funding-test".to_owned(),
+            );
+            let result = client.read(303, Some("2026-11-23T08:00:00Z")).await;
+            server.abort();
+            assert!(result.expect(kind).history_complete);
+        }
+    }
 }

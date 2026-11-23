@@ -55,7 +55,7 @@ Set `CONCURRO_TASKS_CONFIG` to a TOML settings file. The runtime reads these fie
 | GitHub App | `github_api_base`, `github_app_id`, `github_private_key_file` |
 | Reviewer OAuth | Optional `reviewer_oauth_base`, `reviewer_oauth_client_id`, `reviewer_oauth_client_secret_file` for standalone user-grant refresh |
 | Exchange | `exchange_url`, `exchange_token_file`, `exchange_kind = "python"` or `"rust"`; Rust mode also needs `rust_engine_repository` |
-| Vault metadata | Optional paired `vault_metadata_url`, `vault_metadata_token_file` |
+| Credential metadata | Optional paired `vault_metadata_url`, `vault_metadata_token_file` |
 | Private archives | `archive_endpoint`, `archive_bucket`, `archive_prefix`, `archive_region`, `archive_credentials_file` |
 | `[intake]` | `workflow_ref`, `models`, `budget`, `lease`, and `[intake.gateway]` with the runner's gateway settings |
 | `[[targets]]` | `repository_id`, `issue_repository`, `fork`, `upstream`, `issue_permissions`, `issue_write_permissions`, `fork_permissions`, `fork_write_permissions`, `upstream_permissions`, `upstream_write_permissions`, `bot_login`, `publisher_logins`, `engine_sha`; optional `org_routes = { claude = "claude_org", codex = "openai_org" }` maps provider names to frozen Rust gateway route names, and `reviewer_user_id`, `upstream_repository_id`, `reviewer_grant_file` configure standalone reviews |
@@ -69,7 +69,11 @@ Before sending or replaying a turn with retained input, it verifies that the
 exact archive object is available to the exchange runner.
 The task and exchange archive bucket and `archive_prefix` settings must match.
 Rust mode also freezes selected contributed credential versions and consumes
-accounts' credential-change facts to retire revoked grants.
+accounts' credential-change facts to retire revoked grants. In Rust mode,
+`vault_metadata_url` names the accounts internal origin and reads use
+`/v1/credentials/{user_id}`; in Python mode it names the vault and reads use
+`/metadata/{user_id}`. Both use `vault_metadata_token_file` for the owner's
+metadata bearer and preserve the requested as-of boundary.
 
 `fork_permissions` needs Contents and Actions read. `fork_write_permissions`
 needs Contents, Actions and Workflows write for the pinned run ref and launcher.
