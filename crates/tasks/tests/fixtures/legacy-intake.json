@@ -1,0 +1,82 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": [
+        "proceed",
+        "clarify",
+        "reject",
+        "escalate"
+      ]
+    },
+    "headline": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "description": "Set high and escalate for consequential uncertainty requiring human judgment. This QC risk is distinct from advisory classification.change_risk."
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Unanswered human intent or decisions, not code research tasks. Must be empty with proceed."
+    },
+    "concerns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Advisory risks and planning or review considerations; may be nonempty with proceed. Use clarify for unanswered human questions and escalate for decisions requiring human authority."
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "goal_ids": {
+          "type": "array",
+          "description": "Copy each ID verbatim from the supplied charter goals: G-CORRECTNESS, not G-CORRECTNESS: improves validation. Put fit evidence in scope.fit; never invent IDs or use goal descriptions as IDs.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fit": {
+          "type": "string",
+          "description": "Explain concrete fit with the cited charter goals; identify compatibility uncertainty."
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Actual incompatibilities between the requested outcome and the charter; identify the rule and why the request violates it. Hypothetical implementation hazards belong in concerns. Must be empty with proceed."
+        }
+      },
+      "required": [
+        "goal_ids",
+        "fit",
+        "conflicts"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "decision",
+    "headline",
+    "rationale",
+    "risk",
+    "questions",
+    "concerns",
+    "scope"
+  ],
+  "additionalProperties": false
+}

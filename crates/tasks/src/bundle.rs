@@ -704,9 +704,30 @@ print(json.dumps({'prompt':json.loads(prompts.prompt_for(request,frozen)),'schem
         legacy.engine_resources.clear();
         legacy.bundle_id =
             identity(charter, &BTreeMap::new(), &historical).expect("legacy identity");
-        let resolved =
-            ResolvedBundle::resolve(&legacy).expect("recover exact historical bundle once");
-        assert_eq!(resolved.resources(), &historical);
+        let recovered = ResolvedBundle::resolve(&legacy).expect("recover exact committed bundle");
+        assert_eq!(recovered.resources(), &historical);
+
+        // HEAD may contain either contract. Legacy wording uses an explicit fixture instead.
+        let mut legacy_resources = resources.clone();
+        legacy_resources.remove("bundle/controller.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&legacy_resources["bundle/manifest.json"]).expect("manifest");
+        manifest["resources"]
+            .as_array_mut()
+            .expect("resource paths")
+            .retain(|path| path != "bundle/controller.json");
+        legacy_resources.insert(
+            "bundle/manifest.json".to_owned(),
+            serde_json::to_string(&manifest).expect("legacy manifest"),
+        );
+        legacy_resources.insert(
+            "bundle/schemas/intake.json".to_owned(),
+            include_str!("../tests/fixtures/legacy-intake.json").to_owned(),
+        );
+        legacy.bundle_id = identity(charter, &BTreeMap::new(), &legacy_resources)
+            .expect("legacy fixture identity");
+        legacy.engine_resources = legacy_resources.clone();
+        let resolved = ResolvedBundle::resolve(&legacy).expect("resolve legacy contract fixture");
         assert!(
             !super::bundle_directory()
                 .join("legacy-controller.json")
@@ -748,7 +769,8 @@ print(json.dumps({'prompt':json.loads(prompts.prompt_for(request,frozen)),'schem
                 .expect("lookup after resolution")
                 .contains("advisory concerns")
         );
-        assert_eq!(resolved.resources(), &historical);
+        assert_eq!(resolved.resources(), &legacy_resources);
+        legacy.engine_resources.clear();
         assert!(
             super::snapshot_resources(&legacy)
                 .expect_err("unavailable provenance")

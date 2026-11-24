@@ -140,6 +140,25 @@ below cover bundle validation and successful lifecycle execution, not a live rec
   in `/private/tmp/concurro-bundle-followup-definitions.json`; existing shared admission,
   payload and bundle APIs remain reused.
 
+## Committed-HEAD test correction
+
+The bundle regression failed on committed `5c47358`: it loaded `HEAD` as a historical
+bundle but asserted pre-rename wording. Earlier successful runs used `f7cfbd2` as HEAD.
+The reproduced failure is retained in `/private/tmp/concurro-head-bundle-before.log`.
+
+History recovery now compares the recovered committed resources without assuming their
+wording. Legacy controller/schema assertions use an explicit no-controller resource set
+and `crates/tasks/tests/fixtures/legacy-intake.json`, copied unchanged from
+`f7cfbd2191f8f8a2bd2595460ecfcde88804a38b:bundle/schemas/intake.json`.
+The fixture needs no old Git objects at test runtime. Production code is unchanged.
+
+- Task unit suite: 21/21, `/private/tmp/concurro-head-bundle-after.log`.
+- Regression with process-local `GIT_SHALLOW_FILE` at `5c47358` (one visible commit):
+  1/1, `/private/tmp/concurro-head-bundle-shallow.log`. Repository history is unchanged.
+- Strict workspace/all-target Clippy: passed, `/private/tmp/concurro-head-bundle-clippy.log`.
+- Isolated restart lifecycle: 1/1 (148.931s), `/private/tmp/concurro-head-bundle-runtime.log`.
+  The separately reported full-run failure has no retained output, so its cause remains unknown.
+
 ## Reuse and limits
 
 The original Lodestone similarity batch checked 251 new or changed named definitions. Final source snippets:
