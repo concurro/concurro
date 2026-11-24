@@ -31,6 +31,8 @@ jobs:
         run: python3 -m pip install -r contracts/python/requirements.txt
       - name: Check Rust formatting
         run: cargo fmt --check
+      - name: Lint Rust workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test Rust workspace
         run: cargo nextest run --workspace --locked
       - name: Test event fault injection

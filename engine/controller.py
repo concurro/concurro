@@ -602,7 +602,7 @@ class Controller:
         intake = self.state.get("qc", {}).get("intake", {})
         assessment = next((v for v in reversed(self.state.get("qc_history", [])) if v["stage"] == "intake"), {})
         concerns = (
-            intake.get("concerns", [])
+            intake.get("remarks", intake.get("concerns", []))
             if intake.get("decision") == "proceed"
             and assessment.get("base") == self.state["base"]
             and assessment.get("requirements_digest") == digest(self.state["requirements"])
@@ -613,7 +613,7 @@ class Controller:
             "policy": selected,
             "edit_policy": plan_output_contract(self.config)["edit_policy"],
             "limits": checks.limits(self.config),
-            **({"intake_concerns": deepcopy(concerns)} if concerns else {}),
+            **({"intake_remarks": deepcopy(concerns)} if concerns else {}),
             "plan": self.state.get("plan"),
             "base": self.state["base"],
             "bundle_id": self.bundle.identity,
@@ -1444,7 +1444,7 @@ class Controller:
                 "instruction": (
                     "Correct the intake report against its schema and the rejection reason. "
                     "Use clarify with questions when a human answer is needed; do not remove real questions to proceed. "
-                    "Proceed requires empty questions and scope conflicts; advisory concerns may accompany it. "
+                    "Proceed requires empty questions and scope conflicts; advisory remarks may accompany it. "
                     "Preserve genuine blockers with an appropriate non-proceed decision. "
                     "This feedback concerns output validity, not a request to approve the issue."
                 ),
@@ -1582,8 +1582,9 @@ class Controller:
         self.state = state
         self.refresh_classification()
         self.finish_quality_control(stage, report)
-        if stage == "intake" and state["stage"] == "plan" and report["concerns"]:
-            conversation.queue_intake_concerns(state, report["concerns"])
+        remarks = report.get("remarks", report.get("concerns", []))
+        if stage == "intake" and state["stage"] == "plan" and remarks:
+            conversation.queue_intake_remarks(state, remarks)
         self.record_outcome()
         self.transition(state)
         self.classification_room(state, CHECKPOINT_LIMIT - 1000)

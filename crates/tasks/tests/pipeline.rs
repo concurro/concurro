@@ -58,6 +58,7 @@ fn snapshot(pins: PinnedInputs) -> InitializationSnapshot {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle-identity".to_owned(),
     }
 }

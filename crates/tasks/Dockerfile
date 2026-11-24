@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /src/target/release/concurro-tasks /usr/local/bin/concurro-tasks
 COPY --from=build /src/.git /src/.git
 COPY --from=build /src/bundle /src/bundle
+ENV CONCURRO_TASKS_BUNDLE_DIR=/src/bundle
 WORKDIR /src
 USER 65533:65533
 ENTRYPOINT ["/usr/local/bin/concurro-tasks"]

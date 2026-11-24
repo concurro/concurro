@@ -11,31 +11,67 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::plan_payload::ExecutionAttemptInputs;
 use crate::{
     InitializationTarget, IntakeTransport,
+    bundle::ResolvedBundle,
     design_payload::selected_policy,
     plan_payload::{RetainedAttempt, prepare_task_attempt},
 };
 
+/// Published-head evidence and owned findings for one independent PR assessment.
+pub struct PrReviewAttemptInputs<'a> {
+    /// Verified resource bytes and controller wording for this exact turn.
+    pub bundle: &'a ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Frozen plan or published-head batch defining this review.
+    pub batch: &'a PrReviewBatch,
+    /// Independent reviewer identity and model configuration.
+    pub reviewer: &'a DesignReviewer,
+    /// Pinned file contents and diffs for this published head.
+    pub changes: &'a [Value],
+    /// Published PR description corresponding to the frozen head.
+    pub published_body: &'a str,
+    /// Earlier outcomes supplied as untrusted historical evidence.
+    pub prior_outcomes: &'a [Value],
+    /// Findings owned by this reviewer for disposition against this head.
+    pub own_findings: &'a [Value],
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<(&'a Value, &'a str)>,
+    /// Exact predecessor journal and session binding for this role.
+    pub retained: &'a RetainedAttempt,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+    /// Applicable advisory intake remarks with matching source provenance.
+    pub intake_remarks: &'a [String],
+}
+
 /// Freeze a private reviewer request against the verified PR head and file identities.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_pr_review_attempt(
     issue: IssueKey,
     task: &TaskState,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    batch: &PrReviewBatch,
-    reviewer: &DesignReviewer,
-    changes: &[Value],
-    published_body: &str,
-    prior_outcomes: &[Value],
-    own_findings: &[Value],
-    correction: Option<(&Value, &str)>,
-    retained: &RetainedAttempt,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    attempt_inputs: PrReviewAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let PrReviewAttemptInputs {
+        bundle,
+        expected,
+        batch,
+        reviewer,
+        changes,
+        published_body,
+        prior_outcomes,
+        own_findings,
+        correction,
+        retained,
+        turn,
+        now,
+        intake_remarks,
+    } = attempt_inputs;
     let snapshot = &batch.snapshot;
     let config = &snapshot.configuration;
     let harness = reviewer
@@ -111,17 +147,19 @@ pub(crate) fn prepare_pr_review_attempt(
         "repository_commit":batch.head,
         "repository":{"refs":refs,"head":batch.branch},
     });
+    if !intake_remarks.is_empty() {
+        context["intake_remarks"] = json!(intake_remarks);
+    }
     if !attention.is_empty() {
         context["workflow_and_policy_changes"] = json!(attention);
-        context["workflow_and_policy_review"] = json!(
-            "Review changes to CI, workflows and policy documents explicitly, including whether the required checks still validate the contribution. These paths are editable under the target policy."
-        );
+        context["workflow_and_policy_review"] =
+            json!(bundle.instruction("contribution_policy_review")?);
     }
     if let Some((report, reason)) = correction {
         context["review_validation_feedback"] = json!({
             "invalid_report_untrusted":report,
             "reason":reason,
-            "instruction":"Correct the same review for the pinned head and reviewer identity.",
+            "instruction":bundle.instruction("review_correction")?,
         });
     }
     if let Some(agent) = &reviewer.agent {
@@ -134,19 +172,23 @@ pub(crate) fn prepare_pr_review_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        "review",
-        phase,
-        context,
-        (
-            harness.to_owned(),
-            reviewer.model.clone(),
-            effort.to_owned(),
-            reviewer.agent.clone(),
-        ),
-        Some(retained),
-        turn,
-        now,
+        ExecutionAttemptInputs {
+            expected,
+            stage: "review",
+            phase,
+            context,
+            agent_config: (
+                harness.to_owned(),
+                reviewer.model.clone(),
+                effort.to_owned(),
+                reviewer.agent.clone(),
+            ),
+            retained: Some(retained),
+            turn,
+            now,
+            bundle,
+            standalone_review: false,
+        },
     )
 }
 

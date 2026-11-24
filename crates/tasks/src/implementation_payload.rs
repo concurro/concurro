@@ -10,28 +10,54 @@ use concurro_tasks_postgres::{ImplementationCorrection, ImplementationInputs};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+use crate::plan_payload::ExecutionAttemptInputs;
 use crate::{
     InitializationTarget, IntakeTransport,
+    bundle::ResolvedBundle,
     design_payload::selected_policy,
     intake_payload::assigned_agent,
     plan_payload::{RetainedAttempt, prepare_task_attempt},
 };
 
+/// Writer-approved design, source parent and feedback for one implementer turn.
+pub struct ImplementationAttemptInputs<'a> {
+    /// Verified resource bytes and controller wording for this exact turn.
+    pub bundle: ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Approved plan, authorization and parent files for implementation.
+    pub inputs: &'a ImplementationInputs,
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<&'a ImplementationCorrection>,
+    /// Exact predecessor journal and session binding for this role.
+    pub retained: &'a RetainedAttempt,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+    /// Applicable advisory intake remarks with matching source provenance.
+    pub intake_remarks: &'a [String],
+}
+
 /// Freeze one implementer request under the exact writer-approved design binding.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_implementation_attempt(
     issue: IssueKey,
     task: &TaskState,
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    inputs: &ImplementationInputs,
-    correction: Option<&ImplementationCorrection>,
-    retained: &RetainedAttempt,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    attempt_inputs: ImplementationAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let ImplementationAttemptInputs {
+        bundle,
+        expected,
+        inputs,
+        correction,
+        retained,
+        turn,
+        now,
+        intake_remarks,
+    } = attempt_inputs;
     let config = &snapshot.configuration;
     let (harness, model, effort, agent) = assigned_agent(config, "implementer")?;
     let base = config["base"]
@@ -51,6 +77,15 @@ pub(crate) fn prepare_implementation_attempt(
         refs.insert(branch.clone(), Value::String(inputs.parent.clone()));
     }
     let checkout = inputs.branch.as_deref().unwrap_or(base);
+    let implementation_feedback = correction
+        .map(|correction| {
+            Ok::<_, anyhow::Error>(format!(
+                "{}. {}",
+                correction.reason,
+                bundle.instruction("implementation_correction")?
+            ))
+        })
+        .transpose()?;
     let mut context = json!({
         "issue":legacy_requirements(&snapshot.requirements),
         "policy":selected_policy(snapshot, &paths),
@@ -63,10 +98,7 @@ pub(crate) fn prepare_implementation_attempt(
         "prior_outcomes_untrusted":[],
         "prior_reviews":inputs.prior_reviews,
         "review_findings":inputs.review_findings,
-        "implementation_feedback":correction.map(|correction| format!(
-            "{}. Reduce the change or request a design reopen. Nothing was applied.",
-            correction.reason
-        )),
+        "implementation_feedback":implementation_feedback,
         "design_authorization":inputs.authorization,
         "conventional_commits":config.get("conventional_commits").cloned().unwrap_or_else(|| json!(false)),
         "current_description":inputs.current_description,
@@ -74,6 +106,9 @@ pub(crate) fn prepare_implementation_attempt(
         "repository_commit":inputs.parent,
         "repository":{"refs":Value::Object(refs),"head":checkout},
     });
+    if !intake_remarks.is_empty() {
+        context["intake_remarks"] = json!(intake_remarks);
+    }
     if let Some(agent) = &agent {
         context["agent"] = agent.clone();
     }
@@ -88,13 +123,17 @@ pub(crate) fn prepare_implementation_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        "develop",
-        phase,
-        context,
-        (harness, model, effort, agent),
-        Some(retained),
-        turn,
-        now,
+        ExecutionAttemptInputs {
+            expected,
+            stage: "develop",
+            phase,
+            context,
+            agent_config: (harness, model, effort, agent),
+            retained: Some(retained),
+            turn,
+            now,
+            bundle: &bundle,
+            standalone_review: false,
+        },
     )
 }

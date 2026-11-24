@@ -14,6 +14,46 @@ use sha2::{Digest, Sha256};
 
 use crate::execution_owner::lock_execution_owner;
 
+/// Columns read by `retained_preparation`.
+type RetainedPreparationPriorRow = (i64, String, String, Option<String>, Option<Vec<u8>>);
+
+/// Columns read by `retained_eligibility`.
+#[derive(sqlx::FromRow)]
+struct RetainedArchiveRow {
+    /// Persisted session turn.
+    session_turn: i64,
+    /// Persisted gzip sha256.
+    gzip_sha256: Option<String>,
+    /// Persisted archive error.
+    archive_error: Option<String>,
+    /// Persisted journal.
+    journal: Option<Json<Value>>,
+    /// Persisted upload status.
+    upload_status: Option<String>,
+    /// Persisted has pending bytes.
+    has_pending_bytes: bool,
+    /// Persisted tar sha256.
+    tar_sha256: Option<String>,
+    /// Persisted retained file bytes.
+    retained_file_bytes: Option<i64>,
+}
+
+/// Inputs shared by `retained_eligibility`.
+pub struct RetainedInput<'a> {
+    /// Stable retained-session identity for this task and model role.
+    pub scope: &'a str,
+    /// Zero-based turn number in the retained session.
+    pub ordinal: i64,
+    /// Canonical digest of the exact model-facing request.
+    pub request_digest: &'a str,
+    /// Digest of the required completed predecessor, if this is a continuation.
+    pub predecessor_digest: Option<&'a str>,
+    /// Configured limit on the predecessor journal, when present.
+    pub max_retained_bytes: Option<u64>,
+    /// Exact instructions and schema used to verify journal compatibility.
+    pub prompt: &'a Value,
+}
+
 /// Whether one exact retained session turn can start without losing journal history.
 #[derive(Debug, PartialEq)]
 pub enum RetainedEligibility {
@@ -83,12 +123,14 @@ pub(crate) async fn check_retained_attempt(
     let eligibility = retained_eligibility(
         uow,
         spec.task.0,
-        scope,
-        turn,
-        &digest,
-        session["predecessor_digest"].as_str(),
-        max_bytes,
-        &prompt,
+        RetainedInput {
+            scope,
+            ordinal: turn,
+            request_digest: &digest,
+            predecessor_digest: session["predecessor_digest"].as_str(),
+            max_retained_bytes: max_bytes,
+            prompt: &prompt,
+        },
     )
     .await?;
     match eligibility {
@@ -127,7 +169,7 @@ pub async fn retained_preparation(
     task: Uuid,
     scope: &str,
 ) -> Result<RetainedPreparation> {
-    let prior: Option<(i64, String, String, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+    let prior: Option<RetainedPreparationPriorRow> = sqlx::query_as(
         "SELECT a.retained_turn,a.retained_request,a.status,ar.gzip_sha256,u.gzip_bytes \
          FROM tasks.attempts a \
          LEFT JOIN tasks.turn_archives ar ON ar.turn_id=a.id \
@@ -160,27 +202,20 @@ pub async fn retained_preparation(
 pub async fn retained_eligibility(
     uow: &mut UnitOfWork<'_>,
     task_id: Uuid,
-    scope: &str,
-    ordinal: i64,
-    request_digest: &str,
-    predecessor_digest: Option<&str>,
-    max_retained_bytes: Option<u64>,
-    prompt: &Value,
+    inputs: RetainedInput<'_>,
 ) -> Result<RetainedEligibility> {
+    let RetainedInput {
+        scope,
+        ordinal,
+        request_digest,
+        predecessor_digest,
+        max_retained_bytes,
+        prompt,
+    } = inputs;
     ensure!(ordinal >= 0, "negative session ordinal");
-    let rows: Vec<(
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<Json<Value>>,
-        Option<String>,
-        bool,
-        Option<String>,
-        Option<i64>,
-    )> = sqlx::query_as(
-        "SELECT ar.session_turn,ar.gzip_sha256,ar.archive_error,ar.journal, \
-             u.status,u.gzip_bytes IS NOT NULL,ar.tar_sha256,ar.retained_file_bytes \
-             FROM tasks.turn_archives ar \
+    let rows: Vec<RetainedArchiveRow> = sqlx::query_as(
+        "SELECT ar.session_turn, ar.gzip_sha256 AS gzip_sha256, ar.archive_error, ar.journal, u.status AS upload_status, u.gzip_bytes IS NOT NULL AS has_pending_bytes, ar.tar_sha256 AS tar_sha256, ar.retained_file_bytes \
+         FROM tasks.turn_archives ar \
              JOIN tasks.attempts a ON a.id=ar.turn_id \
              LEFT JOIN tasks.archive_uploads u ON u.gzip_sha256=ar.gzip_sha256 \
              WHERE a.task_id=$1 AND ar.session_scope=$2 \
@@ -193,16 +228,16 @@ pub async fn retained_eligibility(
     .bind(ordinal - 1)
     .fetch_all(uow.connection())
     .await?;
-    let Some((
-        prior_turn,
-        gzip_sha,
+    let Some(RetainedArchiveRow {
+        session_turn: prior_turn,
+        gzip_sha256: gzip_sha,
         archive_error,
         journal,
         upload_status,
-        pending_bytes,
-        tar_sha,
-        retained_bytes,
-    )) = rows.first()
+        has_pending_bytes: pending_bytes,
+        tar_sha256: tar_sha,
+        retained_file_bytes: retained_bytes,
+    }) = rows.first()
     else {
         return Ok(if ordinal == 0 {
             RetainedEligibility::Fresh
@@ -210,7 +245,12 @@ pub async fn retained_eligibility(
             RetainedEligibility::Unavailable("retained_revision_missing")
         });
     };
-    if rows.iter().filter(|row| row.0 == *prior_turn).count() != 1 {
+    if rows
+        .iter()
+        .filter(|row| row.session_turn == *prior_turn)
+        .count()
+        != 1
+    {
         return Ok(RetainedEligibility::Unavailable(
             "retained_revision_ambiguous",
         ));

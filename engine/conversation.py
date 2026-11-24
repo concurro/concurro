@@ -162,7 +162,10 @@ def objections(value, details):
     prefix = objection_prefix(details["round"], details["reviewer"], details["phase"])
     resolved = list(details["resolved"]) if value["decision"] == "approve" else []
     concern_ids = open_concern_ids(details.get("disposition_ids", []), value.get("objection_updates", []))
-    concerns = [(concern_ids[i] if concern_ids else f"{prefix}-c{i + 1}", t) for i, t in enumerate(value["concerns"])]
+    concerns = [
+        (concern_ids[i] if concern_ids else f"{prefix}-c{i + 1}", t)
+        for i, t in enumerate(value.get("remarks", value.get("concerns", [])))
+    ]
     questions = [(f"{prefix}-q{i + 1}", t) for i, t in enumerate(value["questions"])]
     return resolved, concerns, questions
 
@@ -505,30 +508,30 @@ def queue(state, title, body=None, *, source=None, kind=None, details=None, meta
     journal["pending"].append(event)
 
 
-def queue_intake_concerns(state, concerns):
-    """Notify humans of advisory intake concerns through the recoverable comment outbox."""
+def queue_intake_remarks(state, remarks):
+    """Notify humans of advisory intake remarks through the recoverable comment outbox."""
     lines = []
     used = 0
     shortened = False
-    for concern in concerns:
-        preview = concern if len(concern) <= 1000 else concern[:999].rstrip() + "…"
+    for remark in remarks:
+        preview = remark if len(remark) <= 1000 else remark[:999].rstrip() + "…"
         rendered = block(preview)
         line = "- " + rendered.replace("\n", "\n  ")
         if used + len(line.encode()) + 1 > EVENT_LIMIT - EVENT_RESERVE - 500:
             shortened = True
             break
-        shortened |= len(concern) > 1000
+        shortened |= len(remark) > 1000
         lines.append(line)
         used += len(line.encode()) + 1
     lines += [
         "",
         ("Some text is shortened. " if shortened else "")
-        + "The full concerns are in the intake report linked from the dashboard.",
+        + "The full remarks are in the intake report linked from the dashboard.",
     ]
     queue(
         state,
-        "Intake approved with concerns",
-        "Planning will continue. No action needed.\n\n" + markup.details("Planning concerns", "\n".join(lines)),
+        "Intake approved with remarks",
+        "Planning will continue. No action needed.\n\n" + markup.details("Planning remarks", "\n".join(lines)),
     )
 
 

@@ -26,6 +26,123 @@ use crate::{
     },
 };
 
+/// Columns read by `pr_review_publication`.
+#[derive(sqlx::FromRow)]
+struct PrReviewPublicationRow {
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted issue number.
+    issue_number: i64,
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted head.
+    head: String,
+    /// Persisted branch.
+    branch: String,
+    /// Persisted marker.
+    marker: String,
+    /// Persisted body.
+    body: String,
+    /// Persisted status.
+    status: String,
+    /// Persisted bot user id.
+    bot_user_id: Option<i64>,
+    /// Persisted review node id.
+    review_node_id: Option<String>,
+    /// Persisted threaded.
+    threaded: bool,
+}
+
+/// Columns read by `pr_review_batch`.
+#[derive(sqlx::FromRow)]
+struct PrReviewBatchRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted issue number.
+    issue_number: i64,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted head.
+    head: String,
+    /// Persisted branch.
+    branch: String,
+    /// Persisted plan id.
+    plan_id: String,
+    /// Persisted round.
+    round: i64,
+    /// Persisted fix round.
+    fix_round: i64,
+    /// Persisted changed paths.
+    changed_paths: Json<Vec<String>>,
+    /// Persisted roster.
+    roster: Json<Vec<DesignReviewer>>,
+    /// Persisted snapshot.
+    snapshot: Json<InitializationSnapshot>,
+    /// Persisted plan report.
+    plan_report: Vec<u8>,
+}
+
+/// Columns read by `pr_review_result`.
+#[derive(sqlx::FromRow)]
+struct PrReviewResultRow {
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted issue number.
+    issue_number: i64,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted head.
+    head: String,
+    /// Persisted changed paths.
+    changed_paths: Json<Vec<String>>,
+    /// Persisted reviewer.
+    reviewer: Json<DesignReviewer>,
+    /// Persisted report raw.
+    report_raw: Vec<u8>,
+}
+
+/// Columns read by `settle_pr_review_attempt`.
+type SettlePrReviewAttemptRow = (
+    String,
+    Option<Json<Value>>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Vec<u8>,
+);
+
+/// Columns read by `apply_pr_review_result`.
+#[derive(sqlx::FromRow)]
+struct PrReviewSettlementRow {
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted head.
+    head: String,
+    /// Persisted plan id.
+    plan_id: String,
+    /// Persisted reviewer.
+    reviewer: Json<DesignReviewer>,
+    /// Persisted report raw.
+    report_raw: Vec<u8>,
+    /// Persisted snapshot.
+    snapshot: Json<InitializationSnapshot>,
+    /// Persisted plan report.
+    plan_report: Vec<u8>,
+    /// Persisted binding.
+    binding: String,
+    /// Persisted correction count.
+    correction_count: i32,
+    /// Persisted repair signature.
+    repair_signature: Option<String>,
+}
+
 /// One immutable pull request head and pinned independent reviewer roster.
 pub struct PrReviewBatch {
     /// Durable batch identity.
@@ -135,23 +252,8 @@ pub async fn pr_review_publication(
     database: &Database,
     turn: Uuid,
 ) -> Result<Option<PrReviewPublication>> {
-    let row: Option<(
-        i64,
-        i64,
-        Uuid,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<i64>,
-        Option<String>,
-        bool,
-    )> = sqlx::query_as(
-        "SELECT t.repository_id,t.issue_number,p.batch_id,p.pr_number,p.head,b.branch,p.marker,p.body, \
-         p.status,p.bot_user_id,p.review_node_id, \
-         EXISTS (SELECT 1 FROM tasks.pr_review_actions a WHERE a.turn_id=p.turn_id) \
+    let row: Option<PrReviewPublicationRow> = sqlx::query_as(
+        "SELECT t.repository_id, t.issue_number, p.batch_id, p.pr_number, p.head, b.branch, p.marker, p.body, p.status, p.bot_user_id, p.review_node_id, EXISTS (SELECT 1 FROM tasks.pr_review_actions a WHERE a.turn_id=p.turn_id) AS threaded \
          FROM tasks.pr_review_publications p \
          JOIN tasks.pr_review_batches b ON b.id=p.batch_id \
          JOIN tasks.task_state t ON t.task_id=p.task_id WHERE p.turn_id=$1 \
@@ -161,20 +263,20 @@ pub async fn pr_review_publication(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(
-            repository_id,
-            number,
-            batch_id,
-            pr_number,
-            head,
-            branch,
-            marker,
-            body,
-            status,
-            bot_user_id,
-            review_node_id,
-            threaded,
-        )| {
+        |PrReviewPublicationRow {
+             repository_id,
+             issue_number: number,
+             batch_id,
+             pr_number,
+             head,
+             branch,
+             marker,
+             body,
+             status,
+             bot_user_id,
+             review_node_id,
+             threaded,
+         }| {
             PrReviewPublication {
                 turn,
                 issue: IssueKey {
@@ -675,23 +777,8 @@ pub(crate) async fn retry_pr_review_batch(
 
 /// Read one recorded batch and its exact approved source without consuming calls.
 pub async fn pr_review_batch(database: &Database, batch: Uuid) -> Result<Option<PrReviewBatch>> {
-    let row: Option<(
-        Uuid,
-        i64,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        Json<Vec<String>>,
-        Json<Vec<DesignReviewer>>,
-        Json<InitializationSnapshot>,
-        Vec<u8>,
-    )> = sqlx::query_as(
-        "SELECT b.task_id,t.repository_id,t.issue_number,b.pr_number,b.head,b.branch,b.plan_id, \
-         b.round,b.fix_round,b.changed_paths,b.roster,i.snapshot,p.raw_report_bytes \
+    let row: Option<PrReviewBatchRow> = sqlx::query_as(
+        "SELECT b.task_id, t.repository_id, t.issue_number, b.pr_number, b.head, b.branch, b.plan_id, b.round, b.fix_round, b.changed_paths, b.roster, i.snapshot, p.raw_report_bytes AS plan_report \
          FROM tasks.pr_review_batches b JOIN tasks.task_state t ON t.task_id=b.task_id \
          JOIN tasks.initialization_inputs i ON i.task_id=b.task_id \
          JOIN tasks.plan_reports p ON p.task_id=b.task_id AND p.plan_id=b.plan_id \
@@ -704,21 +791,21 @@ pub async fn pr_review_batch(database: &Database, batch: Uuid) -> Result<Option<
     .await?;
     let batch = row
         .map(
-            |(
-                task_id,
-                repository_id,
-                number,
-                pr_number,
-                head,
-                branch,
-                plan_id,
-                round,
-                fix_round,
-                Json(changed_paths),
-                Json(roster),
-                Json(snapshot),
-                raw,
-            )|
+            |PrReviewBatchRow {
+                 task_id,
+                 repository_id,
+                 issue_number: number,
+                 pr_number,
+                 head,
+                 branch,
+                 plan_id,
+                 round,
+                 fix_round,
+                 changed_paths: Json(changed_paths),
+                 roster: Json(roster),
+                 snapshot: Json(snapshot),
+                 plan_report: raw,
+             }|
              -> Result<PrReviewBatch> {
                 Ok(PrReviewBatch {
                     id: batch,
@@ -831,10 +918,8 @@ pub async fn pr_review_correction(
 
 /// Read a completed review and the finding IDs only its owner may disposition.
 pub async fn pr_review_result(database: &Database, turn: Uuid) -> Result<Option<PrReviewResult>> {
-    let row: Option<(
-        Uuid, Uuid, i64, i64, i64, String, Json<Vec<String>>, Json<DesignReviewer>, Vec<u8>,
-    )> = sqlx::query_as(
-        "SELECT b.id,b.task_id,t.repository_id,t.issue_number,b.pr_number,b.head,b.changed_paths,s.identity,s.report_raw \
+    let row: Option<PrReviewResultRow> = sqlx::query_as(
+        "SELECT b.id AS batch_id, b.task_id, t.repository_id, t.issue_number, b.pr_number, b.head, b.changed_paths, s.identity AS reviewer, s.report_raw \
          FROM tasks.pr_review_seats s JOIN tasks.pr_review_batches b ON b.id=s.batch_id \
          JOIN tasks.task_state t ON t.task_id=b.task_id \
          WHERE s.attempt_id=$1 AND s.status='completed' AND b.status='admitted'",
@@ -842,17 +927,17 @@ pub async fn pr_review_result(database: &Database, turn: Uuid) -> Result<Option<
     .bind(turn)
     .fetch_optional(database.pool())
     .await?;
-    let Some((
+    let Some(PrReviewResultRow {
         batch_id,
         task_id,
         repository_id,
-        number,
+        issue_number: number,
         pr_number,
         head,
-        Json(changed_paths),
-        Json(reviewer),
-        raw,
-    )) = row
+        changed_paths: Json(changed_paths),
+        reviewer: Json(reviewer),
+        report_raw: raw,
+    }) = row
     else {
         return Ok(None);
     };
@@ -1275,13 +1360,7 @@ pub(crate) async fn settle_pr_review_attempt(
     let Some((batch, reviewer, failure_count, session_failures, seat_epoch)) = seat else {
         return Ok(());
     };
-    let (status, result, raw_result, reason, submit_body): (
-        String,
-        Option<Json<Value>>,
-        Option<Vec<u8>>,
-        Option<String>,
-        Vec<u8>,
-    ) = sqlx::query_as(
+    let (status, result, raw_result, reason, submit_body): SettlePrReviewAttemptRow = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason,submit_body FROM tasks.attempts WHERE id=$1 FOR UPDATE",
     )
     .bind(turn)
@@ -1401,20 +1480,8 @@ pub async fn apply_pr_review_result(
     let Some(state) = crate::lock_issue_for_turn(uow, turn).await? else {
         return Ok(false);
     };
-    let row: Option<(
-        Uuid,
-        String,
-        String,
-        Json<DesignReviewer>,
-        Vec<u8>,
-        Json<InitializationSnapshot>,
-        Vec<u8>,
-        String,
-        i32,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT b.id,b.head,b.plan_id,s.identity,s.report_raw,i.snapshot,p.raw_report_bytes, \
-         s.binding,s.correction_count,s.repair_signature \
+    let row: Option<PrReviewSettlementRow> = sqlx::query_as(
+        "SELECT b.id AS batch_id, b.head, b.plan_id, s.identity AS reviewer, s.report_raw, i.snapshot, p.raw_report_bytes AS plan_report, s.binding, s.correction_count, s.repair_signature \
          FROM tasks.pr_review_seats s JOIN tasks.pr_review_batches b ON b.id=s.batch_id \
          JOIN tasks.initialization_inputs i ON i.task_id=b.task_id \
          JOIN tasks.plan_reports p ON p.task_id=b.task_id AND p.plan_id=b.plan_id \
@@ -1425,18 +1492,18 @@ pub async fn apply_pr_review_result(
     .bind(turn)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((
-        batch,
+    let Some(PrReviewSettlementRow {
+        batch_id: batch,
         head,
         plan_id,
-        Json(reviewer),
-        raw,
-        Json(snapshot),
-        plan_raw,
+        reviewer: Json(reviewer),
+        report_raw: raw,
+        snapshot: Json(snapshot),
+        plan_report: plan_raw,
         binding,
         correction_count,
         repair_signature,
-    )) = row
+    }) = row
     else {
         return Ok(false);
     };

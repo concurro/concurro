@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::execution_owner::lock_execution_owner;
 
 /// A session's immutable fork and current publication state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 pub struct RunnerSession {
     /// Exchange session allocated to the turn.
     pub session_id: Uuid,
@@ -106,50 +106,14 @@ pub async fn runner_session(
     database: &Database,
     session_id: Uuid,
 ) -> Result<Option<RunnerSession>> {
-    let row: Option<(
-        Uuid,
-        Uuid,
-        i64,
-        String,
-        String,
-        bool,
-        i64,
-        bool,
-        bool,
-        String,
-    )> = sqlx::query_as(
-        "SELECT session_id,turn_id,repository_id,fork,config_sha,desired_present, \
-             ref_revision,ref_watch,ref_present_observed,dispatch_status \
-             FROM tasks.runner_sessions WHERE session_id=$1",
+    let row: Option<RunnerSession> = sqlx::query_as(
+        "SELECT session_id, turn_id, repository_id, fork, config_sha, desired_present, ref_revision, ref_watch, ref_present_observed, dispatch_status \
+         FROM tasks.runner_sessions WHERE session_id=$1",
     )
     .bind(session_id)
     .fetch_optional(database.pool())
     .await?;
-    Ok(row.map(
-        |(
-            session_id,
-            turn_id,
-            repository_id,
-            fork,
-            config_sha,
-            desired_present,
-            ref_revision,
-            ref_watch,
-            ref_present_observed,
-            dispatch_status,
-        )| RunnerSession {
-            session_id,
-            turn_id,
-            repository_id,
-            fork,
-            config_sha,
-            desired_present,
-            ref_revision,
-            ref_watch,
-            ref_present_observed,
-            dispatch_status,
-        },
-    ))
+    Ok(row)
 }
 
 /// Read the immutable submit body for nonsecret runner display labels.

@@ -1,5 +1,7 @@
 //! Pure task request ordering and M1 start/stop decisions.
 
+pub use design::DesignPhase;
+pub use sponsorship::InitialFundingContext;
 mod canonical;
 mod design;
 mod design_review;
@@ -280,6 +282,9 @@ pub struct InitializationSnapshot {
     pub policy_documents: BTreeMap<String, String>,
     /// Non-tree paths from the upstream base before edit policy filtering.
     pub base_files: Vec<String>,
+    /// Exact runtime bundle files, absent only on pre-bundle snapshots.
+    #[serde(default)]
+    pub engine_resources: BTreeMap<String, String>,
     /// Hash identity of the complete engine and target bundle.
     pub bundle_id: String,
 }
@@ -366,8 +371,9 @@ pub struct IntakeReport {
     pub risk: IntakeRisk,
     /// Outstanding human questions.
     pub questions: Vec<String>,
-    /// Advisory concerns for later stages.
-    pub concerns: Vec<String>,
+    /// Advisory remarks for later stages.
+    #[serde(alias = "concerns")]
+    pub remarks: Vec<String>,
     /// Charter scope judgment.
     pub scope: IntakeScope,
 }
@@ -387,7 +393,7 @@ impl IntakeReport {
         if report
             .questions
             .iter()
-            .chain(&report.concerns)
+            .chain(&report.remarks)
             .any(|value| value.trim().is_empty())
         {
             return Err("invalid QC questions or concerns".to_owned());

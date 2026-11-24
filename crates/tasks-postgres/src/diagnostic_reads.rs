@@ -7,6 +7,27 @@ use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
+/// Columns read by `transcript_for_tar`.
+#[derive(sqlx::FromRow)]
+struct TranscriptEventRow {
+    /// Persisted position.
+    position: i64,
+    /// Persisted member path.
+    member_path: String,
+    /// Persisted line number.
+    line_number: i32,
+    /// Persisted harness.
+    harness: String,
+    /// Persisted event kind.
+    event_kind: Option<String>,
+    /// Persisted event json.
+    event_json: Option<Json<Value>>,
+    /// Persisted fallback bytes.
+    fallback_bytes: Option<Vec<u8>>,
+    /// Persisted diagnostic.
+    diagnostic: Option<String>,
+}
+
 /// One preserved transcript line in its source order.
 #[derive(Serialize)]
 pub struct TranscriptLine {
@@ -80,18 +101,9 @@ async fn transcript_for_tar(
     after: i64,
     limit: i64,
 ) -> Result<Vec<TranscriptLine>, sqlx::Error> {
-    let rows: Vec<(
-        i64,
-        String,
-        i32,
-        String,
-        Option<String>,
-        Option<Json<Value>>,
-        Option<Vec<u8>>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT position,member_path,line_number,harness,event_kind,event_json, \
-             fallback_bytes,diagnostic FROM ( \
+    let rows: Vec<TranscriptEventRow> = sqlx::query_as(
+        "SELECT position, member_path, line_number, harness, event_kind, event_json, fallback_bytes, diagnostic \
+         FROM ( \
              SELECT row_number() OVER (ORDER BY member_mtime,member_path COLLATE \"C\", \
                  member_ordinal,line_number) position, \
                  member_path,line_number,harness,event_kind,event_json,fallback_bytes,diagnostic \
@@ -106,7 +118,16 @@ async fn transcript_for_tar(
     Ok(rows
         .into_iter()
         .map(
-            |(position, member_path, line_number, harness, kind, json, fallback, diagnostic)| {
+            |TranscriptEventRow {
+                 position,
+                 member_path,
+                 line_number,
+                 harness,
+                 event_kind: kind,
+                 event_json: json,
+                 fallback_bytes: fallback,
+                 diagnostic,
+             }| {
                 TranscriptLine {
                     position,
                     member_path,

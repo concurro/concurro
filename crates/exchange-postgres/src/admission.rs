@@ -1,5 +1,6 @@
 //! Session-key admission, provider accounting and settled turn facts.
 
+use crate::relay_claims::RelayClaimLimits;
 use chrono::{DateTime, Utc};
 use concurro_contracts::{
     Admission, AdmissionRequest, Envelope, EventId, ExchangeTurnFinished, FinishRequest, Grant,
@@ -173,9 +174,11 @@ impl Store {
                     session.session_id,
                     &session.body.0,
                     &session.binding.0,
-                    &session.models.0,
-                    session.budget,
-                    session.deadline,
+                    RelayClaimLimits {
+                        models: &session.models.0,
+                        budget: session.budget,
+                        deadline: session.deadline,
+                    },
                 )
                 .await?,
             )

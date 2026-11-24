@@ -20,9 +20,31 @@ use uuid::Uuid;
 use crate::{
     ArchiveContext, InitializationTarget,
     archive::{RetainedPreflightRefusal, preflight_retained},
-    bundle::{plan_prompt_parts, python_digest, python_pretty_json, task_prompt_parts},
+    bundle::{ResolvedBundle, python_digest, python_pretty_json},
     intake_payload::{IntakeTransport, assigned_agent, mcp_servers},
 };
+
+/// Inputs shared by `prepare_plan_attempt`.
+pub struct PlanAttemptInputs<'a> {
+    /// Verified resource bytes and controller wording for this exact turn.
+    pub bundle: ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<&'a PlanCorrection>,
+    /// Previous plan and design feedback for a requested revision.
+    pub revision: Option<&'a PlanRevision>,
+    /// Unresolved reviewer-owned objections the planner must address.
+    pub open_objections: &'a [Value],
+    /// Exact predecessor journal and session binding for this role.
+    pub retained: &'a RetainedAttempt,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+    /// Applicable advisory intake remarks with matching source provenance.
+    pub intake_remarks: &'a [String],
+}
 
 /// Preflighted role journal bytes and its exact sequential session identity.
 pub(crate) struct RetainedAttempt {
@@ -100,14 +122,19 @@ pub(crate) fn prepare_plan_attempt(
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    correction: Option<&PlanCorrection>,
-    revision: Option<&PlanRevision>,
-    open_objections: &[Value],
-    retained: &RetainedAttempt,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    inputs: PlanAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let PlanAttemptInputs {
+        bundle,
+        expected,
+        correction,
+        revision,
+        open_objections,
+        retained,
+        turn,
+        now,
+        intake_remarks,
+    } = inputs;
     let config = &snapshot.configuration;
     let (harness, model, effort, agent) = assigned_agent(config, "planner")?;
     ensure!(
@@ -157,13 +184,16 @@ pub(crate) fn prepare_plan_attempt(
         "repository_commit": snapshot.pins.base_sha,
         "repository": {"refs":refs,"head":base},
     });
+    if !intake_remarks.is_empty() {
+        context["intake_remarks"] = json!(intake_remarks);
+    }
     if let Some(agent) = &agent {
         context["agent"] = agent.clone();
     }
-    if let Some(revision) = revision {
-        if !revision.design_feedback.is_empty() {
-            context["design_feedback"] = json!(revision.design_feedback);
-        }
+    if let Some(revision) = revision
+        && !revision.design_feedback.is_empty()
+    {
+        context["design_feedback"] = json!(revision.design_feedback);
     }
     if let Some(correction) = correction {
         context["plan_validation_feedback"] = json!({
@@ -184,34 +214,55 @@ pub(crate) fn prepare_plan_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        "plan",
-        phase,
-        context,
-        (harness, model, effort, agent),
-        Some(retained),
-        turn,
-        now,
+        ExecutionAttemptInputs {
+            expected,
+            stage: "plan",
+            phase,
+            context,
+            agent_config: (harness, model, effort, agent),
+            retained: Some(retained),
+            turn,
+            now,
+            bundle: &bundle,
+            standalone_review: false,
+        },
     )
 }
 
-/// Freeze the common runner envelope for a pinned task stage.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_task_attempt(
+/// Frozen role inputs shared by contribution and standalone runner envelopes.
+pub struct ExecutionAttemptInputs<'a> {
+    /// Verified resources and controller wording resolved before constructing this attempt.
+    pub bundle: &'a ResolvedBundle,
+    /// Current runner OIDC claims expected by the exchange.
+    pub expected: Value,
+    /// Model operation selecting the role and response schema.
+    pub stage: &'a str,
+    /// Canonical staffing phase identity.
+    pub phase: String,
+    /// Source evidence and role-specific feedback for the model.
+    pub context: Value,
+    /// Harness, model, effort and optional named agent identity.
+    pub agent_config: (String, String, String, Option<Value>),
+    /// Exact predecessor journal, if this role continues a session.
+    pub retained: Option<&'a RetainedAttempt>,
+    /// Select the standalone PR review instructions and response contract.
+    pub standalone_review: bool,
+    /// Immutable turn identity used for admission and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive the turn deadline.
+    pub now: DateTime<Utc>,
+}
+
+/// Freeze a contribution runner envelope without resolving its bundle again.
+pub fn prepare_task_attempt(
     issue: IssueKey,
     task: &TaskState,
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    stage: &str,
-    phase: String,
-    context: Value,
-    agent_config: (String, String, String, Option<Value>),
-    retained: Option<&RetainedAttempt>,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    mut inputs: ExecutionAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    inputs.standalone_review = false;
     prepare_execution_attempt(
         issue,
         task.id,
@@ -219,37 +270,32 @@ pub(crate) fn prepare_task_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        stage,
-        phase,
-        context,
-        agent_config,
-        retained,
-        false,
-        turn,
-        now,
+        inputs,
     )
 }
 
-/// Freeze a runner envelope for either lifecycle without fabricating task state.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_execution_attempt(
+/// Freeze either lifecycle's runner envelope from one resolved resource set.
+pub fn prepare_execution_attempt(
     issue: IssueKey,
     task_id: TaskId,
     expected_revision: u64,
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    stage: &str,
-    phase: String,
-    context: Value,
-    agent_config: (String, String, String, Option<Value>),
-    retained: Option<&RetainedAttempt>,
-    standalone_review: bool,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    inputs: ExecutionAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let ExecutionAttemptInputs {
+        bundle,
+        expected,
+        stage,
+        phase,
+        context,
+        agent_config,
+        retained,
+        standalone_review,
+        turn,
+        now,
+    } = inputs;
     let config = &snapshot.configuration;
     let (harness, model, effort, agent) = agent_config;
     ensure!(
@@ -285,14 +331,7 @@ pub(crate) fn prepare_execution_attempt(
             base.to_owned(),
         )
     };
-    let (mut prompt, schema) = match stage {
-        "plan" => plan_prompt_parts(&context, snapshot)?,
-        "plan_qc" => crate::bundle::plan_qc_prompt_parts(&context, snapshot)?,
-        "develop" => crate::bundle::develop_prompt_parts(&context, snapshot)?,
-        "review" if standalone_review => task_prompt_parts(&context, snapshot, "review", true)?,
-        "review" => crate::bundle::review_prompt_parts(&context, snapshot)?,
-        _ => anyhow::bail!("unsupported task attempt stage"),
-    };
+    let (mut prompt, schema) = bundle.prompt_parts(&context, snapshot, stage, standalone_review)?;
     let prompt_bytes = serde_json::to_vec(&prompt)?.len() + serde_json::to_vec(&schema)?.len();
     let maximum = config["max_context_bytes"]
         .as_u64()
@@ -312,6 +351,7 @@ pub(crate) fn prepare_execution_attempt(
         "bundle_id": snapshot.bundle_id,
         "charter": snapshot.charter,
         "instruction_texts": snapshot.instruction_texts,
+        "engine_resources": bundle.resources(),
         "max_retained_bytes": config.get("max_retained_bytes").cloned().unwrap_or_else(|| json!(64 * 1024 * 1024)),
         "context": context,
         "session": retained.map(|value| &value.session),

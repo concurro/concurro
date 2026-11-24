@@ -1,5 +1,6 @@
 //! Request ordering and replay against a real PostgreSQL transaction boundary.
 
+use concurro_tasks_postgres::RetainedInput;
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -1694,6 +1695,7 @@ fn snapshot(pins: PinnedInputs) -> InitializationSnapshot {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle-identity".to_owned(),
     }
 }
@@ -3274,12 +3276,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("continuation eligibility"),
@@ -3297,12 +3301,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    0,
-                    "digest-0",
-                    None,
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 0,
+                        request_digest: "digest-0",
+                        predecessor_digest: None,
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("replay eligibility"),
@@ -3318,12 +3324,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                     retained_eligibility(
                         &mut eligibility,
                         current.id.0,
-                        "scope-1",
-                        ordinal,
-                        digest,
-                        predecessor,
-                        Some(retained_size - 1),
-                        &prompt
+                        RetainedInput {
+                            scope: "scope-1",
+                            ordinal,
+                            request_digest: digest,
+                            predecessor_digest: predecessor,
+                            max_retained_bytes: Some(retained_size - 1),
+                            prompt: &prompt
+                        },
                     )
                     .await
                     .expect("oversized retained revision"),
@@ -3334,12 +3342,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    Some(retained_size),
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: Some(retained_size),
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("exact retained limit"),
@@ -3349,12 +3359,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    0,
-                    "digest-0",
-                    None,
-                    Some(retained_size),
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 0,
+                        request_digest: "digest-0",
+                        predecessor_digest: None,
+                        max_retained_bytes: Some(retained_size),
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("exact replay limit"),
@@ -3372,12 +3384,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    0,
-                    "digest-0",
-                    None,
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 0,
+                        request_digest: "digest-0",
+                        predecessor_digest: None,
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("null cached replay"),
@@ -3395,12 +3409,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    0,
-                    "changed",
-                    None,
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 0,
+                        request_digest: "changed",
+                        predecessor_digest: None,
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("changed request"),
@@ -3410,12 +3426,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("wrong-predecessor"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("wrong-predecessor"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("changed predecessor"),
@@ -3425,12 +3443,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    None,
-                    &json!({"instructions":"changed","response_schema":{}})
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: None,
+                        prompt: &json!({"instructions":"changed","response_schema":{}})
+                    },
                 )
                 .await
                 .expect("changed instructions"),
@@ -3440,12 +3460,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "other-scope",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "other-scope",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("other scope"),
@@ -3455,12 +3477,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    2,
-                    "digest-2",
-                    Some("digest-1"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 2,
+                        request_digest: "digest-2",
+                        predecessor_digest: Some("digest-1"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("skipped ordinal"),
@@ -3477,12 +3501,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("corrupt revision"),
@@ -3500,12 +3526,14 @@ async fn invalid_intake_reports_schedule_two_paid_repairs_then_escalate() {
                 retained_eligibility(
                     &mut eligibility,
                     current.id.0,
-                    "scope-1",
-                    1,
-                    "digest-1",
-                    Some("digest-0"),
-                    None,
-                    &prompt
+                    RetainedInput {
+                        scope: "scope-1",
+                        ordinal: 1,
+                        request_digest: "digest-1",
+                        predecessor_digest: Some("digest-0"),
+                        max_retained_bytes: None,
+                        prompt: &prompt
+                    },
                 )
                 .await
                 .expect("pending journal"),
@@ -4770,5 +4798,166 @@ async fn accepted_intake_unrepresentable_json_keeps_raw_reports_and_safe_views()
         if index != 3 {
             assert!(notice.contains("\\u0000"));
         }
+    }
+}
+
+/// Current intake remarks keep their assessment base and requirement provenance across adoption.
+#[tokio::test]
+async fn intake_remarks_preserve_provenance_and_historical_report_bytes() {
+    let postgres = PostgresContainer::start().await.expect("Postgres");
+    let database = Database::connect(postgres.url(), 2)
+        .await
+        .expect("database");
+    migrate(&database).await.expect("tasks schema");
+    migrate_events(&database).await.expect("events schema");
+    let outbox = Outbox::new(
+        1024 * 1024,
+        vec![
+            "request.>".to_owned(),
+            "task.>".to_owned(),
+            "turn.>".to_owned(),
+            "view.>".to_owned(),
+        ],
+    );
+    for (index, field) in ["concerns", "remarks"].into_iter().enumerate() {
+        let mut start = request(10 + index as i64, RequestKind::Start);
+        start.issue.number += index as i64;
+        let mut work = database.begin().await.expect("start");
+        record_request(&mut work, &start).await.expect("record");
+        let state = apply_request(
+            &mut work,
+            &outbox,
+            start.id,
+            start.issue,
+            Authority {
+                writer: true,
+                issue_open: true,
+            },
+        )
+        .await
+        .expect("apply")
+        .expect("decision")
+        .1
+        .task
+        .expect("task");
+        work.commit().await.expect("start commit");
+        let mut source = snapshot(PinnedInputs {
+            config_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            max_model_calls: 10,
+            max_fix_rounds: 2,
+            max_plan_revisions: 2,
+        });
+        source.charter = json!({"version":1,"goals":{"G1":"Goal"}}).to_string();
+        let mut work = database.begin().await.expect("initialize");
+        let state = initialize_task(&mut work, &outbox, start.issue, state.revision, &source)
+            .await
+            .expect("initialize")
+            .expect("current");
+        work.commit().await.expect("initialize commit");
+        let turn = Uuid::now_v7();
+        let prompt = json!({"untrusted_context":{"base":source.pins.base_sha,"issue":concurro_tasks_core::legacy_requirements(&source.requirements)}});
+        let mut work = database.begin().await.expect("admit");
+        assert_eq!(
+            admit_intake(
+                &mut work,
+                &outbox,
+                start.issue,
+                &AttemptSpec {
+                    id: turn,
+                    task: state.id,
+                    expected_revision: state.revision,
+                    staffing_group: turn.to_string(),
+                    fork: "acme/fork".to_owned(),
+                    config_sha: source.pins.config_sha.clone(),
+                    submit_body: serde_json::to_vec(&TurnSubmission {
+                        turn,
+                        expected: json!({}),
+                        models: vec!["test".to_owned()],
+                        budget: 1,
+                        lease: 300,
+                        payload: json!({"request":{"stage":"intake"}}),
+                        pin: None,
+                        binding: json!({})
+                    })
+                    .expect("submission"),
+                    prompt_body: Some(serde_json::to_vec(&prompt).expect("prompt")),
+                    deadline: Utc::now() + chrono::Duration::minutes(10),
+                    unbounded_running: false,
+                }
+            )
+            .await
+            .expect("admit"),
+            Admission::Admitted
+        );
+        work.commit().await.expect("admit commit");
+        let mut report = json!({"decision":"proceed","rationale":"Fits","risk":"low","questions":[],"scope":{"goal_ids":["G1"],"fit":"Matches","conflicts":[]}});
+        report[field] = json!(["Preserve streaming callers."]);
+        let observation: TurnObservation = serde_json::from_value(json!({"turn":turn,"status":"done","created":1.0,"finished":2.0,"result":{"outcome":"ok","response":report}})).expect("observation");
+        let mut work = database.begin().await.expect("settle");
+        record_observation(&mut work, &outbox, &observation, None)
+            .await
+            .expect("report");
+        work.commit().await.expect("report commit");
+        let current = task(&database, start.issue)
+            .await
+            .expect("task")
+            .expect("current task");
+        assert_eq!(
+            current.stage,
+            Stage::Plan,
+            "remarks do not add an approval gate"
+        );
+        assert_eq!(current.used_model_calls, 1);
+        assert_eq!(
+            concurro_tasks_postgres::applicable_intake_remarks(&database, state.id.0, &source)
+                .await
+                .expect("remarks"),
+            ["Preserve streaming callers."]
+        );
+        let mut adopted = source.clone();
+        adopted.pins.config_sha = "c".repeat(40);
+        adopted.bundle_id = "new-runtime-bundle".to_owned();
+        assert_eq!(
+            concurro_tasks_postgres::applicable_intake_remarks(&database, state.id.0, &adopted)
+                .await
+                .expect("adopted remarks"),
+            ["Preserve streaming callers."],
+            "config or prompt adoption retains a same-source assessment"
+        );
+        adopted.pins.base_sha = "d".repeat(40);
+        assert!(
+            concurro_tasks_postgres::applicable_intake_remarks(&database, state.id.0, &adopted)
+                .await
+                .expect("stale base")
+                .is_empty()
+        );
+        adopted = source.clone();
+        adopted.requirements.title.push_str(" changed");
+        assert!(
+            concurro_tasks_postgres::applicable_intake_remarks(&database, state.id.0, &adopted)
+                .await
+                .expect("stale requirements")
+                .is_empty()
+        );
+        let raw: Vec<u8> = sqlx::query_scalar(
+            "SELECT raw_report_bytes FROM tasks.intake_reports WHERE attempt_id=$1",
+        )
+        .bind(turn)
+        .fetch_one(database.pool())
+        .await
+        .expect("historical raw report");
+        assert_eq!(serde_json::from_slice::<Value>(&raw).expect("raw"), report);
+        let event: Vec<u8> = sqlx::query_scalar("SELECT wire_bytes FROM events.outbox WHERE type LIKE 'task.%.report' AND message->'data'->>'report_id'=$1").bind(Uuid::new_v5(&Uuid::NAMESPACE_OID, format!("task-report:{turn}").as_bytes()).to_string()).fetch_one(database.pool()).await.expect("report event");
+        let event = decode::<TaskReport>(&event).expect("typed report event");
+        assert_eq!(event.data.body[field], report[field]);
+        sqlx::query("UPDATE tasks.intake_reports SET raw_report=jsonb_set(raw_report,'{decision}','\"clarify\"'::jsonb),raw_report_bytes=$2 WHERE attempt_id=$1")
+            .bind(turn).bind(serde_json::to_vec(&json!({"decision":"clarify",field:["Needs intent"]})).expect("clarify")).execute(database.pool()).await.expect("latest assessment fixture");
+        assert!(
+            concurro_tasks_postgres::applicable_intake_remarks(&database, state.id.0, &source)
+                .await
+                .expect("nonproceed")
+                .is_empty()
+        );
     }
 }

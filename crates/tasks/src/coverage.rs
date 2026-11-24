@@ -1,5 +1,7 @@
 //! Reconstruct missed GitHub sources and refresh active work after an ingress gap.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
 use concurro_contracts::{Envelope, EventId, GithubEvent, IssueCommentPayload, Timestamp};
@@ -25,6 +27,30 @@ use crate::{
     standalone::scan_standalone_review_events,
 };
 
+/// Inputs shared by `reconcile_coverage_gap`.
+pub struct CoverageInputs<'a> {
+    /// Current target configuration and verified issue authority reader.
+    pub decisions: &'a DecisionContext,
+    /// Independent PR review source and authority reader.
+    pub standalone: &'a StandaloneReviewContext,
+    /// GitHub publication settings used for current-head observations.
+    pub publication: &'a GitPublicationContext,
+    /// Comment intake handler used when recovering missed sources.
+    pub comments: &'a CommentHandler,
+    /// Configured targets whose issue and PR indexes need reconciliation.
+    pub index_targets: &'a [IndexTarget],
+}
+
+/// Inputs shared by `scan_repository`.
+pub struct CoverageRepository<'a> {
+    /// Numeric GitHub repository identity.
+    pub repository_id: i64,
+    /// GitHub owner/repository whose source timeline is being read.
+    pub repository: &'a str,
+    /// Exact GitHub App read permissions for this repository.
+    pub permissions: &'a BTreeMap<String, String>,
+}
+
 /// Re-read changed issue sources in one configured GitHub repository.
 async fn scan_repository(
     database: &Database,
@@ -33,10 +59,13 @@ async fn scan_repository(
     standalone: &StandaloneReviewContext,
     comments: &CommentHandler,
     gap: &PendingCoverageGap,
-    repository_id: i64,
-    repository: &str,
-    permissions: &std::collections::BTreeMap<String, String>,
+    inputs: CoverageRepository<'_>,
 ) -> Result<()> {
+    let CoverageRepository {
+        repository_id,
+        repository,
+        permissions,
+    } = inputs;
     let (owner, name) = repository
         .split_once('/')
         .context("coverage target repository must be owner/name")?;
@@ -379,13 +408,16 @@ async fn scan_repository(
 pub async fn reconcile_coverage_gap(
     database: &Database,
     outbox: &Outbox,
-    decisions: &DecisionContext,
-    standalone: &StandaloneReviewContext,
-    publication: &GitPublicationContext,
-    comments: &CommentHandler,
-    index_targets: &[IndexTarget],
+    inputs: CoverageInputs<'_>,
     gap: &PendingCoverageGap,
 ) -> Result<()> {
+    let CoverageInputs {
+        decisions,
+        standalone,
+        publication,
+        comments,
+        index_targets,
+    } = inputs;
     let mut repositories = std::collections::BTreeMap::new();
     let mut failures = Vec::new();
     for (id, target) in &decisions.targets {
@@ -430,9 +462,11 @@ pub async fn reconcile_coverage_gap(
             standalone,
             comments,
             gap,
-            *id,
-            repository,
-            permissions,
+            CoverageRepository {
+                repository_id: *id,
+                repository,
+                permissions,
+            },
         )
         .await
         {
@@ -440,35 +474,34 @@ pub async fn reconcile_coverage_gap(
         }
     }
     for target in index_targets {
-        if repositories.contains_key(&target.issue_repository_id) {
-            if let Err(error) = scan_target_index(database, &decisions.github, target).await {
-                failures.push(format!("index {}: {error}", target.upstream));
-            }
+        if repositories.contains_key(&target.issue_repository_id)
+            && let Err(error) = scan_target_index(database, &decisions.github, target).await
+        {
+            failures.push(format!("index {}: {error}", target.upstream));
         }
     }
     for issue in pending_issues(database).await? {
-        if repositories.contains_key(&issue.repository_id) {
-            if let Err(error) = run_task_decision(database, decisions, issue).await {
-                failures.push(format!("decision {issue:?}: {error}"));
-            }
+        if repositories.contains_key(&issue.repository_id)
+            && let Err(error) = run_task_decision(database, decisions, issue).await
+        {
+            failures.push(format!("decision {issue:?}: {error}"));
         }
     }
     for issue in watched_gate_issues(database).await? {
-        if repositories.contains_key(&issue.repository_id) {
-            if let Err(error) = run_task_gates(database, publication, issue).await {
-                failures.push(format!("gates {issue:?}: {error}"));
-            }
+        if repositories.contains_key(&issue.repository_id)
+            && let Err(error) = run_task_gates(database, publication, issue).await
+        {
+            failures.push(format!("gates {issue:?}: {error}"));
         }
     }
     for (task_id, observe_pr) in watched_standalone_review_prs(database).await? {
         if observe_pr {
             let repository_id = standalone_task_repository_id(database, task_id).await?;
-            if repositories.contains_key(&repository_id) {
-                if let Err(error) =
+            if repositories.contains_key(&repository_id)
+                && let Err(error) =
                     run_standalone_review_pr_state(database, standalone, task_id).await
-                {
-                    failures.push(format!("review {task_id}: {error}"));
-                }
+            {
+                failures.push(format!("review {task_id}: {error}"));
             }
         }
     }

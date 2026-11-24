@@ -6,6 +6,27 @@ use uuid::Uuid;
 
 use crate::StandaloneReviewRound;
 
+/// Columns read by `standalone_review_check`.
+#[derive(sqlx::FromRow)]
+struct StandaloneCheckRow {
+    /// Persisted head.
+    head: String,
+    /// Persisted external id.
+    external_id: String,
+    /// Persisted run id.
+    run_id: Option<i64>,
+    /// Persisted create state.
+    create_state: String,
+    /// Persisted create misses.
+    create_misses: i32,
+    /// Persisted recheck until.
+    recheck_until: Option<DateTime<Utc>>,
+    /// Persisted sent digest.
+    sent_digest: Option<String>,
+    /// Persisted completed.
+    completed: bool,
+}
+
 /// One App-owned check run correlated to a frozen standalone round.
 pub struct StandaloneReviewCheck {
     /// Standalone task identity.
@@ -74,18 +95,9 @@ pub async fn standalone_review_check(
     .bind(&external_id)
     .execute(work.connection())
     .await?;
-    let row: (
-        String,
-        String,
-        Option<i64>,
-        String,
-        i32,
-        Option<DateTime<Utc>>,
-        Option<String>,
-        bool,
-    ) = sqlx::query_as(
-        "SELECT head,external_id,run_id,create_state,create_misses,recheck_until, \
-             sent_digest,completed FROM tasks.standalone_review_checks \
+    let row: StandaloneCheckRow = sqlx::query_as(
+        "SELECT head, external_id, run_id, create_state, create_misses, recheck_until, sent_digest, completed \
+         FROM tasks.standalone_review_checks \
          WHERE task_id=$1 AND round=$2 AND attempt=$3",
     )
     .bind(round.task_id)
@@ -95,21 +107,21 @@ pub async fn standalone_review_check(
     .await?;
     work.commit().await?;
     anyhow::ensure!(
-        row.0 == head && row.1 == external_id,
+        row.head == head && row.external_id == external_id,
         "standalone check correlation changed"
     );
     Ok(StandaloneReviewCheck {
         task_id: round.task_id,
         round: round.number,
         attempt,
-        head: row.0,
-        external_id: row.1,
-        run_id: row.2,
-        create_state: row.3,
-        create_misses: row.4,
-        recheck_until: row.5,
-        sent_digest: row.6,
-        completed: row.7,
+        head: row.head,
+        external_id: row.external_id,
+        run_id: row.run_id,
+        create_state: row.create_state,
+        create_misses: row.create_misses,
+        recheck_until: row.recheck_until,
+        sent_digest: row.sent_digest,
+        completed: row.completed,
     })
 }
 

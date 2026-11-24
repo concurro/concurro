@@ -17,6 +17,7 @@ use concurro_contracts::{
 use concurro_db::Database;
 use concurro_github_v1::AppDeliveryPage;
 use concurro_tasks_core::{IssueKey, LaterCommand, Request, RequestKind, SourceOrder};
+use concurro_tasks_postgres::StandaloneActionSource;
 use concurro_tasks_postgres::{
     BaselineRow, TranscriptLine, baseline_page, browser_action, browser_standalone_action,
     create_baseline, current_config_targets, finish_baseline, historical_display,
@@ -567,10 +568,12 @@ async fn post_request(
             action_id,
             &content,
             submission.content.issue,
-            &target.repository,
-            &claims.actor,
-            kind,
-            submission.content.source_at,
+            StandaloneActionSource {
+                upstream: &target.repository,
+                actor: &claims.actor,
+                kind,
+                source_at: submission.content.source_at,
+            },
         )
         .await
         .map_err(action_error)?;

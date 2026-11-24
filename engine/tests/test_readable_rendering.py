@@ -20,7 +20,7 @@ def samples():
     """Representative new review, action, plan and intake renderings."""
     result = format_samples.publication_cases(reviews, 4)
     state = {"issue": 7}
-    conversation.queue_intake_concerns(state, ["Consider `<limit>` behavior."])
+    conversation.queue_intake_remarks(state, ["Consider `<limit>` behavior."])
     result["intake"] = state["conversation"]["pending"][0]["body"].split("\n", 1)[1]
     result["blocked"] = actions.explain("The task cannot proceed. A dependency is unavailable.", actions.BLOCKED_RETRY)
     state.update(

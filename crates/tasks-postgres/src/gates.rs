@@ -10,6 +10,27 @@ use uuid::Uuid;
 
 use crate::{append_task_snapshot, queue_task_comment};
 
+/// Columns read by `gate_inputs`.
+#[derive(sqlx::FromRow)]
+struct GateInputsRow {
+    /// Persisted state.
+    state: Json<TaskState>,
+    /// Persisted snapshot.
+    snapshot: Json<InitializationSnapshot>,
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted head.
+    head: String,
+    /// Persisted branch.
+    branch: String,
+    /// Persisted changed paths.
+    changed_paths: Json<Vec<String>>,
+    /// Persisted plan report.
+    plan_report: Vec<u8>,
+}
+
 /// Approved PR head and governance inputs for one current readiness observation.
 pub struct GateInputs {
     /// Current task state.
@@ -192,11 +213,8 @@ pub async fn terminal_pr_inputs(
 
 /// Read only a fully published unanimous review against the current approved plan.
 pub async fn gate_inputs(database: &Database, issue: IssueKey) -> Result<Option<GateInputs>> {
-    let row: Option<(
-        Json<TaskState>, Json<InitializationSnapshot>, Uuid, i64, String, String,
-        Json<Vec<String>>, Vec<u8>,
-    )> = sqlx::query_as(
-        "SELECT t.state,i.snapshot,b.id,b.pr_number,b.head,b.branch,b.changed_paths,p.raw_report_bytes \
+    let row: Option<GateInputsRow> = sqlx::query_as(
+        "SELECT t.state, i.snapshot, b.id AS batch_id, b.pr_number, b.head, b.branch, b.changed_paths, p.raw_report_bytes AS plan_report \
          FROM tasks.task_state t JOIN tasks.initialization_inputs i ON i.task_id=t.task_id \
          JOIN tasks.pr_review_batches b ON b.task_id=t.task_id AND b.status='settled' \
          JOIN tasks.implementation_reports r ON r.attempt_id=b.publication_attempt \
@@ -214,16 +232,16 @@ pub async fn gate_inputs(database: &Database, issue: IssueKey) -> Result<Option<
     .bind(issue.number)
     .fetch_optional(database.pool())
     .await?;
-    let Some((
-        Json(state),
-        Json(snapshot),
+    let Some(GateInputsRow {
+        state: Json(state),
+        snapshot: Json(snapshot),
         batch_id,
         pr_number,
         head,
         branch,
-        Json(changed_paths),
-        plan_raw,
-    )) = row
+        changed_paths: Json(changed_paths),
+        plan_report: plan_raw,
+    }) = row
     else {
         return Ok(None);
     };

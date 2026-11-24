@@ -250,6 +250,73 @@ impl Observation {
     }
 }
 
+/// Read required totals and optional cache counters without zero-filling missing counts.
+fn usage_fields(value: &Value) -> Option<UsageTokens> {
+    let mut usage = usage_fields_partial(value)?;
+    usage.output_tokens = value.get("output_tokens")?.as_u64()?;
+    Some(usage)
+}
+
+/// Read input and cache fields from an Anthropic start event.
+fn usage_fields_partial(value: &Value) -> Option<UsageTokens> {
+    Some(UsageTokens {
+        input_tokens: value.get("input_tokens")?.as_u64()?,
+        output_tokens: 0,
+        cache_read_input_tokens: value
+            .get("input_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .or_else(|| value.get("cache_read_input_tokens").and_then(Value::as_u64)),
+        cache_creation_input_tokens: value
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+    })
+}
+
+/// Classify only documented structured codes for this trusted route family.
+pub fn classify(route: RouteKind, value: &Value) -> Option<&'static str> {
+    let error = if value.get("type").and_then(Value::as_str) == Some("response.failed") {
+        value.pointer("/response/error")?
+    } else {
+        value.get("error")?
+    };
+    let code = error.get("code").and_then(Value::as_str);
+    let kind = error.get("type").and_then(Value::as_str);
+    match route {
+        RouteKind::OpenAi => match code {
+            Some("invalid_api_key") => Some("auth"),
+            Some(
+                "insufficient_quota"
+                | "credit_balance_exhausted"
+                | "organization_spend_limit_exceeded"
+                | "project_spend_limit_exceeded"
+                | "organization_usage_limit_exceeded",
+            ) => Some("quota_exhausted"),
+            Some("rate_limit_exceeded" | "slow_down") => Some("rate_limited"),
+            Some("model_not_found") => Some("model_denied"),
+            _ if kind == Some("insufficient_quota") => Some("quota_exhausted"),
+            _ => None,
+        },
+        RouteKind::ChatGpt => match code {
+            Some("token_expired") => Some("auth"),
+            _ => None,
+        },
+        RouteKind::Anthropic => match kind {
+            Some("authentication_error") => Some("auth"),
+            Some("billing_error") => Some("quota_exhausted"),
+            Some("permission_error" | "not_found_error") => Some("model_denied"),
+            Some("rate_limit_error")
+                if error.pointer("/details/error_code").and_then(Value::as_str)
+                    == Some("enforced_spend_limit_reached") =>
+            {
+                Some("quota_exhausted")
+            }
+            Some("rate_limit_error") => Some("unavailable"),
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Observation, RouteKind};
@@ -328,72 +395,5 @@ mod tests {
                 .expect("UTF-8")
                 .contains("private provider text")
         );
-    }
-}
-
-/// Read required totals and optional cache counters without zero-filling missing counts.
-fn usage_fields(value: &Value) -> Option<UsageTokens> {
-    let mut usage = usage_fields_partial(value)?;
-    usage.output_tokens = value.get("output_tokens")?.as_u64()?;
-    Some(usage)
-}
-
-/// Read input and cache fields from an Anthropic start event.
-fn usage_fields_partial(value: &Value) -> Option<UsageTokens> {
-    Some(UsageTokens {
-        input_tokens: value.get("input_tokens")?.as_u64()?,
-        output_tokens: 0,
-        cache_read_input_tokens: value
-            .get("input_tokens_details")
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64)
-            .or_else(|| value.get("cache_read_input_tokens").and_then(Value::as_u64)),
-        cache_creation_input_tokens: value
-            .get("cache_creation_input_tokens")
-            .and_then(Value::as_u64),
-    })
-}
-
-/// Classify only documented structured codes for this trusted route family.
-pub fn classify(route: RouteKind, value: &Value) -> Option<&'static str> {
-    let error = if value.get("type").and_then(Value::as_str) == Some("response.failed") {
-        value.pointer("/response/error")?
-    } else {
-        value.get("error")?
-    };
-    let code = error.get("code").and_then(Value::as_str);
-    let kind = error.get("type").and_then(Value::as_str);
-    match route {
-        RouteKind::OpenAi => match code {
-            Some("invalid_api_key") => Some("auth"),
-            Some(
-                "insufficient_quota"
-                | "credit_balance_exhausted"
-                | "organization_spend_limit_exceeded"
-                | "project_spend_limit_exceeded"
-                | "organization_usage_limit_exceeded",
-            ) => Some("quota_exhausted"),
-            Some("rate_limit_exceeded" | "slow_down") => Some("rate_limited"),
-            Some("model_not_found") => Some("model_denied"),
-            _ if kind == Some("insufficient_quota") => Some("quota_exhausted"),
-            _ => None,
-        },
-        RouteKind::ChatGpt => match code {
-            Some("token_expired") => Some("auth"),
-            _ => None,
-        },
-        RouteKind::Anthropic => match kind {
-            Some("authentication_error") => Some("auth"),
-            Some("billing_error") => Some("quota_exhausted"),
-            Some("permission_error" | "not_found_error") => Some("model_denied"),
-            Some("rate_limit_error")
-                if error.pointer("/details/error_code").and_then(Value::as_str)
-                    == Some("enforced_spend_limit_reached") =>
-            {
-                Some("quota_exhausted")
-            }
-            Some("rate_limit_error") => Some("unavailable"),
-            _ => None,
-        },
     }
 }

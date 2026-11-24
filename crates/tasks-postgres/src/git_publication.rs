@@ -14,6 +14,21 @@ use crate::{
     append_task_snapshot, lock_issue_for_turn, publication::task_comment_id, queue_task_comment,
 };
 
+/// Columns read by `git_publication`.
+type GitPublicationRow = (i64, String, String, Option<String>, Option<String>);
+
+/// Columns read by `git_publication_input`.
+type GitPublicationInputRow = (
+    Json<TaskState>,
+    Uuid,
+    Json<InitializationSnapshot>,
+    Json<Value>,
+    Vec<u8>,
+);
+
+/// Columns read by `git_publication_input`.
+type GitPublicationInputPriorPrRow = (i64, String, String, Option<String>, Option<String>);
+
 /// GitHub identities and sent-write fences for one approved candidate.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GitPublicationIntent {
@@ -63,7 +78,7 @@ pub struct GitPublicationInput {
     /// Saved publication intent, if reservation has started.
     pub intent: Option<(Uuid, i64, GitPublicationIntent)>,
     /// Prior settled PR number, head, branch and frozen description for a fix publication.
-    pub prior_pr: Option<(i64, String, String, Option<String>, Option<String>)>,
+    pub prior_pr: Option<GitPublicationRow>,
 }
 
 /// Read only the latest candidate under a still-current approved plan.
@@ -71,13 +86,7 @@ pub async fn git_publication_input(
     database: &Database,
     issue: IssueKey,
 ) -> Result<Option<GitPublicationInput>> {
-    let row: Option<(
-        Json<TaskState>,
-        Uuid,
-        Json<InitializationSnapshot>,
-        Json<Value>,
-        Vec<u8>,
-    )> = sqlx::query_as(
+    let row: Option<GitPublicationInputRow> = sqlx::query_as(
         "SELECT t.state,r.attempt_id,i.snapshot,r.candidate,p.raw_report_bytes \
          FROM tasks.task_state t JOIN tasks.initialization_inputs i ON i.task_id=t.task_id \
          JOIN tasks.implementation_reports r ON r.task_id=t.task_id AND r.status='accepted' \
@@ -109,7 +118,7 @@ pub async fn git_publication_input(
     .bind(turn)
     .fetch_optional(database.pool())
     .await?;
-    let prior_pr: Option<(i64, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    let prior_pr: Option<GitPublicationInputPriorPrRow> = sqlx::query_as(
         "SELECT b.pr_number,b.head,b.branch,p.intent->>'pr_title',p.intent->>'pr_body' \
          FROM tasks.pr_review_batches b JOIN tasks.git_publications p \
              ON p.attempt_id=b.publication_attempt AND p.task_id=b.task_id \

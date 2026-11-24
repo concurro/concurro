@@ -104,12 +104,12 @@ pub fn validate_plan(plan: &Value, config: &Value) -> Result<(), String> {
             );
         }
         let limits = effective_limits(config).map_err(|error| error.to_string())?;
-        if let Some(maximum) = limits["primary_files"].as_u64() {
-            if files.len() as u64 > maximum {
-                problems.push(format!(
-                    "plan files exceed limits.primary_files ({maximum})"
-                ));
-            }
+        if let Some(maximum) = limits["primary_files"].as_u64()
+            && files.len() as u64 > maximum
+        {
+            problems.push(format!(
+                "plan files exceed limits.primary_files ({maximum})"
+            ));
         }
         for (index, path) in files.iter().enumerate() {
             let path = path.as_str().expect("checked file string");
@@ -167,22 +167,21 @@ fn scope_error(plan: &Value, limits: &Value) -> Result<Option<String>, String> {
             "plan scope paths must contain distinct non-empty strings".to_owned(),
         ));
     }
-    if let Some(maximum) = limits["scope_paths"].as_u64() {
-        if paths.len() as u64 > maximum {
-            return Ok(Some(format!(
-                "plan scope paths exceed limits.scope_paths ({maximum})"
-            )));
-        }
+    if let Some(maximum) = limits["scope_paths"].as_u64()
+        && paths.len() as u64 > maximum
+    {
+        return Ok(Some(format!(
+            "plan scope paths exceed limits.scope_paths ({maximum})"
+        )));
     }
-    if let Some(maximum) = limits["scope_path_characters"].as_u64() {
-        if paths
+    if let Some(maximum) = limits["scope_path_characters"].as_u64()
+        && paths
             .iter()
             .any(|path| path.as_str().expect("checked path").chars().count() as u64 > maximum)
-        {
-            return Ok(Some(format!(
-                "plan scope paths exceed limits.scope_path_characters (at most {maximum} characters each)"
-            )));
-        }
+    {
+        return Ok(Some(format!(
+            "plan scope paths exceed limits.scope_path_characters (at most {maximum} characters each)"
+        )));
     }
     let patterns = paths
         .iter()

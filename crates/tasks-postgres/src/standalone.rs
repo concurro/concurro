@@ -21,6 +21,116 @@ use crate::{
     sponsorship::{has_credential_exclusion, validate_standalone_funding_admission},
 };
 
+/// Columns read by `standalone_review_result`.
+type StandaloneReviewResultRow = (Uuid, i32, String, Vec<u8>, Vec<u8>);
+
+/// Columns read by `apply_standalone_review_result`.
+#[derive(sqlx::FromRow)]
+struct StandaloneResultRow {
+    /// Persisted round.
+    round: i32,
+    /// Persisted reviewer id.
+    reviewer_id: String,
+    /// Persisted snapshot.
+    snapshot: Json<Value>,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted reviewer user id.
+    reviewer_user_id: i64,
+    /// Persisted stage.
+    stage: String,
+    /// Persisted report raw.
+    report_raw: Vec<u8>,
+    /// Persisted attempt number.
+    attempt_number: i32,
+    /// Persisted submit body.
+    submit_body: Vec<u8>,
+}
+
+/// Columns read by `standalone_review_round`.
+#[derive(sqlx::FromRow)]
+struct StandaloneRoundRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted runner repository id.
+    runner_repository_id: i64,
+    /// Persisted upstream.
+    upstream: String,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted reviewer id.
+    reviewer_id: i64,
+    /// Persisted number.
+    number: i32,
+    /// Persisted request id.
+    request_id: Uuid,
+    /// Persisted stage.
+    stage: String,
+    /// Persisted used model calls.
+    used_model_calls: i64,
+    /// Persisted snapshot.
+    snapshot: Json<Value>,
+    /// Persisted cancelled.
+    cancelled: bool,
+}
+
+/// Columns read by `admit_standalone_review_attempt`.
+type AdmitStandaloneReviewAttemptCurrentRow = (String, i32, i64, String, i64, Json<Value>, bool);
+
+/// Columns read by `next_standalone_review_request`.
+#[derive(sqlx::FromRow)]
+struct StandaloneRequestRow {
+    /// Persisted id.
+    id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted upstream.
+    upstream: String,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted source id.
+    source_id: i64,
+    /// Persisted source at.
+    source_at: DateTime<Utc>,
+    /// Persisted actor.
+    actor: Json<Actor>,
+    /// Persisted action.
+    action: String,
+}
+
+/// Columns read by `apply_standalone_review_request`.
+type ApplyStandaloneReviewRequestNextRow = (Uuid, DateTime<Utc>, i64, Json<Actor>, String, i64);
+
+/// Columns read by `settle_standalone_review_attempt`.
+type SettleStandaloneReviewAttemptRow =
+    (String, Option<Json<Value>>, Option<Vec<u8>>, Option<String>);
+
+/// Inputs shared by `apply_standalone_review_request`.
+pub struct StandaloneReviewAuthority<'a> {
+    /// Upstream owner/repository associated with the review source.
+    pub upstream: &'a str,
+    /// Repository-local pull request identity.
+    pub pr_number: i64,
+    /// Numeric reviewer account identity for this review channel.
+    pub reviewer_id: i64,
+    /// Configured fork repository used to dispatch the runner.
+    pub runner_repository_id: i64,
+    /// Whether current GitHub authority permits the requested control action.
+    pub actor_writer: bool,
+    /// Whether the upstream PR remains open for review.
+    pub pr_open: bool,
+    /// Whether the review request still names the configured reviewer.
+    pub reviewer_requested: bool,
+    /// Source readback defect preventing application, if any.
+    pub source_defect: Option<&'a str>,
+    /// Exact source and configuration inputs selected for the review.
+    pub snapshot: Option<&'a Value>,
+}
+
 /// One delivery awaiting its matching issue-timeline event.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct StandaloneReviewWake {
@@ -108,7 +218,7 @@ pub async fn standalone_review_result(
     database: &Database,
     turn: Uuid,
 ) -> anyhow::Result<Option<StandaloneReviewResult>> {
-    let row: Option<(Uuid, i32, String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+    let row: Option<StandaloneReviewResultRow> = sqlx::query_as(
         "SELECT s.task_id,s.round,s.reviewer_id,s.report_raw,a.submit_body \
          FROM tasks.standalone_review_attempts s \
          JOIN tasks.attempts a ON a.id=s.attempt_id \
@@ -208,9 +318,8 @@ pub async fn apply_standalone_review_result(
     else {
         return Ok(false);
     };
-    let row: Option<(i32, String, Json<Value>, i64, i64, i64, String, Vec<u8>, i32, Vec<u8>)> = sqlx::query_as(
-        "SELECT a.round,a.reviewer_id,r.snapshot,t.repository_id,t.pr_number,t.reviewer_id,t.stage, \
-             a.report_raw,a.attempt_number,i.submit_body \
+    let row: Option<StandaloneResultRow> = sqlx::query_as(
+        "SELECT a.round, a.reviewer_id, r.snapshot, t.repository_id, t.pr_number, t.reviewer_id AS reviewer_user_id, t.stage, a.report_raw, a.attempt_number, i.submit_body \
          FROM tasks.standalone_review_attempts a \
          JOIN tasks.attempts i ON i.id=a.attempt_id \
          JOIN tasks.standalone_review_rounds r ON r.task_id=a.task_id AND r.number=a.round \
@@ -221,18 +330,18 @@ pub async fn apply_standalone_review_result(
     .bind(turn)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((
+    let Some(StandaloneResultRow {
         round,
         reviewer_id,
-        Json(source),
+        snapshot: Json(source),
         repository_id,
         pr_number,
         reviewer_user_id,
         stage,
-        raw,
+        report_raw: raw,
         attempt_number,
         submit_body,
-    )) = row
+    }) = row
     else {
         return Ok(false);
     };
@@ -482,23 +591,8 @@ pub async fn standalone_review_round(
     database: &Database,
     task_id: Uuid,
 ) -> Result<Option<StandaloneReviewRound>, sqlx::Error> {
-    let row: Option<(
-        Uuid,
-        i64,
-        i64,
-        String,
-        i64,
-        i64,
-        i32,
-        Uuid,
-        String,
-        i64,
-        Json<Value>,
-        bool,
-    )> = sqlx::query_as(
-        "SELECT t.id,t.repository_id,t.runner_repository_id,t.upstream,t.pr_number, \
-         t.reviewer_id,r.number,r.request_id,t.stage,t.used_model_calls,r.snapshot, \
-         r.cancellation_request_id IS NOT NULL \
+    let row: Option<StandaloneRoundRow> = sqlx::query_as(
+        "SELECT t.id AS task_id, t.repository_id, t.runner_repository_id, t.upstream, t.pr_number, t.reviewer_id, r.number, r.request_id, t.stage, t.used_model_calls, r.snapshot, r.cancellation_request_id IS NOT NULL AS cancelled \
          FROM tasks.standalone_review_tasks t \
          JOIN tasks.standalone_review_rounds r ON r.task_id=t.id AND r.number=t.round \
          WHERE t.id=$1",
@@ -507,20 +601,20 @@ pub async fn standalone_review_round(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(
-            task_id,
-            repository_id,
-            runner_repository_id,
-            upstream,
-            pr_number,
-            reviewer_id,
-            number,
-            request_id,
-            stage,
-            used_model_calls,
-            Json(snapshot),
-            cancelled,
-        )| StandaloneReviewRound {
+        |StandaloneRoundRow {
+             task_id,
+             repository_id,
+             runner_repository_id,
+             upstream,
+             pr_number,
+             reviewer_id,
+             number,
+             request_id,
+             stage,
+             used_model_calls,
+             snapshot: Json(snapshot),
+             cancelled,
+         }| StandaloneReviewRound {
             task_id,
             repository_id,
             runner_repository_id,
@@ -878,7 +972,7 @@ pub async fn admit_standalone_review_attempt(
     reviewer_id: &str,
     spec: &AttemptSpec,
 ) -> anyhow::Result<Admission> {
-    let current: Option<(String, i32, i64, String, i64, Json<Value>, bool)> = sqlx::query_as(
+    let current: Option<AdmitStandaloneReviewAttemptCurrentRow> = sqlx::query_as(
         "SELECT t.stage,t.round,t.used_model_calls,t.upstream,t.pr_number, \
          r.snapshot,r.cancellation_request_id IS NOT NULL \
          FROM tasks.standalone_review_tasks t \
@@ -1206,18 +1300,9 @@ pub async fn next_standalone_review_request(
     upstream: &str,
     pr_number: i64,
 ) -> Result<Option<StandaloneReviewRequest>, sqlx::Error> {
-    let row: Option<(
-        Uuid,
-        i64,
-        String,
-        i64,
-        i64,
-        DateTime<Utc>,
-        Json<Actor>,
-        String,
-    )> = sqlx::query_as(
-        "SELECT id,repository_id,upstream,pr_number,source_id,source_at,actor,action \
-             FROM tasks.standalone_review_requests \
+    let row: Option<StandaloneRequestRow> = sqlx::query_as(
+        "SELECT id, repository_id, upstream, pr_number, source_id, source_at, actor, action \
+         FROM tasks.standalone_review_requests \
              WHERE upstream=$1 AND pr_number=$2 AND status='pending' \
              ORDER BY source_at,source_id LIMIT 1",
     )
@@ -1226,7 +1311,16 @@ pub async fn next_standalone_review_request(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(id, repository_id, upstream, pr_number, source_id, source_at, Json(actor), action)| {
+        |StandaloneRequestRow {
+             id,
+             repository_id,
+             upstream,
+             pr_number,
+             source_id,
+             source_at,
+             actor: Json(actor),
+             action,
+         }| {
             StandaloneReviewRequest {
                 id,
                 repository_id,
@@ -1279,16 +1373,19 @@ pub async fn pending_standalone_review_issues(
 pub async fn apply_standalone_review_request(
     uow: &mut UnitOfWork<'_>,
     candidate: Uuid,
-    upstream: &str,
-    pr_number: i64,
-    reviewer_id: i64,
-    runner_repository_id: i64,
-    actor_writer: bool,
-    pr_open: bool,
-    reviewer_requested: bool,
-    source_defect: Option<&str>,
-    snapshot: Option<&Value>,
+    inputs: StandaloneReviewAuthority<'_>,
 ) -> anyhow::Result<bool> {
+    let StandaloneReviewAuthority {
+        upstream,
+        pr_number,
+        reviewer_id,
+        runner_repository_id,
+        actor_writer,
+        pr_open,
+        reviewer_requested,
+        source_defect,
+        snapshot,
+    } = inputs;
     let control: Option<(Option<DateTime<Utc>>, Option<i64>)> = sqlx::query_as(
         "SELECT last_source_at,last_source_id FROM tasks.standalone_review_controls \
          WHERE upstream=$1 AND pr_number=$2 FOR UPDATE",
@@ -1300,7 +1397,7 @@ pub async fn apply_standalone_review_request(
     let Some((last_at, last_id)) = control else {
         return Ok(false);
     };
-    let next: Option<(Uuid, DateTime<Utc>, i64, Json<Actor>, String, i64)> = sqlx::query_as(
+    let next: Option<ApplyStandaloneReviewRequestNextRow> = sqlx::query_as(
         "SELECT id,source_at,source_id,actor,action,repository_id \
          FROM tasks.standalone_review_requests WHERE upstream=$1 AND pr_number=$2 \
          AND status='pending' ORDER BY source_at,source_id LIMIT 1 FOR UPDATE",
@@ -1565,12 +1662,7 @@ pub(crate) async fn settle_standalone_review_attempt(
     if seat_status != "admitted" {
         return Ok(());
     }
-    let (status, result, raw_result, reason): (
-        String,
-        Option<Json<Value>>,
-        Option<Vec<u8>>,
-        Option<String>,
-    ) = sqlx::query_as(
+    let (status, result, raw_result, reason): SettleStandaloneReviewAttemptRow = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason FROM tasks.attempts WHERE id=$1 FOR UPDATE",
     )
     .bind(turn)

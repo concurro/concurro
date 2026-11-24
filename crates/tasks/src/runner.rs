@@ -61,7 +61,7 @@ impl TaskHandler for RunnerSessionJob {
     async fn run(self, context: WorkerContext) -> impl IntoTaskHandlerResult {
         let database = Database::from_pool(context.pg_pool().clone());
         let runner = context.get_ext::<RunnerContext>().expect("runner context");
-        publish_runner_session(&database, &runner, self.session_id)
+        publish_runner_session(&database, runner, self.session_id)
             .await
             .map_err(|error| error.to_string())
     }
@@ -110,13 +110,13 @@ pub async fn publish_runner_session(
         Err(error) if response_status(&error) == Some(StatusCode::NOT_FOUND) => None,
         Err(error) => return Err(error),
     };
-    if let Some(sha) = &head {
-        if sha != &session.config_sha {
-            let mut work = database.begin().await?;
-            refuse_ref_conflict(&mut work, &session).await?;
-            work.commit().await?;
-            return Ok(());
-        }
+    if let Some(sha) = &head
+        && sha != &session.config_sha
+    {
+        let mut work = database.begin().await?;
+        refuse_ref_conflict(&mut work, &session).await?;
+        work.commit().await?;
+        return Ok(());
     }
     if session.desired_present != head.is_some() {
         let token = context

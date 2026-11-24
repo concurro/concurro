@@ -8,6 +8,20 @@ use sha2::{Digest, Sha256};
 
 use crate::{Actor, IssueKey, LaterCommand, Request, RequestKind, SourceOrder, python_digest};
 
+/// Inputs shared by `initial_sponsorship_transitions`.
+pub struct InitialFundingContext<'a> {
+    /// Task generation whose funding or review identity is being bound.
+    pub generation: i64,
+    /// Previous provider slot epochs preserved during adoption.
+    pub prior_epochs: Option<&'a BTreeMap<Provider, i64>>,
+    /// Target funding mode used when the source has no explicit choice.
+    pub default_funding: FundingMode,
+    /// Funding mode selected explicitly by the command, if any.
+    pub source_funding: Option<FundingMode>,
+    /// Authenticated browser or comment source for these consent facts.
+    pub source_channel: &'a str,
+}
+
 /// Provider whose personal credentials may fund a task attempt.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -212,14 +226,12 @@ pub fn project_consent(facts: &[ConsentFact]) -> ConsentProjection {
                 if let SponsorSlot::Active {
                     sponsor, source, ..
                 } = &state.slot
+                    && sponsor.id == fact.actor.id
+                    && removed_source.is_none_or(|removed| removed == source.source_id)
                 {
-                    if sponsor.id == fact.actor.id
-                        && removed_source.is_none_or(|removed| removed == source.source_id)
-                    {
-                        state.slot = SponsorSlot::Withdrawn {
-                            grant_id: fact.grant_id.clone(),
-                        };
-                    }
+                    state.slot = SponsorSlot::Withdrawn {
+                        grant_id: fact.grant_id.clone(),
+                    };
                 }
             }
             ConsentAction::FundingRemoved {
@@ -303,12 +315,15 @@ pub fn initial_sponsorship_transitions(
     repository: &str,
     issue: IssueKey,
     initiator: &Actor,
-    generation: i64,
-    prior_epochs: Option<&BTreeMap<Provider, i64>>,
-    default_funding: FundingMode,
-    source_funding: Option<FundingMode>,
-    source_channel: &str,
+    inputs: InitialFundingContext<'_>,
 ) -> anyhow::Result<Vec<Value>> {
+    let InitialFundingContext {
+        generation,
+        prior_epochs,
+        default_funding,
+        source_funding,
+        source_channel,
+    } = inputs;
     anyhow::ensure!(generation > 0, "sponsorship generation is invalid");
     let mode = |funding| match funding {
         FundingMode::Org => "org",
@@ -383,6 +398,7 @@ pub fn initial_sponsorship_transitions(
 
 #[cfg(test)]
 mod tests {
+    use super::InitialFundingContext;
     use std::collections::BTreeMap;
 
     use chrono::{TimeZone, Utc};
@@ -491,7 +507,8 @@ mod tests {
                 removes_sponsor: true,
             },
         );
-        let removed_projection = project_consent(&[facts.as_slice(), &[removed.clone()]].concat());
+        let removed_projection =
+            project_consent(&[facts.as_slice(), std::slice::from_ref(&removed)].concat());
         let state = &removed_projection.providers[&Provider::Openai];
         assert_eq!(state.funding, None);
         std::assert_matches!(state.slot, SponsorSlot::Withdrawn { .. });
@@ -556,11 +573,13 @@ mod tests {
                 number: 12,
             },
             &other,
-            1,
-            None,
-            FundingMode::Contributed,
-            Some(FundingMode::Contributed),
-            "comment",
+            InitialFundingContext {
+                generation: 1,
+                prior_epochs: None,
+                default_funding: FundingMode::Contributed,
+                source_funding: Some(FundingMode::Contributed),
+                source_channel: "comment",
+            },
         )
         .expect("initial transitions");
         assert_eq!(transitions.len(), 2);

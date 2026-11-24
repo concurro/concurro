@@ -504,6 +504,10 @@ whatever engine the operator deployed; with one, any other served commit blocks 
 with "target pins another engine commit". Upgrading a deployment therefore needs no change
 in target repositories, no engine fork and no write access to `concurro/concurro`.
 
+Rust task prompts are runtime files, separately configurable from the task binary and
+runner commit. See [runtime prompt bundles](../crates/tasks/README.md#runtime-prompt-bundles)
+for the bundle mount, first-release runner pin, exact snapshot behavior and legacy recovery.
+
 ### Launcher contract
 
 The launcher on `main` serves every supported release, so these only ever grow:
@@ -879,8 +883,9 @@ svc logs --tail 30 service
 A non-fast-forward release move needs explicit operator reconciliation, not a blind
 force push. The current registry migrates schemas 2–8 to schema 9 transactionally. Exchange columns are
 added without clearing history; old unbound pending turns are lost rather than staffed
-under new authority. In-flight checkpoints retain their old bundle identity and block
-for reconciliation. A fresh issue is the straightforward pilot path; never replace a
+under new authority. In-flight legacy Python checkpoints retain their old bundle identity
+and block for reconciliation. Rust tasks with frozen runtime bundles keep their recorded
+bytes; a writer resume explicitly adopts a newer bundle. A fresh issue is the straightforward pilot path; never replace a
 checkpoint's bundle hash to make old approvals look current. A blocked implementation
 can instead use a writer-authorized retry when only the engine implementer skill changed
 and the controller proves compatibility. Keep local engine Git history for this check on

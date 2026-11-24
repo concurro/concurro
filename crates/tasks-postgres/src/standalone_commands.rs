@@ -23,6 +23,51 @@ use crate::{
     withdrawal::record_withdrawal_blocked,
 };
 
+/// Columns read by `browser_standalone_action`.
+type BrowserStandaloneActionRow = (
+    i64,
+    Json<Value>,
+    String,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<Uuid>,
+);
+
+/// Columns read by `next_standalone_review_command`.
+#[derive(sqlx::FromRow)]
+struct StandaloneCommandRow {
+    /// Persisted id.
+    id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted source at.
+    source_at: DateTime<Utc>,
+    /// Persisted comment id.
+    comment_id: i64,
+    /// Persisted source.
+    source: String,
+    /// Persisted actor.
+    actor: Json<Actor>,
+    /// Persisted kind.
+    kind: Option<Json<RequestKind>>,
+    /// Persisted body.
+    body: String,
+    /// Persisted deleted.
+    deleted: bool,
+}
+
+/// Inputs shared by `record_browser_standalone_action`.
+pub struct StandaloneActionSource<'a> {
+    /// Upstream owner/repository associated with the review source.
+    pub upstream: &'a str,
+    /// Authenticated account whose command is recorded.
+    pub actor: &'a Actor,
+    /// Parsed control or funding command being applied.
+    pub kind: RequestKind,
+    /// GitHub source timestamp used for supersession ordering.
+    pub source_at: DateTime<Utc>,
+}
+
 /// Record later spending steps for an accepted standalone withdrawal.
 pub async fn record_standalone_withdrawal_steps(
     uow: &mut UnitOfWork<'_>,
@@ -95,14 +140,7 @@ pub async fn browser_standalone_action(
     actor_id: i64,
     content: &Value,
 ) -> Result<Option<RequestRecord>> {
-    let row: Option<(
-        i64,
-        Json<Value>,
-        String,
-        Option<String>,
-        Option<DateTime<Utc>>,
-        Option<Uuid>,
-    )> = sqlx::query_as(
+    let row: Option<BrowserStandaloneActionRow> = sqlx::query_as(
         "SELECT a.actor_id,a.content,c.status,c.reason,c.decided_at,t.id \
              FROM tasks.browser_standalone_actions a \
              JOIN tasks.standalone_review_commands c ON c.id=a.command_id \
@@ -136,11 +174,14 @@ pub async fn record_browser_standalone_action(
     action_id: Uuid,
     content: &Value,
     issue: IssueKey,
-    upstream: &str,
-    actor: &Actor,
-    kind: RequestKind,
-    source_at: DateTime<Utc>,
+    inputs: StandaloneActionSource<'_>,
 ) -> Result<()> {
+    let StandaloneActionSource {
+        upstream,
+        actor,
+        kind,
+        source_at,
+    } = inputs;
     let owner: Option<String> = sqlx::query_scalar(
         "SELECT owner_kind FROM tasks.pr_ownership \
          WHERE upstream=lower($1) AND pr_number=$2",
@@ -349,18 +390,8 @@ pub async fn next_standalone_review_command(
     upstream: &str,
     pr_number: i64,
 ) -> Result<Option<StandaloneReviewCommand>> {
-    let row: Option<(
-        Uuid,
-        i64,
-        DateTime<Utc>,
-        i64,
-        String,
-        Json<Actor>,
-        Option<Json<RequestKind>>,
-        String,
-        bool,
-    )> = sqlx::query_as(
-        "SELECT id,repository_id,source_at,comment_id,source,actor,kind,body,deleted \
+    let row: Option<StandaloneCommandRow> = sqlx::query_as(
+        "SELECT id, repository_id, source_at, comment_id, source, actor, kind, body, deleted \
          FROM tasks.standalone_review_commands \
          WHERE upstream=$1 AND pr_number=$2 AND status='pending' \
          ORDER BY source_at,comment_id,source LIMIT 1",
@@ -370,7 +401,17 @@ pub async fn next_standalone_review_command(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(id, repository_id, source_at, comment_id, source, Json(actor), kind, body, deleted)| {
+        |StandaloneCommandRow {
+             id,
+             repository_id,
+             source_at,
+             comment_id,
+             source,
+             actor: Json(actor),
+             kind,
+             body,
+             deleted,
+         }| {
             StandaloneReviewCommand {
                 id,
                 repository_id,

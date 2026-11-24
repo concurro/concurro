@@ -15,7 +15,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{TargetConfig, bundle::TARGET_INSTRUCTIONS, bundle_identity, decode_target_config};
+use crate::{
+    TargetConfig,
+    bundle::{TARGET_INSTRUCTIONS, identity, load_bundle_resources},
+    decode_target_config,
+};
 
 /// Repositories and exact read permissions used for one task source snapshot.
 #[derive(Clone, Deserialize)]
@@ -335,7 +339,8 @@ async fn read_source_snapshot(
             instruction_texts.insert(path.to_owned(), text);
         }
     }
-    let bundle_id = bundle_identity(&charter, &instruction_texts)?;
+    let engine_resources = load_bundle_resources()?;
+    let bundle_id = identity(&charter, &instruction_texts, &engine_resources)?;
 
     let tree = read_tree(
         github,
@@ -384,6 +389,7 @@ async fn read_source_snapshot(
         instruction_texts,
         policy_documents,
         base_files,
+        engine_resources,
         bundle_id,
     })
 }

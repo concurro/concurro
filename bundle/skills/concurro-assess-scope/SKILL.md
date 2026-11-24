@@ -17,19 +17,19 @@ Distinguish the requested outcome from implementation hazards:
 
 - `scope.conflicts`: actual charter incompatibilities. Name the rule and why fulfilling the
   request violates it; a hypothetical bad implementation is not a conflict.
-- `concerns`: advisory compatibility risks, edge cases and validation gaps for planning and
+- `remarks`: advisory compatibility risks, edge cases and validation gaps for planning and
   review. These may accompany proceed and need no human answer. Preserving consensus encoding
-  during cleanup is a concern; an explicitly requested, charter-forbidden encoding change is
+  during cleanup is an advisory remark; an explicitly requested, charter-forbidden encoding change is
   a conflict.
 - `questions`: missing intent or decisions repository inspection cannot settle. Investigate
   code behavior yourself.
 
 Before proceeding, confirm `questions` and `scope.conflicts` are empty. Preserve real blockers
-with a non-proceed decision; do not disguise them as concerns.
+with a non-proceed decision; do not disguise them as remarks.
 
 ## Report
 
-Return the supplied [response contract](../../schemas/intake.json). Write concerns in Markdown,
+Return the supplied [response contract](../../schemas/intake.json). Write remarks in Markdown,
 using inline code for identifiers/paths and fenced examples where helpful. Include
 `classification` using the response-schema rubric: this is a provisional estimate of the issue
 as currently understood.

@@ -33,7 +33,7 @@ MODES = {
 MANIFEST = "bundle/manifest.json"
 CHARTER = ".concurro/charter.json"
 ENGINE_RESOURCES = (
-    {"bundle/instructions.md", "bundle/roles.json", "bundle/schemas/classification.json"}
+    {"bundle/instructions.md", "bundle/roles.json", "bundle/schemas/classification.json", "bundle/controller.json"}
     | {f"bundle/schemas/{stage}.json" for stage in STAGES}
     | {f"bundle/skills/{name}/SKILL.md" for name in SKILLS.values()}
     | {path for modes in MODES.values() for path in modes.values()}
@@ -53,22 +53,31 @@ TARGET_INSTRUCTIONS = {
 class Bundle:
     """Freeze engine instructions and the target's charter from explicitly allowlisted roots."""
 
-    def __init__(self, root=None, target=None, charter_text=None, instruction_texts=None):
+    def __init__(self, root=None, target=None, charter_text=None, instruction_texts=None, engine_resources=None):
         """Freeze engine instructions and the charter supplied from the target config commit."""
         self.root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
         self.resources = {}
-        manifest_text = read(self.root, MANIFEST)
+        manifest_text = read(self.root, MANIFEST) if engine_resources is None else engine_resources[MANIFEST]
         manifest = json.loads(manifest_text)
+        expected = (
+            ENGINE_RESOURCES
+            if engine_resources is None
+            else ENGINE_RESOURCES - ({"bundle/controller.json"} - set(engine_resources))
+        )
         if (
             set(manifest) != {"version", "resources"}
             or manifest["version"] != 1
-            or len(manifest["resources"]) != len(ENGINE_RESOURCES)
-            or set(manifest["resources"]) != ENGINE_RESOURCES
+            or len(manifest["resources"]) != len(expected)
+            or set(manifest["resources"]) != expected
         ):
             raise Blocked("instruction bundle has unapproved resources")
         self.resources[MANIFEST] = manifest_text
-        for path in sorted(ENGINE_RESOURCES):
-            self.resources[path] = read(self.root, path)
+        if engine_resources is not None and set(engine_resources) != expected | {MANIFEST}:
+            raise Blocked("frozen bundle resources differ from manifest")
+        for path in sorted(expected):
+            self.resources[path] = read(self.root, path) if engine_resources is None else engine_resources[path]
+        if not all(isinstance(text, str) for text in self.resources.values()):
+            raise Blocked("bundle resources must be text")
         self.engine_identity = digest(hashes(self.resources))
         if charter_text is None:
             self.target = Path(target) if target is not None else Path.cwd()
@@ -125,6 +134,20 @@ class Bundle:
             schema = json.loads(self.resources[role["schema"]])
             if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
                 raise Blocked("role requires a strict object schema")
+
+        text = self.resources.get("bundle/controller.json")
+        if text is None:
+            text = (Path(__file__).resolve().parent / "resources/legacy-controller.json").read_text(encoding="utf-8")
+            if (
+                hashlib.sha256(text.encode()).hexdigest()
+                != "22ab6a49b333684f2d82c992d653ab705105180f57a49d7dbb651e38d6c94952"
+            ):
+                raise Blocked("legacy controller instructions changed")
+        self.controller = json.loads(text)
+
+    def controller_instruction(self, key):
+        """Read controller prose from this bundle's once-parsed immutable addenda."""
+        return self.controller[key]
 
     @property
     def charter_text(self):

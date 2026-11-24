@@ -1,5 +1,6 @@
 //! Durable sponsorship writes through PostgreSQL and the real Exchange client.
 
+use concurro_tasks_core::InitialFundingContext;
 use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
@@ -95,11 +96,13 @@ async fn uncertain_exchange_send_replays_the_persisted_transition() {
         "acme/demo",
         issue,
         &actor,
-        1,
-        None,
-        FundingMode::Org,
-        Some(FundingMode::Org),
-        "comment",
+        InitialFundingContext {
+            generation: 1,
+            prior_epochs: None,
+            default_funding: FundingMode::Org,
+            source_funding: Some(FundingMode::Org),
+            source_channel: "comment",
+        },
     )
     .expect("transition")
     .into_iter()

@@ -15,6 +15,7 @@
     "bundle/skills/concurro-review-design/SKILL.md",
     "bundle/skills/concurro-review-pr/SKILL.md",
     "bundle/skills/concurro-review-pr/contribution.md",
-    "bundle/skills/concurro-review-pr/standalone.md"
+    "bundle/skills/concurro-review-pr/standalone.md",
+    "bundle/controller.json"
   ]
 }

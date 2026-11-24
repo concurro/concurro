@@ -8,6 +8,16 @@ use uuid::Uuid;
 
 use super::{Store, StoreError, refused};
 
+/// Inputs shared by `relay_claim`.
+pub struct RelayClaimLimits<'a> {
+    /// Allowed model routes bound to the relay claim.
+    pub models: &'a [String],
+    /// Maximum authorized tokens for the relay claim.
+    pub budget: i64,
+    /// Absolute session expiry bound to the relay claim.
+    pub deadline: DateTime<Utc>,
+}
+
 /// Signing configuration held in memory; debug output never includes the private key.
 pub struct RelaySigner {
     kid: String,
@@ -43,10 +53,13 @@ impl Store {
         session: Uuid,
         grant: &Grant,
         binding: &TurnBinding,
-        models: &[String],
-        budget: i64,
-        deadline: DateTime<Utc>,
+        inputs: RelayClaimLimits<'_>,
     ) -> Result<String, StoreError> {
+        let RelayClaimLimits {
+            models,
+            budget,
+            deadline,
+        } = inputs;
         if let Some(compact) = sqlx::query_scalar::<_, Option<String>>(
             "SELECT compact FROM exchange.relay_claims WHERE session_id=$1",
         )

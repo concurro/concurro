@@ -10,6 +10,12 @@ use uuid::Uuid;
 
 use crate::record_request;
 
+/// Columns read by `request_record`.
+type RequestRecordRow = (String, Option<String>, Option<Uuid>, Option<DateTime<Utc>>);
+
+/// Columns read by `browser_action`.
+type BrowserActionRow = (i64, Json<Value>, Uuid, String, Option<String>);
+
 /// The original outcome of a browser action, including one still awaiting decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserAction {
@@ -41,7 +47,7 @@ pub async fn request_record(
     database: &Database,
     request_id: Uuid,
 ) -> Result<Option<RequestRecord>> {
-    let row: Option<(String, Option<String>, Option<Uuid>, Option<DateTime<Utc>>)> =
+    let row: Option<RequestRecordRow> =
         sqlx::query_as("SELECT status,reason,task_id,applied_at FROM tasks.requests WHERE id=$1")
             .bind(request_id)
             .fetch_optional(database.pool())
@@ -78,7 +84,7 @@ pub async fn browser_action(
     actor_id: i64,
     content: &Value,
 ) -> Result<Option<BrowserAction>> {
-    let row: Option<(i64, Json<Value>, Uuid, String, Option<String>)> = sqlx::query_as(
+    let row: Option<BrowserActionRow> = sqlx::query_as(
         "SELECT b.actor_id,b.content,b.request_id,r.status,r.reason \
          FROM tasks.browser_actions b JOIN tasks.requests r ON r.id=b.request_id \
          WHERE b.action_id=$1",

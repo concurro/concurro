@@ -657,6 +657,7 @@ mod tests {
             instruction_texts: BTreeMap::new(),
             policy_documents: BTreeMap::new(),
             base_files: vec![],
+            engine_resources: BTreeMap::new(),
             bundle_id: "bundle".to_owned(),
         };
         let turn = Uuid::now_v7();

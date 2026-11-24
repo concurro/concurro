@@ -157,6 +157,7 @@ def main():
         Path(__file__).resolve().parents[1],
         charter_text=request["charter"],
         instruction_texts=request.get("instruction_texts", {}),
+        engine_resources=request.get("engine_resources"),
     )
     if request["bundle_id"] != bundle.identity or not request["model"].strip():
         raise ValueError("unbound bundle or model")

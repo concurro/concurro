@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::lock_issue_for_turn;
 
 /// One frozen pending-review mutation or its exact readback target.
+#[derive(sqlx::FromRow)]
 pub struct PrReviewAction {
     /// Order within the one native review.
     pub sequence: i32,
@@ -168,22 +169,8 @@ pub async fn next_pr_review_action(
     database: &Database,
     turn: Uuid,
 ) -> Result<Option<PrReviewAction>> {
-    let row: Option<(
-        i32,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT a.sequence,a.kind,a.finding_id,a.path,a.start_line,a.line,a.placement, \
-         a.marker,a.body,a.status,a.result_node_id,f.thread_node_id \
+    let row: Option<PrReviewAction> = sqlx::query_as(
+        "SELECT a.sequence, a.kind, a.finding_id, a.path, a.start_line, a.line, a.placement, a.marker, a.body, a.status, a.result_node_id, f.thread_node_id \
          FROM tasks.pr_review_actions a JOIN tasks.pr_review_publications p ON p.turn_id=a.turn_id \
          LEFT JOIN tasks.pr_review_findings f ON f.task_id=p.task_id AND f.id=a.finding_id \
          WHERE a.turn_id=$1 AND a.status<>'confirmed' AND p.status IN ('recorded','sent') \
@@ -192,35 +179,7 @@ pub async fn next_pr_review_action(
     .bind(turn)
     .fetch_optional(database.pool())
     .await?;
-    Ok(row.map(
-        |(
-            sequence,
-            kind,
-            finding_id,
-            path,
-            start_line,
-            line,
-            placement,
-            marker,
-            body,
-            status,
-            result_node_id,
-            thread_node_id,
-        )| PrReviewAction {
-            sequence,
-            kind,
-            finding_id,
-            path,
-            start_line,
-            line,
-            placement,
-            marker,
-            body,
-            status,
-            result_node_id,
-            thread_node_id,
-        },
-    ))
+    Ok(row)
 }
 
 /// Claim exactly one unsent GraphQL action under the task issue lock.
@@ -302,18 +261,18 @@ pub async fn confirm_pr_review_action(
             .bind(node)
             .execute(uow.connection())
             .await?;
-    } else if kind == "thread" {
-        if let Some(node) = node {
-            let id = finding_id.ok_or_else(|| anyhow::anyhow!("thread finding is missing"))?;
-            sqlx::query(
-                "UPDATE tasks.pr_review_findings SET thread_node_id=$3 WHERE task_id=$1 AND id=$2",
-            )
-            .bind(state.id.0)
-            .bind(id)
-            .bind(node)
-            .execute(uow.connection())
-            .await?;
-        }
+    } else if kind == "thread"
+        && let Some(node) = node
+    {
+        let id = finding_id.ok_or_else(|| anyhow::anyhow!("thread finding is missing"))?;
+        sqlx::query(
+            "UPDATE tasks.pr_review_findings SET thread_node_id=$3 WHERE task_id=$1 AND id=$2",
+        )
+        .bind(state.id.0)
+        .bind(id)
+        .bind(node)
+        .execute(uow.connection())
+        .await?;
     }
     Ok(true)
 }

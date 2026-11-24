@@ -4,15 +4,17 @@ use anyhow::{Context, Result, ensure};
 use concurro_db::Database;
 use concurro_tasks_core::{Admission, IssueKey, Stage, validate_pr_review};
 use concurro_tasks_postgres::{
-    admit_pr_review_batch, admit_pr_review_correction, apply_pr_review_result,
-    block_pr_review_batch, finish_unapplied_result, pr_review_batch, pr_review_correction,
-    pr_review_result, task,
+    admit_pr_review_batch, admit_pr_review_correction, applicable_intake_remarks,
+    apply_pr_review_result, block_pr_review_batch, finish_unapplied_result, pr_review_batch,
+    pr_review_correction, pr_review_result, task,
 };
 use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::bundle::ResolvedBundle;
+use crate::pr_review_payload::PrReviewAttemptInputs;
 use crate::{
     ArchiveContext, GitPublicationContext, IntakeContext,
     funding::fund_or_block_attempt,
@@ -247,6 +249,7 @@ pub async fn run_task_pr_review_batch(
         )
         .await?;
     let now = chrono::Utc::now();
+    let bundle = ResolvedBundle::resolve(&batch.snapshot)?;
     let mut specs = Vec::with_capacity(batch.roster.len());
     for reviewer in &batch.roster {
         let own_findings = batch
@@ -281,17 +284,22 @@ pub async fn run_task_pr_review_batch(
             &current,
             target,
             &intake.transport,
-            expected.clone(),
-            &batch,
-            reviewer,
-            &changes,
-            pr["body"].as_str().unwrap_or(""),
-            &batch.prior_outcomes,
-            own_findings,
-            None,
-            &retained,
-            Uuid::now_v7(),
-            now,
+            PrReviewAttemptInputs {
+                bundle: &bundle,
+                expected: expected.clone(),
+                batch: &batch,
+                reviewer,
+                changes: &changes,
+                published_body: pr["body"].as_str().unwrap_or(""),
+                prior_outcomes: &batch.prior_outcomes,
+                own_findings,
+                correction: None,
+                retained: &retained,
+                turn: Uuid::now_v7(),
+                now,
+                intake_remarks: &applicable_intake_remarks(database, current.id.0, &batch.snapshot)
+                    .await?,
+            },
         )?;
         if !fund_or_block_attempt(
             database,
@@ -467,17 +475,22 @@ pub async fn run_task_pr_review_correction(
         &current,
         target,
         &intake.transport,
-        expected,
-        batch,
-        &correction.reviewer,
-        &changes,
-        pr["body"].as_str().unwrap_or(""),
-        &batch.prior_outcomes,
-        own_findings,
-        feedback,
-        &retained,
-        Uuid::now_v7(),
-        chrono::Utc::now(),
+        PrReviewAttemptInputs {
+            bundle: &ResolvedBundle::resolve(&batch.snapshot)?,
+            expected,
+            batch,
+            reviewer: &correction.reviewer,
+            changes: &changes,
+            published_body: pr["body"].as_str().unwrap_or(""),
+            prior_outcomes: &batch.prior_outcomes,
+            own_findings,
+            correction: feedback,
+            retained: &retained,
+            turn: Uuid::now_v7(),
+            now: chrono::Utc::now(),
+            intake_remarks: &applicable_intake_remarks(database, current.id.0, &batch.snapshot)
+                .await?,
+        },
     )?;
     if !fund_or_block_attempt(
         database,

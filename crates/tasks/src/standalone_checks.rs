@@ -182,8 +182,8 @@ pub async fn sync_standalone_review_check(
             work.commit().await?;
             return Ok(());
         }
-        if let Some(id)=run_id {
-            if check.sent_digest.as_deref()!=Some(&digest) || check.run_id!=Some(id) {
+        if let Some(id)=run_id
+            && (check.sent_digest.as_deref()!=Some(&digest) || check.run_id!=Some(id)) {
                 let _: Value=context.github.write(&round.upstream,&target.upstream_write_permissions,
                     Method::PATCH,&["repos",owner,repository,"check-runs",&id.to_string()],
                     Some(wanted)).await?;
@@ -191,7 +191,6 @@ pub async fn sync_standalone_review_check(
                 settle_standalone_check(&mut work,&check,&digest,status=="completed").await?;
                 work.commit().await?;
             }
-        }
         Ok(())
     }.await;
     if let Err(error) = &result {

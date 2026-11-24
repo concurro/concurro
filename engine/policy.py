@@ -159,7 +159,10 @@ def presentation(report, fields, optional):
 def validate_qc(report, stage, charter=None):
     """Reject incomplete or contradictory decisions before they can authorize work."""
     report = report_core(report)
-    fields = {"decision", "rationale", "risk", "questions", "concerns", "scope"}
+    if not isinstance(report, dict):
+        raise Blocked("invalid QC fields")
+    advisory = "remarks" if stage == "intake" and "remarks" in report else "concerns"
+    fields = {"decision", "rationale", "risk", "questions", advisory, "scope"}
     if stage == "plan_qc":
         fields |= {"sources", "assessments", "objection_updates"}
     if not isinstance(report, dict) or set(report) != presentation(report, fields, {"headline"}):
@@ -169,7 +172,7 @@ def validate_qc(report, stage, charter=None):
         raise Blocked("invalid QC decision or risk")
     if not isinstance(report["rationale"], str) or not report["rationale"].strip():
         raise Blocked("QC rationale missing")
-    for key in ("questions", "concerns"):
+    for key in ("questions", advisory):
         if not isinstance(report[key], list) or not all(isinstance(v, str) and v.strip() for v in report[key]):
             raise Blocked("invalid QC questions or concerns")
     scope = report["scope"]

@@ -17,6 +17,9 @@ use uuid::Uuid;
 
 use crate::DecisionContext;
 
+/// Columns read by `opt_in_events`.
+type OptInEventsRow = (i64, DateTime<Utc>, Actor, bool);
+
 /// One issue's label-delivery wake, anchored to its GitHub update time.
 #[derive(Deserialize, Serialize)]
 pub struct LabelScanJob {
@@ -83,7 +86,7 @@ pub(crate) async fn read_events(
 }
 
 /// Return label events with the exact opt-in name in source order.
-fn opt_in_events(events: &[Value]) -> Result<Vec<(i64, DateTime<Utc>, Actor, bool)>> {
+fn opt_in_events(events: &[Value]) -> Result<Vec<OptInEventsRow>> {
     let mut listed = Vec::new();
     for event in events {
         let labeled = match event["event"].as_str() {

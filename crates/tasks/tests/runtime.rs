@@ -39,6 +39,23 @@ use tokio::{
 };
 use uuid::Uuid;
 
+/// Columns read by `exchange_reply`.
+type ExchangeReplyRow = (
+    Arc<Mutex<GithubFixture>>,
+    Arc<Mutex<HashMap<Uuid, (String, Uuid)>>>,
+    Uuid,
+    String,
+    Arc<AtomicBool>,
+    Arc<Notify>,
+    Arc<Notify>,
+    Arc<AtomicBool>,
+    Arc<Notify>,
+    Arc<Notify>,
+);
+
+/// Columns read by `archive_reply`.
+type ArchiveReplyRow = State<Arc<Mutex<HashMap<String, Vec<u8>>>>>;
+
 /// Mutable responses and externally visible writes of the local GitHub fixture.
 #[derive(Default)]
 struct GithubFixture {
@@ -321,7 +338,7 @@ async fn github_reply(
         fixture.comments.push(comment.clone());
         let hold_notice = request["body"]
             .as_str()
-            .is_some_and(|body| body.contains("Intake approved with concerns"))
+            .is_some_and(|body| body.contains("Intake approved with remarks"))
             && fixture.hold_intake_notice.swap(false, Ordering::SeqCst);
         let entered = fixture.intake_notice_entered.clone();
         let release = fixture.release_intake_notice.clone();
@@ -350,7 +367,7 @@ async fn github_reply(
         return fixture
             .artifacts
             .iter()
-            .find(|artifact| artifact["number"].to_string() == number)
+            .find(|artifact| artifact["number"].as_i64() == number.parse::<i64>().ok())
             .map_or_else(missing, |artifact| {
                 ok(json!({
                     "artifact":artifact,
@@ -363,7 +380,7 @@ async fn github_reply(
         if let Some(comment) = fixture
             .comments
             .iter_mut()
-            .find(|comment| comment["id"].to_string() == id)
+            .find(|comment| comment["id"].as_i64() == id.parse::<i64>().ok())
         {
             if method == Method::PATCH {
                 comment["body"] = request["body"].clone();
@@ -421,18 +438,7 @@ async fn exchange_reply(
         hold_poll,
         poll_entered,
         release_poll,
-    )): State<(
-        Arc<Mutex<GithubFixture>>,
-        Arc<Mutex<HashMap<Uuid, (String, Uuid)>>>,
-        Uuid,
-        String,
-        Arc<AtomicBool>,
-        Arc<Notify>,
-        Arc<Notify>,
-        Arc<AtomicBool>,
-        Arc<Notify>,
-        Arc<Notify>,
-    )>,
+    )): State<ExchangeReplyRow>,
     method: Method,
     uri: Uri,
     body: Bytes,
@@ -488,7 +494,7 @@ async fn exchange_reply(
     let response = match stage.as_str() {
         "intake" => json!({
             "decision":"proceed","rationale":"Fits","risk":"low",
-            "questions":[],"concerns":["Review scope"],
+            "questions":[],"remarks":["Review scope"],
             "scope":{"goal_ids":["G-1"],"fit":"Matches goal","conflicts":[]}
         }),
         "plan" => json!({
@@ -538,7 +544,7 @@ async fn exchange_reply(
 
 /// Keep exact S3 bytes for the runtime upload and readback jobs.
 async fn archive_reply(
-    State(objects): State<Arc<Mutex<HashMap<String, Vec<u8>>>>>,
+    State(objects): ArchiveReplyRow,
     method: Method,
     uri: Uri,
     body: Bytes,
@@ -548,10 +554,10 @@ async fn archive_reply(
         objects.lock().await.insert(key, body.to_vec());
         return (StatusCode::OK, [("etag", "\"stored\"")]).into_response();
     }
-    if method == Method::GET {
-        if let Some(bytes) = objects.lock().await.get(&key).cloned() {
-            return (StatusCode::OK, [("etag", "\"stored\"")], bytes).into_response();
-        }
+    if method == Method::GET
+        && let Some(bytes) = objects.lock().await.get(&key).cloned()
+    {
+        return (StatusCode::OK, [("etag", "\"stored\"")], bytes).into_response();
     }
     StatusCode::NOT_FOUND.into_response()
 }
@@ -562,6 +568,11 @@ fn launch(config: &std::path::Path, log: &std::path::Path) -> Child {
     let stdout = stderr.try_clone().expect("task stdout");
     tokio::process::Command::new(env!("CARGO_BIN_EXE_concurro-tasks"))
         .env("CONCURRO_TASKS_CONFIG", config)
+        .env(
+            "CONCURRO_TASKS_BUNDLE_DIR",
+            config.parent().expect("config parent").join("bundle"),
+        )
+        .current_dir(config.parent().expect("config parent"))
         .stdout(stdout)
         .stderr(stderr)
         .kill_on_drop(true)
@@ -752,6 +763,13 @@ upstream_write_permissions = {{ pull_requests = "write" }}
         .expect("publish")
         .await
         .expect("publish ack");
+    let resources = concurro_tasks::load_bundle_resources().expect("runtime bundle");
+    for (path, content) in &resources {
+        let destination = dir.join(path);
+        fs::create_dir_all(destination.parent().expect("resource parent"))
+            .expect("bundle directory");
+        fs::write(destination, content).expect("runtime resource");
+    }
     let mut process = launch(&dir.join("tasks.toml"), &dir.join("tasks.log"));
     tokio::time::timeout(Duration::from_secs(15), submitted.notified())
         .await
@@ -953,6 +971,11 @@ upstream_write_permissions = {{ pull_requests = "write" }}
     let stored = objects.lock().await;
     assert!(stored.values().any(|bytes| bytes == &archive_bytes));
     drop(stored);
+    fs::write(
+        dir.join("bundle/instructions.md"),
+        "Runtime bundle changed after admission.",
+    )
+    .expect("replace runtime text");
     let mut process = launch(&dir.join("tasks.toml"), &dir.join("tasks-composed.log"));
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
@@ -1097,6 +1120,32 @@ upstream_write_permissions = {{ pull_requests = "write" }}
     }
     process.kill().await.expect("stop composed task");
     process.wait().await.expect("composed process exit");
+    let prompts: Vec<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT operation,prompt_body,submit_body FROM tasks.attempts WHERE operation != 'intake' ORDER BY admitted_at",
+    ).fetch_all(database.pool()).await.expect("downstream prompts");
+    for stage in ["plan", "plan_qc", "develop", "review"] {
+        assert!(
+            prompts.iter().any(|(operation, _, _)| operation == stage),
+            "missing {stage} prompt"
+        );
+    }
+    for (stage, prompt, submit) in prompts {
+        let prompt: Value = serde_json::from_slice(&prompt).expect("prompt");
+        assert_eq!(
+            prompt["untrusted_context"]["intake_remarks"],
+            json!(["Review scope"]),
+            "{stage}"
+        );
+        assert_eq!(
+            prompt["instructions"]["shared"], resources["bundle/instructions.md"],
+            "{stage} keeps frozen instructions"
+        );
+        let submit: Value = serde_json::from_slice(&submit).expect("submission");
+        assert_eq!(
+            submit["payload"]["request"]["engine_resources"]["bundle/instructions.md"],
+            resources["bundle/instructions.md"]
+        );
+    }
     let fixture = github.lock().await;
     assert_eq!(fixture.pulls.len(), 1);
     assert_eq!(fixture.reviews.len(), 1);

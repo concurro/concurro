@@ -98,6 +98,7 @@ class SessionEntryTests(unittest.TestCase):
             "gateway": {"url": "https://gateway.invalid"},
             "charter": self.bundle.charter_text,
             "instruction_texts": self.bundle.instruction_texts,
+            "engine_resources": {p: text for p, text in self.bundle.resources.items() if p.startswith("bundle/")},
             "bundle_id": self.bundle.identity,
             "context": {"repository_commit": "b" * 40, "repository": {"refs": {}, "head": "main"}},
         }
@@ -153,6 +154,43 @@ class SessionEntryTests(unittest.TestCase):
         ):
             agent_entry.main()
         return output.getvalue()
+
+    def test_runtime_bundle_bytes_reach_native_runner_without_checkout_change(self):
+        """The exact task bundle controls execution and its retained journal after a file update."""
+        resources = {p: text for p, text in self.bundle.resources.items() if p.startswith("bundle/")}
+        resources["bundle/instructions.md"] = "Frozen runtime instructions, different from the engine checkout."
+        self.bundle = Bundle(
+            root=self.bundle.root,
+            charter_text=self.bundle.charter_text,
+            instruction_texts=self.bundle.instruction_texts,
+            engine_resources=resources,
+        )
+        self.assertEqual(self.invoke("codex"), '{"answer": true}\n')
+        turn = self.opened[-1]
+        self.assertEqual(turn.prompt["instructions"]["shared"], resources["bundle/instructions.md"])
+        self.assertEqual(
+            json.loads(turn.path.read_text())["prompt"]["instructions"]["shared"], resources["bundle/instructions.md"]
+        )
+
+    def test_legacy_controller_wording_is_independent_of_operator_bundle_directory(self):
+        """An old frozen bundle needs no extra compatibility file from its operator."""
+        resources = {p: text for p, text in self.bundle.resources.items() if p.startswith("bundle/")}
+        resources.pop("bundle/controller.json")
+        manifest = json.loads(resources["bundle/manifest.json"])
+        manifest["resources"].remove("bundle/controller.json")
+        resources["bundle/manifest.json"] = json.dumps(manifest, indent=2) + "\n"
+        with tempfile.TemporaryDirectory() as operator_directory:
+            legacy = Bundle(
+                root=operator_directory,
+                charter_text=self.bundle.charter_text,
+                instruction_texts=self.bundle.instruction_texts,
+                engine_resources=resources,
+            )
+            self.assertFalse((Path(operator_directory) / "legacy-controller.json").exists())
+            self.assertIn("advisory concerns", legacy.controller_instruction("intake_correction"))
+            self.assertEqual(
+                legacy.controller_instruction("feedback_files"), self.bundle.controller_instruction("feedback_files")
+            )
 
     def test_success_journal_and_release(self):
         for provider in ("claude", "codex"):

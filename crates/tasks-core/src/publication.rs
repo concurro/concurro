@@ -10,20 +10,6 @@ pub fn task_branch(repository: &str, issue: i64) -> anyhow::Result<String> {
     Ok(format!("concurro/issue-{issue}-{}", &digest[..12]))
 }
 
-#[cfg(test)]
-mod branch_tests {
-    use super::task_branch;
-
-    /// Keep branch identities compatible with the retained Python controller.
-    #[test]
-    fn branch_name_matches_python_digest() {
-        assert_eq!(
-            task_branch("acme/demo", 3).expect("branch"),
-            "concurro/issue-3-9efb8758a4cb"
-        );
-    }
-}
-
 /// Present validated planner questions without allowing model Markdown to impersonate controls.
 pub fn plan_notice_body(plan: &Value) -> Option<String> {
     let questions = plan.get("questions")?.as_array()?;
@@ -126,7 +112,7 @@ pub fn welcome_body(configuration: &Value, actor: &str) -> String {
                 }
                 .filter(|value| !value.is_empty())
                 .unwrap_or("CLI default");
-                let effort = profile["effort"].as_str().unwrap_or_else(|| match name {
+                let effort = profile["effort"].as_str().unwrap_or(match name {
                     "claude" => "medium",
                     "codex" => "low",
                     _ => "CLI default",
@@ -149,18 +135,18 @@ pub fn intake_notice_body(state: &TaskState, report: Option<&IntakeReport>) -> O
     match state.stage {
         Stage::Plan => {
             let report = report?;
-            if report.concerns.is_empty() {
+            if report.remarks.is_empty() {
                 return None;
             }
-            let concerns = report
-                .concerns
+            let remarks = report
+                .remarks
                 .iter()
                 .take(20)
                 .map(|concern| format!("- {}", markdown_text(concern, 1000)))
                 .collect::<Vec<_>>()
                 .join("\n");
             Some(format!(
-                "### Intake approved with concerns\n\nPlanning will continue. No action needed.\n\n<details><summary>Planning concerns</summary>\n\n{concerns}\n\nThe full concerns are retained in the intake report.\n\n</details>"
+                "### Intake approved with remarks\n\nPlanning will continue. No action needed.\n\n<details><summary>Planning remarks</summary>\n\n{remarks}\n\nThe full remarks are retained in the intake report.\n\n</details>"
             ))
         }
         Stage::Clarify => {
@@ -216,5 +202,19 @@ pub fn intake_notice_body(state: &TaskState, report: Option<&IntakeReport>) -> O
             )
         )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::task_branch;
+
+    /// Keep branch identities compatible with the retained Python controller.
+    #[test]
+    fn branch_name_matches_python_digest() {
+        assert_eq!(
+            task_branch("acme/demo", 3).expect("branch"),
+            "concurro/issue-3-9efb8758a4cb"
+        );
     }
 }

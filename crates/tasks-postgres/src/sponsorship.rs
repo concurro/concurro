@@ -19,6 +19,41 @@ use uuid::Uuid;
 
 use crate::read_model::{append_consent_state, append_read_model_record};
 
+/// Columns read by `record_credential_failure`.
+#[derive(sqlx::FromRow)]
+struct FailedCredentialGrantRow {
+    /// Persisted task id.
+    task_id: Option<Uuid>,
+    /// Persisted standalone task id.
+    standalone_task_id: Option<Uuid>,
+    /// Persisted payer id.
+    payer_id: i64,
+    /// Persisted provider.
+    provider: String,
+    /// Persisted credential record id.
+    credential_record_id: String,
+    /// Persisted credential version.
+    credential_version: i64,
+    /// Persisted slot grant id.
+    slot_grant_id: String,
+    /// Persisted submit body.
+    submit_body: Vec<u8>,
+}
+
+/// Inputs shared by `record_initial_sponsorship`.
+pub struct InitialSponsorship<'a> {
+    /// Consent and funding choices derived from the source boundary.
+    pub initial: &'a InitialConsent,
+    /// Credential availability for each provider at the consent boundary.
+    pub available: &'a BTreeMap<Provider, Option<bool>>,
+    /// Pinned target configuration identity for this funding decision.
+    pub config_digest: &'a str,
+    /// Target funding mode used when the source has no explicit choice.
+    pub default_funding: FundingMode,
+    /// Funding mode selected explicitly by the command, if any.
+    pub source_funding: Option<FundingMode>,
+}
+
 /// One exact Exchange sponsorship write claimed by a fenced worker.
 pub struct SponsorshipWrite {
     /// Idempotency identity in the stored request body.
@@ -339,14 +374,17 @@ pub async fn record_initial_sponsorship(
     task: &TaskState,
     request_id: Uuid,
     boundary: &SourceOrder,
-    initial: &InitialConsent,
-    available: &BTreeMap<Provider, Option<bool>>,
+    inputs: InitialSponsorship<'_>,
     consent_revision: i64,
     unresolved: &[Provider],
-    config_digest: &str,
-    default_funding: FundingMode,
-    source_funding: Option<FundingMode>,
 ) -> anyhow::Result<bool> {
+    let InitialSponsorship {
+        initial,
+        available,
+        config_digest,
+        default_funding,
+        source_funding,
+    } = inputs;
     let mode = |mode| match mode {
         FundingMode::Org => "org",
         FundingMode::Contributed => "contributed",
@@ -439,12 +477,15 @@ pub async fn record_standalone_initial_sponsorship(
     task_id: Uuid,
     request_id: Uuid,
     boundary: &SourceOrder,
-    initial: &InitialConsent,
-    available: &BTreeMap<Provider, Option<bool>>,
-    digest: &str,
-    default_funding: FundingMode,
-    source_funding: Option<FundingMode>,
+    inputs: InitialSponsorship<'_>,
 ) -> anyhow::Result<bool> {
+    let InitialSponsorship {
+        initial,
+        available,
+        config_digest: digest,
+        default_funding,
+        source_funding,
+    } = inputs;
     let mode = |funding| match funding {
         FundingMode::Org => "org",
         FundingMode::Contributed => "contributed",
@@ -826,18 +867,9 @@ pub(crate) async fn record_credential_failure(
     }) else {
         return Ok(false);
     };
-    let selected: Option<(
-        Option<Uuid>,
-        Option<Uuid>,
-        i64,
-        String,
-        String,
-        i64,
-        String,
-        Vec<u8>,
-    )> = sqlx::query_as(
-        "SELECT g.task_id,NULL::uuid,g.payer_id,g.provider,g.credential_record_id, \
-         g.credential_version,g.slot_grant_id,a.submit_body FROM tasks.funding_grants g \
+    let selected: Option<FailedCredentialGrantRow> = sqlx::query_as(
+        "SELECT g.task_id, NULL::uuid AS standalone_task_id, g.payer_id, g.provider, g.credential_record_id, g.credential_version, g.slot_grant_id, a.submit_body \
+         FROM tasks.funding_grants g \
          JOIN tasks.attempts a ON a.id=g.attempt_id \
          WHERE g.attempt_id=$1 AND g.purpose='task_contributed' \
          UNION ALL SELECT NULL::uuid,g.task_id,g.payer_id,g.provider, \
@@ -849,8 +881,16 @@ pub(crate) async fn record_credential_failure(
     .bind(observation.turn)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((task, standalone_task, payer, provider, record, version, slot_grant, body)) =
-        selected
+    let Some(FailedCredentialGrantRow {
+        task_id: task,
+        standalone_task_id: standalone_task,
+        payer_id: payer,
+        provider,
+        credential_record_id: record,
+        credential_version: version,
+        slot_grant_id: slot_grant,
+        submit_body: body,
+    }) = selected
     else {
         return Ok(false);
     };
@@ -876,7 +916,7 @@ pub(crate) async fn record_credential_failure(
             && request["admission"]["grant_id"] == slot_grant
     } else {
         failure["turn"] == observation.turn.to_string()
-            && binding["sponsor"] == payer.to_string()
+            && binding["sponsor"].as_str() == Some(payer.to_string().as_str())
             && binding["credential"] == record
             && binding["credential_version"] == version
             && binding["grant_id"] == slot_grant
@@ -1009,7 +1049,7 @@ pub async fn record_withdraw_transition(
     let prior: Value = serde_json::from_slice(&body)?;
     let slot = &prior["slot"];
     if slot["status"] != "active"
-        || slot["sponsor_id"] != fact.actor.id.to_string()
+        || slot["sponsor_id"].as_str() != Some(fact.actor.id.to_string().as_str())
         || matches!(
             &fact.action,
             ConsentAction::Withdraw {

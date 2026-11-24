@@ -62,7 +62,7 @@ fn write_python_json(value: &Value, output: &mut String) -> Result<()> {
         Value::Object(values) => {
             output.push('{');
             let mut fields = values.iter().collect::<Vec<_>>();
-            fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+            fields.sort_by_key(|(left, _)| *left);
             for (index, (key, value)) in fields.into_iter().enumerate() {
                 if index > 0 {
                     output.push_str(", ");

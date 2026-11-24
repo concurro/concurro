@@ -12,11 +12,14 @@ use concurro_db::{Database, UnitOfWork};
 use concurro_events::{Handler, Outcome};
 use concurro_events_postgres::Outbox;
 use concurro_github_v1::{AppClient, user_grant::UserGrant};
+use concurro_tasks_core::InitialFundingContext;
 use concurro_tasks_core::{
     Actor, Admission, DesignReviewer, FundingMode, LaterCommand, Provider, RequestKind,
     initial_sponsorship_transitions, initialize_consent, pr_review_roster, python_digest,
     validate_standalone_pr_review,
 };
+use concurro_tasks_postgres::InitialSponsorship;
+use concurro_tasks_postgres::StandaloneReviewAuthority;
 use concurro_tasks_postgres::{
     IndexRow, StandaloneReviewCommand, StandaloneReviewRequest, StandaloneReviewWake,
     admit_standalone_review_attempt, apply_standalone_review_control,
@@ -38,6 +41,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::bundle::ResolvedBundle;
+use crate::standalone_payload::StandaloneReviewAttemptInputs;
 use crate::{
     InitializationTarget, IntakeContext, funding, git_publication::read_pr_files, initialization,
     label::read_events, observe_source_funding_policy,
@@ -542,11 +547,13 @@ async fn initialize_standalone_funding(
         round.task_id,
         round.request_id,
         &boundary,
-        &initial,
-        &available,
-        &digest,
-        default_funding,
-        source_funding,
+        InitialSponsorship {
+            initial: &initial,
+            available: &available,
+            config_digest: &digest,
+            default_funding,
+            source_funding,
+        },
     )
     .await?
     {
@@ -558,11 +565,13 @@ async fn initialize_standalone_funding(
                 number: round.pr_number,
             },
             &initiator,
-            round.number.into(),
-            None,
-            default_funding,
-            source_funding,
-            "review_request",
+            InitialFundingContext {
+                generation: round.number.into(),
+                prior_epochs: None,
+                default_funding,
+                source_funding,
+                source_channel: "review_request",
+            },
         )?;
         for transition in transitions {
             record_sponsorship_transition(&mut work, round.task_id, &transition).await?;
@@ -671,14 +680,17 @@ pub async fn run_standalone_review_round(
         &snapshot,
         &target.source,
         &intake.transport,
-        expected,
-        reviewer,
-        &own_findings,
-        correction
-            .as_ref()
-            .map(|(report, reason)| (report, reason.as_str())),
-        Uuid::now_v7(),
-        Utc::now(),
+        StandaloneReviewAttemptInputs {
+            bundle: ResolvedBundle::resolve(&snapshot)?,
+            expected,
+            reviewer,
+            own_findings: &own_findings,
+            correction: correction
+                .as_ref()
+                .map(|(report, reason)| (report, reason.as_str())),
+            turn: Uuid::now_v7(),
+            now: Utc::now(),
+        },
     )?;
     if let Err(error) = funding::fund_attempt(
         database,
@@ -953,15 +965,17 @@ pub async fn run_standalone_review_decision(
             apply_standalone_review_request(
                 &mut work,
                 request.id,
-                upstream,
-                pr_number,
-                target.reviewer_id,
-                target.runner_repository_id,
-                false,
-                false,
-                false,
-                None,
-                None,
+                StandaloneReviewAuthority {
+                    upstream,
+                    pr_number,
+                    reviewer_id: target.reviewer_id,
+                    runner_repository_id: target.runner_repository_id,
+                    actor_writer: false,
+                    pr_open: false,
+                    reviewer_requested: false,
+                    source_defect: None,
+                    snapshot: None,
+                },
             )
             .await?;
             work.commit().await?;
@@ -996,11 +1010,11 @@ pub async fn run_standalone_review_decision(
         let open = pr["state"] == "open" && pr["merged"] != true;
         if let Some(existing) =
             concurro_tasks_postgres::standalone_review_task(database, upstream, pr_number).await?
+            && existing["stage"] == "closed"
+            && open
         {
-            if existing["stage"] == "closed" && open {
-                let task_id: Uuid = serde_json::from_value(existing["id"].clone())?;
-                run_standalone_review_pr_state(database, context, task_id).await?;
-            }
+            let task_id: Uuid = serde_json::from_value(existing["id"].clone())?;
+            run_standalone_review_pr_state(database, context, task_id).await?;
         }
         let requested = pr["requested_reviewers"]
             .as_array()
@@ -1103,15 +1117,17 @@ pub async fn run_standalone_review_decision(
         let applied = apply_standalone_review_request(
             &mut work,
             request.id,
-            upstream,
-            pr_number,
-            target.reviewer_id,
-            target.runner_repository_id,
-            writer,
-            open,
-            requested,
-            source_defect,
-            snapshot.as_ref(),
+            StandaloneReviewAuthority {
+                upstream,
+                pr_number,
+                reviewer_id: target.reviewer_id,
+                runner_repository_id: target.runner_repository_id,
+                actor_writer: writer,
+                pr_open: open,
+                reviewer_requested: requested,
+                source_defect,
+                snapshot: snapshot.as_ref(),
+            },
         )
         .await?;
         work.commit().await?;

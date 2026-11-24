@@ -141,31 +141,30 @@ async fn ci_observations(
         .context("upstream must be owner/name")?;
     let mut refs = vec![head.to_owned()];
     let mut reasons = Vec::new();
-    if pr["merged"] != true {
-        if let Some(merge) = pr["merge_commit_sha"]
+    if pr["merged"] != true
+        && let Some(merge) = pr["merge_commit_sha"]
             .as_str()
             .filter(|merge| *merge != head)
-        {
-            let commit: Value = context
-                .github
-                .read(
-                    &target.upstream,
-                    &target.upstream_read_permissions,
-                    &["repos", owner, repository, "git", "commits", merge],
-                    &[],
-                )
-                .await?;
-            let parents = commit["parents"]
-                .as_array()
-                .context("test-merge parents missing")?
-                .iter()
-                .filter_map(|parent| parent["sha"].as_str())
-                .collect::<Vec<_>>();
-            if parents != [pr["base"]["sha"].as_str().unwrap_or(""), head] {
-                reasons.push("GitHub test-merge commit is not current".to_owned());
-            }
-            refs.push(merge.to_owned());
+    {
+        let commit: Value = context
+            .github
+            .read(
+                &target.upstream,
+                &target.upstream_read_permissions,
+                &["repos", owner, repository, "git", "commits", merge],
+                &[],
+            )
+            .await?;
+        let parents = commit["parents"]
+            .as_array()
+            .context("test-merge parents missing")?
+            .iter()
+            .filter_map(|parent| parent["sha"].as_str())
+            .collect::<Vec<_>>();
+        if parents != [pr["base"]["sha"].as_str().unwrap_or(""), head] {
+            reasons.push("GitHub test-merge commit is not current".to_owned());
         }
+        refs.push(merge.to_owned());
     }
     let mut observations = Vec::with_capacity(refs.len());
     for sha in refs {

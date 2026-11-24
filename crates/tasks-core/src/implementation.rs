@@ -71,25 +71,25 @@ pub fn validated_edit_paths(
         return Err("implementation must contain edits".to_owned());
     }
     let limits = effective_limits(config).map_err(|error| error.to_string())?;
-    if let Some(maximum) = limits["changed_files"].as_u64() {
-        if report.edits.len() as u64 > maximum {
-            return Err(format!(
-                "candidate changes {} files, over limits.changed_files ({maximum})",
-                report.edits.len()
-            ));
-        }
+    if let Some(maximum) = limits["changed_files"].as_u64()
+        && report.edits.len() as u64 > maximum
+    {
+        return Err(format!(
+            "candidate changes {} files, over limits.changed_files ({maximum})",
+            report.edits.len()
+        ));
     }
-    if let Some(maximum) = plan["scope"]["max_files"].as_u64() {
-        if report.edits.len() as u64 > maximum {
-            return Err(format!(
-                "candidate changes {} files, over the approved budget of {maximum}",
-                report.edits.len()
-            ));
-        }
+    if let Some(maximum) = plan["scope"]["max_files"].as_u64()
+        && report.edits.len() as u64 > maximum
+    {
+        return Err(format!(
+            "candidate changes {} files, over the approved budget of {maximum}",
+            report.edits.len()
+        ));
     }
     let mut seen = BTreeSet::new();
     for edit in &report.edits {
-        let allowed = editable_files(config, &[edit.path.clone()])
+        let allowed = editable_files(config, std::slice::from_ref(&edit.path))
             .map_err(|error| error.to_string())?
             .len()
             == 1;

@@ -11,20 +11,24 @@ from types import SimpleNamespace
 root = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(root / "engine"))
 
+import feedback  # noqa: E402
+import prompts  # noqa: E402
 from agents import Agents  # noqa: E402
 from bundle import Bundle  # noqa: E402
 from checks import limits  # noqa: E402
-import feedback  # noqa: E402
-import prompts  # noqa: E402
 from policy import path_allowed, plan_output_contract  # noqa: E402
+
 sys.path.insert(0, str(root / "service"))
 from diagnostics import prompt as diagnostic_prompt  # noqa: E402
+
 sys.path.insert(0, str(root / "gateway" / "exchange"))
 from exchange import staffing  # noqa: E402
+
 sys.path.insert(0, str(root / "gateway" / "tests"))
-from test_exchange_funding import FundedGateway, MetadataVault  # noqa: E402
-from exchange import Exchange, Refused  # noqa: E402
 from exchange_fixtures import AUDIENCE  # noqa: E402
+
+from exchange import Exchange, Refused  # noqa: E402
+from test_exchange_funding import FundedGateway, MetadataVault  # noqa: E402
 
 case = json.load(sys.stdin)
 snapshot = case["snapshot"]
@@ -44,8 +48,7 @@ context = {
         "title": requirements["title"],
         "body": requirements["body"],
         "discussion": [
-            {"author": item["author"]["login"], "body": item["body"]}
-            for item in requirements["discussion"]
+            {"author": item["author"]["login"], "body": item["body"]} for item in requirements["discussion"]
         ],
     },
     "policy": {
@@ -74,29 +77,35 @@ if "correction" in case:
         "instruction": (
             "Correct the intake report against its schema and the rejection reason. "
             "Use clarify with questions when a human answer is needed; do not remove real questions to proceed. "
-            "Proceed requires empty questions and scope conflicts; advisory concerns may accompany it. "
+            "Proceed requires empty questions and scope conflicts; advisory remarks may accompany it. "
             "Preserve genuine blockers with an appropriate non-proceed decision. "
             "This feedback concerns output validity, not a request to approve the issue."
         ),
     }
     context = feedback.prepare(context)
 gateway = submission["payload"]["request"]["gateway"]
-actual = Agents(config, SimpleNamespace(gateway=gateway), bundle=bundle).prepare(
-    config["qc"], "intake", context
+actual = Agents(config, SimpleNamespace(gateway=gateway), bundle=bundle).prepare(config["qc"], "intake", context)
+print(
+    json.dumps(
+        {
+            "size": prompts.size("intake", context, bundle),
+            "prompt": diagnostic_prompt(submission["payload"]["request"], submission["payload"].get("feedback")),
+            "staffing_group": staffing(
+                submission["expected"],
+                submission["binding"],
+                submission["models"],
+                submission["budget"],
+                submission["lease"],
+            ),
+        }
+    )
 )
-print(json.dumps({
-    "size": prompts.size("intake", context, bundle),
-    "prompt": diagnostic_prompt(
-        submission["payload"]["request"], submission["payload"].get("feedback")
-    ),
-    "staffing_group": staffing(
-        submission["expected"], submission["binding"], submission["models"],
-        submission["budget"], submission["lease"]
-    ),
-}))
 expected = deepcopy(submission["payload"])
 expected["request"].pop("admission", None)
 expected["request"].pop("attempt", None)
+assert expected["request"].pop("engine_resources") == {
+    p: text for p, text in bundle.resources.items() if p.startswith("bundle/")
+}
 if actual != expected:
     print("Python intake payload:", json.dumps(actual, indent=2, sort_keys=True), file=sys.stderr)
     print("Rust intake payload:", json.dumps(expected, indent=2, sort_keys=True), file=sys.stderr)
@@ -105,11 +114,19 @@ if actual != expected:
 if "transitions" in case:
     # Prove the persisted Rust body against the retained Exchange's real admission path.
     vault = MetadataVault()
-    vault.records = [{
-        "user_id": "2", "route": "openai-api-key", "record_id": "e" * 64,
-        "version": 1, "kind": "api_key", "status": "valid",
-        "models": ["gpt-test"], "expiry_known": False, "expires_at": None,
-    }]
+    vault.records = [
+        {
+            "user_id": "2",
+            "route": "openai-api-key",
+            "record_id": "e" * 64,
+            "version": 1,
+            "kind": "api_key",
+            "status": "valid",
+            "models": ["gpt-test"],
+            "expiry_known": False,
+            "expires_at": None,
+        }
+    ]
     with tempfile.TemporaryDirectory() as directory:
         exchange = Exchange(directory + "/exchange.db", FundedGateway(), None, AUDIENCE, vault=vault)
         try:

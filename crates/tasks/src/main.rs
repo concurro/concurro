@@ -28,6 +28,7 @@ use concurro_events_postgres::{
 use concurro_exchange_client::OperatorClient;
 use concurro_exchange_v1::Operator;
 use concurro_github_v1::{AppClient, user_grant::UserGrant};
+use concurro_tasks::CoverageInputs;
 use concurro_tasks::api::{TaskApi, router as task_api_router};
 use concurro_tasks::{
     ArchiveContext, CommentHandler, CoverageGapHandler, DashboardJob, DecisionContext,
@@ -385,11 +386,13 @@ async fn run_gap_recovery(
                     if let Err(error) = reconcile_coverage_gap(
                         &database,
                         &outbox,
-                        &decisions,
-                        &standalone,
-                        &publication,
-                        &comments,
-                        &index_targets,
+                        CoverageInputs {
+                            decisions: &decisions,
+                            standalone: &standalone,
+                            publication: &publication,
+                            comments: &comments,
+                            index_targets: &index_targets,
+                        },
                         &gap,
                     )
                     .await
@@ -608,12 +611,11 @@ async fn run_standalone_review_recovery(
         match watched_standalone_review_prs(&database).await {
             Ok(prs) => {
                 for (task_id, observe_pr) in prs {
-                    if observe_pr {
-                        if let Err(error) =
+                    if observe_pr
+                        && let Err(error) =
                             run_standalone_review_pr_state(&database, &context, task_id).await
-                        {
-                            tracing::warn!(%error, %task_id, "standalone PR state observation pending");
-                        }
+                    {
+                        tracing::warn!(%error, %task_id, "standalone PR state observation pending");
                     }
                     if let Err(error) =
                         sync_standalone_review_check(&database, &context, task_id).await

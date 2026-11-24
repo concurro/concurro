@@ -20,6 +20,41 @@ use crate::{
     sponsorship::billable_model_calls,
 };
 
+/// Finding ID, state, report and disposition kept in the existing reopen snapshot format.
+type ReopenedFinding = (String, String, Value, Option<Value>);
+
+/// Columns read by `description_repair`.
+#[derive(sqlx::FromRow)]
+struct DescriptionRepairRow {
+    /// Persisted turn id.
+    turn_id: Uuid,
+    /// Persisted plan id.
+    plan_id: String,
+    /// Persisted binding.
+    binding: String,
+    /// Persisted prior snapshot.
+    prior_snapshot: Json<InitializationSnapshot>,
+    /// Persisted prior head.
+    prior_head: Option<String>,
+    /// Persisted findings snapshot.
+    findings_snapshot: Json<Vec<ReopenedFinding>>,
+    /// Persisted recorded at.
+    recorded_at: DateTime<Utc>,
+    /// Persisted recovered request.
+    recovered_request: Option<Uuid>,
+}
+
+/// Columns read by `description_repair`.
+type DescriptionRepairAfterRow = (String, String, Json<Value>, Option<Json<Value>>);
+
+/// Inputs shared by `decide_recovery`.
+pub struct RecoveryDecision<'a> {
+    /// Current request decision to amend under the issue lock.
+    pub decision: &'a mut Decision,
+    /// Explicit source adoption selected by the resume request.
+    pub resume_adoption: &'a mut Option<ResumeAdoption>,
+}
+
 /// Fresh source and PR observations used by recovery commands.
 pub struct CommandEvidence {
     /// Current configuration, bundle, base and issue requirements.
@@ -95,26 +130,24 @@ async fn description_repair(
     {
         return Ok(Err("governance_changed"));
     }
-    let reopen: Option<(
-        Uuid,
-        String,
-        String,
-        Json<InitializationSnapshot>,
-        Option<String>,
-        Json<Vec<(String, String, Value, Option<Value>)>>,
-        DateTime<Utc>,
-        Option<Uuid>,
-    )> = sqlx::query_as(
-        "SELECT turn_id,plan_id,binding,prior_snapshot,prior_head,findings_snapshot, \
-         recorded_at,recovered_request \
+    let reopen: Option<DescriptionRepairRow> = sqlx::query_as(
+        "SELECT turn_id, plan_id, binding, prior_snapshot, prior_head, findings_snapshot, recorded_at, recovered_request \
          FROM tasks.implementation_reopens WHERE task_id=$1 \
          ORDER BY recorded_at DESC,turn_id DESC LIMIT 1",
     )
     .bind(current.id.0)
     .fetch_optional(uow.connection())
     .await?;
-    let Some((turn, plan_id, binding, Json(prior), Some(head), Json(before), recorded_at, None)) =
-        reopen
+    let Some(DescriptionRepairRow {
+        turn_id: turn,
+        plan_id,
+        binding,
+        prior_snapshot: Json(prior),
+        prior_head: Some(head),
+        findings_snapshot: Json(before),
+        recorded_at,
+        recovered_request: None,
+    }) = reopen
     else {
         return Ok(Err("description_repair_not_available"));
     };
@@ -140,7 +173,7 @@ async fn description_repair(
     .bind(recorded_at)
     .fetch_one(uow.connection())
     .await?;
-    let after: Vec<(String, String, Json<Value>, Option<Json<Value>>)> = sqlx::query_as(
+    let after: Vec<DescriptionRepairAfterRow> = sqlx::query_as(
         "SELECT id,status,finding,disposition FROM tasks.pr_review_findings \
          WHERE task_id=$1 ORDER BY sequence",
     )
@@ -205,9 +238,12 @@ pub(crate) async fn decide_recovery(
     current: Option<&TaskState>,
     authority: Authority,
     evidence: Option<&CommandEvidence>,
-    decision: &mut Decision,
-    resume_adoption: &mut Option<ResumeAdoption>,
+    inputs: RecoveryDecision<'_>,
 ) -> Result<()> {
+    let RecoveryDecision {
+        decision,
+        resume_adoption,
+    } = inputs;
     if authority.writer
         && authority.issue_open
         && decision.status != RequestStatus::Superseded

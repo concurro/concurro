@@ -1,5 +1,6 @@
 //! Approved candidate publication against a local GitHub App API.
 
+use concurro_tasks_core::DesignPhase;
 use std::{
     collections::{BTreeMap, HashMap},
     process::Command,
@@ -675,6 +676,7 @@ async fn approved_candidate_publishes_one_branch_commit_and_draft_pr() {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle".to_owned(),
     };
     let state = TaskState {
@@ -701,10 +703,12 @@ async fn approved_candidate_publishes_one_branch_commit_and_draft_pr() {
         plan_id,
         &snapshot,
         &roster,
-        0,
-        "cooperative",
-        None,
-        &[],
+        DesignPhase {
+            generation: 0,
+            phase: "cooperative",
+            parent: None,
+            changed_files: &[],
+        },
     )
     .expect("design binding");
     sqlx::query("INSERT INTO tasks.issue_controls (repository_id,issue_number) VALUES ($1,$2)")

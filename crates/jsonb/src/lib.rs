@@ -22,7 +22,7 @@ pub fn jsonb_representable(value: &Value) -> bool {
             let decimal = mantissa.find('.').unwrap_or(mantissa.len());
             let digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
             let Some(first_nonzero) = digits.iter().position(|digit| *digit != b'0') else {
-                return exponent <= 131_071 && exponent >= -16_383;
+                return (-16_383..=131_071).contains(&exponent);
             };
             let (Ok(decimal), Ok(count), Ok(first_nonzero)) = (
                 i64::try_from(decimal),

@@ -164,10 +164,10 @@ class RoundTwoTests(unittest.TestCase):
 
     def test_25_intake_concerns_are_advisory_without_repeated_intro(self):
         state = {"issue": 7}
-        conversation.queue_intake_concerns(state, ["Consider the boundary."])
+        conversation.queue_intake_remarks(state, ["Consider the boundary."])
         body = state["conversation"]["pending"][0]["body"]
         self.assertEqual(body.count("Intake approved"), 1)
         self.assertEqual(body.count("No action needed"), 1)
         self.assertNotIn("not a request for human action", body)
         self.assertIn("- Consider the boundary.", body)
-        self.assertIn("full concerns are in the intake report", body)
+        self.assertIn("full remarks are in the intake report", body)

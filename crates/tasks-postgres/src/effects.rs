@@ -1,5 +1,6 @@
 //! Exchange effect claims, retries, observations, and retirement.
 
+use crate::events::FinishedTurn;
 use concurro_contracts::{ProviderRequests, TurnUsage};
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
@@ -17,6 +18,12 @@ use crate::{
     lock_issue_for_turn, record_runner_session, retire_runner_sessions,
     sponsorship::{record_credential_failure, record_credential_success},
 };
+
+/// Columns read by `claim_effect`.
+type ClaimEffectRow = (i64, Uuid, String, Vec<u8>, String, i32, i32);
+
+/// Columns read by `record_observation_inner`.
+type RecordObservationInnerRow = (String, i64, bool, Option<Json<Value>>, Option<String>);
 
 /// Recognize only a definite failed provider result from an admitted retained session.
 pub(crate) fn definite_session_failure(
@@ -124,7 +131,7 @@ pub async fn claim_effect(
         return Ok(None);
     };
     lock_attempt(uow, turn).await?;
-    let row: Option<(i64, Uuid, String, Vec<u8>, String, i32, i32)> = sqlx::query_as(
+    let row: Option<ClaimEffectRow> = sqlx::query_as(
         "SELECT e.id,e.turn_id,e.kind,a.submit_body,a.status,e.submit_attempts, \
          GREATEST(0,CEIL(EXTRACT(EPOCH FROM \
          (e.updated_at + interval '15 seconds' - now()))))::int \
@@ -545,7 +552,7 @@ async fn record_observation_inner(
     let Some(owner) = lock_execution_owner(uow, observation.turn).await? else {
         return Ok(false);
     };
-    let row: Option<(String, i64, bool, Option<Json<Value>>, Option<String>)> =
+    let row: Option<RecordObservationInnerRow> =
         sqlx::query_as("SELECT status,poll_generation,result IS NOT NULL,observation,outcome_reason FROM tasks.attempts WHERE id=$1 FOR UPDATE")
             .bind(observation.turn)
             .fetch_optional(uow.connection())
@@ -773,22 +780,24 @@ async fn record_observation_inner(
                 uow,
                 outbox,
                 observation.turn,
-                observation.result.as_ref(),
-                failure_reason
-                    .as_deref()
-                    .or(obsolete_before_validation.then_some("superseded_before_validation"))
-                    .or(observation.refusal.as_deref())
-                    .or(match observation.status.as_str() {
-                        "lost" => Some("lost"),
-                        "cancelled" => Some("cancelled"),
-                        _ => None,
-                    }),
-                observation.created,
-                observation.started,
-                observation.finished,
-                observation.provider_failure.as_ref(),
-                exchange_usage.as_ref().map(|(requests, _)| requests),
-                exchange_usage.as_ref().map(|(_, usage)| *usage),
+                FinishedTurn {
+                    result: observation.result.as_ref(),
+                    reason: failure_reason
+                        .as_deref()
+                        .or(obsolete_before_validation.then_some("superseded_before_validation"))
+                        .or(observation.refusal.as_deref())
+                        .or(match observation.status.as_str() {
+                            "lost" => Some("lost"),
+                            "cancelled" => Some("cancelled"),
+                            _ => None,
+                        }),
+                    created: observation.created,
+                    started: observation.started,
+                    finished: observation.finished,
+                    provider_failure: observation.provider_failure.as_ref(),
+                    provider_requests: exchange_usage.as_ref().map(|(requests, _)| requests),
+                    usage: exchange_usage.as_ref().map(|(_, usage)| *usage),
+                },
             )
             .await?;
         }

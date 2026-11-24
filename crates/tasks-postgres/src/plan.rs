@@ -18,6 +18,15 @@ use crate::{
     sponsorship::has_credential_exclusion,
 };
 
+/// Columns read by `settle_plan`.
+type SettlePlanAttemptRow = (
+    String,
+    Option<Json<Value>>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Vec<u8>,
+);
+
 /// Rejected planner output supplied to the next bounded correction turn.
 pub struct PlanCorrection {
     /// Exact rejected planner response.
@@ -289,13 +298,7 @@ pub(crate) async fn settle_plan(
     if state.stage != Stage::Plan || state.current_attempt != Some(turn) {
         return Ok(());
     }
-    let attempt: Option<(
-        String,
-        Option<Json<Value>>,
-        Option<Vec<u8>>,
-        Option<String>,
-        Vec<u8>,
-    )> = sqlx::query_as(
+    let attempt: Option<SettlePlanAttemptRow> = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason,submit_body FROM tasks.attempts \
              WHERE id=$1 AND status IN ('finished','unknown','cancelled')",
     )
@@ -526,12 +529,12 @@ pub(crate) async fn settle_plan(
             "cooperative",
         )
         .await?;
-    } else if next.stage == Stage::Clarify {
-        if let Some(body) = plan_notice_body(&report) {
-            let notice_id =
-                queue_task_comment(uow, &next, "notice", &format!("plan:{turn}"), &body).await?;
-            events::append_notice(uow, outbox, &next, notice_id, "plan", &body).await?;
-        }
+    } else if next.stage == Stage::Clarify
+        && let Some(body) = plan_notice_body(&report)
+    {
+        let notice_id =
+            queue_task_comment(uow, &next, "notice", &format!("plan:{turn}"), &body).await?;
+        events::append_notice(uow, outbox, &next, notice_id, "plan", &body).await?;
     }
     Ok(())
 }

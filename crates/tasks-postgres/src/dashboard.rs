@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use crate::publication::queue_task_comment;
 
+/// Columns read by `dashboard_surface`.
+type DashboardSurfaceRow = (Uuid, i64, i64, i64, String, Uuid, Option<i64>);
+
 /// Current desired body and the first comment create for one task dashboard.
 #[derive(Clone, Debug)]
 pub struct DashboardSurface {
@@ -100,7 +103,7 @@ pub async fn dashboard_surface(
     database: &Database,
     task_id: Uuid,
 ) -> Result<Option<DashboardSurface>, sqlx::Error> {
-    let row: Option<(Uuid, i64, i64, i64, String, Uuid, Option<i64>)> = sqlx::query_as(
+    let row: Option<DashboardSurfaceRow> = sqlx::query_as(
         "SELECT s.task_id,s.repository_id,s.issue_number,s.revision,s.desired_body, \
          s.create_id,c.comment_id FROM tasks.dashboard_surfaces s \
          JOIN tasks.publication_comments c ON c.id=s.create_id \

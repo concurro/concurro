@@ -1,5 +1,6 @@
 //! Authenticated standalone review request through timeline and authority boundaries.
 
+use concurro_tasks_postgres::StandaloneReviewAuthority;
 use std::{
     collections::{BTreeMap, HashMap},
     fs::{self, OpenOptions},
@@ -1337,18 +1338,10 @@ async fn reviewer_account_publication_confirms_exact_native_review_once() {
         .await
         .expect("request");
     apply_standalone_review_request(
-        &mut work,
-        requested.id,
-        &requested.upstream,
-        requested.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer","provider":"openai","model":"test","roles":["pr_review"]}]})),
-    )
+&mut work,
+requested.id,
+StandaloneReviewAuthority { upstream: &requested.upstream, pr_number: requested.pr_number, reviewer_id: 99, runner_repository_id: 8, actor_writer: true, pr_open: true, reviewer_requested: true, source_defect: None, snapshot: Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer","provider":"openai","model":"test","roles":["pr_review"]}]})) },
+)
     .await
     .expect("round");
     work.commit().await.expect("request commit");

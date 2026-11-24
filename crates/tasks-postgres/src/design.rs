@@ -1,5 +1,6 @@
 //! Durable independent reviewer batches and per-seat attempt admission.
 
+use concurro_tasks_core::DesignPhase;
 use std::collections::BTreeSet;
 
 use anyhow::ensure;
@@ -26,6 +27,116 @@ use crate::{
         validate_funding_admission,
     },
 };
+
+/// Columns read by `design_correction`.
+#[derive(sqlx::FromRow)]
+struct DesignCorrectionRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted issue number.
+    issue_number: i64,
+    /// Persisted plan id.
+    plan_id: String,
+    /// Persisted binding.
+    binding: String,
+    /// Persisted phase.
+    phase: String,
+    /// Persisted generation.
+    generation: i64,
+    /// Persisted roster.
+    roster: Json<Vec<DesignReviewer>>,
+    /// Persisted plan report.
+    plan_report: Vec<u8>,
+    /// Persisted report raw.
+    report_raw: Option<Vec<u8>>,
+    /// Persisted validation error.
+    validation_error: String,
+    /// Persisted status.
+    status: String,
+    /// Persisted session epoch.
+    session_epoch: i32,
+}
+
+/// Columns read by `design_result`.
+#[derive(sqlx::FromRow)]
+struct DesignResultRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted issue number.
+    issue_number: i64,
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted binding.
+    binding: String,
+    /// Persisted phase.
+    phase: String,
+    /// Persisted reviewer.
+    reviewer: Json<DesignReviewer>,
+    /// Persisted report raw.
+    report_raw: Vec<u8>,
+}
+
+/// Columns read by `approval_proof`.
+type ApprovalProofBatchRow = (
+    String,
+    String,
+    i64,
+    Json<Vec<DesignReviewer>>,
+    Option<Json<InitializationSnapshot>>,
+    i64,
+    bool,
+);
+
+/// Columns read by `design_batch`.
+type DesignBatchRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    i64,
+    Json<Vec<DesignReviewer>>,
+    Vec<u8>,
+);
+
+/// Columns read by `settle_design_attempt`.
+type DesignAttemptOutcomeRow = (
+    String,
+    Option<Json<Value>>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Vec<u8>,
+);
+
+/// Columns read by `apply_design_result`.
+#[derive(sqlx::FromRow)]
+struct DesignResultSeatRow {
+    /// Persisted batch id.
+    batch_id: Uuid,
+    /// Persisted plan id.
+    plan_id: String,
+    /// Persisted binding.
+    binding: String,
+    /// Persisted phase.
+    phase: String,
+    /// Persisted generation.
+    generation: i64,
+    /// Persisted roster.
+    roster: Json<Vec<DesignReviewer>>,
+    /// Persisted reviewer id.
+    reviewer_id: String,
+    /// Persisted report raw.
+    report_raw: Vec<u8>,
+    /// Persisted session epoch.
+    session_epoch: i32,
+    /// Persisted correction count.
+    correction_count: i32,
+    /// Persisted repair signature.
+    repair_signature: Option<String>,
+}
 
 /// Frozen plan and roster to prepare before one atomic batch admission.
 pub struct DesignBatch {
@@ -94,9 +205,9 @@ pub async fn design_correction(
     reviewer_id: &str,
     count: i32,
 ) -> anyhow::Result<Option<DesignCorrection>> {
-    let batch: Option<(Uuid, i64, i64, String, String, String, i64, Json<Vec<DesignReviewer>>, Vec<u8>, Option<Vec<u8>>, String, String, i32)> = sqlx::query_as(
-        "SELECT b.task_id,t.repository_id,t.issue_number,b.plan_id,b.binding,b.phase,b.generation,b.roster,p.raw_report_bytes, \
-         s.report_raw,s.validation_error,s.status,s.session_epoch FROM tasks.plan_review_batches b \
+    let batch: Option<DesignCorrectionRow> = sqlx::query_as(
+        "SELECT b.task_id, t.repository_id, t.issue_number, b.plan_id, b.binding, b.phase, b.generation, b.roster, p.raw_report_bytes AS plan_report, s.report_raw, s.validation_error, s.status, s.session_epoch \
+         FROM tasks.plan_review_batches b \
          JOIN tasks.plan_review_seats s ON s.batch_id=b.id \
          JOIN tasks.task_state t ON t.task_id=b.task_id \
          JOIN tasks.plan_reports p ON p.task_id=b.task_id AND p.plan_id=b.plan_id AND p.accepted AND p.current \
@@ -110,21 +221,21 @@ pub async fn design_correction(
     .bind(count)
     .fetch_optional(database.pool())
     .await?;
-    let Some((
+    let Some(DesignCorrectionRow {
         task_id,
         repository_id,
-        number,
+        issue_number: number,
         plan_id,
         binding,
         phase,
         generation,
-        Json(roster),
-        plan,
-        report,
-        reason,
+        roster: Json(roster),
+        plan_report: plan,
+        report_raw: report,
+        validation_error: reason,
         status,
         session_epoch,
-    )) = batch
+    }) = batch
     else {
         return Ok(None);
     };
@@ -243,10 +354,12 @@ pub(crate) async fn record_design_batch(
         plan_id,
         snapshot,
         &roster,
-        u64::try_from(generation)?,
-        phase,
-        None,
-        &[],
+        DesignPhase {
+            generation: u64::try_from(generation)?,
+            phase,
+            parent: None,
+            changed_files: &[],
+        },
     )
     .map_err(anyhow::Error::msg)?;
     let batch = Uuid::now_v7();
@@ -288,8 +401,8 @@ pub async fn design_result(
     database: &Database,
     turn: Uuid,
 ) -> anyhow::Result<Option<DesignResult>> {
-    let row: Option<(Uuid, i64, i64, Uuid, String, String, Json<DesignReviewer>, Vec<u8>)> = sqlx::query_as(
-        "SELECT b.task_id,t.repository_id,t.issue_number,b.id,b.binding,b.phase,s.identity,s.report_raw \
+    let row: Option<DesignResultRow> = sqlx::query_as(
+        "SELECT b.task_id, t.repository_id, t.issue_number, b.id AS batch_id, b.binding, b.phase, s.identity AS reviewer, s.report_raw \
          FROM tasks.plan_review_seats s JOIN tasks.plan_review_batches b ON b.id=s.batch_id \
          JOIN tasks.task_state t ON t.task_id=b.task_id \
          WHERE s.attempt_id=$1 AND s.status='completed' AND b.status='admitted'",
@@ -298,7 +411,16 @@ pub async fn design_result(
     .fetch_optional(database.pool())
     .await?;
     row.map(
-        |(task_id, repository_id, number, batch_id, binding, phase, Json(reviewer), raw)| {
+        |DesignResultRow {
+             task_id,
+             repository_id,
+             issue_number: number,
+             batch_id,
+             binding,
+             phase,
+             reviewer: Json(reviewer),
+             report_raw: raw,
+         }| {
             Ok(DesignResult {
                 turn,
                 task_id,
@@ -390,15 +512,7 @@ pub(crate) async fn approval_proof(
     let Some((plan_id, raw, Json(snapshot), resumed)) = row else {
         return Ok(None);
     };
-    let batch: Option<(
-        String,
-        String,
-        i64,
-        Json<Vec<DesignReviewer>>,
-        Option<Json<InitializationSnapshot>>,
-        i64,
-        bool,
-    )> = sqlx::query_as(
+    let batch: Option<ApprovalProofBatchRow> = sqlx::query_as(
         "SELECT b.binding,b.phase,b.generation,b.roster,b.snapshot,count(s.reviewer_id), \
          COALESCE(bool_and(s.status='accepted' AND s.report->>'decision'='approve' \
          AND s.report->>'risk'<>'high' AND (b.phase='fresh' OR s.first_pass_eligible)),false) \
@@ -425,10 +539,12 @@ pub(crate) async fn approval_proof(
             .filter(|_| resumed)
             .map_or(&snapshot, |bound| &bound.0),
         &roster,
-        u64::try_from(generation)?,
-        &phase,
-        None,
-        &[],
+        DesignPhase {
+            generation: u64::try_from(generation)?,
+            phase: &phase,
+            parent: None,
+            changed_files: &[],
+        },
     )
     .map_err(anyhow::Error::msg)?;
     Ok((expected == binding).then_some((plan_id, binding)))
@@ -436,15 +552,7 @@ pub(crate) async fn approval_proof(
 
 /// Read the recorded batch and accepted plan without consuming a turn.
 pub async fn design_batch(database: &Database, batch: Uuid) -> anyhow::Result<Option<DesignBatch>> {
-    let row: Option<(
-        Uuid,
-        String,
-        String,
-        String,
-        i64,
-        Json<Vec<DesignReviewer>>,
-        Vec<u8>,
-    )> = sqlx::query_as(
+    let row: Option<DesignBatchRow> = sqlx::query_as(
         "SELECT b.task_id,b.plan_id,b.binding,b.phase,b.generation,b.roster,p.raw_report_bytes \
              FROM tasks.plan_review_batches b JOIN tasks.plan_reports p \
              ON p.task_id=b.task_id AND p.plan_id=b.plan_id AND p.accepted AND p.current \
@@ -878,7 +986,7 @@ pub(crate) async fn settle_design_attempt(
     if seat_status != "admitted" {
         return Ok(());
     }
-    let attempt: (String, Option<Json<Value>>, Option<Vec<u8>>, Option<String>, Vec<u8>) = sqlx::query_as(
+    let attempt: DesignAttemptOutcomeRow = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason,submit_body FROM tasks.attempts WHERE id=$1 FOR UPDATE",
     )
     .bind(turn)
@@ -1002,30 +1110,29 @@ pub async fn apply_design_result(
     let Some(state) = lock_issue_for_turn(uow, turn).await? else {
         return Ok(false);
     };
-    let seat: Option<(Uuid, String, String, String, i64, Json<Vec<DesignReviewer>>, String, Vec<u8>, i32, i32, Option<String>)> =
+    let seat: Option<DesignResultSeatRow> =
         sqlx::query_as(
-            "SELECT b.id,b.plan_id,b.binding,b.phase,b.generation,b.roster,s.reviewer_id,s.report_raw,s.session_epoch, \
-             s.correction_count,s.repair_signature \
-             FROM tasks.plan_review_seats s JOIN tasks.plan_review_batches b ON b.id=s.batch_id \
+            "SELECT b.id AS batch_id, b.plan_id, b.binding, b.phase, b.generation, b.roster, s.reviewer_id, s.report_raw, s.session_epoch, s.correction_count, s.repair_signature \
+         FROM tasks.plan_review_seats s JOIN tasks.plan_review_batches b ON b.id=s.batch_id \
              WHERE s.attempt_id=$1 AND s.status='completed' AND b.status='admitted' \
              FOR UPDATE OF b,s",
         )
         .bind(turn)
         .fetch_optional(uow.connection())
         .await?;
-    let Some((
-        batch,
+    let Some(DesignResultSeatRow {
+        batch_id: batch,
         plan_id,
         binding,
         phase,
         generation,
-        Json(roster),
-        reviewer,
-        raw,
+        roster: Json(roster),
+        reviewer_id: reviewer,
+        report_raw: raw,
         session_epoch,
         correction_count,
         repair_signature,
-    )) = seat
+    }) = seat
     else {
         return Ok(false);
     };
@@ -1061,10 +1168,12 @@ pub async fn apply_design_result(
         &plan_id,
         &snapshot,
         &roster,
-        u64::try_from(generation)?,
-        &phase,
-        None,
-        &[],
+        DesignPhase {
+            generation: u64::try_from(generation)?,
+            phase: &phase,
+            parent: None,
+            changed_files: &[],
+        },
     )
     .map_err(anyhow::Error::msg)?;
     if latest_plan.as_deref() != Some(&plan_id) || current_binding != binding {

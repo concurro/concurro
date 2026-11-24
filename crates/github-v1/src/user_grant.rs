@@ -291,12 +291,12 @@ impl UserGrant {
         if usable(&current, now) {
             return Ok(current.token.clone());
         }
-        if let Ok(stored) = read_grant(&self.inner.path, self.inner.expected_user_id) {
-            if stored.token != current.token {
-                *current = stored;
-                if usable(&current, now) {
-                    return Ok(current.token.clone());
-                }
+        if let Ok(stored) = read_grant(&self.inner.path, self.inner.expected_user_id)
+            && stored.token != current.token
+        {
+            *current = stored;
+            if usable(&current, now) {
+                return Ok(current.token.clone());
             }
         }
         let refresh = current

@@ -1,5 +1,7 @@
 //! Standalone PR request ordering and ownership at the database boundary.
 
+use concurro_tasks_postgres::StandaloneActionSource;
+use concurro_tasks_postgres::StandaloneReviewAuthority;
 use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
@@ -200,10 +202,12 @@ async fn browser_standalone_actions_replay_without_folding_each_other() {
             id,
             &content,
             issue,
-            "acme/demo",
-            &actor,
-            RequestKind::Stop,
-            Utc::now(),
+            StandaloneActionSource {
+                upstream: "acme/demo",
+                actor: &actor,
+                kind: RequestKind::Stop,
+                source_at: Utc::now(),
+            },
         )
         .await
         .expect("browser action");
@@ -267,18 +271,10 @@ async fn standalone_observation_retains_report_on_owning_round() {
         .await
         .expect("request");
     apply_standalone_review_request(
-        &mut work,
-        request.id,
-        &request.upstream,
-        request.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer"}],"configuration":{"max_review_repairs":1}})),
-    )
+&mut work,
+request.id,
+StandaloneReviewAuthority { upstream: &request.upstream, pr_number: request.pr_number, reviewer_id: 99, runner_repository_id: 8, actor_writer: true, pr_open: true, reviewer_requested: true, source_defect: None, snapshot: Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer"}],"configuration":{"max_review_repairs":1}})) },
+)
     .await
     .expect("round");
     work.commit().await.expect("request commit");
@@ -450,15 +446,17 @@ async fn standalone_provider_failure_retries_with_a_new_credential() {
     apply_standalone_review_request(
         &mut work,
         request.id,
-        &request.upstream,
-        request.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&json!({"head":"a".repeat(40),"configuration":{"max_model_calls":3}})),
+        StandaloneReviewAuthority {
+            upstream: &request.upstream,
+            pr_number: request.pr_number,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&json!({"head":"a".repeat(40),"configuration":{"max_model_calls":3}})),
+        },
     )
     .await
     .expect("round");
@@ -691,15 +689,17 @@ async fn standalone_publication_finishes_cancelled_round_after_readback() {
     apply_standalone_review_request(
         &mut work,
         requested.id,
-        &requested.upstream,
-        requested.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer"}]})),
+        StandaloneReviewAuthority {
+            upstream: &requested.upstream,
+            pr_number: requested.pr_number,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&json!({"head":"a".repeat(40),"panel":[{"id":"reviewer"}]})),
+        },
     )
     .await
     .expect("round");
@@ -767,15 +767,17 @@ async fn standalone_publication_finishes_cancelled_round_after_readback() {
     apply_standalone_review_request(
         &mut work,
         removed.id,
-        &removed.upstream,
-        removed.pr_number,
-        99,
-        8,
-        true,
-        true,
-        false,
-        None,
-        None,
+        StandaloneReviewAuthority {
+            upstream: &removed.upstream,
+            pr_number: removed.pr_number,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: false,
+            source_defect: None,
+            snapshot: None,
+        },
     )
     .await
     .expect("cancel");
@@ -845,15 +847,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
         apply_standalone_review_request(
             &mut work,
             first.id,
-            &first.upstream,
-            42,
-            99,
-            8,
-            true,
-            true,
-            true,
-            None,
-            Some(&snapshot),
+            StandaloneReviewAuthority {
+                upstream: &first.upstream,
+                pr_number: 42,
+                reviewer_id: 99,
+                runner_repository_id: 8,
+                actor_writer: true,
+                pr_open: true,
+                reviewer_requested: true,
+                source_defect: None,
+                snapshot: Some(&snapshot)
+            },
         )
         .await
         .expect("apply request")
@@ -919,15 +923,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
     apply_standalone_review_request(
         &mut work,
         joined.id,
-        &joined.upstream,
-        42,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        None,
+        StandaloneReviewAuthority {
+            upstream: &joined.upstream,
+            pr_number: 42,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: None,
+        },
     )
     .await
     .expect("join request");
@@ -960,15 +966,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
     apply_standalone_review_request(
         &mut work,
         again.id,
-        &again.upstream,
-        42,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&snapshot),
+        StandaloneReviewAuthority {
+            upstream: &again.upstream,
+            pr_number: 42,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&snapshot),
+        },
     )
     .await
     .expect("new round");
@@ -1004,15 +1012,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
     apply_standalone_review_request(
         &mut work,
         removed.id,
-        &removed.upstream,
-        42,
-        99,
-        8,
-        false,
-        true,
-        false,
-        None,
-        None,
+        StandaloneReviewAuthority {
+            upstream: &removed.upstream,
+            pr_number: 42,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: false,
+            pr_open: true,
+            reviewer_requested: false,
+            source_defect: None,
+            snapshot: None,
+        },
     )
     .await
     .expect("remove request");
@@ -1070,15 +1080,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
     apply_standalone_review_request(
         &mut work,
         old.id,
-        &old.upstream,
-        42,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&snapshot),
+        StandaloneReviewAuthority {
+            upstream: &old.upstream,
+            pr_number: 42,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&snapshot),
+        },
     )
     .await
     .expect("late request");
@@ -1113,15 +1125,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
         apply_standalone_review_request(
             &mut work,
             rerequest.id,
-            &rerequest.upstream,
-            42,
-            99,
-            8,
-            true,
-            true,
-            true,
-            None,
-            Some(&snapshot),
+            StandaloneReviewAuthority {
+                upstream: &rerequest.upstream,
+                pr_number: 42,
+                reviewer_id: 99,
+                runner_repository_id: 8,
+                actor_writer: true,
+                pr_open: true,
+                reviewer_requested: true,
+                source_defect: None,
+                snapshot: Some(&snapshot)
+            },
         )
         .await
         .expect("apply request after cancellation")
@@ -1155,15 +1169,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
     apply_standalone_review_request(
         &mut work,
         owned.id,
-        &owned.upstream,
-        43,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&snapshot),
+        StandaloneReviewAuthority {
+            upstream: &owned.upstream,
+            pr_number: 43,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&snapshot),
+        },
     )
     .await
     .expect("owned decision");
@@ -1224,15 +1240,17 @@ async fn standalone_review_sources_open_join_and_cancel_owned_rounds() {
         apply_standalone_review_request(
             &mut work,
             request.id,
-            &request.upstream,
-            request.pr_number,
-            99,
-            8,
-            true,
-            true,
-            true,
-            None,
-            Some(&snapshot),
+            StandaloneReviewAuthority {
+                upstream: &request.upstream,
+                pr_number: request.pr_number,
+                reviewer_id: 99,
+                runner_repository_id: 8,
+                actor_writer: true,
+                pr_open: true,
+                reviewer_requested: true,
+                source_defect: None,
+                snapshot: Some(&snapshot),
+            },
         )
         .await
         .expect("batch source decision");
@@ -1295,15 +1313,17 @@ async fn standalone_second_round_records_own_finding_disposition() {
     apply_standalone_review_request(
         &mut work,
         request.id,
-        &request.upstream,
-        request.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&snapshot),
+        StandaloneReviewAuthority {
+            upstream: &request.upstream,
+            pr_number: request.pr_number,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&snapshot),
+        },
     )
     .await
     .expect("first round");
@@ -1347,15 +1367,17 @@ async fn standalone_second_round_records_own_finding_disposition() {
     apply_standalone_review_request(
         &mut work,
         request2.id,
-        &request2.upstream,
-        request2.pr_number,
-        99,
-        8,
-        true,
-        true,
-        true,
-        None,
-        Some(&snapshot),
+        StandaloneReviewAuthority {
+            upstream: &request2.upstream,
+            pr_number: request2.pr_number,
+            reviewer_id: 99,
+            runner_repository_id: 8,
+            actor_writer: true,
+            pr_open: true,
+            reviewer_requested: true,
+            source_defect: None,
+            snapshot: Some(&snapshot),
+        },
     )
     .await
     .expect("second round");

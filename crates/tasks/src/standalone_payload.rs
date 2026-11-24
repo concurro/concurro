@@ -11,25 +11,47 @@ use concurro_tasks_postgres::StandaloneReviewRound;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+use crate::plan_payload::ExecutionAttemptInputs;
 use crate::{
-    InitializationTarget, IntakeTransport, design_payload::selected_policy,
+    InitializationTarget, IntakeTransport, bundle::ResolvedBundle, design_payload::selected_policy,
     plan_payload::prepare_execution_attempt,
 };
 
+/// Frozen standalone PR source and reviewer feedback for one native turn.
+pub struct StandaloneReviewAttemptInputs<'a> {
+    /// Verified resource bytes and controller wording for this exact turn.
+    pub bundle: ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Independent reviewer identity and model configuration.
+    pub reviewer: &'a DesignReviewer,
+    /// Findings owned by this reviewer for disposition against this head.
+    pub own_findings: &'a [Value],
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<(&'a Value, &'a str)>,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+}
+
 /// Build one independent reviewer turn from a frozen standalone PR round.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_standalone_review_attempt(
     round: &StandaloneReviewRound,
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    reviewer: &DesignReviewer,
-    own_findings: &[Value],
-    correction: Option<(&Value, &str)>,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    attempt_inputs: StandaloneReviewAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let StandaloneReviewAttemptInputs {
+        bundle,
+        expected,
+        reviewer,
+        own_findings,
+        correction,
+        turn,
+        now,
+    } = attempt_inputs;
     const MAX_DIFF_BYTES: usize = 8192;
     let source = &round.snapshot;
     let head = source["head"].as_str().context("review head missing")?;
@@ -104,7 +126,7 @@ pub(crate) fn prepare_standalone_review_attempt(
         context["review_validation_feedback"] = json!({
             "invalid_report_untrusted":report,
             "reason":reason,
-            "instruction":"Correct the same review for the pinned head and reviewer identity.",
+            "instruction":bundle.instruction("review_correction")?,
         });
     }
     let attention = paths
@@ -126,9 +148,8 @@ pub(crate) fn prepare_standalone_review_attempt(
         .collect::<Vec<_>>();
     if !attention.is_empty() {
         context["workflow_and_policy_changes"] = json!(attention);
-        context["workflow_and_policy_review"] = json!(
-            "Review changes to CI, workflows and policy documents explicitly, including whether the required checks still validate the change."
-        );
+        context["workflow_and_policy_review"] =
+            json!(bundle.instruction("standalone_policy_review")?);
     }
     if let Some(agent) = &reviewer.agent {
         context["agent"] = agent.clone();
@@ -153,19 +174,22 @@ pub(crate) fn prepare_standalone_review_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        "review",
-        phase,
-        context,
-        (
-            harness.to_owned(),
-            reviewer.model.clone(),
-            effort.to_owned(),
-            reviewer.agent.clone(),
-        ),
-        None,
-        true,
-        turn,
-        now,
+        ExecutionAttemptInputs {
+            expected,
+            stage: "review",
+            phase,
+            context,
+            agent_config: (
+                harness.to_owned(),
+                reviewer.model.clone(),
+                effort.to_owned(),
+                reviewer.agent.clone(),
+            ),
+            retained: None,
+            standalone_review: true,
+            turn,
+            now,
+            bundle: &bundle,
+        },
     )
 }

@@ -15,16 +15,26 @@ use uuid::Uuid;
 
 use crate::{
     InitializationTarget,
-    bundle::{
-        intake_prompt_bytes, intake_prompt_parts, python_digest, python_json, python_pretty_json,
-    },
+    bundle::{ResolvedBundle, python_digest, python_json, python_pretty_json},
 };
+
+/// Inputs shared by `prepare_intake_attempt`.
+pub struct IntakeAttemptInputs<'a> {
+    /// Verified runtime resources and addenda for this exact attempt.
+    pub bundle: ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<&'a IntakeCorrection>,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+}
 
 const QUEUE_SECONDS: i64 = 1800;
 const DEFAULT_TURN_SECONDS: i64 = 1200;
 const DEFAULT_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
-
-const CORRECTION_INSTRUCTION: &str = "Correct the intake report against its schema and the rejection reason. Use clarify with questions when a human answer is needed; do not remove real questions to proceed. Proceed requires empty questions and scope conflicts; advisory concerns may accompany it. Preserve genuine blockers with an appropriate non-proceed decision. This feedback concerns output validity, not a request to approve the issue.";
 
 /// Keep feedback identities while shortening long previews in a prompt index.
 fn feedback_index(value: &Value, field: Option<&str>) -> Value {
@@ -174,11 +184,15 @@ pub fn prepare_intake_attempt(
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    correction: Option<&IntakeCorrection>,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    inputs: IntakeAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let IntakeAttemptInputs {
+        bundle,
+        expected,
+        correction,
+        turn,
+        now,
+    } = inputs;
     let config = &snapshot.configuration;
     let (harness, model, effort, agent) = assigned_agent(config, "triage")?;
     ensure!(
@@ -236,7 +250,7 @@ pub fn prepare_intake_attempt(
             "truncated": false,
             "reason": correction.reason,
             "attempt": correction.attempt,
-            "instruction": CORRECTION_INSTRUCTION,
+            "instruction": bundle.instruction("intake_correction")?,
         });
     }
     let mut feedback = json!({});
@@ -248,14 +262,16 @@ pub fn prepare_intake_attempt(
                 "feedback_file": format!("{digest}.json"),
                 "digest": digest,
                 "index": feedback_index(&selected, None),
-                "notice": "Index only; read the file for complete evidence.",
+                "notice": bundle.instruction("feedback_index")?,
             });
             feedback[digest] = selected;
             context["controller_feedback"] = feedback.clone();
         }
     }
-    let prompt_bytes = intake_prompt_bytes(&context, snapshot)?;
-    let (mut prompt_document, response_schema) = intake_prompt_parts(&context, snapshot)?;
+    let (mut prompt_document, response_schema) =
+        bundle.prompt_parts(&context, snapshot, "intake", false)?;
+    let prompt_bytes =
+        serde_json::to_vec(&prompt_document)?.len() + serde_json::to_vec(&response_schema)?.len();
     prompt_document["response_schema"] = response_schema;
     let prompt_body = serde_json::to_vec(&prompt_document)?;
     let max_context_bytes = config["max_context_bytes"]
@@ -278,6 +294,7 @@ pub fn prepare_intake_attempt(
         "bundle_id": snapshot.bundle_id,
         "charter": snapshot.charter,
         "instruction_texts": snapshot.instruction_texts,
+        "engine_resources": bundle.resources(),
         "max_retained_bytes": config.get("max_retained_bytes")
             .cloned().unwrap_or_else(|| json!(DEFAULT_RETAINED_BYTES)),
         "context": context,
@@ -386,9 +403,9 @@ mod tests {
     use serde_json::{Value, json};
     use uuid::Uuid;
 
-    use crate::{InitializationTarget, bundle::intake_prompt_bytes, bundle_identity};
+    use crate::{InitializationTarget, bundle::ResolvedBundle, bundle_identity};
 
-    use super::{IntakeTransport, prepare_intake_attempt};
+    use super::{IntakeAttemptInputs, IntakeTransport, prepare_intake_attempt};
 
     #[test]
     fn large_correction_matches_python_feedback_file_and_prompt() {
@@ -415,6 +432,7 @@ mod tests {
             instruction_texts: BTreeMap::new(),
             policy_documents: BTreeMap::new(),
             base_files: vec!["src/lib.rs".to_owned()],
+            engine_resources: BTreeMap::new(),
             bundle_id: bundle_identity(charter, &BTreeMap::new()).expect("bundle"),
         };
         let issue = IssueKey {
@@ -465,10 +483,13 @@ mod tests {
             &snapshot,
             &target,
             &transport,
-            json!({"repository_id": "8"}),
-            Some(&correction),
-            Uuid::now_v7(),
-            Utc::now(),
+            IntakeAttemptInputs {
+                bundle: ResolvedBundle::resolve(&snapshot).expect("resolved bundle"),
+                expected: json!({"repository_id": "8"}),
+                correction: Some(&correction),
+                turn: Uuid::now_v7(),
+                now: Utc::now(),
+            },
         )
         .expect("corrected intake attempt");
         let submission: Value = serde_json::from_slice(&prepared.submit_body).expect("submission");
@@ -480,7 +501,12 @@ mod tests {
         );
         let mut prompt_context = submission["payload"]["request"]["context"].clone();
         prompt_context["controller_feedback"] = submission["payload"]["feedback"].clone();
-        let prompt_bytes = intake_prompt_bytes(&prompt_context, &snapshot).expect("prompt bytes");
+        let (prompt, schema) = ResolvedBundle::resolve(&snapshot)
+            .expect("bundle")
+            .prompt_parts(&prompt_context, &snapshot, "intake", false)
+            .expect("prompt");
+        let prompt_bytes = serde_json::to_vec(&prompt).expect("prompt bytes").len()
+            + serde_json::to_vec(&schema).expect("schema bytes").len();
         let mut oracle = Command::new("python3")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -533,10 +559,13 @@ mod tests {
                 &at_bound,
                 &target,
                 &transport,
-                json!({"repository_id": "8"}),
-                Some(&correction),
-                Uuid::now_v7(),
-                Utc::now(),
+                IntakeAttemptInputs {
+                    bundle: ResolvedBundle::resolve(&snapshot).expect("resolved bundle"),
+                    expected: json!({"repository_id": "8"}),
+                    correction: Some(&correction),
+                    turn: Uuid::now_v7(),
+                    now: Utc::now()
+                },
             )
             .is_ok()
         );
@@ -548,10 +577,13 @@ mod tests {
                 &at_bound,
                 &target,
                 &transport,
-                json!({"repository_id": "8"}),
-                Some(&correction),
-                Uuid::now_v7(),
-                Utc::now(),
+                IntakeAttemptInputs {
+                    bundle: ResolvedBundle::resolve(&snapshot).expect("resolved bundle"),
+                    expected: json!({"repository_id": "8"}),
+                    correction: Some(&correction),
+                    turn: Uuid::now_v7(),
+                    now: Utc::now()
+                },
             )
             .is_err()
         );

@@ -5,6 +5,27 @@ use concurro_contracts::InferenceUsage;
 use concurro_db::{Database, UnitOfWork};
 use uuid::Uuid;
 
+/// Columns read by `org_attempt`.
+#[derive(sqlx::FromRow)]
+struct IssuedGrantRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted route.
+    route: Option<String>,
+    /// Persisted purpose.
+    purpose: String,
+    /// Persisted payer id.
+    payer_id: Option<i64>,
+    /// Persisted credential record id.
+    credential_record_id: Option<String>,
+    /// Persisted credential version.
+    credential_version: Option<i64>,
+    /// Persisted status.
+    status: String,
+}
+
 /// Immutable task and source identity needed to convert an org attempt.
 pub struct OrgAttempt {
     /// Owning task.
@@ -25,8 +46,9 @@ pub struct OrgAttempt {
 
 /// Read an issued grant and its contribution or review runner target.
 pub async fn org_attempt(database: &Database, turn: Uuid) -> Result<OrgAttempt> {
-    let row: Option<(Uuid, i64, Option<String>, String, Option<i64>, Option<String>, Option<i64>, String)> = sqlx::query_as(
-        "SELECT a.task_id,t.repository_id,g.route,g.purpose,g.payer_id,g.credential_record_id,g.credential_version,g.status FROM tasks.attempts a \
+    let row: Option<IssuedGrantRow> = sqlx::query_as(
+        "SELECT a.task_id, t.repository_id, g.route, g.purpose, g.payer_id, g.credential_record_id, g.credential_version, g.status \
+         FROM tasks.attempts a \
          JOIN tasks.task_state t ON t.task_id=a.task_id \
          JOIN tasks.funding_grants g ON g.attempt_id=a.id \
          WHERE a.id=$1 \
@@ -38,8 +60,16 @@ pub async fn org_attempt(database: &Database, turn: Uuid) -> Result<OrgAttempt> 
     .bind(turn)
     .fetch_optional(database.pool())
     .await?;
-    let (task_id, repository_id, route, purpose, payer_id, record, version, status) =
-        row.ok_or_else(|| anyhow::anyhow!("issued funding grant missing"))?;
+    let IssuedGrantRow {
+        task_id,
+        repository_id,
+        route,
+        purpose,
+        payer_id,
+        credential_record_id: record,
+        credential_version: version,
+        status,
+    } = row.ok_or_else(|| anyhow::anyhow!("issued funding grant missing"))?;
     Ok(OrgAttempt {
         task_id,
         repository_id,

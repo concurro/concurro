@@ -10,31 +10,61 @@ use concurro_tasks_postgres::{DesignBatch, DesignCorrection};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+use crate::plan_payload::ExecutionAttemptInputs;
 use crate::{
     InitializationTarget, IntakeTransport,
+    bundle::ResolvedBundle,
     plan_payload::{RetainedAttempt, prepare_task_attempt},
 };
 
-const OBJECTION_INSTRUCTIONS: &str = "For each new concern, add an objection_updates entry with id \"\" and status \"open\"; the controller assigns its ID. Reuse an ID only from own_objections, exactly once per supplied objection. concerns must equal the detail strings of all open entries in order. A revise verdict needs at least one open entry, even when own_objections is empty.";
+/// Pinned plan, reviewer seat and feedback for one independent design assessment.
+pub struct DesignAttemptInputs<'a> {
+    /// Verified resource bytes and controller wording for this exact turn.
+    pub bundle: &'a ResolvedBundle,
+    /// Runner OIDC claims rechecked before admission.
+    pub expected: Value,
+    /// Frozen plan or published-head batch defining this review.
+    pub batch: &'a DesignBatch,
+    /// Independent reviewer identity and model configuration.
+    pub reviewer: &'a DesignReviewer,
+    /// This reviewer’s earlier objections, excluding other reviewers’ private work.
+    pub own_objections: &'a [Value],
+    /// Pinned file identities and source evidence available to the reviewer.
+    pub manifest: &'a Value,
+    /// Prior invalid report and bounded repair feedback, if present.
+    pub correction: Option<&'a DesignCorrection>,
+    /// Exact predecessor journal and session binding for this role.
+    pub retained: Option<&'a RetainedAttempt>,
+    /// Immutable turn identity shared by admission, runner and replay.
+    pub turn: Uuid,
+    /// Admission clock used to derive queue and execution deadlines.
+    pub now: DateTime<Utc>,
+    /// Applicable advisory intake remarks with matching source provenance.
+    pub intake_remarks: &'a [String],
+}
 
 /// Freeze one reviewer's private first-pass assessment against the shared batch.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_design_attempt(
     issue: IssueKey,
     task: &TaskState,
     snapshot: &InitializationSnapshot,
     target: &InitializationTarget,
     transport: &IntakeTransport,
-    expected: Value,
-    batch: &DesignBatch,
-    reviewer: &DesignReviewer,
-    own_objections: &[Value],
-    manifest: &Value,
-    correction: Option<&DesignCorrection>,
-    retained: Option<&RetainedAttempt>,
-    turn: Uuid,
-    now: DateTime<Utc>,
+    attempt_inputs: DesignAttemptInputs<'_>,
 ) -> Result<AttemptSpec> {
+    let DesignAttemptInputs {
+        bundle,
+        expected,
+        batch,
+        reviewer,
+        own_objections,
+        manifest,
+        correction,
+        retained,
+        turn,
+        now,
+        intake_remarks,
+    } = attempt_inputs;
     let config = &snapshot.configuration;
     let harness = reviewer
         .agent
@@ -77,7 +107,7 @@ pub(crate) fn prepare_design_attempt(
         "prior_outcomes_untrusted": [],
         "review_phase": batch.phase,
         "review_criteria": design_criteria(&snapshot.requirements),
-        "objection_instructions": OBJECTION_INSTRUCTIONS,
+        "objection_instructions": bundle.instruction("objections")?,
         "own_objections": own_objections,
         "files": manifest,
         "design_binding": batch.binding,
@@ -88,6 +118,9 @@ pub(crate) fn prepare_design_attempt(
         "repository_commit": snapshot.pins.base_sha,
         "repository": {"refs":refs,"head":base},
     });
+    if !intake_remarks.is_empty() {
+        context["intake_remarks"] = json!(intake_remarks);
+    }
     if batch.phase == "fresh" {
         context
             .as_object_mut()
@@ -102,7 +135,7 @@ pub(crate) fn prepare_design_attempt(
             "detail": correction.reason,
             "output": correction.report,
             "attempt": correction.count,
-            "instruction": "Correct the report against its schema and the validation feedback. Reconsider the verdict if necessary; approval is never required. Preserve genuine concerns and unanswered questions, and report actionable objections when the evidence warrants them. This feedback concerns report validity, not a request to approve the design.",
+            "instruction": bundle.instruction("design_correction")?,
         });
     }
     let phase = python_digest(&json!(["design", batch.binding, reviewer.id]))?;
@@ -112,19 +145,23 @@ pub(crate) fn prepare_design_attempt(
         snapshot,
         target,
         transport,
-        expected,
-        "plan_qc",
-        phase,
-        context,
-        (
-            harness.to_owned(),
-            reviewer.model.clone(),
-            effort.to_owned(),
-            reviewer.agent.clone(),
-        ),
-        retained,
-        turn,
-        now,
+        ExecutionAttemptInputs {
+            expected,
+            stage: "plan_qc",
+            phase,
+            context,
+            agent_config: (
+                harness.to_owned(),
+                reviewer.model.clone(),
+                effort.to_owned(),
+                reviewer.agent.clone(),
+            ),
+            retained,
+            turn,
+            now,
+            bundle,
+            standalone_review: false,
+        },
     )
 }
 

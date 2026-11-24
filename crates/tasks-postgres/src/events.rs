@@ -17,6 +17,34 @@ use uuid::Uuid;
 
 use crate::artifacts::record_turn_artifact;
 
+/// Columns read by `append_deferred_turn_finished`.
+type AppendDeferredTurnFinishedRow = (
+    Json<Value>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Option<Json<TurnUsage>>,
+);
+
+/// Inputs shared by `append_turn_finished`.
+pub struct FinishedTurn<'a> {
+    /// Terminal runner response and workspace artifacts, if recorded.
+    pub result: Option<&'a Value>,
+    /// Terminal refusal or supersession reason, when applicable.
+    pub reason: Option<&'a str>,
+    /// Exchange creation time in Unix seconds.
+    pub created: f64,
+    /// Observed runner start time in Unix seconds.
+    pub started: Option<f64>,
+    /// Observed terminal time in Unix seconds.
+    pub finished: Option<f64>,
+    /// Structured provider refusal attributed to this attempt.
+    pub provider_failure: Option<&'a Value>,
+    /// Whether provider calls were observed for the attempt.
+    pub provider_requests: Option<&'a ProviderRequests>,
+    /// Settled usage attributed to the terminal attempt.
+    pub usage: Option<&'a TurnUsage>,
+}
+
 /// Convert an exchange epoch second into an aware event timestamp.
 fn exchange_time(seconds: Option<f64>) -> Option<Timestamp> {
     seconds
@@ -261,14 +289,16 @@ pub(crate) async fn append_turn_disposition(
         uow,
         outbox,
         turn,
-        None,
-        Some(reason),
-        0.0,
-        None,
-        None,
-        None,
-        None,
-        None,
+        FinishedTurn {
+            result: None,
+            reason: Some(reason),
+            created: 0.0,
+            started: None,
+            finished: None,
+            provider_failure: None,
+            provider_requests: None,
+            usage: None,
+        },
     )
     .await
 }
@@ -278,15 +308,18 @@ pub(crate) async fn append_turn_finished(
     uow: &mut UnitOfWork<'_>,
     outbox: &Outbox,
     turn: Uuid,
-    result: Option<&Value>,
-    reason: Option<&str>,
-    created: f64,
-    started: Option<f64>,
-    finished: Option<f64>,
-    provider_failure: Option<&Value>,
-    provider_requests: Option<&concurro_contracts::ProviderRequests>,
-    usage: Option<&concurro_contracts::TurnUsage>,
+    inputs: FinishedTurn<'_>,
 ) -> Result<()> {
+    let FinishedTurn {
+        result,
+        reason,
+        created,
+        started,
+        finished,
+        provider_failure,
+        provider_requests,
+        usage,
+    } = inputs;
     let newly_emitted: Option<Uuid> = sqlx::query_scalar(
         "UPDATE tasks.attempts SET finished_event_emitted=true \
          WHERE id=$1 AND NOT finished_event_emitted RETURNING id",
@@ -420,7 +453,7 @@ pub(crate) async fn append_deferred_turn_finished(
     reason: Option<&str>,
 ) -> Result<()> {
     let (Json(observation), raw_result, requests, usage):
-        (Json<Value>, Option<Vec<u8>>, Option<String>, Option<Json<TurnUsage>>) =
+        AppendDeferredTurnFinishedRow =
         sqlx::query_as("SELECT observation,result_raw,rust_provider_requests,rust_usage FROM tasks.attempts WHERE id=$1")
             .bind(turn)
             .fetch_one(uow.connection())
@@ -432,21 +465,23 @@ pub(crate) async fn append_deferred_turn_finished(
         uow,
         outbox,
         turn,
-        result.as_ref(),
-        reason,
-        observation["created"].as_f64().unwrap_or_default(),
-        observation["started"].as_f64(),
-        observation["finished"].as_f64(),
-        None,
-        requests
-            .as_deref()
-            .map(|value| match value {
-                "some" => ProviderRequests::Some,
-                "none" => ProviderRequests::None,
-                _ => ProviderRequests::Unknown,
-            })
-            .as_ref(),
-        usage.as_ref().map(|value| &value.0),
+        FinishedTurn {
+            result: result.as_ref(),
+            reason,
+            created: observation["created"].as_f64().unwrap_or_default(),
+            started: observation["started"].as_f64(),
+            finished: observation["finished"].as_f64(),
+            provider_failure: None,
+            provider_requests: requests
+                .as_deref()
+                .map(|value| match value {
+                    "some" => ProviderRequests::Some,
+                    "none" => ProviderRequests::None,
+                    _ => ProviderRequests::Unknown,
+                })
+                .as_ref(),
+            usage: usage.as_ref().map(|value| &value.0),
+        },
     )
     .await
 }

@@ -724,6 +724,7 @@ mod tests {
             instruction_texts: BTreeMap::new(),
             policy_documents: BTreeMap::new(),
             base_files: vec!["docs/guide.md".to_owned()],
+            engine_resources: BTreeMap::new(),
             bundle_id: "fixture".to_owned(),
         };
         sqlx::query("INSERT INTO tasks.initialization_inputs(task_id,task_revision,snapshot) VALUES($1,1,$2)")

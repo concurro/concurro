@@ -1,5 +1,64 @@
 //! Task event capture and exchange effect execution.
 
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt,
+    time::Duration,
+};
+
+use anyhow::{Context, Result};
+use concurro_contracts::{
+    CoverageGap, Envelope, GithubEvent, GithubIssues, IssueAction, IssueCommentPayload,
+    KnownIssueAction, TaskId,
+};
+use concurro_db::{Database, UnitOfWork};
+use concurro_events::{Handler, Outcome};
+use concurro_events_postgres::Outbox;
+use concurro_exchange_client::OperatorClient;
+use concurro_exchange_v1::{ExchangeError, Operator, SponsorshipAck, SponsorshipTransitionAck};
+use concurro_github_v1::{AppClient, response_status};
+use concurro_tasks_core::InitialFundingContext;
+use concurro_tasks_core::{
+    Actor, Admission, Authority, ConsentAction, FundingMode, IssueKey, LaterCommand, Provider,
+    Request, RequestKind, RequestStatus, RequirementComment, SourceOrder, Stage, comment_revision,
+    consent_facts, initial_sponsorship_transitions, initialize_consent, pr_comment_revision,
+    python_digest, validate_design_review,
+};
+use concurro_tasks_postgres::InitialSponsorship;
+use concurro_tasks_postgres::{
+    CommandEvidence, EffectKind, IndexRow, acknowledge_retirement,
+    acknowledge_sponsorship_transition, activate_funding_policy, admit_design_batch,
+    admit_design_correction, admit_implementation, admit_intake, admit_plan,
+    applicable_intake_remarks, applied_request, apply_design_result,
+    apply_request_with_evidence_mode, browser_retry_feedback, claim_effect,
+    claim_sponsorship_transition, confirm_current_sponsorship_sources, consent_sources,
+    continue_planner_answer, cutover_floor, design_batch, design_correction, design_result,
+    enqueue_label_scan, expire_attempt, fail_sponsorship_transition, finish_unapplied_result,
+    funding_policy_at, implementation_inputs, implementation_session_epoch,
+    initialization_snapshot, initialize_task, latest_implementation_correction,
+    latest_intake_correction, latest_plan_correction, latest_plan_revision, next_pending,
+    open_plan_objections, pin_start_config, planner_session_epoch, pollable_generation,
+    record_comment_revision, record_coverage_gap, record_initial_sponsorship, record_observation,
+    record_poll_failure, record_request, record_sponsorship_transition,
+    record_standalone_review_command, record_submit_failure, record_withdraw_transition,
+    refuse_request, refuse_stage_preflight, reviewer_objections, reviewer_session_epoch,
+    settle_submit, settle_submit_refusal, source_after_activation, start_config_pin, task,
+    terminal_pr_inputs, upsert_index_event, withdrawn_grants,
+};
+use concurro_vault_v1::MetadataClient;
+use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::bundle::ResolvedBundle;
+use crate::design_payload::DesignAttemptInputs;
+use crate::implementation_payload::ImplementationAttemptInputs;
+use crate::intake_payload::IntakeAttemptInputs;
+use crate::plan_payload::PlanAttemptInputs;
+
+pub use coverage::CoverageInputs;
 pub mod api;
 
 mod archive;
@@ -35,7 +94,7 @@ mod target_display;
 mod target_index;
 
 pub use archive::{ArchiveContext, UploadArchiveJob, upload_archive};
-pub use bundle::bundle_identity;
+pub use bundle::{bundle_identity, load_bundle_resources};
 pub use coverage::reconcile_coverage_gap;
 pub use dashboard::{DashboardJob, publish_dashboard};
 pub use gates::{TaskGatesJob, run_task_gates};
@@ -70,55 +129,6 @@ pub use standalone_publication::{
 };
 pub use target_config::{TargetConfig, decode_target_config};
 pub use target_index::{IndexRunHandler, IndexTarget, scan_target_index};
-
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt,
-    time::Duration,
-};
-
-use anyhow::{Context, Result};
-use concurro_contracts::{
-    CoverageGap, Envelope, GithubEvent, GithubIssues, IssueAction, IssueCommentPayload,
-    KnownIssueAction, TaskId,
-};
-use concurro_db::{Database, UnitOfWork};
-use concurro_events::{Handler, Outcome};
-use concurro_events_postgres::Outbox;
-use concurro_exchange_client::OperatorClient;
-use concurro_exchange_v1::{ExchangeError, Operator, SponsorshipAck, SponsorshipTransitionAck};
-use concurro_github_v1::{AppClient, response_status};
-use concurro_tasks_core::{
-    Actor, Admission, Authority, ConsentAction, FundingMode, IssueKey, LaterCommand, Provider,
-    Request, RequestKind, RequestStatus, RequirementComment, SourceOrder, Stage, comment_revision,
-    consent_facts, initial_sponsorship_transitions, initialize_consent, pr_comment_revision,
-    python_digest, validate_design_review,
-};
-use concurro_tasks_postgres::{
-    CommandEvidence, EffectKind, IndexRow, acknowledge_retirement,
-    acknowledge_sponsorship_transition, activate_funding_policy, admit_design_batch,
-    admit_design_correction, admit_implementation, admit_intake, admit_plan, applied_request,
-    apply_design_result, apply_request_with_evidence_mode, browser_retry_feedback, claim_effect,
-    claim_sponsorship_transition, confirm_current_sponsorship_sources, consent_sources,
-    continue_planner_answer, cutover_floor, design_batch, design_correction, design_result,
-    enqueue_label_scan, expire_attempt, fail_sponsorship_transition, finish_unapplied_result,
-    funding_policy_at, implementation_inputs, implementation_session_epoch,
-    initialization_snapshot, initialize_task, latest_implementation_correction,
-    latest_intake_correction, latest_plan_correction, latest_plan_revision, next_pending,
-    open_plan_objections, pin_start_config, planner_session_epoch, pollable_generation,
-    record_comment_revision, record_coverage_gap, record_initial_sponsorship, record_observation,
-    record_poll_failure, record_request, record_sponsorship_transition,
-    record_standalone_review_command, record_submit_failure, record_withdraw_transition,
-    refuse_request, refuse_stage_preflight, reviewer_objections, reviewer_session_epoch,
-    settle_submit, settle_submit_refusal, source_after_activation, start_config_pin, task,
-    terminal_pr_inputs, upsert_index_event, withdrawn_grants,
-};
-use concurro_vault_v1::MetadataClient;
-use graphile_worker::{IntoTaskHandlerResult, TaskHandler, WorkerContext};
-use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use uuid::Uuid;
 
 /// Persist a recovery interval before acknowledging its ingress event.
 #[derive(Clone)]
@@ -761,24 +771,23 @@ pub async fn run_task_decision(
             context.rust_exchange,
         )
         .await?;
-        if let Some((applied, outcome)) = decision {
-            if applied.kind == RequestKind::Start
-                && outcome.status == RequestStatus::Applied
-                && outcome
-                    .task
-                    .as_ref()
-                    .is_some_and(|task| matches!(task.stage, Stage::Initializing | Stage::Clarify))
-            {
-                pin_start_config(
-                    &mut apply,
-                    applied.id,
-                    outcome.task.as_ref().expect("applied start has task"),
-                    config_sha
-                        .as_deref()
-                        .expect("authorized start has fork head"),
-                )
-                .await?;
-            }
+        if let Some((applied, outcome)) = decision
+            && applied.kind == RequestKind::Start
+            && outcome.status == RequestStatus::Applied
+            && outcome
+                .task
+                .as_ref()
+                .is_some_and(|task| matches!(task.stage, Stage::Initializing | Stage::Clarify))
+        {
+            pin_start_config(
+                &mut apply,
+                applied.id,
+                outcome.task.as_ref().expect("applied start has task"),
+                config_sha
+                    .as_deref()
+                    .expect("authorized start has fork head"),
+            )
+            .await?;
         }
         apply.commit().await?;
     }
@@ -958,13 +967,15 @@ pub async fn run_task_initialize(
             &initialized,
             request_id,
             &request.order,
-            &initial,
-            &available,
+            InitialSponsorship {
+                initial: &initial,
+                available: &available,
+                config_digest: &config_digest,
+                default_funding,
+                source_funding,
+            },
             sources.revision,
             &unresolved,
-            &config_digest,
-            default_funding,
-            source_funding,
         )
         .await?;
         let floor = cutover_floor(&mut apply, issue.repository_id, issue.number).await?;
@@ -984,11 +995,13 @@ pub async fn run_task_initialize(
                 &target.issue_repository,
                 issue,
                 &request.actor,
-                floor.map_or(1, |floor| floor.generation + 1),
-                epochs.as_ref(),
-                default_funding,
-                source_funding,
-                &request.channel,
+                InitialFundingContext {
+                    generation: floor.map_or(1, |floor| floor.generation + 1),
+                    prior_epochs: epochs.as_ref(),
+                    default_funding,
+                    source_funding,
+                    source_channel: &request.channel,
+                },
             )?;
             for transition in transitions {
                 record_sponsorship_transition(&mut apply, initialized.id.0, &transition).await?;
@@ -1159,10 +1172,13 @@ pub async fn run_task_intake(
         &snapshot,
         target,
         &context.transport,
-        expected,
-        correction.as_ref(),
-        Uuid::now_v7(),
-        chrono::Utc::now(),
+        IntakeAttemptInputs {
+            bundle: ResolvedBundle::resolve(&snapshot)?,
+            expected,
+            correction: correction.as_ref(),
+            turn: Uuid::now_v7(),
+            now: chrono::Utc::now(),
+        },
     )?;
     if !funding::fund_or_block_attempt(
         database,
@@ -1285,13 +1301,17 @@ pub async fn run_task_plan(
         &snapshot,
         target,
         &context.transport,
-        expected,
-        correction.as_ref(),
-        revision_context.as_ref(),
-        &open_objections,
-        &retained,
-        Uuid::now_v7(),
-        chrono::Utc::now(),
+        PlanAttemptInputs {
+            bundle: ResolvedBundle::resolve(&snapshot)?,
+            expected,
+            correction: correction.as_ref(),
+            revision: revision_context.as_ref(),
+            open_objections: &open_objections,
+            retained: &retained,
+            turn: Uuid::now_v7(),
+            now: chrono::Utc::now(),
+            intake_remarks: &applicable_intake_remarks(database, current.id.0, &snapshot).await?,
+        },
     )?;
     if !funding::fund_or_block_attempt(
         database,
@@ -1374,19 +1394,26 @@ pub async fn run_task_implement(
     let snapshot = initialization_snapshot(database, current.id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("implementation source snapshot unavailable"))?;
-    if bundle_identity(&snapshot.charter, &snapshot.instruction_texts)? != snapshot.bundle_id {
-        let mut work = database.begin().await?;
-        refuse_stage_preflight(
-            &mut work,
-            &context.initialization.outbox,
-            current.id.0,
-            current.revision,
-            "Implementation instructions changed; a writer may retry a verified implementer-only update",
-        )
-        .await?;
-        work.commit().await?;
-        return Ok(());
-    }
+    let resolved_bundle = match ResolvedBundle::resolve(&snapshot) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let mut work = database.begin().await?;
+            let reason = format!(
+                "Cannot load the pinned implementation prompt bundle: {error:#}. \
+                 Restore the recorded bundle files/history or use an authorized resume to adopt the current bundle."
+            );
+            refuse_stage_preflight(
+                &mut work,
+                &context.initialization.outbox,
+                current.id.0,
+                current.revision,
+                &reason,
+            )
+            .await?;
+            work.commit().await?;
+            return Ok(());
+        }
+    };
     let inputs = implementation_inputs(database, current.id.0)
         .await?
         .ok_or_else(|| anyhow::anyhow!("writer-approved design unavailable"))?;
@@ -1428,12 +1455,16 @@ pub async fn run_task_implement(
         &snapshot,
         target,
         &context.transport,
-        expected,
-        &inputs,
-        correction.as_ref(),
-        &retained,
-        Uuid::now_v7(),
-        chrono::Utc::now(),
+        ImplementationAttemptInputs {
+            bundle: resolved_bundle,
+            expected,
+            inputs: &inputs,
+            correction: correction.as_ref(),
+            retained: &retained,
+            turn: Uuid::now_v7(),
+            now: chrono::Utc::now(),
+            intake_remarks: &applicable_intake_remarks(database, current.id.0, &snapshot).await?,
+        },
     )?;
     if !funding::fund_or_block_attempt(
         database,
@@ -1557,6 +1588,7 @@ pub async fn run_task_design_batch(
     )
     .await?;
     let now = chrono::Utc::now();
+    let bundle = ResolvedBundle::resolve(&snapshot)?;
     let mut specs = Vec::with_capacity(batch.roster.len());
     for reviewer in &batch.roster {
         let session_epoch = reviewer_session_epoch(database, current.id.0, &reviewer.id).await?;
@@ -1595,15 +1627,20 @@ pub async fn run_task_design_batch(
             &snapshot,
             target,
             &context.transport,
-            expected.clone(),
-            &batch,
-            reviewer,
-            &own_objections,
-            &manifest,
-            None,
-            retained.as_ref(),
-            Uuid::now_v7(),
-            now,
+            DesignAttemptInputs {
+                bundle: &bundle,
+                expected: expected.clone(),
+                batch: &batch,
+                reviewer,
+                own_objections: &own_objections,
+                manifest: &manifest,
+                correction: None,
+                retained: retained.as_ref(),
+                turn: Uuid::now_v7(),
+                now,
+                intake_remarks: &applicable_intake_remarks(database, current.id.0, &snapshot)
+                    .await?,
+            },
         )?;
         if !funding::fund_or_block_attempt(
             database,
@@ -1763,15 +1800,19 @@ pub async fn run_task_design_correction(
         &snapshot,
         target,
         &context.transport,
-        expected,
-        &correction.batch,
-        &correction.reviewer,
-        &own_objections,
-        &manifest,
-        Some(&correction),
-        retained.as_ref(),
-        Uuid::now_v7(),
-        chrono::Utc::now(),
+        DesignAttemptInputs {
+            bundle: &ResolvedBundle::resolve(&snapshot)?,
+            expected,
+            batch: &correction.batch,
+            reviewer: &correction.reviewer,
+            own_objections: &own_objections,
+            manifest: &manifest,
+            correction: Some(&correction),
+            retained: retained.as_ref(),
+            turn: Uuid::now_v7(),
+            now: chrono::Utc::now(),
+            intake_remarks: &applicable_intake_remarks(database, current.id.0, &snapshot).await?,
+        },
     )?;
     if !funding::fund_or_block_attempt(
         database,

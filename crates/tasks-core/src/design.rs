@@ -7,6 +7,18 @@ use serde_json::{Value, json};
 
 use crate::{InitializationSnapshot, Requirements, python_digest};
 
+/// Inputs shared by `design_binding`.
+pub struct DesignPhase<'a> {
+    /// Task generation whose funding or review identity is being bound.
+    pub generation: u64,
+    /// Review pass identity bound to this source snapshot.
+    pub phase: &'a str,
+    /// Published parent commit, when continuing an existing contribution.
+    pub parent: Option<&'a str>,
+    /// Accumulated changed paths covered by the design approval.
+    pub changed_files: &'a [String],
+}
+
 /// Split the substantive issue request into stable independent review criteria.
 pub fn design_criteria(requirements: &Requirements) -> Vec<Value> {
     let mut values = vec![requirements.title.clone()];
@@ -149,11 +161,14 @@ pub fn design_binding(
     plan_id: &str,
     snapshot: &InitializationSnapshot,
     roster: &[DesignReviewer],
-    generation: u64,
-    phase: &str,
-    parent: Option<&str>,
-    changed_files: &[String],
+    inputs: DesignPhase<'_>,
 ) -> Result<String, String> {
+    let DesignPhase {
+        generation,
+        phase,
+        parent,
+        changed_files,
+    } = inputs;
     let config_digest = configuration_digest(&snapshot.configuration)?;
     let charter: Value =
         serde_json::from_str(&snapshot.charter).map_err(|error| error.to_string())?;

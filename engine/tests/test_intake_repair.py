@@ -13,7 +13,7 @@ from conversation import ARCHIVE_LIMIT, PublicationError
 from fakes import FakeAgents, FakeGitHub
 from legacy_publications import legacy_events
 from pipeline_fixtures import PipelineFixture
-from policy import Blocked
+from policy import Blocked, validate_qc
 from protocol import GITHUB_ARTIFACT_BODY_BYTES
 
 
@@ -258,7 +258,22 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
 
     def advisory_comments(self):
         """Return only the new human-facing intake notices."""
-        return [c for c in self.gh.comments if "### Intake approved with concerns" in c["body"]]
+        return [c for c in self.gh.comments if "### Intake approved with remarks" in c["body"]]
+
+    def test_malformed_intake_reports_raise_blocked(self):
+        """Scalar and null results remain report validation failures."""
+        for report in (None, 7, [], "bad"):
+            with self.subTest(report=report), self.assertRaises(Blocked):
+                validate_qc(report, "intake")
+
+    def test_current_remarks_spelling_is_accepted_with_historical_state_compatibility(self):
+        """New intake reports use remarks while older recorded concerns remain readable."""
+        report = self.report(concerns=["Preserve callers."])
+        report["remarks"] = report.pop("concerns")
+        self.agents.qc_reports = [report]
+        controller = self.tick()
+        self.assertEqual(controller.state["stage"], "plan")
+        self.assertEqual(controller.context()["intake_remarks"], ["Preserve callers."])
 
     def test_advisories_reach_planner_and_both_review_stages_without_extra_calls(self):
         """Proceed with concerns reaches ready using the same calls and independent review gates."""
@@ -280,7 +295,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.assertEqual({stage for stage, _ in downstream}, {"plan", "plan_qc", "develop", "review"})
         for stage, context in downstream:
             with self.subTest(stage=stage):
-                self.assertEqual(context["intake_concerns"], concerns)
+                self.assertEqual(context["intake_remarks"], concerns)
         self.tick()
         self.assertEqual(len(self.advisory_comments()), 1)
 
@@ -290,7 +305,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.agents.qc_reports = [self.report(concerns=[hazard])]
         controller = self.tick()
         self.assertEqual(controller.state["stage"], "plan")
-        self.assertEqual(controller.context()["intake_concerns"], [hazard])
+        self.assertEqual(controller.context()["intake_remarks"], [hazard])
         self.assertNotIn("intake_draft", controller.state)
 
         self.setUp()
@@ -341,15 +356,15 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         controller = self.tick()
         self.assertEqual(controller.state["stage"], "plan")
         self.assertFalse(self.advisory_comments())
-        self.assertNotIn("intake_concerns", controller.context())
+        self.assertNotIn("intake_remarks", controller.context())
 
     def test_changed_requirements_do_not_reuse_old_advisories(self):
         """Only concerns about the same requirements and base enter downstream contexts."""
         self.agents.qc_reports = [self.report(concerns=["Check the old interface."])]
         controller = self.tick()
-        self.assertEqual(controller.context()["intake_concerns"], ["Check the old interface."])
+        self.assertEqual(controller.context()["intake_remarks"], ["Check the old interface."])
         controller.state["requirements"]["body"] = "A different task."
-        self.assertNotIn("intake_concerns", controller.context())
+        self.assertNotIn("intake_remarks", controller.context())
 
     @legacy_events
     def test_notice_recovers_a_lost_response_without_duplicate_or_model_call(self):
@@ -363,7 +378,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
             if (
                 method == "POST"
                 and path.endswith("/comments")
-                and "Intake approved with concerns" in (data or {}).get("body", "")
+                and "Intake approved with remarks" in (data or {}).get("body", "")
                 and not lost
             ):
                 lost.append(True)
@@ -391,12 +406,12 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.agents.qc_reports = [self.report(concerns=concerns)]
         controller = self.tick()
         body = self.advisory_comments()[0]["body"]
-        self.assertIn("### Intake approved with concerns", body)
+        self.assertIn("### Intake approved with remarks", body)
         self.assertNotIn("advisory concerns", body)
         self.assertIn("- Check `BitVec` and **compatibility**.\n  \n  ```rust\n  zeros(0);\n  ```", body)
         self.assertIn("  ones(0);\n  ```\n- Check `<T>`;", body)
         self.assertIn("&lt;details>must stay text&lt;/details>", body)
-        self.assertEqual(controller.context()["intake_concerns"], concerns)
+        self.assertEqual(controller.context()["intake_remarks"], concerns)
 
     def test_shortened_notice_closes_its_code_fence(self):
         """Truncating an example keeps subsequent concerns outside its code block."""
@@ -406,7 +421,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         body = self.advisory_comments()[0]["body"]
         self.assertIn("…\n  ```\n- Next concern.", body)
         self.assertIn("Some text is shortened.", body)
-        self.assertEqual(controller.context()["intake_concerns"][0], concern)
+        self.assertEqual(controller.context()["intake_remarks"][0], concern)
 
     @legacy_events
     def test_notice_escapes_and_bounds_model_text_without_losing_context(self):
@@ -417,7 +432,7 @@ class IntakeRepairTests(PipelineFixture, unittest.TestCase):
         self.agents.qc_reports = [self.report(concerns=concerns)]
         controller = self.tick()
         self.assertEqual(controller.state["stage"], "plan")
-        self.assertEqual(controller.context()["intake_concerns"], concerns)
+        self.assertEqual(controller.context()["intake_remarks"], concerns)
         body = self.advisory_comments()[0]["body"]
         self.assertEqual(body.count("<details>"), 1)
         self.assertIn("&lt;", body)

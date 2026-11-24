@@ -1,5 +1,6 @@
 //! Planner admission and report settlement share the intake transaction boundary.
 
+use concurro_tasks_core::DesignPhase;
 use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
@@ -97,6 +98,7 @@ async fn planner_result_is_atomic_with_plan_report_and_task_snapshot() {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle".to_owned(),
     };
     sqlx::query("INSERT INTO tasks.issue_controls (repository_id,issue_number) VALUES (8,3)")
@@ -1379,6 +1381,7 @@ async fn design_objection_requires_an_exact_plan_revision_response() {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle".to_owned(),
     };
     let state = TaskState {
@@ -1442,10 +1445,12 @@ async fn design_objection_requires_an_exact_plan_revision_response() {
         &plan_id,
         &snapshot,
         &roster,
-        0,
-        "cooperative",
-        None,
-        &[],
+        DesignPhase {
+            generation: 0,
+            phase: "cooperative",
+            parent: None,
+            changed_files: &[],
+        },
     )
     .expect("design binding");
     let batch_id = Uuid::now_v7();
@@ -1980,6 +1985,7 @@ async fn planner_clarification_continues_with_one_source_ordered_answer() {
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec!["src/lib.rs".to_owned()],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle".to_owned(),
     };
     sqlx::query("INSERT INTO tasks.issue_controls (repository_id,issue_number) VALUES (18,9)")
@@ -2364,6 +2370,7 @@ async fn implementer_session_failure_retries_once_and_rotates_after_second_failu
         instruction_texts: BTreeMap::new(),
         policy_documents: BTreeMap::new(),
         base_files: vec![],
+        engine_resources: BTreeMap::new(),
         bundle_id: "bundle".to_owned(),
     };
     sqlx::query("INSERT INTO tasks.issue_controls (repository_id,issue_number) VALUES (8,9)")

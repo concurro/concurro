@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use sqlx::types::Json;
 use uuid::Uuid;
 
+/// Columns read by `finish_baseline`.
+type FinishBaselineBufferedRow = (Uuid, String, Option<String>, Option<i64>, Json<Value>);
+
 /// One configured repository identity for read entitlement and task display.
 #[derive(Clone, Deserialize)]
 pub struct Target {
@@ -147,7 +150,7 @@ pub async fn finish_baseline(
     .bind(snapshot)
     .execute(work.connection())
     .await?;
-    let buffered: Vec<(Uuid, String, Option<String>, Option<i64>, Json<Value>)> = sqlx::query_as(
+    let buffered: Vec<FinishBaselineBufferedRow> = sqlx::query_as(
         "SELECT id,event_type,entity,revision,data FROM backoffice.model_events \
          WHERE NOT applied OR received_order>$1 ORDER BY received_order",
     )

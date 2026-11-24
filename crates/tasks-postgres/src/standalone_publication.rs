@@ -2,6 +2,7 @@
 
 use anyhow::{Result, ensure};
 use concurro_db::{Database, UnitOfWork};
+use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -9,6 +10,62 @@ use crate::read_model::append_standalone_view;
 use crate::standalone::{
     enqueue_standalone_review_round, finish_cancelled_round, standalone_panel_complete,
 };
+
+/// Columns read by `standalone_review_publication`.
+#[derive(sqlx::FromRow)]
+struct StandalonePublicationRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted upstream.
+    upstream: String,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted head.
+    head: String,
+    /// Persisted marker.
+    marker: String,
+    /// Persisted body.
+    body: String,
+    /// Persisted comments.
+    comments: Json<Vec<Value>>,
+    /// Persisted status.
+    status: String,
+    /// Persisted reviewer user id.
+    reviewer_user_id: i64,
+}
+
+/// Columns read by `confirm_standalone_review_publication`.
+type ConfirmStandaloneReviewPublicationRow =
+    (Uuid, i32, String, bool, Json<Value>, Json<Vec<Value>>);
+
+/// Columns read by `next_standalone_disposition`.
+#[derive(sqlx::FromRow)]
+struct StandaloneDispositionRow {
+    /// Persisted finding id.
+    finding_id: String,
+    /// Persisted repository id.
+    repository_id: i64,
+    /// Persisted upstream.
+    upstream: String,
+    /// Persisted pr number.
+    pr_number: i64,
+    /// Persisted reviewer user id.
+    reviewer_user_id: i64,
+    /// Persisted root comment id.
+    root_comment_id: i64,
+    /// Persisted thread node id.
+    thread_node_id: String,
+    /// Persisted marker.
+    marker: String,
+    /// Persisted body.
+    body: String,
+    /// Persisted reply status.
+    reply_status: String,
+    /// Persisted resolve status.
+    resolve_status: String,
+}
 
 /// One frozen native review owned by a standalone reviewer turn.
 pub struct StandaloneReviewPublication {
@@ -29,7 +86,7 @@ pub struct StandaloneReviewPublication {
     /// Exact native review body.
     pub body: String,
     /// Frozen inline comments and their owner finding IDs.
-    pub comments: Vec<serde_json::Value>,
+    pub comments: Vec<Value>,
     /// Current send/readback fence.
     pub status: String,
     /// Reviewer account ID pinned at enrollment.
@@ -41,21 +98,9 @@ pub async fn standalone_review_publication(
     database: &Database,
     turn: Uuid,
 ) -> Result<Option<StandaloneReviewPublication>> {
-    let row: Option<(
-        Uuid,
-        i64,
-        String,
-        i64,
-        String,
-        String,
-        String,
-        Json<Vec<serde_json::Value>>,
-        String,
-        i64,
-    )> = sqlx::query_as(
-        "SELECT p.task_id,t.repository_id,t.upstream,p.pr_number,p.head,p.marker, \
-             p.body,p.comments,p.status,p.reviewer_user_id \
-             FROM tasks.standalone_review_publications p \
+    let row: Option<StandalonePublicationRow> = sqlx::query_as(
+        "SELECT p.task_id, t.repository_id, t.upstream, p.pr_number, p.head, p.marker, p.body, p.comments, p.status, p.reviewer_user_id \
+         FROM tasks.standalone_review_publications p \
              JOIN tasks.standalone_review_tasks t ON t.id=p.task_id \
              WHERE p.turn_id=$1 AND p.status IN ('recorded','sent')",
     )
@@ -63,18 +108,18 @@ pub async fn standalone_review_publication(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(
-            task_id,
-            repository_id,
-            upstream,
-            pr_number,
-            head,
-            marker,
-            body,
-            Json(comments),
-            status,
-            reviewer_user_id,
-        )| {
+        |StandalonePublicationRow {
+             task_id,
+             repository_id,
+             upstream,
+             pr_number,
+             head,
+             marker,
+             body,
+             comments: Json(comments),
+             status,
+             reviewer_user_id,
+         }| {
             StandaloneReviewPublication {
                 turn,
                 task_id,
@@ -146,7 +191,7 @@ pub async fn confirm_standalone_review_publication(
     threads: &[(String, String, i64)],
 ) -> Result<bool> {
     ensure!(review_id > 0, "GitHub review ID is invalid");
-    let row: Option<(Uuid, i32, String, bool, Json<serde_json::Value>, Json<Vec<serde_json::Value>>)> = sqlx::query_as(
+    let row: Option<ConfirmStandaloneReviewPublicationRow> = sqlx::query_as(
         "SELECT p.task_id,p.round,t.stage,r.cancellation_request_id IS NOT NULL,r.snapshot,p.comments \
          FROM tasks.standalone_review_publications p \
          JOIN tasks.standalone_review_tasks t ON t.id=p.task_id \
@@ -326,21 +371,8 @@ pub async fn next_standalone_disposition(
     database: &Database,
     turn: Uuid,
 ) -> Result<Option<StandaloneDisposition>> {
-    let row: Option<(
-        String,
-        i64,
-        String,
-        i64,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )> = sqlx::query_as(
-        "SELECT d.finding_id,t.repository_id,t.upstream,t.pr_number,p.reviewer_user_id, \
-             f.root_comment_id,f.thread_node_id,d.marker,d.body,d.reply_status,d.resolve_status \
+    let row: Option<StandaloneDispositionRow> = sqlx::query_as(
+        "SELECT d.finding_id, t.repository_id, t.upstream, t.pr_number, p.reviewer_user_id, f.root_comment_id, f.thread_node_id, d.marker, d.body, d.reply_status, d.resolve_status \
          FROM tasks.standalone_review_dispositions d \
          JOIN tasks.standalone_review_findings f ON f.task_id=d.task_id AND f.id=d.finding_id \
          JOIN tasks.standalone_review_tasks t ON t.id=d.task_id \
@@ -354,19 +386,19 @@ pub async fn next_standalone_disposition(
     .fetch_optional(database.pool())
     .await?;
     Ok(row.map(
-        |(
-            finding_id,
-            repository_id,
-            upstream,
-            pr_number,
-            reviewer_user_id,
-            root_comment_id,
-            thread_node_id,
-            marker,
-            body,
-            reply_status,
-            resolve_status,
-        )| {
+        |StandaloneDispositionRow {
+             finding_id,
+             repository_id,
+             upstream,
+             pr_number,
+             reviewer_user_id,
+             root_comment_id,
+             thread_node_id,
+             marker,
+             body,
+             reply_status,
+             resolve_status,
+         }| {
             StandaloneDisposition {
                 turn,
                 finding_id,

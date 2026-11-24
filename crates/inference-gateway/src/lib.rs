@@ -32,6 +32,18 @@ use uuid::Uuid;
 mod protocol;
 use protocol::{Observation, RouteKind};
 
+/// Inputs shared by `pump`.
+pub struct StreamLifetime {
+    /// Cancellation signal for the active upstream response stream.
+    pub cancelled: watch::Receiver<bool>,
+    /// Admission-status monitor to stop after stream completion.
+    pub monitor: JoinHandle<()>,
+    /// Incremental provider usage and terminal-response parser.
+    pub observation: Observation,
+    /// Provider retry hint retained with the final usage observation.
+    pub retry_after: Option<f64>,
+}
+
 /// Report uncertain dispatch if a downstream future disappears before handoff.
 struct Inflight {
     admission: AdmissionClient,
@@ -536,10 +548,12 @@ async fn forward(
         sender,
         state.admission.clone(),
         admission.request_id,
-        cancelled,
-        monitor,
-        Observation::new(kind, media.as_deref()),
-        retry_after,
+        StreamLifetime {
+            cancelled,
+            monitor,
+            observation: Observation::new(kind, media.as_deref()),
+            retry_after,
+        },
     ));
     let output = stream::unfold(receiver, |mut receiver| async move {
         receiver.recv().await.map(|chunk| (chunk, receiver))
@@ -676,11 +690,14 @@ async fn pump(
     sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
     admission: AdmissionClient,
     request: Uuid,
-    mut cancelled: watch::Receiver<bool>,
-    monitor: JoinHandle<()>,
-    mut observation: Observation,
-    retry_after: Option<f64>,
+    inputs: StreamLifetime,
 ) {
+    let StreamLifetime {
+        mut cancelled,
+        monitor,
+        mut observation,
+        retry_after,
+    } = inputs;
     let mut stream = provider.bytes_stream();
     let mut complete = false;
     loop {

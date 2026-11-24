@@ -1,5 +1,10 @@
 //! PostgreSQL state and serialized request decisions for the task application.
 
+use crate::recovery::RecoveryDecision;
+pub use archive::RetainedInput;
+pub use sponsorship::InitialSponsorship;
+pub use standalone::StandaloneReviewAuthority;
+pub use standalone_commands::StandaloneActionSource;
 mod archive;
 mod baseline;
 mod browser_actions;
@@ -124,7 +129,7 @@ mod standalone_checks;
 mod standalone_commands;
 mod standalone_publication;
 mod target_index;
-pub use intake::{IntakeCorrection, latest_intake_correction};
+pub use intake::{IntakeCorrection, applicable_intake_remarks, latest_intake_correction};
 pub use operator::{
     cancel_attempt, list_tasks, pending_effects, resolve_pending_write, task_detail,
 };
@@ -209,6 +214,38 @@ use concurro_tasks_core::{
 use graphile_worker::WorkerUtils;
 use sqlx::{migrate::Migrator, types::Json};
 use uuid::Uuid;
+
+/// Columns read by `apply_request_with_evidence_mode`.
+type ApplyRequestWithEvidenceModeControlRow = (
+    Option<Json<SourceOrder>>,
+    Option<Json<SourceOrder>>,
+    Option<Json<SourceOrder>>,
+);
+
+/// Columns read by `admit_stage`.
+#[derive(sqlx::FromRow)]
+struct AttemptIdentityRow {
+    /// Persisted task id.
+    task_id: Uuid,
+    /// Persisted operation.
+    operation: String,
+    /// Persisted expected revision.
+    expected_revision: i64,
+    /// Persisted staffing group.
+    staffing_group: String,
+    /// Persisted fork.
+    fork: String,
+    /// Persisted config sha.
+    config_sha: String,
+    /// Persisted submit body.
+    submit_body: Vec<u8>,
+    /// Persisted prompt body.
+    prompt_body: Option<Vec<u8>>,
+    /// Persisted initial deadline.
+    initial_deadline: chrono::DateTime<Utc>,
+    /// Persisted unbounded running.
+    unbounded_running: bool,
+}
 
 static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
 const NEXT_PENDING: &str = "SELECT id, request FROM tasks.requests WHERE repository_id=$1 AND issue_number=$2 AND status='pending' \
@@ -1392,7 +1429,7 @@ pub async fn apply_request_with_evidence_mode(
     evidence: Option<&CommandEvidence>,
     rust_exchange: bool,
 ) -> anyhow::Result<Option<(Request, Decision)>> {
-    let control: Option<(Option<Json<SourceOrder>>, Option<Json<SourceOrder>>, Option<Json<SourceOrder>>)> = sqlx::query_as(
+    let control: Option<ApplyRequestWithEvidenceModeControlRow> = sqlx::query_as(
         "SELECT applied_stop,applied_lifecycle,applied_label FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2 FOR UPDATE",
     )
     .bind(issue.repository_id)
@@ -1676,8 +1713,10 @@ pub async fn apply_request_with_evidence_mode(
         current.as_ref().map(|row| &row.0.0),
         authority,
         evidence,
-        &mut decision,
-        &mut resume_adoption,
+        RecoveryDecision {
+            decision: &mut decision,
+            resume_adoption: &mut resume_adoption,
+        },
     )
     .await?;
     if request.channel == "issue_close" && authority.issue_open {
@@ -1721,10 +1760,9 @@ pub async fn apply_request_with_evidence_mode(
     }
     if matches!(request.kind, concurro_tasks_core::RequestKind::Stop)
         && decision.status == RequestStatus::Applied
+        && let Some(task) = current.as_ref()
     {
-        if let Some(task) = current.as_ref() {
-            cancel_attempts(uow, outbox, task.0.0.id.0, None).await?;
-        }
+        cancel_attempts(uow, outbox, task.0.0.id.0, None).await?;
     }
     if let Some(task) = &decision.task {
         let updated = sqlx::query(
@@ -2071,25 +2109,25 @@ async fn admit_stage(
     let Some((Json(mut current),)) = current else {
         return Ok(Admission::Stale);
     };
-    let existing: Option<(Uuid, String, i64, String, String, String, Vec<u8>, Option<Vec<u8>>, chrono::DateTime<Utc>, bool)> = sqlx::query_as(
-        "SELECT task_id,operation,expected_revision,staffing_group,fork,config_sha,submit_body,prompt_body,initial_deadline,unbounded_running \
+    let existing: Option<AttemptIdentityRow> = sqlx::query_as(
+        "SELECT task_id, operation, expected_revision, staffing_group, fork, config_sha, submit_body, prompt_body, initial_deadline, unbounded_running \
          FROM tasks.attempts WHERE id=$1",
     )
     .bind(spec.id)
     .fetch_optional(uow.connection())
     .await?;
-    if let Some((
+    if let Some(AttemptIdentityRow {
         task_id,
-        stored_operation,
-        revision,
-        group,
+        operation: stored_operation,
+        expected_revision: revision,
+        staffing_group: group,
         fork,
         config_sha,
-        body,
+        submit_body: body,
         prompt_body,
-        deadline,
+        initial_deadline: deadline,
         unbounded_running,
-    )) = existing
+    }) = existing
     {
         anyhow::ensure!(
             task_id == spec.task.0

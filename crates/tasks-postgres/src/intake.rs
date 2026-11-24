@@ -2,7 +2,10 @@
 
 use concurro_db::{Database, UnitOfWork};
 use concurro_events_postgres::Outbox;
-use concurro_tasks_core::{IntakeReport, Stage, TaskState, finish_intake, intake_notice_body};
+use concurro_tasks_core::{
+    InitializationSnapshot, IntakeReport, Stage, TaskState, finish_intake, intake_notice_body,
+    legacy_requirements,
+};
 use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -11,6 +14,9 @@ use crate::{
     append_task_snapshot, effects::operational_json, enqueue_intake, enqueue_plan, events,
     queue_task_comment, sponsorship::has_credential_exclusion,
 };
+
+/// Columns read by `settle_intake`.
+type SettleIntakeResultRow = (String, Option<Json<Value>>, Option<Vec<u8>>, Option<String>);
 
 /// Rejected output retained for the next paid intake correction.
 pub struct IntakeCorrection {
@@ -49,6 +55,45 @@ pub async fn latest_intake_correction(
     .transpose()
 }
 
+/// Read the latest accepted intake remarks only for the same base and issue requirements.
+pub async fn applicable_intake_remarks(
+    database: &Database,
+    task: Uuid,
+    snapshot: &InitializationSnapshot,
+) -> anyhow::Result<Vec<String>> {
+    let row: Option<(Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT r.raw_report_bytes,a.prompt_body FROM tasks.intake_reports r \
+         JOIN tasks.attempts a ON a.id=r.attempt_id \
+         WHERE r.task_id=$1 AND r.accepted \
+         ORDER BY r.recorded_at DESC,r.attempt_id DESC LIMIT 1",
+    )
+    .bind(task)
+    .fetch_optional(database.pool())
+    .await?;
+    let Some((raw, Some(prompt))) = row else {
+        return Ok(Vec::new());
+    };
+    let prompt: Value = serde_json::from_slice(&prompt)?;
+    let context = &prompt["untrusted_context"];
+    if context["base"] != snapshot.pins.base_sha
+        || context["issue"] != legacy_requirements(&snapshot.requirements)
+    {
+        return Ok(Vec::new());
+    }
+    let report: Value = serde_json::from_slice(&raw)?;
+    if report["decision"] != "proceed" {
+        return Ok(Vec::new());
+    }
+    let remarks = report.get("remarks").or_else(|| report.get("concerns"));
+    Ok(remarks
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Apply a finished current attempt's first recorded report or queue a bounded repair.
 pub(crate) async fn settle_intake(
     uow: &mut UnitOfWork<'_>,
@@ -59,7 +104,7 @@ pub(crate) async fn settle_intake(
     if state.stage != Stage::Intake || state.current_attempt != Some(turn) {
         return Ok(());
     }
-    let result: Option<(String, Option<Json<Value>>, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+    let result: Option<SettleIntakeResultRow> = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason FROM tasks.attempts WHERE id=$1 AND status IN ('finished','unknown','cancelled')",
     )
     .bind(turn)

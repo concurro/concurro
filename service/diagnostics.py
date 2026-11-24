@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS turns_task ON turns (repository, issue, submitted);
 """
 # Request fields kept out of the record: endpoint configuration, and bundle texts the prompt already holds.
-OMITTED = ("gateway", "charter", "instruction_texts")
+OMITTED = ("gateway", "charter", "instruction_texts", "engine_resources")
 
 
 def connect(root, readonly=False):
@@ -94,7 +94,11 @@ def prompt(request, feedback):
 
     Session turns after the first send only the changed context; the transcript shows what was sent.
     """
-    bundle = Bundle(charter_text=request["charter"], instruction_texts=request.get("instruction_texts") or {})
+    bundle = Bundle(
+        charter_text=request["charter"],
+        instruction_texts=request.get("instruction_texts") or {},
+        engine_resources=request.get("engine_resources"),
+    )
     if bundle.identity != request.get("bundle_id"):
         return None
     return {

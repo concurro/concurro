@@ -417,6 +417,7 @@ mod tests {
             instruction_texts: BTreeMap::new(),
             policy_documents: BTreeMap::new(),
             base_files: vec![],
+            engine_resources: BTreeMap::new(),
             bundle_id: "bundle".to_owned(),
         };
         let reviewer = pr_review_roster(&config).expect("roster").remove(0);

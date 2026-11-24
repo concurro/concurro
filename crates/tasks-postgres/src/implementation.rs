@@ -18,6 +18,21 @@ use crate::{
     sponsorship::has_credential_exclusion,
 };
 
+/// Columns read by `implementation_inputs`.
+type ImplementationInputsPublishedRow = (String, String, Option<Json<Value>>, Option<Json<Value>>);
+
+/// Columns read by `settle_development`.
+type SettleDevelopmentAttemptRow = (
+    String,
+    Option<Json<Value>>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Vec<u8>,
+);
+
+/// Columns read by `apply_implementation_result`.
+type ApplyImplementationResultFindingsRow = (String, String, Json<Value>, Option<Json<Value>>);
+
 /// Read the durable implementer journal generation after a provider session failure.
 pub async fn implementation_session_epoch(
     database: &Database,
@@ -188,17 +203,16 @@ pub async fn implementation_inputs(
             "identity":identity,"binding":binding,"decision":"approve"
         })).collect::<Vec<_>>(),
     });
-    let published: Option<(String, String, Option<Json<Value>>, Option<Json<Value>>)> =
-        sqlx::query_as(
-            "SELECT b.head,b.branch,r.candidate->'description',r.candidate->'validation' \
+    let published: Option<ImplementationInputsPublishedRow> = sqlx::query_as(
+        "SELECT b.head,b.branch,r.candidate->'description',r.candidate->'validation' \
          FROM tasks.pr_review_batches b JOIN tasks.implementation_reports r \
              ON r.attempt_id=b.publication_attempt \
          WHERE b.task_id=$1 AND b.status='settled' \
          ORDER BY b.round DESC,b.id DESC LIMIT 1",
-        )
-        .bind(task)
-        .fetch_optional(database.pool())
-        .await?;
+    )
+    .bind(task)
+    .fetch_optional(database.pool())
+    .await?;
     let (parent, branch, current_description, current_validation) =
         if let Some((head, branch, description, validation)) = published {
             (
@@ -267,13 +281,7 @@ pub(crate) async fn settle_development(
     if state.stage != Stage::Implement || state.current_attempt != Some(turn) {
         return Ok(());
     }
-    let attempt: Option<(
-        String,
-        Option<Json<Value>>,
-        Option<Vec<u8>>,
-        Option<String>,
-        Vec<u8>,
-    )> = sqlx::query_as(
+    let attempt: Option<SettleDevelopmentAttemptRow> = sqlx::query_as(
         "SELECT status,result,result_raw,outcome_reason,submit_body FROM tasks.attempts \
              WHERE id=$1 AND status IN ('finished','unknown','cancelled')",
     )
@@ -481,7 +489,7 @@ pub async fn apply_implementation_result(
             .fetch_optional(uow.connection())
             .await
             .context("read reopening PR head")?;
-            let findings: Vec<(String, String, Json<Value>, Option<Json<Value>>)> = sqlx::query_as(
+            let findings: Vec<ApplyImplementationResultFindingsRow> = sqlx::query_as(
                 "SELECT id,status,finding,disposition FROM tasks.pr_review_findings \
                  WHERE task_id=$1 ORDER BY sequence",
             )

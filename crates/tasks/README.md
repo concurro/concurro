@@ -88,11 +88,51 @@ charging a model call. A newly created grant file is picked up on service restar
 the recovery scan then resumes the round. The reviewer user token needs Pull
 requests write on the upstream for native review publication.
 
+## Runtime prompt bundles
+
+Set `CONCURRO_TASKS_BUNDLE_DIR` to an absolute bundle directory containing
+`manifest.json` and the listed resources. The image defaults
+to `/src/bundle`; mount an operator-owned bundle there to update prompts independently
+of the task binary. Local builds default to this checkout's `bundle/`, independent of
+the process working directory.
+
+Publish complete bundles in versioned directories. The content digest is the exact
+bundle version: the manifest format remains version 1. A new initialization or an
+explicit writer resume reads the selected files and stores their exact bytes and digest
+with the source snapshot. Each admitted attempt also carries those bytes to the runner
+and retains its rendered prompt. Replacing files at the selected path needs no service
+restart; changing the environment's directory selection requires one. Update the whole
+bundle together, or switch the mounted version during an idle deployment window.
+
+Existing tasks and ordinary retries keep their frozen bundle across restarts. Resume
+adopts current configuration and instructions while preserving the existing approval
+bindings and spent budgets. An implementer-only retry accepts exactly a changed
+implementer skill; it compares frozen resource maps and preserves the original approval.
+Legacy snapshots without resource bytes resolve only files whose complete digest matches
+the recorded bundle, using the selected bundle or packaged Git history. If those bytes
+are unavailable, restore the original bundle/history or use an authorized resume.
+Never replace the recorded digest. Earlier inline helper wording is an immutable application
+resource shared by Rust and the retained Python runner; the operator bundle needs no legacy
+compatibility file. Each attempt resolves its bundle once, then uses that object for controller
+addenda, prompt/schema rendering and request serialization.
+
+The first release of runtime bundles must also pin `targets[].engine_sha` to a runner
+containing frozen-bundle support. That retained Python runner reads the supplied bytes
+instead of its checkout's prompt files. Later prompt-only updates need no binary or
+runner release. No templates, fragments or network prompt sources are used.
+
+Intake uses advisory `remarks`. Planner, design reviewer, implementer and PR reviewer
+contexts receive `intake_remarks` only when the latest accepted proceed assessment has
+the same base and issue requirements. Configuration-only or bundle adoption preserves
+those remarks; a changed base or requirements makes them stale. Remarks add no approval
+gate. Historical intake reports using `concerns` remain readable, including in the
+backoffice; design reviewer concerns and objections keep their existing meaning.
+
 Writer commands include `/concurro approve <plan-id>`, `/concurro retry`,
 `/concurro retry --plan-revisions N`, `/concurro resume`,
 `/concurro resume --description-only` and `/concurro invalidate`.
-An implementer-skill-only retry preserves design approval when bounded local Git
-history proves that no other bundle resource changed. The retry starts a fresh
+An implementer-skill-only retry preserves design approval when frozen bundle bytes
+(or matching local Git history for a legacy task) prove no other resource changed. The retry starts a fresh
 implementer session and retains spent budgets.
 
 The database URL, App key, exchange token and optional metadata-only Vault token are

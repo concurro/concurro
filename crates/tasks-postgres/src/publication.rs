@@ -5,6 +5,9 @@ use concurro_tasks_core::{IssueKey, Request, RequestStatus, TaskState, request_r
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Columns read by `claim_comment`.
+type ClaimCommentRow = (i64, i64, String, String, String, Option<String>, bool);
+
 /// One claimed App comment write, fenced from older worker observations.
 pub struct CommentWrite {
     /// Stable logical write identity.
@@ -204,7 +207,7 @@ pub async fn claim_comment(
     uow: &mut UnitOfWork<'_>,
     id: Uuid,
 ) -> Result<Option<CommentWrite>, sqlx::Error> {
-    let row: Option<(i64, i64, String, String, String, Option<String>, bool)> = sqlx::query_as(
+    let row: Option<ClaimCommentRow> = sqlx::query_as(
         "SELECT repository_id,issue_number,body,marker,status,failure, \
          retry_at IS NOT NULL AND retry_at>now() \
          FROM tasks.publication_comments WHERE id=$1 FOR UPDATE",
