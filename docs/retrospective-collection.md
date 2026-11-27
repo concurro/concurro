@@ -1,5 +1,10 @@
 # Retrospective collection
 
+**Status (2026-11-24): legacy phase-0 collector, not a collector for the Rust stack.**
+Snapshot replay remains useful offline. Fresh collection below requires Python-era service
+settings, diagnostics and exchange interfaces; adapting it to Rust task records and
+archives remains deferred. Do not recreate retired services just to run these commands.
+
 `service/retro.py` gathers what happened in a target's tasks into per-task dossiers and
 cross-task metrics. It is phase 0 of [retrospective tuning](proposals/retrospective-tuning.md):
 operators read the output to judge whether there is enough signal for an analyst. It makes

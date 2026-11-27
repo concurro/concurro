@@ -1,5 +1,10 @@
 # S4: Rust exchange and runner API v2
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
 Part of the [phase 5 plan](../phase-5-plan.md). The exchange is deployed inactive and
 takes traffic at S7. It replaces `gateway/exchange/exchange.py`. The inference forwarder
 in `gateway/exchange/inference.py` is replaced by the [gateway](s5-gateway.md) together

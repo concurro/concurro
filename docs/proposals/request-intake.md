@@ -1,11 +1,9 @@
 # Proposal: request intake
 
-**Status: proposal, not implemented.**
-
-Designed against the target in the [architecture review](architecture.md); build it as
-the intake module of phase 3's
-[task application](architecture/phase-3-plan.md#the-task-application), not in the
-current Python service.
+**Status (2026-11-24): shared intake and existing channels implemented; new channels deferred.**
+The Rust [task application](architecture/phase-3-plan.md#the-task-application) owns the
+request ledger. Exact comments, browser commands, labels and standalone-review requests
+are implemented. Assignment, mentions, model interpretation and additional surfaces are not.
 
 Give every way of asking Concurro to act (a `/concurro` comment, the backoffice, a label,
 an assignment, a review request, a [mention](mentions.md), later Slack) one shared path:
@@ -175,7 +173,7 @@ pending, and consent already applied stands.
   decision: task, provider slot, sponsor, funding mode, consent revision, boundary and a
   reference to the sources folded. Replaying the attempt reuses it; a charged retry is a
   new attempt with a new decision ([cross-cutting rules](README.md#cross-cutting-rules)).
-- **Withdrawal stops spending in one transaction.** Applying a `withdraw` commits the new
+- **Withdrawal records the spending cutoff in one transaction.** Applying a `withdraw` commits the new
   consent revision and the cutoff for the task, provider slot and sponsor, which refuses
   any later attempt under it, and records the exchange transition that fences new
   sessions. The outcome is reported in two steps: "withdrawal recorded, new attempts
@@ -241,9 +239,8 @@ stage or consent change, with the GitHub writes they need. Publication writes th
 
 ### Backoffice
 
-Phase 3, M3, before the cutover, since backoffice commands are an existing team
-workflow. Through phase 3 the browser posts a command to the Python backoffice, as
-today, which checks CSRF and the user for the kind (a writer, or issue visibility for
+Implemented in Phase 3 M3, then moved to accounts in Phase 4. The browser posts a
+command to accounts, which checks CSRF and the user for the kind (a writer, or visibility for
 `withdraw`) with the session's GitHub token, signs a short-lived
 [command proof](contracts.md#command-proofs) bound to the user, issue, command,
 arguments, `detail.feedback`, `source_at` and the browser action's ID, and calls the
@@ -251,8 +248,8 @@ task application's `POST /v1/requests` with it. The backoffice API, which only r
 sees only a viewer token, can neither obtain a proof nor submit a request. The task
 application verifies the proof, takes the actor from it, and returns the request ID and
 its status. A refused request changes nothing but its own record. Each browser action
-carries an ID that survives its retries, the request's idempotency key, and the Python
-backoffice keeps its original `source_at`; a retry, even after the proof expired and is
+carries an ID that survives its retries, the request's idempotency key, and accounts
+keeps its original `source_at`; a retry, even after the proof expired and is
 signed again, is matched on the actor and the command's contents and returns the same
 request ([requests](contracts.md#requests)), which removes the "may or may not have been
 posted" case.
@@ -321,8 +318,8 @@ imported. Roll-forward only:
 
 ## Phasing
 
-Every channel Concurro has today works before the cutover; only channels that are new
-follow it.
+Steps 1–3 are implemented. Steps 4–5 remain deferred; the milestone descriptions
+below preserve the implementation order.
 
 1. **Requests and the comment channel,** with `start` and `stop` (phase 3, M1). Until M2
    and M3, every other command gets a `not_supported` reply on the test repository.

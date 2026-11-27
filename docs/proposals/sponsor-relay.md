@@ -1,87 +1,79 @@
-# Sponsor-held Claude credentials
+# Sponsor-held credentials
 
-**Status:** local synthetic and bounded live-provider integration passed and has not been
-deployed. The frozen Sponsor relay at `5d57cfab313d69c16a3b3e39fda5eb721e83c070`
-speaks protocol v4. Earlier TLSNotary spike measurements and the superseded
-design remain in Git history; the current native transport uses TLS 1.3 MPC
-and proof verification.
+**Status (2026-11-27): implemented on main for Claude, ChatGPT and Antigravity,
+using relay protocol 6.** Sponsor v0.1.2 / protocol 5 is the earlier deployed baseline,
+not a compatible client for the current verifier. Upgrade Sponsor and verifier together;
+see [Antigravity release requirements](../antigravity.md#installation-and-release).
 
-The sponsor runs `concurro-relay` on their machine. Its provider credential
-stays there. Concurro's Rust hosted verifier authenticates its two outbound
-TLS links, starts the existing native Concurro role, verifies each provider
-response, and leases that proved session to one admitted task turn. The local
-integration covers Claude HTTP and ChatGPT/Codex WebSocket routes, including
-the portal's exact-route approval. The [sustained synthetic CLI report](sponsor-relay-sustained.md)
-records 25 tool turns per CLI. The five-file live reports cover
-[Claude compact Message Threads](sponsor-relay-message-threads.md) and
-[Codex compact continuations](sponsor-relay-codex-compact.md), including their
-validation limits. Rollout remains later work.
-
-> The [architecture review](architecture.md#services) changes this integration in its
-> target: funding takes over the Vault's relay approvals and credential selection, the
-> inference gateway calls the verifier in place of the Exchange, and the verifier checks
-> a session claim signed by the Exchange. The relay and the verifier's link handling
-> below are unchanged.
+Local fresh and resumed agy turns passed through PostgreSQL admission, the Rust gateway,
+hosted verifier, Sponsor and the real Google provider. Separate near-expiry login refresh
+checks passed. The [evidence report](../reports/antigravity-joined-evidence.md) records
+versions, timings and limits. These results do not establish deployed GitHub Actions
+qualification; [Phase 5 closeout](architecture/phase-5-plan.md#implementation-status)
+remains partial.
 
 ## Authority and custody
 
-The [Vault](../../gateway/vault/README.md) owns current ordered/filterable
-entries, immutable versions and retirement events. A relay entry uses the
-same owner, route, entry, record and version identity as a pasted credential,
-but stores a relay ID instead of encrypted provider material. Entries of both
-custodies can coexist in one provider's ordered list. Selection and sponsorship
-remain the existing service decisions; the relay adds no priority or fallback
-system.
+Accounts owns ordered/filterable entries, immutable versions and lifecycle facts. A
+relay entry carries the same owner, route, entry, record and version identity as a pasted
+credential. Accounts stores its relay binding; provider material stays on the Sponsor
+instead of entering OpenBao. Both custodies can share a provider's ordered list. The task application's funding module selects the
+payer and exact credential; fallback remains within that payer's eligible list.
 
-The Rust verifier persists pending registration codes and approved public keys.
-Its private approval endpoint accepts an exact Vault owner/route/entry/record/
-version binding only from the owner-authenticated Vault API. A Sponsor must
-prove possession of that key on both live links. A withdrawn relay loses its
-active link leases. Vault retirement makes the old exact record unusable.
+Accounts approves exact owner/route/entry/record/version bindings through the verifier's
+owner API. The verifier persists registration and approval state. Sponsor proves possession
+of its registered identity on both live links. Retirement and withdrawal revoke the
+corresponding execution authority through the existing accounts/task/exchange paths.
 
 ## Owner portal
 
-The credentials page groups each device's route entries. Approval looks up the code
-and binds exactly the routes it registered; a reinstalled device is replaced with one
-new code, keeping entry policy and order. Live status comes from the verifier's
-authenticated links and task leases, reported only to their owner: connected with
-free links, offline since a time, or unknown before it reconnects after a verifier
-restart. Device usage reuses task funding evidence and keeps Concurro's charged
-calls apart from provider-reported tokens. No Sponsor release is published; the
-setup steps show only the configured relay address and download location.
+The credentials page groups a device's route entries. Pairing binds the routes registered
+by that device; replacement preserves entry policy and order. The owner sees connection
+and lease status. Usage keeps Concurro's charged attempts separate from provider token counts.
+
+Antigravity subscription setup uses `agy` login and
+`concurro-relay connect antigravity_subscription`. Sponsor records the login's email and
+subscription project, rereads agy's bearer, and asks `agy models` to renew it before a new
+link when expiry is within 60 seconds or unknown. Sponsor does not implement Google OAuth
+refresh or retain the refresh grant. Account changes require reconnecting; Sponsor injects
+its bound project, so the caller cannot choose the subscription account being charged.
+See [credential locations and link expiry](../antigravity.md#sponsor-login-and-account-attribution).
 
 ## Inference path
 
-1. The existing controller freezes the selected sponsor and credential version
-   in its admission. Exchange validates the controller receipt and creates a
-   scoped session key.
-2. Agentgateway authenticates that key and enforces the model and token budget.
-   Its `/start` hook freezes the sole running turn; `/resolve` obtains the
-   exact Vault record. Relay custody supplies only a local placeholder to the
-   gateway, never a provider credential.
-3. Exchange consumes the one-use request nonce, rechecks the exact relay
-   record and current turn authority, then forwards the request over its
-   private authenticated Rust service connection. It keeps cancellation,
-   deadlines and sanitized observations.
-4. Rust matches the exact approved relay ID and record to a live link. The
-   first request starts a native session; later requests from that same
-   session and turn reuse it. A disconnected, non-generating Codex warmup
-   finishes its admitted setup so the following generation can use that link.
-   Exchange deadlines, cancellation and revocation still release it. Another
-   task cannot borrow its link.
-   Missing, stale and withdrawn links fail the request; there is no payer
-   fallback or automatic second inference.
-5. The native Concurro worker releases only authenticated provider response
-   fragments to the CLI. Ending the Exchange turn releases the native lease.
+1. The task application freezes payer, credential version, model and allowance in an
+   admitted attempt. Exchange creates its runner session and signs relay authority.
+2. The Rust inference gateway authenticates the runner's session key through Exchange
+   admission. It resolves the frozen route and sends the request with its signed claim
+   to the hosted verifier. Provider credentials never enter the runner or gateway.
+3. The verifier checks the claim and exact approved relay binding, then leases a live
+   Sponsor link to the admitted session/turn. It enforces request identity, revocation,
+   allowance and lifetime. Dispatch failure does not trigger an automatic payer switch.
+4. Claude and Antigravity share the HTTP/2 `TlsKeyUpdate` transport. Sponsor injects its
+   credential; semantic review uses decoded JSON while native proofs bind the exact gzip
+   bytes sent over TLS. Claude uses compact Message Threads; agy retains its conversation
+   locally but sends full history. Codex uses WebSockets and `previous_response_id`.
+5. Authenticated provider responses return through the verifier and gateway. Google SSE
+   envelopes are unwrapped for agy, preserving tools and thought signatures; final usage
+   includes late events. Gateway reports settlement to Exchange, which releases the lease
+   at turn completion or revocation.
 
-The sponsor can see the task content it proves. The proof authenticates the
-provider exchange; it does not independently establish the provider's model
-choice or reported usage.
+Sponsor can see the task content it proves. The proof authenticates the provider exchange;
+it does not independently establish the provider's model choice or reported usage.
 
 ## Deployment boundary
 
-The hosted Rust listener for Sponsor links is raw TLS, separate from the
-HTTP edge. Its private control/dispatch listener is reachable only on the
-credential network and requires a service bearer. The current qualified
-native package includes a locally tested Linux amd64 Concurro role bundle.
-Deployment and live-provider calls require separate authorization.
+Sponsor links use a dedicated raw TLS listener, separate from the HTTP edge. The private
+HTTP listener uses separate Accounts owner, Gateway inference and Exchange release bearer
+credentials, plus Exchange signing keys for claims. See the Phase 5
+[relay](architecture/phase-5/s1-relay.md), [accounts](architecture/phase-5/s3-accounts.md)
+and [gateway](architecture/phase-5/s5-gateway.md) interfaces. Current protocol-6 release
+coordination supersedes their historical protocol-5 cutover sequence.
+
+## Historical qualification
+
+The [sustained synthetic CLI report](sponsor-relay-sustained.md) covers 25 tool turns per
+CLI. Five-file live reports cover [Claude Message Threads](sponsor-relay-message-threads.md)
+and [Codex continuations](sponsor-relay-codex-compact.md). Those results retain their
+original source and deployment baselines; they do not qualify a later service release.
+The original Vault/Agentgateway relay design remains in Git history.

@@ -1,8 +1,14 @@
 # Phase 4 plan: sign-in, commands and credentials in Rust
 
-**Status: Slices 1–4 implemented locally; cutover not started.** Phase 4 of the [migration](../architecture.md#migration).
-It builds on phase 3 as deployed: the task application is the sole controller, the
-backoffice read API serves every view under `/api/v2`, and the Python backoffice is left
+**Status (2026-11-24): implemented, cut over and closed out.** Live sign-in/logout,
+credential add/reorder/remove, Sponsor pairing and attributed browser-request checks passed.
+The command check used the authenticated browser API, not a visible command button;
+no paid turn was part of those checks. The retired Python backoffice's container, dedicated
+volume and settings were removed after archives were verified. See
+[slice 4 evidence](../../reports/phase-4-slice-4-evidence.md) for local test scope.
+
+The following plan records the Phase 3 starting point: the task application is the sole
+controller, the backoffice read API serves every view under `/api/v2`, and the Python backoffice is left
 with sign-in, browser commands and the credentials pages.
 
 ## Outcome

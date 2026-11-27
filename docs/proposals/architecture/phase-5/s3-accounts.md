@@ -1,5 +1,14 @@
 # S3: accounts credential store
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
+The subsequent [Google integration](../../../antigravity.md) adds `gemini-api-key`
+and Sponsor-held `antigravity-subscription` credentials. Subscription login material
+stays with agy on the Sponsor machine; accounts stores the exact relay binding.
+
 Part of the [phase 5 plan](../phase-5-plan.md). Accounts gains a native credential
 store. It is deployed inactive (`credential_store = "vault"`) and becomes authoritative
 at S7 (`"native"`). The browser routes and their response shapes don't change.

@@ -1,17 +1,17 @@
 # Proposal: ordered personal credentials
 
-**Status: proposed; not implemented.** Claude owns implementation; Codex handles acceptance
-review. Baselines: backend `47f9ea600a4a12f121e54aa99c202bb6b611fe0f`, backoffice
-`08ea714cd70d62ccd51e77ffe441a29cff97f4ab`. For this work, the user explicitly authorizes
-Claude to use its own worktree in each repository and commit per phase on implementation
-branches. This overrides the usual uncommitted-changes instruction for this feature only.
-Do not push or merge before Codex has reviewed both branch diffs. Deployment and live provider
-calls require separate authorization; completing review does not itself authorize them.
+**Status (2026-11-27): implemented.** Native accounts storage, ordered selection and
+same-payer fallback are in the Rust stack. Add/reorder/remove reached task-visible metadata
+in live checks; paid fallback on the Phase 5 stack remains unqualified live. See
+[Phase 5 status](architecture/phase-5-plan.md#implementation-status).
 
-Replace the four fixed credential cards with an ordered list of saved accounts. A person
-can keep several subscriptions or API keys for one provider, choose where each is used,
+The ordered list replaces the original four fixed credential cards. A person can keep
+several subscriptions or API keys for one provider, choose where each is used,
 temporarily disable entries, and let Concurro try the next matching credential when one fails.
-Saving remains local to the vault: no provider probes, model-access checks or validation gate.
+Pasted credentials write through accounts to OpenBao without provider probes or
+model-access checks. Sponsor entries store a relay binding instead of provider material.
+Google supports `gemini-api-key` and Sponsor-only `antigravity-subscription`; agy owns
+the subscription login and renewal ([operation](../antigravity.md)).
 
 ## Agreed behavior
 
@@ -39,26 +39,19 @@ is the user's reason for arranging the list; Concurro does not add a dollar-budg
 
 ## Current implementation and reuse
 
-| Area | Existing code | Required change |
-| ---- | ---- | ---- |
-| Encrypted storage | [`Store`](../../gateway/vault/vault.py), `record_id`, `aad` | One current version per list entry, retaining immutable record identities and encryption bindings. |
-| Owner API | [`backoffice/credentials.py`](../../backoffice/credentials.py), [`app.py`](../../backoffice/app.py) | Replace fixed route slots with entry CRUD and ordered provider lists; retain authenticated owner forwarding. |
-| Selection | [`sponsorship.credential_route`, `selected_routes`, `initialize`, `coverage`](../../engine/sponsorship.py); [`Shadow.preflight`](../../service/shadow.py) | Resolve eligible entries from the current role/profile and provider instead of a target-selected credential type. |
-| Frozen attempts | [`Credential`](../../engine/credentials.py), [`admissions`](../../engine/admissions.py), [`Controller.ask`](../../engine/controller.py), [`Design.reserve`](../../engine/design_batch.py) | Reuse exact record/version binding and central attempt charging for every fallback. |
-| Gateway | [`Exchange.metadata_for`, lifecycle polling](../../gateway/exchange/exchange.py), [`inference.py`](../../gateway/exchange/inference.py) | Admit and resolve one selected record; never swap credentials inside a running request. |
-| Failure evidence | [`provider_protocol.category`, `Observation`](../../gateway/provider_protocol.py), [`Worker._suspend_failure`](../../service/worker.py) | Extend tested execution-time classifications; retain trusted request/turn provenance. |
-| Recovery | [`credential_recovery`](../../service/credential_recovery.py), [`Registry.credential_events`](../../service/registry.py), `Shadow.recover` | Replace owner/route minimum-version recovery with candidate selection and exact failed-record tracking. |
-| Conversations | [`sessions`](../../engine/sessions.py), [`RunnerExecutor.binding`](../../engine/agents.py) | Preserve logical conversation history while issuing a new execution binding for a changed credential. |
+| Responsibility | Implementation |
+| ---- | ---- |
+| Credential writes and lifecycle | [Accounts native store](../../crates/accounts/src/credentials/native/mod.rs), [PostgreSQL storage](../../crates/accounts-postgres/src/credentials.rs); material in OpenBao |
+| Owner views and as-of metadata | [Accounts views](../../crates/accounts/src/credentials/view.rs); activated history remains visible after material retirement |
+| Ordered eligibility | [Shared metadata client and selection](../../crates/vault-v1/src/lib.rs), used against accounts in Rust mode |
+| Grants, fallback and consent | [Task application](../../crates/tasks/) and [task storage](../../crates/tasks-postgres/); retries preserve the chosen payer |
+| Execution and credential resolution | [Rust exchange](../../crates/exchange/) and [inference gateway](../../crates/inference-gateway/); an admitted attempt keeps its exact version |
 
-The current vault key is `(user_id, route, version)`. `Store.put` retires all earlier material
-for that owner/route, and metadata returns one latest record per route. Registry's recovery
-cache is also keyed by owner/route. `credential_fences` uses that key too; its optional
-`expected_revision` check currently has only test callers. Public saves no longer use it.
-These assumptions must change together.
-
-The frontend is in `concurro-backoffice`: `src/routes/(app)/me/credentials/+page.svelte`,
-`src/lib/types.ts`, `src/lib/api/`, and the account/store mocks. Its route-coverage panel is
-configuration reporting left after validation removal. Remove it rather than renaming it.
+The `concurro-vault-v1` crate name reflects its original bridge, not the live metadata
+owner. The native accounts store replaced the vault in Phase 5. The frontend's
+`me/credentials` page provides ordered entries and Sponsor device management. The sections
+below retain the feature's behavior specification; old fixed-card and Python-backoffice
+migration instructions no longer apply.
 
 ## Page and editing
 
@@ -67,9 +60,9 @@ toggle, a short filter summary and an actions menu. Provide keyboard-accessible 
 buttons as well as drag reordering. Show saved entries only, with an Add credential button;
 an empty provider list needs no placeholder card.
 
-Add/edit asks for a name and type. New entries also need a secret and, for ChatGPT, the
-supplied account ID. Put optional filters under **Use for…**. Token replacement is a separate
-action on an existing entry; renaming or changing filters never requires entering the token
+Add/edit asks for a name and type. New server-stored entries also need a secret and, for
+ChatGPT, the supplied account ID. Sponsor entries use device pairing instead of a pasted
+secret. Put optional filters under **Use for…**. Token replacement is a separate action on an existing entry; renaming or changing filters never requires entering the token
 again. Type/provider are fixed for an entry; use another entry to change them.
 
 Keep fingerprints, timestamps and connection instructions in expandable details or the edit
@@ -144,6 +137,10 @@ views to report a selected entry or “no matching enabled credential”, not �
 
 ## Storage, APIs and lifecycle
 
+The identity and browser API rules remain. Vault encryption, AAD and lifecycle-feed
+references below describe the original implementation; native storage uses the
+[accounts contract](architecture/phase-5/s3-accounts.md) and `credential.*.changed` facts.
+
 Add a stable entry identity separate from the immutable secret-record identity:
 
 | Record | Fields / responsibility |
@@ -180,8 +177,8 @@ The owner-facing contract should provide:
 | Reorder | `PUT /api/me/credentials/order/{provider}` | Exact ordered entry IDs from the current list, committed atomically. |
 | Remove | `DELETE /api/me/credentials/{entry_id}` | Idempotent removal and scoped material revocation. |
 
-Mirror these through the vault's existing authenticated owner API. The BFF never chooses an
-owner from browser input or stores secrets. Reuse existing CSRF, private-principal separation,
+Accounts implements these owner-authenticated operations natively. The browser never
+chooses the owner, and accounts does not retain plaintext material in its database. Reuse existing CSRF, private-principal separation,
 sanitized errors and write-only form handling. Mutations use the entry or list revision above
 to detect concurrent changes; on conflict refresh the list and retain nonsecret draft fields. This is
 write-conflict handling, not a provider-validation or confirmation step.
@@ -303,6 +300,9 @@ newly selected record. Prove switching in both directions between API and subscr
 including plan-review independence and retained PR-review follow-ups.
 
 ## Forward migration and release
+
+Historical vault list migration, already implemented. The subsequent Phase 5 import
+into accounts/OpenBao is documented in [S3](architecture/phase-5/s3-accounts.md).
 
 1. Migrate vault schema 3 to a new schema transactionally. Create one deterministic entry for
    each existing owner/route and associate **all** its historical versions. Preserve ciphertext,

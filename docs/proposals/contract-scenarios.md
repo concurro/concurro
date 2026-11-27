@@ -1,6 +1,10 @@
 # Contract scenarios
 
-**Status: proposal, not implemented.**
+**Status (2026-11-24): acceptance scenarios spanning implemented and deferred work.**
+These traces describe required behavior, not a claim that every scenario has run live.
+The [proposal index](README.md) identifies deferred features; milestone evidence linked
+from the [Phase 5 plan](architecture/phase-5-plan.md#implementation-status) records the
+implemented tests and their limits.
 
 These traces walk the critical flows through the [service contracts](contracts.md), step by
 step, and check them against the invariants of the

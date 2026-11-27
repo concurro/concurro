@@ -1,23 +1,33 @@
 # Proposal: per-user provider credentials
 
-The current [main integration](per-user-credentials/main-integration.md) uses configured upstream writer authority
+**Current Rust ownership (2026-11-27):** the task application owns consent, selection,
+grants, budgets and accounting. Accounts owns credential metadata and OpenBao stores
+server-custodied personal material. Sponsor-held provider credentials stay on the
+Sponsor machine. OpenAI, Anthropic and Google funding share these ownership rules. See
+[Phase 5](architecture/phase-5-plan.md#implementation-status). Automatic refresh of
+server-stored personal tokens remains deferred. Antigravity Sponsor renewal is implemented
+by invoking agy, which owns its OAuth refresh grant; see [Antigravity operation](../antigravity.md).
+The original Python phase notes and token-paste workflow below are historical.
+
+The historical [main integration](per-user-credentials/main-integration.md) uses configured
+upstream writer authority
 for new consent/control/admission, while preserving identity-bound self-withdrawal and own
 consent reads after writer loss. Historical phase reviews retain their original evidence.
 
-**Status: phases 1–6 implemented; optional credential refresh remains deferred.**
-Current operation and deployment prerequisites are recorded in the
+**Historical Python status: phases 1–6 implemented; optional vault refresh deferred.**
+Original Python deployment prerequisites are recorded in the
 [readiness guide](per-user-credentials/deployment-readiness.md). Historical phase boundaries
 and evidence remain in the individual phase notes. Revised after two Codex reviews against
 the code and the pinned agentgateway v1.7.0.
 
-The [implementation plan](per-user-credentials/implementation-plan.md) records the current
-code baseline, coordinated protocol changes and delivery sequence. The user-directed
+The [implementation plan](per-user-credentials/implementation-plan.md) records the original
+Python baseline, coordinated protocol changes and delivery sequence. The user-directed
 subscription flow reuses local CLI login and user-pasted tokens through the existing
 portal/vault path; manual replacement is the initial deliverable, with refresh optional.
 The "Today" section below predates backoffice sign-in and the API-key vault.
 
 People register their own credentials and sponsor provider slots on an issue or task.
-One person can sponsor OpenAI and another Anthropic, each using only their own credentials. A
+Different people can sponsor OpenAI, Anthropic and Google, each using only their own credentials. A
 credential failure pauses the task without losing accepted work.
 
 ## Today

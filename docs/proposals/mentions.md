@@ -1,9 +1,9 @@
 # Proposal: mentions and assignment
 
-**Status: proposal, not implemented.**
-
-Designed against the target in the [architecture review](architecture.md); build it on
-the new orchestrator, not the current Python service.
+**Status (2026-11-24): deferred.** Neither assignment enrollment nor exact or interpreted
+mentions is implemented. The shared request ledger and existing channels are implemented
+in the Rust task application; build these new channels there. Per-task plan-only mode,
+time-bound approval and the interpreter remain part of this proposal, not current features.
 
 Let people work with Concurro by mentioning its account (`@ConcurroBot please plan this
 but don't implement yet`) or assigning it to an issue, instead of only through the
@@ -17,32 +17,15 @@ proposal depends on.
 
 ## Today
 
-- **Enrollment.** A writer applies the `concurro` label. `Controller.enrollment` accepts
-  it only while the label is present and its latest `labeled` event came from a current
-  writer; that event is the funding initiation boundary (provenance `label`). In
-  autonomous mode the label starts the task; in manual mode `/concurro start` does
-  (`engine/commands.py`).
-- **Commands.** `commands.parse` accepts only the exact `/concurro ...` grammar. Ingress
-  wakes a task for commands, sponsorship comments, and author or writer comments on
-  enrolled issues (`service/ingress.py:Ingress.comment`). Each processed command revision
-  gets one App-authored reply.
-- **Command transport.** Every command reaches the controller as a GitHub comment,
-  including backoffice commands, which the service posts as signed App comments
-  (`engine/delegation.py`). [Request intake](request-intake.md) proposes replacing this
-  with a `requests` table fed by independent channels.
-- **Reviewer account.** With `reviewer` configured, a writer's review request for that
-  account on an upstream PR starts a [standalone review](../design/standalone-reviews.md)
-  (provenance `review_request`). The account posts reviews through a user-to-server token
-  of the service App; the App posts everything else. It is matched by numeric ID
-  (`identities.Actor`), and needs only read access.
-- **Mode.** `autonomous` is a target-wide boolean. Manual mode waits for
-  `/concurro approve <plan-id>`; autonomous mode proceeds on plan-reviewer consensus.
-- **Roles and credentials.** Model calls run under the role keys `triage`, `planner`,
-  `plan_reviewers`, `implementer` and `pr_reviewers`, and pass central budget admission.
-  [Ordered personal credentials](credential-list.md) lets a credential be restricted to
-  roles; optional roles fail open to a deterministic path.
-- **Feedback on Concurro's own PRs.** PR-thread replies don't start repair work; a writer
-  comments on the issue and then uses `/concurro retry`.
+- Writers use the `concurro` label and exact `/concurro` commands. A configured reviewer
+  account can receive a review request to start a standalone review.
+- Comment, label, review-request and browser channels feed the task application's durable
+  request ledger. Browser commands are signed direct requests, with actor attribution in
+  the receipt; they do not post a command or reply comment on GitHub.
+- The configured reviewer is matched by stable numeric identity. `@ConcurroBot` here is
+  an example account name, not a hard-coded mention trigger.
+- Target-wide manual/autonomous behavior, budget admission, ordered credentials and
+  role/profile filters already exist. Assignment and mentions currently add no action.
 
 ## Goals
 
@@ -154,9 +137,9 @@ A new optional role, `interpreter`, typically a small model (Haiku-class).
   before the call ([sources](request-intake.md#sources)). A restart recovers that
   attempt's stored result instead of calling again: an exchange turn stores its result
   durably, and a direct gateway call would need to store the response under the attempt
-  ID before acknowledging it. Results are kept until the source is final. The Python
-  exchange deletes finished turns after a day; a result lost that way falls under the
-  deadline below.
+  ID before acknowledging it. Results are kept in the source record until it is final.
+  The Rust exchange prunes finished turns into tombstones after a day; an outcome lost
+  before the interpreter stores it falls under the deadline below.
 - **Deadline.** An attempt whose outcome is still unknown at its deadline (a crash after
   the provider charged, a result lost before it was stored) ends: the source is
   finalized as failed and the reply asks for the exact command. It is never paid for
@@ -266,9 +249,9 @@ this matters only at volume.
 
 ## Phasing
 
-1. **Assignment.** Arrives with [request intake](request-intake.md#phasing) phase 2.
+1. **Assignment.** A new channel on the implemented [request intake](request-intake.md#phasing).
 2. **Exact mentions.** Detection, reaction, the mention channel and the account's reply
-   transport. Needs intake phase 1.
+   transport. Reuses the existing request ledger; precedes model interpretation.
 3. **Interpreter.** Role key, schema, admission and charging, clarifying replies,
    per-task mode, time-bound approval. Built once exact mentions show what people ask
    for.
@@ -292,9 +275,8 @@ Each phase is usable on its own, and phases 1 and 2 need no credential changes.
    but a job adds startup latency to each reply), or call the inference gateway directly
    (fast, but only for routes usable outside a CLI harness, the gateway then needs a
    session for the orchestrator, and it must store each response under its attempt ID
-   so a restart doesn't pay twice)? If the interpreter is built before architecture
-   [phase 5](architecture.md#migration), it runs as a turn on the Python exchange; the
-   longer-term path stays open.
+   so a restart doesn't pay twice)? The runner option now uses the Rust exchange and
+   runner API v2; the Python-exchange execution option is retired.
 2. **Admission without a task.** Charge interpreter calls on unenrolled issues to a
    per-commenter record, or open the task first and charge it there?
 3. **Org-funded targets.** Should the org pay for interpretation where it pays for task

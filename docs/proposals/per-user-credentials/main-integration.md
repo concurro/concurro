@@ -1,5 +1,12 @@
 # Sponsorship and current main integration
 
+**Historical Python implementation record.** Phase 5 replaced this wiring with native
+accounts/OpenBao and the Rust exchange/gateway. Use the
+[Phase 5 plan](../architecture/phase-5-plan.md#implementation-status)
+and [gateway guide](../../../gateway/README.md) for current interfaces and deployment.
+The original baselines, evidence and commands below are retained for migration reference,
+not instructions for the active stack.
+
 Pending merges combine backend `57a6442aef58c4006de34f7f0428747c0b7f379b` with
 `f7a3d70b24536f6ec32524f6dba4328f870e5bb7`, and portal
 `8aa752710f697ab145d4e7b2e521f03f79adf32b` with

@@ -1,5 +1,11 @@
 # Proposal: webhook-fed list index
 
+**Current implementation (2026-11-24): complete, with Rust storage replacing the original.**
+The task application's [target index](../../crates/tasks/src/target_index.rs) and the
+[backoffice projection](../../crates/backoffice-postgres/src/lib.rs) now own the read path,
+including reconciliation scans and live updates. The SQLite/service design and phase notes
+below describe the completed Python predecessor, not current storage or scan behavior.
+
 **Status: all phases implemented.** Revised after four Codex reviews and a design
 discussion, against service `main` at `cf29ba9` and frontend `main` at `6b275ec`. [Phase 0](list-index/phase-0.md)
 records what was verified live and what is still open; the per-phase briefs are in

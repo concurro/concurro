@@ -1,11 +1,24 @@
 # S1: relay verifier release
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
+**Follow-on status (2026-11-27):** main now requires protocol 6 for Claude, ChatGPT
+and Antigravity. The v0.1.2/protocol-5 release below is historical. Local joined Google
+inference and provider-owned refresh passed; see the
+[evidence and limits](../../../reports/antigravity-joined-evidence.md) and
+[coordinated release requirements](../../../antigravity.md#installation-and-release).
+
 Part of the [phase 5 plan](../phase-5-plan.md). The work is in `concurro-relay`, and it
 can deploy before the cutover, but Sponsor functionality requires the new Phase 5
 callers. The relay is unused during this replacement; Python API compatibility is
 not required.
 
 ## Today
+
+Historical starting point for this slice.
 
 The hosted verifier (`crates/hosted`, binary `concurro-relay-hosted`) trusts one shared
 bearer on its private listener:
@@ -15,16 +28,17 @@ bearer on its private listener:
 - **Dispatch trusts its caller.** It accepts the session, turn and deadline in
   `x-concurro-binding` and checks only that they match the registry's binding exactly.
 - **Release is in memory.** `/release` cancels one turn, and a restart forgets it.
-- **Exact protocol match.** Installed Sponsors (v0.1.x) speak relay protocol 4, while
+- **Exact protocol match.** Pre-upgrade Sponsors (v0.1.1) speak relay protocol 4, while
   `main` accepts only protocol 5.
 
 ## Scope
 
-1. **Sponsor 0.2.0 and a protocol-5 verifier.** S0 found that protocol 5 changed the native session the
+1. **Sponsor 0.1.2 and a protocol-5 verifier.** S0 found that protocol 5 changed the
+   native session the
    Sponsor and the verifier run together, not just the link messages
    ([evidence](../../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)). Accepting
    protocol 4 would mean keeping two native session implementations.
-   - So Sponsor 0.2.0 is released from relay `main`, speaking protocol 5.
+   - So Sponsor 0.1.2 is released from relay `main`, speaking protocol 5.
    - Sponsor and verifier are upgraded together before relay qualification.
    - The verifier accepts only protocol 5; no dual-protocol transition is needed.
 2. **Three caller credentials,** each a separate token file and each accepted only on
@@ -82,12 +96,12 @@ bearer on its private listener:
 
 - TLS on the private listener. It stays on its internal network; TLS is later
   hardening.
-- Changes to the Sponsor client beyond releasing current `main` as 0.2.0.
+- Changes to the Sponsor client beyond releasing current `main` as 0.1.2.
 - Python vault or exchange bridges to the replacement verifier.
 
 ## Release
 
-- Release Sponsor 0.2.0 from relay `main` through the existing `release-plz` and `dist`
+- Release Sponsor 0.1.2 from relay `main` through the existing `release-plz` and `dist`
   process. The owner upgrades their Sponsor devices to it.
 - Tag the relay repository, and build the verifier image from that tag.
 - Document the new flags in its README: the three token files, the exchange public key
@@ -99,7 +113,7 @@ bearer on its private listener:
 
 ## Acceptance
 
-- A Sponsor 0.2.0 client registers, links and serves a dispatch against the S1 verifier.
+- A Sponsor 0.1.2 client registers, links and serves a dispatch against the S1 verifier.
   A protocol 4 client is refused with the existing "update concurro-relay" message.
 - Each credential is refused on the other credentials' routes.
 - The removed private routes are unavailable, and the old authentication header is

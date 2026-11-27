@@ -1,7 +1,8 @@
 # Plan: phase 2, GitHub ingress
 
-**Status: plan, not started.** It builds on [phase 1](phase-1-plan.md), which must be done
-first.
+**Status (2026-11-24): implemented and deployed.** See the
+[implementation record](../../rust-rewrite-progress.md). The overlap and Python-consumer
+steps below are completed migration history; current consumers are Rust services.
 
 Phase 2 of the [architecture review](../architecture.md#migration) moves webhook receipt
 out of the Python service into a Rust ingress service. Ingress verifies each delivery,

@@ -1,5 +1,16 @@
 # S5: Rust inference gateway
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
+The route inventory below is the original Phase 5 scope. The subsequent
+[Google integration](../../../antigravity.md#request-and-validator-path) adds Gemini
+API-key routes and protocol-6 `/dispatch/v2/antigravity` subscription dispatch, including
+Google SSE unwrapping and late usage settlement. Its
+[local joined provider test passed](../../../reports/antigravity-joined-evidence.md).
+
 Part of the [phase 5 plan](../phase-5-plan.md). The gateway is deployed inactive and
 takes traffic at S7. It replaces agentgateway (`gateway/agentgateway.yaml`) and the
 exchange's forwarder hooks (`gateway/exchange/inference.py`: `/start`, `/resolve` and

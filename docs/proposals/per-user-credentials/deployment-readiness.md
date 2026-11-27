@@ -1,5 +1,12 @@
 # Sponsorship: current operation and deployment readiness
 
+**Historical Python implementation record.** Phase 5 replaced this wiring with native
+accounts/OpenBao and the Rust exchange/gateway. Use the
+[Phase 5 plan](../architecture/phase-5-plan.md#implementation-status)
+and [gateway guide](../../../gateway/README.md) for current interfaces and deployment.
+The original baselines, evidence and commands below are retained for migration reference,
+not instructions for the active stack.
+
 The [main integration](main-integration.md) supersedes this review's App, visibility and
 release-entrypoint guidance; earlier evidence below remains historical. Phases 0–6 are implemented. Baselines are signed backend
 `abd891415407358527734ed84fe91ea840852f61` and portal

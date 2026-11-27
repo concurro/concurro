@@ -1,57 +1,68 @@
 # Proposals
 
-**The active proposals below are not implemented.** They are design briefs for possible future work. They describe
-intended behaviour, not current behaviour; for how Concurro works today, see
-[`docs/design/`](../design/) and the code.
+**Status reconciled against the implementation on 2026-11-27.** This directory contains
+implemented design records as well as unfinished proposals. The table distinguishes
+shipped scope from remaining work; a retained brief is not evidence that its feature is
+still pending. Historical phase notes and test reports retain their original baselines.
 
-Each proposal records the current state it builds on, the proposed design, the invariants
-it must keep, the phasing and open questions. Implementation detail that isn't needed to
-understand the design is staged per phase in a directory named after the proposal: input
-for that phase's implementation brief, re-checked against the code when the brief is
-written. A proposal moves out of this directory once
-it is implemented (its design notes go to `docs/design/`) or abandoned (it is deleted).
-Completed briefs may remain linked separately during release closeout; current behavior belongs
-in the design and operator docs.
+Implementation, deployment and live qualification are separate. In particular, the
+Phase 5 cutover and connection checks are complete. Local Antigravity provider turns and
+refresh checks also passed; deployed Actions/provider qualification and final legacy-source
+retirement remain open. See the
+[Phase 5 closeout](architecture/phase-5-plan.md#implementation-status).
 
-| Proposal | Kind | Summary |
+| Proposal | Status | Implemented / remaining |
 | ---- | ---- | ---- |
-| [Demo target policy](demo-target-policy.md) | Approved direction | Default-open text edits, explicit protections and configurable workload limits; rollout requires engine support and replacement tasks. |
-| [Per-user provider credentials](per-user-credentials.md) | Epic | Provider slots let different people fund OpenAI and Anthropic; explicit issue sponsors take precedence over initiator fill. [Implementation plan](per-user-credentials/implementation-plan.md): user-pasted CLI subscription tokens and manual replacement. |
-| [Ordered personal credentials](credential-list.md) | Feature | Multiple accounts per provider, optional role/profile filters, list priority and automatic credential fallback, with forward migration of existing records. |
-| [Sponsor-held credentials through a relay](sponsor-relay.md) | Epic | A sponsor's subscription token stays on their machine. The first Concurro-side Claude verifier integration is under development; Linux qualification and deployment remain open. |
-| [Risk-driven routing](risk-driven-routing.md) | Feature | Use complexity and change-risk estimates to choose models, effort and review depth. |
-| [Consolidated PR reviews](consolidated-pr-reviews.md) | Feature | Post one GitHub review per round with attributed findings; later, group duplicates and handle contradictions. |
-| [Backoffice API surface](backoffice-api.md) | Epic (inventory) | Endpoints for a GitHub-authenticated backoffice: own credentials, task overview, commands and run diagnostics. |
-| [Retrospective tuning](retrospective-tuning.md) | Feature | Analyse past tasks and open a fork PR with evidence-backed `.concurro/` changes to instructions, models, panels and budgets. |
-| [Webhook-fed list index](list-index.md) | Feature | A persistent read-model projection in the service keeps backoffice lists current from webhooks. [Phase 0 evidence](list-index/phase-0.md) and per-phase briefs are in [`list-index/`](list-index/). |
-| [Architecture review](architecture.md) | Epic | Postgres as system of record, GitHub as projection, an event bus and services split by domain and trust boundary, migrated alongside the Rust port. [Phase 1 plan](architecture/phase-1-plan.md): the Cargo workspace, contracts, event plumbing and platform. [Phase 2 plan](architecture/phase-2-plan.md): GitHub ingress in Rust and the cutover from the Python webhook path. [Phase 3 plan](architecture/phase-3-plan.md): one Rust task application, a single cutover from the Python controller and owner use before the team, with the [M1 plan](architecture/phase-3-m1-plan.md) for the first slice. [Phase 4 plan](architecture/phase-4-plan.md): a Rust accounts service for sign-in, commands and credentials, retiring the Python backoffice. [Phase 5 plan](architecture/phase-5-plan.md): the Rust exchange, a stateless inference gateway, OpenBao and the accounts credential store, in one cutover, with a brief per slice. |
-| [Service contracts](contracts.md) | Epic | Every API, event and command between the architecture review's services, across all migration phases, with [scenario traces](contract-scenarios.md) that test them. |
-| [Request intake](request-intake.md) | Feature | A `requests` table fed by independent channels (comments, backoffice, labels, assignment, review requests, mentions), replacing GitHub comments as the only command transport. |
-| [Mentions and assignment](mentions.md) | Feature | Enroll issues by assigning Concurro's account; `@` mentions map to requests, interpreted by a model the commenter pays for. Builds on request intake. |
+| [Architecture review](architecture.md) | Partly complete | Phases 1–4 complete; Phase 5 implementation and cutover complete, deployed Actions/provider qualification and source retirement pending. |
+| [Service contracts](contracts.md) | Partly implemented | Current Rust APIs/events have generated types and tests. Explicit later contracts and mention interpretation remain deferred; [scenario traces](contract-scenarios.md) are acceptance designs, not a test-pass ledger. |
+| [Per-user provider credentials](per-user-credentials.md) | Implemented | Task funding and accounts/OpenBao support OpenAI, Anthropic and Google. Server-stored personal-token refresh remains deferred; Antigravity Sponsor renewal delegates to agy. |
+| [Ordered personal credentials](credential-list.md) | Implemented | CRUD, ordering, role/profile filters and same-payer fallback. Phase 5 paid fallback still needs live qualification. |
+| [Sponsor-held credentials through a relay](sponsor-relay.md) | Implemented; deployment qualification remains | Claude, ChatGPT and Antigravity routes use protocol 6 on main. Local joined Antigravity inference and refresh passed; v0.1.2/protocol 5 is the earlier deployed baseline. |
+| [Request intake](request-intake.md) | Partly implemented | Durable requests from exact comments, browser commands, labels and review requests. Assignment, mentions and additional channels remain deferred. |
+| [Mentions and assignment](mentions.md) | Deferred | Neither assignment enrollment nor exact/free-text mentions is implemented. The shared intake foundation is ready. |
+| [Risk-driven routing](risk-driven-routing.md) | Deferred | Descriptive complexity/risk ratings exist; automatic model, effort and review-depth selection does not. |
+| [Consolidated PR reviews](consolidated-pr-reviews.md) | Deferred | Reviews still publish per reviewer turn. Round-wide consolidation, deduplication and contradiction handling remain future work. |
+| [Retrospective tuning](retrospective-tuning.md) | Partly implemented | Legacy phase-0 collector and snapshot replay exist. Rust-source collection, analysis, tuning PRs and scheduled evaluation remain deferred. |
+| [Backoffice API surface](backoffice-api.md) | Partly implemented; inventory superseded | Core auth, credentials, task views/commands, diagnostics, SSE, configuration visibility and read-only Operator shipped. Preferences and the broader operator-write inventory are not implemented. |
+| [Webhook-fed list index](list-index.md) | Implemented; storage replaced | Rust task/index and backoffice projections replace the original Python/SQLite implementation. |
+| [Demo target policy](demo-target-policy.md) | Implementation complete | Engine and Rust policy support exist; individual target configuration is an installation rollout, not an outstanding code feature. |
+| [Issue artifact consolidation](issue-artifact-consolidation.md) | Complete historical implementation | Engine artifact consolidation shipped. Rust task recovery now uses PostgreSQL; retained artifact notes describe the original engine storage contract. |
 
-## Completed, awaiting release
+## Implementation records
 
-[Issue artifact consolidation](issue-artifact-consolidation.md) is complete through phase 5.
-See the [current storage contract](../design/issue-dashboard.md) and
-[closeout evidence](../reports/limits-cleanup/README.md#artifact-consolidation-closeout).
-The completed brief is retained here for release review.
+- [Phase 1](architecture/phase-1-plan.md): contracts, shared database/event crates and platform.
+- [Phase 2](architecture/phase-2-plan.md): Rust ingress, recovery and webhook cutover.
+- [Phase 3](architecture/phase-3-plan.md): task application, funding, publication and read API.
+- [Phase 4](architecture/phase-4-plan.md): accounts service and Python backoffice retirement.
+- [Phase 5](architecture/phase-5-plan.md): exchange, gateway, native credentials and OpenBao;
+  remaining qualification and retirement are listed separately from completed slices.
+- [Antigravity](../antigravity.md): Google profiles, Sponsor login renewal and shared TLS
+  KeyUpdate transport; [joined-test evidence](../reports/antigravity-joined-evidence.md)
+  records fresh/resumed provider turns and the remaining qualification limits.
+
+## Deferred feature work
+
+The rewrite did not implicitly implement the feature backlog. Assignment and exact
+mentions can build on the existing request ledger; the model interpreter and per-task
+mode/approval choices need their own implementation brief. Routing, consolidated reviews
+and retrospective tuning likewise need their proposals rechecked against Rust interfaces
+before implementation. No Rust rewrite of the retained Python engine/runner is scheduled.
 
 ## Cross-cutting rules
 
-These apply wherever the proposals meet:
+These apply wherever the proposals meet. Rules for deferred features are design
+constraints, not claims that those features already run:
 
 - **One frozen admission record per admitted attempt.** The routing and profile identity
   with its assignment revision, canonical provider slot, consenting sponsor, slot epoch
   and credential version, and the attempt are
-  fixed when the attempt is admitted (`RunnerExecutor.binding`, `sessions.prepare`,
-  `design_batch.Design.reserve`). Only the selected slot enters its binding; another
+  fixed in the task application's admitted attempt and immutable exchange grant.
+  Only the selected slot enters its binding; another
   provider's transfer/withdrawal never changes that session. A later change never rebinds an
   admitted attempt.
   - **Replay** of that attempt preserves the record; it is never recomputed from current
     state.
   - **A new, charged retry** is a new attempt and gets a new record.
-  - Nothing here recovers an old exchange result across ownership generations, which
-    current recovery deliberately avoids (`Design.open`).
 - **Provider grants are source-bound and task-local.** Confirm explicit issue-comment
   sponsors before initial start/label fills uncovered slots from the initiator's
   available route credentials. Existing explicit sponsors keep priority even with missing
@@ -60,7 +71,7 @@ These apply wherever the proposals meet:
   the initiator pay more. An earlier withdrawal prevents only that actor's auto-
   reassignment (even without a previous grant), not another initiator's own grant.
   Afterwards withdrawal/failure/retry/relabel never select another sponsor automatically.
-  [Ordered personal credentials](credential-list.md) proposes fallback between the same
+  [Ordered personal credentials](credential-list.md) implements fallback between the same
   sponsor's eligible credentials, preserving that provider grant and funding choice.
   `sponsor <provider>` assigns the caller; self `withdraw <provider>` retires only their
   selected-provider work. Independent epochs/tombstones survive; required batch coverage
@@ -84,7 +95,8 @@ These apply wherever the proposals meet:
 - **Budget admission is central.** Every attempted model call, including consolidation
   and credential retries, passes budget admission (batch reservation or the
   next-attempt check against `max_model_calls`) and is charged
-  (`Controller.charge_call`, which counts calls but doesn't enforce the cap).
+  through the task application's funding module; exchange admission also enforces the
+  submitted grant's allowance.
 - **Required and optional roles are distinct.** Credential preflight covers required
   roles only, so an optional role, such as the PR consolidator, never puts a task in
   `awaiting_credentials`. An optional call still passes budget admission; if admission
@@ -93,7 +105,7 @@ These apply wherever the proposals meet:
     `spent calls + optional next attempts + known required uncharged attempts <=
     max_model_calls`. "Known required" means work already pending, for example the
     current round's remaining reviewers and the next repair turn; attempts that
-    `Design.reserve` has already charged are counted once, as spent. The check runs
+    the task application has already charged are counted once, as spent. The check runs
     before every optional charge, retries included, and a failure takes the
     deterministic path. It needs a policy helper, not a new persistent reservation.
     Admission still reserves only next attempts, so unknown future repairs aren't

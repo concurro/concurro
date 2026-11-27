@@ -13,7 +13,8 @@ links read agy's current access token from Keychain (`gemini` / `antigravity`), 
 Secret Service, or agy's `.gemini/antigravity-cli/antigravity-oauth-token` fallback. They do not
 read Gemini CLI's `oauth_creds.json` or retain Google's refresh token.
 
-Before a new link, a bearer within 60 seconds of expiry is renewed by `agy models`.
+Before a new link, a bearer within 60 seconds of expiry, or with unknown expiry, is
+renewed by `agy models`.
 Each Google link closes 60 seconds before its bearer expires; a subsequent link reads
 the renewed login. An interrupted request follows the existing uncertain-result retry path.
 Sponsor owns no OAuth refresh implementation. An account switch requires reconnecting
@@ -90,6 +91,9 @@ the TLS identity bound to that provider. No extra endpoint is needed in the rela
 credential form.
 
 ## Reproducible checks
+
+The [2026-11-27 evidence report](reports/antigravity-joined-evidence.md) records the
+completed local joined provider and refresh checks, their versions and their limits.
 
 ```sh
 cargo nextest run --workspace --locked

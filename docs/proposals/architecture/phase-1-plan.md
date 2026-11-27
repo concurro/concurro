@@ -1,6 +1,7 @@
 # Plan: phase 1, contracts and platform
 
-**Status: implementation complete and locally verified; no production deployment.**
+**Status (2026-11-24): complete; shared infrastructure is in production.**
+The steps below describe the original Phase 1 baseline, before service deployment.
 See the [phase 1 progress record](../../rust-rewrite-progress.md) for exit-test evidence.
 
 Phase 1 of the [architecture review](../architecture.md#migration) builds what every Rust

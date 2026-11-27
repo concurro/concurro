@@ -1,8 +1,9 @@
 # Demo target policy after pilots #33/#34
 
-Status: approved direction; included in the combined engine release, awaiting deployment.
-The broader policy support ships with readable output and output-contract feedback.
-Target configuration changes remain a separate, explicit rollout step.
+**Status (2026-11-24): implementation complete.** Engine support and the Rust
+[policy implementation](../../crates/tasks-core/src/policy.rs) preserve the configurable
+protections and limits. Target configuration remains an installation-specific rollout;
+this document does not establish that the original pilot tasks were resumed.
 
 Use `paths.protected_extensions: []` to allow every supported text-file extension.
 Remove the demo's toolchain, formatter and script-directory protections. Keep
@@ -22,7 +23,7 @@ protection, text/mode checks, pinned approvals and aggregate transport limits re
 2. Replace the demo fork's allow-list config with the new policy and explicit limits.
 3. A writer can resume #33/#34 under the new settings, preserving their work, findings and
    spent budgets. This does not answer their questions or waive unresolved findings.
-4. Large inventories use checkpoint format 5; resume receipts use format 6. Rollback
-   requires an engine that reads every format already saved.
+4. Large inventories use checkpoint format 5; resume receipts use format 6. Forward
+   migrations and corrective releases must preserve every format already saved.
 
 No deployment or pilot commands are part of this code change.

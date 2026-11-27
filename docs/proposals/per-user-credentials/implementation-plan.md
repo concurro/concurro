@@ -1,5 +1,12 @@
 # Per-user credentials: implementation plan
 
+**Historical Python implementation record.** Phase 5 replaced this wiring with native
+accounts/OpenBao and the Rust exchange/gateway. Use the
+[Phase 5 plan](../architecture/phase-5-plan.md#implementation-status)
+and [gateway guide](../../../gateway/README.md) for current interfaces and deployment.
+The original baselines, evidence and commands below are retained for migration reference,
+not instructions for the active stack.
+
 The current [main integration](main-integration.md) uses configured upstream writer authority
 for new consent/control/admission, while preserving identity-bound self-withdrawal and own
 consent reads after writer loss. Historical phase reviews retain their original evidence.

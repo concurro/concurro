@@ -1,5 +1,14 @@
 # S6: task application on the Rust exchange
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
+The subsequent [Antigravity integration](../../../antigravity.md) adds Google as a
+provider slot, with the same consent, frozen grants, budgets and same-payer fallback.
+The retained Python runner invokes the Rust agy adapter for Google profiles.
+
 Part of the [phase 5 plan](../phase-5-plan.md). The same release starts in either mode,
 `exchange_kind = "python"` or `"rust"`, chosen in settings. S7 switches it to `"rust"` after
 the quiesce, and the retirement slice removes the Python mode.

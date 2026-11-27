@@ -1,8 +1,44 @@
 # Phase 5 plan: exchange, inference gateway and secrets in Rust
 
-**Status: plan, not implemented.** Phase 5 of the [migration](../architecture.md#migration),
-planned against the deployed phase 4 system (backend `6e04c6b`, frontend `8a65807`).
-Each slice has its own brief in [`phase-5/`](phase-5/).
+**Status (2026-11-27): S0–S6 implemented; S7 cutover complete, closeout partial.**
+Each slice has its own brief in [`phase-5/`](phase-5/). The plan was written against
+Phase 4; the table below distinguishes completed implementation from remaining work.
+
+## Implementation status
+
+| Slice | State | Evidence / remaining work |
+| ---- | ---- | ---- |
+| S0, baseline/spikes | Complete | [Spike evidence](../../rust-phase-5-s0-evidence.md) |
+| S1, relay | Original release complete; protocol 6 on main | Sponsor **v0.1.2** / protocol 5 was the cutover baseline. Protocol 6 adds Antigravity; [local joined inference and refresh checks passed](../../reports/antigravity-joined-evidence.md). A coordinated protocol-6 rollout remains separate. |
+| S2, OpenBao | Implemented and provisioned | [Evidence](../../rust-phase-5-s2-evidence.md); service roles, policies, backups and recovery custody established |
+| S3, native accounts | Implemented and activated | [Evidence](../../rust-phase-5-s3-evidence.md); vault capture/import and metadata checks complete |
+| S4, exchange/runner | Implemented and activated | [S4a](../../reports/phase-5-s4a-evidence.md), [S4b](../../reports/phase-5-s4b-evidence.md), [S4c](../../reports/phase-5-s4c-evidence.md), [S4d](../../reports/phase-5-s4d-evidence.md) |
+| S5/S6, gateway/tasks | Implemented and activated | [Combined evidence](../../reports/phase-5-s5-s6-evidence.md); subsequent CI corrections are in the released tree |
+| S7, cutover/qualification/retirement | Partly complete | Native stack switched, import and authenticated UI/health/connectivity checks complete. Deployed Actions/provider qualification and final source/helper retirement remain. |
+
+The retained Python engine/Actions runner uses runner API v2. It is not part of the
+retirement. Funding remains a module of the task application; accounts owns credential
+metadata, OpenBao holds material, and the Rust exchange/gateway execute admitted work.
+
+The later [Antigravity integration](../../antigravity.md) adds a Rust CLI adapter while
+retaining the Python engine/runner. Protocol 6 is now required by Sponsor and verifier
+on main; the protocol-5 release and cutover instructions below are historical. No
+protocol-6 deployment is established by the local joined test.
+
+Remaining closeout:
+
+- Run a real Actions turn through runner v2 and the new inference path. Org, personal,
+  relay, fallback and cancel/withdrawal paths have local tests. Antigravity subscription
+  inference reached the real provider through local gateway/verifier/Sponsor processes;
+  that does not qualify the deployed Actions path or the other funding scenarios.
+- Retire obsolete Python exchange/vault/agentgateway source, startup-mode adapters and
+  deployment-helper paths after qualification. Stopped legacy containers and preserved
+  migration data are not proof that source retirement is complete.
+
+Operational records and installation-specific commands remain in the deployment repository.
+
+The sections below remain the implementation/cutover design, including historical
+before/after tables; their future tense is not an indication that S0–S6 remain unbuilt.
 
 ## Outcome
 
@@ -105,7 +141,7 @@ Each decision names the older proposal text it replaces, where there is one.
     and audits the verifier's native path. So the older plan to reuse it is withdrawn.
 12. **Codex WebSocket keeps `responses-bridge`,** pointed at the Rust gateway instead
     of agentgateway. Native WebSocket support in the gateway is later work.
-13. **The relay is replaced without Python compatibility.** Sponsor 0.2.0 and the
+13. **The relay is replaced without Python compatibility.** Sponsor 0.1.2 and the
     verifier use protocol 5 ([S0](../../rust-phase-5-s0-evidence.md#1-relay-protocol-range)).
     The release splits the three caller credentials, adds owner API v1, persists claim
     revocation and allowance, and requires signed claims for every dispatch. Old private
@@ -119,7 +155,7 @@ Each decision names the older proposal text it replaces, where there is one.
 | Slice | Delivers | Brief |
 | ---- | ---- | ---- |
 | S0 | Contract decisions and feasibility spikes, on top of the recorded phase 4 baseline | [s0](phase-5/s0-baseline.md) |
-| S1 | `concurro-relay` release: Sponsor 0.2.0, caller credentials, owner API v1, claims, persisted revocation and allowance | [s1](phase-5/s1-relay.md) |
+| S1 | `concurro-relay` release: Sponsor 0.1.2, caller credentials, owner API v1, claims, persisted revocation and allowance | [s1](phase-5/s1-relay.md) |
 | S2 | OpenBao and the shared secrets client | [s2](phase-5/s2-openbao.md) |
 | S3 | Accounts credential store, OpenBao writes, metadata API, change facts, vault import | [s3](phase-5/s3-accounts.md) |
 | S4 | Rust exchange, runner API v2, launcher and engine client | [s4](phase-5/s4-exchange.md) |
@@ -273,7 +309,7 @@ installation's own commands belong in its private deployment records.
 1. **The phase 4 baseline holds.** Its live checks of credential add, reorder and
    delete, a browser command's receipt and actor, and fresh Sponsor pairing passed on
    the old stack ([S0](phase-5/s0-baseline.md#phase-4-baseline)).
-2. **S1 is qualified for deployment,** with Sponsor 0.2.0 available. Stage its
+2. **S1 is qualified for deployment,** with Sponsor 0.1.2 available. Stage its
    protocol 5 image and settings inactive; the live protocol 4 verifier stays in
    place until the coordinated switch. The new owner, dispatch and release APIs
    need the Phase 5 callers.
@@ -382,7 +418,7 @@ release SHAs, recorded in the private deployment records.
 
 S0 tested the plan's original assumptions ([evidence](../../rust-phase-5-s0-evidence.md)):
 
-- **The relay protocol range was infeasible.** Sponsor 0.2.0 and the verifier move to
+- **The relay protocol range was infeasible.** Sponsor 0.1.2 and the verifier move to
   protocol 5 together; no Python API compatibility is required.
 - **OpenBao works as planned,** with two corrections in S2.
 - **Streaming passthrough with a usage tap works,** as does `responses-bridge` in front

@@ -1,0 +1,148 @@
+{
+  "date": "2026-11-27",
+  "description": "Sanitized observations extracted from the recorded joined and refresh checks; not a new test run.",
+  "source_sha256": {
+    "joined-result.json": "93713054de764d65dd4316a4f6b38a63bf9565a0384f746ad8ea6ca16e82bf61",
+    "refresh-results5.jsonl": "51efc282db054c806789885ee4241b5c7b0cfb18c84d78ac3f0e019c9f99909c",
+    "refresh-control.jsonl": "357bab79aba5ae11278eeaef817be3a08bac4ad953f161a32e493f00ea9075cf",
+    "summary.json": "ae25255aef809fc9a8943836a84f5c71534d3a20d1299362f3b191549086bb66"
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "elapsed_seconds": 31.797601833,
+      "marker": 741
+    },
+    {
+      "turn": 1,
+      "elapsed_seconds": 4.498357084,
+      "marker": 742
+    }
+  ],
+  "same_conversation": true,
+  "settlements": [
+    {
+      "category": "ok",
+      "dispatched": true,
+      "usage": {
+        "input_tokens": 9079,
+        "output_tokens": 61,
+        "cache_read_input_tokens": null,
+        "cache_creation_input_tokens": null
+      }
+    },
+    {
+      "category": "ok",
+      "dispatched": true,
+      "usage": {
+        "input_tokens": 9565,
+        "output_tokens": 48,
+        "cache_read_input_tokens": null,
+        "cache_creation_input_tokens": null
+      }
+    }
+  ],
+  "refresh": [
+    {
+      "supplied_remaining_seconds": 120,
+      "exit_code": 0,
+      "elapsed_seconds": 2.695,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3597.948,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 61,
+      "exit_code": 0,
+      "elapsed_seconds": 1.816,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3598.092,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 45,
+      "exit_code": 0,
+      "elapsed_seconds": 1.809,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3598.081,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 15,
+      "exit_code": 0,
+      "elapsed_seconds": 2.178,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3597.829,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 5,
+      "exit_code": 0,
+      "elapsed_seconds": 2.02,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3597.881,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": -5,
+      "exit_code": 0,
+      "elapsed_seconds": 1.905,
+      "access_changed": true,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3598.09,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    }
+  ],
+  "refresh_controls": [
+    {
+      "supplied_remaining_seconds": 3600,
+      "exit_code": 0,
+      "elapsed_seconds": 2.468,
+      "access_changed": false,
+      "refresh_changed": false,
+      "remaining_after_seconds": 3597.532,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 601,
+      "exit_code": 0,
+      "elapsed_seconds": 1.785,
+      "access_changed": false,
+      "refresh_changed": false,
+      "remaining_after_seconds": 599.214,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    },
+    {
+      "supplied_remaining_seconds": 301,
+      "exit_code": 0,
+      "elapsed_seconds": 1.793,
+      "access_changed": false,
+      "refresh_changed": false,
+      "remaining_after_seconds": 299.207,
+      "stdout_bytes": 1230,
+      "stderr_bytes": 29,
+      "recognized_models": true
+    }
+  ]
+}

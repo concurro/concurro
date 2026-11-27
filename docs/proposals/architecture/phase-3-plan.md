@@ -1,7 +1,11 @@
 # Plan: phase 3, the task application
 
-**Status: implementation in progress.** It builds on [phase 2](phase-2-plan.md), which must be in
-production first: the task application consumes `github.*` from ingress.
+**Status (2026-11-24): M1–M3 implemented and cut over.** The task application is the
+controller in production. Local evidence covers [M1](../../rust-phase-3-m1-evidence.md),
+[M2](../../rust-phase-3-m2-evidence.md) and [M3](../../rust-phase-3-m3-evidence.md).
+The plan below preserves the migration baseline; Python backoffice/exchange/vault wiring
+has since been replaced by phases 4–5. Owner-use and team-readiness criteria are not a
+claim that every workflow has been exercised live.
 
 Phase 3 of the [architecture review](../architecture.md#migration) replaces the Python
 service's task controller with a Rust task application, with Postgres as the authority,
@@ -35,7 +39,8 @@ M1's local implementation is accepted. The [M1 evidence](../../rust-phase-3-m1-e
 records the full 123 test checkpoint and the separately tested five regression
 closure delta. No live target was exercised.
 M2 is also accepted locally; its [evidence](../../rust-phase-3-m2-evidence.md)
-records the frozen source, correction and test limits. M3 remains in progress.
+records the frozen source, correction and test limits. M3 is also accepted locally;
+its [evidence](../../rust-phase-3-m3-evidence.md) records scope and test limits.
 
 ## Team workflows
 
@@ -58,14 +63,14 @@ this table is dropped; [deferrals](#deferrals) lists what isn't carried over and
 
 ### Deferrals
 
-Each is explicit, with why and what it changes for users:
+Original scope decisions, reconciled with phases 4–5:
 
 | Deferred | Why | Impact |
 | ---- | ---- | ---- |
 | Mentions and assignment channels | New features, not in the Python service today ([mentions](../mentions.md)) | None at the cutover; they're built on the task application afterwards |
-| Relay-custody credentials in production | Not deployed today; the verifier's qualification is open ([sponsor relay](../sponsor-relay.md)) | None at the cutover; the task application selects relay-custody versions like any other once the verifier is deployed |
-| Command comments posted on a user's behalf by the backoffice | A backoffice command becomes a request with the signed-in user as its actor ([request intake](../request-intake.md#backoffice)), so the delegated comment and its "may have posted" recovery go away | The issue shows the request's reply naming the user, instead of a bot comment carrying the command text |
-| Sign-in, credential writes and relay approvals in Rust | Phase 4 ([plan](phase-4-plan.md)). They all act with the viewer's own token, so moving sign-in alone wouldn't retire the Python backoffice | None for users; the Python backoffice keeps doing them |
+| Relay-custody credentials | Implemented through phases 4–5 ([sponsor relay](../sponsor-relay.md)) | Pairing/connectivity and local joined Antigravity inference verified; deployed Actions/provider qualification remains open |
+| Command comments posted on a user's behalf by the backoffice | A backoffice command becomes a request with the signed-in user as its actor ([request intake](../request-intake.md#backoffice)), so the delegated comment and its "may have posted" recovery go away | The browser receives a request receipt; the durable request records the actor. No GitHub command or reply comment is posted for this channel |
+| Sign-in, credential writes and relay approvals in Rust | Completed in [Phase 4](phase-4-plan.md); native storage followed in Phase 5 | Accounts serves these flows; the Python backoffice is retired |
 
 ## Roles
 

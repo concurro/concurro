@@ -1,6 +1,10 @@
 # Proposal: retrospective tuning
 
-**Status: proposal, not implemented.**
+**Status (2026-11-24): partly implemented.** Phase 0's legacy
+[collector and snapshot replay](../retrospective-collection.md) exist. The collector reads
+Python-era sources; a Rust task/exchange adapter is still needed for current production
+collection. Model analysis, tuning PR publication, evaluation and scheduling remain deferred.
+The "Today" section below describes the original Python baseline.
 
 Analyse past tasks and open a pull request in the target's fork with recommended changes
 to its `.concurro/` configuration. Each recommendation states a hypothesis and cites the

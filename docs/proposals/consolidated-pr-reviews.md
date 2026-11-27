@@ -1,6 +1,9 @@
 # Proposal: consolidated PR reviews
 
-**Status: proposal, not implemented.** Revised after two Codex reviews against the code.
+**Status (2026-11-24): deferred.** The Rust task application still publishes a review
+[per reviewer turn](../../crates/tasks/src/pr_review_publication.rs). Round-wide publication,
+deduplication and contradiction handling are not implemented. The Python references below
+record the proposal's original baseline; finding attribution remains a current invariant.
 
 Post **one** GitHub review per review round instead of one per reviewer model, with each
 finding attributed to its reviewer. Later phases add duplicate grouping and contradiction

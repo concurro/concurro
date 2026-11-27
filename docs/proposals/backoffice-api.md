@@ -1,8 +1,16 @@
 # Proposal: backoffice API surface
 
-**Status: proposal (input for a design spec), not implemented.** Inventory of the HTTP
-endpoints a web backoffice needs, mapped to where the data lives today and what is
-missing. Credential management builds on [per-user credentials](per-user-credentials.md).
+**Status (2026-11-24): core workflows implemented; this route inventory is superseded.**
+[Accounts](../../crates/accounts/src/) serves sign-in, credentials and signed browser
+commands; the [read API router](../../crates/backoffice-api/src/api.rs) serves task/list
+views, archived diagnostics, SSE, configuration visibility and a read-only Operator view.
+Browser commands use direct task requests, not delegated GitHub comments.
+
+Preferences and the broader operator-write/evaluation inventory below are not implemented.
+Old endpoint names, Python data-source assumptions and deployment prerequisites are design
+history, not the current HTTP contract. Use the routers and [contracts](contracts.md) for
+implemented interfaces. Phases [3](architecture/phase-3-plan.md),
+[4](architecture/phase-4-plan.md) and [5](architecture/phase-5-plan.md) record their delivery.
 
 ## Use cases
 

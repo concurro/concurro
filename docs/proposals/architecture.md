@@ -1,11 +1,16 @@
 # Proposal: architecture review
 
-**Status: proposal, not implemented.**
+**Status (2026-11-27): phases 1–4 complete; Phase 5 implementation and cutover complete,
+with deployed Actions/provider qualification and source retirement pending.** See the
+[proposal index](README.md) and
+[Phase 5 status](architecture/phase-5-plan.md#implementation-status).
+The Python inventory and migration steps below record the original design baseline;
+they are not a list of currently running services.
 
 Concurro was built quickly as an MVP: task state is stored on GitHub, inputs are re-read
 from GitHub on every tick, and each component keeps its own SQLite files. New features
-now spend much of their effort on keeping those stores consistent. This review describes
-the current architecture, where it costs us, and a target built on PostgreSQL and an event
+then spent much of their effort on keeping those stores consistent. This review describes
+that original architecture, its costs, and the target built on PostgreSQL and an event
 bus, split into services along domain and trust boundaries. The migration path lines up
 with porting the services to Rust.
 
@@ -15,6 +20,8 @@ idle task waiting on one CI ref, without caching; the worker's snapshot before i
 more.
 
 ## Today
+
+Historical pre-rewrite baseline; see the status above for implementation progress.
 
 ### Processes
 

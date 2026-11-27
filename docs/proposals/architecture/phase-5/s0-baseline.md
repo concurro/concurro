@@ -1,17 +1,23 @@
 # S0: contracts and spikes
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live. The protocol-5 baseline below was
+superseded on main by protocol 6; see [Antigravity operation](../../../antigravity.md).
+
 Part of the [phase 5 plan](../phase-5-plan.md). S0 changes no running service.
 
 **Done.** Results are in the [S0 evidence](../../../rust-phase-5-s0-evidence.md), and the
 affected briefs are updated:
 
-- S1 ships Sponsor 0.2.0 first.
+- S1 ships Sponsor 0.1.2 first.
 - S2 drops the mount-wide `cas_required`, sources self-init passwords from the
   environment, and documents recovery-key break-glass.
 
 ## Phase 4 baseline
 
-Phase 4's live checks passed on the current stack with the operator's own account, and
+Phase 4's live checks passed on the pre-Phase-5 stack with the operator's own account, and
 are recorded in the private deployment records
 ([phase 4 plan](../phase-4-plan.md#slices), P1–P3):
 
@@ -43,7 +49,7 @@ recorded result:
 
 1. **Relay protocol range.** Can the verifier's `Acceptor` accept protocols 4 and 5,
    with `Order` and `Notice` unchanged for version 4 clients? If not, S1 ships Sponsor
-   0.2.0 first and asks installed Sponsors to upgrade before the verifier deploys.
+   0.1.2 first and asks installed Sponsors to upgrade before the verifier deploys.
 2. **OpenBao.** OpenBao 2.7.3 on a throwaway PostgreSQL database, with:
    - the static seal and declarative self-init;
    - a KV v2 mount;

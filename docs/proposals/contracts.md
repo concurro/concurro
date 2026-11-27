@@ -1,6 +1,17 @@
 # Proposal: service contracts
 
-**Status: proposal, not implemented.**
+**Status (2026-11-27): implemented contract families plus explicitly deferred sketches.**
+Rust wire definitions and generated artifacts live in [`crates/contracts`](../../crates/contracts/)
+and [`contracts`](../../contracts/). Phase 5 APIs are implemented; `funding.routes`,
+`funding.charge` and mention-interpretation contracts remain future work. Python bridge
+entries describe retained migration code, not the active Phase 5 path. See the
+[Phase 5 status](architecture/phase-5-plan.md#implementation-status) for qualification
+and retirement still outstanding.
+
+The generated contracts also include Google funding and agy runner bindings. The relay
+uses protocol 6; [Antigravity operation](../antigravity.md) describes the added dispatch
+and credential route. Protocol-5 and two-provider inventories below retain their original
+migration scope; use the generated definitions for the current wire schema.
 
 Every contract between the services in the [architecture review](architecture.md), across
 all migration phases: what crosses each boundary, who produces and consumes it, how it's

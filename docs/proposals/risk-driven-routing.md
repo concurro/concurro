@@ -1,6 +1,9 @@
 # Proposal: risk-driven routing
 
-**Status: proposal, not implemented.** Implementation detail for each phase is staged in
+**Status (2026-11-24): automatic routing deferred.** Descriptive complexity and risk
+[classification](../design/complexity-risk.md) is implemented; it does not select models,
+effort or review depth. The controller references below are the original Python baseline;
+implementation briefs must target the Rust task application. Phase detail is staged in
 [`risk-driven-routing/`](risk-driven-routing/).
 
 Use Concurro's complexity and change-risk ratings to choose the models, reasoning effort

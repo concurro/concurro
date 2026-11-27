@@ -1,5 +1,10 @@
 # S2: OpenBao and the shared secrets client
 
+**Implementation status (2026-11-24): complete.** This brief retains the original
+work order and acceptance design. See the [Phase 5 status](../phase-5-plan.md#implementation-status)
+for deployment, evidence and remaining live qualification/retirement. A listed acceptance
+case is not, by itself, evidence that it ran live.
+
 Part of the [phase 5 plan](../phase-5-plan.md). OpenBao deploys before the cutover. Its
 first users are the operator, storing org provider credentials, and its own checks.
 Accounts, the exchange and the gateway use it from S7.

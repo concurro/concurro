@@ -1,11 +1,9 @@
 # Proposal: fewer, larger issue artifacts
 
-**Status: complete.** Phases 1–4b are committed and reviewed through `c1af384`; phase 5
-reconciles the evidence and operator guidance. This closeout remains uncommitted for review.
-See the [closeout measurements](../reports/limits-cleanup/README.md#artifact-consolidation-closeout)
-and [current storage contract](../design/issue-dashboard.md). The deployed engine has not
-changed. No deployment, pilot commands, artifact deletion or diagnostic writes are authorized
-by this document.
+**Status (2026-11-24): complete historical engine implementation.** See the
+[closeout measurements](../reports/limits-cleanup/README.md#artifact-consolidation-closeout)
+and [engine artifact contract](../design/issue-dashboard.md). Rust task state and recovery
+now live in PostgreSQL; this brief is not the task application's storage specification.
 
 Make a report's first durable artifact serve both recovery and human reading, and avoid
 routine collection scans. Store canonical data inside an HTML comment; derive multipart
