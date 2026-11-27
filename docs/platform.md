@@ -243,8 +243,13 @@ the gap and strictly reconcile rather than assuming a later scan can recover it.
 
 ## PostgreSQL major upgrades
 
-The Compose examples and test fixtures use PostgreSQL 19.0. PostgreSQL uses
-`major.minor` release numbers, not three-component SemVer.
+Deployment and development Compose files use PostgreSQL 18.7. Integration test
+fixtures also cover PostgreSQL 19.0; Concurro does not require a database major
+upgrade. PostgreSQL uses `major.minor` release numbers, not three-component SemVer.
+
+A shared PostgreSQL instance is upgraded separately from Concurro application
+releases, with migration and validation covering every database and application
+using that instance.
 
 An existing 18.x data directory must be migrated before starting 19.0 against it.
 Stop application writers, including OpenBao, and take a logical backup of every

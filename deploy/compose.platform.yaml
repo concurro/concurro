@@ -4,7 +4,7 @@ name: concurro-platform
 
 services:
   postgres:
-    image: postgres:19.0
+    image: postgres:18.7
     environment:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
     volumes:
