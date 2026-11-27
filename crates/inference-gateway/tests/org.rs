@@ -130,8 +130,9 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
                     tokio::time::sleep(Duration::from_secs(60)).await;
                     Json(json!({"type":"message","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})).into_response()
                 } else if body["flood"] == true {
-                    let events = (0..10_000).map(|_| Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"content_block_delta\"}\n\n")));
-                    let mut response = Body::from_stream(stream::iter(events)).into_response();
+                    // Keep producing until cancellation; a finite body can fit in socket buffers.
+                    let events = stream::repeat_with(|| Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"content_block_delta\"}\n\n")));
+                    let mut response = Body::from_stream(events).into_response();
                     response.headers_mut().insert("content-type", "text/event-stream".parse().expect("media"));
                     response
                 } else if body["hang"] == true {
@@ -386,6 +387,8 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
         .await
         .expect("backpressured stream");
     assert_eq!(flood.status(), 200);
+    let flood_request: Uuid = sqlx::query_scalar("SELECT request_id FROM exchange.inference_requests WHERE turn_id=$1 ORDER BY started DESC, request_id DESC LIMIT 1")
+        .bind(turn).fetch_one(database.pool()).await.expect("backpressured request id");
     let gateway_disconnected = gateway_url.clone();
     let disconnected = tokio::spawn(async move {
         reqwest::Client::new()
@@ -430,6 +433,22 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
     tokio::time::timeout(Duration::from_secs(3), stall_seen.notified())
         .await
         .expect("provider saw stalled request");
+    let admitted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM exchange.inference_requests WHERE turn_id=$1")
+            .bind(turn)
+            .fetch_one(database.pool())
+            .await
+            .expect("admitted requests before revoke");
+    // Normal, rotation, hanging body, unread body, disconnected headers and stalled headers.
+    assert_eq!(admitted, 6);
+    let flood_finished: bool = sqlx::query_scalar(
+        "SELECT finished IS NOT NULL FROM exchange.inference_requests WHERE request_id=$1",
+    )
+    .bind(flood_request)
+    .fetch_one(database.pool())
+    .await
+    .expect("backpressured request state");
+    assert!(!flood_finished, "unread stream settled before revocation");
     control.revoke("org-1").await.expect("revoke grant");
     let ended = tokio::time::timeout(Duration::from_secs(13), hanging.chunk())
         .await
@@ -447,14 +466,22 @@ async fn org_route_uses_frozen_credential_and_reports_usage() {
     for _ in 0..40 {
         let finished: i64 = sqlx::query_scalar("SELECT count(*) FROM exchange.inference_requests WHERE turn_id=$1 AND finished IS NOT NULL")
             .bind(turn).fetch_one(database.pool()).await.expect("finished count");
-        if finished == 5 {
+        if finished == admitted {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let settled: i64 = sqlx::query_scalar("SELECT count(*) FROM exchange.inference_requests WHERE turn_id=$1 AND finished IS NOT NULL")
         .bind(turn).fetch_one(database.pool()).await.expect("settled requests");
-    assert_eq!(settled, 5, "backpressured stream remained unsettled");
+    assert_eq!(settled, admitted, "admitted requests remained unsettled");
+    let flood_outcome: (String, Option<Value>) = sqlx::query_as(
+        "SELECT category,usage FROM exchange.inference_requests WHERE request_id=$1",
+    )
+    .bind(flood_request)
+    .fetch_one(database.pool())
+    .await
+    .expect("backpressured settlement");
+    assert_eq!(flood_outcome, ("unknown".to_owned(), None));
     drop(flood);
     let mut oauth_body: Value = serde_json::from_str(include_str!(
         "../../../contracts/fixtures/exchange.http.v1/operator_submit.json"
