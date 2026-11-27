@@ -932,6 +932,7 @@ pub async fn run_task_initialize(
         BTreeMap::from([
             (Provider::Openai, Some(false)),
             (Provider::Anthropic, Some(false)),
+            (Provider::Google, Some(false)),
         ])
     };
     let mut apply = database.begin().await?;

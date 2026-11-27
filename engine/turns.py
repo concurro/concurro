@@ -63,7 +63,17 @@ def agent_environment(root, key, retained):
 
     This is hygiene, not a sandbox: native tools can access their own ephemeral job.
     """
-    excluded = ("ACTIONS_", "GITHUB_", "GIT_", "CONCURRO_", "OPENAI_", "ANTHROPIC_", "CLAUDE_", "CODEX_", "COPILOT_")
+    excluded = (
+        "ACTIONS_",
+        "GITHUB_",
+        "GIT_",
+        "CONCURRO_",
+        "OPENAI_",
+        "ANTHROPIC_",
+        "CLAUDE_",
+        "CODEX_",
+        "COPILOT_",
+    )
     environment = {
         k: v
         for k, v in os.environ.items()

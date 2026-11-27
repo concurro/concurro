@@ -543,7 +543,7 @@ async fn verify_initialization(
                 .fetch_one(database.pool())
                 .await
                 .expect("transition status");
-                if acknowledged == 3 {
+                if acknowledged == Provider::ALL.len() as i64 + 1 {
                     break;
                 }
                 tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -582,7 +582,10 @@ async fn verify_initialization(
             .expect("boundary");
         assert!(funding.acknowledged);
         assert_eq!(funding.slot.expect("slot")["status"], "withdrawn");
-        assert_eq!(sponsorship_writes.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            sponsorship_writes.load(Ordering::SeqCst),
+            Provider::ALL.len() + 1
+        );
         running.abort();
         server.abort();
         return;
@@ -611,7 +614,7 @@ async fn verify_initialization(
             .fetch_one(database.pool())
             .await
             .expect("transition status");
-            if acknowledged == 2 {
+            if acknowledged == Provider::ALL.len() as i64 {
                 break;
             }
             tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -619,7 +622,10 @@ async fn verify_initialization(
     })
     .await
     .expect("initial sponsorship transitions acknowledged");
-    assert_eq!(sponsorship_writes.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        sponsorship_writes.load(Ordering::SeqCst),
+        Provider::ALL.len()
+    );
     assert!(vault_reads.load(Ordering::SeqCst) > 0);
     let (initial, availability, funding): (Value, Value, String) = sqlx::query_as(
         "SELECT initial,availability,default_funding FROM tasks.sponsorship_initializations",
@@ -961,7 +967,7 @@ async fn verify_initialization(
             .fetch_one(database.pool())
             .await
             .expect("transition status");
-            if acknowledged == 3 {
+            if acknowledged == Provider::ALL.len() as i64 + 1 {
                 break;
             }
             tokio::time::sleep(StdDuration::from_millis(50)).await;

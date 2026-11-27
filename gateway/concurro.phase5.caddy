@@ -20,7 +20,8 @@ handle /concurro/* {
 		reverse_proxy concurro-responses-bridge:7451
 	}
 
-	handle /inference/v1/* {
+	@inference path /inference/v1/* /inference/v1beta/*
+	handle @inference {
 		uri strip_prefix /inference
 		reverse_proxy concurro-inference-gateway:8098 {
 			flush_interval -1

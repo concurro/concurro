@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{InitializationSnapshot, Requirements, python_digest};
+use crate::{InitializationSnapshot, Provider, Requirements, python_digest};
 
 /// Inputs shared by `design_binding`.
 pub struct DesignPhase<'a> {
@@ -309,17 +309,19 @@ fn named_review_roster(
             let provider = profile["provider"]
                 .as_str()
                 .ok_or("reviewer provider is invalid")?;
-            let harness = match provider {
-                "openai" => "codex",
-                "anthropic" => "claude",
-                _ => return Err("reviewer provider is unsupported".to_owned()),
-            };
+            let harness = Provider::from_name(provider)
+                .ok_or("reviewer provider is unsupported")?
+                .harness();
             let model = profile["model"]
                 .as_str()
                 .ok_or("reviewer model is invalid")?;
             let effort = profile["effort"]
                 .as_str()
                 .ok_or("reviewer effort is invalid")?;
+            Provider::from_name(provider)
+                .expect("validated provider")
+                .validate_model(model, effort)
+                .map_err(|error| error.to_string())?;
             let agent = json!({
                 "profile":name,"provider":provider,"model":model,
                 "effort":effort,"harness":harness,

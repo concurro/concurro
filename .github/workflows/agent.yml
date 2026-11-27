@@ -99,6 +99,33 @@ jobs:
             < "$RUNNER_TEMP/concurro/engine/agent-clients.txt"
           echo "$RUNNER_TEMP/concurro-clients/node_modules/.bin" >> "$GITHUB_PATH"
 
+      - name: Install Antigravity adapter
+        if: steps.target.outputs.agy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          clients="$RUNNER_TEMP/concurro-clients/bin"
+          mkdir -p "$clients"
+          manifest="$RUNNER_TEMP/concurro/engine/agent-native-clients.json"
+          platform="$(uname -s)-$(uname -m)"
+          case "$platform" in
+            Linux-x86_64) platform=linux-x64 ;;
+            *) echo "Unsupported Antigravity runner platform: $platform" >&2; exit 1 ;;
+          esac
+          url=$(jq -er --arg platform "$platform" '.agy[$platform].url' "$manifest")
+          digest=$(jq -er --arg platform "$platform" '.agy[$platform].sha512' "$manifest")
+          member=$(jq -er --arg platform "$platform" '.agy[$platform].member' "$manifest")
+          archive="$RUNNER_TEMP/agy.tar.gz"
+          curl -fsSL "$url" -o "$archive"
+          printf '%s  %s\n' "$digest" "$archive" | sha512sum --check
+          tar -xzf "$archive" -C "$clients" "$member"
+          mv "$clients/$member" "$clients/agy"
+          cd "$RUNNER_TEMP/concurro"
+          cargo build --target-dir "$RUNNER_TEMP/concurro-agy-build" \
+            --release --locked -p concurro-agy --bin agy-runner
+          cp "$RUNNER_TEMP/concurro-agy-build/release/agy-runner" "$clients/agy-runner"
+          echo "$clients" >> "$GITHUB_PATH"
+
       - name: ${{ format('{0} · {1}', inputs.operation-label || 'Run agent', inputs.task-label || inputs.session) }}
         shell: bash
         run: |

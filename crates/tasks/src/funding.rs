@@ -120,6 +120,7 @@ fn credential_routes(
     let all_routes: &[&str] = match provider {
         Provider::Openai => &["openai-api-key", "chatgpt-subscription"],
         Provider::Anthropic => &["anthropic-api-key", "claude-subscription"],
+        Provider::Google => &["gemini-api-key", "antigravity-subscription"],
     };
     let defaults = config
         .get("provider_credential_routes")
@@ -163,6 +164,7 @@ pub(crate) fn boundary_eligibility(
     let mut available = BTreeMap::from([
         (Provider::Openai, Some(false)),
         (Provider::Anthropic, Some(false)),
+        (Provider::Google, Some(false)),
     ]);
     if !metadata.history_complete {
         return Ok(available
@@ -177,11 +179,7 @@ pub(crate) fn boundary_eligibility(
             .as_ref()
             .and_then(|agent| agent["profile"].as_str())
             .unwrap_or(&harness);
-        let provider = if harness == "codex" {
-            Provider::Openai
-        } else {
-            Provider::Anthropic
-        };
+        let provider = Provider::from_harness(&harness).context("agent harness is unsupported")?;
         requirements.push((role.to_owned(), profile.to_owned(), provider));
     }
     for (role, roster) in [
@@ -189,20 +187,15 @@ pub(crate) fn boundary_eligibility(
         ("pr_reviewers", pr_review_roster(config)),
     ] {
         for member in roster.map_err(anyhow::Error::msg)? {
-            let provider_name = member
+            let provider = match member
                 .agent
                 .as_ref()
                 .and_then(|agent| agent["provider"].as_str())
-                .unwrap_or(match member.provider.as_str() {
-                    "codex" => "openai",
-                    "claude" => "anthropic",
-                    _ => "invalid",
-                });
-            let provider = match provider_name {
-                "openai" => Provider::Openai,
-                "anthropic" => Provider::Anthropic,
-                _ => anyhow::bail!("reviewer provider is invalid"),
-            };
+            {
+                Some(name) => Provider::from_name(name),
+                None => Provider::from_harness(&member.provider),
+            }
+            .context("reviewer provider is invalid")?;
             requirements.push((role.to_owned(), member.provider, provider));
         }
     }
@@ -234,11 +227,7 @@ pub(crate) async fn fund_attempt(
     let harness = request["provider"]
         .as_str()
         .context("attempt provider is missing")?;
-    let provider = match harness {
-        "codex" => Provider::Openai,
-        "claude" => Provider::Anthropic,
-        _ => anyhow::bail!("attempt provider is unsupported"),
-    };
+    let provider = Provider::from_harness(harness).context("attempt provider is unsupported")?;
     let Some(funding) = funding_slot(database, task_id, provider).await? else {
         ensure!(
             configuration["funding_mode"] != "contributed",

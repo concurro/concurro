@@ -15,7 +15,7 @@ def provider_modes(config, state=None):
     """Resolve frozen task choices, retaining the target mode only as the legacy default."""
     fallback = mode(config)
     values = (state or {}).get("provider_funding", {})
-    result = {provider: values.get(provider, fallback) for provider in ("openai", "anthropic")}
+    result = {provider: values.get(provider, fallback) for provider in ("openai", "anthropic", "google")}
     if any(value not in ("org", "contributed") for value in result.values()):
         raise Blocked("unknown provider funding policy")
     return result

@@ -146,7 +146,8 @@ fn typed_command(body: &CommandBody) -> Result<RequestCommand, CommandError> {
             let (provider, mode) = argument
                 .and_then(|value| value.split_once(' '))
                 .ok_or_else(invalid)?;
-            if !["openai", "anthropic"].contains(&provider) || !["org", "personal"].contains(&mode)
+            if !["openai", "anthropic", "google"].contains(&provider)
+                || !["org", "personal"].contains(&mode)
             {
                 return Err(invalid());
             }
@@ -156,7 +157,7 @@ fn typed_command(body: &CommandBody) -> Result<RequestCommand, CommandError> {
             })
         }
         "sponsor" | "withdraw" => {
-            if argument.is_some_and(|value| !["openai", "anthropic"].contains(&value))
+            if argument.is_some_and(|value| !["openai", "anthropic", "google"].contains(&value))
                 || (body.command == "withdraw" && argument.is_none())
             {
                 return Err(invalid());

@@ -9,7 +9,7 @@ from credential_routes import ROUTES
 from model_config import assigned, resolve
 from policy import design_roster, digest
 
-PROVIDERS = ("openai", "anthropic")
+PROVIDERS = ("openai", "anthropic", "google")
 
 ROLES = {
     "triage": "intake",
@@ -344,7 +344,7 @@ def coverage(routes, slots, metadata, target=None):
 def own_consent(projection: dict, actor: str) -> dict:
     """Expose only this actor's consent evidence; omit task state, other owners and accounting."""
     result = {"scope": "own", "status": projection.get("status", "unavailable"), "slots": {}}
-    for provider in ("openai", "anthropic"):
+    for provider in ("openai", "anthropic", "google"):
         slot = (projection.get("task", {}).get("slots") or projection.get("slots") or {}).get(provider) or {}
         result["slots"][provider] = (
             deepcopy(slot) if slot.get("sponsor_id") == actor else {"status": "not shown", "sponsor_id": None}

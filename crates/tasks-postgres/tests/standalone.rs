@@ -642,6 +642,7 @@ async fn standalone_funding_edit_preserves_historical_boundary() {
     let available = BTreeMap::from([
         (Provider::Openai, Some(false)),
         (Provider::Anthropic, Some(false)),
+        (Provider::Google, Some(false)),
     ]);
     let initial = initialize_consent(
         &facts,

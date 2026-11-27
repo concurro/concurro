@@ -114,6 +114,7 @@ fn review_binding(
     let agent = reviewer.agent.clone().unwrap_or_else(|| {
         let (vendor, effort) = match reviewer.provider.as_str() {
             "claude" => (json!("anthropic"), json!("medium")),
+            "agy" => (json!("google"), json!("low")),
             "codex" => (json!("openai"), json!("low")),
             _ => (Value::Null, Value::Null),
         };

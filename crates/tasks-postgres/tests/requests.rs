@@ -1110,143 +1110,144 @@ async fn browser_action_replays_exact_contents_across_restarts() {
 
 #[tokio::test]
 async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
-    let postgres = PostgresContainer::start().await.expect("Postgres");
-    let database = Database::connect(postgres.url(), 2)
-        .await
-        .expect("database");
-    migrate(&database).await.expect("task schema");
-    migrate_events(&database).await.expect("event schema");
-    let outbox = Outbox::new(1024 * 1024, vec!["request.>".to_owned()]);
-    let writer = Authority {
-        writer: true,
-        issue_open: true,
-    };
-    let former_writer = Authority {
-        writer: false,
-        issue_open: true,
-    };
-    let mut latest = request(
-        25,
-        RequestKind::Later(LaterCommand::Sponsor {
-            provider: Some("openai".to_owned()),
-        }),
-    );
-    latest.actor = Actor {
-        id: 25,
-        login: "new-sponsor".to_owned(),
-    };
-    let issue = latest.issue;
-    let mut earlier = request(
-        10,
-        RequestKind::Later(LaterCommand::Sponsor {
-            provider: Some("anthropic".to_owned()),
-        }),
-    );
-    earlier.actor = Actor {
-        id: 10,
-        login: "former-sponsor".to_owned(),
-    };
-    let mut withdrawal = request(
-        30,
-        RequestKind::Later(LaterCommand::Withdraw {
-            provider: "openai".to_owned(),
-        }),
-    );
-    withdrawal.actor = earlier.actor.clone();
-    for (command, authority) in [
-        (&latest, writer),
-        (&earlier, writer),
-        (&withdrawal, former_writer),
-    ] {
-        let mut work = database.begin().await.expect("record command");
-        record_request(&mut work, command).await.expect("record");
-        sqlx::query(
-            "INSERT INTO tasks.comment_revisions \
+    for sponsor_provider in [Provider::Openai, Provider::Google] {
+        let postgres = PostgresContainer::start().await.expect("Postgres");
+        let database = Database::connect(postgres.url(), 2)
+            .await
+            .expect("database");
+        migrate(&database).await.expect("task schema");
+        migrate_events(&database).await.expect("event schema");
+        let outbox = Outbox::new(1024 * 1024, vec!["request.>".to_owned()]);
+        let writer = Authority {
+            writer: true,
+            issue_open: true,
+        };
+        let former_writer = Authority {
+            writer: false,
+            issue_open: true,
+        };
+        let mut latest = request(
+            25,
+            RequestKind::Later(LaterCommand::Sponsor {
+                provider: Some(sponsor_provider.as_str().to_owned()),
+            }),
+        );
+        latest.actor = Actor {
+            id: 25,
+            login: "new-sponsor".to_owned(),
+        };
+        let issue = latest.issue;
+        let mut earlier = request(
+            10,
+            RequestKind::Later(LaterCommand::Sponsor {
+                provider: Some("anthropic".to_owned()),
+            }),
+        );
+        earlier.actor = Actor {
+            id: 10,
+            login: "former-sponsor".to_owned(),
+        };
+        let mut withdrawal = request(
+            30,
+            RequestKind::Later(LaterCommand::Withdraw {
+                provider: sponsor_provider.as_str().to_owned(),
+            }),
+        );
+        withdrawal.actor = earlier.actor.clone();
+        for (command, authority) in [
+            (&latest, writer),
+            (&earlier, writer),
+            (&withdrawal, former_writer),
+        ] {
+            let mut work = database.begin().await.expect("record command");
+            record_request(&mut work, command).await.expect("record");
+            sqlx::query(
+                "INSERT INTO tasks.comment_revisions \
              (repository_id,issue_number,comment_id,source,source_at) VALUES ($1,$2,$3,$4,$5)",
-        )
-        .bind(issue.repository_id)
-        .bind(issue.number)
-        .bind(command.comment_id.expect("comment"))
-        .bind(&command.order.source)
-        .bind(command.order.at)
-        .execute(work.connection())
-        .await
-        .expect("revision");
-        work.commit().await.expect("record commit");
-        let mut work = database.begin().await.expect("apply command");
-        let decision = apply_request(&mut work, &outbox, command.id, issue, authority)
+            )
+            .bind(issue.repository_id)
+            .bind(issue.number)
+            .bind(command.comment_id.expect("comment"))
+            .bind(&command.order.source)
+            .bind(command.order.at)
+            .execute(work.connection())
             .await
-            .expect("decision")
-            .expect("pending")
-            .1;
-        work.commit().await.expect("apply commit");
-        assert_eq!(decision.status, RequestStatus::Applied);
-    }
-    let boundary = request(40, RequestKind::Start).order;
-    let visible = [
-        (earlier.order.clone(), earlier.actor.clone()),
-        (latest.order.clone(), latest.actor.clone()),
-        (withdrawal.order.clone(), withdrawal.actor.clone()),
-    ];
-    let mut read = database.begin().await.expect("source read");
-    assert!(
-        confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible)
+            .expect("revision");
+            work.commit().await.expect("record commit");
+            let mut work = database.begin().await.expect("apply command");
+            let decision = apply_request(&mut work, &outbox, command.id, issue, authority)
+                .await
+                .expect("decision")
+                .expect("pending")
+                .1;
+            work.commit().await.expect("apply commit");
+            assert_eq!(decision.status, RequestStatus::Applied);
+        }
+        let boundary = request(40, RequestKind::Start).order;
+        let visible = [
+            (earlier.order.clone(), earlier.actor.clone()),
+            (latest.order.clone(), latest.actor.clone()),
+            (withdrawal.order.clone(), withdrawal.actor.clone()),
+        ];
+        let mut read = database.begin().await.expect("source read");
+        assert!(
+            confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible)
+                .await
+                .expect("confirmed source")
+        );
+        assert!(
+            !confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible[1..])
+                .await
+                .expect("missing source")
+        );
+        read.commit().await.expect("source read commit");
+        assert!(task(&database, issue).await.expect("task read").is_none());
+        let projected = consent_projection(&database, issue)
             .await
-            .expect("confirmed source")
-    );
-    assert!(
-        !confirm_current_sponsorship_sources(&mut read, issue, &boundary, &visible[1..])
-            .await
-            .expect("missing source")
-    );
-    read.commit().await.expect("source read commit");
-    assert!(task(&database, issue).await.expect("task read").is_none());
-    let projected = consent_projection(&database, issue)
-        .await
-        .expect("projection");
-    assert!(matches!(
-        &projected.providers[&Provider::Openai].slot,
-        SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
-    ));
-    assert!(matches!(
-        &projected.providers[&Provider::Anthropic].slot,
-        SponsorSlot::Active { sponsor, .. } if sponsor.id == earlier.actor.id
-    ));
-    assert!(
-        projected.providers[&Provider::Openai]
-            .tombstones
-            .contains_key(&earlier.actor.id)
-    );
+            .expect("projection");
+        assert!(matches!(
+            &projected.providers[&sponsor_provider].slot,
+            SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
+        ));
+        assert!(matches!(
+            &projected.providers[&Provider::Anthropic].slot,
+            SponsorSlot::Active { sponsor, .. } if sponsor.id == earlier.actor.id
+        ));
+        assert!(
+            projected.providers[&sponsor_provider]
+                .tombstones
+                .contains_key(&earlier.actor.id)
+        );
 
-    let removed = CommentRevision {
-        issue,
-        comment_id: earlier.comment_id.expect("comment"),
-        order: SourceOrder {
-            at: DateTime::<Utc>::from_timestamp(35, 0).expect("time"),
-            source_id: earlier.comment_id.expect("comment"),
-            source: "comment:10:deleted".to_owned(),
-            index: 0,
-        },
-        deleted: true,
-        request: None,
-    };
-    let mut work = database.begin().await.expect("remove source");
-    record_comment_revision(&mut work, &outbox, &removed)
-        .await
-        .expect("comment removal");
-    work.commit().await.expect("removal commit");
-    let projected = consent_projection(&database, issue)
-        .await
-        .expect("projection");
-    assert!(matches!(
-        &projected.providers[&Provider::Openai].slot,
-        SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
-    ));
-    assert!(matches!(
-        &projected.providers[&Provider::Anthropic].slot,
-        SponsorSlot::Withdrawn { .. }
-    ));
-    let revision: i64 = sqlx::query_scalar(
+        let removed = CommentRevision {
+            issue,
+            comment_id: earlier.comment_id.expect("comment"),
+            order: SourceOrder {
+                at: DateTime::<Utc>::from_timestamp(35, 0).expect("time"),
+                source_id: earlier.comment_id.expect("comment"),
+                source: "comment:10:deleted".to_owned(),
+                index: 0,
+            },
+            deleted: true,
+            request: None,
+        };
+        let mut work = database.begin().await.expect("remove source");
+        record_comment_revision(&mut work, &outbox, &removed)
+            .await
+            .expect("comment removal");
+        work.commit().await.expect("removal commit");
+        let projected = consent_projection(&database, issue)
+            .await
+            .expect("projection");
+        assert!(matches!(
+            &projected.providers[&sponsor_provider].slot,
+            SponsorSlot::Active { sponsor, .. } if sponsor.id == latest.actor.id
+        ));
+        assert!(matches!(
+            &projected.providers[&Provider::Anthropic].slot,
+            SponsorSlot::Withdrawn { .. }
+        ));
+        let revision: i64 = sqlx::query_scalar(
         "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
     )
     .bind(issue.repository_id)
@@ -1254,28 +1255,28 @@ async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
     .fetch_one(database.pool())
     .await
     .expect("consent revision");
-    assert_eq!(revision, 4);
+        assert_eq!(revision, 4);
 
-    let mut pending = request(
-        40,
-        RequestKind::Later(LaterCommand::Sponsor {
-            provider: Some("anthropic".to_owned()),
-        }),
-    );
-    pending.issue.number += 1;
-    let received = CommentRevision {
-        issue: pending.issue,
-        comment_id: pending.comment_id.expect("comment"),
-        order: pending.order.clone(),
-        deleted: false,
-        request: Some(pending.clone()),
-    };
-    let mut work = database.begin().await.expect("receive pending consent");
-    record_comment_revision(&mut work, &outbox, &received)
-        .await
-        .expect("record source");
-    work.commit().await.expect("source commit");
-    let pending_revision: i64 = sqlx::query_scalar(
+        let mut pending = request(
+            40,
+            RequestKind::Later(LaterCommand::Sponsor {
+                provider: Some("anthropic".to_owned()),
+            }),
+        );
+        pending.issue.number += 1;
+        let received = CommentRevision {
+            issue: pending.issue,
+            comment_id: pending.comment_id.expect("comment"),
+            order: pending.order.clone(),
+            deleted: false,
+            request: Some(pending.clone()),
+        };
+        let mut work = database.begin().await.expect("receive pending consent");
+        record_comment_revision(&mut work, &outbox, &received)
+            .await
+            .expect("record source");
+        work.commit().await.expect("source commit");
+        let pending_revision: i64 = sqlx::query_scalar(
         "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
     )
     .bind(pending.issue.repository_id)
@@ -1283,16 +1284,16 @@ async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
     .fetch_one(database.pool())
     .await
     .expect("pending revision");
-    assert_eq!(
-        pending_revision, 1,
-        "a receipt invalidates an outstanding fill"
-    );
-    let mut work = database.begin().await.expect("redeliver source");
-    record_comment_revision(&mut work, &outbox, &received)
-        .await
-        .expect("replay source");
-    work.commit().await.expect("replay commit");
-    let replay_revision: i64 = sqlx::query_scalar(
+        assert_eq!(
+            pending_revision, 1,
+            "a receipt invalidates an outstanding fill"
+        );
+        let mut work = database.begin().await.expect("redeliver source");
+        record_comment_revision(&mut work, &outbox, &received)
+            .await
+            .expect("replay source");
+        work.commit().await.expect("replay commit");
+        let replay_revision: i64 = sqlx::query_scalar(
         "SELECT consent_revision FROM tasks.issue_controls WHERE repository_id=$1 AND issue_number=$2",
     )
     .bind(pending.issue.repository_id)
@@ -1300,29 +1301,29 @@ async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
     .fetch_one(database.pool())
     .await
     .expect("replay revision");
-    assert_eq!(replay_revision, pending_revision);
+        assert_eq!(replay_revision, pending_revision);
 
-    let mut bare = request(
-        50,
-        RequestKind::Later(LaterCommand::Sponsor { provider: None }),
-    );
-    bare.issue.number += 2;
-    let mut work = database.begin().await.expect("bare sponsor");
-    record_request(&mut work, &bare)
-        .await
-        .expect("record bare sponsor");
-    let decision = apply_request(&mut work, &outbox, bare.id, bare.issue, writer)
-        .await
-        .expect("bare sponsor decision")
-        .expect("pending bare sponsor")
-        .1;
-    work.commit().await.expect("bare sponsor commit");
-    assert_eq!(decision.status, RequestStatus::Refused);
-    assert_eq!(
-        decision.reason,
-        Some("usage: /concurro sponsor <openai|anthropic>")
-    );
-    let facts: i64 = sqlx::query_scalar(
+        let mut bare = request(
+            50,
+            RequestKind::Later(LaterCommand::Sponsor { provider: None }),
+        );
+        bare.issue.number += 2;
+        let mut work = database.begin().await.expect("bare sponsor");
+        record_request(&mut work, &bare)
+            .await
+            .expect("record bare sponsor");
+        let decision = apply_request(&mut work, &outbox, bare.id, bare.issue, writer)
+            .await
+            .expect("bare sponsor decision")
+            .expect("pending bare sponsor")
+            .1;
+        work.commit().await.expect("bare sponsor commit");
+        assert_eq!(decision.status, RequestStatus::Refused);
+        assert_eq!(
+            decision.reason,
+            Some("usage: /concurro sponsor <openai|anthropic|google>")
+        );
+        let facts: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM tasks.sponsorship_facts WHERE repository_id=$1 AND issue_number=$2",
     )
     .bind(bare.issue.repository_id)
@@ -1330,7 +1331,8 @@ async fn pre_enrollment_consent_keeps_source_order_and_self_withdrawal() {
     .fetch_one(database.pool())
     .await
     .expect("bare sponsor fact count");
-    assert_eq!(facts, 0);
+        assert_eq!(facts, 0);
+    }
 }
 
 /// Removing an older source cannot revoke a newer slot held by the same actor.

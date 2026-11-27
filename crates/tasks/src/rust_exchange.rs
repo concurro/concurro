@@ -195,9 +195,13 @@ async fn submission(
         request: old.payload["request"].clone(),
         feedback: old.payload["feedback"].clone(),
         spec: old.payload["spec"].clone(),
-        timeout: old.payload["timeout"]
-            .as_f64()
-            .context("turn timeout missing")?,
+        timeout: serde_json::from_value(
+            old.payload
+                .get("timeout")
+                .context("turn timeout missing")?
+                .clone(),
+        )
+        .context("invalid turn timeout")?,
         retained,
     };
     let mut body = TurnSubmissionV2 {

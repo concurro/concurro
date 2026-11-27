@@ -130,8 +130,8 @@ pub struct TurnPayloadV2 {
     pub feedback: Value,
     /// Frozen checkout and workspace specification.
     pub spec: Value,
-    /// Engine timeout in seconds.
-    pub timeout: f64,
+    /// Optional execution limit in seconds; null uses the outer runner lifetime.
+    pub timeout: Option<f64>,
     /// Retained archive to restore, when continuing.
     pub retained: Option<BlobRef>,
 }

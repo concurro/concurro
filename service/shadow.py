@@ -17,7 +17,7 @@ from commands import CommandKind, parse
 from controller import config_digest
 from credentials import Credential
 from github import NotFound, Transient
-from model_config import resolve
+from model_config import HARNESSES, resolve
 from policy import Blocked, CredentialsUnavailable, ProviderFailure, digest
 from relay import ExchangeError
 from vocab import STANDALONE_REVIEW
@@ -225,7 +225,7 @@ class Shadow:
                 "route": row.get("route"),
                 "version": row.get("version"),
                 "provider": sponsorship.ROUTES.get(row.get("route"), {}).get("sponsorship_provider")
-                or {"codex": "openai", "claude": "anthropic"}.get(row.get("provider")),
+                or {harness: vendor for vendor, harness in HARNESSES.items()}.get(row.get("provider")),
                 "sponsor": row.get("account") if row.get("kind") == "contributed" else None,
             }
             for row in projection.get("task", {}).get("usage", [])

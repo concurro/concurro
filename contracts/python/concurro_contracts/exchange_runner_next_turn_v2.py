@@ -58,9 +58,9 @@ class TurnPayloadV2(StrictModel):
     """
     Frozen checkout and workspace specification.
     """
-    timeout: StrictFloat
+    timeout: StrictFloat | None = None
     """
-    Engine timeout in seconds.
+    Optional execution limit in seconds; null uses the outer runner lifetime.
     """
 
 

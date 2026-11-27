@@ -62,6 +62,8 @@ class TargetLoadingTests(ServiceFixture, unittest.TestCase):
 
     def test_worker_runs_named_yaml_configuration(self):
         self.config = named_config()
+        self.config["models"]["neon-high"] = {"provider": "google", "model": "gemini-4-neon", "effort": "high"}
+        self.config["agents"]["triage"] = "neon-high"
         self.fake.config = self.config
         self.backend.files.pop(".concurro/config.json")
         self.backend.files[".concurro/config.yaml"] = yaml.safe_dump({**self.config, "engine": ENGINE})
@@ -72,7 +74,7 @@ class TargetLoadingTests(ServiceFixture, unittest.TestCase):
         self.reconciler.poll()
         self.drain()
         self.assertTrue(self.agents.calls)
-        self.assertEqual(self.agents.calls[0][:2], ("sol-medium", "intake"))
+        self.assertEqual(self.agents.calls[0][:2], ("neon-high", "intake"))
 
     def test_both_remote_formats_are_rejected(self):
         self.backend.files[".concurro/config.yaml"] = "{}"

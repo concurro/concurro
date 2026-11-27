@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -29,7 +29,11 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod google;
 mod protocol;
+
+/// Hosted dispatch endpoint for Google subscription envelopes.
+const ANTIGRAVITY_PATH: &str = "/dispatch/v2/antigravity";
 use protocol::{Observation, RouteKind};
 
 /// Inputs shared by `pump`.
@@ -71,7 +75,7 @@ pub struct OrgRoute {
     pub upstream: String,
     /// Secret token or API key.
     pub token: SecretRef,
-    /// `bearer` or `x-api-key` injection.
+    /// `bearer`, `x-api-key`, or Gemini `x-goog-api-key` injection.
     pub auth: String,
     /// Optional ChatGPT account header.
     pub account: Option<SecretRef>,
@@ -121,6 +125,7 @@ pub fn router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/models", get(models))
         .route("/v1/{*path}", post(forward))
+        .route("/v1beta/{*path}", post(forward))
         .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
         .with_state(state)
 }
@@ -134,6 +139,11 @@ fn key(headers: &HeaderMap) -> Option<&str> {
         .or_else(|| {
             headers
                 .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        })
+        .or_else(|| {
+            headers
+                .get("x-goog-api-key")
                 .and_then(|value| value.to_str().ok())
         })
         .filter(|value| !value.is_empty())
@@ -218,6 +228,7 @@ fn authorized_request(
 ) -> reqwest::RequestBuilder {
     request = match auth {
         "x-api-key" => request.header("x-api-key", token.expose_secret()),
+        "x-goog-api-key" => request.header("x-goog-api-key", token.expose_secret()),
         _ => request.bearer_auth(token.expose_secret()),
     };
     if let Some(account) = account {
@@ -246,15 +257,36 @@ async fn models(State(state): State<GatewayState>, headers: HeaderMap) -> Respon
 async fn forward(
     State(state): State<GatewayState>,
     Path(path): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
-    body: Bytes,
+    mut body: Bytes,
 ) -> Response {
     let Some(key) = key(&headers) else {
         return refusal(StatusCode::UNAUTHORIZED);
     };
-    let model = serde_json::from_slice::<Value>(&body)
-        .ok()
-        .and_then(|value| value.get("model")?.as_str().map(str::to_owned));
+    let google = if uri.path().starts_with("/v1beta/") {
+        match google::Request::parse(&path, uri.query()) {
+            Ok(request) => Some(request),
+            Err(_) => return refusal(StatusCode::UNPROCESSABLE_ENTITY),
+        }
+    } else {
+        None
+    };
+    let parsed = match serde_json::from_slice::<Value>(&body) {
+        Ok(value) if value.is_object() => value,
+        _ => return refusal(StatusCode::UNPROCESSABLE_ENTITY),
+    };
+    let model = google
+        .as_ref()
+        .map(|request| request.model.clone())
+        .or_else(|| parsed["model"].as_str().map(str::to_owned));
+    if let Some(request) = &google
+        && parsed
+            .get("model")
+            .is_some_and(|model| model.as_str() != Some(&request.model))
+    {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let Some(model) = model else {
         return refusal(StatusCode::UNPROCESSABLE_ENTITY);
     };
@@ -272,6 +304,33 @@ async fn forward(
         Err(error) => return refusal(admission_status(&error)),
     };
     let route = &admission.credential.route;
+    let google_route = match admission.credential.custody.as_deref() {
+        None => state
+            .routes
+            .get(route)
+            .is_some_and(|route| route.auth == "x-goog-api-key"),
+        Some("secret_store") => route == "gemini-api-key",
+        Some("relay") => route == "antigravity-subscription",
+        _ => false,
+    };
+    if google.is_some() != google_route {
+        finish_local(&state.admission, admission.request_id, "unknown").await;
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let path = google.as_ref().map_or(path, |request| request.path.clone());
+    if route == "antigravity-subscription" {
+        match google
+            .as_ref()
+            .expect("Google route checked")
+            .subscription(&body, &admission.request_id.to_string())
+        {
+            Ok(envelope) => body = Bytes::from(envelope),
+            Err(_) => {
+                finish_local(&state.admission, admission.request_id, "unknown").await;
+                return refusal(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+    }
     let (upstream, auth, token_ref, account_ref, beta, path, relay) =
         match admission.credential.custody.as_deref() {
             None => {
@@ -307,6 +366,8 @@ async fn forward(
                     personal.upstream.clone(),
                     if route == "anthropic-api-key" {
                         "x-api-key"
+                    } else if route == "gemini-api-key" {
+                        "x-goog-api-key"
                     } else {
                         "bearer"
                     },
@@ -325,7 +386,9 @@ async fn forward(
                     finish_local(&state.admission, admission.request_id, "unknown").await;
                     return refusal(StatusCode::BAD_GATEWAY);
                 };
-                let destination = if path.ends_with("messages") {
+                let destination = if google_route {
+                    ANTIGRAVITY_PATH
+                } else if path.ends_with("messages") {
                     MESSAGES_PATH
                 } else if path.ends_with("responses") {
                     RESPONSES_PATH
@@ -391,7 +454,7 @@ async fn forward(
     } else if let Some(client_beta) = client_beta {
         request = request.header("anthropic-beta", client_beta);
     }
-    if !matches!(auth, "bearer" | "x-api-key") {
+    if !matches!(auth, "bearer" | "x-api-key" | "x-goog-api-key") {
         finish_local(&state.admission, admission.request_id, "unknown").await;
         return refusal(StatusCode::BAD_GATEWAY);
     }
@@ -479,10 +542,14 @@ async fn forward(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let kind = RouteKind::for_request(
-        route == "chatgpt-subscription" || account_ref.is_some(),
-        &path,
-    );
+    let kind = if google_route {
+        RouteKind::Google
+    } else {
+        RouteKind::for_request(
+            route == "chatgpt-subscription" || account_ref.is_some(),
+            &path,
+        )
+    };
     let retry_after = provider
         .headers()
         .get(header::RETRY_AFTER)
@@ -643,6 +710,8 @@ fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
                     field,
                     "authorization"
                         | "x-api-key"
+                        | "x-goog-api-key"
+                        | "x-goog-user-project"
                         | "chatgpt-account-id"
                         | "cookie"
                         | "origin"
@@ -778,6 +847,18 @@ mod tests {
 
     use super::{relay_refusal_category, secret_failure};
     use concurro_secrets::Error as SecretError;
+
+    /// Google native credentials work while Bearer keeps its existing precedence.
+    #[test]
+    fn native_credentials_preserve_bearer_precedence() {
+        let mut headers = super::HeaderMap::new();
+        headers.insert("x-goog-api-key", "derived-key".parse().unwrap());
+        assert_eq!(super::key(&headers), Some("derived-key"));
+        headers.insert("authorization", "Bearer derived-key".parse().unwrap());
+        assert_eq!(super::key(&headers), Some("derived-key"));
+        headers.append("x-goog-api-key", "other-key".parse().unwrap());
+        assert_eq!(super::key(&headers), Some("derived-key"));
+    }
 
     /// S1 claim, allowance, reuse and link failures retain their distinct accounting.
     #[test]

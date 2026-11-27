@@ -44,6 +44,8 @@ def command_for(request, schema_path, output_path):
     servers = request.get("mcp_servers")
     if servers:
         servers = mcp_config.resolved(servers, request["workspace"])
+    if provider == "agy":
+        return ["agy-runner"]
     if provider == "codex":
         admission = request.get("admission") or {}
         bridge = (
@@ -184,6 +186,22 @@ def main():
             request["resume_id"] = turn.identifier if turn.previous else None
             prompt = turn.start()
         command = command_for(request, schema_path, output_path)
+        if request["provider"] == "agy":
+            prompt = json.dumps(
+                {
+                    "model": request["model"],
+                    "effort": request.get("effort", "low"),
+                    "workspace": request["workspace"],
+                    "scratch": request["scratch"],
+                    "retained_root": request["retained_root"] if turn else None,
+                    "resume_id": request.get("resume_id"),
+                    "gateway_url": request["gateway"]["url"],
+                    "schema_path": schema_path,
+                    "prompt": prompt,
+                    "timeout": request["timeout"],
+                    "mcp_servers": mcp_config.resolved(request.get("mcp_servers") or {}, request["workspace"]),
+                }
+            )
         result = subprocess.run(
             command,
             input=prompt,
@@ -192,12 +210,17 @@ def main():
             timeout=request["timeout"],
             env={**os.environ, **provider_environment(request)},
         )
-        if result.returncode in KILLED:
+        if result.returncode in KILLED or (request["provider"] == "agy" and result.returncode == 75):
             raise ProviderUncertain()
+        if request["provider"] == "agy" and result.returncode == TIMEOUT_EXIT:
+            raise subprocess.TimeoutExpired(command, request["timeout"])
         if result.returncode:
             raise RuntimeError("provider invocation failed")
         if request["provider"] == "codex":
             response = json.loads(Path(output_path).read_text())
+        elif request["provider"] == "agy":
+            envelope = json.loads(result.stdout)
+            response = envelope["structured_output"]
         else:
             envelope = json.loads(result.stdout)
             if envelope.get("is_error") or envelope.get("subtype") != "success":
@@ -213,6 +236,8 @@ def main():
                 identifier = identifiers[0]
             elif request["provider"] == "claude":
                 identifier = envelope["session_id"]
+            elif request["provider"] == "agy":
+                identifier = envelope["conversation_id"]
             if request.get("resume_id") and identifier != request["resume_id"]:
                 raise ValueError("provider resumed a different session")
             turn.finish(response, identifier)

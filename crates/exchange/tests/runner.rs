@@ -615,7 +615,7 @@ async fn python_engine_completes_canned_turn_with_fake_inference() {
             "context":{"base":base_sha}},
         "feedback":{},
         "spec":{"refs":{"main":base_sha}, "head":"main", "base_branch":"main", "candidate":null},
-        "timeout":30.0,
+        "timeout":null,
         "retained":{"sha256":retained_sha,"size":retained.len()}
     });
     let session = store

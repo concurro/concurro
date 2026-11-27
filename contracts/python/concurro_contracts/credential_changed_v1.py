@@ -108,7 +108,7 @@ class CredentialChanged(StrictModel):
     """
     provider: StrictStr
     """
-    `anthropic` or `openai`.
+    `anthropic`, `google` or `openai`.
     """
     revoked: list[RevokedVersion]
     """

@@ -41,7 +41,10 @@ impl Validate for Settings {
         );
         for route in self.routes.values() {
             ensure!(
-                matches!(route.auth.as_str(), "bearer" | "x-api-key"),
+                matches!(
+                    route.auth.as_str(),
+                    "bearer" | "x-api-key" | "x-goog-api-key"
+                ),
                 "invalid org auth mode"
             );
         }
@@ -75,4 +78,36 @@ async fn main() -> Result<()> {
     tracing::info!(listener = %settings.listen, "org inference gateway ready");
     axum::serve(listener, router(state)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use concurro_secrets::SecretRef;
+
+    /// Every supported provider auth mode can start the deployed gateway process.
+    #[test]
+    fn provider_auth_modes_validate() {
+        for auth in ["bearer", "x-api-key", "x-goog-api-key"] {
+            let settings = Settings {
+                listen: "127.0.0.1:0".into(),
+                exchange_admission_url: "http://exchange".into(),
+                admission_bearer_file: "bearer".into(),
+                routes: HashMap::from([(
+                    "provider".into(),
+                    OrgRoute {
+                        upstream: "https://provider".into(),
+                        token: SecretRef::File("credential".into()),
+                        auth: auth.into(),
+                        account: None,
+                        anthropic_beta: None,
+                    },
+                )]),
+                personal_routes: HashMap::new(),
+                relay: None,
+                openbao: None,
+            };
+            settings.validate().unwrap();
+        }
+    }
 }

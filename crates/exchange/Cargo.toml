@@ -41,7 +41,7 @@ concurro-exchange-client = { path = "../exchange-client" }
 concurro-testkit = { path = "../testkit" }
 concurro-tasks-core = { path = "../tasks-core" }
 concurro-vault-v1 = { path = "../vault-v1" }
-concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "c1ea48bfa3fbd67a4531e8bfa9f28c166721853d" }
+concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "dcb96c69ef4f1a7c5c355a40802ec7253084d849" }
 reqwest.workspace = true
 rand = "0.8"
 rsa = { version = "0.9", features = ["pem"] }

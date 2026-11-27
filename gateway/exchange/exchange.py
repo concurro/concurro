@@ -288,7 +288,7 @@ def session_binding(value):
             for k in {"base", "config_sha", "engine"} & set(value)
         )
         or not isinstance(value["role"], str)
-        or re.fullmatch(r"(intake|plan|plan_qc|develop|review):(claude|codex)", value["role"]) is None
+        or re.fullmatch(r"(intake|plan|plan_qc|develop|review):(claude|codex|agy)", value["role"]) is None
         or not isinstance(value["phase"], str)
         or not re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", value["phase"])
     ):
@@ -336,6 +336,7 @@ CATALOG = Path(__file__).with_name("credential_routes.py")
 if not CATALOG.is_file():
     CATALOG = Path(__file__).resolve().parents[2] / "engine" / "credential_routes.py"
 ROUTES = runpy.run_path(str(CATALOG))["ROUTES"]
+PROVIDERS = frozenset(route["sponsorship_provider"] for route in ROUTES.values())
 FUNDING_FIELDS = {
     "version",
     "funding",
@@ -697,7 +698,7 @@ class Exchange:
     def sponsorship(self, request):
         """Apply replay-safe provider fences/cutoffs atomically; org-funded sessions are untouched."""
         requests = request.get("transitions", [request])
-        if not isinstance(requests, list) or not requests or len(requests) > 2:
+        if not isinstance(requests, list) or not requests or len(requests) > len(PROVIDERS):
             raise ValueError("invalid sponsorship transitions")
         fields = {
             "repository",
@@ -720,7 +721,7 @@ class Exchange:
                 or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", value["repository"])
                 or type(value["issue"]) is not int
                 or value["issue"] < 1
-                or value["provider"] not in ("openai", "anthropic")
+                or value["provider"] not in PROVIDERS
                 or type(value["generation"]) is not int
                 or value["generation"] < 1
                 or type(value["expected_epoch"]) is not int

@@ -30,14 +30,51 @@ pub enum Provider {
     Openai,
     /// Anthropic API keys or Claude subscriptions.
     Anthropic,
+    /// Gemini API keys or Antigravity subscriptions.
+    Google,
 }
 
 impl Provider {
+    /// Providers participating in consent and funding projections.
+    pub const ALL: [Self; 3] = [Self::Openai, Self::Anthropic, Self::Google];
+
+    /// Resolve a canonical provider name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.as_str() == name)
+    }
+
+    /// Resolve the provider behind a supported agent CLI.
+    pub fn from_harness(harness: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.harness() == harness)
+    }
+
+    /// Agent CLI associated with this provider.
+    pub fn harness(self) -> &'static str {
+        match self {
+            Self::Openai => "codex",
+            Self::Anthropic => "claude",
+            Self::Google => "agy",
+        }
+    }
+
+    /// Validate model-specific selections before a profile can enter a grant.
+    pub fn validate_model(self, model: &str, effort: &str) -> anyhow::Result<()> {
+        if self == Self::Google {
+            concurro_agy::validate_model(model, effort)?;
+        }
+        Ok(())
+    }
+
     /// Return the provider's canonical command and storage name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Openai => "openai",
             Self::Anthropic => "anthropic",
+            Self::Google => "google",
         }
     }
 }
@@ -122,7 +159,7 @@ pub struct ProviderConsent {
 /// Folded provider state for an issue, including pre-enrollment commands.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ConsentProjection {
-    /// Both providers, including providers with no facts.
+    /// All providers, including providers with no facts.
     pub providers: BTreeMap<Provider, ProviderConsent>,
 }
 
@@ -137,24 +174,12 @@ pub struct InitialConsent {
 
 /// Normalize an authenticated sponsorship request into one fact per provider.
 pub fn consent_facts(request: &Request) -> Vec<ConsentFact> {
-    let (providers, action): (&[Provider], ConsentAction) = match &request.kind {
-        RequestKind::Later(LaterCommand::Sponsor { provider: None }) => return Vec::new(),
+    let (provider, action) = match &request.kind {
         RequestKind::Later(LaterCommand::Sponsor {
             provider: Some(provider),
-        }) => (
-            match provider.as_str() {
-                "openai" => &[Provider::Openai],
-                "anthropic" => &[Provider::Anthropic],
-                _ => return Vec::new(),
-            },
-            ConsentAction::Sponsor,
-        ),
+        }) => (provider, ConsentAction::Sponsor),
         RequestKind::Later(LaterCommand::Funding { provider, mode }) => (
-            match provider.as_str() {
-                "openai" => &[Provider::Openai],
-                "anthropic" => &[Provider::Anthropic],
-                _ => return Vec::new(),
-            },
+            provider,
             ConsentAction::Funding(match mode.as_str() {
                 "org" => FundingMode::Org,
                 "personal" => FundingMode::Contributed,
@@ -162,29 +187,25 @@ pub fn consent_facts(request: &Request) -> Vec<ConsentFact> {
             }),
         ),
         RequestKind::Later(LaterCommand::Withdraw { provider }) => (
-            match provider.as_str() {
-                "openai" => &[Provider::Openai],
-                "anthropic" => &[Provider::Anthropic],
-                _ => return Vec::new(),
-            },
+            provider,
             ConsentAction::Withdraw {
                 removed_source: None,
             },
         ),
         _ => return Vec::new(),
     };
-    providers
-        .iter()
-        .map(|provider| ConsentFact {
-            provider: *provider,
-            actor: request.actor.clone(),
-            order: request.order.clone(),
-            grant_id: hex::encode(Sha256::digest(
-                format!("{}:{}", request.order.source, provider.as_str()).as_bytes(),
-            )),
-            action: action.clone(),
-        })
-        .collect()
+    let Some(provider) = Provider::from_name(provider) else {
+        return Vec::new();
+    };
+    vec![ConsentFact {
+        provider,
+        actor: request.actor.clone(),
+        order: request.order.clone(),
+        grant_id: hex::encode(Sha256::digest(
+            format!("{}:{}", request.order.source, provider.as_str()).as_bytes(),
+        )),
+        action,
+    }]
 }
 
 /// Fold source revisions in GitHub order; a withdrawal never restores an older payer.
@@ -195,14 +216,16 @@ pub fn project_consent(facts: &[ConsentFact]) -> ConsentProjection {
         funding_order: None,
         tombstones: BTreeMap::new(),
     };
-    let mut providers =
-        BTreeMap::from([(Provider::Openai, empty()), (Provider::Anthropic, empty())]);
+    let mut providers = Provider::ALL
+        .into_iter()
+        .map(|provider| (provider, empty()))
+        .collect::<BTreeMap<_, _>>();
     let mut ordered = facts.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|fact| &fact.order);
     for fact in ordered {
         let state = providers
             .get_mut(&fact.provider)
-            .expect("both providers are initialized");
+            .expect("all providers are initialized");
         if let ConsentAction::Funding(mode) = fact.action {
             state.funding = Some(mode);
             state.funding_order = Some(fact.order.clone());
@@ -309,7 +332,7 @@ pub fn initialize_consent(
     })
 }
 
-/// Build the two exact initial Exchange slot requests from a frozen boundary.
+/// Build the exact initial Exchange slot requests from a frozen boundary.
 pub fn initial_sponsorship_transitions(
     initial: &InitialConsent,
     repository: &str,
@@ -540,6 +563,7 @@ mod tests {
         let available = BTreeMap::from([
             (Provider::Openai, Some(true)),
             (Provider::Anthropic, Some(true)),
+            (Provider::Google, Some(false)),
         ]);
         let frozen = initialize_consent(
             &[later, withdrawal.clone(), explicit],
@@ -582,7 +606,7 @@ mod tests {
             },
         )
         .expect("initial transitions");
-        assert_eq!(transitions.len(), 2);
+        assert_eq!(transitions.len(), 3);
         let anthropic = transitions
             .iter()
             .find(|request| request["provider"] == "anthropic")

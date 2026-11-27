@@ -7,7 +7,7 @@ from pathlib import Path
 from bundle import CHARTER, TARGET_INSTRUCTIONS, Bundle
 from controller import validate_config
 from github import NotFound
-from model_config import parse as parse_models
+from model_config import HARNESSES, parse as parse_models
 from policy import Blocked
 
 from .github_reads import content, head
@@ -42,8 +42,8 @@ def load_target(target, reader, engine, bot_login, engine_root=CHECKOUT, config_
         if "agents" in config
         else {config["planner"], config["implementer"], config["qc"], *config["reviewers"]}
     )
-    if not active <= {"claude", "codex"}:
-        raise Blocked("the MVP runner supports Claude and Codex roles only")
+    if not active <= set(HARNESSES.values()):
+        raise Blocked("the runner supports Claude, Codex and Antigravity roles")
     if config["repository"].lower() != repository.lower():
         raise Blocked("target configuration names another repository")
     if "engine" in config and config["engine"] != engine:

@@ -17,7 +17,7 @@ pub struct CredentialChanged {
     pub sequence: i64,
     /// The changed entry; absent for a reorder.
     pub entry_id: Option<String>,
-    /// `anthropic` or `openai`.
+    /// `anthropic`, `google` or `openai`.
     pub provider: String,
     /// What changed.
     pub change: CredentialChange,

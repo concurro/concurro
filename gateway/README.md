@@ -516,6 +516,12 @@ The launcher on `main` serves every supported release, so these only ever grow:
 - `engine/runner.py claim|prepare|serve|end|summary --session --gateway --root`, with
   `--config` and `--base` for `prepare`.
 - `engine/agent-clients.txt`: the npm packages the launcher installs, one pinned spec per line.
+- `prepare` outputs `setup`, `base` and, on agy-capable engines, `agy`. An absent `agy`
+  output skips native installation for older releases.
+- `engine/agent-native-clients.json` pins agy's Linux x64 archive and SHA-512 digest.
+  For `agy=true`, the launcher installs that archive and builds `agy-runner` from the
+  bound engine with its pinned Rust toolchain and locked dependencies. This adds setup
+  time on each agy job; a published digest-pinned adapter can replace the build later.
 - The target's optional `.concurro/setup` action, given `base`.
 
 `engine/tests/test_launcher.py` runs the workflow's own steps against the exchange. A

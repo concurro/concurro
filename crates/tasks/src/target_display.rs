@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use concurro_github_v1::AppClient;
-use concurro_tasks_core::{design_roster, effective_limits, path_rules, pr_review_roster};
+use concurro_tasks_core::{
+    Provider, design_roster, effective_limits, path_rules, pr_review_roster,
+};
 use serde_json::{Value, json};
 
 use crate::{InitializationTarget, initialization, intake_payload::assigned_agent};
@@ -51,11 +53,9 @@ fn configuration(config: &Value) -> Result<Value> {
         seat(
             role,
             name,
-            if harness == "codex" {
-                "openai"
-            } else {
-                "anthropic"
-            },
+            Provider::from_harness(&harness)
+                .context("unsupported agent harness")?
+                .as_str(),
             model,
             effort,
         );
@@ -88,11 +88,9 @@ fn configuration(config: &Value) -> Result<Value> {
             seat(
                 role,
                 name,
-                if harness == "codex" {
-                    "openai"
-                } else {
-                    "anthropic"
-                },
+                Provider::from_harness(harness)
+                    .context("unsupported agent harness")?
+                    .as_str(),
                 member.model,
                 effort,
             );

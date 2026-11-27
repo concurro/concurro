@@ -623,11 +623,10 @@ pub(crate) async fn validate_funding_admission(
     }
     let submission: TurnSubmission = serde_json::from_slice(&spec.submit_body)?;
     let request = &submission.payload["request"];
-    let provider = match request["provider"].as_str() {
-        Some("codex") => Provider::Openai,
-        Some("claude") => Provider::Anthropic,
-        _ => anyhow::bail!("attempt provider is invalid"),
-    };
+    let provider = request["provider"]
+        .as_str()
+        .and_then(Provider::from_harness)
+        .context("attempt provider is invalid")?;
     let funding = funding_slot_locked(uow, task.id.0, provider)
         .await?
         .expect("funding boundary remains present under the issue lock");
@@ -674,11 +673,10 @@ pub(crate) async fn validate_standalone_funding_admission(
 ) -> anyhow::Result<()> {
     let submission: TurnSubmission = serde_json::from_slice(&spec.submit_body)?;
     let request = &submission.payload["request"];
-    let provider = match request["provider"].as_str() {
-        Some("codex") => Provider::Openai,
-        Some("claude") => Provider::Anthropic,
-        _ => anyhow::bail!("standalone reviewer provider is invalid"),
-    };
+    let provider = request["provider"]
+        .as_str()
+        .and_then(Provider::from_harness)
+        .context("standalone reviewer provider is invalid")?;
     let funding = funding_slot_locked(uow, task_id, provider)
         .await?
         .ok_or_else(|| anyhow::anyhow!("standalone funding boundary is missing"))?;
@@ -1278,7 +1276,7 @@ pub async fn record_sponsorship_transition(
         .ok_or_else(|| anyhow::anyhow!("invalid sponsorship transition identity"))?;
     let provider = request["provider"]
         .as_str()
-        .filter(|value| matches!(*value, "openai" | "anthropic"))
+        .filter(|value| matches!(*value, "openai" | "anthropic" | "google"))
         .ok_or_else(|| anyhow::anyhow!("invalid sponsorship provider"))?;
     let expected = request["expected_epoch"]
         .as_i64()
@@ -1382,7 +1380,7 @@ pub async fn claim_sponsorship_transition(
         if predecessor.as_deref() != Some("acknowledged") {
             let floor: Option<(i64, i64)> = sqlx::query_as(
                 "SELECT f.generation,CASE WHEN $2='openai' THEN f.openai_epoch \
-                 ELSE f.anthropic_epoch END FROM tasks.cutover_floors f \
+                 WHEN $2='anthropic' THEN f.anthropic_epoch ELSE -1 END FROM tasks.cutover_floors f \
                  JOIN tasks.task_state t ON t.repository_id=f.repository_id \
                  AND t.issue_number=f.issue_number WHERE t.task_id=$1",
             )

@@ -13,6 +13,7 @@ sys.path.insert(0, str(root / "engine"))
 
 import feedback  # noqa: E402
 import prompts  # noqa: E402
+from sponsorship import PROVIDERS  # noqa: E402
 from agents import Agents  # noqa: E402
 from bundle import Bundle  # noqa: E402
 from checks import limits  # noqa: E402
@@ -130,8 +131,8 @@ if "transitions" in case:
     with tempfile.TemporaryDirectory() as directory:
         exchange = Exchange(directory + "/exchange.db", FundedGateway(), None, AUDIENCE, vault=vault)
         try:
-            assert len(case["transitions"]) == 3
-            for transition in case["transitions"][:2]:
+            assert len(case["transitions"]) == len(PROVIDERS) + 1
+            for transition in case["transitions"][: len(PROVIDERS)]:
                 exchange.sponsorship(transition)
             body = case["submission"]
             values = [body[k] for k in ("turn", "expected", "models", "budget", "lease", "payload")]
@@ -139,7 +140,7 @@ if "transitions" in case:
             assert first["status"] == "queued"
             assert exchange.submit(*values, pin=body["pin"], binding=body["binding"]) == first
             assert exchange.db.execute("SELECT count(*) FROM turns").fetchone()[0] == 1
-            withdraw = case["transitions"][2]
+            withdraw = case["transitions"][len(PROVIDERS)]
             assert withdraw["reason"] == "withdraw" and withdraw["cutoff"] == body["binding"]["epoch"]
             exchange.sponsorship(withdraw)
             later = deepcopy(body)

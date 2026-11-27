@@ -88,6 +88,7 @@ async fn uncertain_exchange_send_replays_the_persisted_transition() {
     let available = BTreeMap::from([
         (Provider::Openai, Some(false)),
         (Provider::Anthropic, Some(false)),
+        (Provider::Google, Some(false)),
     ]);
     let initial =
         initialize_consent(&[], &request.order, &actor, &available).expect("known boundary");

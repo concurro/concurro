@@ -278,13 +278,21 @@ fn replace(entry_id: &str, revision: i64, secret: &str, mutation: &str) -> Opera
     }
 }
 
-/// Replace each recorded vault entry ID with the native store's.
-fn translate(value: &Value, ids: &[(String, String)]) -> Value {
+/// Translate old entry IDs and append the new empty Google catalog to legacy snapshots.
+pub fn translate(value: &Value, ids: &[(String, String)]) -> Value {
     let mut text = value.to_string();
     for (vault, native) in ids {
         text = text.replace(vault, native);
     }
-    serde_json::from_str(&text).unwrap()
+    let mut value: Value = serde_json::from_str(&text).unwrap();
+    if let Some(providers) = value.get_mut("providers").and_then(Value::as_array_mut) {
+        providers.push(json!({"provider":"google","revision":0,"entries":[]}));
+        value["types"].as_array_mut().unwrap().extend([
+            json!({"route":"gemini-api-key","provider":"google","kind":"api_key","label":"Gemini API key"}),
+            json!({"route":"antigravity-subscription","provider":"google","kind":"subscription","label":"Antigravity subscription"}),
+        ]);
+    }
+    value
 }
 
 /// The recorded owner writes, replayed, answer as the vault did, with the same policy
@@ -984,7 +992,9 @@ async fn fake_verifier(state: Arc<Mutex<FakeVerifier>>) -> String {
             "/owner/v1/registrations/{code}",
             get(move |headers: HeaderMap, Path(code): Path<String>| async move {
                 assert!(authorized(&headers));
-                if code == "BCDF-GHJK" || code == "LMNP-QRST" {
+                if code == "BCDF-GHJV" {
+                    (StatusCode::OK, Json(json!({"name":"Google Sponsor", "routes":["antigravity-subscription"], "expires_at":"2027-01-01T00:10:00Z"})))
+                } else if code == "BCDF-GHJK" || code == "LMNP-QRST" {
                     (StatusCode::OK, Json(json!({"name":"Desk",
                         "routes":["claude-subscription","chatgpt-subscription"],
                         "expires_at":"2027-01-01T00:10:00Z"})))
@@ -1251,4 +1261,64 @@ fn relay_setup() {
     )
     .unwrap();
     assert_eq!(ipv6.setup, fixture["relay_setup_ipv6"]);
+}
+
+/// Google API keys use the vault; subscription approval binds a Sponsor-owned login.
+#[tokio::test]
+async fn google_credentials_require_sponsor_for_subscription() {
+    let harness = Harness::start().await;
+    let user = alice();
+    harness.clock.set("2027-01-01T00:00:00+00:00");
+    let api = harness
+        .native
+        .run(
+            &user,
+            add(
+                "gemini-api-key",
+                "Gemini",
+                "test-google-key",
+                "google-api-add-01",
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api["provider"], "google");
+    assert_eq!(api["record"]["custody"], "vault");
+    assert_matches!(
+        harness
+            .native
+            .run(
+                &user,
+                add(
+                    "antigravity-subscription",
+                    "Agy",
+                    "not-a-login",
+                    "google-token-add"
+                )
+            )
+            .await,
+        Err(super::CredentialError(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            _
+        ))
+    );
+    let verifier = Arc::new(Mutex::new(FakeVerifier::default()));
+    let url = fake_verifier(verifier.clone()).await;
+    let native = harness.native.clone().with_verifier(super::Verifier::new(
+        reqwest::Client::new(),
+        &url,
+        "owner-test".to_owned(),
+    ));
+    let operation = Operation::Relay(serde_json::from_value(json!({"code":"BCDF-GHJV","name":"Google Sponsor","mutation_id":"google-relay-001","routes":["antigravity-subscription"]})).unwrap());
+    let approval = native.run(&user, operation).await.unwrap();
+    let entry = &approval;
+    assert_eq!(entry["route"], "antigravity-subscription");
+    assert_eq!(entry["record"]["custody"], "relay");
+    assert_eq!(entry["record"]["relay_id"], "relay-BCDF-GHJV");
+    let listing = native.run(&user, Operation::List).await.unwrap();
+    assert_eq!(
+        listing["providers"][2]["entries"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(verifier.lock().unwrap().approvals.len(), 1);
 }

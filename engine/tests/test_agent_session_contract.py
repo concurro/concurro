@@ -90,7 +90,7 @@ class SessionEntryTests(unittest.TestCase):
             "provider": provider,
             "model": "test-model",
             "stage": "plan",
-            "timeout": 60,
+            "timeout": None if provider == "agy" else 60,
             "session": {"scope": "a" * 64, "turn": 0},
             "workspace": str(root),
             "scratch": str(root),
@@ -121,11 +121,20 @@ class SessionEntryTests(unittest.TestCase):
             self.assert_lock(root, True)
             self.assertNotIn("response_schema", json.loads(kwargs["input"]))
             command = args[0]
-            native_schema = (
-                json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
-                if provider == "codex"
-                else json.loads(command[command.index("--json-schema") + 1])
-            )
+            if provider == "agy":
+                invocation = json.loads(kwargs["input"])
+                self.assertEqual(command, ["agy-runner"])
+                self.assertEqual(invocation["workspace"], request["workspace"])
+                self.assertIsNone(invocation["timeout"])
+                self.assertEqual(invocation["gateway_url"], request["gateway"]["url"])
+                self.assertNotIn("response_schema", json.loads(invocation["prompt"]))
+                native_schema = json.loads(Path(invocation["schema_path"]).read_text())
+            else:
+                native_schema = (
+                    json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
+                    if provider == "codex"
+                    else json.loads(command[command.index("--json-schema") + 1])
+                )
             self.assertEqual(native_schema, self.bundle.schema(request["stage"]))
             self.assertEqual(self.opened[-1].prompt["response_schema"], native_schema)
             raw = (root / "turn.json").read_bytes()
@@ -137,6 +146,8 @@ class SessionEntryTests(unittest.TestCase):
             if provider == "codex":
                 (root / "result.json").write_text('{"answer": true}')
                 stdout = json.dumps({"type": "thread.started", "thread_id": identifier})
+            elif provider == "agy":
+                stdout = json.dumps({"conversation_id": identifier, "structured_output": {"answer": True}})
             else:
                 stdout = json.dumps(
                     {"subtype": "success", "session_id": identifier, "structured_output": {"answer": True}}
@@ -193,7 +204,7 @@ class SessionEntryTests(unittest.TestCase):
             )
 
     def test_success_journal_and_release(self):
-        for provider in ("claude", "codex"):
+        for provider in ("claude", "codex", "agy"):
             with self.subTest(provider=provider):
                 self.assertEqual(self.invoke(provider), '{"answer": true}\n')
                 turn = self.opened[-1]
@@ -211,7 +222,7 @@ class SessionEntryTests(unittest.TestCase):
                 self.assertEqual(turn.path.read_bytes(), json.dumps(expected).encode())
 
     def test_cached_response_preserves_journal_and_releases(self):
-        for provider in ("claude", "codex"):
+        for provider in ("claude", "codex", "agy"):
             with self.subTest(provider=provider):
                 self.invoke(provider)
                 raw = self.opened[-1].path.read_bytes()
@@ -224,7 +235,7 @@ class SessionEntryTests(unittest.TestCase):
                 self.assertEqual(turn.path.read_bytes(), raw)
 
     def test_provider_failure_keeps_pending_bytes_and_close_only_releases(self):
-        for provider in ("claude", "codex"):
+        for provider in ("claude", "codex", "agy"):
             with self.subTest(provider=provider):
                 error = RuntimeError("provider failed")
                 with self.assertRaises(RuntimeError) as caught:

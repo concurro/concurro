@@ -101,6 +101,7 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
     let openai = "c".repeat(64);
     let claude = "d".repeat(64);
     let chatgpt = "e".repeat(64);
+    let google = "f".repeat(64);
     for (record, secret) in [(&bad, "bad-key"), (&good, "good-key")] {
         accounts
             .create(
@@ -112,6 +113,7 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
     }
     for (record, secret, account) in [
         (&openai, "openai-key", None),
+        (&google, "gemini-key", None),
         (&claude, "claude-oauth", None),
         (
             &chatgpt,
@@ -187,6 +189,12 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             (StatusCode::FORBIDDEN, Json(json!({"error":{"type":"unknown"}})))
         }
     }));
+    let provider = provider.route("/v1beta/models/claude-test:generateContent", post(|headers: HeaderMap, Json(_): Json<Value>| async move {
+        assert_eq!(headers["x-goog-api-key"], "gemini-key");
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-goog-user-project").is_none());
+        Json(json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}))
+    }));
     let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("provider listener");
@@ -208,6 +216,13 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
         provider: reqwest::Client::new(),
         routes: Arc::new(HashMap::new()),
         personal_routes: Arc::new(HashMap::from([
+            (
+                "gemini-api-key".to_owned(),
+                PersonalRoute {
+                    upstream: upstream.trim_end_matches("/v1").to_owned(),
+                    anthropic_beta: None,
+                },
+            ),
             (
                 "anthropic-api-key".to_owned(),
                 PersonalRoute {
@@ -330,6 +345,12 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             "chatgpt-session",
         ),
         (&claude, "claude-subscription", "messages", "claude-session"),
+        (
+            &google,
+            "gemini-api-key",
+            "v1beta/models/claude-test:generateContent",
+            "gemini-session",
+        ),
     ] {
         let turn = Uuid::now_v7();
         fixture["attempt_id"] = json!(turn);
@@ -352,10 +373,19 @@ async fn personal_failure_then_replacement_uses_exact_openbao_version() {
             .await
             .expect("route running");
         let response = http
-            .post(format!("{gateway_url}/v1/{path}"))
+            .post(format!(
+                "{gateway_url}/{}",
+                if route == "gemini-api-key" {
+                    path.to_owned()
+                } else {
+                    format!("v1/{path}")
+                }
+            ))
             .bearer_auth(key)
             .header("x-api-key", "forged")
             .header("chatgpt-account-id", "forged")
+            .header("x-goog-api-key", "forged")
+            .header("x-goog-user-project", "forged")
             .json(&json!({"model":"claude-test","messages":[]}))
             .send()
             .await

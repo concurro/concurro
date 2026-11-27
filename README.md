@@ -43,7 +43,7 @@ in the fork's `.concurro/` directory. You can choose:
 
 - **The team:** named model profiles with explicit effort settings, assigned separately
   to intake, planning, design review, implementation and PR review. Claude Code and
-  Codex are supported; each review team requires at least two distinct provider/model pairs.
+  Codex and Antigravity (`agy`) are supported; each review team requires at least two distinct provider/model pairs.
 - **The workflow:** manual plan approval or autonomous progression, with human merging
   in either mode.
 - **The environment:** optional setup and role instructions using the project's own

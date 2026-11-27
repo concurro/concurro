@@ -150,6 +150,11 @@ struct Material {
 impl Material {
     /// Check a token and its route's account header, as the vault's `candidate`.
     fn check(route: &str, secret: &str, account_id: Option<&str>) -> Result<Self, CredentialError> {
+        if route == "antigravity-subscription" {
+            return Err(refused(
+                "Connect Antigravity through Sponsor using its agy login",
+            ));
+        }
         let header =
             |value: &str| !value.is_empty() && value.bytes().all(|b| (33..=126).contains(&b));
         let secret = secret.trim();

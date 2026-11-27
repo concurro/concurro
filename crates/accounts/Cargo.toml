@@ -24,7 +24,7 @@ concurro-events = { path = "../events" }
 concurro-events-nats = { path = "../events-nats" }
 concurro-events-postgres = { path = "../events-postgres" }
 concurro-github-v1 = { path = "../github-v1" }
-concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "c1ea48bfa3fbd67a4531e8bfa9f28c166721853d" }
+concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "dcb96c69ef4f1a7c5c355a40802ec7253084d849" }
 concurro-secrets = { path = "../secrets" }
 concurro-telemetry = { path = "../telemetry" }
 graphile_worker.workspace = true

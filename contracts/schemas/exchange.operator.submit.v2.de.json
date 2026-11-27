@@ -294,16 +294,18 @@
           "description": "Frozen checkout and workspace specification."
         },
         "timeout": {
-          "description": "Engine timeout in seconds.",
+          "description": "Optional execution limit in seconds; null uses the outer runner lifetime.",
           "format": "double",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "required": [
         "request",
         "feedback",
-        "spec",
-        "timeout"
+        "spec"
       ],
       "type": "object"
     }

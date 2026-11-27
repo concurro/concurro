@@ -69,7 +69,7 @@ def render(key, repository, issue, actor, actor_id, command, nonce):
         argument=argument if parsed.kind == commands.CommandKind.FUNDING else argument[:12]
     )
     if parsed.kind == commands.CommandKind.SPONSOR and parsed.argument is None:
-        line = "requested sponsorship status; use /concurro sponsor openai or /concurro sponsor anthropic"
+        line = "requested sponsorship status; use /concurro sponsor openai, /concurro sponsor anthropic or /concurro sponsor google"
     notice = (
         " Provider funding is unchanged."
         if parsed.kind in (commands.CommandKind.SPONSOR, commands.CommandKind.WITHDRAW)

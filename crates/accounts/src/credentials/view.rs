@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 /// Route, provider, kind and default entry name, in the vault's order.
-pub const ROUTES: [(&str, &str, &str, &str); 4] = [
+pub const ROUTES: [(&str, &str, &str, &str); 6] = [
     ("openai-api-key", "openai", "api_key", "OpenAI API key"),
     (
         "anthropic-api-key",
@@ -29,10 +29,17 @@ pub const ROUTES: [(&str, &str, &str, &str); 4] = [
         "subscription",
         "Claude subscription",
     ),
+    ("gemini-api-key", "google", "api_key", "Gemini API key"),
+    (
+        "antigravity-subscription",
+        "google",
+        "subscription",
+        "Antigravity subscription",
+    ),
 ];
 
-/// Providers in the vault's sorted order.
-pub const PROVIDERS: [&str; 2] = ["anthropic", "openai"];
+/// Providers in stable display order.
+pub const PROVIDERS: [&str; 3] = ["anthropic", "openai", "google"];
 
 /// A route's provider, kind and default name.
 pub fn route(route: &str) -> Option<(&'static str, &'static str, &'static str)> {

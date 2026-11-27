@@ -376,7 +376,7 @@ mod tests {
     use super::*;
     use crate::credentials::{
         Operation,
-        tests::{Harness, assert_same, call},
+        tests::{Harness, assert_same, call, translate},
     };
     use crate::github::User;
 
@@ -505,7 +505,7 @@ mod tests {
             let actual = harness.native.run(&user, Operation::List).await.unwrap();
             assert_same(
                 &actual,
-                &listing["listing"],
+                &translate(&listing["listing"], &[]),
                 &format!("listing of {}", user.id),
             );
         }

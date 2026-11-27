@@ -81,7 +81,7 @@ pub struct SponsorshipTransitionAck {
     pub epoch: i64,
 }
 
-/// Atomic acknowledgement of one or two sponsorship transitions.
+/// Atomic acknowledgement of provider sponsorship transitions.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct SponsorshipAck {
     /// Receipts in the same order as the submitted transitions.
@@ -173,7 +173,7 @@ impl Operator {
             serde_json::from_slice(body).map_err(|_| ExchangeError::InvalidResponse)?;
         let requests = value.get("transitions").and_then(Value::as_array);
         let submitted = requests.map_or_else(|| vec![&value], |requests| requests.iter().collect());
-        if submitted.is_empty() || submitted.len() > 2 {
+        if submitted.is_empty() || submitted.len() > 3 {
             return Err(ExchangeError::InvalidResponse);
         }
         let identities = submitted

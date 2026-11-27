@@ -38,9 +38,11 @@ const ROLES: [(&str, &str); 5] = [
     ("implementer", "Implementation"),
     ("pr_reviewers", "PR review"),
 ];
-const TYPES: [(&str, &str); 4] = [
+const TYPES: [(&str, &str); 6] = [
     ("anthropic_api", "anthropic-api-key"),
     ("claude_subscription", "claude-subscription"),
+    ("antigravity_subscription", "antigravity-subscription"),
+    ("gemini_api", "gemini-api-key"),
     ("openai_api", "openai-api-key"),
     ("chatgpt_subscription", "chatgpt-subscription"),
 ];
@@ -372,6 +374,7 @@ fn entry(value: &Value) -> Value {
 fn group(value: &Value) -> Value {
     let label = match value["provider"].as_str() {
         Some("anthropic") => "Anthropic",
+        Some("google") => "Google",
         Some("openai") => "OpenAI",
         _ => "",
     };
@@ -388,20 +391,23 @@ fn listing(value: &Value) -> Value {
         .as_array()
         .map(|groups| groups.iter().map(group).collect::<Vec<_>>())
         .unwrap_or_default();
-    let types = TYPES
-        .iter()
-        .flat_map(|(kind, route)| {
-            value["types"]
+    let types =
+        TYPES
+            .iter()
+            .flat_map(|(kind, route)| {
+                value["types"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter(move |item| item["route"] == *route)
                 .map(move |item| {
-                    json!({"id":kind,"provider":item["provider"],"kind":item["kind"],
-                "label":item["label"],"accountId":*route == "chatgpt-subscription"})
+                    let mut kind = json!({"id":kind,"provider":item["provider"],"kind":item["kind"],
+                        "label":item["label"],"accountId":*route == "chatgpt-subscription"});
+                    if *route == "antigravity-subscription" { kind["relayOnly"] = json!(true); }
+                    kind
                 })
-        })
-        .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
     let roles = ROLES
         .iter()
         .map(|(key, label)| json!({"key":key,"label":label}))
@@ -484,7 +490,7 @@ pub async fn credentials(
         (Method::POST, ["relay", "pending"]) => Operation::RelayPending(parse(&body)?),
         (Method::POST, ["relay"]) => {
             let body: RelayBody = parse(&body)?;
-            if !(1..=2).contains(&body.routes.len()) {
+            if !(1..=view::PROVIDERS.len()).contains(&body.routes.len()) {
                 return Err(CredentialError::malformed());
             }
             policy(Some(&body.roles))?;
@@ -492,7 +498,7 @@ pub async fn credentials(
         }
         (Method::PUT, ["relay", "device"]) => {
             let body: DeviceBody = parse(&body)?;
-            if !(1..=2).contains(&body.entries.len()) {
+            if !(1..=view::PROVIDERS.len()).contains(&body.entries.len()) {
                 return Err(CredentialError::malformed());
             }
             Operation::Device(body)

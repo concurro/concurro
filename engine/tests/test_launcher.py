@@ -11,6 +11,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -238,6 +239,18 @@ class LauncherTests(unittest.TestCase):
         self.assertNotEqual(claimed.returncode, 0)
         self.assertFalse((self.temp / "concurro-session/grant.json").exists())
         self.assertIn("runner engine differs", self.refusal())
+
+    def test_prepare_selects_agy_from_both_exchange_bindings(self):
+        """Both exchanges identify the harness in role, without an extra harness key."""
+        output = self.tmp / "outputs"
+        for stage in ("plan", "develop", "review"):
+            for harness in ("agy", "claude", "codex"):
+                with self.subTest(stage=stage, harness=harness):
+                    binding = {**exchange_fixtures.BINDING, "role": f"{stage}:{harness}"}
+                    output.write_text("")
+                    with patch.object(runner, "checkout"), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                        runner.prepare({"binding": binding}, self.tmp / "config", self.tmp / "base")
+                    self.assertIn(f"agy={'true' if harness == 'agy' else 'false'}\n", output.read_text())
 
     def test_every_launcher_command_is_one_the_engine_accepts(self):
         """The launcher outlives engine releases: its calls stay within the runner's command line."""

@@ -670,7 +670,7 @@ pub fn parse_command(body: &str) -> Option<RequestKind> {
     static COMMAND: OnceLock<Regex> = OnceLock::new();
     let grammar = COMMAND.get_or_init(|| {
         Regex::new(
-            r"\A/concurro (?:funding (?:openai|anthropic) (?:org|personal)|sponsor(?: (?:openai|anthropic))?|withdraw (?:openai|anthropic)|start|approve [a-f0-9]{64}|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)\z",
+            r"\A/concurro (?:funding (?:openai|anthropic|google) (?:org|personal)|sponsor(?: (?:openai|anthropic|google))?|withdraw (?:openai|anthropic|google)|start|approve [a-f0-9]{64}|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)\z",
         )
         .expect("command grammar")
     });
@@ -834,7 +834,7 @@ pub fn decide(
     ) {
         return outcome(
             RequestStatus::Refused,
-            Some("usage: /concurro sponsor <openai|anthropic>"),
+            Some("usage: /concurro sponsor <openai|anthropic|google>"),
         );
     }
     if request.kind == RequestKind::Later(LaterCommand::Unenroll) {
@@ -1190,7 +1190,7 @@ mod tests {
         );
         assert_eq!(
             usage.reason,
-            Some("usage: /concurro sponsor <openai|anthropic>")
+            Some("usage: /concurro sponsor <openai|anthropic|google>")
         );
         assert!(unsupported.stop_order.is_none());
         let stop = request(12, RequestKind::Stop);

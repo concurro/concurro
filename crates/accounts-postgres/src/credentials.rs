@@ -14,7 +14,7 @@ pub struct EntryRow {
     pub entry_id: String,
     /// GitHub owner ID.
     pub user_id: i64,
-    /// `anthropic` or `openai`.
+    /// `anthropic`, `google` or `openai`.
     pub provider: String,
     /// Credential route.
     pub route: String,

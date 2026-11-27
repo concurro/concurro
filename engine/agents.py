@@ -19,7 +19,7 @@ from bundle import Bundle
 from credential_routes import ROUTES
 from credentials import Credential
 from github import Transient
-from model_config import resolve
+from model_config import HARNESSES, resolve
 from policy import (
     Blocked,
     ProviderFailure,
@@ -36,7 +36,7 @@ from snapshot import inspection
 from vocab import CONTRIBUTION, TurnOutcome
 
 # Providers whose CLIs the gateway serves natively.
-PROVIDERS = ("claude", "codex")
+PROVIDERS = tuple(HARNESSES.values())
 ADAPTER = "gateway-key"
 # A runner turn may also wait for a runner to be dispatched, to start and finish target setup.
 QUEUE_SECONDS = 1800

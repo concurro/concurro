@@ -522,6 +522,7 @@ async fn initialize_standalone_funding(
         BTreeMap::from([
             (Provider::Openai, Some(false)),
             (Provider::Anthropic, Some(false)),
+            (Provider::Google, Some(false)),
         ])
     } else {
         let mut work = database.begin().await?;

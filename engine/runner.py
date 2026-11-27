@@ -230,6 +230,7 @@ def prepare(grant, config, base):
     if "GITHUB_OUTPUT" in os.environ:
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"setup={'true' if setup.is_file() else 'false'}\nbase={base}\n")
+            output.write(f"agy={'true' if binding.get('role', '').endswith(':agy') else 'false'}\n")
 
 
 def end_session(root, client):

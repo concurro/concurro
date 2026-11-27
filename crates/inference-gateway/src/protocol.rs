@@ -16,6 +16,8 @@ pub enum RouteKind {
     ChatGpt,
     /// Anthropic Messages route.
     Anthropic,
+    /// Gemini API or Antigravity subscription response grammar.
+    Google,
 }
 
 impl RouteKind {
@@ -110,7 +112,7 @@ impl Observation {
                     .map(|end| (end, 4))
             })
         {
-            let event: Vec<u8> = self.pending.drain(..end + width).collect();
+            let mut event: Vec<u8> = self.pending.drain(..end + width).collect();
             if event.len() > MAX_EVENT {
                 self.ambiguous = true;
                 break;
@@ -134,7 +136,14 @@ impl Observation {
             }
             if !data.is_empty() && data != b"[DONE]" {
                 match serde_json::from_slice::<Value>(&data) {
-                    Ok(value) => self.accept(&value),
+                    Ok(value) => {
+                        self.accept(&value);
+                        if matches!(self.route, RouteKind::Google)
+                            && let Some(response) = value.get("response")
+                        {
+                            event = format!("data: {response}\n\n").into_bytes();
+                        }
+                    }
                     Err(_) => self.ambiguous = true,
                 }
             }
@@ -158,6 +167,11 @@ impl Observation {
 
     /// Accept only known terminal shapes and structured error fields.
     fn accept(&mut self, value: &Value) {
+        let value = if matches!(self.route, RouteKind::Google) {
+            value.get("response").unwrap_or(value)
+        } else {
+            value
+        };
         let Some(object) = value.as_object() else {
             self.ambiguous = true;
             return;
@@ -168,6 +182,33 @@ impl Observation {
         {
             self.category = Some(classify(self.route, value).unwrap_or("unknown"));
             self.failed = true;
+            return;
+        }
+        if matches!(self.route, RouteKind::Google) {
+            if let Some(reason) = value
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+                && reason != "BLOCK_REASON_UNSPECIFIED"
+            {
+                self.failed = true;
+                self.category = Some("unknown");
+                return;
+            }
+            if let Some(candidates) = value["candidates"].as_array() {
+                for candidate in candidates {
+                    if let Some(reason) = candidate["finishReason"].as_str() {
+                        if reason == "STOP" || reason == "MAX_TOKENS" {
+                            self.completed = true;
+                        } else if reason != "FINISH_REASON_UNSPECIFIED" {
+                            self.failed = true;
+                            self.category = Some("unknown");
+                        }
+                    }
+                }
+            }
+            if let Some(raw) = value.get("usageMetadata") {
+                self.usage = google_usage(raw);
+            }
             return;
         }
         let response = if kind == Some("response.completed") {
@@ -231,7 +272,10 @@ impl Observation {
                 Err(_) => self.ambiguous = true,
             }
         }
-        if self.ambiguous || !self.completed {
+        if self.streaming && !self.pending.iter().all(u8::is_ascii_whitespace) {
+            self.ambiguous = true;
+        }
+        if self.ambiguous || !self.completed || self.failed {
             self.category.get_or_insert("unknown");
             self.usage = None;
         }
@@ -248,6 +292,21 @@ impl Observation {
     fn safe_error_json(&self) -> Bytes {
         Bytes::from(json!({"error":{"type":self.category.unwrap_or("unknown"),"message":"provider request failed"}}).to_string())
     }
+}
+
+/// Normalize Gemini totals, counting thought tokens once and retaining cache information.
+fn google_usage(raw: &Value) -> Option<UsageTokens> {
+    Some(UsageTokens {
+        input_tokens: raw["promptTokenCount"]
+            .as_u64()?
+            .checked_add(raw["toolUsePromptTokenCount"].as_u64().unwrap_or(0))?,
+        output_tokens: raw["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0)
+            .checked_add(raw["thoughtsTokenCount"].as_u64().unwrap_or(0))?,
+        cache_read_input_tokens: raw["cachedContentTokenCount"].as_u64(),
+        cache_creation_input_tokens: None,
+    })
 }
 
 /// Read required totals and optional cache counters without zero-filling missing counts.
@@ -283,6 +342,20 @@ pub fn classify(route: RouteKind, value: &Value) -> Option<&'static str> {
     let code = error.get("code").and_then(Value::as_str);
     let kind = error.get("type").and_then(Value::as_str);
     match route {
+        RouteKind::Google => {
+            let reason = error["details"]
+                .as_array()
+                .and_then(|details| details.iter().find_map(|detail| detail["reason"].as_str()));
+            match (error["status"].as_str(), reason) {
+                (Some("UNAUTHENTICATED"), _) | (_, Some("API_KEY_INVALID" | "API_KEY_EXPIRED")) => {
+                    Some("auth")
+                }
+                (Some("RESOURCE_EXHAUSTED"), _) => Some("rate_limited"),
+                (Some("UNAVAILABLE" | "INTERNAL" | "DEADLINE_EXCEEDED"), _) => Some("unavailable"),
+                (_, Some("MODEL_NOT_FOUND" | "MODEL_ACCESS_DENIED")) => Some("model_denied"),
+                _ => None,
+            }
+        }
         RouteKind::OpenAi => match code {
             Some("invalid_api_key") => Some("auth"),
             Some(
@@ -394,6 +467,71 @@ mod tests {
             !std::str::from_utf8(&body.expect("sanitized body"))
                 .expect("UTF-8")
                 .contains("private provider text")
+        );
+    }
+    /// Google envelopes retain signatures and settle the final cumulative usage snapshot.
+    #[test]
+    fn google_stream_unwraps_without_changing_conversation_parts() {
+        let start = serde_json::json!({"response":{"responseId":"g1","candidates":[{"content":{"parts":[{"thoughtSignature":"signed","functionCall":{"name":"read_file","args":{"Path":"README.md"}}}]},"finishReason":"STOP"}]}});
+        let usage = serde_json::json!({"response":{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"thoughtsTokenCount":7,"cachedContentTokenCount":4}}});
+        let wire = format!("data: {start}\n\ndata: {usage}\n\n");
+        for size in 1..wire.len() {
+            let mut observation = Observation::new(RouteKind::Google, Some("text/event-stream"));
+            let mut output = Vec::new();
+            for chunk in wire.as_bytes().chunks(size) {
+                output.extend(observation.feed(chunk));
+            }
+            let rendered = output
+                .iter()
+                .flat_map(|chunk| chunk.iter().copied())
+                .collect::<Vec<_>>();
+            let first: serde_json::Value = serde_json::from_slice(
+                rendered
+                    .split(|byte| *byte == b'\n')
+                    .next()
+                    .unwrap()
+                    .strip_prefix(b"data: ")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(first, start["response"]);
+            let (observation, _) = observation.finish();
+            assert!(observation.completed && !observation.failed && !observation.ambiguous);
+            let counts = observation.usage.unwrap();
+            assert_eq!((counts.input_tokens, counts.output_tokens), (10, 10));
+            assert_eq!(counts.cache_read_input_tokens, Some(4));
+        }
+    }
+
+    /// Structured Google errors do not turn generic permissions or throttles into exhausted accounts.
+    #[test]
+    fn google_errors_and_incomplete_streams() {
+        let mut blocked = Observation::new(RouteKind::Google, Some("text/event-stream"));
+        let output = blocked
+            .feed(b"data: {\"response\":{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}}\n\n");
+        assert!(blocked.failed);
+        assert!(!String::from_utf8_lossy(&output[0]).contains("SAFETY"));
+        assert!(blocked.finish().0.usage.is_none());
+        assert_eq!(
+            super::classify(
+                RouteKind::Google,
+                &serde_json::json!({"error":{"status":"PERMISSION_DENIED"}})
+            ),
+            None
+        );
+        assert_eq!(
+            super::classify(
+                RouteKind::Google,
+                &serde_json::json!({"error":{"status":"RESOURCE_EXHAUSTED"}})
+            ),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            super::classify(
+                RouteKind::Google,
+                &serde_json::json!({"error":{"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}})
+            ),
+            Some("auth")
         );
     }
 }

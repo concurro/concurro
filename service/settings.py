@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import private
+from model_config import HARNESSES
 from policy import Blocked
 
 from . import ENGINE
@@ -61,7 +62,7 @@ WORKFLOW_REF = re.compile(
 )
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9.*_:-]{1,100}")
 HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
-PROVIDERS = ("claude", "codex")
+PROVIDERS = tuple(HARNESSES.values())
 
 
 class SettingsError(ValueError):

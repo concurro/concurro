@@ -37,6 +37,8 @@ impl Metadata {
                     "chatgpt-subscription" if provider == "openai" => "subscription",
                     "anthropic-api-key" if provider == "anthropic" => "api_key",
                     "claude-subscription" if provider == "anthropic" => "subscription",
+                    "gemini-api-key" if provider == "google" => "api_key",
+                    "antigravity-subscription" if provider == "google" => "subscription",
                     _ => return false,
                 };
                 record.provider.as_deref() == Some(provider)
@@ -339,7 +341,10 @@ impl CredentialEvent {
         if self.kind == "policy" {
             return self.version == 0
                 && self.record_id.is_empty()
-                && matches!(self.provider.as_deref(), Some("openai" | "anthropic"))
+                && matches!(
+                    self.provider.as_deref(),
+                    Some("openai" | "anthropic" | "google")
+                )
                 && self.revision.is_some();
         }
         self.version > 0

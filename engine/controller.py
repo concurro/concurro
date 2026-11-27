@@ -90,7 +90,8 @@ MAX_DIFF = 64000
 DIFF_TRUNCATED = "[diff truncated; inspect the pinned repository]\n"
 ESCALATION_REASON = "High-risk or consequential work requires human intervention."
 LEGACY_BUNDLE_REASON = reason_guidance.LEGACY_BUNDLE
-PROVIDERS = {"claude", "codex", "copilot"}
+LEGACY_PROVIDERS = {"claude", "codex", "copilot"}
+PROVIDERS = LEGACY_PROVIDERS | {"agy"}
 PATH_POLICY = {
     "editable_extensions",
     "protected_names",
@@ -184,7 +185,8 @@ def validate_config(config):
     _budget_int(config["max_plan_revisions"], 0, "invalid plan revision budget")
     _budget_int(config.get("max_review_repairs"), 0, "invalid review repair budget")
     if "agents" not in config and (
-        set(config["models"]) != PROVIDERS or not all(isinstance(v, str) for v in config["models"].values())
+        set(config["models"]) not in (LEGACY_PROVIDERS, PROVIDERS)
+        or not all(isinstance(v, str) for v in config["models"].values())
     ):
         raise Blocked("model map must name each provider")
     documents = config["policy_documents"]

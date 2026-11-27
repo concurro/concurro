@@ -230,11 +230,29 @@ agents:
   pr_reviewers: [opus55-high, sol61-high]
 ```
 
-`anthropic` uses Claude Code; `openai` uses Codex. Each profile requires a model and
+`anthropic` uses Claude Code; `openai` uses Codex; `google` uses Antigravity (`agy`). Each profile requires a model and
 an explicit effort. Choose an effort supported by that model and the pinned CLI;
 Concurro passes it through on fresh and resumed calls. Profile names are identifiers,
 not settings: the `effort` field determines the actual value. Unknown profile fields
 and role names are rejected so misspellings do not silently change execution.
+
+Google profiles use canonical model IDs: `gemini-4-neon` and `gemini-4-hydrogen`
+support `low`, `medium`, `high` and `xhigh`; `gemini-4-carbon`, `gemini-4-argon`
+and `gemini-3.8-flash` support `low`, `medium` and `high`. For example:
+
+```yaml
+models:
+  neon-high:
+    provider: google
+    model: gemini-4-neon
+    effort: high
+```
+
+Assign the profile to the desired roles in `agents`, alongside the other profiles.
+For login-based funding, connect **Antigravity subscription** in Sponsor using an
+existing `agy` login. Manual subscription-token entry is not supported. Google API
+keys use the separate `gemini-api-key` route. See [Antigravity operation](antigravity.md)
+for account binding, continuation and deployment details.
 
 Each review list needs at least two profiles with distinct `(provider, model)` pairs.
 Aliases or different efforts for the same provider/model cannot appear together in

@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+concurro-agy = { path = "../agy", default-features = false }
 anyhow.workspace = true
 chrono.workspace = true
 concurro-contracts = { path = "../contracts" }

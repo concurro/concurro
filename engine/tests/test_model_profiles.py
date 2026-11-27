@@ -75,6 +75,8 @@ class ConfigurationTests(unittest.TestCase):
             lambda c: c["models"]["sol-high"].update(temperature=0.3),
             lambda c: c["models"]["sol-high"].update(provider="codex"),
             lambda c: c["models"]["sol-high"].update(model=""),
+            lambda c: c["models"]["sol-high"].update(provider="google", model="gemini-4-carbon", effort="xhigh"),
+            lambda c: c["models"]["sol-high"].update(provider="google", model="unknown", effort="high"),
             lambda c: c["agents"].update(triage="missing"),
             lambda c: c["agents"].update(plan_reviewers=["sol-high", "sol-high"]),
             lambda c: c["agents"].update(pr_reviewers=["sol-high"]),
@@ -111,8 +113,13 @@ class InvocationTests(unittest.TestCase):
 
     def test_turns_and_credentials_use_the_resolved_harness(self):
         config, executor = named_config(), FakeExecutor()
+        config["models"]["neon-high"] = {"provider": "google", "model": "gemini-4-neon", "effort": "high"}
+        config["agents"]["planner"] = "neon-high"
+        config["agents"]["plan_reviewers"] = ["neon-high", "sol-high"]
+        validate_config(config)
+        self.assertEqual(design_roster(config)[0]["agent"]["harness"], "agy")
         agents = Agents(config, executor)
-        for name in ("sol-high", "astra-high", "opus-high"):
+        for name in ("sol-high", "astra-high", "opus-high", "neon-high"):
             resolved = resolve(config, name, "review")
             context = {
                 "bundle_id": agents.bundle.identity,

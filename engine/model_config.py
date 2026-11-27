@@ -5,8 +5,9 @@ import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
-HARNESSES = {"anthropic": "claude", "openai": "codex"}
+HARNESSES = {"anthropic": "claude", "openai": "codex", "google": "agy"}
 EFFORTS = {
+    "google": {"low", "medium", "high", "xhigh"},
     "anthropic": {"low", "medium", "high", "xhigh", "max"},
     "openai": {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
 }
@@ -90,6 +91,11 @@ def _parse(serialized):
             raise ValueError("model profile requires an explicit model ID")
         if not isinstance(effort, str) or effort not in EFFORTS[provider]:
             raise ValueError("unsupported effort for model provider")
+        if provider == "google":
+            if model not in {"gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash"}:
+                raise ValueError("unsupported Antigravity canonical model")
+            if effort == "xhigh" and model not in {"gemini-4-neon", "gemini-4-hydrogen"}:
+                raise ValueError("unsupported effort for Antigravity model")
         profiles.append(ResolvedAgent(name, ModelProfile(provider, model, effort)))
     if not isinstance(roles, dict) or set(roles) != set(AgentAssignments.__dataclass_fields__):
         raise ValueError("agents must assign triage, planner, plan_reviewers, implementer and pr_reviewers")
@@ -140,7 +146,7 @@ def resolve(config, name, stage, reviewer=None):
     if model is None:
         model = config.get("qc_model") if stage in ("intake", "plan_qc") else None
         model = model or config["models"][name]
-    vendor = {"claude": "anthropic", "codex": "openai"}.get(name)
+    vendor = {harness: vendor for vendor, harness in HARNESSES.items()}.get(name)
     if vendor is None:
-        raise ValueError("the runner supports Claude and Codex only")
+        raise ValueError("the runner supports Claude, Codex and Antigravity")
     return ResolvedAgent(name, ModelProfile(vendor, model, default_effort(name)))

@@ -30,7 +30,11 @@ use crate::{
 };
 
 /// The routes a relay can serve.
-const RELAY_ROUTES: [&str; 2] = ["chatgpt-subscription", "claude-subscription"];
+const RELAY_ROUTES: [&str; 3] = [
+    "chatgpt-subscription",
+    "claude-subscription",
+    "antigravity-subscription",
+];
 /// How long a reservation may stay before settlement repeats its approval.
 const SETTLE_AFTER_SECONDS: i64 = 120;
 

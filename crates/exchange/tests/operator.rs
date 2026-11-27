@@ -133,7 +133,7 @@ fn submission(turn: Uuid, grant_id: &str) -> TurnSubmissionV2 {
             request: json!({"stage":"intake","provider":"claude"}),
             feedback: json!({}),
             spec: json!({"head":"base"}),
-            timeout: 60.0,
+            timeout: Some(60.0),
             retained: None,
         },
     }

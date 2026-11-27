@@ -4,8 +4,8 @@ use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Duration, Utc};
 use concurro_exchange_v1::TurnSubmission;
 use concurro_tasks_core::{
-    AttemptSpec, InitializationSnapshot, IssueKey, TaskState, edit_policy, editable_files,
-    effective_limits,
+    AttemptSpec, InitializationSnapshot, IssueKey, Provider, TaskState, edit_policy,
+    editable_files, effective_limits,
 };
 use concurro_tasks_postgres::IntakeCorrection;
 use glob::Pattern;
@@ -96,11 +96,9 @@ pub(crate) fn assigned_agent(
         let provider = profile["provider"]
             .as_str()
             .context("target agent provider is invalid")?;
-        let harness = match provider {
-            "anthropic" => "claude",
-            "openai" => "codex",
-            _ => anyhow::bail!("target agent provider is unsupported"),
-        };
+        let harness = Provider::from_name(provider)
+            .context("target agent provider is unsupported")?
+            .harness();
         let model = profile["model"]
             .as_str()
             .context("target agent model is invalid")?;
@@ -108,6 +106,9 @@ pub(crate) fn assigned_agent(
             .as_str()
             .context("target agent effort is invalid")?;
         ensure!(!model.trim().is_empty(), "target agent model is empty");
+        Provider::from_name(provider)
+            .expect("validated provider")
+            .validate_model(model, effort)?;
         return Ok((
             harness.to_owned(),
             model.to_owned(),
@@ -130,7 +131,7 @@ pub(crate) fn assigned_agent(
         .as_str()
         .context("target qc provider is missing")?;
     ensure!(
-        matches!(harness, "claude" | "codex"),
+        Provider::from_harness(harness).is_some(),
         "target qc provider is unsupported"
     );
     let override_model = (role == "triage")
@@ -145,6 +146,9 @@ pub(crate) fn assigned_agent(
         .context("target qc model is missing")?;
     ensure!(!model.trim().is_empty(), "target qc model is empty");
     let effort = if harness == "claude" { "medium" } else { "low" };
+    Provider::from_harness(harness)
+        .context("unsupported provider")?
+        .validate_model(model, effort)?;
     Ok((
         harness.to_owned(),
         model.to_owned(),

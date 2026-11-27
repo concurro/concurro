@@ -64,7 +64,7 @@ def parse(body: str) -> Command | None:
     """Parse only the existing exact command grammar, ignoring surrounding whitespace."""
     body = body.strip()
     if not re.fullmatch(
-        r"/concurro (funding (?:openai|anthropic) (?:org|personal)|sponsor(?: (?:openai|anthropic))?|withdraw (?:openai|anthropic)|start|approve "
+        r"/concurro (funding (?:openai|anthropic|google) (?:org|personal)|sponsor(?: (?:openai|anthropic|google))?|withdraw (?:openai|anthropic|google)|start|approve "
         + protocol.DIGEST_PATTERN
         + r"|stop|resume(?: --description-only)?|retry(?: --plan-revisions [0-9]{1,3})?|invalidate)",
         body,
