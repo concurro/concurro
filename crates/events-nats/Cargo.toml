@@ -10,11 +10,11 @@ fault-injection = []
 [dependencies]
 anyhow.workspace = true
 async-nats.workspace = true
-concurro-config = { path = "../config" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events = { path = "../events" }
+concurro-config = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events = { workspace = true }
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,5 +23,5 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-concurro-testkit = { path = "../testkit" }
+concurro-testkit = { workspace = true }
 sqlx.workspace = true

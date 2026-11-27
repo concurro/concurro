@@ -9,7 +9,7 @@
 # SIM300: keep mathematical subset notation (FIELDS <= value.keys()).
 # E501 and quote rules are not selected; the formatter handles layout and quoting.
 
-required-version = ">=0.17.4,<0.18"
+required-version = "==0.17.6"
 target-version = "py312"
 line-length = 120
 # Flat engine and test modules are first-party alongside the service package.

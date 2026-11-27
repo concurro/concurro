@@ -13,23 +13,23 @@ axum = { version = "=0.8.9", default-features = false, features = ["http1", "jso
 async-nats = { version = "=0.53.0", default-features = false, features = ["jetstream", "ring", "server_2_10"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
 flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
-graphile_worker = { version = "=0.14.2", default-features = false, features = ["driver-sqlx", "runtime-tokio", "tls-rustls"] }
+graphile_worker = { version = "=0.15.0", default-features = false, features = ["driver-sqlx", "runtime-tokio", "tls-rustls"] }
 hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
 object_store = { version = "=0.14.2", default-features = false, features = ["aws"] }
 hmac = { version = "=0.13.0", default-features = false }
 jsonwebtoken = { version = "=12.0.0", default-features = false, features = ["rust_crypto", "use_pem"] }
 oauth2 = { version = "=5.0.0", default-features = false }
-anyhow = { version = "=1.0.104", default-features = false, features = ["std"] }
+anyhow = { version = "=1.0.105", default-features = false, features = ["std"] }
 aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc"] }
 axum-extra = { version = "=0.12.6", default-features = false, features = ["cookie"] }
-base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 config = { version = "=0.15.27", default-features = false, features = ["toml"] }
 regex = { version = "=1.13.2", default-features = false, features = ["std"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "query", "rustls"] }
 rand = { version = "=0.10.4", default-features = false, features = ["sys_rng"] }
 schemars = { version = "=1.2.3", default-features = false, features = ["derive", "std"] }
-sha2 = { version = "=0.11.1", default-features = false }
+sha2 = { version = "=0.11.2", default-features = false }
 subtle = "=2.6.1"
 secrecy = { version = "=0.10.3", default-features = false }
 vaultrs = { version = "=0.8.0", default-features = false, features = ["rustls"] }
@@ -37,13 +37,48 @@ tar = { version = "=0.4.46", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std", "arbitrary_precision", "preserve_order"] }
 serde_yaml_ng = { version = "=0.10.0", default-features = false }
-sqlx = { version = "=0.9.0", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls-ring", "uuid"] }
+sqlx = { version = "=0.9.1", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls-ring", "uuid"] }
 testcontainers = { version = "=0.28.0", default-features = false, features = ["ring"] }
 thiserror = { version = "=2.0.21", default-features = false, features = ["std"] }
 time = { version = "=0.3.55", default-features = false }
 tokio = { version = "=1.54.1", default-features = false, features = ["full"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "std"] }
 tracing = "=0.1.44"
-uuid = { version = "=1.29.0", default-features = false, features = ["serde", "std", "v5", "v7"] }
-yaml-rust2 = { version = "=0.13.0", default-features = false }
-zstd = { version = "=0.13.5", default-features = false }
+uuid = { version = "=1.29.3", default-features = false, features = ["serde", "std", "v5", "v7"] }
+yaml-rust2 = { version = "=0.13.2", default-features = false }
+zstd = { version = "=0.14.5", default-features = false }
+concurro-db = { path = "crates/db" }
+concurro-accounts-postgres = { path = "crates/accounts-postgres" }
+concurro-config = { path = "crates/config" }
+concurro-contracts = { path = "crates/contracts" }
+concurro-events = { path = "crates/events" }
+concurro-events-nats = { path = "crates/events-nats" }
+concurro-events-postgres = { path = "crates/events-postgres" }
+concurro-github-v1 = { path = "crates/github-v1" }
+concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "da3ffef9a037f22567483911769bfa2192946d29" }
+concurro-secrets = { path = "crates/secrets" }
+concurro-telemetry = { path = "crates/telemetry" }
+concurro-backoffice-api = { path = "crates/backoffice-api" }
+concurro-backoffice-postgres = { path = "crates/backoffice-postgres" }
+concurro-tasks-postgres = { path = "crates/tasks-postgres" }
+concurro-testkit = { path = "crates/testkit" }
+concurro-tasks = { path = "crates/tasks" }
+tower = { version = "=0.5.3" }
+rusqlite = { version = "=0.43.0", default-features = false }
+concurro-jsonb = { path = "crates/jsonb" }
+concurro-tasks-core = { path = "crates/tasks-core" }
+concurro-exchange-postgres = { path = "crates/exchange-postgres" }
+concurro-exchange-client = { path = "crates/exchange-client" }
+concurro-vault-v1 = { path = "crates/vault-v1" }
+rsa = { version = "=0.10.0" }
+concurro-exchange = { path = "crates/exchange" }
+tokio-tungstenite = { version = "=0.30.0" }
+concurro-ingress-core = { path = "crates/ingress-core" }
+concurro-ingress-postgres = { path = "crates/ingress-postgres" }
+concurro-agy = { path = "crates/agy", default-features = false }
+concurro-exchange-v1 = { path = "crates/exchange-v1" }
+concurro-tasks-diagnostics = { path = "crates/tasks-diagnostics" }
+concurro-inference-gateway = { path = "crates/inference-gateway" }
+
+[patch.crates-io]
+graphile_worker_database = { path = "vendor/graphile_worker_database" }

@@ -233,8 +233,13 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
         for minute in range(0, 61, 5):
             self.now[0] = (self.start_time + timedelta(minutes=minute)).timestamp()
             asyncio.run(self.publish([self.coverage_event(minute, minute + 1)]))
-            self.wait_for(lambda: self.verified() is not None and self.verified() >= self.now[0])
-            self.assertEqual(self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"], "current")
+            self.wait_for(
+                lambda: (
+                    self.verified() is not None
+                    and self.verified() >= self.now[0]
+                    and self.index.revisions({KEY[0]})[KEY[0]]["issues"]["state"] == "current"
+                )
+            )
         self.stop_worker()
         self.index.close()
         self.index = self.open_index()
@@ -459,7 +464,7 @@ class BusLiveTests(ServiceFixture, unittest.TestCase):
                 "POSTGRES_PASSWORD=test",
                 "-e",
                 "POSTGRES_DB=concurro_test",
-                "postgres:18.7",
+                "postgres:19.0",
             ],
             capture_output=True,
             text=True,

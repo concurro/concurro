@@ -99,8 +99,6 @@ class ConsumerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             consumer = Consumer(Path(directory) / "consumer.sqlite", "python", 1)
             raw = b"[" * 20_000 + b"]" * 20_000
-            with self.assertRaises(RecursionError):
-                json.loads(raw)
             key = "bad\0" + "x" * 1000
             for action in (Action.NAK, Action.TERM, Action.ACK):
                 self.assertEqual(consumer.process(raw, key, lambda db, event: (Outcome.DONE, "")), action)
@@ -111,13 +109,14 @@ class ConsumerTests(unittest.TestCase):
             self.assertIn("wire_message", consumer.parked_command("show", parking["id"]))
             consumer.close()
 
-        with tempfile.TemporaryDirectory() as directory:
-            consumer = Consumer(
-                Path(directory) / "consumer.sqlite", "python", 1, decoder=Mock(side_effect=OverflowError("clock"))
-            )
-            self.assertEqual(consumer.process(FIXTURE, "overflow", lambda db, event: (Outcome.DONE, "")), Action.NAK)
-            self.assertEqual(consumer.process(FIXTURE, "overflow", lambda db, event: (Outcome.DONE, "")), Action.TERM)
-            consumer.close()
+        for error in (RecursionError("decoder depth"), OverflowError("clock")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
+                consumer = Consumer(
+                    Path(directory) / "consumer.sqlite", "python", 1, decoder=Mock(side_effect=error)
+                )
+                self.assertEqual(consumer.process(FIXTURE, "decoder-error", lambda db, event: (Outcome.DONE, "")), Action.NAK)
+                self.assertEqual(consumer.process(FIXTURE, "decoder-error", lambda db, event: (Outcome.DONE, "")), Action.TERM)
+                consumer.close()
 
     def test_unsupported_released_version_parks_for_operator(self):
         """An old-version held row becomes a visible parking that can be resolved."""

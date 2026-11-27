@@ -241,6 +241,23 @@ deliveries every five minutes by default, but GitHub retains them for only three
 days. Clear sustained saturation within that window; if coverage expires, declare
 the gap and strictly reconcile rather than assuming a later scan can recover it.
 
+## PostgreSQL major upgrades
+
+The Compose examples and test fixtures use PostgreSQL 19.0. PostgreSQL uses
+`major.minor` release numbers, not three-component SemVer.
+
+An existing 18.x data directory must be migrated before starting 19.0 against it.
+Stop application writers, including OpenBao, and take a logical backup of every
+database and role. Restore into a fresh PostgreSQL 19 volume, or use `pg_upgrade`
+with both server versions installed. Verify the restored roles, schema migrations,
+OpenBao access and application readiness before reconnecting writers. Preserve the
+original volume and backup until the forward migration is accepted; do not delete
+or reinitialize them as part of a Compose image update.
+
+See the [PostgreSQL upgrade procedure](https://www.postgresql.org/docs/19/upgrading.html).
+The existing `deploy/backup-platform.sh` produces a full logical archive; it does
+not migrate the volume or switch the running server.
+
 ## Recovery
 
 `deploy/backup-platform.sh` is an example backup helper for the bundled PostgreSQL

@@ -2,7 +2,7 @@ name: concurro-platform-dev
 
 services:
   postgres:
-    image: postgres:18.7
+    image: postgres:19.0
     environment:
       POSTGRES_PASSWORD: postgres-dev
     ports:

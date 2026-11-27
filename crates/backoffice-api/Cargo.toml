@@ -9,13 +9,13 @@ anyhow.workspace = true
 async-nats.workspace = true
 axum = { workspace = true, features = ["query"] }
 chrono.workspace = true
-concurro-db = { path = "../db" }
-concurro-backoffice-postgres = { path = "../backoffice-postgres" }
-concurro-config = { path = "../config" }
-concurro-contracts = { path = "../contracts" }
-concurro-events = { path = "../events" }
-concurro-events-nats = { path = "../events-nats" }
-concurro-events-postgres = { path = "../events-postgres" }
+concurro-db = { workspace = true }
+concurro-backoffice-postgres = { workspace = true }
+concurro-config = { workspace = true }
+concurro-contracts = { workspace = true }
+concurro-events = { workspace = true }
+concurro-events-nats = { workspace = true }
+concurro-events-postgres = { workspace = true }
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -26,6 +26,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-concurro-tasks-postgres = { path = "../tasks-postgres" }
-concurro-testkit = { path = "../testkit" }
+concurro-tasks-postgres = { workspace = true }
+concurro-testkit = { workspace = true }
 sqlx.workspace = true

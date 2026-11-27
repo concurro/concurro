@@ -77,7 +77,7 @@ impl NatsContainer {
 impl PostgresContainer {
     /// Start the pinned Postgres image with one test database.
     pub async fn start() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let container = GenericImage::new("postgres", "18.7")
+        let container = GenericImage::new("postgres", "19.0")
             .with_exposed_port(5432.tcp())
             .with_wait_for(WaitFor::message_on_stdout(
                 "PostgreSQL init process complete; ready for start up.",
@@ -161,7 +161,7 @@ impl OpenBaoContainer {
         let mut key = [0_u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut key)?;
         std::fs::write(directory.join("seal.key"), key)?;
-        let postgres = GenericImage::new("postgres", "18.7")
+        let postgres = GenericImage::new("postgres", "19.0")
             .with_wait_for(WaitFor::message_on_stdout(
                 "PostgreSQL init process complete; ready for start up.",
             ))

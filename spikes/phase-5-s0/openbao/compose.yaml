@@ -2,7 +2,7 @@
 name: s0-openbao
 services:
   postgres:
-    image: postgres:17
+    image: postgres:19.0
     environment:
       POSTGRES_USER: openbao
       POSTGRES_PASSWORD: spike-only

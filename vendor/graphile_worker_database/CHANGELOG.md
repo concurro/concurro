@@ -1,0 +1,99 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.3.0](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.2.0...graphile_worker_database-v0.3.0) - 2026-11-23
+
+### Added
+
+- port historical migration and cron behavior ([#585](https://github.com/leo91000/graphile_worker_rs/pull/585))
+
+### Other
+
+- [**breaking**] Replace Chrono with time ([#587](https://github.com/leo91000/graphile_worker_rs/pull/587))
+
+## [0.2.0](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.8...graphile_worker_database-v0.2.0) - 2026-11-10
+
+### Added
+
+- port upstream SQL retries and maintenance helpers ([#576](https://github.com/leo91000/graphile_worker_rs/pull/576))
+
+### Fixed
+
+- *(database)* Retain native PostgreSQL error sources ([#582](https://github.com/leo91000/graphile_worker_rs/pull/582))
+- preserve run-once persistence errors and server diagnostics ([#568](https://github.com/leo91000/graphile_worker_rs/pull/568))
+
+## [0.1.8](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.7...graphile_worker_database-v0.1.8) - 2026-10-06
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.7](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.6...graphile_worker_database-v0.1.7) - 2026-09-29
+
+### Fixed
+
+- enable TLS for tokio-postgres queries and notifications ([#531](https://github.com/leo91000/graphile_worker_rs/pull/531))
+- synchronize upstream queue and database behavior
+
+### Other
+
+- explain queue and recovery contracts
+
+## [0.1.6](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.5...graphile_worker_database-v0.1.6) - 2026-07-19
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.5](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.4...graphile_worker_database-v0.1.5) - 2026-06-27
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.4](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.3...graphile_worker_database-v0.1.4) - 2026-06-09
+
+### Fixed
+
+- accept raw schema inputs in query APIs
+
+### Other
+
+- clean up migration loading
+- clean worker architecture
+- match listener identifier escaping
+- escape identifiers without database query
+- migrate to sqlx 0.9
+
+## [0.1.3](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.2...graphile_worker_database-v0.1.3) - 2026-05-23
+
+### Fixed
+
+- support mutable tokio-postgres transactions
+- accept transaction executors for add_job
+
+### Other
+
+- remove driver-specific executor probing
+
+## [0.1.2](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.1...graphile_worker_database-v0.1.2) - 2026-05-12
+
+### Other
+
+- organize admin UI and workspace deps
+
+## [0.1.1](https://github.com/leo91000/graphile_worker_rs/compare/graphile_worker_database-v0.1.0...graphile_worker_database-v0.1.1) - 2026-05-11
+
+### Fixed
+
+- reconnect tokio-postgres listener
+
+### Other
+
+- *(deps)* update all non-major dependencies ([#407](https://github.com/leo91000/graphile_worker_rs/pull/407))

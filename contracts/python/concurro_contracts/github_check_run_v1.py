@@ -162,5 +162,8 @@ class Envelope(StrictModel):
     Service that committed this event.
     """
     revision: None = Field(None)
-    type: constr(pattern=r'^github\.check_run(?:\.[^.\s*>\u0000-\u001f\u007f-\u009f]+)?$', strict=True)
+    type: constr(
+        pattern=r'^github\.check_run(?:\.[^.\s*>\u0000-\u001f\u007f-\u009f]+)?$',
+        strict=True,
+    )
     version: Literal[1]

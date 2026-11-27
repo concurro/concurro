@@ -1,7 +1,7 @@
 # The Concurro service: coordination only. With runner executors it runs no containers and no
 # target code, so it needs no Docker access. Built from a full clone; the image holds that
 # commit's checkout, which the service serves and runner sessions must match.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
+FROM python:3.15.2-slim-trixie@sha256:63bb298d2b7b88f176f51b5189f54ce6535c997682ea70885d2132f5d473a8a5
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system safe.directory /opt/concurro \

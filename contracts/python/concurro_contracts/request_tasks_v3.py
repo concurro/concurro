@@ -642,7 +642,19 @@ class RequestOutcome(
         | RequestOutcome11
     ]
 ):
-    root: RequestOutcome1 | RequestOutcome2 | RequestOutcome3 | RequestOutcome4 | RequestOutcome5 | RequestOutcome6 | RequestOutcome7 | RequestOutcome8 | RequestOutcome9 | RequestOutcome10 | RequestOutcome11
+    root: (
+        RequestOutcome1
+        | RequestOutcome2
+        | RequestOutcome3
+        | RequestOutcome4
+        | RequestOutcome5
+        | RequestOutcome6
+        | RequestOutcome7
+        | RequestOutcome8
+        | RequestOutcome9
+        | RequestOutcome10
+        | RequestOutcome11
+    )
     """
     One durable request decision for publication and read models.
     """
@@ -672,5 +684,8 @@ class Envelope(StrictModel):
     Service that committed this event.
     """
     revision: None = Field(None)
-    type: constr(pattern=r'^request\.tasks\.(?:applied|blocked|stopped|refused|superseded)$', strict=True)
+    type: constr(
+        pattern=r'^request\.tasks\.(?:applied|blocked|stopped|refused|superseded)$',
+        strict=True,
+    )
     version: Literal[3]

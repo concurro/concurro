@@ -1,0 +1,126 @@
+use std::time::Duration;
+
+use ::tokio_postgres::{AsyncMessage, Client};
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
+
+use crate::{escape_identifier, DbError, Notification, NotificationStream};
+
+use super::ListenerConfig;
+
+const INITIAL_LISTENER_RECONNECT_DELAY: Duration = Duration::from_millis(50);
+const MAX_LISTENER_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+pub(super) async fn listen(
+    config: Option<ListenerConfig>,
+    channels: impl Iterator<Item = &str>,
+) -> Result<Option<NotificationStream>, DbError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+
+    let sql = channels
+        .map(|channel| format!("LISTEN {}", escape_identifier(channel)))
+        .collect::<Vec<_>>()
+        .join(";");
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (client, closed_rx) = connect_listener(&config, &sql, &tx).await?;
+
+    drop(tokio::spawn(run_reconnecting_listener(
+        config, sql, tx, client, closed_rx,
+    )));
+
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+
+    Ok(Some(Box::pin(stream) as NotificationStream))
+}
+
+fn next_reconnect_delay(delay: Duration) -> Duration {
+    let doubled = delay.checked_mul(2).unwrap_or(MAX_LISTENER_RECONNECT_DELAY);
+
+    if doubled > MAX_LISTENER_RECONNECT_DELAY {
+        MAX_LISTENER_RECONNECT_DELAY
+    } else {
+        doubled
+    }
+}
+
+// TLS connectors need cloning; the no-TLS connector also happens to be Copy.
+#[allow(clippy::clone_on_copy)]
+async fn connect_listener(
+    config: &ListenerConfig,
+    listen_sql: &str,
+    tx: &UnboundedSender<Result<Notification, DbError>>,
+) -> Result<(Client, oneshot::Receiver<()>), DbError> {
+    // The no-TLS connector is Copy; both TLS connectors require cloning.
+    #[allow(clippy::clone_on_copy)]
+    let tls = config.tls.clone();
+    let (client, connection) = config.config.connect(tls).await?;
+    let (closed_tx, closed_rx) = oneshot::channel();
+    let tx = tx.clone();
+
+    drop(tokio::spawn(async move {
+        let mut connection = Box::pin(connection);
+
+        while let Some(message) =
+            std::future::poll_fn(|cx| connection.as_mut().poll_message(cx)).await
+        {
+            let item = match message {
+                Ok(AsyncMessage::Notification(notification)) => Ok(Notification {
+                    channel: notification.channel().to_string(),
+                    payload: notification.payload().to_string(),
+                }),
+                Ok(AsyncMessage::Notice(_)) => continue,
+                Ok(_) => continue,
+                Err(_) => break,
+            };
+
+            if tx.send(item).is_err() {
+                break;
+            }
+        }
+
+        let _ = closed_tx.send(());
+    }));
+
+    client.batch_execute(listen_sql).await?;
+
+    Ok((client, closed_rx))
+}
+
+async fn run_reconnecting_listener(
+    config: ListenerConfig,
+    listen_sql: String,
+    tx: UnboundedSender<Result<Notification, DbError>>,
+    mut client: Client,
+    mut closed_rx: oneshot::Receiver<()>,
+) {
+    let mut reconnect_delay = INITIAL_LISTENER_RECONNECT_DELAY;
+
+    loop {
+        tokio::select! {
+            _ = tx.closed() => return,
+            _ = &mut closed_rx => {}
+        }
+
+        drop(client);
+
+        loop {
+            tokio::select! {
+                _ = tx.closed() => return,
+                _ = tokio::time::sleep(reconnect_delay) => {}
+            }
+
+            match connect_listener(&config, &listen_sql, &tx).await {
+                Ok((new_client, new_closed_rx)) => {
+                    client = new_client;
+                    closed_rx = new_closed_rx;
+                    reconnect_delay = INITIAL_LISTENER_RECONNECT_DELAY;
+                    break;
+                }
+                Err(_) => {
+                    reconnect_delay = next_reconnect_delay(reconnect_delay);
+                }
+            }
+        }
+    }
+}

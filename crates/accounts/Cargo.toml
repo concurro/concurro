@@ -16,17 +16,17 @@ axum = { workspace = true, features = ["query"] }
 axum-extra.workspace = true
 base64.workspace = true
 chrono.workspace = true
-concurro-accounts-postgres = { path = "../accounts-postgres" }
-concurro-config = { path = "../config" }
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events = { path = "../events" }
-concurro-events-nats = { path = "../events-nats" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-github-v1 = { path = "../github-v1" }
-concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "dcb96c69ef4f1a7c5c355a40802ec7253084d849" }
-concurro-secrets = { path = "../secrets" }
-concurro-telemetry = { path = "../telemetry" }
+concurro-accounts-postgres = { workspace = true }
+concurro-config = { workspace = true }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events = { workspace = true }
+concurro-events-nats = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-github-v1 = { workspace = true }
+concurro-relay-hosted-api = { workspace = true }
+concurro-secrets = { workspace = true }
+concurro-telemetry = { workspace = true }
 graphile_worker.workspace = true
 hex.workspace = true
 jsonwebtoken.workspace = true
@@ -46,9 +46,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["sqlite"] }
-concurro-backoffice-api = { path = "../backoffice-api" }
-concurro-backoffice-postgres = { path = "../backoffice-postgres" }
-concurro-tasks-postgres = { path = "../tasks-postgres" }
-concurro-testkit = { path = "../testkit" }
-concurro-tasks = { path = "../tasks" }
-tower = "=0.5.3"
+concurro-backoffice-api = { workspace = true }
+concurro-backoffice-postgres = { workspace = true }
+concurro-tasks-postgres = { workspace = true }
+concurro-testkit = { workspace = true }
+concurro-tasks = { workspace = true }
+tower = { workspace = true }

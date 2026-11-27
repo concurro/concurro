@@ -456,7 +456,9 @@ class AdmissionTests(ShadowTests):
             self.assertEqual([row["funding"] for row in selected], ["contributed", "org"])
             self.assertEqual(selected[0]["sponsor"], "202")
             self.assertIsNone(selected[1]["sponsor"])
-            self.assertEqual(controller.state["provider_funding"], {"openai": "contributed", "anthropic": "org"})
+            self.assertEqual(
+                controller.state["provider_funding"], {"openai": "contributed", "anthropic": "org", "google": "org"}
+            )
             self.registry.record_shadow(
                 KEY, controller.state, funding=admissions.task_mode(controller.config, controller.state)
             )
@@ -542,14 +544,16 @@ class AdmissionTests(ShadowTests):
             self.shadow.begin(controller)
             with patch.object(self.shadow, "confirm", side_effect=Transient("synthetic first-upgrade source outage")):
                 self.shadow.sync(controller, self.fake.comments)
-            self.assertEqual(controller.state["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertEqual(
+                controller.state["provider_funding"], {"openai": "org", "anthropic": "org", "google": "org"}
+            )
             self.assertEqual(controller.select_admissions([("codex", "intake", {})])[0]["funding"], "org")
             self.assertEqual(controller.state.get("operation"), operation)
             self.assertEqual(controller.state["calls"], calls)
             self.shadow.begin(controller)
             self.shadow.sync(controller, self.fake.comments)
             view = self.shadow.view(KEY)
-            self.assertEqual(view["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertEqual(view["provider_funding"], {"openai": "org", "anthropic": "org", "google": "org"})
             self.assertEqual(view["source_provider_funding"], view["provider_funding"])
 
     def test_pretask_funding_order_is_independent_of_delivery_and_duplicates(self):
@@ -585,7 +589,9 @@ class AdmissionTests(ShadowTests):
         ]
         self.advance()
         with self.current(funded=False) as controller:
-            self.assertEqual(controller.state["provider_funding"], {"openai": "org", "anthropic": "org"})
+            self.assertEqual(
+                controller.state["provider_funding"], {"openai": "org", "anthropic": "org", "google": "org"}
+            )
             self.assertFalse(any(f["actor_id"] == "202" for f in controller.shadow_projection["facts"]))
 
     def test_batch_preflight_has_no_charge_when_any_required_owner_lacks_coverage(self):
@@ -1234,7 +1240,7 @@ class AdmissionTests(ShadowTests):
             with patch.object(self.shadow, "operator", return_value=LocalOperator(self.exchange)):
                 self.shadow.flush(controller)
             self.assertFalse(controller.state.get("pending_sponsorships"))
-            accepted = {value["provider"]: value for value in controller.state["sponsorship_history"][-2:]}
+            accepted = {value["provider"]: value for value in controller.state["sponsorship_history"][-3:]}
             self.assertEqual(accepted["openai"]["transition"], first["transition"])
             self.assertEqual(accepted["openai"]["generation"], generation - 1)
             self.assertNotEqual(accepted["anthropic"]["transition"], second["transition"])
@@ -1249,7 +1255,7 @@ class AdmissionTests(ShadowTests):
                 self.exchange.db.execute(
                     "SELECT provider,actor,through_epoch FROM sponsorship_revocations ORDER BY provider"
                 ).fetchall(),
-                [("anthropic", "101", 1), ("openai", "101", 1)],
+                [("anthropic", "101", 1), ("google", "101", 0), ("openai", "101", 1)],
             )
 
     def test_generation_lookup_failure_never_starts_or_debits_serial_attempt(self):

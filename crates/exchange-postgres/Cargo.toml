@@ -7,11 +7,11 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "dcb96c69ef4f1a7c5c355a40802ec7253084d849" }
-concurro-tasks-core = { path = "../tasks-core" }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-relay-hosted-api = { workspace = true }
+concurro-tasks-core = { workspace = true }
 hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

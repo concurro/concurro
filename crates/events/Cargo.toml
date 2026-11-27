@@ -5,6 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
 serde.workspace = true

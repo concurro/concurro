@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 chrono.workspace = true
-concurro-contracts = { path = "../contracts" }
+concurro-contracts = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

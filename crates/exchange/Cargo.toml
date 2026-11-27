@@ -14,14 +14,14 @@ base64.workspace = true
 async-nats.workspace = true
 axum = { workspace = true, features = ["query"] }
 chrono.workspace = true
-concurro-config = { path = "../config" }
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events-nats = { path = "../events-nats" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-exchange-postgres = { path = "../exchange-postgres" }
-concurro-secrets = { path = "../secrets" }
-concurro-telemetry = { path = "../telemetry" }
+concurro-config = { workspace = true }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events-nats = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-exchange-postgres = { workspace = true }
+concurro-secrets = { workspace = true }
+concurro-telemetry = { workspace = true }
 hmac.workspace = true
 hex.workspace = true
 jsonwebtoken.workspace = true
@@ -37,12 +37,12 @@ uuid.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-concurro-exchange-client = { path = "../exchange-client" }
-concurro-testkit = { path = "../testkit" }
-concurro-tasks-core = { path = "../tasks-core" }
-concurro-vault-v1 = { path = "../vault-v1" }
-concurro-relay-hosted-api = { git = "https://github.com/concurro/concurro-relay", rev = "dcb96c69ef4f1a7c5c355a40802ec7253084d849" }
+concurro-exchange-client = { workspace = true }
+concurro-testkit = { workspace = true }
+concurro-tasks-core = { workspace = true }
+concurro-vault-v1 = { workspace = true }
+concurro-relay-hosted-api = { workspace = true }
 reqwest.workspace = true
-rand = "0.8"
-rsa = { version = "0.9", features = ["pem"] }
+rand = { workspace = true, features = ["thread_rng"] }
+rsa = { workspace = true, features = ["encoding"] }
 sqlx.workspace = true

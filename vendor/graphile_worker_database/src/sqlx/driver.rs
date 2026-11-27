@@ -1,0 +1,129 @@
+use futures::StreamExt;
+use sqlx::PgPool;
+
+use super::transaction::SqlxTransaction;
+use crate::{Database, DatabaseDriver, DbError, DbTransaction, Notification, NotificationStream};
+
+#[derive(Clone, Debug)]
+pub struct SqlxDatabase {
+    pub(super) pool: PgPool,
+    pub(super) prepared_statements: bool,
+}
+
+impl SqlxDatabase {
+    /// Wraps a SQLx pool with persistent named statements enabled by default.
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            prepared_statements: true,
+        }
+    }
+
+    /// Controls persistent named statements for this database and its transactions.
+    ///
+    /// Enabled by default. Disable for proxies that cannot preserve prepared
+    /// statements across transactions. Configure this before using the pool;
+    /// existing statements cached by SQLx may otherwise still be reused.
+    pub fn with_prepared_statements(mut self, enabled: bool) -> Self {
+        self.prepared_statements = enabled;
+        self
+    }
+
+    /// Borrows the underlying pool for operations outside the database wrapper.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
+impl From<PgPool> for SqlxDatabase {
+    fn from(pool: PgPool) -> Self {
+        Self::new(pool)
+    }
+}
+
+impl From<PgPool> for Database {
+    fn from(pool: PgPool) -> Self {
+        Database::new(SqlxDatabase::new(pool))
+    }
+}
+
+impl From<&PgPool> for Database {
+    fn from(pool: &PgPool) -> Self {
+        Database::new(SqlxDatabase::new(pool.clone()))
+    }
+}
+
+impl From<SqlxDatabase> for Database {
+    fn from(database: SqlxDatabase) -> Self {
+        Database::new(database)
+    }
+}
+
+impl From<sqlx::Error> for DbError {
+    fn from(error: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(database_error) = &error {
+            if let Some(code) = database_error.code() {
+                return DbError::with_code(error.to_string(), code);
+            }
+        }
+
+        DbError::new(error.to_string())
+    }
+}
+
+impl DatabaseDriver for SqlxDatabase {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn begin<'a>(&'a self) -> crate::BoxFuture<'a, Result<DbTransaction, DbError>> {
+        Box::pin(async move {
+            let tx = self.pool.begin().await?;
+            Ok(DbTransaction::new(Box::new(SqlxTransaction::new(
+                tx,
+                self.prepared_statements,
+            ))))
+        })
+    }
+
+    fn listen<'a>(
+        &'a self,
+        channel: &'a str,
+    ) -> crate::BoxFuture<'a, Result<Option<NotificationStream>, DbError>> {
+        self.listen_with_channels(channel, &[])
+    }
+
+    fn listen_with_channels<'a>(
+        &'a self,
+        primary: &'a str,
+        additional: &'a [&'a str],
+    ) -> crate::BoxFuture<'a, Result<Option<NotificationStream>, DbError>> {
+        Box::pin(async move {
+            let mut listener = sqlx::postgres::PgListener::connect_with(&self.pool).await?;
+            let channels = std::iter::once(primary).chain(additional.iter().copied());
+            listener.listen_all(channels).await?;
+            let stream = listener.into_stream().map(|result| {
+                result
+                    .map(|notification| Notification {
+                        channel: notification.channel().to_string(),
+                        payload: notification.payload().to_string(),
+                    })
+                    .map_err(Into::into)
+            });
+            Ok(Some(Box::pin(stream) as NotificationStream))
+        })
+    }
+}
+
+/// Pool acquisition happens before execution, so these faults are safe to retry.
+pub(crate) fn acquisition_error(error: sqlx::Error) -> DbError {
+    let code = if matches!(error, sqlx::Error::PoolTimedOut) {
+        Some("ETIMEDOUT")
+    } else {
+        DbError::connection_io_code(&error)
+    };
+    match code {
+        Some(code) => DbError::connection_failure(error.to_string(), code),
+        None => error.into(),
+    }
+}

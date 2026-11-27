@@ -9,14 +9,14 @@ anyhow.workspace = true
 async-nats.workspace = true
 axum.workspace = true
 chrono.workspace = true
-concurro-config = { path = "../config" }
-concurro-db = { path = "../db" }
-concurro-events = { path = "../events" }
-concurro-events-nats = { path = "../events-nats" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-ingress-core = { path = "../ingress-core" }
-concurro-ingress-postgres = { path = "../ingress-postgres" }
-concurro-telemetry = { path = "../telemetry" }
+concurro-config = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events = { workspace = true }
+concurro-events-nats = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-ingress-core = { workspace = true }
+concurro-ingress-postgres = { workspace = true }
+concurro-telemetry = { workspace = true }
 hex.workspace = true
 hmac.workspace = true
 reqwest.workspace = true
@@ -28,8 +28,8 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-concurro-testkit = { path = "../testkit" }
+concurro-testkit = { workspace = true }
 futures-util.workspace = true
 sqlx.workspace = true
-tower = { version = "0.5.3", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 

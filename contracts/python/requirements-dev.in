@@ -1,2 +1,2 @@
-datamodel-code-generator==0.78.0
-pydantic==2.14.1
+datamodel-code-generator==0.103.0
+pydantic==2.14.4

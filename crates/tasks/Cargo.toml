@@ -11,19 +11,19 @@ thiserror.workspace = true
 base64.workspace = true
 async-nats.workspace = true
 chrono.workspace = true
-concurro-config = { path = "../config" }
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events = { path = "../events" }
-concurro-events-nats = { path = "../events-nats" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-exchange-v1 = { path = "../exchange-v1" }
-concurro-exchange-client = { path = "../exchange-client" }
-concurro-github-v1 = { path = "../github-v1" }
-concurro-tasks-core = { path = "../tasks-core" }
-concurro-tasks-postgres = { path = "../tasks-postgres" }
-concurro-vault-v1 = { path = "../vault-v1" }
-concurro-telemetry = { path = "../telemetry" }
+concurro-config = { workspace = true }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events = { workspace = true }
+concurro-events-nats = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-exchange-v1 = { workspace = true }
+concurro-exchange-client = { workspace = true }
+concurro-github-v1 = { workspace = true }
+concurro-tasks-core = { workspace = true }
+concurro-tasks-postgres = { workspace = true }
+concurro-vault-v1 = { workspace = true }
+concurro-telemetry = { workspace = true }
 graphile_worker.workspace = true
 jsonwebtoken.workspace = true
 glob.workspace = true
@@ -41,14 +41,14 @@ yaml-rust2.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
-concurro-testkit = { path = "../testkit" }
-concurro-exchange = { path = "../exchange" }
-concurro-exchange-postgres = { path = "../exchange-postgres" }
-concurro-inference-gateway = { path = "../inference-gateway" }
-concurro-secrets = { path = "../secrets" }
+concurro-testkit = { workspace = true }
+concurro-exchange = { workspace = true }
+concurro-exchange-postgres = { workspace = true }
+concurro-inference-gateway = { workspace = true }
+concurro-secrets = { workspace = true }
 flate2.workspace = true
-rand = "0.8"
-rsa = { version = "0.9", features = ["pem"] }
+rand = { workspace = true, features = ["thread_rng"] }
+rsa = { workspace = true, features = ["encoding"] }
 reqwest.workspace = true
 sqlx.workspace = true
 tar.workspace = true

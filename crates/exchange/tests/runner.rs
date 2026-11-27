@@ -18,8 +18,8 @@ use concurro_secrets::{SecretRef, Secrets};
 use concurro_testkit::PostgresContainer;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
-use rand::thread_rng;
-use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
+use rand::rng;
+use rsa::{PrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -27,14 +27,14 @@ use uuid::Uuid;
 
 /// Create a local RSA issuer and its published public JWK.
 fn issuer() -> (EncodingKey, Value) {
-    let private = RsaPrivateKey::new(&mut thread_rng(), 2048).expect("RSA key");
+    let private = PrivateKey::new(&mut rng(), 2048).expect("RSA key");
     let public = private.to_public_key();
     let pem = private.to_pkcs1_pem(Default::default()).expect("PEM");
     let key = EncodingKey::from_rsa_pem(pem.as_bytes()).expect("encoding key");
     let jwks = json!({"keys":[{
         "kty":"RSA", "alg":"RS256", "use":"sig", "kid":"fake-github",
-        "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
-        "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        "n":URL_SAFE_NO_PAD.encode(public.n().to_be_bytes_trimmed_vartime()),
+        "e":URL_SAFE_NO_PAD.encode(public.e().to_be_bytes_trimmed_vartime())
     }]});
     (key, jwks)
 }

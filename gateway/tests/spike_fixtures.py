@@ -21,7 +21,7 @@ from spike_observer import observe
 IMAGE = (
     "cr.agentgateway.dev/agentgateway:v1.7.0@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b"
 )
-CLI_VERSIONS = {"codex": "0.169.0", "claude": "2.1.301"}
+CLI_VERSIONS = {"codex": "0.172.0", "claude": "2.1.332"}
 SCHEMA = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},

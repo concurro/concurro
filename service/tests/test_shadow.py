@@ -295,8 +295,11 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
             state = self.advance()
             self.assertTrue(state["pending_sponsorships"])
             state = self.advance()
-        self.assertEqual({slot["epoch"] for slot in state["sponsorships"].values()}, {1})
-        self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM sponsorship_transitions").fetchone()[0], 2)
+        self.assertEqual(
+            {provider: slot["epoch"] for provider, slot in state["sponsorships"].items()},
+            {"openai": 1, "anthropic": 1, "google": 0},
+        )
+        self.assertEqual(self.exchange.db.execute("SELECT count(*) FROM sponsorship_transitions").fetchone()[0], 3)
         self.assertEqual(len([call for call in self.metadata_calls if call[1] == AT]), 1)
 
     def test_self_withdraw_without_prior_grant_blocks_only_own_start(self):
@@ -325,7 +328,7 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
         batches = [call.args[0]["transitions"] for call in publish.call_args_list]
         self.assertTrue(
             any(
-                len(batch) == 2 and all(t["actor"] == "202" and t["reason"] == "permission_loss" for t in batch)
+                len(batch) == 3 and all(t["actor"] == "202" and t["reason"] == "permission_loss" for t in batch)
                 for batch in batches
             )
         )
@@ -333,7 +336,7 @@ class ShadowTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(state["sponsorships"]["openai"]["status"], "withdrawn")
         self.assertEqual(
             {r[0] for r in self.exchange.db.execute("SELECT provider FROM sponsorship_revocations WHERE actor='202'")},
-            {"openai", "anthropic"},
+            {"openai", "anthropic", "google"},
         )
 
     def test_legacy_org_checkpoint_never_infers_an_old_starter_grant(self):

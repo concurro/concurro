@@ -165,7 +165,9 @@ class GithubIssues1(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -201,7 +203,9 @@ class GithubIssues2(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -233,7 +237,9 @@ class GithubIssues3(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -265,7 +271,9 @@ class GithubIssues4(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -297,7 +305,9 @@ class GithubIssues5(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -333,7 +343,9 @@ class GithubIssues6(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -373,7 +385,9 @@ class GithubIssues7(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -409,7 +423,9 @@ class GithubIssues8(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -441,7 +457,9 @@ class GithubIssues9(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -477,7 +495,9 @@ class GithubIssues10(StrictModel):
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -507,12 +527,17 @@ class GithubIssues11(StrictModel):
     model_config = ConfigDict(
         regex_engine="python-re",
     )
-    action: constr(pattern=r'^(?!(?:opened|edited|closed|reopened|labeled|unlabeled|assigned|unassigned|transferred|deleted)$)[^.\s*>\u0000-\u001f\u007f-\u009f]+$(?![\s\S])', strict=True)
+    action: constr(
+        pattern=r'^(?!(?:opened|edited|closed|reopened|labeled|unlabeled|assigned|unassigned|transferred|deleted)$)[^.\s*>\u0000-\u001f\u007f-\u009f]+$(?![\s\S])',
+        strict=True,
+    )
     delivery_id: StrictStr
     """
     GitHub delivery GUID.
     """
-    installation_id: conint(ge=-9223372036854775808, le=9223372036854775807, strict=True)
+    installation_id: conint(
+        ge=-9223372036854775808, le=9223372036854775807, strict=True
+    )
     """
     App installation ID.
     """
@@ -553,7 +578,19 @@ class GithubIssues(
         | GithubIssues11
     ]
 ):
-    root: GithubIssues1 | GithubIssues2 | GithubIssues3 | GithubIssues4 | GithubIssues5 | GithubIssues6 | GithubIssues7 | GithubIssues8 | GithubIssues9 | GithubIssues10 | GithubIssues11
+    root: (
+        GithubIssues1
+        | GithubIssues2
+        | GithubIssues3
+        | GithubIssues4
+        | GithubIssues5
+        | GithubIssues6
+        | GithubIssues7
+        | GithubIssues8
+        | GithubIssues9
+        | GithubIssues10
+        | GithubIssues11
+    )
     """
     One mapped GitHub issues delivery.
     """
@@ -595,7 +632,10 @@ class Envelope(StrictModel):
     """
     Facts have no snapshot revision.
     """
-    type: constr(pattern=r'^github\.issues\.[^.\s*>\u0000-\u001f\u007f-\u009f]+$(?![\s\S])', strict=True)
+    type: constr(
+        pattern=r'^github\.issues\.[^.\s*>\u0000-\u001f\u007f-\u009f]+$(?![\s\S])',
+        strict=True,
+    )
     """
     Concrete GitHub issue action type.
     """

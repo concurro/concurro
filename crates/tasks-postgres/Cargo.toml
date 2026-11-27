@@ -8,13 +8,13 @@ publish.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
-concurro-contracts = { path = "../contracts" }
-concurro-db = { path = "../db" }
-concurro-events-postgres = { path = "../events-postgres" }
-concurro-exchange-v1 = { path = "../exchange-v1" }
+concurro-contracts = { workspace = true }
+concurro-db = { workspace = true }
+concurro-events-postgres = { workspace = true }
+concurro-exchange-v1 = { workspace = true }
 graphile_worker.workspace = true
-concurro-tasks-core = { path = "../tasks-core" }
-concurro-tasks-diagnostics = { path = "../tasks-diagnostics" }
+concurro-tasks-core = { workspace = true }
+concurro-tasks-diagnostics = { workspace = true }
 hex.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
@@ -23,7 +23,7 @@ serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-concurro-testkit = { path = "../testkit" }
+concurro-testkit = { workspace = true }
 flate2.workspace = true
 tar.workspace = true
 tokio.workspace = true

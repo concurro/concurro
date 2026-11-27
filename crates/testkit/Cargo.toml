@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-concurro-db = { path = "../db" }
+concurro-db = { workspace = true }
 sqlx.workspace = true
 testcontainers.workspace = true
 tokio.workspace = true

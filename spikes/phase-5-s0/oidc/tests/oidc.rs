@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{EncodingKey, Header, jwk::JwkSet};
-use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
+use rsa::{PrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
 use s0_oidc::{ISSUER, Refusal, Session, verify};
 use serde_json::{Value, json};
 
@@ -14,12 +14,12 @@ struct Issuer {
 }
 
 fn issuer() -> Issuer {
-    let private = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+    let private = PrivateKey::new(&mut rand::rng(), 2048).unwrap();
     let public = private.to_public_key();
     let jwks: JwkSet = serde_json::from_value(json!({"keys": [{
         "kty": "RSA", "alg": "RS256", "use": "sig", "kid": "gh-1",
-        "n": URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
-        "e": URL_SAFE_NO_PAD.encode(public.e().to_bytes_be()),
+        "n": URL_SAFE_NO_PAD.encode(public.n().to_be_bytes_trimmed_vartime()),
+        "e": URL_SAFE_NO_PAD.encode(public.e().to_be_bytes_trimmed_vartime()),
     }]}))
     .unwrap();
     let pem = private.to_pkcs1_pem(Default::default()).unwrap();

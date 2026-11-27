@@ -598,8 +598,8 @@ mod tests {
     use concurro_testkit::{NatsContainer, PostgresContainer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
-    use rand::thread_rng;
-    use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
+    use rand::rng;
+    use rsa::{PrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use sqlx::types::Json as SqlJson;
@@ -1008,12 +1008,12 @@ mod tests {
                 .is_some()
         );
         let (private, jwks) = {
-            let private = RsaPrivateKey::new(&mut thread_rng(), 2048).expect("RSA key");
+            let private = PrivateKey::new(&mut rng(), 2048).expect("RSA key");
             let public = private.to_public_key();
             let pem = private.to_pkcs1_pem(Default::default()).expect("PEM");
             let jwks = json!({"keys":[{"kty":"RSA","alg":"RS256","use":"sig","kid":"fake-github",
-                "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
-                "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())}]});
+                "n":URL_SAFE_NO_PAD.encode(public.n().to_be_bytes_trimmed_vartime()),
+                "e":URL_SAFE_NO_PAD.encode(public.e().to_be_bytes_trimmed_vartime())}]});
             (
                 EncodingKey::from_rsa_pem(pem.as_bytes()).expect("signing key"),
                 jwks,

@@ -92,7 +92,13 @@ def _parse(serialized):
         if not isinstance(effort, str) or effort not in EFFORTS[provider]:
             raise ValueError("unsupported effort for model provider")
         if provider == "google":
-            if model not in {"gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash"}:
+            if model not in {
+                "gemini-4-neon",
+                "gemini-4-hydrogen",
+                "gemini-4-carbon",
+                "gemini-4-argon",
+                "gemini-3.8-flash",
+            }:
                 raise ValueError("unsupported Antigravity canonical model")
             if effort == "xhigh" and model not in {"gemini-4-neon", "gemini-4-hydrogen"}:
                 raise ValueError("unsupported effort for Antigravity model")

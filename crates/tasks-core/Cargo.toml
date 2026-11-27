@@ -5,10 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-concurro-agy = { path = "../agy", default-features = false }
+concurro-agy = { workspace = true, default-features = false }
 anyhow.workspace = true
 chrono.workspace = true
-concurro-contracts = { path = "../contracts" }
+concurro-contracts = { workspace = true }
 glob.workspace = true
 hex.workspace = true
 regex.workspace = true
